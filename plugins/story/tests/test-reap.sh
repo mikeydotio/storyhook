@@ -48,7 +48,7 @@ out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$ab" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "abandonment: ok:false"
 assert_eq "$(jqf "$out" .reason)" "not-completion-state" \
   "abandonment: reason distinguishes closure from completion"
-assert_eq "$(jqf "$out" .state)" "closed" "abandonment: reports the state found"
+assert_eq "$(jqf "$out" .state)" "dropped" "abandonment: reports the state found"
 assert_eq "$(jqf "$out" .completion_state)" "done" \
   "abandonment: reports the state required"
 [ -d "$repo/.claude/worktrees/$wab" ] \
@@ -123,7 +123,7 @@ assert_contains "$(jqf "$out" .display)" "removed worktree" "happy: display name
 [ -d "$repo/.claude/worktrees/$whp" ] && fail_test "happy: worktree still on disk"
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$whp") \
   && fail_test "happy: branch still in git"
-grep -q -- '-t @1' "$FAKE_TMUX_STATE/kill_window_args.log" \
+grep -q -- '-t @7' "$FAKE_TMUX_STATE/kill_window_args.log" \
   || fail_test "happy: tmux kill-window did not target the resolved window"
 
 # --- idempotent: nothing to reclaim is still ok:true, not an error ---------
@@ -134,18 +134,52 @@ assert_eq "$(jqf "$out" .ok)" "true" "nothing-to-reclaim: ok"
 assert_eq "$(jqf "$out" '.removed.worktree')" "false" "nothing-to-reclaim: no worktree to remove"
 assert_eq "$(jqf "$out" '.removed.branch')" "false" "nothing-to-reclaim: no branch to remove"
 
-# --- project-specific completion: first CLOSED state, never hard-coded done -
-custom=$(new_story "$repo" "Custom completion state")
+# --- completion is the required `done`, never the first CLOSED state (SH-652)
+# `shipped` is ordered ahead of `done`; a story a person moved into it is not
+# completed work and reap refuses it, while `done` is still accepted.
+custom=$(new_story "$repo" "Custom closed state is not completion")
 wcustom=$(mk_dispatched "$repo" "$custom")
 (cd "$repo" \
   && story state add shipped --super CLOSED >/dev/null \
-  && story state reorder todo,in-progress,verifying,blocked,shipped,done,closed >/dev/null \
+  && story state reorder todo,in-progress,verifying,blocked,shipped,done,dropped >/dev/null \
   && story move "$custom" shipped >/dev/null)
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$custom" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "custom completion: ok:true"
-assert_eq "$(jqf "$out" .dry_run)" "true" "custom completion: reaches the dry-run cleanup"
+assert_eq "$(jqf "$out" .ok)" "false" "shipped-first catalog: a story in shipped is refused"
+assert_eq "$(jqf "$out" .reason)" "not-completion-state" "shipped-first catalog: names the reason"
+assert_eq "$(jqf "$out" .completion_state)" "done" "shipped-first catalog: names done as completion"
 [ -d "$repo/.claude/worktrees/$wcustom" ] \
-  || fail_test "custom completion: dry run removed the worktree"
+  || fail_test "shipped-first catalog: a refused reap removed the worktree"
+stilldone=$(new_story "$repo" "Done under a shipped-first catalog")
+wdone=$(mk_dispatched "$repo" "$stilldone")
+close_story "$stilldone"
+out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$stilldone" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "shipped-first catalog: done is still completion"
+assert_eq "$(jqf "$out" .dry_run)" "true" "shipped-first catalog: reaches the dry-run cleanup"
+[ -d "$repo/.claude/worktrees/$wdone" ] \
+  || fail_test "shipped-first catalog: dry run removed the worktree"
+
+# --- SH-691: merged-ness is judged against origin's ADVERTISED default -------
+# The local origin/HEAD cache says `main`; origin's default is `dev`, and the
+# branch is merged only there. A reap that trusted the cache — or the old
+# `main` literal — would refuse this as unmerged.
+origin=$(git -C "$repo" remote get-url origin)
+dv=$(new_story "$repo" "Merged into dev only")
+wdv=$(mk_dispatched "$repo" "$dv")
+printf 'dev\n' >"$repo/.claude/worktrees/$wdv/dev.txt"
+git -C "$repo/.claude/worktrees/$wdv" add dev.txt
+git -C "$repo/.claude/worktrees/$wdv" -c user.name=t -c user.email=t@e commit -qm 'dev work'
+git -C "$repo" push -q origin "refs/heads/worktree-$wdv:refs/heads/dev"
+git --git-dir="$origin" symbolic-ref HEAD refs/heads/dev
+assert_eq "$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD)" "refs/remotes/origin/main" \
+  "dev-only: fixture cache still says main"
+close_story "$dv"
+out=$(cd "$repo" && bash "$SCRIPT" reap "$dv" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "dev-only: reaped — merged-ness was judged against origin's default: $out"
+assert_eq "$(jqf "$out" '.removed.branch')" "true" "dev-only: the branch merged only into dev was deleted"
+[ -d "$repo/.claude/worktrees/$wdv" ] && fail_test "dev-only: worktree survived a successful reap"
+(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$wdv") \
+  && fail_test "dev-only: branch survived a successful reap"
+git --git-dir="$origin" symbolic-ref HEAD refs/heads/main
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" reap 2>&1)

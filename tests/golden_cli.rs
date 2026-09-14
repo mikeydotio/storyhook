@@ -40,6 +40,9 @@
 //! unreviewable and pins nothing the human form does not.
 
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
+
+use storyhook::daemon::block_delivery::IDLE_POLL;
 
 use storyhook_test_support::{Project, TestEnv, scratch_root};
 
@@ -66,7 +69,33 @@ static CORPUS: LazyLock<Project<'static>> = LazyLock::new(build_corpus);
 /// `blocks` relations, comments, assignees, two members, two archived (closed)
 /// stories, one explicitly closed story, an `awaiting` block, and two phases.
 fn build_corpus() -> Project<'static> {
-    let project = TestEnv::shared().project().build();
+    let env = TestEnv::shared();
+    // Block delivery, stubbed (SH-693). Three operations below make a story
+    // blocked, and each enqueues an interrupt that the daemon's block-delivery
+    // worker (SH-690) attempts against the agent helper and records on the
+    // story as a comment. Left to the machine, that comment reads "could not
+    // find plugins/story/bin/story.sh for agent `codex`" — or, with the plugin
+    // installed, "pane-unavailable" — and lands whenever the worker's thread
+    // reaches it, so both its text and its place in the global sequence would
+    // differ from one machine and run to the next. The stub is how every test
+    // in this tree points dispatch at a known answer (`STORYHOOK_DISPATCH_SCRIPT`,
+    // src/api/dispatch.rs). It has to be in the daemon's own environment,
+    // which is the client's at the moment the daemon is spawned — hence the
+    // explicit `daemon start` before the project exists, the same door
+    // tests/block_delivery.rs uses. [`settled`] then pins where each delivery
+    // lands.
+    let stub = env.home().join("golden-notify.sh");
+    std::fs::write(
+        &stub,
+        "DISPATCH_PROTOCOL=5\nprintf '%s' '{\"ok\":false,\"reason\":\"pane-unavailable\",\"display\":\"no agent reached: the golden corpus dispatches nothing\"}'\n",
+    )
+    .expect("writing the dispatch stub");
+    env.story(env.home())
+        .env("STORYHOOK_DISPATCH_SCRIPT", &stub)
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let project = env.project().build();
     let run = |args: &[&str]| {
         project.run(args).success();
     };
@@ -189,7 +218,9 @@ fn build_corpus() -> Project<'static> {
     run(&["relate", "SH-1", "parent-of", "SH-3"]);
     run(&["relate", "SH-1", "parent-of", "SH-4"]);
     run(&["relate", "SH-5", "blocks", "SH-9"]);
+    settled(&project, "SH-9", 1);
     run(&["relate", "SH-2", "blocks", "SH-3"]);
+    settled(&project, "SH-3", 2);
 
     run(&["assign", "SH-2", "ada-lovelace"]);
     run(&["assign", "SH-5", "grace-hopper"]);
@@ -211,6 +242,7 @@ fn build_corpus() -> Project<'static> {
     run(&["phase", "add", "SH-9", "2"]);
 
     run(&["block", "SH-6", "waiting on the benchmark harness"]);
+    settled(&project, "SH-6", 3);
 
     run(&["move", "SH-3", "in-progress"]);
     run(&["move", "SH-4", "review"]);
@@ -243,6 +275,35 @@ fn build_corpus() -> Project<'static> {
     project
 }
 
+/// Waits until `story` carries the block-delivery comment numbered `delivery`.
+///
+/// The worker wakes on the change bus, so this normally returns on its first
+/// poll. The bound is ten of the worker's own fallback cadence — derived from
+/// it rather than picked (SH-394) — which is the difference between "slow" and
+/// "never": a corpus that trips it fails naming the delivery in flight rather
+/// than snapshotting a story whose next event has not landed.
+fn settled(project: &Project<'_>, story: &str, delivery: u32) {
+    let marker = format!("AGENT BLOCK DELIVERY #{delivery} — interrupt unreached");
+    let bound = IDLE_POLL * 10;
+    let deadline = Instant::now() + bound;
+    loop {
+        let out = project
+            .story()
+            .args(["show", story, "--json"])
+            .output()
+            .unwrap_or_else(|e| panic!("running `story show {story} --json`: {e}"));
+        if String::from_utf8_lossy(&out.stdout).contains(&marker) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "block delivery #{delivery} for {story} did not settle within {bound:?}; the corpus \
+             cannot be snapshotted while a delivery is in flight"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Redaction
 // ---------------------------------------------------------------------------
@@ -259,14 +320,12 @@ fn build_corpus() -> Project<'static> {
 /// one machine and green on another.
 fn filters() -> Vec<(String, &'static str)> {
     vec![
-        // 2026-07-28T15:06:14Z — every `at`, `created_at`, `closed_at`, …
+        // 2026-07-28T15:06:14Z in `--json` and `2026-07-28T08:06:14-07:00` in
+        // human text (SH-679: the CLI shows stored instants in the process's
+        // zone, so the offset is whatever this machine's `TZ` says) — every
+        // `at`, `created_at`, `closed_at`, `report --html`'s "Generated …".
         (
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z".to_string(),
-            "[timestamp]",
-        ),
-        // `report --html`: "Generated 2026-07-28 15:06 UTC"
-        (
-            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC".to_string(),
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})".to_string(),
             "[timestamp]",
         ),
         // `report --html`'s Updated column is a bare date. Scoped to that cell
@@ -283,6 +342,11 @@ fn filters() -> Vec<(String, &'static str)> {
         (
             format!("{}/[A-Za-z0-9._-]+", scratch_root().display()),
             "[fixture]",
+        ),
+        // Project identity is randomly generated by the corpus fixture.
+        (
+            r#""project": "storyhook-fixture-project-[a-z0-9]+""#.to_string(),
+            r#""project": "[project]""#,
         ),
         // Full git SHAs. Short SHAs are deliberately NOT filtered: a 7-hex
         // pattern also matches ordinary words, and over-redaction silently
@@ -325,6 +389,7 @@ macro_rules! assert_json_golden {
             ".**.last_activity_at" => "[timestamp]",
             ".**.days_stale" => "[days]",
             ".**.run.id" => "[run-id]",
+            ".**.verifier.project" => "[project]",
         })
     };
 }

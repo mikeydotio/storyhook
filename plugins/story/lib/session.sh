@@ -47,6 +47,12 @@
 # divergence originally shipped alongside, once no `<repo-prefix>-*`
 # worktree remained anywhere using this plugin.)
 #
+# A third deliberate divergence, SH-691: default_branch asks origin itself
+# (`git ls-remote --symref origin HEAD`) instead of reading the local
+# origin/HEAD cache, and never falls back to a literal; is_protected_branch
+# takes the resolved default as an argument; cached_default_branch is new.
+# Each function's own comment carries the reasons.
+#
 # Sourced, not executed: this file sets no shell options of its own (no
 # `set -euo pipefail`) — it inherits whatever the sourcing caller already
 # set. bin/story.sh sources this file immediately after its own `set -euo
@@ -136,10 +142,10 @@ render_template() {  # render_template <template> <id> [<name>] [<dir>] [<reap>]
   #           rather than left for the child to reconstruct — an autonomous
   #           session knows neither this script's own path nor its project's
   #           slug reliably, and both are needed to self-reap correctly.
-  # <done-state> -> the project-specific CLOSED state that means completed
-  #           work, resolved by story_closed_state. Empty when not passed.
-  #           Autonomous overrides may use it too, so they do not have to
-  #           guess which CLOSED state represents completion.
+  # <done-state> -> the completion state: the required `done` the verifier
+  #           writes, resolved by story_completion_state (SH-652). Empty when
+  #           not passed. Autonomous overrides may use it too, so they do not
+  #           have to guess which CLOSED state represents completion.
   local tpl="$1" n="$2" name="${3:-}" dir="${4:-}" reap="${5:-}" done_state="${6:-}"
   tpl="${tpl//<name>/$name}"
   tpl="${tpl//<dir>/$dir}"
@@ -164,20 +170,72 @@ resolve_wname() {
 }
 
 # ---- git-safety helpers ------------------------------------------------------
-# default_branch — the repo's default branch NAME (no "origin/"), from
-# origin/HEAD, falling back to "main". NEVER a valid delete target.
+# default_branch — the NAME of origin's default branch (no "origin/"), asked
+# of origin itself: `git ls-remote --symref origin HEAD` advertises the
+# remote's own HEAD — one read-only round trip, no `gh`, any git host. On
+# success prints the name and nothing else.
+#
+# Never the local refs/remotes/origin/HEAD cache alone, and never a literal
+# (SH-691). Git writes that cache at clone time and no fetch refreshes it, so
+# when this repository's default moved to `dev`, every checkout whose cache
+# still said `main` — and every checkout with no cache, which the old
+# fallback answered `main` for — submitted its pull request to the wrong
+# branch, five stories over, and nothing downstream noticed. The cache is a
+# copy of a fact that has an authority (SH-136); a literal turns "I do not
+# know" into a confident wrong answer (SH-394).
+#
+# When origin cannot say — unreachable, no such remote, or a HEAD that is
+# unborn or detached (ls-remote then prints no `ref:` line at exit 0) — this
+# prints nothing and returns 1 with the reason on stderr. Absence is not an
+# answer (SH-372); each caller decides what an unknown default means for its
+# own verb. Git's own stderr is captured here and never reaches stdout, so a
+# caller may take `$(default_branch 2>&1)` as the name on success and as the
+# diagnostic on failure.
 default_branch() {
-  local ref
-  ref=$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) || ref=""
-  if [ -n "$ref" ]; then printf '%s' "${ref##*/}"; else printf 'main'; fi
+  local out name
+  if ! out=$(git ls-remote --symref origin HEAD 2>&1); then
+    printf 'default_branch: origin did not answer: %s\n' "$out" >&2
+    return 1
+  fi
+  name=$(printf '%s\n' "$out" \
+    | awk -F'\t' '$2 == "HEAD" && index($1, "ref: refs/heads/") == 1 { print substr($1, 17); exit }')
+  if [ -z "$name" ]; then
+    printf 'default_branch: origin advertises no symbolic HEAD (its default branch is unborn or detached); set one on the remote, e.g. `gh repo edit --default-branch <name>`\n' >&2
+    return 1
+  fi
+  printf '%s' "$name"
 }
 
-# is_protected_branch <branch> — true for the default branch, main/master, or any
-# glob in STORY_PROTECTED_BRANCHES (space-separated). These are never deleted.
+# cached_default_branch — the LOCAL refs/remotes/origin/HEAD cache, name only,
+# or return 1 when there is none. Stale by construction (see default_branch):
+# for the callers allowed to keep working when origin does not answer
+# (dispatch's documented offline tiers; complete's read-only plan), which
+# must SAY they used the cache and name `git remote set-head origin -a` as
+# the remedy. Strips the whole remote prefix, never `##*/`: a default named
+# `release/1.0` is not `1.0`.
+cached_default_branch() {
+  local ref
+  ref=$(git symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null) || return 1
+  printf '%s' "${ref#refs/remotes/origin/}"
+}
+
+# is_protected_branch <branch> <default> — true for <default> (origin's default
+# branch as the caller resolved it; empty when none could be established, in
+# which case only the names below protect), for main/master, or for any glob
+# in STORY_PROTECTED_BRANCHES (space-separated). These are never deleted.
+# The default is an ARGUMENT (SH-691): a predicate must not do network I/O,
+# and a lookup failure inside it could only surface as the wrong refusal, so
+# every caller resolves the default once and classifies its own failure. A
+# call that omits the argument is a programming error and answers
+# "protected" — the direction in which a guard on deletion fails safe.
 is_protected_branch() {
-  local b="$1" d extra g
-  d=$(default_branch)
-  case "$b" in "$d"|main|master) return 0 ;; esac
+  local b="$1" d="${2-}" g
+  if [ "$#" -lt 2 ]; then
+    printf 'is_protected_branch: the resolved default branch is required (pass an empty string when none was established)\n' >&2
+    return 0
+  fi
+  if [ -n "$d" ] && [ "$b" = "$d" ]; then return 0; fi
+  case "$b" in main|master) return 0 ;; esac
   for g in ${STORY_PROTECTED_BRANCHES:-}; do
     case "$b" in $g) return 0 ;; esac
   done
@@ -236,6 +294,31 @@ delete_merged_local_branch() {
 }
 
 # ---- input-box / readiness helpers -------------------------------------------
+# COMPOSER_DECORATION_EXPR — a sed expression deleting every character of the
+# Unicode Braille Patterns block (U+2800..U+28FF), spelled as the UTF-8 byte
+# sequence E2 [A0-A3] [80-BF] so it runs under LC_ALL=C on BSD and GNU sed alike
+# and needs nothing from the caller's own locale (the daemon's is whatever it
+# inherited). Built once, at source time, from printf octal escapes: BSD sed has
+# no \x escapes (SH-694).
+COMPOSER_DECORATION_EXPR="s/$(printf '\342')[$(printf '\240')-$(printf '\243')][$(printf '\200')-$(printf '\277')]//g"
+
+# strip_composer_decoration <text> — echo <text> with every Braille Patterns
+# character removed. Codex 0.154.0 animates the idle composer of an Astra model
+# with a Braille "sparkle" — dots before AND after the placeholder, redrawn every
+# 150ms for the whole idle period — and the row that carries it is the very row
+# input_state reads to confirm a submission cleared the box; undecorated, it is
+# the plain placeholder EMPTY_INPUT_PATTERN already recognises. The managed launch
+# turns the animation off (tui.animations=false, bin/story.sh), but a launch
+# override does not have to, and a decoration nothing anticipated must never
+# again turn a confirmed submission into bootstrap-submit-unconfirmed silently
+# (SH-694). Only the OBSERVATION is stripped — nothing here touches what is
+# delivered to the pane — and the empty pattern itself is deliberately NOT
+# widened to "contains the placeholder": a real draft can contain those words,
+# and reading it as empty would report a never-submitted prompt as submitted.
+strip_composer_decoration() {
+  printf '%s' "$1" | LC_ALL=C sed -E "$COMPOSER_DECORATION_EXPR"
+}
+
 # input_box_text <content> — echo the trailing text of the ACTIVE input row (the
 # LAST line bearing READY_PROMPT_GLYPH), box padding stripped. The input row, NOT
 # the pane's last non-blank line: the real TUI (and the test fixtures) render a
@@ -247,6 +330,7 @@ input_box_text() {
   [ -n "$row" ] || { printf ''; return 0; }
   tail=${row##*"$READY_PROMPT_GLYPH"}   # everything after the last glyph
   tail=${tail//│/}                       # strip the box border (literal, mb-safe)
+  tail=$(strip_composer_decoration "$tail")   # then any animated decoration (SH-694)
   printf '%s' "$tail"
 }
 
@@ -288,6 +372,41 @@ poll_input() {
 # than from rendered characters.
 pane_command() {
   tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null || printf ''
+}
+
+# PANE_PROBE_FORMAT -- the one composite liveness question this plugin asks a
+# pane: its pid, its foreground command, whether tmux itself considers the
+# pane dead, and the window's last activity, tab-separated. The SAME spelling
+# the daemon's Full Auto reconciler asks (`WINDOW_PROBE_FORMAT`,
+# src/service/engine.rs) and the fake tmux answers in one arm, pinned equal by
+# tests/notify_reasons.rs rather than copied twice (SH-136). A second,
+# single-field `#{pane_dead}` spelling would be a third format for every
+# fixture to learn. Fields are read by POSITION, never as "the last one", so
+# the reconciler may widen the format again without moving the dead flag.
+PANE_PROBE_FORMAT='#{pane_pid}	#{pane_current_command}	#{pane_dead}	#{window_activity}'
+
+# pane_probe <pane> -- READ-ONLY. Echo the pane's PANE_PROBE_FORMAT answer, or
+# fail (empty) when tmux cannot be asked. Failure is distinct from "dead" on
+# purpose: a probe that could not run has not answered no (SH-626).
+pane_probe() {
+  tmux display-message -p -t "$1" "$PANE_PROBE_FORMAT" 2>/dev/null
+}
+
+# pane_is_dead <pane> -- READ-ONLY. Succeeds only when tmux reports the pane's
+# process has EXITED (`#{pane_dead}` is 1, which remain-on-exit preserves).
+#
+# Measured on tmux 3.7c (SH-650): once the process exits under remain-on-exit,
+# `#{pane_pid}` and `#{pane_current_command}` stay FROZEN at their last live
+# values -- so pane_runs still answers yes for a corpse, `paste-buffer` into it
+# fails with "target pane has exited", and `send-keys` to it silently exits 0.
+# Only this field tells a dead pane from a live one; nothing rendered does.
+# An unanswered probe is NOT death (returns 1 here), so a caller that wants to
+# refuse on death asks this and treats a failed pane_probe separately.
+pane_is_dead() {
+  local answer dead
+  answer=$(pane_probe "$1") || return 1
+  dead=$(printf '%s\n' "$answer" | cut -f 3)
+  [ "$dead" = 1 ]
 }
 
 # resolve_exe <command-word> — READ-ONLY. Echo the real path <command-word>
@@ -692,9 +811,12 @@ pane_for_window() {
   # filtering so callers retain the exit status and the tmux diagnostic.
   panes=$(tmux list-panes -a -F '#{window_name}	#{pane_active}	#{pane_id}') || return
   awk -F'\t' -v w="$wname" '
-        $1==w && $2==1 { print $3; found=1; exit }
+        $1==w && $2==1 { active[++n]=$3 }
         $1==w && !first { first=$3 }
-        END { if (!found && first) print first }' <<<"$panes"
+        END {
+          if (n > 1) { print "ambiguous story windows: " w > "/dev/stderr"; exit 2 }
+          if (n == 1) print active[1]; else if (first) print first
+        }' <<<"$panes"
 }
 
 # capture_pane_transcript <target> [lines] — READ-ONLY. Echo the rendered

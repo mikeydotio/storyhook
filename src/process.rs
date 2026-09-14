@@ -15,7 +15,9 @@ use wait_timeout::ChildExt;
 
 #[cfg(test)]
 mod activity_tests;
+mod cancellation;
 mod progress;
+pub use cancellation::Cancellation;
 
 /// Bounds diagnostics from a faulty subprocess.
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
@@ -27,6 +29,32 @@ pub(crate) struct Captured {
     pub(crate) stderr: Vec<u8>,
 }
 
+/// A capture error with any bounded answer collected after process cleanup.
+pub(crate) struct CaptureFailure {
+    /// The process-lifetime failure, retained independently of its answer.
+    pub(crate) error: CaptureError,
+    /// Output available after termination; callers must validate it as evidence.
+    pub(crate) stdout: Vec<u8>,
+}
+
+impl From<CaptureError> for CaptureFailure {
+    fn from(error: CaptureError) -> Self {
+        Self {
+            error,
+            stdout: Vec::new(),
+        }
+    }
+}
+
+impl CaptureFailure {
+    fn after(error: CaptureError, stdout: File) -> Self {
+        Self {
+            error,
+            stdout: read_capture(stdout),
+        }
+    }
+}
+
 /// A failure to stage, start, wait for, or finish a bounded subprocess.
 pub(crate) enum CaptureError {
     Stage(std::io::Error),
@@ -34,6 +62,7 @@ pub(crate) enum CaptureError {
     Wait(std::io::Error),
     Track(String),
     Timeout(TimeoutTermination),
+    Cancelled,
 }
 
 impl CaptureError {
@@ -42,6 +71,7 @@ impl CaptureError {
         match self {
             Self::Stage(error) | Self::Spawn(error) | Self::Wait(error) => error.to_string(),
             Self::Track(error) => error.clone(),
+            Self::Cancelled => "the operator cancelled verification".to_string(),
             Self::Timeout(_) => "the process timed out".to_string(),
         }
     }
@@ -90,9 +120,31 @@ pub(crate) fn run_captured_with_registration<G>(
     register: impl FnOnce(u32) -> Result<G, String>,
 ) -> Result<Captured, CaptureError> {
     let deadline = Instant::now() + timeout;
-    run_captured_until(command, termination, None, register, || {
+    run_captured_until(command, termination, None, None, None, register, || {
         Ok(deadline.saturating_duration_since(Instant::now()))
     })
+    .map_err(|failure| failure.error)
+}
+
+/// Runs a command with owner-observed cancellation and bounded group cleanup.
+pub(crate) fn run_captured_cancellable<G>(
+    command: Command,
+    timeout: Duration,
+    termination: TerminationPolicy,
+    cancellation: &Cancellation,
+    register: impl FnOnce(u32) -> Result<G, String>,
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(
+        command,
+        termination,
+        None,
+        None,
+        Some(cancellation),
+        register,
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
 }
 
 /// Runs a command until its append-only journal stops advancing for `timeout`.
@@ -103,29 +155,73 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
     timeout: Duration,
     termination: TerminationPolicy,
     journal: &std::path::Path,
+    cancellation: &Cancellation,
     register: impl FnOnce(u32) -> Result<G, String>,
-) -> Result<Captured, CaptureError> {
+) -> Result<Captured, CaptureFailure> {
     let mut deadline =
         progress::IdleDeadline::new(journal, timeout).map_err(CaptureError::Stage)?;
     // Observe at least four times per idle window, capped to keep journal
     // activity responsive even for the production multi-minute budget.
     let poll = (timeout / 4).min(Duration::from_millis(100));
-    let captured = run_captured_until(command, termination, Some(poll), register, || {
-        deadline.remaining()
-    })?;
+    let captured = run_captured_until(
+        command,
+        termination,
+        None,
+        Some(poll),
+        Some(cancellation),
+        register,
+        || deadline.remaining(),
+    )?;
     // A child can damage the journal and exit inside one poll interval. Check
     // once more after reaping so a fast successful result cannot hide that.
-    deadline.remaining().map_err(CaptureError::Wait)?;
+    if let Err(error) = deadline.remaining() {
+        return Err(CaptureFailure {
+            error: CaptureError::Wait(error),
+            stdout: captured.stdout,
+        });
+    }
     Ok(captured)
+}
+
+/// Runs a bounded subprocess with staged, file-backed standard input.
+pub(crate) fn run_captured_with_input(
+    command: Command,
+    input: File,
+    timeout: Duration,
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        Some(input),
+        None,
+        None,
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
 }
 
 fn run_captured_until<G>(
     mut command: Command,
     termination: TerminationPolicy,
+    input: Option<File>,
     poll: Option<Duration>,
+    cancellation: Option<&Cancellation>,
     register: impl FnOnce(u32) -> Result<G, String>,
     mut remaining: impl FnMut() -> std::io::Result<Duration>,
-) -> Result<Captured, CaptureError> {
+) -> Result<Captured, CaptureFailure> {
+    if cancellation.is_some_and(Cancellation::is_cancelled) {
+        return Err(CaptureError::Cancelled.into());
+    }
+    let poll = if cancellation.is_some() {
+        Some(
+            poll.unwrap_or(Duration::from_millis(100))
+                .min(Duration::from_millis(100)),
+        )
+    } else {
+        poll
+    };
     let source = crate::daemon::activity::command_source(&command);
     crate::daemon::activity::configure(&mut command);
     let stdout_file = tempfile::tempfile().map_err(CaptureError::Stage)?;
@@ -133,7 +229,7 @@ fn run_captured_until<G>(
     let child_stdout = stdout_file.try_clone().map_err(CaptureError::Stage)?;
     let child_stderr = stderr_file.try_clone().map_err(CaptureError::Stage)?;
     command
-        .stdin(Stdio::null())
+        .stdin(input.map_or_else(Stdio::null, Stdio::from))
         .stdout(child_stdout)
         .stderr(child_stderr);
     #[cfg(unix)]
@@ -148,20 +244,38 @@ fn run_captured_until<G>(
         &stdout_file,
         &stderr_file,
     );
+    // macOS removes an exiting child from process lookup before publishing
+    // its wait status (SH-698). Either exit observation permits the ordinary
+    // bounded wait/capture path; a live unregistered child still fails closed.
     let _registration = match register(pid) {
-        Ok(registration) => registration,
+        Ok(registration) => Some(registration),
         Err(error) => {
-            kill_process_group(pid);
-            let _ = child.wait();
-            return Err(CaptureError::Track(error));
+            // Query before try_wait can reap: this PID still belongs to us.
+            let group = child_process_group(pid);
+            if registration_failure_is_exit(child.try_wait(), group) {
+                None
+            } else {
+                kill_process_group(pid);
+                let _ = child.wait();
+                return Err(CaptureError::Track(error).into());
+            }
         }
     };
     let status = loop {
+        if cancellation.is_some_and(Cancellation::is_cancelled) {
+            terminate_timed_out(&mut child, pid, termination);
+            drop(observer);
+            return Err(CaptureFailure::after(CaptureError::Cancelled, stdout_file));
+        }
         let budget = match remaining() {
             Ok(budget) => budget,
             Err(error) => {
                 terminate_timed_out(&mut child, pid, termination);
-                return Err(CaptureError::Wait(error));
+                drop(observer);
+                return Err(CaptureFailure::after(
+                    CaptureError::Wait(error),
+                    stdout_file,
+                ));
             }
         };
         match child.wait_timeout(poll.map_or(budget, |poll| budget.min(poll))) {
@@ -176,12 +290,20 @@ fn run_captured_until<G>(
                     &context,
                     "process timed out; group terminated",
                 );
-                return Err(CaptureError::Timeout(outcome));
+                drop(observer);
+                return Err(CaptureFailure::after(
+                    CaptureError::Timeout(outcome),
+                    stdout_file,
+                ));
             }
             Err(error) => {
                 kill_process_group(pid);
                 let _ = child.wait();
-                return Err(CaptureError::Wait(error));
+                drop(observer);
+                return Err(CaptureFailure::after(
+                    CaptureError::Wait(error),
+                    stdout_file,
+                ));
             }
         }
     };
@@ -267,6 +389,40 @@ fn process_group_is_live(pid: u32) -> bool {
     }
 }
 
+// Separate observations keep the macOS teardown window testable without
+// requiring the scheduler to stop between kernel exit milestones.
+fn registration_failure_is_exit(
+    status: std::io::Result<Option<ExitStatus>>,
+    group: std::io::Result<u32>,
+) -> bool {
+    match status {
+        Ok(Some(_)) => true,
+        Ok(None) => group.is_err_and(|error| error.raw_os_error() == Some(libc::ESRCH)),
+        Err(_) => false,
+    }
+}
+
+/// Reads the group of a child we still own without discarding lookup errors.
+fn child_process_group(pid: u32) -> std::io::Result<u32> {
+    #[cfg(unix)]
+    {
+        let pid = libc::pid_t::try_from(pid)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        // SAFETY: getpgid only observes kernel state and takes no pointers.
+        let group = unsafe { libc::getpgid(pid) };
+        if group == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(group as u32)
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+    }
+}
+
 fn kill_process_group(pid: u32) {
     #[cfg(unix)]
     // SAFETY: this is the process group created for the child immediately
@@ -292,6 +448,107 @@ mod tests {
     use super::*;
 
     #[test]
+    fn registration_accepts_only_proven_exit_states() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let absent = || Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+        assert!(registration_failure_is_exit(Ok(None), absent()));
+        assert!(registration_failure_is_exit(
+            Ok(Some(ExitStatus::from_raw(0))),
+            absent(),
+        ));
+        assert!(registration_failure_is_exit(
+            Ok(Some(ExitStatus::from_raw(1 << 8))),
+            Ok(123),
+        ));
+        assert!(!registration_failure_is_exit(Ok(None), Ok(123)));
+        assert!(!registration_failure_is_exit(
+            Ok(None),
+            Err(std::io::Error::from_raw_os_error(libc::EPERM)),
+        ));
+        assert!(!registration_failure_is_exit(
+            Err(std::io::Error::from_raw_os_error(libc::ECHILD)),
+            absent(),
+        ));
+    }
+
+    #[test]
+    fn a_live_child_registration_failure_remains_fatal() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exec sleep 30"]);
+        let result = run_captured_with_registration(
+            command,
+            Duration::from_secs(10),
+            TerminationPolicy::Kill,
+            |_| Err::<(), _>("registry write refused".into()),
+        );
+        match result {
+            Err(CaptureError::Track(error)) => assert_eq!(error, "registry write refused"),
+            Err(error) => panic!("wrong failure: {}", error.detail()),
+            Ok(_) => panic!("a live unregistered child must not be accepted"),
+        }
+    }
+
+    /// SH-650: a child that exits before its process group can be read is
+    /// captured, not reported as untrackable. The race is CONSTRUCTED (SH-420's
+    /// posture): the registration closure waits until the kernel no longer
+    /// answers for the leader, then asks the real registry, which must fail
+    /// exactly the way it failed in the wild; the capture must still carry
+    /// the child's answer.
+    #[test]
+    fn a_child_that_exits_before_registration_is_still_captured() {
+        let root = storyhook_test_support::scratch_dir();
+        let env = crate::env::Environment::at(root.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
+        let owned = crate::daemon::lifecycle::OwnedProcesses::new(env);
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("printf '{\"ok\":false,\"reason\":\"pane-dead\"}'");
+        let registration_error = std::sync::Mutex::new(None);
+
+        let captured = run_captured_with_registration(
+            command,
+            Duration::from_secs(10),
+            TerminationPolicy::Kill,
+            |pid| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                // A zombie no longer answers `getpgid`; that is the condition
+                // the real registration trips over.
+                while unsafe { libc::getpgid(libc::pid_t::try_from(pid).unwrap()) } != -1 {
+                    assert!(Instant::now() < deadline, "the child never exited");
+                    thread::sleep(Duration::from_millis(2));
+                }
+                let result = owned
+                    .register("verifier-notify", pid, Some("verify:fixture:SH-1:1"))
+                    .map_err(|error| error.to_string());
+                *registration_error.lock().unwrap() = result.as_ref().err().cloned();
+                result
+            },
+        );
+        let captured = match captured {
+            Ok(captured) => captured,
+            Err(error) => panic!(
+                "an exited child is captured, never reported as untrackable: {}",
+                error.detail()
+            ),
+        };
+
+        assert!(captured.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&captured.stdout),
+            "{\"ok\":false,\"reason\":\"pane-dead\"}"
+        );
+        let error = registration_error.lock().unwrap().clone();
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|error| error.contains("could not read process group")),
+            "positive control: the registry must have refused the zombie the way it did in the wild, got {error:?}"
+        );
+    }
+
+    #[test]
     fn graceful_timeout_allows_the_process_group_to_exit_on_term() {
         let root = storyhook_test_support::scratch_dir();
         let marker = root.path().join("terminated");
@@ -300,7 +557,7 @@ mod tests {
         let mut command = Command::new("sh");
         command.args([
             "-c",
-            "trap 'printf terminated > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do sleep 30; done",
+            "trap 'printf terminated > \"$1\"; exit 0' TERM; printf ready > \"$2\"; while :; do sleep 30 & wait; done",
             "graceful-timeout-probe",
             marker.to_str().unwrap(),
             ready.to_str().unwrap(),

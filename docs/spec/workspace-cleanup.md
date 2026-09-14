@@ -32,8 +32,9 @@ this order — the first three from the store, before any Git or network work:
 5. No window with the exact story ID exists on the leased tmux socket.
 6. The canonical worktree is clean, unlocked, registered, and checked out on
    the leased branch.
-7. After fetching `origin/HEAD`, the worktree tip and the local-branch tip are
-   ancestors of that default branch.
+7. After asking origin for its default branch (`git ls-remote --symref
+   origin HEAD` — never the local `origin/HEAD` cache; SH-691) and fetching
+   it, the worktree tip and local-branch tip are ancestors of that branch.
 8. The leased branch is not `main`, `master`, or the repository default.
 
 An unavailable dependency is a refusal, not permission to delete. A missing

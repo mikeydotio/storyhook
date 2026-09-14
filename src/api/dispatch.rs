@@ -242,10 +242,8 @@ pub enum DispatchReason {
     /// CHARTER-INERT (SH-232's runtime-enforcement rider). See
     /// [`prompt_override_violation`].
     UnsafePromptOverride,
-    /// The machine lane budget is full (SH-655): `story lane-budget`
-    /// counted as many live agent windows as the budget allows, and the
-    /// dispatch was refused before any claim rather than opening one more
-    /// session. The payload's `lane_budget` object carries the census.
+    /// Legacy pre-SH-672 helper refusal, retained to decode older installed
+    /// plugins without losing their diagnostic. Current helpers never emit it.
     LaneBudget,
     /// A reason string this binary does not recognize, carried verbatim
     /// rather than dropped.
@@ -1555,7 +1553,7 @@ fn run_child(
         script,
         project,
         story,
-        engine_agent,
+        Some(engine_agent),
         auto,
         false,
         &options,
@@ -1591,17 +1589,33 @@ fn classify(stdout: std::fs::File, stderr: std::fs::File) -> Classification {
 /// story.sh` declares the contract it implements in its own
 /// `DISPATCH_PROTOCOL` constant; bump both together, and see that
 /// constant's doc comment for the rule on when a bump is actually needed.
-pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 4;
+pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 5;
 
 /// Locates `plugins/story/bin/story.sh`, in order:
 ///
 /// 1. `$STORYHOOK_DISPATCH_SCRIPT` — an operator's own override, and how
 ///    every test in this tree points dispatch at a stub.
-/// 2. The plugin's own install record
-///    (`~/.claude/plugins/installed_plugins.json`, keyed `story@storyhook`),
-///    since the marketplace installs to a version-scoped cache directory
-///    that is not otherwise discoverable.
-/// 3. A dev checkout's own copy, via [`crate::plugin::dev_repo_root`] — the
+/// 2. The provider's own install record — Claude Code's
+///    `~/.claude/plugins/installed_plugins.json` (keyed `story@storyhook`),
+///    or the Codex plugin cache `codex plugin list` names — since a
+///    marketplace installs to a version-scoped cache directory that is not
+///    otherwise discoverable.
+/// 3. This binary's own release projection,
+///    `<data dir>/plugins/<this version>/plugins/story/bin/story.sh`
+///    ([`crate::plugin::release_marketplace_root`]) — the tree `story plugin
+///    install` materializes and registers with the provider, and therefore
+///    the exact bytes the provider copied into its cache (SH-671). The
+///    provider's registry is the provider's file: Claude Code rewrites it
+///    from every running session and can lose the entry with nothing
+///    storyhook did wrong (SH-640 on 2026-09-09; again on 2026-09-10, when
+///    2.1.268 also swept the plugin cache). Only the daemon ever reads that
+///    registry — `/story do` launches from its own plugin root — so before
+///    this candidate a lost registration broke dashboard dispatch alone,
+///    while the helper it needed sat on disk. The projection is
+///    version-locked to this daemon, so the protocol check below stays
+///    meaningful. Ranked *after* the registry so a healthy machine keeps
+///    dispatching the same bytes its interactive sessions load.
+/// 4. A dev checkout's own copy, via [`crate::plugin::dev_repo_root`] — the
 ///    explicit fallback for an uninstalled development build. `story plugin
 ///    install` never uses this path; it registers the marketplace embedded in
 ///    the binary.
@@ -1622,6 +1636,7 @@ pub(crate) fn resolve_dispatch_script(agent: DispatchAgent) -> Result<PathBuf, S
     resolve_dispatch_script_from_for_agent(
         std::env::var("STORYHOOK_DISPATCH_SCRIPT").ok(),
         std::env::var("HOME").ok().map(PathBuf::from),
+        crate::plugin::release_marketplace_root().ok(),
         crate::plugin::dev_repo_root(),
         agent,
     )
@@ -1648,6 +1663,7 @@ pub(crate) fn resolve_engine_dispatch_script(agent: EngineAgent) -> Result<PathB
 fn resolve_dispatch_script_from_for_agent(
     configured: Option<String>,
     home: Option<PathBuf>,
+    release_root: Option<PathBuf>,
     dev_root: Option<PathBuf>,
     agent: DispatchAgent,
 ) -> Result<PathBuf, String> {
@@ -1671,7 +1687,9 @@ fn resolve_dispatch_script_from_for_agent(
     if let Some(path) = installed {
         return check_dispatch_protocol(path);
     }
-    if let Some(root) = dev_root {
+    // The projection and a checkout share one layout, so one loop; the
+    // order of the two is the precedence the doc comment states.
+    for root in [release_root, dev_root].into_iter().flatten() {
         let path = root.join("plugins/story/bin/story.sh");
         if path.is_file() {
             return check_dispatch_protocol(path);
@@ -1685,13 +1703,16 @@ fn resolve_dispatch_script_from_for_agent(
     ))
 }
 
+/// The Claude-only, no-release-projection shape most resolution tests need;
+/// the tests of the projection itself and of the Codex branch call
+/// [`resolve_dispatch_script_from_for_agent`] directly.
 #[cfg(test)]
 fn resolve_dispatch_script_from(
     configured: Option<String>,
     home: Option<PathBuf>,
     dev_root: Option<PathBuf>,
 ) -> Result<PathBuf, String> {
-    resolve_dispatch_script_from_for_agent(configured, home, dev_root, DispatchAgent::Claude)
+    resolve_dispatch_script_from_for_agent(configured, home, None, dev_root, DispatchAgent::Claude)
 }
 
 /// Refuses `path` if its declared `DISPATCH_PROTOCOL` is older than
@@ -2916,6 +2937,88 @@ mod tests {
         vars
     }
 
+    /// Validate literals and all referenced fragments without executing shell code.
+    fn charter_fragment_is_inert(script: &str, text: &str, visiting: &mut Vec<String>) -> bool {
+        let mut rest = text;
+        while let Some((literal, after)) = rest.split_once('$') {
+            if charter_inert_violation(literal) {
+                return false;
+            }
+            let end = after
+                .bytes()
+                .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                .count();
+            let var = &after[..end];
+            if var.is_empty()
+                || var.as_bytes()[0].is_ascii_digit()
+                || visiting.iter().any(|ancestor| ancestor == var)
+            {
+                return false;
+            }
+            // Only the script's single-line, double-quoted fragment assignments
+            // are understood. Missing or ambiguous definitions fail closed.
+            let prefix = format!("{var}=\"");
+            let mut definitions = script.lines().filter_map(|line| line.strip_prefix(&prefix));
+            let Some(value) = definitions.next().and_then(|value| value.strip_suffix('"')) else {
+                return false;
+            };
+            if definitions.next().is_some() {
+                return false;
+            }
+            visiting.push(var.to_string());
+            let inert = charter_fragment_is_inert(script, value, visiting);
+            visiting.pop();
+            if !inert {
+                return false;
+            }
+            rest = &after[end..];
+        }
+        !charter_inert_violation(rest)
+    }
+
+    #[test]
+    fn charter_fragment_check_follows_nested_and_repeated_references() {
+        let script = "HEAD=\"Read $REVIEW and $REVIEW_EXTRA\"\n\
+                      REVIEW=\"$LEAF\"\n\
+                      REVIEW_EXTRA=\"$LEAF again\"\n\
+                      LEAF=\"story <n>\"";
+        assert!(charter_fragment_is_inert(
+            script,
+            "$HEAD then $REVIEW",
+            &mut Vec::new()
+        ));
+    }
+
+    #[test]
+    fn charter_fragment_check_rejects_unsafe_nested_content() {
+        for banned in CHARTER_INERT_BANNED.iter().copied().chain(['\n']) {
+            let script = format!("HEAD=\"$REVIEW\"\nREVIEW=\"before {banned} after\"");
+            assert!(
+                !charter_fragment_is_inert(&script, "$HEAD", &mut Vec::new()),
+                "nested {banned:?} must remain forbidden"
+            );
+        }
+    }
+
+    #[test]
+    fn charter_fragment_check_rejects_missing_cyclic_and_unsupported_definitions() {
+        for script in [
+            "HEAD=\"$MISSING\"",
+            "HEAD=\"$HEAD\"",
+            "HEAD=\"$REVIEW\"\nREVIEW=\"$HEAD\"",
+            "HEAD='unrecognized assignment'",
+            "HEAD=\"$(command)\"",
+            "HEAD=\"${UNKNOWN:-fallback}\"",
+            "HEAD=\"$REVIEW_suffix\"\nREVIEW=\"safe prefix\"",
+            "HEAD=\"safe\"\nHEAD=\"unsafe; command\"",
+        ] {
+            assert!(
+                !charter_fragment_is_inert(script, "$HEAD", &mut Vec::new()),
+                "unverifiable fragment must fail: {script}"
+            );
+        }
+    }
+
     /// The shipped defaults must themselves pass this check -- otherwise
     /// every UNMODIFIED dispatch (`STORY_PROMPT`/`STORY_AUTO_PROMPT` never
     /// set at all) would refuse itself the moment an operator's daemon
@@ -2928,7 +3031,8 @@ mod tests {
     fn the_shipped_default_templates_are_charter_inert() {
         let script = include_str!("../../plugins/story/bin/story.sh");
 
-        // PROMPT_TPL is still one "${STORY_PROMPT:-literal}" default.
+        // The default may reference shared fragments; the override wrapper
+        // itself is shell syntax rather than text delivered to the agent.
         let line = script
             .lines()
             .find(|l| l.starts_with("PROMPT_TPL="))
@@ -2938,17 +3042,15 @@ mod tests {
             .and_then(|rest| rest.strip_suffix("}\""))
             .expect("PROMPT_TPL's default-value shape changed -- update this extraction");
         assert!(
-            !charter_inert_violation(default),
+            charter_fragment_is_inert(script, default, &mut Vec::new()),
             "PROMPT_TPL's shipped default must itself be CHARTER-INERT"
         );
 
         // SH-219: AUTO_PROMPT_TPL and AUTO_PROMPT_SOLO_TPL are no longer
-        // single literals -- each composes several pieces, themselves plain
-        // literal assignments defined just above the composition. Checking
-        // each piece on its own (rather than the composed line, which by now
-        // names OTHER SHELL VARIABLES, not charter text) covers both
-        // rendered charters transitively: a single space joins clean pieces
-        // into a still-clean whole.
+        // single literals -- each composes several pieces. Follow each piece's
+        // own references too: SH-673 shares its review clause with both the
+        // attended default and AUTO_PROMPT_HEAD. Raw assignment syntax is not
+        // the rendered text checked by the production validator.
         //
         // The piece NAMES are derived from the composition lines themselves
         // rather than hand-listed here (SH-402): a hand-maintained list is
@@ -2997,7 +3099,7 @@ mod tests {
                     panic!("{var}'s literal-assignment shape changed -- update this extraction")
                 });
             assert!(
-                !charter_inert_violation(default),
+                charter_fragment_is_inert(script, default, &mut Vec::new()),
                 "{var}'s shipped text must itself be CHARTER-INERT"
             );
         }
@@ -3120,7 +3222,7 @@ mod tests {
     /// `check_dispatch_protocol` now requires, so these tests keep
     /// exercising resolution order rather than tripping the protocol check
     /// that has its own tests, below.
-    const FAKE_STORY_SH: &str = "#!/usr/bin/env bash\nDISPATCH_PROTOCOL=4\n";
+    const FAKE_STORY_SH: &str = "#!/usr/bin/env bash\nDISPATCH_PROTOCOL=5\n";
 
     #[test]
     fn resolve_dispatch_script_honours_the_env_override() {
@@ -3381,5 +3483,182 @@ mod tests {
         let message =
             resolved.expect_err("an installed plugin predating the marker must be refused");
         assert!(message.contains("out of date"));
+    }
+
+    /// A release projection as `story plugin install` materializes it under
+    /// the data directory: `<root>/plugins/story/bin/story.sh`, declaring
+    /// `protocol`. Returns the root (kept alive by the caller) and the script.
+    fn fake_release_projection(protocol: Option<u32>) -> (tempfile::TempDir, PathBuf) {
+        let root = storyhook_test_support::scratch_dir();
+        let bin = root.path().join("plugins/story/bin");
+        std::fs::create_dir_all(&bin).expect("mkdir projection bin");
+        let script = bin.join("story.sh");
+        let body = match protocol {
+            Some(protocol) => format!("#!/usr/bin/env bash\nDISPATCH_PROTOCOL={protocol}\n"),
+            None => "#!/usr/bin/env bash\nset -euo pipefail\n".to_string(),
+        };
+        std::fs::write(&script, body).expect("write projection story.sh");
+        (root, script)
+    }
+
+    /// A home whose Claude registry exists but no longer names
+    /// `story@storyhook` — the state Claude Code left behind on 2026-09-10
+    /// (SH-671), and on 2026-09-09 (SH-640).
+    fn home_whose_registry_lost_the_plugin() -> tempfile::TempDir {
+        let home = storyhook_test_support::scratch_dir();
+        let manifest_dir = home.path().join(".claude/plugins");
+        std::fs::create_dir_all(&manifest_dir).expect("mkdir manifest dir");
+        std::fs::write(
+            manifest_dir.join("installed_plugins.json"),
+            serde_json::json!({"plugins": {"other@marketplace": [{"installPath": "/x"}]}})
+                .to_string(),
+        )
+        .expect("write installed_plugins.json without story@storyhook");
+        home
+    }
+
+    #[test]
+    fn resolve_dispatch_script_falls_back_to_the_release_projection_when_the_registry_lost_the_plugin()
+     {
+        // SH-671's exact shape: registry rewritten without the plugin, no
+        // override, no checkout, and the projection this binary materialized
+        // still on disk.
+        let home = home_whose_registry_lost_the_plugin();
+        let (_root, script) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let resolved = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_root.path().to_path_buf()),
+            None,
+            DispatchAgent::Claude,
+        );
+        assert_eq!(
+            resolved.expect("the release projection must resolve when the registry is empty"),
+            script
+        );
+    }
+
+    #[test]
+    fn resolve_dispatch_script_prefers_an_installed_plugin_over_the_release_projection() {
+        let home = fake_installed_plugin_home(&["plugins/cache/storyhook/story/0.5.0"]);
+        let (_root, _projection) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let resolved = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_root.path().to_path_buf()),
+            None,
+            DispatchAgent::Claude,
+        );
+        assert_eq!(
+            resolved.expect("an installed plugin should resolve"),
+            home.path()
+                .join("plugins/cache/storyhook/story/0.5.0/bin/story.sh"),
+            "a healthy registry must keep dispatching the bytes interactive sessions load"
+        );
+    }
+
+    #[test]
+    fn resolve_dispatch_script_prefers_the_release_projection_over_a_dev_checkout() {
+        let home = home_whose_registry_lost_the_plugin();
+        let (_root, projection) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let dev_root = storyhook_test_support::scratch_dir();
+        std::fs::create_dir_all(dev_root.path().join("plugins/story/bin"))
+            .expect("mkdir dev checkout script dir");
+        std::fs::write(
+            dev_root.path().join("plugins/story/bin/story.sh"),
+            FAKE_STORY_SH,
+        )
+        .expect("write dev story.sh");
+        let resolved = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_root.path().to_path_buf()),
+            Some(dev_root.path().to_path_buf()),
+            DispatchAgent::Claude,
+        );
+        assert_eq!(resolved.unwrap(), projection);
+    }
+
+    #[test]
+    fn resolve_dispatch_script_ignores_a_release_projection_whose_script_is_missing() {
+        // A data directory whose versioned root exists but was never fully
+        // materialized (or was reclaimed) must fall through, not resolve a
+        // path that is not there.
+        let home = home_whose_registry_lost_the_plugin();
+        let root = storyhook_test_support::scratch_dir();
+        std::fs::create_dir_all(root.path().join("plugins/story")).expect("mkdir bare projection");
+        let dev_root = storyhook_test_support::scratch_dir();
+        std::fs::create_dir_all(dev_root.path().join("plugins/story/bin"))
+            .expect("mkdir dev checkout script dir");
+        let dev_script = dev_root.path().join("plugins/story/bin/story.sh");
+        std::fs::write(&dev_script, FAKE_STORY_SH).expect("write dev story.sh");
+        let resolved = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(root.path().to_path_buf()),
+            Some(dev_root.path().to_path_buf()),
+            DispatchAgent::Claude,
+        );
+        assert_eq!(resolved.unwrap(), dev_script);
+    }
+
+    #[test]
+    fn resolve_dispatch_script_applies_the_protocol_check_to_the_release_projection_too() {
+        let home = home_whose_registry_lost_the_plugin();
+        let (_root, projection) = fake_release_projection(None);
+        let resolved = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_root.path().to_path_buf()),
+            None,
+            DispatchAgent::Claude,
+        );
+        let message = resolved.expect_err("a projection predating the marker must be refused");
+        assert!(
+            message.contains(&projection.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("out of date"), "{message}");
+    }
+
+    #[test]
+    fn resolve_dispatch_script_resolves_the_release_projection_for_codex_too() {
+        // One rule for both providers: a home with no Codex plugin cache
+        // (so the `codex plugin list` probe, if `codex` is even on PATH,
+        // names a directory that does not exist under this home) falls
+        // through to the same projection.
+        let home = storyhook_test_support::scratch_dir();
+        let (_root, script) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let resolved = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_root.path().to_path_buf()),
+            None,
+            DispatchAgent::Codex,
+        );
+        assert_eq!(
+            resolved.expect("the projection must resolve for codex"),
+            script
+        );
+    }
+
+    #[test]
+    fn resolve_dispatch_script_names_the_install_remedy_when_nothing_resolves() {
+        // The message SH-671 was filed with, pinned: it must name the agent
+        // and both remedies, so a dashboard user can act on it.
+        let home = home_whose_registry_lost_the_plugin();
+        let resolved = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            None,
+            None,
+            DispatchAgent::Claude,
+        );
+        let message = resolved.expect_err("nothing to resolve must be an error");
+        assert_eq!(
+            message,
+            "could not find plugins/story/bin/story.sh for agent `claude` -- install it with \
+             `story plugin install claude` or set STORYHOOK_DISPATCH_SCRIPT"
+        );
     }
 }

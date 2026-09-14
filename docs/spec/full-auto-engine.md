@@ -43,7 +43,7 @@ being picked.
 | D2 | **A lane is a window + worktree per story**, created and reaped per story exactly as `--auto` does today. | Context reset is free: each story gets a new process. The alternative — one long-lived lane session freshen-cleared between stories — buys faster startup at the cost of switching a live session's worktree and cwd, and a wedged pane then strands the lane rather than one story. |
 | D3 | **Completion is a store fact, not a rendered one.** A lane frees when its story leaves the OPEN superstate. Window liveness and a stall timeout detect a *dead* lane; they never declare success. | SH-226: a frame rule and a prompt glyph were read as "the agent is ready" and the charter was executed by zsh. A tmux window closing is evidence about a window. |
 | D4 | **Lane agents run only new and directly impacted tests. One daemon verification worker serializes `make test` for stories in required OPEN state `verifying`.** | The expensive release gate is a machine concern, not per-agent work. A store-derived queue survives restarts, removes suite contention between lanes, and orders candidates by priority then age (SH-521). |
-| D5 | **The verification worker owns exact-merge-tree certification, `land-pr.sh`, the transition to `done`, and reap.** Agents publish and link exactly one open close-on-merge PR, move the story to `verifying` as their final action, and stop. | Merge authority must not depend on a lane remembering policy. The daemon can serialize every project, retry infrastructure failures without blaming the author, and return conflict/red candidates to their exact provider-tagged pane (SH-521). |
+| D5 | **The verification worker owns submission, exact-merge-tree certification, `land-pr.sh`, the transition to `done`, and reap.** Agents commit and move the story to `verifying` from inside their worktree as their final action, and stop; the verifier pushes the leased branch and opens or adopts the PR before it verifies (SH-647). | Merge authority must not depend on a lane remembering policy. The daemon can serialize every project, retry infrastructure failures without blaming the author, and return conflict/red candidates to their exact provider-tagged pane (SH-521). |
 | D6 | **Unattendedness is enforced by provider-scoped approval gates**, inert unless the lane's marker environment variable is set. `PreToolUse` allows Claude's plan tool and denies question tools; dispatch arms each provider's pane-lifetime exact watcher after Plan mode is confirmed and before submitting the charter. A watcher retries bounded transport/TUI races and completes only after its exact dialog leaves the original live pane. | Live probes proved neither Claude's `PreToolUse allow` nor Codex's `--approve-for-me` accepts the separate plan-review UI. Claude 2.1.261 also stopped emitting the `PermissionRequest` event used by the first implementation. Provider-specific exact strings and pane identity guard every keystroke. A changed UI fails closed instead of receiving input; tmux command success alone is not provider acknowledgement (SH-570). |
 | D7 | **Both agents. Codex was verified first.** SH-459 measured Codex CLI 0.149.0 denying `request_user_input` through `PreToolUse`, returning the denial reason to the model, and failing open at the configured timeout. | A Codex lane that silently stalls on a question nobody will answer is the exact failure Full Auto exists to remove. The native denial surface exists, so both provider arms ship; the measured timeout hole remains covered by the stall ceiling and quarantine — a ceiling that, since SH-657, requires the lane's terminal to have gone silent too, not only its story. |
 | D8 | **Epic semantics from SH-446 are absorbed into this program**, not merely depended on: epic state becomes computed from children, epic priority stays stored, and `story next` breaks priority ties on epic priority. | The epic entry point is meaningless without it, and "an epic with all finished children is finished" is the run's own termination condition. |
@@ -52,24 +52,23 @@ being picked.
 | D11 | **On daemon restart or reboot, interrupted lanes are quarantined and reported, never resumed.** Worktree and branch are preserved. | A fresh agent inheriting uncommitted work it did not write is a hazard with no upside; the story is still there to be re-dispatched deliberately. Re-confirmed against a live alternative once `story reset` existed: the engine must never destroy a crashed agent's work unattended, so a human runs `reset` deliberately if they want the clean restart. |
 | D12 | **Two reserved labels.** `no-auto`: still returned by `story next` and claimable by hand, but never dispatched by the engine — human-in-the-loop work. `human-only`: never returned by `story next` at all. Both render with an orange tint in the dashboard. | The engine skips `no-auto` rather than holding a lane open waiting for a person who is asleep; `human-only` is removed from the ready queue entirely because no agent should be offered it. |
 | D13 | **Halt, drain and lane-failure fire an event hook and raise a non-dismissable dashboard modal that persists until acknowledged or a live run is abandoned.** Escape and backdrop presses do nothing; alerts queue newest first, one modal at a time. | A gate that goes silent must read as stale rather than as an all-clear (SH-306, SH-418). A push you might miss plus a modal that only a durable operator outcome can close is the pair that survives a missed notification. Allowing ordinary overlay dismissal would recreate the silence this decision forbids. |
-| D14 | **Multiple runs, one per project, with a machine-wide lane budget.** | Two projects can progress at once; total concurrent lanes stay bounded, which is what the locks in D4/D5 are sized against. |
+| D14 | **Multiple runs, one per project, with independent per-run lane limits (SH-672).** | Each run honors its configured `--lanes`; other runs and manual sessions do not consume its capacity. HTTP request concurrency is a separate bound. |
 | D15 | **Verification infrastructure failures are classified and bounded.** Permanent local failures halt the serialized queue immediately; retryable network failures get three attempts across one 60-second progress-freshness window. One durable incident drives an edited story comment, stalled queue status, a `verification_halted` hook and an acknowledgement banner. | An infrastructure result cannot prove later candidates are safe, so skipping would trade visible zero throughput for hidden partial certification. Exact-incident acknowledgement means “repair complete; retry,” and cannot clear a newer halt (SH-573). |
 | D16 | **Provider configuration is explicit, durable run state that operators may revise while a run is running or paused.** Each claim snapshots the current selection transactionally; occupied lanes keep the selection they launched with and future claims use the revision. | Browser preferences and provider environment variables remain outside the run, so neither can silently change it. Explicit reconfiguration gives an operator one auditable control point without interrupting work already in flight. Open model and effort tokens preserve provider evolution; speed is a closed two-value policy because StoryHook itself translates it into launch behavior. |
 
 **Superseded in part by SH-645 (2026-09-10).** The rows above are the record
-of what was decided and stay as written; `docs/spec/verification-workflow.md`
+of what was decided, with D14 revised by SH-672; `docs/spec/verification-workflow.md`
 is now the design of record for everything from submission to reap, and three
-rows read differently against it. D4's "priority then age": the age that ships
-is story `created_at`, and SH-651 makes it the time the story entered
-`verifying`. D5's "serialize every project": what ships is one global worker
-over one queue spanning every project, and SH-648 makes the worker, the queue,
-the incident halt and the conflict hold per project. D14's "the locks in D4/D5
-are sized against" a machine-wide budget: the `gate` and `merge` locks are
-keyed by name alone today, and SH-648 keys them by project, so two projects'
-suites may overlap on one machine — a trade-off that spec states rather than
-this table.
+rows read differently against it. D4's "priority then age": since SH-651, age
+is the time the story most recently entered `verifying`. Resubmission resets
+that age. D5's "serialize every project": what shipped for a year was one
+global worker over one queue spanning every project; since SH-648 the worker,
+the queue, the incident halt and the conflict hold are per project. D14's
+"the locks in D4/D5 are sized against" a machine-wide budget: the `gate` and
+`merge` locks are keyed by project since SH-648, so two projects' suites may
+overlap on one machine — a trade-off that spec states rather than this table.
 
-**Amended by SH-655 (2026-09-10).** D14's "machine-wide lane budget" was
+**Historical amendment, superseded by SH-672 below: SH-655 (2026-09-10).** D14's "machine-wide lane budget" was
 enforced over `engine_lanes` rows alone, so a session `/story do` opened by
 hand — the same `cmd_dispatch`, worktree, window and cold workspace build —
 counted for nothing, and the dashboard's own in-memory cap (`MAX_RUNNING`, a
@@ -135,7 +134,7 @@ flowchart TB
     STORIES --> BUS
     SVC -->|spawn, off store thread| SH
     SH --> TMUX --> AGENT
-    AGENT -->|targeted tests, link PR, move verifying| STORIES
+    AGENT -->|targeted tests, commit, move verifying| STORIES
     STORIES --> VER
     VER --> LOCKS
     VER -->|done / remediation| STORIES
@@ -329,10 +328,10 @@ sequenceDiagram
     Sh-->>Rec: ok, window name
     Rec->>Store: lane -> Working
     Lane->>Store: plan comment on SH-N
-    Lane->>GH: push + open PR
-    Lane->>Store: link PR + comment URL
-    Lane->>Store: story move SH-N verifying (final action)
+    Lane->>Store: commit, then story move SH-N verifying (final action)
     Store-->>Ver: Change::Project(slug)
+    Ver->>GH: push leased branch, open or adopt PR (SH-647)
+    Ver->>Store: link PR + SUBMITTED comment
     Ver->>GH: fetch current base + submitted head
     Ver->>Ver: exact merge tree + make test
     Ver->>GH: land-pr.sh
@@ -402,12 +401,25 @@ fixture can lie about needs a test; a column with a CHECK does not):
 The engine has no busy loop. `reconcile` runs when woken by
 `crate::daemon::engine::poll_engine` (SH-466), on:
 
-- `Change::Project(slug)` on the daemon's bus, for a slug some live run names —
-  which is how a lane's own `story move` reaches the engine;
+- any `Change::Project(slug)` or `Change::Catalog` on the daemon's bus —
+  without filtering against a stale list of live projects, so a newly started
+  run is discovered immediately;
 - a coarse liveness tick, whose period derives from the stall ceiling rather
   than being picked (SH-394's rule, one axis over from wall clocks);
-- any control command (`start`, `pause`, `resume`, `stop`, `ack`), each of
-  which already publishes `Change::Project` on success.
+- subscriber queue overflow, detected by an increase in that subscription's
+  dropped-message counter, which earns a recovery pass once per observed increase.
+
+HTTP controls publish `Change::Project` on success. The shared change watcher
+attributes CLI controls by comparing live run records along with story event
+sequences. Lane-only observation writes remain `Resync` notifications for UI
+clients; the engine ignores ordinary `Resync`, `Ping`, and `Reload` notices
+while retaining its original wait deadline. Shutdown/drain flags prevent a
+new pass. A finished run's CLI acknowledgement updates the UI through `Resync`.
+
+The fallback currently derives to **300 seconds** (five minutes). Pane-only
+progress and otherwise unattributed configuration changes are sampled at this
+cadence in the absence of another qualifying wake. Persisted observations
+record when the engine actually looked; they are not a one-second heartbeat.
 
 One pass, per live run:
 
@@ -424,7 +436,7 @@ One pass, per live run:
    fire the hook, raise the persistent modal alert. A completion zeroes the streak and series.
 5. **Release** quarantined lanes only when the run remains running in a steady
    pass, or is draining. Halted, paused, and restart-pass lanes retain evidence.
-6. **Fill** idle lanes while the run is `running` and the machine lane budget
+6. **Fill** idle lanes while the run is `running` and its configured lane count
    allows: `story claim --next` scoped and label-filtered, then dispatch.
    A refusal is accounted immediately and ends that fill attempt; it cannot
    prove the queue drained until the next wake.
@@ -435,9 +447,9 @@ One pass, per live run:
 natural end, and `resume` returns the run to `running`. `draining` is the
 irreversible state graceful and immediate stop produce; graceful stop becomes
 `finished` when the last lane frees. `stop --now`
-additionally kills lane windows and returns each claimed story to its prior
-state, preserving worktrees and branches — plain `story unclaim`, which touches
-no on-disk state by construction rather than by opting out of doing so.
+resets run-owned in-progress stories, discarding their windows, worktrees and
+local branches before restoring their prior eligible open state. Verifying or
+closed stories are detached without resource or story mutations (SH-706).
 
 ### Where the dispatch subprocess runs
 
@@ -595,16 +607,17 @@ silent — which is the bar.
 ## Central verification and machine locks
 
 `scripts/machine-lock.sh <name> -- <command...>`: a pid-checked, stale-tolerant
-machine-wide lock, in the shape `browser-watch.sh`'s own lock already uses.
+advisory lock, in the shape `browser-watch.sh`'s own lock already uses.
 Three names are live — the two below and `release-observer`, taken by
 `scripts/release-watch.sh` around one observer pass (`release-observer.md`) —
-and lane agents acquire none of them themselves (SH-521). The key is the name
-alone today, so every clone and every repository on the machine shares one of
-each; SH-648 adds a project component. `verification-workflow.md`'s "The
-locks" section is the statement of record, including the one invariant every
-verification depends on: `merge-watch.sh`'s environment scrub must never strip
-`STORYHOOK_MACHINE_LOCKS`, or the inner `gate` take inside `make test` waits on
-its own outer holder for ever.
+and lane agents acquire none of them themselves (SH-521). `gate` and `merge`
+carry the project — the canonical git common dir, hashed into the key
+(SH-648) — so every worktree of one clone shares one of each and a different
+repository does not; `release-observer` stays machine-wide.
+`verification-workflow.md`'s "The locks" section is the statement of record,
+including the one invariant every verification depends on: `merge-watch.sh`'s
+environment scrub must never strip `STORYHOOK_MACHINE_LOCKS`, or the inner
+`gate` take inside `make test` waits on its own outer holder for ever.
 
 - **`gate`** — the verification worker takes it once around the complete
   speculative `make test` run against the predicted merge tree. The two Rust
@@ -694,12 +707,14 @@ Claiming is one verb, `story claim <id> | --next` (epic SH-475): both forms
 mutating, exactly one required, so a dropped argument can never silently claim
 whatever happened to be top-priority. SH-477 removed the claiming mode SH-344
 had bolted onto `story next`, so `story next` is a pure read again. Releasing a claim is its inverse,
-`story unclaim <id>` (SH-483, with its plugin half in SH-484) — the primitive
-`stop --now` routes through rather than composing its own `story move`.
+`story unclaim <id>` (SH-483, with its plugin half in SH-484). Explicit engine
+Stop Now instead uses reserved leased reset (SH-706), sharing restoration
+semantics while retaining ownership until cleanup is proven.
 `unclaim` restores the claim's state and closes the lane's window; it does not
 touch on-disk state at all. Its destructive sibling `story reset <id>` deletes
-the worktree and branch for a clean restart, and **the engine never calls it**
-— see the restart policy below.
+the worktree and branch for a clean restart. The engine uses its reserved
+leased path only for an explicitly requested Stop Now; ordinary crash recovery
+continues to preserve work.
 
 As built (SH-484), both are `story.sh` verbs — `story.sh unclaim <id>` and
 `story.sh reset <id> [--force]` — because the window and the worktree are tmux
@@ -711,15 +726,14 @@ rather than torn down on a claim the engine no longer holds. Second, when the
 caller's own pane is the lane's window, `unclaim` performs the release and
 leaves that window open, naming the skip — it never refuses on that ground,
 which is what lets a lane release itself. `reset` refuses that case instead
-(`self-window`), and `--force` does not override it; since the engine never
-calls `reset`, that refusal is a guard for a human, not a constraint on the
-engine.
+(`self-window`), and `--force` does not override it. Reserved engine reset
+retains this refusal and never lets a verification conflict authorize deletion.
 
 **`unclaim` restores the state a story was claimed from**, derived from the
 story's own event log inside its own transaction — `StoryStateChanged` records
 only the destination, so it is a short replay rather than a field read. The
 engine therefore needs no `claimed_from` column, no explicit `story move`, and
-no second release path: it calls `unclaim` and the store answers the question.
+shared destination resolver: ordinary unclaim and reserved engine reset both derive prior state from the event history. Reset excludes active, closed and verifying destinations before restoration.
 Where the replay cannot answer it falls back to `todo` and **says so** — in the
 result and in the default comment. A silent substitution there would store a
 wrong answer about where the work came from. As built (SH-483) there are three
@@ -1356,7 +1370,7 @@ it, and count it toward the breaker that halts the run. It is one `if` away
 from being wrong in a way no other case would notice, so it carries its own
 test on both the pure and the wired side.
 
-**Both new budgets derive rather than being picked** (SH-394).
+**Historical derivations (SH-394); SH-672 removes the lane-budget derivation below.**
 `ENGINE_LANE_BUDGET` **is** `api::dispatch::MAX_RUNNING` — a filled lane is
 exactly one `story.sh dispatch` subprocess and that bound already exists, so a
 second literal would be a second opinion about one machine (SH-136).
@@ -1411,7 +1425,9 @@ and daemon-start reconciliation is SH-466's.
 SH-521 landed on `main` while this story's implementation sat unmerged in its
 own worktree, and made `verifying` a required OPEN state and the agent's own
 final action: the charter now ends a successful lane with `story move <n>
-verifying`, then stops. Left unhandled, that is a silent inversion of this
+verifying`, then stops. Since SH-647 that is the *whole* of the handoff —
+pushing the branch and opening the PR moved into the verifier's own first step,
+so the agent no longer runs `git push`, `gh pr create`, or `story link-pr`. Left unhandled, that is a silent inversion of this
 story's own load-bearing rule: `story_closed` reads `false` for an OPEN
 handoff state, so every successful lane would fall through to `WindowGone`
 (the pane is normally already dead — see below) or eventually `Stalled` (D4's
@@ -1453,13 +1469,15 @@ process exits, `story move <n> verifying` included, which is exactly why
 `Verifying` needs its own precedence ahead of `WindowGone` rather than the
 window probe alone being sufficient. This also explains why centralized
 verification's own `notify()` (`plugins/story/bin/story.sh cmd_notify`)
-refuses with `pane-changed` whenever the pane it targets no longer runs the
-dispatched process — the common case, once the pane is already dead — and
-`return_for_repair` (`src/daemon/verification.rs`) falls back to
-`set_awaiting` on that refusal. No special-case code was needed for the
-return-for-repair path on this side: it reduces to the already-existing
-`AgentBlocked` classification once `awaiting` is set, which is what makes the
-next fix below load-bearing for it.
+refuses whenever the pane it targets no longer holds the dispatched process —
+the common case, once the pane is already dead. Until SH-650 that refusal
+parked the story (`set_awaiting`) and this side needed no special case: it
+reduced to `AgentBlocked` once `awaiting` was set. **SH-650 changed both
+halves** — the refusal is `pane-dead`, not `pane-changed` (tmux freezes the
+frozen pane's command, so only `#{pane_dead}` tells), and the verifier now
+re-dispatches the story into the same window with the resume clause instead
+of parking it; the reconciler's own part of that change is under "As built —
+SH-650" below.
 
 **Two conformance repairs, found while re-verifying the branch's own
 committed work against the approved plan rather than newly discovered by the
@@ -1733,6 +1751,13 @@ acceptance example required it.
 
 ### SH-545 — verifier observability (a tmux mirror, not a second execution path)
 
+**Current window ownership (SH-662):** the fixed session now contains one
+verification window per canonical Git common directory and one continuous
+activity window per store. Project phases do not replace journal readers.
+See [Concurrent verifier views](verifier-windows.md) for names, concurrency,
+and migration behavior. The original SH-545 decision below records the serial
+verifier design that SH-590, SH-648, SH-654, and SH-662 subsequently extended.
+
 SH-524's checklist answers "how far along is this candidate," but not "what
 is `make test` printing right now" — the one artifact that already grows
 incrementally (`verify-pr.sh`'s own `>"$log" 2>&1` redirect around the gate
@@ -1851,14 +1876,13 @@ fetch connectivity check walks those shared entries, so it can install every
 requested remote object and still exit with `fatal: bad object`.
 
 `verify-pr.sh` now establishes the verifier worktree before its first fetch.
-A format marker distinguishes worktrees created under SH-552's private-Git-dir
-contract. A markerless, mismatched, or unresolvable verifier is disposable:
-the script removes it through `git worktree remove --force` and recreates it
-detached at a known local commit, replacing its HEAD, reflog and index as one
-Git-owned lifecycle operation. A healthy marked verifier is reused so its
-build caches survive. The private `--ensure-verifier-worktree` seam lets a
-real-Git regression reproduce the missing-object fetch failure and prove both
-recovery and healthy reuse without imitating GitHub.
+SH-683 replaces the earlier force-remove/recreate recovery with a shared,
+owned lifecycle. Healthy checkouts are reused regardless of an old format
+marker. Invalid owned state is retained with its checkout, index, administration
+and private objects before replacement; ambiguous ownership is refused. Both
+creator and speculative borrower hold ownership before inspecting or mutating
+the worktree. See [Shared verifier lifecycle](verifier-worktree-lifecycle.md)
+for restart recovery, process supervision and operator limits.
 
 ### SH-466 — restart reconciliation
 
@@ -2036,7 +2060,9 @@ Codex 0.149.0 through 0.153.4 accepts `deny` for blocking, but reports a bare
 result. Storyhook had emitted that Claude decision for any `ExitPlanMode`
 payload, including Codex's provider-shaped envelope. The hook now recognizes
 Codex by its required `turn_id` extension and emits `{}` for that plan event;
-the existing exact-pane watcher remains the sole Codex plan-approval mechanism.
+the existing exact-pane watcher remains the Codex native-menu approval mechanism.
+SH-676 later supplements it with a guarded Stop continuation for prose approval
+requests; see [Codex autonomous plan continuation](codex-auto-plan-continuation.md).
 Claude's explicit `allow` and both providers' question denials are unchanged.
 
 ### SH-462 — operational state outside the event fold
@@ -2062,25 +2088,40 @@ flow.
 ### SH-464 — lifecycle controls preserve recovery evidence
 
 `EngineService` owns start, status, pause, resume, stop, and acknowledge.
-Pause is resumable; graceful stop is irreversible draining; stop-now kills
-live windows and uses StoryHook's unclaim primitive to restore claimed
-stories, but preserves their branches and worktrees. Each successful dispatch
-stores the helper's versioned creation-time cleanup lease on its lane. Stop-now
-must use that lease and accept success only after the helper echoes it and
-proves that no exact-name story window remains on the leased tmux server. A
-legacy lane without a lease is retained with an explicit error instead of
-inventing cleanup identity from mutable checkout or provider settings. A
-fresh dispatching lane is not legacy: stop-now first makes the run draining,
-waits within the dispatch helper's existing bound for its validated lease, and
-then performs the same exact cleanup. A reconcile already inside one dispatch
-checks that the run is still `running` in the same write transaction that
-selects and claims the next story **and** marks its lane `dispatching`. Stop
-transitioning the run to `draining` therefore linearizes before any later
-claim, while a claim that linearizes first is already visible to stop as an
-occupied lane; neither a separate preflight read nor a later lane write can
-authorize work after stop. A partially failed stop-now can be retried.
-Quarantined lanes are already evidence and are cleared without unclaiming or
-deleting that evidence.
+Pause is resumable; graceful stop is irreversible draining. SH-706 supersedes
+Stop Now's original resource-preserving behavior: the explicitly cancelled
+run resets its occupied in-progress stories, including retained quarantined
+lanes. Verifying and closed stories leave the run without any state or
+resource change. Successful dispatch persists the exact creation-time lease;
+legacy occupied work without a lease is retained with a diagnostic. Dispatch
+already in progress must settle before reset reserves its target.
+
+`engine_resets` persists a unique token, project/story, run/lane, lease,
+restoration destination and latest failure. Reservation and verification
+handoff serialize through the store writer. Shared mutation guards prevent
+state transfer, blocking and deletion during cleanup; the helper's dispatch
+preflight rejects reserved stories. Comments remain available. No subprocess
+runs inside a store transaction. A per-run file lock serializes cleanup workers
+and survives process failure through kernel lock release.
+
+The leased helper validates its reservation through the internal read-only
+`engine reset-target` command, validates the resource marker and installed
+artifact boundary, closes the original window, then removes the worktree and
+local branch. Dirty files, untracked files, unpushed commits and an explicit
+worktree lock are part of the confirmed discard operation. Protected branches,
+caller resources, changed identities and ambiguous windows remain refusals.
+The receipt must echo the token and lease and prove every resource absent.
+Only then does one transaction restore the prior eligible open state (falling
+back to `todo`, never `verifying`), clear free-text awaiting, release the lane
+and remove the reservation. Relationships, labels, assignee and history remain.
+
+Partial failure retains the reservation and contextual diagnostics, processes
+independent targets, and leaves the run draining without creating a story
+block. Retry accepts already absent resources but rejects changed ownership.
+Restart preserves pending explicit cancellation during startup and resumes
+cleanup in the first steady pass, once helper callbacks can be served. Normal
+and stale reconciliation cannot quarantine or free stop-owned targets.
+Ordinary interrupted runs retain D11's non-destructive recovery policy.
 
 ### SH-467 — a singular operational CLI
 
@@ -2155,7 +2196,8 @@ run's notice; it is not coupled to the timed notice stack.
 blocked story. An engine lane remains occupied while the daemon-owned,
 machine-wide verifier orders submitted work, predicts the exact merge tree,
 runs the release gate, validates its content-addressed receipt, and lands the
-PR. Success moves the story to the configured completion state and reaps its
+PR. Success moves the story to the completion state — the required `done`
+(`domain::completion_state`, SH-652) — and reaps its
 submitted workspace; the engine then observes that completion and frees the
 lane. Conflicts and red gates preserve the PR and worktree and return precise
 diagnostics to the recorded provider pane. Restart markers make the queue and
@@ -2516,6 +2558,40 @@ lane writes move `data_version`, the change poller publishes `Change::Resync`,
 and `poll_engine` wakes on any non-`Ping` change — the tick (72 s then, 300 s
 since SH-657) is an idle floor, never a rate limit.
 
+### SH-650 — a dead window on a story the verifier just returned is deferred
+
+`return_for_repair` used to park a story with `awaiting` when `story.sh
+notify` could not reach its pane, and this reconciler read that as
+`AgentBlocked` → quarantine → a breaker strike for what is ordinary
+remediation (decision D-E, `verification-workflow.md`). The verifier now
+re-dispatches the story into its own window with `dispatch --resume --auto`
+(as the lane it is, when a live lane holds it: the run's provider options and
+`--full-auto`) and pastes the diagnosis afterwards. That exposed a race this
+side owns: the return transition (`verifying` → `in-progress`, no `awaiting`)
+wakes the reconciler, the pane is normally already dead, and the respawned
+pane comes alive only after a readiness wait bounded by `DISPATCH_TIMEOUT` —
+so a steady pass in that window read `WindowGone` and struck the breaker
+anyway. The same gap existed for about a second before SH-650 and was closed
+by `set_awaiting`, a classification this side tolerates.
+
+`LaneObservation.returned_for_repair` is the store-derived fact that closes
+it, read from the story's own state history (`service::verification::
+returned_for_repair`: the latest `StoryStateChanged` is `RETURNED_STATE`, the
+one before it `VERIFYING_STATE`, nothing since) rather than from a lane mark
+the verifier would have to write. On a **steady** pass a `Gone` probe on such
+a story contributes no evidence — SH-626's rule for an unanswered probe, one
+cause over — and the lane is judged by the stall clock, with
+`DISPATCH_TIMEOUT` pinned inside `STALL_CEILING_SECS` so a re-dispatch has
+either shown a live pane or parked the story with `awaiting` (which still
+outranks the deferral) before the clock can fire. A **restart** pass never
+defers: a daemon that died mid-re-dispatch has nobody left to finish it. The
+fact is read lazily, only when the probe says `Gone` on an open,
+non-verifying, non-awaiting story, and the deferral is visible three ways:
+`ReconcileReport.deferred`, `probe_detail` on the lane, and an INFO journal
+line on the deferral's opening and closing edges (never per pass). Stated
+limit: a re-dispatched agent that dies again before its next state change is
+caught by the stall clock, not immediately.
+
 ### SH-646 — the verification workflow has its own design of record
 
 **Everything from submission to reap now lives in
@@ -2596,6 +2672,9 @@ until it is.
 
 ### SH-655 — one census for every door the lane budget guards
 
+**Historical: SH-672 below supersedes the admission gates and budget coupling.
+The census and compiler bound remain.**
+
 **A lane is a live window, and every door counts the same windows.** D14
 promised a machine-wide budget and enforced it over `engine_lanes` rows; a
 manual dispatch was in no table, so seven of them were measured at load 33 on
@@ -2665,3 +2744,63 @@ fixture you can forget is one that will be forgotten again; those files had
 already been leaking resume inventory's `list-panes -a` to the real server.
 The compile bound that shipped alongside is in `docs/spec/test-tiers.md`,
 "The compile bound". Council verdict, plan and decisions: `story show SH-655`.
+
+### SH-672 — concurrency belongs to each run or to the operator
+
+D14 now means one independent configured limit per engine run. The existing
+`--lanes` value (1..=255, also configurable in the dashboard) is checked
+against that run's Dispatching and Working lanes in the same transaction
+that reserves the next story. Reconfiguration preserves occupied lanes and
+prevents refill until occupancy falls below the revised target. Other
+projects' runs, including paused or halted ones, consume no slots in this
+run. No schema or new configuration knob is needed.
+
+`MAX_RUNNING` remains the HTTP endpoint's in-flight request bound, sized
+against the daemon thread pool. It does not measure agent sessions.
+`ENGINE_LANE_BUDGET`, the global occupancy scan, and the census admission
+checks are removed. The source fence that enforced their coupling now
+rejects it; execution tests require six configured lanes to dispatch six
+sessions, and concurrent runs to fill their own independent limits.
+
+Outside the engine, concurrency is between the operator and agent.
+`cmd_dispatch` does not consult a census, including named, next, forced,
+resumed, and engine-issued dispatches. Legacy `--over-budget` is accepted
+with a deprecation diagnostic and has no effect, including epic starts.
+
+`story lane-budget` retains its name and store-free, daemon-free census.
+JSON reports `probe`, `live`, and `windows` when counted, or `probe` and
+`detail` when unanswered. The former `budget` and `available` fields are
+removed. Human output reports the count and window addresses or the probe
+failure. The engine still reports the census and journals outages/recovery,
+but census results never determine admission. The probe's existing socket,
+tagging, and pane-liveness limits remain.
+
+The compile bound from SH-655 remains separate and unchanged: concurrent
+rustc processes still acquire the machine's shared compiler slots.
+
+### SH-642 — observations do not wake their own reconciler
+
+The daemon previously treated every non-ping bus notification as a reason to
+reconcile. Each pass updated a lane's `last_observed_at`; the store watcher
+could not attribute that write and emitted `Resync`, producing another pass.
+This made the historical 72-second fallback, and later the derived 300-second
+fallback, irrelevant during active runs.
+
+Two unanimous UX/QA/performance council votes chose subscriber filtering and
+shared live-run attribution. `ChangeWatcher` now reads project sequences and
+live `EngineRunRecord` values in one transaction, compares run identities and
+values (including same-second controls and removals), and publishes each
+affected project once. The snapshot excludes lanes and completed-run history.
+Failures retain both the prior snapshot and token, report context, and retry;
+an unreadable snapshot cannot be mistaken for project removal.
+
+The engine retains machine-wide sweeps on project/catalog events and recovers
+from actual subscriber overflow using its dropped counter. Ordinary UI resyncs
+cannot start another pass or reset the fallback deadline. No observation writes,
+progress evidence, shared bus messages, or stall constants are suppressed.
+
+Regression coverage drives SQLite-backed controls and watcher snapshots, the
+production wait with real bus notifications, and CLI start/resume through a
+real daemon. It covers lane-write feedback, overflow, deadline starvation,
+same-second controls, snapshot failure, removal/replacement, UI invalidation,
+and shutdown. Council decisions and the approved plan are retained on SH-642.

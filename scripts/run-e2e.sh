@@ -169,7 +169,7 @@ run_one_project() {
   shift
   playwright_args=("$@")
 
-  data_root="$(mktemp -d /private/tmp/storyhook-e2e.XXXXXX)"
+  data_root="$(mktemp -d /private/tmp/story-e2e.XXXXXX)"
   daemon_started=0
 
   cleanup() {
@@ -432,8 +432,9 @@ WRAPPER
   # until something reads it as a repository), but dispatch's worktree
   # creation does -- confirmed the hard way when AA-1's checkout wasn't one
   # and story.sh refused with exactly that message. No origin is configured;
-  # story.sh's own base-resolution tolerates that (falls back to HEAD), so
-  # this is the minimum dispatch actually needs.
+  # story.sh's own base-resolution tolerates that (its `none` tier bases the
+  # work on HEAD and says so — SH-691), so this is the minimum dispatch
+  # actually needs.
   init_git_repo() {
     storyhook_fixture_git init -q -b main
     storyhook_fixture_git config user.email "e2e@storyhook.test"
@@ -489,9 +490,13 @@ WRAPPER
   (
     cd "$seed_dir/engine"
     init_git_repo
+    # SH-706: destructive reset resolves protected branches from a real
+    # origin. Keep that contract offline with a run-owned bare repository.
+    storyhook_fixture_git clone -q --bare . "$seed_dir/engine-origin.git"
+    storyhook_fixture_git remote add origin "$seed_dir/engine-origin.git"
     "$story_bin" project new --prefix EE --name "Engine Project" --no-agents-md >/dev/null
     # SH-473's one real Full Auto lane. A dedicated project prevents the
-    # engine's claim/unclaim cycle from changing Alpha's exact board shape or
+    # engine's claim/reset cycle from changing Alpha's exact board shape or
     # consuming Delta's ordinary Auto target.
     "$story_bin" new "Exercise Full Auto end to end" --json | jq -r '.story.story.id' >"$data_root/engine-story-id"
   )

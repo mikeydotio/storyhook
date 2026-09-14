@@ -133,7 +133,7 @@ if [ -n "${STORYHOOK_GATE_LOCK_TAKEN:-}" ]; then
     # one.
     unset STORYHOOK_GATE_LOCK_TAKEN STORYHOOK_GATE_LOCK_DEPTH
 elif [ "${STORYHOOK_GATE_LOCK:-1}" = "0" ]; then
-    echo "run-tests.sh: STORYHOOK_GATE_LOCK=0 -- running WITHOUT the machine-wide 'gate' lock; a concurrent suite will contend with this one" >&2
+    echo "run-tests.sh: STORYHOOK_GATE_LOCK=0 -- running WITHOUT this repository's 'gate' lock; a concurrent suite will contend with this one" >&2
 else
     # THE DEPTH GUARD, AND WHY IT IS NOT THE SAME CHECK TWICE.  Arriving here
     # a second time means the handshake above did not land -- and the failure
@@ -218,7 +218,7 @@ run_leg() {
     if [ -n "$(gate_progress_journal)" ]; then
         observer+=(--test-progress "$gate_progress_case_path")
     fi
-    observer+=(run-tests.sh/cargo -- "$@")
+    observer+=(run-tests.sh/cargo -- python3 "$script_dir/cargo_diagnostics.py" -- "$@")
     "${observer[@]}"
 }
 
@@ -302,7 +302,7 @@ listed_test_count() {
     if [ -n "$(gate_progress_journal)" ]; then
         observer+=(--test-progress "$gate_progress_case_path")
     fi
-    observer+=(run-tests.sh/discovery -- "${command[@]}")
+    observer+=(run-tests.sh/discovery -- python3 "$script_dir/cargo_diagnostics.py" -- "${command[@]}")
     if ! "${observer[@]}" >/dev/null; then
         cat "$output" >&2
         echo "run-tests.sh: test discovery failed before execution; refusing an estimated progress total" >&2
@@ -374,17 +374,38 @@ if [ -n "$(gate_progress_journal)" ]; then
 fi
 gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" passed
 
+# EVERY BINARY OF A BATTERY RUNS, EVEN AFTER ONE GOES RED -- SH-697.
+#
+# Cargo's default is fail-fast across test BINARIES: the first `--test`
+# target with a failing case ends the invocation, and every later target in
+# the same battery never executes. libtest already runs every case inside one
+# binary; this is the same rule one level up. Without it the verifier's RED
+# summary carried one binary's failures, the checklist stopped at
+# `rust-suite (164/4074)`, and the agent met the next binary's failures on
+# resubmission -- `tests/store_isolation.rs` records three of four sibling
+# defects hidden exactly this way, and `scripts/test-delta.sh`'s "not re-run
+# since" bucket measured the loss on every red run (SH-607: one failure, 611
+# unknowns). The exit status is unchanged (Cargo still exits nonzero naming
+# every failed target), and the ledger and `verify-pr.sh`'s failure summary
+# already read every FAILED line, so they gain the extra failures for free.
+#
+# Applied to every EXECUTING invocation below and to none of the `--list`
+# discoveries above, which execute nothing. One array rather than four
+# literals, so no path can drop it alone (`tests/battery_completion.rs` pins
+# all four).
+cargo_test_flags=(--no-fail-fast)
+
 status=0
 
 if [ "$only_mode" -eq 0 ]; then
-    run_leg cargo test --workspace "$@" || status=$?
+    run_leg cargo test "${cargo_test_flags[@]}" --workspace "$@" || status=$?
 else
     if [ "${#only_names[@]}" -eq 0 ]; then
         echo "run-tests.sh: --only given with no binaries -- nothing to run" >&2
     else
 
         if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
-            run_leg cargo test -p storyhook "${storyhook_test_args[@]}" "$@" || status=$?
+            run_leg cargo test "${cargo_test_flags[@]}" -p storyhook "${storyhook_test_args[@]}" "$@" || status=$?
         fi
         # `[ "${#lib_packages[@]}" -gt 0 ] && for` rather than a bare
         # `for pkg in "${lib_packages[@]}"`: bash < 4.4 (macOS's system bash
@@ -395,12 +416,12 @@ else
         i=0
         while [ "$i" -lt "${#lib_packages[@]}" ]; do
             pkg="${lib_packages[$i]}"
-            run_leg cargo test -p "$pkg" --lib "$@" || status=$?
+            run_leg cargo test "${cargo_test_flags[@]}" -p "$pkg" --lib "$@" || status=$?
             i=$((i + 1))
         done
     fi
     if [ "$run_docs" -eq 1 ]; then
-        run_leg cargo test --workspace --doc "$@" || status=$?
+        run_leg cargo test "${cargo_test_flags[@]}" --workspace --doc "$@" || status=$?
     fi
 fi
 

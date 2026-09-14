@@ -68,7 +68,7 @@ fi
 # immediately-closed stdin reads as "".
 if command -v story &>/dev/null; then
   if [ -n "${STORYHOOK_DISPATCH:-}" ]; then out=$(printf '%s' "$story_payload" | story --deadline 20 session-start 2>/dev/null) || out=""; else out=$(printf '%s' "$story_payload" | story --deadline 3 session-start 2>/dev/null) || out=""; fi
-  case "$out" in "{"*) printf '%s' "$out" ;; *) printf '{}' ;; esac
+  source "$HOOK_PLUGIN_ROOT/lib/codex-bootstrap.sh"; codex_bootstrap_hook_response "$stdin_json" "$out"
 else
   printf '{}'
 fi

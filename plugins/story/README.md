@@ -19,6 +19,10 @@ stale the rule. The generated rule allows only `bash` plus the exact launcher pa
 verified with `codex execpolicy check`, and takes effect after Codex restarts. Bare `bash`
 is never allowlisted.
 
+Installing a new `story` binary (`make install`, `story update`, the installer script)
+reinstalls the plugin for every provider that has it registered, so the plugin never needs
+a separate update; `story plugin reinstall` does the same by hand.
+
 The former plugin target `claude-code` remains accepted for install and uninstall as a
 deprecated, warned compatibility alias. New dispatch interfaces accept only `claude` and
 `codex`.
@@ -74,18 +78,19 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 |---|---|
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
-| `dispatch <id> [--auto] [--force] [--resume] [--over-budget] [--agent=claude\|codex]` | `/story do`; records the intended window transactionally with a fresh named claim, while `--resume` preserves and reconstructs an abandoned dispatch and `--force` only reuses an existing claim. Refuses (`lane-budget`) to open a new session past `story lane-budget`'s machine ceiling unless `--over-budget` says you meant it |
+| `dispatch <id> [--auto] [--force] [--resume] [--agent=claude\|codex]` | `/story do`; records the intended window transactionally with a fresh named claim, while `--resume` preserves and reconstructs an abandoned dispatch and `--force` only reuses an existing claim. Manual concurrency is operator-controlled; `story lane-budget` is informational. Legacy `--over-budget` is a deprecated no-op |
 | `dispatch <id> --auto --full-auto [--force] [--agent=claude\|codex]` | engine-only lane launch; the dashboard, skills, and ordinary autonomous dispatch never add `--full-auto` |
 | `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story claim --next` picks atomically, then records its window, worktree, and branch after confirmed handoff |
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id> [--no-close] [--no-clean] [--force]` | `/story complete` |
 | `reap <id>` | not routed by the skill (SH-208) — the `--auto` charter's own final act; see below |
+| `submit <id>` | not routed by any skill (SH-647) — the centralized verifier's submission step: from the dispatch lease in `STORYHOOK_REAP_LEASE_V1`, push the leased branch and open or adopt the pull request against the default branch, answering with a typed receipt; agents never push |
 | `unclaim <id> [--comment <t> \| --no-comment]` | `/story unclaim` (SH-484) — the inverse of `claim`: release the claim through `story unclaim`, then close the story's tmux window. Nothing on disk is touched |
 | `reset <id> [--force] [--comment <t> \| --no-comment]` | `/story reset` (SH-484) — everything `unclaim` does, then deletes the worktree and the branch, for a story abandoned by a crash where restarting beats inheriting |
 | `capture <id>` | `/story capture` |
 | `doctor` | `/story doctor` |
 | `ensure-cli` | the CLI-availability check six standalone skills used to hand-roll in prose |
-| `context [--full]` | `/story-context` |
+| `context [--full] [--story <id>]` | `/story-context` |
 | `sync [--since <d>]` | `/story-sync` |
 | `handoff [--since <d>]` | `/story-handoff` |
 | `triage` | `/story-triage` |
@@ -242,8 +247,9 @@ Worth knowing before changing anything here:
   run — and would try to remove the very worktree the auto session is
   standing in. Once closed, it runs `story.sh reap <id>` as its own last act
   (SH-208): reclaims the worktree and branch, then kills the tmux window it
-  was running in. `reap` refuses outright unless the story is in the project's
-  completion state (the first CLOSED state, or `STORY_DONE_STATE`) and the
+  was running in. `reap` refuses outright unless the story is in the
+  completion state — the required `done`, the one state the verifier writes
+  after a green merge (SH-652) — and the
   worktree/branch are both safe to discard. A different CLOSED state may mean
   abandoned work and is not accepted as completion — nothing partial, matching
   `complete`'s own "never forces anything by default" rule above but all-or-nothing
@@ -277,10 +283,11 @@ Worth knowing before changing anything here:
   through the certified path.
 - **Dispatch is provider-selected, not inferred from terminal prose.** Adapters pass
   `--agent=claude|codex`; an explicit dispatch flag overrides the active host and an
-  omitted flag retains that adapter's host default. The helper also accepts
+  omitted flag retains that adapter's host default for new dispatches. The helper also accepts
   `STORY_AGENT=claude|codex` for direct callers; `STORY_AGENT=claude-code` is a warned
   compatibility alias. Claude remains the default for callers that choose neither. Codex
-  uses `codex --no-alt-screen`, `.codex/worktrees/`, screen readiness, a confirmed
+  uses `codex --no-alt-screen` (update chooser and TUI animations switched off for the
+  managed process), `.codex/worktrees/`, screen readiness, a confirmed
   Shift+Tab transition into Plan mode, and Tab submission. Failure before submission keeps
   the existing rollback invariants intact. `doctor` reports and probes the selected
   provider rather than treating a Codex screen as Claude.
@@ -295,6 +302,12 @@ Worth knowing before changing anything here:
   charter tells the child that an *easy* decision (one clear best answer)
   gets researched and decided on its own, full stop — `--auto` was never
   meant to route every open question through a mechanism at all.
+  Every decision comment includes **Context**, **Question**, **Decision**, and
+  **Rationale**, with relevant alternatives and trade-offs. This applies to
+  researched decisions, council outcomes, and fallback decisions. Record it
+  immediately, before resuming work, with enough detail to understand it after
+  the session and local deliberation files are gone. `story help comment`
+  provides the format and an example.
 
 ## Environment
 
@@ -308,9 +321,9 @@ All knobs are `STORY_*`. The commonly useful ones:
 | `STORY_LAUNCH_CMD` | wholesale attended/ordinary-Auto launch override (must **not** include `-w`); ordinary autonomous results warn because it may weaken unattendedness; Full Auto reports and ignores it |
 | `STORY_FULL_AUTO_LAUNCH_CMD` | engine-only wholesale launch override; when unset, Full Auto reuses the provider's built-in Auto command |
 | `STORY_PROMPT` / `STORY_PROMPT_EXTRA` | the handoff prompt, and a clause appended to it |
-| `STORY_AUTO_PROMPT` / `STORY_AUTO_PROMPT_SOLO` | the two `--auto` charters — council-available and no-council, respectively (same seam as `STORY_PROMPT`; either wins outright over the probe below); `<done-state>` renders as the project-specific completion state |
+| `STORY_AUTO_PROMPT` / `STORY_AUTO_PROMPT_SOLO` | the two `--auto` charters — council-available and no-council, respectively (same seam as `STORY_PROMPT`; either wins outright over the probe below); `<done-state>` renders as the completion state, the required `done` |
 | `STORY_COUNCIL` | `auto` (default, probes for real)/`on`/`off` — which `--auto` charter `council_vote_available` picks |
-| `STORY_DONE_STATE` | the completion state used by `complete`, autonomous prompt rendering, and `reap` |
+| `STORY_DONE_STATE` | **retired** (SH-652): the completion state is the required `done` everywhere — `complete`, `<done-state>`, `reap` and the verifier — and a set `STORY_DONE_STATE` is refused by name rather than ignored, because a value the daemon cannot see would make the helper disagree with the verifier |
 | `STORY_TARGET_SESSION` | dispatch into a named session from outside tmux |
 | `STORY_PROTECTED_BRANCHES` | extra globs `complete` must never delete |
 | `STORY_REQUIRE_FRESH_BASE=1` | refuse to dispatch on a stale base instead of warning |
@@ -329,3 +342,21 @@ repo with a local bare origin under `/tmp` — deliberately not `$TMPDIR`, which
 Spotlight indexes and which stalls file-intensive runs on macOS. Only `tmux` is
 faked. `make test` builds the binary first and puts it on `PATH` for this suite,
 so it always exercises the freshly built CLI rather than whatever is installed.
+
+### Existing resources
+
+`story resources <id> --json` reports the shared native inventory. Reset,
+unclaim, completion, reap, capture and resume use verified Git/lease identity,
+including `.claude/worktrees`, `.codex/worktrees` and registered custom paths.
+The caller does not set `STORY_AGENT` to find existing work. Unknown caller
+provider values do not change deterministic operations.
+
+Recorded sockets win over the caller's terminal. Capture works outside tmux;
+notify derives its terminal protocol from the target's provider tag. Duplicate
+windows/worktrees and contradictory metadata refuse selection. `--force` can
+allow existing dirty/unpushed/locked reset cases but cannot establish ownership.
+
+Resume preserves the actual worktree even when `--agent` changes provider.
+Without that flag, target metadata or the legacy resource path supplies the
+provider; a custom path without provider evidence requires an explicit launch
+choice. See [the resource contract](../../docs/spec/provider-independent-resources.md).

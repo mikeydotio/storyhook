@@ -1,0 +1,284 @@
+{
+  "kind": "SH-707 development artifact",
+  "release_certified": false,
+  "active_host_validated": false,
+  "source": {
+    "commit": "dfd8aebda5c3fa33dec87bc93c4925fff7264809",
+    "tree": "4f75d7d126608269459d60553f541a0543601d13",
+    "plugin_tree": "c49f3ec2dcbadb8c66780047922aed20d1d5c4a8",
+    "version": "3.9.1",
+    "files": {
+      ".claude-plugin/plugin.json": {
+        "sha256": "1c2a9051217b079814239f6c3049dace7dc5b0d7a981c493bffab9a131944300",
+        "mode": "100644"
+      },
+      "README.md": {
+        "sha256": "4f4f814e41ffbd478b74981bde5f401cd90d97537e71f4da48ae36aac5e6b3b7",
+        "mode": "100644"
+      },
+      "bin/greenlight-explore.sh": {
+        "sha256": "e1d45b61c7bcfd83b964998b84c97c270cd0b71305240ba80710aede96aa7272",
+        "mode": "100755"
+      },
+      "hooks/greenlight.sh": {
+        "sha256": "03d34946f1de513082b127e5dc860f929c95ff919b9f1b1229a948e794d3b78a",
+        "mode": "100755"
+      },
+      "hooks/hooks.json": {
+        "sha256": "5664c2920dc9c8502dd3ec86cfe2315c5e453dc16b302fc10d5326bfc583670f",
+        "mode": "100644"
+      },
+      "references/default-config.yaml": {
+        "sha256": "96084e9cd02627338d58f30e7c4e62bf69a96748d371d2004c4df072a0510f2d",
+        "mode": "100644"
+      },
+      "skills/greenlight/SKILL.md": {
+        "sha256": "457a2103d157d571c05e13eb304d0169b7f601f775888a1cc6bce176d0a11714",
+        "mode": "100644"
+      },
+      "tests/contract-helper.bash": {
+        "sha256": "3c83798556127221f9b08df4b54837d65ff62a5663d5c98a479ab92f3f4f13e0",
+        "mode": "100644"
+      },
+      "tests/greenlight-ai.bats": {
+        "sha256": "fd19489c4dae31812f6f83a2f3fadb3bf775574b5cf169c22c38d8ae1772e883",
+        "mode": "100644"
+      },
+      "tests/greenlight-codex.bats": {
+        "sha256": "2d0b5011e8d9776ca9645d93060cca14deb1c9b0c028de7ad8447f7cd3db66bf",
+        "mode": "100644"
+      },
+      "tests/greenlight-explore.bats": {
+        "sha256": "6240dbf5497d6215b06495a3a947a595efd0a0ead4492735678ebf4e56c0b2e9",
+        "mode": "100644"
+      },
+      "tests/greenlight-manifest.bats": {
+        "sha256": "b19c3f740b843b46525e530a05953e553b03649afb2128862ebf0aaf05963189",
+        "mode": "100644"
+      },
+      "tests/greenlight-policy.bats": {
+        "sha256": "2c678a81de7679c8fa3e2c3d3219c9b3daae502ee2b174a89dfaf3c76c859dd3",
+        "mode": "100644"
+      },
+      "tests/greenlight-redirection.bats": {
+        "sha256": "f841b5d003d2c276553b3abb6992905a77b768ceb1442c47b9e4ec7f39271a72",
+        "mode": "100644"
+      },
+      "tests/greenlight-story.bats": {
+        "sha256": "4522e8ffa16831609fe2146d5705f4e2cff95ab9bfb1f1c0ca0e8bf5d1e4b5c5",
+        "mode": "100644"
+      },
+      "tests/greenlight.bats": {
+        "sha256": "7085319591662e8e56c7b0aa0fd6f48258879cc659bcaa2b65fc33514cb1d180",
+        "mode": "100644"
+      },
+      "tests/run-tests.sh": {
+        "sha256": "86676d2b7a45bdc1911a4ea1dd4acdcbb69cf44baaad03b767bb46a0891d8952",
+        "mode": "100755"
+      }
+    }
+  },
+  "metadata_delta": {
+    "added": [
+      ".codex-plugin/plugin.json"
+    ],
+    "removed": [],
+    "modified": [],
+    "version": "3.9.1+codex.20260913065353",
+    "files": {
+      ".claude-plugin/plugin.json": {
+        "sha256": "1c2a9051217b079814239f6c3049dace7dc5b0d7a981c493bffab9a131944300",
+        "mode": "100644"
+      },
+      ".codex-plugin/plugin.json": {
+        "sha256": "34042540e1e89cc09e79a7e5d12d82b5778f292264bf1f08c198cfb6580ff4b0",
+        "mode": "100644"
+      },
+      "README.md": {
+        "sha256": "4f4f814e41ffbd478b74981bde5f401cd90d97537e71f4da48ae36aac5e6b3b7",
+        "mode": "100644"
+      },
+      "bin/greenlight-explore.sh": {
+        "sha256": "e1d45b61c7bcfd83b964998b84c97c270cd0b71305240ba80710aede96aa7272",
+        "mode": "100755"
+      },
+      "hooks/greenlight.sh": {
+        "sha256": "03d34946f1de513082b127e5dc860f929c95ff919b9f1b1229a948e794d3b78a",
+        "mode": "100755"
+      },
+      "hooks/hooks.json": {
+        "sha256": "5664c2920dc9c8502dd3ec86cfe2315c5e453dc16b302fc10d5326bfc583670f",
+        "mode": "100644"
+      },
+      "references/default-config.yaml": {
+        "sha256": "96084e9cd02627338d58f30e7c4e62bf69a96748d371d2004c4df072a0510f2d",
+        "mode": "100644"
+      },
+      "skills/greenlight/SKILL.md": {
+        "sha256": "457a2103d157d571c05e13eb304d0169b7f601f775888a1cc6bce176d0a11714",
+        "mode": "100644"
+      },
+      "tests/contract-helper.bash": {
+        "sha256": "3c83798556127221f9b08df4b54837d65ff62a5663d5c98a479ab92f3f4f13e0",
+        "mode": "100644"
+      },
+      "tests/greenlight-ai.bats": {
+        "sha256": "fd19489c4dae31812f6f83a2f3fadb3bf775574b5cf169c22c38d8ae1772e883",
+        "mode": "100644"
+      },
+      "tests/greenlight-codex.bats": {
+        "sha256": "2d0b5011e8d9776ca9645d93060cca14deb1c9b0c028de7ad8447f7cd3db66bf",
+        "mode": "100644"
+      },
+      "tests/greenlight-explore.bats": {
+        "sha256": "6240dbf5497d6215b06495a3a947a595efd0a0ead4492735678ebf4e56c0b2e9",
+        "mode": "100644"
+      },
+      "tests/greenlight-manifest.bats": {
+        "sha256": "b19c3f740b843b46525e530a05953e553b03649afb2128862ebf0aaf05963189",
+        "mode": "100644"
+      },
+      "tests/greenlight-policy.bats": {
+        "sha256": "2c678a81de7679c8fa3e2c3d3219c9b3daae502ee2b174a89dfaf3c76c859dd3",
+        "mode": "100644"
+      },
+      "tests/greenlight-redirection.bats": {
+        "sha256": "f841b5d003d2c276553b3abb6992905a77b768ceb1442c47b9e4ec7f39271a72",
+        "mode": "100644"
+      },
+      "tests/greenlight-story.bats": {
+        "sha256": "4522e8ffa16831609fe2146d5705f4e2cff95ab9bfb1f1c0ca0e8bf5d1e4b5c5",
+        "mode": "100644"
+      },
+      "tests/greenlight.bats": {
+        "sha256": "7085319591662e8e56c7b0aa0fd6f48258879cc659bcaa2b65fc33514cb1d180",
+        "mode": "100644"
+      },
+      "tests/run-tests.sh": {
+        "sha256": "86676d2b7a45bdc1911a4ea1dd4acdcbb69cf44baaad03b767bb46a0891d8952",
+        "mode": "100755"
+      }
+    }
+  },
+  "artifact": "/Users/mikey/Enderchest/storyhook/sh707-development-20260913-age54-isolated/greenlight-sh707-development.tar.gz",
+  "artifact_sha256": "c58e1bcafcb38756e1473fd972be896a2f67971fb1e5c3e98a621350792e29be",
+  "payload_files": {
+    ".agents/plugins/marketplace.json": {
+      "sha256": "9d44a515bb97f0fab46618ed665c1f069a4c0fe6eba8a13de6c4478ef36029d9",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/.claude-plugin/plugin.json": {
+      "sha256": "1c2a9051217b079814239f6c3049dace7dc5b0d7a981c493bffab9a131944300",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/.codex-plugin/plugin.json": {
+      "sha256": "34042540e1e89cc09e79a7e5d12d82b5778f292264bf1f08c198cfb6580ff4b0",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/README.md": {
+      "sha256": "4f4f814e41ffbd478b74981bde5f401cd90d97537e71f4da48ae36aac5e6b3b7",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/bin/greenlight-explore.sh": {
+      "sha256": "e1d45b61c7bcfd83b964998b84c97c270cd0b71305240ba80710aede96aa7272",
+      "mode": "100755"
+    },
+    "plugins/greenlight-sh707-age54/hooks/greenlight.sh": {
+      "sha256": "03d34946f1de513082b127e5dc860f929c95ff919b9f1b1229a948e794d3b78a",
+      "mode": "100755"
+    },
+    "plugins/greenlight-sh707-age54/hooks/hooks.json": {
+      "sha256": "5664c2920dc9c8502dd3ec86cfe2315c5e453dc16b302fc10d5326bfc583670f",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/references/default-config.yaml": {
+      "sha256": "96084e9cd02627338d58f30e7c4e62bf69a96748d371d2004c4df072a0510f2d",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/skills/greenlight/SKILL.md": {
+      "sha256": "457a2103d157d571c05e13eb304d0169b7f601f775888a1cc6bce176d0a11714",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/tests/contract-helper.bash": {
+      "sha256": "3c83798556127221f9b08df4b54837d65ff62a5663d5c98a479ab92f3f4f13e0",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/tests/greenlight-ai.bats": {
+      "sha256": "fd19489c4dae31812f6f83a2f3fadb3bf775574b5cf169c22c38d8ae1772e883",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/tests/greenlight-codex.bats": {
+      "sha256": "2d0b5011e8d9776ca9645d93060cca14deb1c9b0c028de7ad8447f7cd3db66bf",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/tests/greenlight-explore.bats": {
+      "sha256": "6240dbf5497d6215b06495a3a947a595efd0a0ead4492735678ebf4e56c0b2e9",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/tests/greenlight-manifest.bats": {
+      "sha256": "b19c3f740b843b46525e530a05953e553b03649afb2128862ebf0aaf05963189",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/tests/greenlight-policy.bats": {
+      "sha256": "2c678a81de7679c8fa3e2c3d3219c9b3daae502ee2b174a89dfaf3c76c859dd3",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/tests/greenlight-redirection.bats": {
+      "sha256": "f841b5d003d2c276553b3abb6992905a77b768ceb1442c47b9e4ec7f39271a72",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/tests/greenlight-story.bats": {
+      "sha256": "4522e8ffa16831609fe2146d5705f4e2cff95ab9bfb1f1c0ca0e8bf5d1e4b5c5",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/tests/greenlight.bats": {
+      "sha256": "7085319591662e8e56c7b0aa0fd6f48258879cc659bcaa2b65fc33514cb1d180",
+      "mode": "100644"
+    },
+    "plugins/greenlight-sh707-age54/tests/run-tests.sh": {
+      "sha256": "86676d2b7a45bdc1911a4ea1dd4acdcbb69cf44baaad03b767bb46a0891d8952",
+      "mode": "100755"
+    }
+  },
+  "helper_commands": [
+    {
+      "helper": "create_basic_plugin.py",
+      "arguments": [
+        "greenlight-sh707-age54",
+        "--with-marketplace"
+      ],
+      "exit_status": 0,
+      "stdout": "Created plugin scaffold: /Users/mikey/Enderchest/storyhook/sh707-development-20260913-age54-isolated/payload/plugins/greenlight-sh707-age54\nplugin manifest: /Users/mikey/Enderchest/storyhook/sh707-development-20260913-age54-isolated/payload/plugins/greenlight-sh707-age54/.codex-plugin/plugin.json\nmarketplace manifest: /Users/mikey/Enderchest/storyhook/sh707-development-20260913-age54-isolated/payload/.agents/plugins/marketplace.json\n",
+      "stderr": ""
+    },
+    {
+      "helper": "read_marketplace_name.py",
+      "arguments": [],
+      "exit_status": 0,
+      "stdout": "personal\n",
+      "stderr": ""
+    },
+    {
+      "helper": "update_plugin_cachebuster.py",
+      "arguments": [
+        "/Users/mikey/Enderchest/storyhook/sh707-development-20260913-age54-isolated/payload/plugins/greenlight-sh707-age54"
+      ],
+      "exit_status": 0,
+      "stdout": "Updated plugin version: 3.9.1 -> 3.9.1+codex.20260913065353\n",
+      "stderr": ""
+    },
+    {
+      "helper": "validate_plugin.py",
+      "arguments": [
+        "/Users/mikey/Enderchest/storyhook/sh707-development-20260913-age54-isolated/payload/plugins/greenlight-sh707-age54"
+      ],
+      "exit_status": 0,
+      "stdout": "Plugin validation passed: /Users/mikey/Enderchest/storyhook/sh707-development-20260913-age54-isolated/payload/plugins/greenlight-sh707-age54\n",
+      "stderr": ""
+    }
+  ],
+  "manifest_precedence": "Codex overlay is authoritative for this artifact; original Claude manifest is retained unchanged as source provenance.",
+  "plugin_name": "greenlight-sh707-age54",
+  "lasting_owner": "AGE-103",
+  "retirement": "Replace after a containing release is installed and byte/manifest/native-host validation passes; remove only the separately identified personal development plugin."
+}

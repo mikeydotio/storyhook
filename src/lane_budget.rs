@@ -1,14 +1,9 @@
-//! The machine lane budget, and the live agent windows counted against it
-//! (SH-655).
+//! Informational census of live agent windows (SH-655, SH-672).
 //!
-//! D14 (`docs/spec/full-auto-engine.md`) promises a *machine-wide* lane
-//! budget, and until SH-655 the only thing that consulted it was the Full
-//! Auto engine, over its own `engine_lanes` rows. A `/story do` typed by hand
-//! is the same `cmd_dispatch`, opens the same worktree and window, compiles
-//! the same workspace, and counted for nothing — seven of them were measured
-//! at load 33 on a ten-core machine. This module is the census both doors
-//! read: the engine from inside the daemon, and `story lane-budget` from the
-//! operator's own shell, before a manual dispatch has claimed anything.
+//! The Full Auto engine and `story lane-budget` share this probe. A census
+//! describes sessions; it does not choose a budget or authorize dispatch.
+//! The engine limits each run by its configured lane count. Outside the
+//! engine, concurrency is between the operator and the agent.
 //!
 //! # What a live agent session IS
 //!
@@ -23,19 +18,15 @@
 //!
 //! # No evidence is not zero
 //!
-//! The census is three-valued (SH-626): counted, or unanswered with the
-//! probe's own words. A caller that read "tmux could not be asked" as "no
-//! sessions" would dispatch past the budget exactly when the machine is
-//! least observable. `story lane-budget` reports an unanswered census with no
-//! `live` and no `available` at all, and `cmd_dispatch` proceeds on it
-//! loudly rather than refusing on it.
+//! An unanswered probe carries its own words and no live count. It must
+//! never be interpreted as an empty server.
 
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
 use crate::process::{CaptureError, run_captured};
-use crate::service::engine::{ENGINE_LANE_BUDGET, TMUX_TIMEOUT};
+use crate::service::engine::TMUX_TIMEOUT;
 
 /// The one `list-windows` format the census asks for: the window's address,
 /// its `@storyhook-agent` option (empty when unset), and whether tmux itself
@@ -56,23 +47,6 @@ pub enum WindowCensus {
     Unanswered { detail: String },
 }
 
-impl WindowCensus {
-    /// The number of live sessions, when the server answered.
-    pub fn live(&self) -> Option<usize> {
-        match self {
-            Self::Counted { windows } => Some(windows.len()),
-            Self::Unanswered { .. } => None,
-        }
-    }
-}
-
-/// The machine-wide ceiling every dispatch door is measured against — the
-/// engine's own number (`ENGINE_LANE_BUDGET`, itself derived from
-/// `api::dispatch::MAX_RUNNING`), never a second copy (SH-136).
-pub fn budget() -> usize {
-    ENGINE_LANE_BUDGET
-}
-
 /// Asks the tmux server the caller's environment names for its live agent
 /// windows.
 ///
@@ -86,7 +60,7 @@ pub fn count_live_agent_windows() -> WindowCensus {
 
 /// The same census through a caller-prepared `tmux` command — the engine's
 /// `ShellDispatcher` passes its own program and allowlisted environment, so
-/// the census it fills lanes against is taken on the server its lanes live
+/// the census is taken on the server its lanes live
 /// on. One parser, one error vocabulary, two doors (SH-136).
 pub fn census_through(mut command: Command) -> WindowCensus {
     command.args(["list-windows", "-a", "-F", CENSUS_FORMAT]);
@@ -158,8 +132,6 @@ pub fn parse_census(answer: &str) -> WindowCensus {
 /// `story lane-budget`'s answer, in both renderings.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LaneBudgetView {
-    /// The machine-wide ceiling.
-    pub budget: usize,
     /// `"counted"` or `"unanswered"`.
     pub probe: String,
     /// Live sessions, when counted. Absent on an unanswered census rather
@@ -169,34 +141,25 @@ pub struct LaneBudgetView {
     /// The live sessions' window addresses, when counted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub windows: Option<Vec<String>>,
-    /// Whether another session fits under the budget. Absent when nothing
-    /// was counted: no evidence is not permission.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub available: Option<bool>,
     /// The probe's own words, when unanswered.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
 
 impl LaneBudgetView {
-    /// Measures a census against the budget.
+    /// Reports the census without assigning a budget.
     pub fn from_census(census: WindowCensus) -> Self {
-        let budget = budget();
         match census {
             WindowCensus::Counted { windows } => Self {
-                budget,
                 probe: "counted".to_string(),
                 live: Some(windows.len()),
-                available: Some(windows.len() < budget),
                 windows: Some(windows),
                 detail: None,
             },
             WindowCensus::Unanswered { detail } => Self {
-                budget,
                 probe: "unanswered".to_string(),
                 live: None,
                 windows: None,
-                available: None,
                 detail: Some(detail),
             },
         }
@@ -212,15 +175,7 @@ impl LaneBudgetView {
         match (&self.windows, &self.detail) {
             (Some(windows), _) => {
                 let live = windows.len();
-                let mut text = format!(
-                    "{live} of {} lanes in use on this machine{}\n",
-                    self.budget,
-                    if live < self.budget {
-                        ""
-                    } else {
-                        " — at the budget"
-                    }
-                );
+                let mut text = format!("{live} live agent sessions on this tmux server\n");
                 for window in windows {
                     text.push_str("  ");
                     text.push_str(window);
@@ -229,8 +184,7 @@ impl LaneBudgetView {
                 text
             }
             (None, detail) => format!(
-                "lane budget {}; live sessions unknown: {}\n",
-                self.budget,
+                "live agent sessions unknown: {}\n",
                 detail.as_deref().unwrap_or("the census was not answered")
             ),
         }
@@ -272,10 +226,10 @@ mod tests {
             detail: "no server".to_string(),
         });
         assert_eq!(view.live, None);
-        assert_eq!(view.available, None);
         assert_eq!(view.probe, "unanswered");
         let json = serde_json::to_value(&view).unwrap();
         assert!(json.get("live").is_none(), "{json}");
         assert!(json.get("available").is_none(), "{json}");
+        assert!(json.get("budget").is_none(), "{json}");
     }
 }

@@ -681,13 +681,14 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
   margin-left: auto;
 }
 .column-archive-btn:hover { color: var(--accent); background: var(--bg-raised); }
-.column-sort-btn {
+.column-sort-btn, .verification-control-btn {
   border: none; background: none; color: var(--fg-muted); font-size: 0.8125rem;
   padding: 0.0625rem 0.25rem; cursor: pointer; border-radius: var(--radius-sm);
   display: inline-flex; align-items: center; justify-content: center;
   min-width: var(--tap-min); min-height: var(--tap-min);
 }
-.column-sort-btn:hover { color: var(--accent); background: var(--bg-raised); }
+.column-sort-btn:hover, .verification-control-btn:hover { color: var(--accent); background: var(--bg-raised); }
+.verification-control-status { padding: 0 var(--space-card) var(--space-control); color: var(--fg-metadata); font-size: var(--type-metadata); }
 .column-cards { flex: 1; overflow-y: auto; padding: 0.125rem var(--space-control) var(--space-card); display: flex; flex-direction: column; gap: var(--space-control); min-height: 3rem; }
 .column-empty { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); text-align: center; padding: var(--space-section) 0; border: 1.5px dashed var(--control-boundary); border-radius: var(--radius-sm); }
 
@@ -1740,7 +1741,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           <div class="fdd" id="fdd-assignees"></div>
           <div class="fdd" id="fdd-types"></div>
           <div class="fdd" id="fdd-states"></div>
-          <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
+          <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show dropped</label>
           <label class="filter-toggle"><input type="checkbox" id="toggle-epics"> Show epics</label>
           <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
         </section>
@@ -1956,6 +1957,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <div class="field"><label for="dispatch-speed">Speed</label>
         <select id="dispatch-speed"><option value="">Default</option></select></div>
     </div>
+    <div class="modal-error" id="dispatch-options-notice" role="status" aria-live="polite"></div>
     <label class="dispatch-auto-option" for="dispatch-auto">
       <input type="checkbox" id="dispatch-auto">
       <span class="dispatch-auto-copy">
@@ -1987,6 +1989,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <div class="field"><label for="engine-speed">Speed</label>
         <select id="engine-speed"><option value="">Default</option></select></div>
     </div>
+    <div class="modal-error" id="engine-options-notice" role="status" aria-live="polite"></div>
     <div class="engine-modal-lanes" id="engine-modal-lanes" hidden>
       <div class="engine-modal-lanes-summary" id="engine-modal-lanes-summary"></div>
       <div class="engine-lane-strip" id="engine-modal-lane-strip" aria-label="Full Auto lanes"></div>
@@ -2013,7 +2016,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       </div>
       <div class="engine-stop-choice">
         <strong>Stop now</strong>
-        <span>Active claims are released and their windows are closed. Branches and worktrees are preserved.</span>
+        <span>Unfinished stories are reset: their windows, worktrees, local branches, and uncommitted work are removed. Stories already verifying continue unchanged.</span>
       </div>
     </div>
     <div class="modal-error" id="engine-stop-modal-error"></div>
@@ -2027,16 +2030,31 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
 <div class="backdrop" id="close-modal-backdrop" data-overlay="close-modal" hidden></div>
 <div class="modal" id="close-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="close-modal-header">
-  <div class="modal-header" id="close-modal-header">Close story</div>
+  <div class="modal-header" id="close-modal-header">Drop story</div>
   <div class="modal-body">
     <div id="close-modal-summary"></div>
     <div class="field"><label for="close-reason">Reason</label>
-      <input type="text" id="close-reason" placeholder="Why is this story being closed?" autocomplete="off"></div>
+      <input type="text" id="close-reason" placeholder="Why is this story being dropped?" autocomplete="off"></div>
     <div class="modal-error" id="close-modal-error"></div>
   </div>
   <div class="modal-footer">
     <button type="button" class="btn btn-ghost" id="close-modal-cancel">Cancel</button>
-    <button type="button" class="btn btn-primary" id="close-modal-submit">Close story</button>
+    <button type="button" class="btn btn-primary" id="close-modal-submit">Drop story</button>
+  </div>
+</div>
+
+<div class="backdrop" id="verify-override-backdrop" data-overlay="verify-override-modal" hidden></div>
+<div class="modal" id="verify-override-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="verify-override-header">
+  <div class="modal-header" id="verify-override-header">Override verification?</div>
+  <div class="modal-body">
+    <div id="verify-override-summary"></div>
+    <div class="field"><label for="verify-override-reason">Reason</label>
+      <input type="text" id="verify-override-reason" placeholder="Why is this story done without the verifier's verdict?" autocomplete="off"></div>
+    <div class="modal-error" id="verify-override-error"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="verify-override-cancel">Cancel</button>
+    <button type="button" class="btn btn-primary" id="verify-override-submit">Override and complete</button>
   </div>
 </div>
 
@@ -2046,8 +2064,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <div class="modal-body">
     <div id="delete-modal-summary"></div>
     <div class="delete-alternative" id="delete-modal-alternative" hidden>
-      <span class="delete-alternative-copy">Need to preserve the story and its history? Close it with a reason instead.</span>
-      <button type="button" class="btn" id="delete-modal-close-instead">Close instead</button>
+      <span class="delete-alternative-copy">Need to preserve the story and its history? Drop it with a reason instead.</span>
+      <button type="button" class="btn" id="delete-modal-close-instead">Drop instead</button>
     </div>
     <div class="field"><label for="delete-confirmation">Type the story ID to confirm</label>
       <input type="text" id="delete-confirmation" autocomplete="off"></div>
@@ -2762,7 +2780,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // while a newer run is live, and because abandon owns a stop-then-ack
     // sequence under one in-flight claim.
     engineAcknowledgements: Object.create(null),
-    verificationAcknowledgement: null,
+    verificationRequests: Object.create(null),
+    verificationObservations: Object.create(null),
     engineLanes: 1,
     // Story id -> {handle, timer, agent, auto} for a dispatch this tab is polling
     // (SH-50). Keyed per-story rather than one global slot, matching the
@@ -2865,6 +2884,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     expand: "➕",
     filters: "🎛️",
     home: "🏠",
+    play: "▶️",
+    stop: "⏹️",
     search: "🔍",
     settings: "⚙️",
     sort: "↕️",
@@ -5147,33 +5168,67 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
   }
 
-  /** Durable machine-wide verifier halt. It comes from `/data` so the banner
-   * and card statuses are one consistent store snapshot. */
+  /** Durable verifier halt for THIS project (SH-648: one verifier, one queue
+   * and one incident per project). It comes from `/data` so the banner and
+   * card statuses are one consistent store snapshot. */
   function renderVerificationBanner() {
     var mount = $("verification-banner-region");
     var incident = state.data && state.data.verification_incident;
-    var visible = !!(incident && incident.halted);
+    var halted = !!(incident && incident.halted);
+    var verifier = state.data && state.data.verifier;
+    var control = state.data && state.data.verification_control;
+    var mode = control && control.state;
+    var recovery = verifier && verifier.recovery;
+    var request = recovery && recovery.request;
+    var requestState = request && request.outcome && request.outcome.state;
+    var transition = JSON.stringify([mode, verifier && verifier.active && verifier.active.attempt_id, request && request.id, requestState]);
+    var observation = state.verificationObservations[state.repoId] || { halted: false, transition: null, resumed: false };
+    if (observation.halted && !halted) observation.resumed = true;
+    else if (observation.resumed && observation.transition !== transition) observation.resumed = false;
+    observation.halted = halted;
+    observation.transition = transition;
+    state.verificationObservations[state.repoId] = observation;
+    var visible = halted || !!(mode && mode !== "running") || !!(verifier && verifier.warning) || observation.resumed || requestState === "scheduled";
     mount.hidden = !visible;
     if (!visible) {
+      delete mount.dataset.fingerprint;
       if (mount.firstChild) clear(mount);
       return;
     }
-    var pending = state.verificationAcknowledgement === incident.incident_id;
-    var fingerprint = JSON.stringify([incident, pending]);
+    var pending = state.verificationRequests[state.repoId];
+    var fingerprint = JSON.stringify([incident, pending, verifier, mode, observation.resumed]);
     if (mount.dataset.fingerprint === fingerprint) return;
     clear(mount);
+    if (!halted) {
+      var title = mode === "stopped" ? "Central verification stopped" : mode === "stopping" ? "Central verification stopping" : mode === "draining" ? "Central verification draining" : observation.resumed ? "Central verification halt cleared" : requestState === "scheduled" ? "Central verification retry scheduled" : "Central verification needs attention";
+      var children = [el("div", { class: "engine-banner-title" }, [title])];
+      if (verifier && verifier.warning) children.push(el("div", {}, [verifier.warning]));
+      if (request) children.push(el("div", {}, ["Recovery request ", el("code", {}, [request.id]), ": ", requestState]));
+      if (request && request.admission) children.push(el("div", {}, ["Attempt ", el("code", {}, [request.admission.attempt_id]), " on ", request.admission.story_id]));
+      if (recovery && recovery.acknowledgement) children.push(el("div", {}, ["Acknowledged ", recovery.acknowledgement.incident.incident_id, " at ", timeNode(recovery.acknowledgement.at, "second")]));
+      if (mode === "stopped") children.push(el("button", { type: "button", class: "btn", disabled: !!pending, onClick: function() { submitVerificationRequest("control", { action: "start" }); } }, ["Start verifier"]));
+      children.push(el("div", {}, ["Diagnostics: ", el("code", {}, ["story verifier status"]), " · ", el("code", {}, ["story daemon logs"])]));
+      mount.appendChild(el("article", { class: "engine-banner", role: "status" }, children));
+      mount.dataset.fingerprint = fingerprint;
+      measureNoticeBands();
+      return;
+    }
     mount.appendChild(el("article", { class: "engine-banner verification-halted-banner" }, [
       el("div", { class: "engine-banner-head" }, [
         el("div", { class: "engine-banner-title" }, ["Central verification halted"]),
         el("button", {
           type: "button", class: "btn btn-warn", disabled: pending,
-          onClick: function() { acknowledgeVerificationIncident(incident.incident_id); }
-        }, [pending ? "Acknowledging…" : "Acknowledge and retry"])
+          onClick: function() { acknowledgeVerificationIncident(incident.incident_id, "retry"); }
+        }, [pending && pending.action === "retry" ? "Acknowledging…" : "Acknowledge and retry"]),
+        el("button", {
+          type: "button", class: "btn", disabled: !!pending,
+          onClick: function() { acknowledgeVerificationIncident(incident.incident_id, "leave-stopped"); }
+        }, [pending && pending.action === "leave-stopped" ? "Acknowledging…" : "Leave verifier stopped"])
       ]),
       el("div", { class: "engine-banner-meta" }, [
-        el("span", {}, ["Story ", el("code", {}, [incident.story_id])]),
+        el("span", {}, ["First hit on ", el("code", {}, [incident.story_id]), " (not its fault)"]),
         el("span", {}, [String(incident.attempts) + " attempt" + (incident.attempts === 1 ? "" : "s")]),
-        el("span", {}, ["First failure ", el("code", {}, [incident.first_failed_at])])
+        el("span", {}, ["First failure ", el("code", {}, [timeNode(incident.first_failed_at, "second")])])
       ]),
       el("div", { class: "engine-banner-quarantines" }, [incident.detail])
     ]));
@@ -5181,18 +5236,122 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     measureNoticeBands();
   }
 
-  function acknowledgeVerificationIncident(incidentId) {
-    if (!state.repoId || state.verificationAcknowledgement) return;
-    state.verificationAcknowledgement = incidentId;
+  function acknowledgeVerificationIncident(incidentId, action) {
+    submitVerificationRequest("ack", { incident_id: incidentId, action: action });
+  }
+
+  /** Every verifier write captures its project, so a late response cannot
+   * change the board the operator navigated to while it was pending. */
+  function submitVerificationRequest(verb, body) {
+    var project = state.repoId;
+    if (!project || state.verificationRequests[project]) return;
+    state.verificationRequests[project] = body;
     renderVerificationBanner();
-    api("POST", apiBase() + "/verification/ack", { incident_id: incidentId }).then(function() {
-      state.verificationAcknowledgement = null;
+    renderVerificationControl();
+    api("POST", apiBase() + "/verification/" + verb, body).then(function(response) {
+      delete state.verificationRequests[project];
+      if (state.repoId !== project) return;
+      boardFetchFloor = boardFetchTicket;
+      if (state.data) {
+        if (response.state) state.data.verification_control = { state: response.state };
+        if (response.verifier) state.data.verifier = response.verifier;
+        var incident = state.data.verification_incident;
+        if (incident && incident.incident_id === response.acknowledged) state.data.verification_incident = null;
+      }
+      renderVerificationBanner();
+      renderVerificationControl();
       fetchData();
     }).catch(function(err) {
-      state.verificationAcknowledgement = null;
+      delete state.verificationRequests[project];
       toastError(err);
+      if (state.repoId !== project) return;
+      renderVerificationBanner();
+      renderVerificationControl();
       fetchData();
     });
+  }
+
+  function verifierControlState() {
+    var control = state.data && state.data.verification_control;
+    var mode = control ? control.state : "loading";
+    var incident = state.data && state.data.verification_incident;
+    return mode === "running" && incident && incident.halted ? "halted" : mode;
+  }
+
+  /** The shell survives board refreshes; only confirmed state changes its glyph. */
+  function renderVerificationControl() {
+    var column = document.querySelector('.column[data-state="verifying"]');
+    if (!column) return;
+    var button = column.querySelector(".verification-control-btn");
+    if (!button) return;
+    var mode = verifierControlState();
+    var pending = state.verificationRequests[state.repoId];
+    var canStop = mode === "running" || mode === "draining";
+    var label = canStop ? "Stop verifier" : mode === "stopping" ? "Stopping verifier…" : "Start verifier";
+    button.disabled = !!pending || mode === "stopping" || mode === "halted" || mode === "loading";
+    button.title = mode === "halted" ? "Acknowledge the verification failure before starting" : label;
+    button.setAttribute("aria-label", label);
+    if (canStop) button.setAttribute("aria-haspopup", "menu");
+    else button.removeAttribute("aria-haspopup");
+    var icon = canStop || mode === "stopping" ? "stop" : "play";
+    if (button.dataset.icon !== icon) {
+      clear(button);
+      button.appendChild(emojiIcon(icon));
+      button.dataset.icon = icon;
+    }
+    var status = column.querySelector(".verification-control-status");
+    var text = pending ? "Updating verifier…" : mode === "draining" ? "Finishing inflight verification…"
+      : mode === "stopping" ? "Stopping inflight verification…" : mode === "stopped" ? "Verifier stopped"
+      : mode === "halted" ? "Verification needs acknowledgement" : "";
+    status.textContent = text;
+    status.hidden = !text;
+    if (verificationMenuNode && (mode !== verificationMenuMode || !!pending)) closeVerificationMenu(true);
+  }
+
+  var verificationMenuNode = null;
+  var verificationMenuInvoker = null;
+  var verificationMenuFocusIndex = -1;
+  var verificationMenuMode = null;
+
+  function openVerificationMenu(e, invoker) {
+    closeAllPopovers();
+    var mode = verifierControlState();
+    if (state.verificationRequests[state.repoId]) return;
+    if (mode === "stopped") {
+      submitVerificationRequest("control", { action: "start" });
+      return;
+    }
+    if (mode !== "running" && mode !== "draining") return;
+    var project = state.repoId;
+    function select(action) {
+      if (state.repoId === project) submitVerificationRequest("control", { action: action });
+    }
+    verificationMenuInvoker = invoker;
+    verificationMenuMode = mode;
+    verificationMenuNode = renderMenuNode([
+      { label: "Let inflight verifications finish", disabled: mode === "draining", onSelect: function() { select("drain"); } },
+      { label: "Stop inflight verifications", danger: true, onSelect: function() { select("stop"); } }
+    ], "Stop verifier", function() { closeVerificationMenu(true); }, null);
+    verificationMenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
+    verificationMenuNode.addEventListener("keydown", function(evt) {
+      handleMenuKeydown(evt, verificationMenuNode, verificationMenuFocusIndex, function(index) { verificationMenuFocusIndex = index; }, closeVerificationMenu);
+    });
+    document.body.appendChild(verificationMenuNode);
+    invoker.setAttribute("aria-expanded", "true");
+    var anchor = menuAnchor(e, invoker);
+    placeMenu(verificationMenuNode, anchor.x, anchor.y);
+    verificationMenuFocusIndex = focusMenuItem(verificationMenuNode, mode === "draining" ? 1 : 0, -1);
+  }
+
+  function closeVerificationMenu(restoreFocus) {
+    var invoker = verificationMenuInvoker;
+    if (verificationMenuNode) detach(verificationMenuNode);
+    verificationMenuNode = null;
+    verificationMenuInvoker = null;
+    verificationMenuMode = null;
+    verificationMenuFocusIndex = -1;
+    if (invoker) invoker.setAttribute("aria-expanded", "false");
+    if (restoreFocus) restoreOverlayFocus(invoker);
   }
 
   function currentEngineStartPending() {
@@ -5246,6 +5405,56 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var control = el("div", { class: "engine-launch" }, [button]);
     syncEngineControl(control);
     return control;
+  }
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+  /** The viewer's local wall-clock for a stored RFC3339 UTC instant (SH-679).
+   * `mode` is "date" (YYYY-MM-DD), "minute" (YYYY-MM-DD HH:MM) or "second"
+   * (YYYY-MM-DD HH:MM:SS). Display only: every sort key and threshold still
+   * compares the raw server string (docs/spec/recency-ordering.md). The shape
+   * stays ISO-like rather than locale-formatted so the fixed-width metadata
+   * columns keep their width and a value reads the same as the CLI prints it.
+   * An unparseable value is shown as received: the stored string is the only
+   * evidence, and hiding it would be worse than showing it unconverted. */
+  function localStamp(at, mode) {
+    if (!at) return "";
+    var ms = Date.parse(at);
+    if (!Number.isFinite(ms)) return String(at);
+    var d = new Date(ms);
+    var date = d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+    if (mode === "date") return date;
+    var time = pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    if (mode === "second") time += ":" + pad2(d.getSeconds());
+    return date + " " + time;
+  }
+
+  /** The IANA zone the browser is converting into, for the hover title; "" when
+   * the runtime cannot say. Resolved once: a page's zone does not change
+   * between renders, and a list paints one <time> per row. */
+  var viewerZoneName = null;
+  function viewerZone() {
+    if (viewerZoneName !== null) return viewerZoneName;
+    try {
+      var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      viewerZoneName = zone ? String(zone) : "";
+    } catch (_error) {
+      viewerZoneName = "";
+    }
+    return viewerZoneName;
+  }
+
+  /** The one door for an absolute time in this page: a <time> whose text is
+   * `localStamp(at, mode)`, whose `datetime` is the stored instant, and whose
+   * title names that instant as UTC and the zone it is shown in. Callers pass
+   * a non-empty `at`; tests/dashboard_local_time.rs refuses any `*_at` field
+   * rendered around this function. */
+  function timeNode(at, mode) {
+    var zone = viewerZone();
+    return el("time", {
+      datetime: at,
+      title: at + " UTC" + (zone ? " · shown in " + zone : "")
+    }, [localStamp(at, mode)]);
   }
 
   function formatEngineElapsed(startedAt) {
@@ -5327,7 +5536,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       queued.push("position " + verification.position);
       if (verification.blocked_by) {
         queued.push("verifier " + (verification.blocked_by.halted ? "halted" : "retrying") +
-          " at " + verification.blocked_by.story_id);
+          " (infrastructure; first hit on " + verification.blocked_by.story_id + ", not its fault)");
       }
       return queued.join(" · ");
     }
@@ -5718,6 +5927,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * permanent failure for the rest of the page's life. */
   var dispatchOptionsCache = null;
   var dispatchOptionsPromise = null;
+  /** SH-670: why the last catalog fetch failed, as `describeFailure` words
+   * it, or `null` after a success. The failure path hands
+   * `applyDispatchAvailability` a `null` catalog on purpose (availability is
+   * unknown, not negative), so this is the only place the reason survives
+   * for the options notice to read. */
+  var dispatchOptionsFailure = null;
   var DISPATCH_FALLBACK_AGENTS = [
     { id: "claude", label: "Claude", installed: true },
     { id: "codex", label: "Codex", installed: true }
@@ -5728,14 +5943,54 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     dispatchOptionsPromise = api("GET", "/api/dispatch-options")
       .then(function(resp) {
         dispatchOptionsCache = resp;
+        dispatchOptionsFailure = null;
         dispatchOptionsPromise = null;
         return resp;
       })
       .catch(function(err) {
+        dispatchOptionsFailure = describeFailure(err);
         dispatchOptionsPromise = null;
         throw err;
       });
     return dispatchOptionsPromise;
+  }
+
+  var OPTIONS_NOTICE_TAIL = " Model, Effort and Speed will use the provider's defaults.";
+
+  /** `text` as a sentence: the resolver's reason ends without a period,
+   * `describeFailure`'s unprovable-outcome sentence already carries one. */
+  function asSentence(text) {
+    return /[.!?]$/.test(text) ? text : text + ".";
+  }
+
+  /** SH-670: the sentence explaining why `agent`'s Model/Effort/Speed hold
+   * nothing but "Default", or "" when the catalog is healthy. A provider
+   * slot the daemon degraded to `{ok:false, reason}` (helper not installed,
+   * timed out, predates the `capabilities` verb) used to render exactly like
+   * a provider with no options -- and the `reason` it carried was the one
+   * line naming the fix (`story plugin install claude`). A failed fetch is
+   * the same silence one layer up. Neither gates Submit: SH-517 degrades
+   * the selector rather than dispatch, and SH-616's availability row owns
+   * whether a provider is launchable at all. */
+  function providerOptionsNotice(agent, caps) {
+    if (!caps) {
+      return dispatchOptionsFailure
+        ? "Provider options could not be loaded: " + asSentence(dispatchOptionsFailure) + OPTIONS_NOTICE_TAIL
+        : "";
+    }
+    var slot = agent ? caps[agent] : null;
+    if (!slot || slot.ok !== false) return "";
+    var label = dispatchAgentsFrom(caps).reduce(function(found, entry) {
+      return entry.id === agent ? entry.label : found;
+    }, agent);
+    var reason = typeof slot.reason === "string" && slot.reason
+      ? slot.reason
+      : "the helper reported no catalog";
+    return label + " options unavailable: " + asSentence(reason) + OPTIONS_NOTICE_TAIL;
+  }
+
+  function renderProviderOptionsNotice(prefix, agent, caps) {
+    $(prefix + "-options-notice").textContent = providerOptionsNotice(agent, caps);
   }
 
   /** Repopulates one dispatch selector from `entries` (an array of
@@ -5832,6 +6087,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     populateDispatchSelector(prefix + "-model", providerCaps.models, remembered.model);
     populateDispatchSelector(prefix + "-effort", providerCaps.efforts, remembered.effort);
     populateDispatchSelector(prefix + "-speed", providerCaps.speeds, remembered.speed);
+    renderProviderOptionsNotice(prefix, agent, caps);
   }
 
   /** Opens with the last submitted configuration. Localhost remains the only
@@ -5886,6 +6142,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function closeDispatchModal() {
     dispatchModalStoryId = null;
+    $("dispatch-options-notice").textContent = "";
     hideBackdrop("dispatch-modal-backdrop");
     $("dispatch-modal").classList.remove("open");
     $("dispatch-modal").setAttribute("aria-hidden", "true");
@@ -5930,6 +6187,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     populateCurrentEngineSelector("engine-model", providerCaps.models, run.model || "");
     populateCurrentEngineSelector("engine-effort", providerCaps.efforts, run.effort || "");
     populateCurrentEngineSelector("engine-speed", providerCaps.speeds, run.speed || "");
+    renderProviderOptionsNotice("engine", run.agent, caps);
   }
 
   function renderEngineModalLanes(run) {
@@ -6081,6 +6339,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     engineModalRunId = null;
     engineAvailabilityPending = false;
     engineProviderAvailable = true;
+    $("engine-options-notice").textContent = "";
     hideBackdrop("engine-modal-backdrop");
     $("engine-modal").classList.remove("open");
     $("engine-modal").setAttribute("aria-hidden", "true");
@@ -6450,11 +6709,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Whether `st` can use the deliberate-abandonment path SH-505 added.
    * The catalog check matters for a migrated project that already owned an
-   * OPEN state named `closed`: the CLI refuses `story close` there, so the
+   * OPEN state named `dropped`: the CLI cannot abandon a story there, so the
    * dashboard must not advertise a button whose only outcome is that refusal. */
   function canCloseStory(st) {
     return stateSuperstate(st.state) === "OPEN" && meta().states.some(function(s) {
-      return s.slug === "closed" && s.super_state === "CLOSED";
+      return s.slug === "dropped" && s.super_state === "CLOSED";
     });
   }
 
@@ -6522,7 +6781,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       },
       { separator: true },
       canCloseStory(st) ? {
-        label: "Close",
+        label: "Drop",
         disabled: !!state.pending[st.id],
         onSelect: function() { openCloseModal(st.id, st.title); }
       } : null,
@@ -7182,10 +7441,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var st = v.story;
       // `display_state || st.state` (SH-407) -- the status this story actually
       // renders under, shared by column placement and the State filter below.
-      // "Show closed" names the required `closed` status (SH-551), not every
+      // "Show dropped" names the required `dropped` status (SH-551), not every
       // status in the CLOSED superstate: completed work in `done` stays visible.
       var shownState = v.display_state || st.state;
-      if (!f.showClosed && shownState === "closed") return false;
+      if (!f.showClosed && shownState === "dropped") return false;
       // SH-499: an epic is a story TYPED `epic`, never one that merely has
       // children. This read `v.progress`, which is present for ANY parent, so
       // an ordinary story that gained one sub-task was hidden from the board
@@ -7998,6 +8257,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     closeMoreMenu(false);
     closeStoryMenu(false);
     closeColumnSortMenu(false);
+    closeVerificationMenu(false);
   }
 
   /** The document-wide click listener that dismisses every popover (below)
@@ -8618,6 +8878,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // `ensureColumnShells`'s one-time shell -- that only rebuilds when the
       // *set* of states changes, not on every render, so a stale label
       // would otherwise survive any sort change made after the first paint.
+      if (stateDef.slug === "verifying") renderVerificationControl();
       var sortLabel = "Sort: " + columnSortLabel(stateDef.slug);
       var sortBtn = column.querySelector(".column-sort-btn");
       sortBtn.title = sortLabel;
@@ -8659,6 +8920,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             class: "column-archive-btn", type: "button", title: "Archive every story in this column",
             onClick: function() { openArchiveColumn(stateDef.slug); }
           }, ["Archive"]) : null,
+          stateDef.slug === "verifying" ? el("button", {
+            type: "button", class: "verification-control-btn", "aria-expanded": "false",
+            onClick: function(e) { e.stopPropagation(); openVerificationMenu(e, e.currentTarget); }
+          }, []) : null,
           el("span", { class: "column-count" }, ["0"]),
           // SH-305: opens a popup of Added/Modified/Priority x asc/desc for
           // this column alone. `stopPropagation` keeps the click from
@@ -8677,6 +8942,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             }
           }, [emojiIcon("sort")])
         ]),
+        stateDef.slug === "verifying" ? el("div", { class: "verification-control-status", role: "status", hidden: true }, []) : null,
         el("div", { class: "column-cards" }, [])
       ]);
       bindColumnDrop(column, stateDef.slug, isClosed);
@@ -9430,6 +9696,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         openDropBlockedReasonModal(id);
         return;
       }
+      // SH-692: a `verifying` card belongs to the central verifier. Dropping
+      // it on Done is an override, which needs the operator's reason — the
+      // service refuses the bare move — so the drop defers to a prompt that,
+      // unlike Blocked's, is NOT skippable: no reason, no move.
+      if (currentSlug === "verifying" && targetSlug === "done") {
+        openVerifyOverrideModal(id);
+        return;
+      }
       moveStory(id, targetSlug, isClosed);
     });
   }
@@ -9505,7 +9779,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `reason` (SH-205) is optional and only meaningful alongside a move into
    * an OPEN state — the server refuses it combined with a close, so it is
    * never sent on the `targetIsClosed` path. */
-  function moveStory(id, targetSlug, targetIsClosed, reason) {
+  function moveStory(id, targetSlug, targetIsClosed, reason, comment) {
     var story = findStory(id);
     if (!story) return;
     var originSlug = story.story.state;
@@ -9515,9 +9789,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     var body = { state: targetSlug };
     if (reason) body.reason = reason;
+    // `comment` (SH-692) is the override reason a Verifying -> Done move
+    // carries; it rides the closed path only, as `story move <id> done
+    // "<why>"` does, and is absent from every other drop.
+    var closedBody = { state: targetSlug };
+    if (comment) closedBody.comment = comment;
 
     var request = targetIsClosed
-      ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", { state: targetSlug })
+      ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", closedBody)
       : (stateSuperstate(originSlug) === "CLOSED"
           ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/reopen", {})
           : api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", body));
@@ -9568,7 +9847,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** The colour a status light or column dot uses for `slug`.
    *
    * SH-203: was a pure positional lookup into STATE_PALETTE -- with the
-   * required catalog (todo, in-progress, verifying, blocked, done, closed, in that
+   * required catalog (todo, in-progress, verifying, blocked, done, dropped, in that
    * configured order) that put `done` at index 3, painting every
    * completed story red. A status light that colours by column has to
    * mean something, so the REQUIRED_STATES slugs every project's catalog
@@ -10613,7 +10892,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var st = v.story;
     var engineLane = engineLaneForStory(st.id);
     var engineLaneDesc = engineLaneDescription(engineLane);
-    var updated = (st.updated_at || "").slice(0, 10);
+    var updated = st.updated_at ? timeNode(st.updated_at, "date") : "";
     var order = nextRank(st.id);
     row.setAttribute(
       "aria-label",
@@ -10737,7 +11016,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var shownState = v.display_state || st.state;
     var promoted = shownState !== st.state;
     var order = nextRank(id);
-    var updated = (st.updated_at || "").slice(0, 10) || "—";
+    var updated = st.updated_at ? timeNode(st.updated_at, "date") : "—";
     var detailsId = "mobile-story-details-" + id;
     item.style.borderLeft = blocked[id] ? "3px solid var(--danger)" : "";
 
@@ -11582,6 +11861,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return o;
     }));
     stateSelect.addEventListener("change", function() {
+      // SH-692: the same override prompt the board drop uses; the select
+      // shows `verifying` again until the reason is submitted.
+      if (st.state === "verifying" && stateSelect.value === "done") {
+        stateSelect.value = st.state;
+        openVerifyOverrideModal(st.id);
+        return;
+      }
       var closed = stateSuperstate(stateSelect.value) === "CLOSED";
       var wasClosed = stateSuperstate(st.state) === "CLOSED";
       var path = wasClosed && !closed ? "reopen" : "move";
@@ -12043,7 +12329,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var list = el("div", { class: "comments" }, []);
       comments.slice().reverse().forEach(function(c) {
         list.appendChild(el("div", { class: "comment" }, [
-          el("div", { class: "comment-meta" }, [(c.at || "").replace("T", " ").slice(0, 16)]),
+          el("div", { class: "comment-meta" }, [c.at ? timeNode(c.at, "minute") : ""]),
           el("div", { class: "comment-text md" }, [renderMarkdown(c.text, st.id)])
         ]));
       });
@@ -12071,13 +12357,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var list = el("div", { class: "referenced-by-list" }, []);
     commits.forEach(function(c) {
       list.appendChild(el("div", { class: "referenced-by-row" }, [
-        el("span", { class: "referenced-by-meta" }, [(c.at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-meta" }, [c.at ? timeNode(c.at, "minute") : ""]),
         el("span", { class: "referenced-by-text" }, ["[git] " + c.sha.slice(0, 7) + ": " + c.subject])
       ]));
     });
     prs.forEach(function(p) {
       list.appendChild(el("div", { class: "referenced-by-row" }, [
-        el("span", { class: "referenced-by-meta" }, [(p.linked_at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-meta" }, [p.linked_at ? timeNode(p.linked_at, "minute") : ""]),
         el("span", { class: "referenced-by-text" }, [
           el("a", { href: p.url, target: "_blank", rel: "noopener" }, [
             "PR " + p.owner + "/" + p.repo + "#" + p.number
@@ -12090,7 +12376,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // is half of one. Same storyRef() affordance the relationships list uses.
     mentions.forEach(function(m) {
       list.appendChild(el("div", { class: "referenced-by-row" }, [
-        el("span", { class: "referenced-by-meta" }, [(m.at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-meta" }, [m.at ? timeNode(m.at, "minute") : ""]),
         el("span", { class: "referenced-by-text" }, [
           storyRef(m.other_id),
           " " + m.snippet
@@ -12152,7 +12438,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           var current = currentDrawerStory(st.id);
           openCloseModal(st.id, current ? current.title : st.title);
         }
-      }, ["Close"]));
+      }, ["Drop"]));
     }
     next.appendChild(el("button", { class: "btn btn-danger", style: closeAvailable ? null : "margin-left:auto", onClick: function() {
       openDeleteModal(st.id);
@@ -14897,7 +15183,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     closeModalStoryId = id;
     setCloseModalInFlight(false);
     $("close-modal-summary").textContent =
-      "Close " + id + (title ? " — " + title : "") + "? The reason will be saved as a comment.";
+      "Drop " + id + (title ? " — " + title : "") + "? The reason will be saved as a comment.";
     $("close-reason").value = "";
     $("close-modal-error").textContent = "";
     showBackdrop("close-modal-backdrop");
@@ -14933,24 +15219,90 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!id) return;
     var reason = $("close-reason").value.trim();
     if (!reason) {
-      $("close-modal-error").textContent = "A closing reason is required.";
+      $("close-modal-error").textContent = "A reason for dropping the story is required.";
       return;
     }
     setCloseModalInFlight(true);
     api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", {
-      state: "closed",
+      state: "dropped",
       comment: reason
     })
       .then(function(resp) {
         setCloseModalInFlight(false);
         closeCloseModal();
-        toast(id + " closed", "success");
+        toast(id + " dropped", "success");
         handleMutationSuccess(resp);
       })
       .catch(function(err) {
         setCloseModalInFlight(false);
         $("close-modal-error").textContent = describeMutationFailure(err);
       });
+  }
+
+  /** The story id the verification-override prompt (SH-692) is open for, or
+   * `null`. Opened by a Verifying -> Done drop on the board and by the
+   * drawer's state select; both are the same override, so both read the
+   * same reason and send the same `/move` with `comment`. */
+  var verifyOverrideStoryId = null;
+  var verifyOverrideInFlight = false;
+  var verifyOverrideOpenFrame = null;
+
+  function setVerifyOverrideInFlight(value) {
+    verifyOverrideInFlight = value;
+    $("verify-override-submit").disabled = value;
+    $("verify-override-cancel").disabled = value;
+  }
+
+  function openVerifyOverrideModal(id) {
+    var story = findStory(id);
+    verifyOverrideStoryId = id;
+    setVerifyOverrideInFlight(false);
+    $("verify-override-summary").textContent =
+      id + (story ? " — " + story.story.title : "") +
+      " is under central verification. Completing it by hand overrides the verifier: " +
+      "its running attempt is cancelled and your reason is recorded on the story.";
+    $("verify-override-reason").value = "";
+    $("verify-override-error").textContent = "";
+    showBackdrop("verify-override-backdrop");
+    activateOverlay("verify-override-modal", "verify-override-reason");
+    verifyOverrideOpenFrame = requestAnimationFrame(function() {
+      verifyOverrideOpenFrame = null;
+      // Same guard as the close modal: a rapid Escape/Cancel between the
+      // synchronous activation and this frame must not reopen the surface.
+      if (overlayStack[overlayStack.length - 1] !== "verify-override-modal") return;
+      $("verify-override-modal").classList.add("open");
+      $("verify-override-modal").setAttribute("aria-hidden", "false");
+    });
+  }
+
+  function closeVerifyOverrideModal() {
+    if (verifyOverrideInFlight) return;
+    if (verifyOverrideOpenFrame !== null) {
+      cancelAnimationFrame(verifyOverrideOpenFrame);
+      verifyOverrideOpenFrame = null;
+    }
+    verifyOverrideStoryId = null;
+    hideBackdrop("verify-override-backdrop");
+    $("verify-override-modal").classList.remove("open");
+    $("verify-override-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("verify-override-modal");
+  }
+
+  /** The one door out that moves the card: a non-empty reason. Cancel,
+   * backdrop and Escape leave the story exactly where it was, in
+   * `verifying` — the prompt gates the move, unlike Blocked's. */
+  function submitVerifyOverride() {
+    if (verifyOverrideInFlight) return;
+    var id = verifyOverrideStoryId;
+    if (!id) return;
+    var reason = $("verify-override-reason").value.trim();
+    if (!reason) {
+      $("verify-override-error").textContent = "A reason for overriding verification is required.";
+      return;
+    }
+    verifyOverrideStoryId = null;
+    closeVerifyOverrideModal();
+    moveStory(id, "done", true, undefined, reason);
   }
 
   /** The story id the delete modal (SH-197) is currently open for, or
@@ -15250,6 +15602,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("close-modal-backdrop").addEventListener("click", closeCloseModal);
     $("close-modal-submit").addEventListener("click", submitCloseStory);
     bindEnterSubmit($("close-reason"), submitCloseStory);
+    $("verify-override-cancel").addEventListener("click", closeVerifyOverrideModal);
+    $("verify-override-backdrop").addEventListener("click", closeVerifyOverrideModal);
+    $("verify-override-submit").addEventListener("click", submitVerifyOverride);
+    bindEnterSubmit($("verify-override-reason"), submitVerifyOverride);
     $("delete-modal-cancel").addEventListener("click", closeDeleteModal);
     $("delete-modal-backdrop").addEventListener("click", closeDeleteModal);
     $("delete-modal-close-instead").addEventListener("click", closeInsteadOfDelete);
@@ -15322,6 +15678,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // is in flight `closeCloseModal()` deliberately keeps it open.
         if (overlayStack[overlayStack.length - 1] === "close-modal") {
           closeCloseModal();
+          return;
+        }
+        // The override prompt (SH-692) has the same standing as Close: it may
+        // sit over the drawer, and Escape dismisses only it, leaving the card
+        // in Verifying.
+        if (overlayStack[overlayStack.length - 1] === "verify-override-modal") {
+          closeVerifyOverrideModal();
           return;
         }
         // Read BEFORE the closers run, not after (SH-324). An open editor

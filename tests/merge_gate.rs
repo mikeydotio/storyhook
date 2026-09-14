@@ -50,6 +50,24 @@
 //!   → **1 of 7 red**, `a_textual_conflict_is_reported_distinctly_and_prints_no_tree`
 //!   — the only test asserting on the conflict path specifically.
 //!
+//! SH-692 (a gate killed mid-run must never read as red, never as green, and
+//! must always leave a verdict), measured the same way, snapshotting each
+//! script before the change:
+//!
+//! - `merge-watch.sh` publishing its completion record for a signalled child
+//!   again (the `< 128` guard removed) → **1 of 2 red**:
+//!   `a_gate_terminated_by_signal_is_infrastructure_never_red` — the record
+//!   reappears and the detail no longer reads "Completion record: missing".
+//! - the `>= 128` classification deleted from `run_verification_gate` →
+//!   **1 of 2 red**: the same test, because the missing record then falls
+//!   into the preparation-failure branch and comes back `permanent`.
+//! - both restored to their pre-SH-692 text → **2 of 2 red**: the same test
+//!   reads `tests-failed` — the exact misreading that motivated the story.
+//! - the TERM/INT/HUP trap deleted from `verify-pr.sh` → **1 of 2 red**:
+//!   `a_terminated_verifier_reports_the_termination_and_leaves_no_completion_record`
+//!   — no verdict on stdout and the `143` record survives, the two artifacts
+//!   PR #791 actually left behind.
+//!
 //! # The merge-watch boundary
 //!
 //! `scripts/merge-watch.sh` keeps its GitHub polling and comment orchestration
@@ -199,6 +217,206 @@ fn verifier_distinguishes_poller_preparation_failure_from_test_failure() {
     }
 }
 
+/// SH-692: the gate for PR #791 was terminated by SIGTERM at leg 226/4058,
+/// and `merge-watch.sh` published the dead child's status, `143`, as a
+/// "completion record". `run_verification_gate`'s one guard is that the
+/// record and the status agree — `143 == 143` — so a verifier that survived
+/// its gate's death would have posted that death as RED. A killed gate judged
+/// nothing: it is infrastructure, retryable (the tree is merely unjudged),
+/// named by signal, and it leaves no completion record behind for the next
+/// reader to misread. Only the gate LEAF is signalled here; the verifier and
+/// merge-watch live on to classify, which is exactly the shape that misread.
+#[test]
+fn a_gate_terminated_by_signal_is_infrastructure_never_red() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let expected_tree = stdout(&repo.preflight(&base, &head));
+    let pid_file = repo.path().join("gate-pid");
+    // A busy loop rather than `sleep`: the gate must have no grandchild for
+    // the owner to count as a live writer once the leaf is gone.
+    let mut verifier = repo.spawn_verification_gate(
+        &expected_tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            "printf '%s' $$ > \"$1\"; while :; do :; done",
+            "signal-probe",
+            &pid_file.display().to_string(),
+        ],
+    );
+    wait_for_within(&pid_file, Duration::from_secs(60));
+    let gate_pid: i32 = fs::read_to_string(&pid_file)
+        .expect("the gate published its pid")
+        .trim()
+        .parse()
+        .expect("a pid");
+    assert_eq!(
+        unsafe { libc::kill(gate_pid, libc::SIGTERM) },
+        0,
+        "signalling the gate leaf"
+    );
+    let out = verifier.wait_with_output_within(Duration::from_secs(120), || {
+        "the verifier did not classify its terminated gate".to_string()
+    });
+    assert_ok(
+        &out,
+        "a terminated gate is still answered with a classified verdict",
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|error| {
+        panic!(
+            "one JSON verdict on stdout, got {error}: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr(&out)
+        )
+    });
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    let detail = payload["detail"].as_str().expect("a detail");
+    assert!(detail.contains("terminated by signal 15"), "{detail}");
+    assert!(detail.contains("SIGTERM"), "{detail}");
+    assert!(detail.contains("judged nothing"), "{detail}");
+    assert!(
+        detail.contains("Completion record: missing"),
+        "a signalled child must earn no completion record: {detail}"
+    );
+    assert!(
+        !detail.contains("Failed tests"),
+        "a killed gate is not a test failure: {detail}"
+    );
+    assert!(
+        completion_records(&repo).is_empty(),
+        "no completion record may outlive the attempt: {:?}",
+        completion_records(&repo)
+    );
+    assert_eq!(
+        lifecycle_statuses(&repo.path().join("gate-progress.ndjson"), "release gate"),
+        ["running"],
+        "a signalled command has no validated terminal gate result"
+    );
+    assert!(
+        !repo
+            .common_dir()
+            .join("storyhook/gate-receipts")
+            .join(&expected_tree)
+            .exists(),
+        "nothing certified the tree"
+    );
+}
+
+/// SH-692, the shape that actually happened to PR #791: the whole verifier
+/// group was terminated (the daemon's SH-686 cancellation of a withdrawn
+/// generation). `verify-pr.sh` carried no trap, so bash's default action
+/// ended it after merge-watch returned and before it read or removed its
+/// completion record — two `143` records were left behind as evidence and no
+/// verdict was ever written. With the trap, the termination is reported as
+/// exactly one JSON verdict naming the phase, and the record is removed.
+#[test]
+fn a_terminated_verifier_reports_the_termination_and_leaves_no_completion_record() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let expected_tree = stdout(&repo.preflight(&base, &head));
+    let pid_file = repo.path().join("gate-pid");
+    let mut verifier = repo.spawn_verification_gate(
+        &expected_tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            "printf '%s' $$ > \"$1\"; while :; do :; done",
+            "signal-probe",
+            &pid_file.display().to_string(),
+        ],
+    );
+    wait_for_within(&pid_file, Duration::from_secs(60));
+    // The verifier's own group, as the daemon signals it.
+    let group = i32::try_from(verifier.pid()).expect("a pid");
+    assert_eq!(
+        unsafe { libc::kill(-group, libc::SIGTERM) },
+        0,
+        "signalling the verifier's process group"
+    );
+    let out = verifier.wait_with_output_within(Duration::from_secs(120), || {
+        "the terminated verifier did not finish its bounded cleanup".to_string()
+    });
+    // machine-lock re-raises the signal on itself once its group is reaped,
+    // so the outer status is a truthful signal death, never a fabricated 0.
+    assert_eq!(
+        out.status.signal(),
+        Some(libc::SIGTERM),
+        "outer status: {:?}\nstderr: {}",
+        out.status,
+        stderr(&out)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let payload: serde_json::Value = serde_json::from_str(text.trim()).unwrap_or_else(|error| {
+        panic!(
+            "exactly one JSON verdict on stdout, got {error}: {text}\nstderr: {}",
+            stderr(&out)
+        )
+    });
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "retryable", "{payload}");
+    let detail = payload["detail"].as_str().expect("a detail");
+    assert!(
+        detail.contains("terminated by SIGTERM during release gate"),
+        "{detail}"
+    );
+    assert!(detail.contains("PR #668"), "{detail}");
+    assert!(detail.contains(&expected_tree), "{detail}");
+    assert!(detail.contains("judged nothing"), "{detail}");
+    assert!(
+        completion_records(&repo).is_empty(),
+        "the terminated attempt must remove its completion record: {:?}",
+        completion_records(&repo)
+    );
+    // The gate leaf is gone with its session: nothing of the attempt survives.
+    let gate_pid: i32 = fs::read_to_string(&pid_file)
+        .expect("the gate published its pid")
+        .trim()
+        .parse()
+        .expect("a pid");
+    assert_ne!(
+        unsafe { libc::kill(gate_pid, 0) },
+        0,
+        "the gate leaf must not survive the verifier's termination"
+    );
+}
+
+/// Every `pr-668-result.*` completion record under the shared git directory.
+fn completion_records(repo: &MergeRepo) -> Vec<String> {
+    let logs = repo.common_dir().join("storyhook/verification-logs");
+    let Ok(entries) = fs::read_dir(&logs) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("pr-668-result."))
+        .collect()
+}
+
+/// [`wait_for`] with a longer deadline: the gate seam re-execs under
+/// machine-lock and the lifecycle owner before its command starts, which is
+/// more start-up than the bare speculative run `wait_for` was sized for.
+fn wait_for_within(path: &Path, deadline: Duration) {
+    let give_up_at = Instant::now() + deadline;
+    while !path.exists() && Instant::now() < give_up_at {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(path.exists(), "timed out waiting for {}", path.display());
+}
+
 /// The SH-607 production incident had one decisive failure followed by 611
 /// unknown outcomes. A tail cannot recover the failure from that ordering.
 #[test]
@@ -247,6 +465,123 @@ exit 101
     );
 }
 
+/// SH-695: a red rust-suite leg tore the gate down while a test's deliberate
+/// `sleep 300 &` orphan (`tests/event_hooks.rs`, `tests/hook_bounds.rs`) was
+/// still alive in the gate session. `verifier-owner.py` refused quiescence
+/// the instant the leader exited, the refusal skipped the bookkeeping that
+/// clears `gate_started`, and the outer supervisor's census found the same
+/// orphan and replaced the RED with a permanent infrastructure halt — which
+/// then recurred on every acknowledgement until the record was hand-edited.
+/// The orphan is a leak, not a writer with authority: the gate is red, the
+/// orphan is reaped, and the same poller takes the next gate on this boot.
+/// The orphan's stdio goes to the attempt log (`verify-pr.sh` redirects the
+/// whole gate), not to this test's pipes, so `.output()` cannot hang on it.
+#[test]
+fn a_red_gate_whose_test_left_an_orphan_is_red_not_infrastructure() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let pid_file = repo.path().join("orphan-pid");
+    let outcome = repo.verification_gate(
+        &tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            "sleep 300 & printf '%s' $! > \"$1\"; exit 7",
+            "orphan-probe",
+            &pid_file.display().to_string(),
+        ],
+    );
+    assert_ok(
+        &outcome,
+        "a red gate with a lingering orphan is still classified",
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&outcome.stdout).unwrap_or_else(|error| {
+            panic!(
+                "one JSON verdict on stdout, got {error}: {}\nstderr: {}",
+                String::from_utf8_lossy(&outcome.stdout),
+                stderr(&outcome)
+            )
+        });
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    let detail = payload["detail"].as_str().expect("a detail");
+    assert!(
+        !detail.contains("live writers"),
+        "the orphan must not be reported as an ambiguous writer: {detail}"
+    );
+    let orphan = fs::read_to_string(&pid_file).expect("the gate published its orphan's pid");
+    let state = stdout(&run(
+        repo.path(),
+        "ps",
+        &["-o", "stat=", "-p", orphan.trim()],
+    ));
+    assert!(
+        state.is_empty() || state.starts_with('Z'),
+        "the orphan must be reaped with its gate, found state {state:?}"
+    );
+    let log =
+        fs::read_to_string(payload["log"].as_str().expect("a log path")).expect("read the log");
+    assert!(
+        log.contains("leaving survivors"),
+        "the reap must be visible in the attempt log:\n{log}"
+    );
+
+    // The same poller, same boot: the record did not poison later admission.
+    let again = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", "exit 7"]);
+    assert_ok(&again, "the next gate on the same poller is admitted");
+    let payload: serde_json::Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+}
+
+#[test]
+fn verifier_does_not_promote_test_output_to_compiler_diagnostics() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let command = r#"
+printf '     Running tests/daemon_lifecycle.rs (target/debug/deps/daemon_lifecycle-fixture)\n'
+printf 'test replacement ... ok\n'
+printf 'error: the storyhook daemon stopped answering: io: Peer disconnected.\n'
+printf 'error[E0425]: printed by a test, not rustc\n'
+printf '{"reason":"compiler-message","message":{"level":"error","message":"test-printed JSON"}}\n'
+printf 'test forced_stop ... ok\n'
+printf 'test actual_failure ... FAILED\n'
+exit 101
+"#;
+    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", command]);
+    assert_ok(&outcome, "classifying intentional test errors");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    assert_eq!(payload["result"], "tests-failed", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    let summary = detail.split("\nAncillary context").next().unwrap();
+    assert!(
+        summary.contains("daemon_lifecycle::actual_failure"),
+        "{detail}"
+    );
+    assert!(
+        !summary.contains("Compiler/build diagnostics") && !summary.contains("Peer disconnected"),
+        "test-owned error output was promoted to a compiler diagnostic: {detail}"
+    );
+    let log = fs::read_to_string(payload["log"].as_str().unwrap()).unwrap();
+    for printed in [
+        "Peer disconnected",
+        "printed by a test",
+        "test-printed JSON",
+    ] {
+        assert!(log.contains(printed), "full log lost {printed}: {log}");
+    }
+}
+
 #[test]
 fn verifier_bounds_each_diagnostic_class_without_changing_its_meaning() {
     let repo = MergeRepo::new();
@@ -255,25 +590,57 @@ fn verifier_bounds_each_diagnostic_class_without_changing_its_meaning() {
     let tree = stdout(&repo.preflight(&base, &head));
     let poller_container = repo.poller(&base);
     let poller = poller_container.path().join("poller");
+    let compiler = scratch_dir();
+    fs::create_dir(compiler.path().join("src")).unwrap();
+    fs::write(
+        compiler.path().join("Cargo.toml"),
+        "[package]\nname=\"diagnostics\"\nversion=\"0.1.0\"\nedition=\"2021\"\n[workspace]\n",
+    )
+    .unwrap();
+    let errors = (1..=12)
+        .map(|i| format!("compiler_diagnostic_{i:02};\n"))
+        .collect::<String>();
+    fs::write(
+        compiler.path().join("src/lib.rs"),
+        format!("pub fn fails() {{\n{errors}}}\n"),
+    )
+    .unwrap();
     let command = r#"
 printf 'leg fmt: REUSED — relevant tracked inputs and command are unchanged\n'
 printf 'leg clippy: REUSED — relevant tracked inputs and command are unchanged\n'
+printf 'leg rust-suite: FAILED — exit 101\n'
+printf 'leg rust-contracts: FAILED — exit 7\n'
+printf 'leg plugin: SKIPPED — dependency build failed\n'
 printf '     Running tests/diagnostics.rs (target/debug/deps/diagnostics-fixture)\n'
 i=1
 while [ "$i" -le 25 ]; do
     printf 'test failure_%02d ... FAILED\n' "$i"
     i=$((i + 1))
 done
-i=1
-while [ "$i" -le 12 ]; do
-    printf 'error[E%04d]: compiler diagnostic %02d\n' "$i" "$i"
-    i=$((i + 1))
-done
+python3 "$1" -- cargo check --offline --manifest-path "$2"
+printf 'error: intentional test output\n'
+printf 'error[E0425]: another test impostor\n'
+printf '{"reason":"compiler-message","message":{"level":"error","message":"test JSON impostor"}}\n'
 printf 'test-delta: not re-run since the comparison ledger -- status unknown, not assumed green (300):\n'
 exit 101
 "#;
 
-    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", command]);
+    let adapter = checkout().join("scripts/cargo_diagnostics.py");
+    let manifest = compiler.path().join("Cargo.toml");
+    let outcome = repo.verification_gate(
+        &tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            command,
+            "probe",
+            adapter.to_str().unwrap(),
+            manifest.to_str().unwrap(),
+        ],
+    );
 
     assert_ok(&outcome, "summarizing bounded verification diagnostics");
     let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
@@ -296,10 +663,24 @@ exit 101
         summary.contains("Compiler/build diagnostics (12; showing first 10)"),
         "{detail}"
     );
-    assert!(summary.contains("compiler diagnostic 10"), "{detail}");
-    assert!(!summary.contains("compiler diagnostic 11"), "{detail}");
+    assert!(summary.contains("compiler_diagnostic_10"), "{detail}");
+    assert!(!summary.contains("compiler_diagnostic_11"), "{detail}");
+    assert!(
+        !summary.contains("impostor") && !summary.contains("intentional test output"),
+        "{detail}"
+    );
     assert!(
         summary.contains("2 additional compiler/build diagnostics omitted"),
+        "{detail}"
+    );
+    assert!(summary.contains("Failed legs:"), "{detail}");
+    assert!(
+        summary.contains("rust-suite: FAILED") && summary.contains("rust-contracts: FAILED"),
+        "{detail}"
+    );
+    assert!(summary.contains("Dependency skips:"), "{detail}");
+    assert!(
+        summary.contains("plugin: SKIPPED — dependency build failed"),
         "{detail}"
     );
     assert!(detail.contains("Reused/cached legs (2)"), "{detail}");
@@ -307,6 +688,235 @@ exit 101
         detail.contains("Not re-run (300): status unknown; not counted as pass or failure"),
         "{detail}"
     );
+    let next = repo.verification_gate(&tree, &base, &head, &poller, &["sh", "-c", "exit 7"]);
+    assert_ok(&next, "a new attempt must have its own diagnostic artifact");
+    let next: serde_json::Value = serde_json::from_slice(&next.stdout).unwrap();
+    assert_ne!(next["log"], payload["log"]);
+    assert!(
+        !next["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Compiler/build diagnostics"),
+        "{next}"
+    );
+}
+
+#[test]
+fn verifier_reports_unreadable_compiler_evidence_without_inventing_errors() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let command = r#"printf 'malformed artifact\n' > "$STORYHOOK_COMPILER_DIAGNOSTICS"; exit 9"#;
+    let outcome = repo.verification_gate(&tree, &base, &head, &poller, &["sh", "-c", command]);
+    assert_ok(&outcome, "reporting corrupt compiler evidence");
+    let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("exit status 9"), "{detail}");
+    assert!(
+        detail.contains("Compiler diagnostic collection unavailable"),
+        "{detail}"
+    );
+    assert!(!detail.contains("Compiler/build diagnostics ("), "{detail}");
+}
+
+#[test]
+fn foreign_gate_registers_its_exact_attempt_log_before_ordinary_output() {
+    use std::os::unix::fs::MetadataExt;
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let tree = stdout(&repo.preflight(&base, &head));
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    let mut previous_log = None;
+    for attempt in ["first-owned-attempt", "same-generation-retry"] {
+        let journal = repo.path().join("gate-progress.ndjson");
+        fs::write(&journal, "").unwrap();
+        let snapshot = repo.path().join("output-binding-inside.ndjson");
+        let args = MergeRepo::verification_gate_args(
+            &tree,
+            &base,
+            &head,
+            &poller,
+            &[
+                "bash",
+                "-c",
+                "cp \"$STORYHOOK_GATE_PROGRESS\" \"$1\"; printf stdout-partial; printf stderr-partial >&2",
+                "foreign-output",
+                snapshot.to_str().unwrap(),
+            ],
+        );
+        let result = Command::new("bash")
+            .args(args)
+            .current_dir(repo.path())
+            .envs(storyhook_test_support::daemon_containment())
+            .env("STORYHOOK_GATE_PROGRESS", &journal)
+            .env("STORYHOOK_VERIFICATION_ATTEMPT", attempt)
+            .env("STORYHOOK_LOCK_DIR", repo.path().join("locks"))
+            .env("STORYHOOK_ACTIVITY_LOG_DIR", repo.path().join("activity"))
+            .env_remove("STORYHOOK_MACHINE_LOCKS")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .output()
+            .unwrap();
+        assert_ok(&result, "run foreign gate with authenticated capture");
+        let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(payload["result"], "gate-passed", "{payload}");
+        let inside = fs::read_to_string(snapshot).unwrap();
+        let progress = storyhook::service::gate_progress::fold(&inside);
+        let reference = progress
+            .output
+            .expect("binding exists before foreign command starts");
+        let path = PathBuf::from(payload["log"].as_str().unwrap());
+        assert_eq!(reference.path, path);
+        assert_eq!(reference.attempt_id, attempt);
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(
+            (reference.dev, reference.ino),
+            (metadata.dev(), metadata.ino())
+        );
+        let log = fs::read_to_string(&path).unwrap();
+        assert!(log.contains("stdout-partial"), "{log}");
+        assert!(log.contains("stderr-partial"), "{log}");
+        assert_ne!(previous_log.as_ref(), Some(&path));
+        previous_log = Some(path);
+        let all = fs::read_to_string(&journal).unwrap();
+        assert_eq!(
+            all.lines()
+                .filter(
+                    |line| serde_json::from_str::<serde_json::Value>(line).unwrap()["kind"]
+                        == "output"
+                )
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn foreign_gate_lifecycle_is_running_inside_the_command_then_records_its_exit() {
+    for (exit_status, expected_status) in [(0, "passed"), (9, "failed")] {
+        let repo = MergeRepo::new();
+        let base = repo.rev_parse("main");
+        let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+        let tree = stdout(&repo.preflight(&base, &head));
+        let poller_container = repo.poller(&base);
+        let poller = poller_container.path().join("poller");
+        let snapshot = repo.path().join("inside-gate.ndjson");
+        let result = repo.verification_gate(
+            &tree,
+            &base,
+            &head,
+            &poller,
+            &[
+                "bash",
+                "-c",
+                "cp \"$STORYHOOK_GATE_PROGRESS\" \"$1\"; printf 'ordinary stdout'; printf 'ordinary stderr' >&2; exit \"$2\"",
+                "foreign-gate",
+                snapshot.to_str().unwrap(),
+                &exit_status.to_string(),
+            ],
+        );
+        assert_ok(&result, "classify the foreign gate execution");
+        let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(payload["exit_status"], exit_status, "{payload}");
+        assert_eq!(
+            lifecycle_statuses(&snapshot, "release gate"),
+            ["running"],
+            "the verifier must own a running lifecycle before invoking a foreign gate"
+        );
+        assert_eq!(
+            lifecycle_statuses(&repo.path().join("gate-progress.ndjson"), "release gate"),
+            ["running", expected_status]
+        );
+    }
+}
+
+#[test]
+fn foreign_gate_lifecycle_preserves_completed_exit_when_cleanup_is_signalled() {
+    for (exit_status, expected_status) in [(0, "passed"), (9, "failed")] {
+        let repo = MergeRepo::new();
+        let base = repo.rev_parse("main");
+        let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+        let tree = stdout(&repo.preflight(&base, &head));
+        let poller_container = repo.poller(&base);
+        let poller = poller_container.path().join("poller");
+        let armed = repo.path().join("gate-completed");
+        let restoring = repo.path().join("cleanup-started");
+        let release = repo.path().join("cleanup-release");
+        let hooks = repo.path().join("cleanup-hooks");
+        fs::create_dir(&hooks).unwrap();
+        let hook = hooks.join("post-checkout");
+        // A real checkout hook holds restoration after the gate's owner has
+        // recorded its exit. Walk only this hook's ancestry to identify the
+        // verifier shell whose deferred signal trap is under test.
+        fs::write(
+            &hook,
+            format!(
+                "#!/bin/bash\n[ -f '{}' ] || exit 0\nready='{}'\n[ ! -f \"$ready\" ] || exit 0\npid=$PPID\nwhile [ \"$pid\" -gt 1 ]; do\n command=$(ps -p \"$pid\" -o command=)\n case \"$command\" in bash*scripts/verify-pr.sh\\ --run-gate*) break ;; esac\n pid=$(ps -p \"$pid\" -o ppid= | tr -d ' ')\ndone\n[ \"$pid\" -gt 1 ] || exit 1\nprintf '%s' \"$pid\" > \"$ready.tmp\"\nmv \"$ready.tmp\" \"$ready\"\nwhile [ ! -f '{}' ]; do :; done\n",
+                armed.display(), restoring.display(), release.display()
+            ),
+        ).unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_ok(
+            &repo.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]),
+            "install the fixture's restoration barrier",
+        );
+        let mut verifier = repo.spawn_verification_gate(
+            &tree,
+            &base,
+            &head,
+            &poller,
+            &[
+                "bash",
+                "-c",
+                ": > \"$1\"; exit \"$2\"",
+                "cleanup-probe",
+                armed.to_str().unwrap(),
+                &exit_status.to_string(),
+            ],
+        );
+        wait_for_within(&restoring, Duration::from_secs(60));
+        let verifier_shell: i32 = fs::read_to_string(&restoring).unwrap().parse().unwrap();
+        assert_eq!(unsafe { libc::kill(verifier_shell, libc::SIGTERM) }, 0);
+        fs::write(&release, "continue restoration\n").unwrap();
+        let result = verifier.wait_with_output_within(Duration::from_secs(120), || {
+            "the signalled cleanup did not report the completed gate".to_owned()
+        });
+        let payload: serde_json::Value = serde_json::from_slice(&result.stdout)
+            .unwrap_or_else(|error| panic!("{error}: {} / {}", stdout(&result), stderr(&result)));
+        assert_eq!(payload["exit_status"], exit_status, "{payload}");
+        assert_eq!(
+            payload["result"],
+            if exit_status == 0 {
+                "gate-passed"
+            } else {
+                "tests-failed"
+            },
+            "{payload}"
+        );
+        assert_eq!(
+            lifecycle_statuses(&repo.path().join("gate-progress.ndjson"), "release gate"),
+            ["running", expected_status],
+            "{payload}"
+        );
+    }
+}
+
+fn lifecycle_statuses(journal: &Path, path: &str) -> Vec<String> {
+    fs::read_to_string(journal)
+        .unwrap_or_else(|error| panic!("read {}: {error}", journal.display()))
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|row| row["kind"] == "item" && row["path"] == path)
+        .map(|row| row["status"].as_str().unwrap().to_owned())
+        .collect()
 }
 
 #[test]
@@ -353,7 +963,15 @@ fn verifier_holds_the_gate_across_the_complete_speculative_run() {
         &[
             "bash",
             "-c",
-            "case :${STORYHOOK_MACHINE_LOCKS:-}: in *:gate:*) ;; *) exit 99;; esac; [ -z \"${STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}\" ] || exit 98; printf gate-stdout; printf gate-stderr >&2",
+            // `--held` asked from INSIDE the speculative checkout: the poller
+            // worktree's swapped gitlink resolves the repository's own common
+            // dir, so the key the inner `run-tests.sh` take derives is the one
+            // the outer `verify-pr.sh` hold recorded (SH-648) — the fact the
+            // reentrancy invariant now rests on.
+            &format!(
+                "bash '{}' --held gate || exit 99; [ -z \"${{STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH:-}}\" ] || exit 98; printf gate-stdout; printf gate-stderr >&2",
+                checkout().join("scripts/machine-lock.sh").display()
+            ),
         ],
     );
 
@@ -370,10 +988,9 @@ fn verifier_holds_the_gate_across_the_complete_speculative_run() {
         .collect();
     for stream in ["stdout", "stderr"] {
         assert!(
-            rows.iter()
-                .any(|row| row["source"] == "machine-lock.sh/merge-watch.sh"
-                    && row["stream"] == stream
-                    && row["message"] == format!("gate-{stream}")),
+            rows.iter().any(|row| row["source"] == "merge-watch.sh"
+                && row["stream"] == stream
+                && row["message"] == format!("gate-{stream}")),
             "gate stream missing from activity: {journal}"
         );
     }
@@ -406,15 +1023,32 @@ fn same_tree_verification_attempts_keep_distinct_logs() {
         assert_ok(&outcome, "running a same-tree verification attempt");
     }
 
-    let logs = fs::read_dir(repo.common_dir().join("storyhook/verification-logs"))
+    let evidence = fs::read_dir(repo.common_dir().join("storyhook/verification-logs"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        evidence.len(),
+        4,
+        "two logs and two compiler artifacts: {evidence:?}"
+    );
+    let logs = evidence
+        .iter()
+        .filter(|path| path.extension().is_none_or(|ext| ext != "jsonl"))
         .collect::<Vec<_>>();
     assert_eq!(
         logs.len(),
         2,
         "each attempt needs its own evidence: {logs:?}"
     );
+    for log in &logs {
+        let artifact = PathBuf::from(format!("{}.compiler.jsonl", log.display()));
+        assert!(
+            evidence.contains(&artifact),
+            "missing compiler artifact for {log:?}"
+        );
+        assert_eq!(fs::read_to_string(artifact).unwrap(), "");
+    }
     let contents = logs
         .iter()
         .map(|path| fs::read_to_string(path).unwrap())
@@ -456,23 +1090,45 @@ fn verifier_preserves_tracked_edits_before_and_during_the_gate() {
             assert_ok(&result, "classify tracked edits");
             let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
             assert_eq!(
-                payload["result"], "infrastructure-failure",
+                payload["result"],
+                if during_gate {
+                    "gate-passed"
+                } else {
+                    "infrastructure-failure"
+                },
                 "during_gate={during_gate}, staged={staged}: {payload}"
             );
-            assert_eq!(
-                fs::read_to_string(poller.join("f")).unwrap(),
-                "preserve these edits\n"
-            );
-            assert_eq!(poller.join("gate-started").exists(), during_gate);
             if during_gate {
-                assert_ne!(fs::read(poller.join(".git")).unwrap(), original_gitlink);
+                assert_eq!(payload["exit_status"], 0);
+                assert_eq!(payload["cleanup_failure"]["disposition"], "permanent");
+            }
+            let evidence = if during_gate {
+                let recovery = fs::read_dir(repo.common_dir().join("storyhook"))
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| {
+                        path.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with("verification-recovery-")
+                    })
+                    .expect("retain the complete damaged verifier unit");
+                assert!(recovery.join("lease/.git/index").is_file());
+                assert!(recovery.join("admin/HEAD").is_file());
                 assert!(
-                    !repo.merge_object_artifacts().is_empty(),
-                    "retain private recovery state"
+                    !poller.exists(),
+                    "retained files must not masquerade as a usable checkout"
                 );
+                recovery.join("worktree")
             } else {
                 assert_eq!(fs::read(poller.join(".git")).unwrap(), original_gitlink);
-            }
+                poller.clone()
+            };
+            assert_eq!(
+                fs::read_to_string(evidence.join("f")).unwrap(),
+                "preserve these edits\n"
+            );
+            assert_eq!(evidence.join("gate-started").exists(), during_gate);
         }
     }
 }
@@ -661,6 +1317,36 @@ impl MergeRepo {
         poller: &Path,
         command: &[&str],
     ) -> Output {
+        let args = Self::verification_gate_args(expected_tree, base, head, poller, command);
+        Command::new("bash")
+            .args(&args)
+            .current_dir(self.path())
+            .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
+            .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
+            .envs(storyhook_test_support::daemon_containment())
+            .env(
+                "STORYHOOK_GATE_PROGRESS",
+                self.path().join("gate-progress.ndjson"),
+            )
+            .env_remove("STORYHOOK_MACHINE_LOCKS")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_OBJECT_DIRECTORY")
+            .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+            .output()
+            .expect("running the centralized verification gate")
+    }
+
+    /// The argv `verification_gate` runs, shared with the spawning variant
+    /// below so the two cannot drift.
+    fn verification_gate_args(
+        expected_tree: &str,
+        base: &str,
+        head: &str,
+        poller: &Path,
+        command: &[&str],
+    ) -> Vec<String> {
         let mut args = vec![
             checkout()
                 .join("scripts/verify-pr.sh")
@@ -675,12 +1361,33 @@ impl MergeRepo {
             "--".to_string(),
         ];
         args.extend(command.iter().map(|arg| (*arg).to_string()));
-        Command::new("bash")
+        args
+    }
+
+    /// Spawns the real-Git gate seam as its own process-group leader with
+    /// stdout and stderr captured, for the tests that terminate the run
+    /// mid-gate (SH-692). The group is what the daemon signals in
+    /// production, so a test that kills the group provokes the same
+    /// cancellation shape the verifier's own cancellation does.
+    fn spawn_verification_gate(
+        &self,
+        expected_tree: &str,
+        base: &str,
+        head: &str,
+        poller: &Path,
+        command: &[&str],
+    ) -> ChildGuard {
+        let args = Self::verification_gate_args(expected_tree, base, head, poller, command);
+        let mut spawned = Command::new("bash");
+        spawned
             .args(&args)
             .current_dir(self.path())
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
             .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
-            .env("STORYHOOK_VERIFIER_MIRROR", "0")
+            .envs(storyhook_test_support::daemon_containment())
+            // Bounds the owner's cancellation grace so a test never waits on
+            // the production 30s budget; the gates here die on first TERM.
+            .env("STORYHOOK_VERIFIER_CLEANUP_GRACE_MS", "8000")
             .env(
                 "STORYHOOK_GATE_PROGRESS",
                 self.path().join("gate-progress.ndjson"),
@@ -691,8 +1398,19 @@ impl MergeRepo {
             .env_remove("GIT_INDEX_FILE")
             .env_remove("GIT_OBJECT_DIRECTORY")
             .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-            .output()
-            .expect("running the centralized verification gate")
+            .process_group(0);
+        // The Rust test harness may itself carry ignored terminal signals;
+        // the verifier must start from the ordinary process contract so its
+        // trap (and machine-lock's) can be installed and exercised.
+        unsafe {
+            spawned.pre_exec(|| {
+                libc::signal(libc::SIGHUP, libc::SIG_DFL);
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                libc::signal(libc::SIGTERM, libc::SIG_DFL);
+                Ok(())
+            });
+        }
+        ChildGuard::spawn_with_output(&mut spawned).expect("spawning the verification gate seam")
     }
 
     fn spawn_speculative_run(
@@ -980,7 +1698,7 @@ jq -e --arg fields "$5" '
             .env("FAKE_GH_STATE", self.path().join("fake-gh-state"))
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
             .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
-            .env("STORYHOOK_VERIFIER_MIRROR", "0")
+            .envs(storyhook_test_support::daemon_containment())
             .env(
                 "STORYHOOK_GATE_PROGRESS",
                 self.path().join("gate-progress.ndjson"),
@@ -1049,6 +1767,7 @@ fn run(cwd: &Path, program: &str, args: &[&str]) -> Output {
     Command::new(program)
         .args(args)
         .current_dir(cwd)
+        .envs(storyhook_test_support::daemon_containment())
         // A hook or script under test must not inherit git's own targeting
         // variables from the test runner's environment — the same scrub
         // `tests/push_gate.rs` applies.
@@ -1658,8 +2377,8 @@ fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
         "checking connectivity after repair",
     );
 
-    let sentinel = verifier.join("persistent-cache-sentinel");
-    fs::write(&sentinel, "keep\n").expect("writing the persistent cache sentinel");
+    let sentinel = verifier.join("disposable-cache-sentinel");
+    fs::write(&sentinel, "stale\n").expect("writing a disposable cache sentinel");
     let reused = run(
         repo.path(),
         "bash",
@@ -1671,9 +2390,11 @@ fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
     );
     assert_ok(&reused, "reusing the healthy verifier worktree");
     assert!(
-        sentinel.exists(),
-        "a healthy formatted verifier must preserve its caches"
+        !sentinel.exists(),
+        "new verification must clear disposable cache inputs"
     );
+    let admin = stdout(&run(&verifier, "git", &["rev-parse", "--absolute-git-dir"]));
+    let index = fs::read(Path::new(&admin).join("index")).expect("read the healthy index");
 
     fs::write(
         repo.common_dir()
@@ -1681,56 +2402,26 @@ fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
         "legacy\n",
     )
     .expect("downgrading the verifier format marker");
-    let wrapper_root = scratch_dir();
-    let git_wrapper = wrapper_root.path().join("git");
-    fs::write(
-        &git_wrapper,
-        r#"#!/bin/sh
-if [ "$1" = worktree ] && [ "$2" = remove ]; then
-    "$SH555_REAL_GIT" "$@"
-    exit 42
-fi
-exec "$SH555_REAL_GIT" "$@"
-"#,
-    )
-    .expect("writing the Git exit-status wrapper");
-    let mut permissions = fs::metadata(&git_wrapper)
-        .expect("reading the Git wrapper metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&git_wrapper, permissions).expect("making the Git wrapper executable");
-    let real_git = stdout(&run(repo.path(), "sh", &["-c", "command -v git"]));
-    let wrapped_path = format!(
-        "{}:{}",
-        wrapper_root.path().display(),
-        std::env::var("PATH").unwrap_or_default()
+    let marker_repair = run(
+        repo.path(),
+        "bash",
+        &[
+            &script.display().to_string(),
+            "--ensure-verifier-worktree",
+            &base,
+        ],
     );
-    let postcondition_repair = Command::new("bash")
-        .args([
-            script.as_os_str(),
-            "--ensure-verifier-worktree".as_ref(),
-            base.as_ref(),
-        ])
-        .current_dir(repo.path())
-        .env("PATH", wrapped_path)
-        .env("SH555_REAL_GIT", real_git)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-        .output()
-        .expect("running verifier repair through the Git wrapper");
     assert_ok(
-        &postcondition_repair,
-        "accepting a completed removal despite Git's stale exit status",
+        &marker_repair,
+        "reusing a healthy verifier with an old marker",
     );
-    let payload: serde_json::Value = serde_json::from_slice(&postcondition_repair.stdout)
-        .expect("the postcondition repair must return JSON");
+    let payload: serde_json::Value =
+        serde_json::from_slice(&marker_repair.stdout).expect("the marker repair must return JSON");
     assert_eq!(payload["result"], "verifier-worktree-ready");
-    assert!(
-        !sentinel.exists(),
-        "the mismatched verifier must have been rebuilt"
+    assert_eq!(
+        fs::read(Path::new(&admin).join("index")).expect("read the reused index"),
+        index,
+        "a stale format marker alone must not rebuild healthy administration"
     );
 }
 
@@ -2759,6 +3450,68 @@ fn verifier_preserves_the_landing_scripts_terminal_classifications() {
     let payload: serde_json::Value = serde_json::from_slice(&merged.stdout).unwrap();
     assert_eq!(payload["result"], "merged");
     assert_eq!(payload["tree"], "deadbeef");
+
+    // SH-691: land-pr.sh's wrong-base refusal is its own status, 3, and is
+    // the submission's fault — never a retryable landing refusal to reconcile.
+    let misdirected = run(
+        repo.path(),
+        "bash",
+        &[
+            &script,
+            "--classify-land",
+            "3",
+            "land-pr: PR #42 targets `main`, but the branch it must land on is `dev` (origin's default branch); nothing was merged.",
+            "42",
+            "deadbeef",
+        ],
+    );
+    assert_ok(&misdirected, "classifying a wrong-base refusal");
+    let payload: serde_json::Value = serde_json::from_slice(&misdirected.stdout).unwrap();
+    assert_eq!(payload["result"], "invalid-submission", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("must not land on"), "{detail}");
+    assert!(detail.contains("targets `main`"), "{detail}");
+    assert!(detail.contains("must land on is `dev`"), "{detail}");
+}
+
+/// SH-691: the base a pull request names must be the repository's
+/// integration branch — origin's own default, asked of origin — and that is
+/// checked before any gate runs. Until SH-691 only the base's STABILITY was
+/// checked, and five pull requests opened against `main` by a stale local
+/// cache were certified and merged. Here GitHub says `other` while origin
+/// (this fixture, HEAD on `main`) advertises `main`.
+#[test]
+fn a_pull_request_on_the_wrong_base_is_an_invalid_submission_before_any_gate_runs() {
+    let repo = MergeRepo::new();
+    let head = repo.branch("feature", "main", "g", "feature\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
+    repo.publish_origin(42, &head);
+    repo.fake_gh();
+    converge_public_head(&repo, &head);
+    repo.fake_gh_answers(
+        &open_pr_metadata(42, &head)
+            .replace("\"baseRefName\":\"main\"", "\"baseRefName\":\"other\""),
+    );
+    let witness = repo.path().join("gate-ran");
+    repo.fake_gate("gate", &format!("touch '{}'", witness.display()));
+
+    let payload = public_payload(&repo.verify_public_with_gate(&["gate"]));
+    assert_eq!(payload["result"], "invalid-submission", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("PR #42 targets `other`"), "{detail}");
+    assert!(
+        detail.contains("integration branch (origin's default) is `main`"),
+        "{detail}"
+    );
+    assert!(
+        !witness.exists(),
+        "the gate must not run for a pull request on the wrong base"
+    );
+    assert_eq!(
+        repo.fake_gh_calls(),
+        1,
+        "one entry read; a wrong shape earns no verdict recheck"
+    );
 }
 
 /// Missing arguments are refused with a message naming correct usage, in
@@ -3086,6 +3839,18 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
     assert_eq!(payload["disposition"], "permanent", "{payload}");
     let detail = payload["detail"].as_str().unwrap();
     assert!(detail.contains("certified nothing"), "{detail}");
+    assert_eq!(
+        lifecycle_statuses(&repo.path().join("gate-progress.ndjson"), "release gate"),
+        ["running", "passed"],
+        "missing certification must not rewrite a known successful execution"
+    );
+    assert_eq!(
+        lifecycle_statuses(
+            &repo.path().join("gate-progress.ndjson"),
+            "gate certification receipt"
+        ),
+        ["failed"]
+    );
     assert!(
         detail.contains("`gate-bin --ci`"),
         "names the gate: {detail}"
@@ -3093,6 +3858,14 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
     assert!(
         detail.contains("gate-receipt.sh postlude"),
         "names the remedy: {detail}"
+    );
+    assert!(
+        detail.contains("\"$STORYHOOK_GATE_RECEIPT\" preflight"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("\"$STORYHOOK_GATE_RECEIPT\" postlude gate"),
+        "{detail}"
     );
     let tree = stdout(&repo.preflight("refs/remotes/origin/main", &new));
     assert!(detail.contains(&tree), "names the tree: {detail}");
@@ -3109,6 +3882,74 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
         repo.fake_gh_calls(),
         1,
         "refused after the entry read and before any landing read"
+    );
+}
+
+/// SH-666's second incident, reconstructed: the gate ran green on the tree
+/// preflight computed and certified it through the production writer — and
+/// while it ran, a fetch in the shared repository (a `/story do` creating a
+/// worktree, a poller, anything) moved `refs/remotes/origin/main` to a tip
+/// that conflicts with the PR. The post-gate certification check then
+/// re-resolved that REF instead of the commit the gate ran on, computed a
+/// different merge, met the conflict, and reported "certified nothing" as a
+/// PERMANENT halt of the whole queue. A base that moved is the story's own
+/// business: landing refreshes it under the merge lock and answers CONFLICT,
+/// which the daemon holds the queue on while the implementer reconciles — so
+/// the check must ask exactly "did the gate certify the tree it ran on",
+/// against the pinned commits, and let landing find the moved base.
+#[test]
+fn a_base_that_moves_during_the_gate_is_a_conflict_for_the_story_never_a_halt() {
+    let repo = MergeRepo::new();
+    let (_old, new) = reconciled_feature(&repo);
+    // Main will move here during the gate: `f` diverges from NEW's reconcile.
+    let later = repo.branch("later", "main", "f", "main moves again during the gate\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "back to main");
+    repo.publish_origin(42, &new);
+    repo.fake_gh();
+    converge_public_head(&repo, &new);
+    let hooks = checkout().join(".githooks");
+    let writer = checkout().join("scripts/gate-receipt.sh");
+    let fixture = repo.path().display().to_string();
+    repo.fake_gate(
+        "gate-bin",
+        &format!(
+            "ln -sfn '{}' .githooks && bash '{writer}' preflight && bash '{writer}' postlude || exit $?\n\
+             git -C '{fixture}' update-ref refs/heads/main {later}\n\
+             git -C '{fixture}' update-ref refs/remotes/origin/main {later}\n",
+            hooks.display(),
+            writer = writer.display()
+        ),
+    );
+
+    let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin"]));
+    // The gate certified the tree it ran on: preflight of the pinned parents.
+    let gate_tree = {
+        let base_before = repo.rev_parse("later~1");
+        stdout(&repo.preflight(&base_before, &new))
+    };
+    let receipt = repo
+        .common_dir()
+        .join("storyhook/gate-receipts")
+        .join(gate_tree.trim());
+    assert!(
+        fs::read_to_string(&receipt)
+            .unwrap_or_else(|e| panic!("the gate certified the tree it ran on: {e}"))
+            .contains("tier gate"),
+        "the production writer minted a gate-tier receipt for the gate's own tree"
+    );
+    assert_eq!(
+        payload["result"], "conflict",
+        "a base that moved into conflict is the story's to reconcile: {payload}"
+    );
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("CONFLICT"), "{detail}");
+    assert!(
+        !detail.contains("certified nothing"),
+        "a certified tree is never reported as uncertified because the base moved: {detail}"
+    );
+    assert!(
+        repo.fake_gh_calls() >= 2,
+        "the conflict was found by landing's own refresh, after the gate: {payload}"
     );
 }
 

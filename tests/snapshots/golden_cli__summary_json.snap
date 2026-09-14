@@ -28,12 +28,12 @@ source: tests/golden_cli.rs
         ],
         "by_state": [
           [
-            "closed",
-            1
-          ],
-          [
             "done",
             2
+          ],
+          [
+            "dropped",
+            1
           ],
           [
             "in-progress",
@@ -74,7 +74,7 @@ source: tests/golden_cli.rs
         "ready_count": 8,
         "ready_stories": [
           {
-            "head_global_seq": 62,
+            "head_global_seq": 64,
             "story": {
               "assignee": "grace-hopper",
               "awaiting": null,
@@ -109,7 +109,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 63,
+            "head_global_seq": 65,
             "story": {
               "assignee": "ada-lovelace",
               "awaiting": null,
@@ -163,7 +163,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 68,
+            "head_global_seq": 71,
             "story": {
               "awaiting": null,
               "comments": [],
@@ -207,6 +207,26 @@ source: tests/golden_cli.rs
         ],
         "total_closed": 3,
         "total_open": 13
+      },
+      "verifier": {
+        "active": null,
+        "control": "running",
+        "evidence_error": null,
+        "first_hit_story": null,
+        "held_stories": [],
+        "incident": null,
+        "incident_age_seconds": null,
+        "incident_is_current": false,
+        "last_evidence_at": null,
+        "project": "[project]",
+        "recovery": {
+          "acknowledgement": null,
+          "request": null
+        },
+        "retry_count": 0,
+        "silence_seconds": null,
+        "verifying": [],
+        "warning": null
       }
     }
   },
@@ -236,12 +256,12 @@ source: tests/golden_cli.rs
         ],
         "by_state": [
           [
-            "closed",
-            1
-          ],
-          [
             "done",
             2
+          ],
+          [
+            "dropped",
+            1
           ],
           [
             "in-progress",
@@ -282,7 +302,7 @@ source: tests/golden_cli.rs
         "ready_count": 8,
         "ready_stories": [
           {
-            "head_global_seq": 62,
+            "head_global_seq": 64,
             "story": {
               "assignee": "grace-hopper",
               "awaiting": null,
@@ -317,7 +337,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 63,
+            "head_global_seq": 65,
             "story": {
               "assignee": "ada-lovelace",
               "awaiting": null,
@@ -371,7 +391,7 @@ source: tests/golden_cli.rs
             }
           },
           {
-            "head_global_seq": 68,
+            "head_global_seq": 71,
             "story": {
               "awaiting": null,
               "comments": [],

@@ -1,0 +1,615 @@
+{
+  "kind": "separate SH-707 development identity rehearsal",
+  "source_commit": "dfd8aebda5c3fa33dec87bc93c4925fff7264809",
+  "plugin_tree": "c49f3ec2dcbadb8c66780047922aed20d1d5c4a8",
+  "plugin_id": "greenlight-sh707-age54@personal",
+  "version": "3.9.1+codex.20260913065353",
+  "artifact_sha256": "c58e1bcafcb38756e1473fd972be896a2f67971fb1e5c3e98a621350792e29be",
+  "staging": {
+    "plugin_id": "greenlight-sh707-age54@personal",
+    "version": "3.9.1+codex.20260913065353",
+    "source": "/private/tmp/sh707-alias-rehearsal-age54/home/plugins/greenlight-sh707-age54",
+    "marketplace": "/private/tmp/sh707-alias-rehearsal-age54/home/.agents/plugins/marketplace.json",
+    "artifact_sha256": "c58e1bcafcb38756e1473fd972be896a2f67971fb1e5c3e98a621350792e29be",
+    "existing_registration_preserved": true,
+    "installed": false,
+    "native_trust_changed": false,
+    "helper_commands": [
+      {
+        "helper": "read_marketplace_name.py",
+        "arguments": [
+          "--marketplace-path",
+          "/private/tmp/sh707-alias-rehearsal-age54/home/.agents/plugins/marketplace.json"
+        ],
+        "exit_status": 0,
+        "stdout": "personal\n",
+        "stderr": ""
+      },
+      {
+        "helper": "create_basic_plugin.py",
+        "arguments": [
+          "greenlight-sh707-age54",
+          "--with-marketplace"
+        ],
+        "exit_status": 0,
+        "stdout": "Created plugin scaffold: /private/tmp/sh707-alias-rehearsal-age54/home/plugins/greenlight-sh707-age54\nplugin manifest: /private/tmp/sh707-alias-rehearsal-age54/home/plugins/greenlight-sh707-age54/.codex-plugin/plugin.json\nmarketplace manifest: /private/tmp/sh707-alias-rehearsal-age54/home/.agents/plugins/marketplace.json\n",
+        "stderr": ""
+      }
+    ]
+  },
+  "all_previous_cache_files_preserved": 43,
+  "old_staged_source_preserved": true,
+  "existing_config_and_synthetic_trust_preserved": true,
+  "installer_enables_new_candidate": true,
+  "rollback_disabled_new_candidate": true,
+  "compatibility_contracts_passed": 20,
+  "explorer_contracts": "1..16\nok 1 AGE-54: legacy allow denies every uncertain execution family on both hosts\nok 2 AGE-54: legacy allow denies uncertainty in compounds and substitutions\nok 3 AGE-54: missing default and invalid uncertainty policies deny on both hosts\nok 4 AGE-54: legacy allow never invokes an enabled approving AI\nok 5 AGE-54: deterministic approvals and custom configuration retain precedence\nok 6 AGE-54: AI opt-in still evaluates uncertain commands on both hosts\nok 7 AGE-54: known destructive verbs never reach an otherwise approving AI\nok 8 AGE-54: disabled or failed AI cannot approve explorer uncertainty\nok 9 AGE-54: legacy setting is inert outside explorer mode\nok 10 AGE-54: writable redirection cannot approve uncertain execution\nok 11 AGE-54: writable redirection cannot approve destructive execution or invoke AI\nok 12 AGE-54: writable redirection still checks later segments and substitutions\nok 13 AGE-54: safe temporary redirection retains host-specific approval\nok 14 AGE-54: protected or indeterminate destinations deny before AI evaluation\nok 15 AGE-54: redirected uncertainty reaches opted-in AI instead of early approval\nok 16 AGE-54: normal-session redirection still defers without an AI call\n",
+  "toggle_rpc_transcript": [
+    {
+      "request": {
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "clientInfo": {
+            "name": "sh707-fixture",
+            "version": "1"
+          }
+        }
+      },
+      "response": {
+        "id": 1,
+        "result": {
+          "userAgent": "sh707-fixture/0.154.0 (Mac OS 26.6.2; arm64) unknown (sh707-fixture; 1)",
+          "codexHome": "/private/tmp/sh707-alias-rehearsal-age54/codex-home",
+          "platformFamily": "unix",
+          "platformOs": "macos"
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 2,
+        "method": "config/read",
+        "params": {
+          "includeLayers": true
+        }
+      },
+      "response": {
+        "id": 2,
+        "result": {
+          "config": {
+            "model": null,
+            "review_model": null,
+            "model_context_window": null,
+            "model_auto_compact_token_limit": null,
+            "model_auto_compact_token_limit_scope": null,
+            "model_provider": null,
+            "approval_policy": null,
+            "approvals_reviewer": null,
+            "sandbox_mode": null,
+            "sandbox_workspace_write": null,
+            "forced_chatgpt_workspace_id": null,
+            "forced_login_method": null,
+            "web_search": null,
+            "tools": null,
+            "instructions": null,
+            "developer_instructions": null,
+            "compact_prompt": null,
+            "model_reasoning_effort": null,
+            "model_reasoning_summary": null,
+            "model_verbosity": null,
+            "service_tier": null,
+            "analytics": null,
+            "apps": null,
+            "browser_use": null,
+            "computer_use": null,
+            "desktop": null,
+            "mcp_oauth_callback_url": null,
+            "experimental_realtime_ws_model": null,
+            "profile": null,
+            "check_for_update_on_startup": null,
+            "include_environment_context": true,
+            "project_doc_max_bytes": 32768,
+            "notice": null,
+            "shell_environment_policy": {
+              "inherit": null,
+              "ignore_default_excludes": null,
+              "exclude": null,
+              "set": null,
+              "include_only": null,
+              "filters": null,
+              "experimental_use_profile": null
+            },
+            "experimental_realtime_webrtc_call_base_url": null,
+            "skills": null,
+            "features": {
+              "auth_elicitation": true,
+              "background_paginated_rollout_migration": false,
+              "mcp_2026_07_28": false,
+              "memories": false,
+              "mentions_v2": true,
+              "remote_control": false,
+              "remote_plugin": true,
+              "tool_suggest": true,
+              "windows_sandbox_service": false
+            },
+            "mcp_oauth_credentials_store": "auto",
+            "experimental_realtime_ws_startup_context": null,
+            "background_terminal_max_timeout": 300000,
+            "history": {
+              "persistence": "save-all",
+              "max_bytes": null
+            },
+            "sqlite_home": null,
+            "disable_paste_burst": null,
+            "plugins": {
+              "hook-guard@agentics": {
+                "enabled": true
+              },
+              "rca@agentics": {
+                "enabled": true
+              },
+              "semver@agentics": {
+                "enabled": true
+              },
+              "council@agentics": {
+                "enabled": true
+              },
+              "greenlight-sh707-age54@personal": {
+                "enabled": true
+              },
+              "freshen@agentics": {
+                "enabled": true
+              },
+              "deployit@agentics": {
+                "enabled": true
+              },
+              "greenlight@agentics": {
+                "enabled": true
+              },
+              "reconcile-pr@agentics": {
+                "enabled": true
+              },
+              "greenlight@personal": {
+                "enabled": false
+              },
+              "agents@agentics": {
+                "enabled": true
+              }
+            },
+            "experimental_use_unified_exec_tool": null,
+            "js_repl_node_path": null,
+            "tool_output_token_limit": null,
+            "tui": null,
+            "marketplaces": {
+              "agentics": {
+                "last_updated": null,
+                "last_revision": null,
+                "source_type": "local",
+                "source": "/private/tmp/sh707-alias-rehearsal-age54/agentics",
+                "ref": null,
+                "sparse_paths": null
+              }
+            },
+            "responses_api_metadata": null,
+            "feedback": null,
+            "mcp_servers": {},
+            "permissions": null,
+            "mcp_oauth_callback_port": null,
+            "model_providers": {},
+            "allow_symlinked_codex_home": null,
+            "hide_agent_reasoning": false,
+            "projects": null,
+            "goals": null,
+            "mcp_optional_startup_grace_ms": null,
+            "tool_suggest": null,
+            "model_instructions_file": null,
+            "orchestrator": null,
+            "experimental_thread_store": null,
+            "file_opener": "vscode",
+            "model_catalog_json": null,
+            "audio": null,
+            "cli_auth_credentials_store": "file",
+            "apps_mcp_product_sku": null,
+            "windows": null,
+            "include_permissions_instructions": true,
+            "ghost_snapshot": null,
+            "js_repl_node_module_dirs": null,
+            "realtime": null,
+            "otel": null,
+            "memories": null,
+            "project_root_markers": [
+              ".git"
+            ],
+            "auto_review": null,
+            "experimental_thread_store_endpoint": null,
+            "thread_unload_delay_secs": null,
+            "project_doc_fallback_filenames": [],
+            "experimental_realtime_ws_base_url": null,
+            "profiles": {},
+            "default_permissions": null,
+            "include_collaboration_mode_instructions": true,
+            "plan_mode_reasoning_effort": null,
+            "personality": null,
+            "chatgpt_base_url": "https://chatgpt.com/backend-api/",
+            "openai_base_url": null,
+            "hooks": {
+              "PreToolUse": [],
+              "PermissionRequest": [],
+              "PostToolUse": [],
+              "PreCompact": [],
+              "PostCompact": [],
+              "SessionStart": [],
+              "SessionEnd": [],
+              "UserPromptSubmit": [],
+              "SubagentStart": [],
+              "SubagentStop": [],
+              "Stop": [],
+              "Interrupt": [],
+              "state": {
+                "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                },
+                "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                  "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              }
+            },
+            "experimental_realtime_start_instructions": null,
+            "allow_login_shell": true,
+            "experimental_realtime_ws_backend_prompt": null,
+            "include_apps_instructions": true,
+            "suppress_unstable_features_warning": null,
+            "experimental_compact_prompt_file": null,
+            "oss_provider": null,
+            "show_raw_agent_reasoning": null,
+            "log_dir": null,
+            "agents": null,
+            "notify": null
+          },
+          "origins": {
+            "hooks.state.deployit@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "plugins.freshen@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "hooks.state.agents@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "plugins.deployit@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "hooks.state.reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "plugins.reconcile-pr@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "plugins.hook-guard@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "marketplaces.agentics.source_type": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "hooks.state.greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "plugins.greenlight-sh707-age54@personal.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "plugins.council@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "hooks.state.hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "marketplaces.agentics.source": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "plugins.agents@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "hooks.state.rca@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "hooks.state.freshen@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "plugins.semver@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "plugins.greenlight@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "plugins.rca@agentics.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "plugins.greenlight@personal.enabled": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "hooks.state.semver@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            },
+            "hooks.state.council@agentics:hooks/hooks.json:pre_tool_use:0:0.trusted_hash": {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+            }
+          },
+          "layers": [
+            {
+              "name": {
+                "type": "user",
+                "file": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+                "profile": null
+              },
+              "version": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696",
+              "config": {
+                "hooks": {
+                  "state": {
+                    "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "council@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "freshen@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "agents@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "rca@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "semver@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "reconcile-pr@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "deployit@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
+                    "hook-guard@agentics:hooks/hooks.json:pre_tool_use:0:0": {
+                      "trusted_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                  }
+                },
+                "marketplaces": {
+                  "agentics": {
+                    "source_type": "local",
+                    "source": "/private/tmp/sh707-alias-rehearsal-age54/agentics"
+                  }
+                },
+                "plugins": {
+                  "greenlight@agentics": {
+                    "enabled": true
+                  },
+                  "council@agentics": {
+                    "enabled": true
+                  },
+                  "freshen@agentics": {
+                    "enabled": true
+                  },
+                  "agents@agentics": {
+                    "enabled": true
+                  },
+                  "rca@agentics": {
+                    "enabled": true
+                  },
+                  "semver@agentics": {
+                    "enabled": true
+                  },
+                  "reconcile-pr@agentics": {
+                    "enabled": true
+                  },
+                  "deployit@agentics": {
+                    "enabled": true
+                  },
+                  "hook-guard@agentics": {
+                    "enabled": true
+                  },
+                  "greenlight@personal": {
+                    "enabled": false
+                  },
+                  "greenlight-sh707-age54@personal": {
+                    "enabled": true
+                  }
+                }
+              }
+            },
+            {
+              "name": {
+                "type": "system",
+                "file": "/etc/codex/config.toml"
+              },
+              "version": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+              "config": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "id": 3,
+        "method": "config/value/write",
+        "params": {
+          "keyPath": "plugins.greenlight-sh707-age54@personal",
+          "value": {
+            "enabled": false
+          },
+          "mergeStrategy": "upsert",
+          "expectedVersion": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      "response": {
+        "error": {
+          "code": -32600,
+          "data": {
+            "config_write_error_code": "configVersionConflict"
+          },
+          "message": "Configuration was modified since last read. Fetch latest version and retry."
+        },
+        "id": 3
+      }
+    },
+    {
+      "request": {
+        "id": 4,
+        "method": "config/value/write",
+        "params": {
+          "keyPath": "plugins.greenlight-sh707-age54@personal",
+          "value": {
+            "enabled": false
+          },
+          "mergeStrategy": "upsert",
+          "expectedVersion": "sha256:22295ae69391a495c404fb29329e8e1e097db6e5a8c6e53c4c574e13bd9bc696"
+        }
+      },
+      "response": {
+        "id": 4,
+        "result": {
+          "status": "ok",
+          "version": "sha256:a5ee9e11a69bc450174c8858f95827942f739efa509f3f0407da50a6df7aac46",
+          "filePath": "/private/tmp/sh707-alias-rehearsal-age54/codex-home/config.toml",
+          "overriddenMetadata": null
+        }
+      }
+    }
+  ],
+  "native_host_validated": false,
+  "release_certified": false,
+  "live_changes_performed": false
+}

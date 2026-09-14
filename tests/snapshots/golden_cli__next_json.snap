@@ -7,7 +7,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 62,
+        "head_global_seq": 64,
         "story": {
           "assignee": "grace-hopper",
           "awaiting": null,
@@ -40,6 +40,26 @@ source: tests/golden_cli.rs
           "title": "Fix the id collision across worktrees",
           "updated_at": "[timestamp]"
         }
+      },
+      "verifier": {
+        "active": null,
+        "control": "running",
+        "evidence_error": null,
+        "first_hit_story": null,
+        "held_stories": [],
+        "incident": null,
+        "incident_age_seconds": null,
+        "incident_is_current": false,
+        "last_evidence_at": null,
+        "project": "[project]",
+        "recovery": {
+          "acknowledgement": null,
+          "request": null
+        },
+        "retry_count": 0,
+        "silence_seconds": null,
+        "verifying": [],
+        "warning": null
       }
     }
   },
@@ -49,7 +69,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 62,
+          "head_global_seq": 64,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -84,7 +104,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 63,
+          "head_global_seq": 65,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -137,7 +157,27 @@ source: tests/golden_cli.rs
             "updated_at": "[timestamp]"
           }
         }
-      ]
+      ],
+      "verifier": {
+        "active": null,
+        "control": "running",
+        "evidence_error": null,
+        "first_hit_story": null,
+        "held_stories": [],
+        "incident": null,
+        "incident_age_seconds": null,
+        "incident_is_current": false,
+        "last_evidence_at": null,
+        "project": "[project]",
+        "recovery": {
+          "acknowledgement": null,
+          "request": null
+        },
+        "retry_count": 0,
+        "silence_seconds": null,
+        "verifying": [],
+        "warning": null
+      }
     }
   },
   {
@@ -146,7 +186,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 62,
+          "head_global_seq": 64,
           "story": {
             "assignee": "grace-hopper",
             "awaiting": null,
@@ -181,7 +221,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 63,
+          "head_global_seq": 65,
           "story": {
             "assignee": "ada-lovelace",
             "awaiting": null,
@@ -235,7 +275,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 68,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -260,10 +300,15 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
-            "comments": [],
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "AGENT BLOCK DELIVERY #1 — interrupt unreached: no agent reached: the golden corpus dispatches nothing"
+              }
+            ],
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -336,7 +381,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 83,
+          "head_global_seq": 86,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -360,7 +405,27 @@ source: tests/golden_cli.rs
             "updated_at": "[timestamp]"
           }
         }
-      ]
+      ],
+      "verifier": {
+        "active": null,
+        "control": "running",
+        "evidence_error": null,
+        "first_hit_story": null,
+        "held_stories": [],
+        "incident": null,
+        "incident_age_seconds": null,
+        "incident_is_current": false,
+        "last_evidence_at": null,
+        "project": "[project]",
+        "recovery": {
+          "acknowledgement": null,
+          "request": null
+        },
+        "retry_count": 0,
+        "silence_seconds": null,
+        "verifying": [],
+        "warning": null
+      }
     }
   },
   {
@@ -368,7 +433,7 @@ source: tests/golden_cli.rs
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 63,
+        "head_global_seq": 65,
         "story": {
           "assignee": "ada-lovelace",
           "awaiting": null,
@@ -403,6 +468,26 @@ source: tests/golden_cli.rs
           "title": "Define the Store trait",
           "updated_at": "[timestamp]"
         }
+      },
+      "verifier": {
+        "active": null,
+        "control": "running",
+        "evidence_error": null,
+        "first_hit_story": null,
+        "held_stories": [],
+        "incident": null,
+        "incident_age_seconds": null,
+        "incident_is_current": false,
+        "last_evidence_at": null,
+        "project": "[project]",
+        "recovery": {
+          "acknowledgement": null,
+          "request": null
+        },
+        "retry_count": 0,
+        "silence_seconds": null,
+        "verifying": [],
+        "warning": null
       }
     }
   },
@@ -410,7 +495,27 @@ source: tests/golden_cli.rs
     "argv": "story next --phase 9 --json",
     "stdout": {
       "message": "no ready stories",
-      "result": "ok"
+      "result": "ok",
+      "verifier": {
+        "active": null,
+        "control": "running",
+        "evidence_error": null,
+        "first_hit_story": null,
+        "held_stories": [],
+        "incident": null,
+        "incident_age_seconds": null,
+        "incident_is_current": false,
+        "last_evidence_at": null,
+        "project": "[project]",
+        "recovery": {
+          "acknowledgement": null,
+          "request": null
+        },
+        "retry_count": 0,
+        "silence_seconds": null,
+        "verifying": [],
+        "warning": null
+      }
     }
   }
 ]

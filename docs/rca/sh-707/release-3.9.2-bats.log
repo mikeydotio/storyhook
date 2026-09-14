@@ -1,0 +1,165 @@
+1..164
+ok 1 AI boolean false approves with rationale disabled
+ok 2 AI boolean false approves and retains rationale and diagnostics
+ok 3 AI boolean true preserves destructive context for both hosts
+ok 4 AI rejects every nonboolean answer instead of treating it as safe
+ok 5 AI rejects missing fields and malformed structured text
+ok 6 AI rejects invalid rationales even with a valid boolean answer
+ok 7 AI malformed outer response defers with diagnostics
+ok 8 Codex deterministic Bash approval emits no permission decision or orphan reason
+ok 9 Claude deterministic Bash approval retains allow and reason
+ok 10 Codex readonly tool approval is neutral
+ok 11 Claude readonly tool approval retains allow
+ok 12 Codex AI safe approval without rationale is neutral after parsing boolean false
+ok 13 Codex AI safe approval with rationale emits context only
+ok 14 Claude AI safe approval without rationale retains allow
+ok 15 Claude AI safe approval with rationale retains allow and context
+ok 16 Codex plan explorer destructive command remains denied
+ok 17 Claude plan explorer destructive command remains denied
+ok 18 Codex destructive warning remains context only
+ok 19 Claude destructive warning remains context only
+ok 20 Malformed JSON remains inert
+ok 21 Codex unrelated tool remains inert
+ok 22 Claude unrelated tool remains inert
+ok 23 Codex manifest invocation resolves its PLUGIN_ROOT-only environment
+ok 24 turn_id presence selects Codex regardless of its value or root environment
+ok 25 PLUGIN_ROOT alone does not misclassify a Claude payload as Codex
+ok 26 AI rationale survives JSON escaping for both hosts with unchanged log detail
+ok 27 fresh hook reads defaults without creating user configuration
+ok 28 bundle-only upgrade changes behavior next invocation; user pin wins
+ok 29 status exposes every bundled setting and explicit pins equal to defaults
+ok 30 legacy AI pins change only when explicitly unset; other overrides survive
+ok 31 empty lists clear defaults; empty scalar inherits but is disclosed as pinned
+ok 32 first set is sparse and later sets preserve comments unknown keys and literal values
+ok 33 list mutations start from effective defaults and preserve explicit empty lists
+ok 34 reset retains exact backup and future defaults stay live; repeated reset works
+ok 35 read-only status get and unset of absent key never seed a defaults snapshot
+ok 36 duplicate and malformed recognized settings defer normal hook and deny explorer
+ok 37 missing defaults and incomplete defaults never approve or mutate user config
+ok 38 unreadable configuration fails visibly and leaves content intact
+ok 39 writers refuse occupied lock and symlink without changing original
+ok 40 failed write and invalid requests preserve configuration
+ok 41 quoted CRLF configuration without final newline is read as literal scalar data
+ok 42 inherited writer variables cannot claim or remove resources
+ok 43 concurrent successful list edits are never lost and contention fails visibly
+ok 44 run creates a scratch worktree, runs the explorer there with the tag, tears it down
+ok 45 run --keep leaves the worktree and branch in place
+ok 46 run --out writes findings to the given path and reports it
+ok 47 run --model overrides the model passed to the explorer
+ok 48 the default model is sonnet
+ok 49 missing --task is a usage error (nonzero exit)
+ok 50 a nonzero explorer exit still tears down and reports ok=false
+ok 51 the scratch branch carries the greenlight/scratch- prefix
+ok 52 missing claude CLI reports ok=false (no crash)
+ok 53 run outside a git repo without --repo reports ok=false
+ok 54 stdout is a single clean JSON object (findings do not leak to stdout)
+ok 55 explorer inherits bundled model and scratch identity recognized by the real hook
+ok 56 explorer user pins and CLI model override bundled values
+ok 57 explorer root variables select the same bundled precedence as the hook
+ok 58 explorer refuses invalid configuration before creating worktrees or running Claude
+ok 59 manifest loads PLUGIN_ROOT alone including a path with spaces
+ok 60 manifest loads CLAUDE_PLUGIN_ROOT alone including a path with spaces
+ok 61 manifest and bundled resources prefer PLUGIN_ROOT when both are set
+ok 62 empty PLUGIN_ROOT falls back to CLAUDE_PLUGIN_ROOT
+ok 63 empty CLAUDE_PLUGIN_ROOT does not shadow PLUGIN_ROOT
+ok 64 direct hook invocation finds its own bundled resources without root variables
+ok 65 AGE-54: legacy allow denies every uncertain execution family on both hosts
+ok 66 AGE-54: legacy allow denies uncertainty in compounds and substitutions
+ok 67 AGE-54: missing default and invalid uncertainty policies deny on both hosts
+ok 68 AGE-54: legacy allow never invokes an enabled approving AI
+ok 69 AGE-54: deterministic approvals and custom configuration retain precedence
+ok 70 AGE-54: AI opt-in still evaluates uncertain commands on both hosts
+ok 71 AGE-54: known destructive verbs never reach an otherwise approving AI
+ok 72 AGE-54: disabled or failed AI cannot approve explorer uncertainty
+ok 73 AGE-54: legacy setting is inert outside explorer mode
+ok 74 AGE-54: writable redirection cannot approve uncertain execution
+ok 75 AGE-54: writable redirection cannot approve destructive execution or invoke AI
+ok 76 AGE-54: writable redirection still checks later segments and substitutions
+ok 77 AGE-54: safe temporary redirection retains host-specific approval
+ok 78 AGE-54: protected or indeterminate destinations deny before AI evaluation
+ok 79 AGE-54: redirected uncertainty reaches opted-in AI instead of early approval
+ok 80 AGE-54: normal-session redirection still defers without an AI call
+ok 81 AGE-26: read verbs are allowed
+ok 82 AGE-26: reversible record-annotation verbs are allowed
+ok 83 AGE-26: delete is allowed because purge — the irreversible half — is not
+ok 84 AGE-26: decompose is allowed (shipped forge step, story-scoped, reversible)
+ok 85 AGE-26: two-token read actions are allowed
+ok 86 AGE-26: purge and project delete are destructive (peer: rm|rmdir|unlink|shred)
+ok 87 AGE-26: update and plugin install are destructive (peer: apt|brew|yum|dnf|pacman)
+ok 88 AGE-26: the destructive banner names the verb, not a bare 'story'
+ok 89 AGE-26: boundary-crossing verbs are uncertain, and are not called destructive
+ok 90 AGE-26: doctor is denied whole — no flag parsing anywhere
+ok 91 AGE-26: an unrecognised verb fails closed (the sentinel)
+ok 92 AGE-26: an unrecognised action under a two-token verb fails closed
+ok 93 AGE-26: global flags before the verb do not hide a destructive verb
+ok 94 AGE-26: global flags before the verb still allow a read verb
+ok 95 AGE-26: a path-prefixed story binary is classified the same way
+ok 96 AGE-26: bare story and an empty verb fail closed
+ok 97 AGE-26: env and VAR=val prefixes do not hide a destructive verb
+ok 98 AGE-26: a destructive verb inside a command substitution is caught
+ok 99 AGE-26: a destructive verb in a later segment is caught
+ok 100 AGE-26: a verb name inside a quoted argument is not treated as a verb
+ok 101 AGE-26: explorer allows reads and denies the destructive verbs
+ok 102 AGE-26: plan_explorer_uncertain=allow cannot re-arm a destructive verb
+ok 103 AGE-26: no story arm survives in is_always_safe (blanket-restoration guard)
+ok 104 AGE-26: the story allowlist is pinned (widening and narrowing both red)
+ok 105 AGE-26: every destructive story verb has a peer in is_known_destructive
+ok 106 uses bundled defaults without initializing user config on first run
+ok 107 F077/F078: effective ai_enabled defaults to false
+ok 108 F082: effective ai_show_rationale defaults to false
+ok 109 F078: effective ai_model retains the bundled Haiku default
+ok 110 readonly tools (Read, Glob, Grep) are always allowed
+ok 111 a non-Bash, non-readonly tool passes through silently (no decision)
+ok 112 known-safe readonly commands are allowed
+ok 113 jq/grep pipelines are allowed
+ok 114 git status/log/diff are allowed
+ok 115 git branch -D (delete) is NOT allowed (falls to uncertain)
+ok 116 rm -rf surfaces a destructive warning, never auto-allowed
+ok 117 sudo surfaces a privilege-escalation warning
+ok 118 bypassPermissions mode disables all evaluation (no output even for rm -rf)
+ok 119 default mode still evaluates and warns on rm -rf
+ok 120 F075: a quoted '>' inside the command string is not treated as redirection
+ok 121 F075: a quoted '->' inside the command string is not treated as redirection
+ok 122 F075: forge-style commit message arrows do not defer
+ok 123 F075: grep pattern containing '>' inside quotes is not treated as redirection
+ok 124 F075: a REAL unquoted redirection is still detected and deferred
+ok 125 F075: story comment with an arrow in the free-text argument is allowed
+ok 126 F076/F077: story CLI subcommands are allowed
+ok 127 F076/F077: git add/commit/checkout are allowed
+ok 128 F076/F077: cargo/npm/go test and build are allowed
+ok 129 F076/F077: make test is allowed, but an arbitrary make target is not
+ok 130 F081: a destructive command nested in $(...) is classified as destructive, not merely uncertain
+ok 131 a safe command nested in $(...) is still allowed
+ok 132 strict mode defers uncertain commands silently (no AI, no context)
+ok 133 standard mode with AI disabled (the default) defers uncertain commands silently, without an API call
+ok 134 AI fallback with no ANTHROPIC_API_KEY set falls through to silent defer even when explicitly enabled
+ok 135 custom_allow forces a command to be allowed regardless of classification
+ok 136 custom_pass forces a command to always defer, even if otherwise safe
+ok 137 sed without -i is allowed
+ok 138 sed -i is NOT allowed (in-place edit is uncertain/destructive territory)
+ok 139 every non-empty hook output is valid JSON
+ok 140 explorer: editing a tracked file off-scratch is DENIED
+ok 141 explorer: creating a new untracked file in the repo tree off-scratch is DENIED
+ok 142 explorer: editing a file INSIDE the scratch worktree is ALLOWED
+ok 143 explorer: writing a brand-new file inside the scratch worktree is ALLOWED
+ok 144 explorer: writing under /tmp is ALLOWED (outside any repo tree)
+ok 145 explorer: an absolute path escaping the worktree into the main tree is DENIED
+ok 146 explorer: a symlink inside the worktree resolving to the main tree is DENIED
+ok 147 explorer: MultiEdit inside the worktree is ALLOWED, in the main tree is DENIED
+ok 148 explorer: NotebookEdit inside the worktree is ALLOWED
+ok 149 explorer: a relative file_path resolves against cwd (worktree) and is ALLOWED
+ok 150 explorer: a relative file_path in the main tree cwd is DENIED
+ok 151 explorer: readonly bash is ALLOWED
+ok 152 explorer: a destructive command is DENIED even inside the worktree
+ok 153 explorer: git push is DENIED
+ok 154 explorer: an uncertain command is DENIED by default
+ok 155 explorer: safe build/test commands are ALLOWED even off-scratch (write only build artifacts)
+ok 156 explorer: shell redirection to a target inside the worktree is ALLOWED
+ok 157 explorer: shell redirection to a tracked file in the main tree is DENIED
+ok 158 explorer: shell redirection to /tmp is ALLOWED
+ok 159 explorer: Read is ALLOWED
+ok 160 explorer: a non-enumerated tool defers (no decision; dontAsk then denies)
+ok 161 AGE-54: explorer legacy allow denies uncertain commands with migration guidance
+ok 162 explorer: plan_explorer_enabled=false disables the policy entirely
+ok 163 non-regression: without the explorer env var, Edit passes through silently
+ok 164 non-regression: without the explorer env var, rm -rf still warns via context (no deny)

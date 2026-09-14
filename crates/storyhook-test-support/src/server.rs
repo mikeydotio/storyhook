@@ -533,7 +533,7 @@ impl Drop for ChildGuard {
 /// times this fired, it was right. What was wrong was the message, which named
 /// the duration instead of the condition, and so reported an FSEvents pathology
 /// as a mass of unexplained server failures.
-const ACCEPT_DEADLINE: Duration = Duration::from_secs(5);
+pub(crate) const ACCEPT_DEADLINE: Duration = Duration::from_secs(5);
 
 /// How often the deadline above is retried. Short enough that a ready listener
 /// is noticed at once, long enough not to spin.

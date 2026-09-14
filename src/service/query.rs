@@ -51,6 +51,10 @@ use crate::store::{GlobalSeq, ProjectId, ReadOps, StoryNo, StoryQuery, StoryRow,
 
 use super::project_prefix;
 
+mod eligibility;
+mod obviation;
+pub use eligibility::{EligibilityReason, SessionEligibility};
+
 /// The `story list` filter grammar, as one value.
 ///
 /// One field per flag the CLI accepts, in the order the legacy arm applied
@@ -1020,6 +1024,7 @@ pub fn story_views(
     project: ProjectId,
     include_derived: bool,
 ) -> Result<Vec<StoryView>, AppError> {
+    let continuations = tx.continuations(project)?;
     let rows = story_rows(tx, project)?;
     // `head_global_seq` (SH-336) travels alongside `stories` rather than
     // through it — `stories` is the snapshot map every function below already
@@ -1118,7 +1123,16 @@ pub fn story_views(
             story,
             derived_relationships: derived_relationships.get(&id).cloned().unwrap_or_default(),
             referenced_by,
-            warnings: Vec::new(),
+            warnings: continuations
+                .iter()
+                .filter(|r| r.story_id == id && r.status.outstanding())
+                .map(|r| {
+                    format!(
+                        "continuation {} {:?} ({}): {}",
+                        r.id, r.status, r.phase, r.detail
+                    )
+                })
+                .collect(),
             flagged_reasons,
             stale_info: None,
             progress: progress.get(&id).cloned(),

@@ -1,0 +1,97 @@
+{
+  "story_id": "SH-707",
+  "observed_at": "2026-09-13T23:12:58.387979+00:00",
+  "release_receipt": "release-3.9.2-receipt.json",
+  "installed_identity_rechecked": true,
+  "unchanged_files": 21,
+  "native_hooks_list": [
+    {
+      "key": "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0",
+      "eventName": "preToolUse",
+      "handlerType": "command",
+      "command": "bash \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/greenlight.sh\"",
+      "async": false,
+      "matcher": null,
+      "timeoutSec": 20,
+      "statusMessage": null,
+      "additionalContextLimit": null,
+      "sourcePath": "/Users/mikey/.codex/plugins/cache/agentics/greenlight/3.9.2/hooks/hooks.json",
+      "source": "plugin",
+      "pluginId": "greenlight@agentics",
+      "displayOrder": 11,
+      "enabled": true,
+      "isManaged": false,
+      "currentHash": "sha256:e7cd1e579c65088e3ff4b0fa8c16c5a5b01c8381c2ee486e560c4bb85632044e",
+      "trustStatus": "trusted"
+    }
+  ],
+  "stored_trusted_hash": "sha256:e7cd1e579c65088e3ff4b0fa8c16c5a5b01c8381c2ee486e560c4bb85632044e",
+  "user_report": "Mikey completed native review and pwd in window sttest.",
+  "native_smoke": {
+    "window": "sttest",
+    "pane": "storyhook:3.1",
+    "codex_version": "0.154.0",
+    "thread_id": "01a09d03-16d9-7d90-aab2-0685099d8fba",
+    "turn_id": "01a09d05-5d95-7a40-a70a-0192f33803a9",
+    "source_rollout": "/Users/mikey/.codex/sessions/2026/09/13/rollout-2026-09-13T16-03-40-01a09d03-16d9-7d90-aab2-0685099d8fba.jsonl",
+    "command_event": {
+      "timestamp": "2026-09-13T23:06:14.635Z",
+      "ordinal": 16,
+      "type": "event_msg",
+      "payload": {
+        "type": "item_completed",
+        "thread_id": "01a09d03-16d9-7d90-aab2-0685099d8fba",
+        "turn_id": "01a09d05-5d95-7a40-a70a-0192f33803a9",
+        "item": {
+          "type": "CommandExecution",
+          "id": "exec-62fc177c-08f7-4a75-ab4f-af3d04c93781",
+          "process_id": "11114",
+          "command": [
+            "/bin/zsh",
+            "-lc",
+            "pwd"
+          ],
+          "cwd": "file:///Volumes/Code/mikeyward/storyhook",
+          "parsed_cmd": [
+            {
+              "type": "unknown",
+              "cmd": "pwd"
+            }
+          ],
+          "source": "unified_exec_startup",
+          "status": "completed",
+          "stdout": "/Volumes/Code/mikeyward/storyhook\n",
+          "stderr": "",
+          "aggregated_output": "/Volumes/Code/mikeyward/storyhook\n",
+          "exit_code": 0,
+          "duration": {
+            "secs": 0,
+            "nanos": 2833
+          },
+          "formatted_output": "/Volumes/Code/mikeyward/storyhook\n"
+        },
+        "started_at_ms": 1789340774635,
+        "completed_at_ms": 1789340774635
+      }
+    },
+    "pane_observation": "Ran pwd; expected directory returned; no hook failure displayed.",
+    "unsupported_hook_diagnostic_observed": false,
+    "passed": true
+  },
+  "limits": {
+    "separate_successful_handler_trace_available": false,
+    "explanation": "The retained native rollout has no separate successful per-handler event; existing Greenlight log_file is empty. Acceptance combines native trusted discovery and successful actual-host smoke with independently passing installed-manifest contracts. No captured per-handler stdout or certain original-incident attribution is claimed.",
+    "central_release_gate_run_here": false
+  },
+  "preservation": {
+    "live_mutation_by_agent": false,
+    "raw_private_config_copied": false,
+    "official_plugin_enabled": true,
+    "personal_plugin_enabled": false,
+    "personal_cache_retained": true,
+    "age54_alias_staged_only": true
+  },
+  "native_review_complete": true,
+  "native_host_smoke_validated": true,
+  "remaining_external_prerequisite": null
+}
