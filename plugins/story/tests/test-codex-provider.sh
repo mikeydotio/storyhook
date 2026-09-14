@@ -66,9 +66,6 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
   "post the plan verbatim rather than summarizing it" \
   "dispatch: attended Codex persists the exact approved plan"
-assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
-  "every linked pull request title contains the exact story ID $id" \
-  "dispatch: attended Codex requires the story ID in the PR title"
 [ ! -e "$FAKE_TMUX_STATE/run_shell.log" ] \
   || fail_test "dispatch: attended Codex armed the autonomous plan watcher"
 
@@ -98,7 +95,7 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/plan_key_ignored.log")" "late TUI start
   "dropped Plan key: fixture exercised the retry"
 
 # Safe reap uses the provider's path and removes only the closed, merged leaf.
-(cd "$repo" && story move "$id" done >/dev/null)
+(cd "$repo" && story move "$id" "done" >/dev/null)
 export FAKE_TMUX_PANES
 FAKE_TMUX_PANES=$(printf '%s\t1\t%%1' "$id")
 out=$(run_codex "$repo" reap "$id")
@@ -144,7 +141,7 @@ out=$(cd "$repo_plan" && PATH="$FAKE_BIN:$PATH" STORY_AGENT=codex STORY_DRY_RUN=
 assert_eq "$(jqf "$out" .agent)" "codex" "dry auto: selected provider"
 assert_eq "$(jqf "$out" .council)" "false" "dry auto: safe solo fallback"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" \
-  "codex --no-alt-screen -c check_for_update_on_startup=false --approve-for-me --dangerously-bypass-hook-trust" \
+  "codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false --approve-for-me --dangerously-bypass-hook-trust" \
   "dry auto: Codex uses later automatic review and trusts the packaged hook"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" \
   "-e STORYHOOK_AUTO=$id_auto" "dry auto: Codex child receives the autonomous marker"
@@ -165,9 +162,10 @@ assert_contains "$(jqf "$out" .prompt)" \
 assert_contains "$(jqf "$out" .prompt)" \
   "before changing files or running tests" \
   "dry auto: persistence precedes implementation"
-assert_contains "$(jqf "$out" .prompt)" \
-  "every linked pull request title contains the exact story ID $id_auto" \
-  "dry auto: Codex requires the story ID in the PR title"
+assert_contains "$(jqf "$out" .prompt)" "storyhook.implementation-plan" \
+  "dry auto: explicit structured request avoids prose classification"
+assert_contains "$(jqf "$out" .prompt)" "Default mode" \
+  "dry auto: structured request is advertised for Default mode"
 
 # A real fake-tmux Auto dispatch arms the pane watcher after Plan mode is
 # confirmed and before prompt submission. An arming failure is a pre-handoff
@@ -220,7 +218,7 @@ assert_eq "$(jqf "$out" .prompt)" "custom auto $id_auto" \
 out=$(cd "$repo_plan" && PATH="$FAKE_BIN:$PATH" STORY_AGENT=codex STORY_DRY_RUN=1 \
   STORY_PROMPT_EXTRA="EXTRA-CLAUSE" bash "$SCRIPT" dispatch "$id_auto" --auto 2>&1)
 case "$(jqf "$out" .prompt)" in
-  *"every linked pull request title contains the exact story ID $id_auto. EXTRA-CLAUSE") : ;;
+  *"post the plan verbatim rather than summarizing it. EXTRA-CLAUSE") : ;;
   *) fail_test "Codex built-in prompt: STORY_PROMPT_EXTRA is not last" ;;
 esac
 
@@ -247,8 +245,15 @@ assert_eq "$(jqf "$out" .agent)" "claude" "legacy env alias: canonical provider"
 assert_contains "$(cat "$alias_err")" "deprecated" "legacy env alias: warning"
 assert_contains "$(cat "$alias_err")" "STORY_AGENT=claude" "legacy env alias: canonical remedy"
 
+# Deterministic readers ignore caller provider settings; launch still validates them.
 out=$(cd "$repo_plan" && STORY_AGENT=unknown bash "$SCRIPT" list 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unknown provider: refused"
-assert_contains "$(jqf "$out" .display)" "supported agents" "unknown provider: names choices"
+assert_eq "$(jqf "$out" .ok)" "true" "unknown caller provider: list succeeds"
+assert_eq "$(printf '%s' "$out" | jq -r --arg id "$id_auto" '.stories | any(.id == $id)')" \
+  "true" "unknown caller provider: list returns the ready story"
+
+out=$(cd "$repo_plan" && STORY_AGENT=unknown STORY_DRY_RUN=1 \
+  bash "$SCRIPT" dispatch "$id_auto" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "unknown launch provider: refused"
+assert_contains "$(jqf "$out" .display)" "supported agents" "unknown launch provider: names choices"
 
 finish

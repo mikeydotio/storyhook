@@ -27,8 +27,7 @@ repo=$(mktemp -d /tmp/story-test-fullauto-hook.XXXXXX)
 _TMP_REPOS+=("$repo")
 
 hook_command() {
-  jq -r --arg e "$1" --arg m "$2" \
-    '.hooks[$e][] | select(.matcher == $m) | .hooks[0].command' "$MANIFEST"
+  manifest_hook "$1" "$2" full-auto.sh "$MANIFEST" | jq -r '.command'
 }
 
 # fire <matcher> <payload> -- run the manifest's command for <matcher> with a
@@ -207,7 +206,11 @@ for probe in "AskUserQuestion:$(claude_payload AskUserQuestion '{"questions":[{"
   # reads it and has to be able to act on it without a person. Each span is a
   # separate obligation, so each is named separately.
   for needle in "unattended" "council-vote" "do not stall" "$LANE_STORY" \
-                "before you resume the work"; do
+                "before you resume the work" \
+                "Context: the relevant facts and constraints" \
+                "Question: the question being answered" \
+                "Decision: the chosen answer" "Rationale: why it was chosen" \
+                "alternatives and trade-offs" "without this session or local files"; do
     assert_contains "$reason" "$needle" "$matcher: the denial feedback carries '$needle'"
   done
 done
@@ -283,8 +286,7 @@ for event_matcher in PreToolUse:ExitPlanMode PreToolUse:AskUserQuestion \
                      PreToolUse:request_user_input; do
   event="${event_matcher%%:*}"
   matcher="${event_matcher#*:}"
-  budget=$(jq -r --arg m "$matcher" \
-    --arg e "$event" '.hooks[$e][] | select(.matcher == $m) | .hooks[0].timeout' "$MANIFEST")
+  budget=$(manifest_hook "$event" "$matcher" full-auto.sh "$MANIFEST" | jq -r '.timeout')
   case "$budget" in
     ''|null|0) fail_test "full-auto: $event '$matcher' declares no timeout" ;;
     *) [ "$budget" -le 30 ] || fail_test "full-auto: $event '$matcher' timeout ${budget}s is longer than a lane should wait" ;;

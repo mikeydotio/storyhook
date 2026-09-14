@@ -19,7 +19,7 @@ use storyhook::service::{
     VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_CLEANUP_REQUIRED_PREFIX,
 };
 use storyhook::store::{Store, WriteOps};
-use storyhook_test_support::{ServiceFixture, StoryWorkspace, scratch_dir};
+use storyhook_test_support::{ServiceFixture, StoryWorkspace};
 
 /// A merged story workspace registered as the fixture project's checkout.
 struct Leased {
@@ -88,8 +88,9 @@ impl Leased {
     }
 
     fn move_to(&self, state: &str) {
+        let reason = (state == "done").then_some("fixture: confirmed merged workspace");
         StoryService::new(&self.fixture.ctx())
-            .set_state(&self.id, state, None, None, None)
+            .set_state(&self.id, state, reason, None, None)
             .unwrap();
     }
 
@@ -128,10 +129,23 @@ fn an_open_story_is_refused_before_any_git_work() {
         })
         .unwrap()
         .id;
-    let checkout = scratch_dir();
+    // Discovery reads the registered checkout before considering candidates.
+    // Keep that repository valid so this test isolates the candidate gate.
+    let workspace = StoryWorkspace::new(&id, false);
+    let checkout = &workspace.checkout;
+    let removed = storyhook::env::git_env::command(checkout)
+        .args(["worktree", "remove"])
+        .arg(&workspace.worktree)
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
     fixture
         .store()
-        .write(|tx| tx.set_checkout_path(fixture.project(), Some(checkout.path())))
+        .write(|tx| tx.set_checkout_path(fixture.project(), Some(checkout)))
         .unwrap();
     StoryService::new(&ctx)
         .set_state(&id, "in-progress", None, None, None)
@@ -139,7 +153,7 @@ fn an_open_story_is_refused_before_any_git_work() {
     StoryService::new(&ctx)
         .set_state(&id, "verifying", None, None, None)
         .unwrap();
-    let missing = checkout.path().join("never-created");
+    let missing = checkout.join("never-created");
     fixture.append_cleanup_lease(
         &id,
         StoryCleanupLease {

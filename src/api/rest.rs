@@ -46,7 +46,7 @@ use crate::output::{ReportData, Response, render_response};
 use crate::service::{
     AttachmentService, CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService,
 };
-use crate::store::{ProjectId, ReadOps, Store, WriteOps};
+use crate::store::{ProjectId, ReadOps, Store};
 
 const DASHBOARD_HTML: &str = include_str!("../web_dashboard.html");
 const DASHBOARD_VERSION_PLACEHOLDER: &str = "__STORYHOOK_VERSION__";
@@ -226,6 +226,7 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
     let verb = match route {
         ProjectRoute::Data => "data",
         ProjectRoute::VerificationAck => "verification-ack",
+        ProjectRoute::VerificationControl => "verification-control",
         ProjectRoute::StoryCreate => "new",
         ProjectRoute::StoryShow { .. } => "show",
         ProjectRoute::StoryAttachment { .. } => "attachment-get",
@@ -367,7 +368,8 @@ pub fn route_with_activity<S: Store>(
                 let root = checkout.unwrap_or_else(|| no_checkout_placeholder(id));
                 let ctx = Ctx::new(store, project, root, env.clone())
                     .no_hooks(hookless)
-                    .with_provenance(route_provenance(&route));
+                    .with_provenance(route_provenance(&route))
+                    .with_verification_activity(Some(verification_activity));
                 let reply = route_project(
                     &ctx,
                     verification_activity,
@@ -453,8 +455,25 @@ fn route_project<S: Store>(
             Ok(json) => json_reply(200, json).no_cache(),
             Err(e) => error_reply(&e),
         },
+        ProjectRoute::VerificationControl => guarded(headers, trusted_hosts, body, |b| {
+            (|| -> Result<Reply, AppError> {
+                let obj = parse_json_object(b)?;
+                let action = serde_json::from_value(serde_json::Value::String(
+                    require_str(&obj, "action")?.into(),
+                ))
+                .map_err(|error| {
+                    AppError::Validation(format!("invalid verifier action: {error}"))
+                })?;
+                let (state, receipt) = verification_activity.control_with_receipt(ctx.store(), ctx.project(), action, &ctx.now())?;
+                Ok(json_reply(
+                    200,
+                    serde_json::json!({"state": state, "command_receipt": receipt, "verifier": verification_activity.status(ctx)?}).to_string(),
+                ))
+            })()
+            .unwrap_or_else(|error| error_reply(&error))
+        }),
         ProjectRoute::VerificationAck => guarded(headers, trusted_hosts, body, |b| {
-            route_ack_verification(ctx, b)
+            route_ack_verification(ctx, verification_activity, b)
         }),
         // Answered by [`crate::api::engine::intercept`] in the per-connection
         // worker so a stop-now helper can call back into the daemon without
@@ -865,7 +884,7 @@ fn project_data_json<S: Store>(
 ) -> Result<String, AppError> {
     let now = ctx.now();
     let project = ctx.project();
-    ctx.store().read(|tx| {
+    verification_activity.read_project(ctx.store(), project, |tx, active, control| {
         Ok((|| -> Result<String, AppError> {
             let query = QueryService::new(tx, project, &now);
             let data = query.report_data()?;
@@ -880,15 +899,9 @@ fn project_data_json<S: Store>(
                     .or_insert_with(Vec::new)
                     .push(link);
             }
-            let active = verification_activity.active();
-            let incident = tx.verification_incident()?;
-            let verification = crate::daemon::verification_progress::status_snapshot_with_incident(
-                &crate::service::verification::ordered_candidates(tx)?,
-                active.as_ref(),
-                incident.as_ref(),
-                ctx.env(),
-                &now,
-            );
+            let (verifier, verification) =
+                crate::daemon::verification::status::snapshot(tx, ctx, active, control)?;
+            let incident = verifier.incident.as_ref();
 
             // Drafts (SH-175) are excluded from `stories`: the board is a curated
             // "what's actionable" view,
@@ -967,6 +980,8 @@ fn project_data_json<S: Store>(
                 "highest_story_number": highest_story_number,
                 "meta": meta_json(tx, project, &data)?,
                 "verification_incident": incident_json,
+                "verification_control": {"state": control},
+                "verifier": verifier,
             });
             to_json(&response)
         })())
@@ -974,34 +989,28 @@ fn project_data_json<S: Store>(
 }
 
 /// Acknowledges exactly the halted incident the browser displayed.
-fn route_ack_verification<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
+fn route_ack_verification<S: Store>(
+    ctx: &Ctx<'_, S>,
+    activity: &VerificationActivity,
+    body: &str,
+) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let expected = require_str(&obj, "incident_id")?;
-        let current = ctx.store().read(|tx| tx.verification_incident())?;
-        let Some(current) = current else {
-            return Err(AppError::Validation(
-                "no verification incident is active".into(),
-            ));
-        };
-        if !current.halted {
-            return Err(AppError::Validation(
-                "the verification incident is still retrying".into(),
-            ));
-        }
-        if current.incident_id != expected {
-            return Err(AppError::Validation(format!(
-                "verification incident `{expected}` is stale; current incident is `{}`",
-                current.incident_id
-            )));
-        }
-        ctx.store().write(|tx| {
-            tx.clear_verification_incident(expected)?;
-            Ok(())
-        })?;
+        let action = obj
+            .get("action")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|error| {
+                AppError::Validation(format!("invalid acknowledgement action: {error}"))
+            })?;
+        let (acknowledged, receipt) = activity.acknowledge_with_receipt(ctx, expected, action)?;
+        let control =
+            activity.read_project(ctx.store(), ctx.project(), |_, _, control| Ok(control))?;
         Ok(json_reply(
             200,
-            serde_json::json!({"acknowledged": expected}).to_string(),
+            serde_json::json!({"acknowledged": acknowledged.incident_id, "state": control, "command_receipt": receipt, "verifier": activity.status(ctx)?})
+                .to_string(),
         ))
     })()
     .unwrap_or_else(|error| error_reply(&error))
@@ -1164,6 +1173,9 @@ fn route_patch_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply 
 /// `SetState`). An optional `reason` (SH-205) sets `awaiting` atomically with
 /// the move — the Blocked-column drop prompt's skippable field; omitted by
 /// every other drop, so no existing caller's payload shape needs to change.
+/// A move from `verifying` to `done` requires `comment` (SH-692): it is the
+/// operator's reason for overriding central verification, recorded on the
+/// story; without it the service answers 422 naming the rule.
 fn route_move_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;

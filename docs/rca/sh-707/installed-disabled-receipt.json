@@ -1,0 +1,194 @@
+{
+  "observed_at": "2026-09-13T02:36:34.115512+00:00",
+  "plugin_id": "greenlight@personal",
+  "version": "3.9.1+codex.20260913021137",
+  "installed_path": "/Users/mikey/.codex/plugins/cache/personal/greenlight/3.9.1+codex.20260913021137",
+  "candidate_enabled": false,
+  "original_enabled": true,
+  "existing_caches_unchanged": true,
+  "unrelated_config_and_trust_unchanged": true,
+  "contracts": [
+    {
+      "provider": "codex",
+      "case": "safe",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:31Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+    },
+    {
+      "provider": "codex",
+      "case": "read",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:31Z [ALLOW] Read: Read: readonly tool\n"
+    },
+    {
+      "provider": "codex",
+      "case": "deny",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:31Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+    },
+    {
+      "provider": "codex",
+      "case": "warning",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:31Z [PASS] Bash: known destructive command\n"
+    },
+    {
+      "provider": "codex",
+      "case": "malformed",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "codex",
+      "case": "unrelated",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "codex",
+      "case": "ai-quiet",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:32Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:36:32Z [ALLOW] Bash: AI confirmed safe\n"
+    },
+    {
+      "provider": "codex",
+      "case": "ai-context",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI analysis: Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:32Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:36:32Z [ALLOW] AI confirmed safe: Fixture says \"safe\"; $(never-execute) remains data.\n"
+    },
+    {
+      "provider": "codex",
+      "case": "ai-destructive",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI safety analysis: POTENTIALLY DESTRUCTIVE. Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:32Z [AI_RESULT] answer=true rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:36:32Z [PASS] Bash: AI determined command is potentially destructive\n"
+    },
+    {
+      "provider": "codex",
+      "case": "ai-invalid",
+      "root_variable": "PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:32Z [AI_FAIL] invalid structured response: expected one object with boolean answer and nonempty string rationale\n2026-09-13T02:36:32Z [PASS] AI fallback failed, deferring to user\n"
+    },
+    {
+      "provider": "claude",
+      "case": "safe",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Bash: safe readonly command(s)\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:33Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+    },
+    {
+      "provider": "claude",
+      "case": "read",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Read: readonly tool\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:33Z [ALLOW] Read: Read: readonly tool\n"
+    },
+    {
+      "provider": "claude",
+      "case": "deny",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:33Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+    },
+    {
+      "provider": "claude",
+      "case": "warning",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:33Z [PASS] Bash: known destructive command\n"
+    },
+    {
+      "provider": "claude",
+      "case": "malformed",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "claude",
+      "case": "unrelated",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": ""
+    },
+    {
+      "provider": "claude",
+      "case": "ai-quiet",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"AI confirmed safe\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:33Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:36:33Z [ALLOW] Bash: AI confirmed safe\n"
+    },
+    {
+      "provider": "claude",
+      "case": "ai-context",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"AI confirmed safe\",\n    \"additionalContext\": \"[greenlight] AI analysis: Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:33Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:36:33Z [ALLOW] AI confirmed safe: Fixture says \"safe\"; $(never-execute) remains data.\n"
+    },
+    {
+      "provider": "claude",
+      "case": "ai-destructive",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI safety analysis: POTENTIALLY DESTRUCTIVE. Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:33Z [AI_RESULT] answer=true rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T02:36:33Z [PASS] Bash: AI determined command is potentially destructive\n"
+    },
+    {
+      "provider": "claude",
+      "case": "ai-invalid",
+      "root_variable": "CLAUDE_PLUGIN_ROOT",
+      "stdout": "",
+      "stderr": "",
+      "exit_status": 0,
+      "log": "2026-09-13T02:36:34Z [AI_FAIL] invalid structured response: expected one object with boolean answer and nonempty string rationale\n2026-09-13T02:36:34Z [PASS] AI fallback failed, deferring to user\n"
+    }
+  ],
+  "native_host_validated": false,
+  "release_certified": false
+}

@@ -192,7 +192,10 @@ fn foreign_prefix_refusal<S: Store>(
 /// beside it.
 fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
     match invocation {
-        Invocation::Show { id }
+        Invocation::Continuation { id, .. }
+        | Invocation::SessionEligibility { id }
+        | Invocation::Show { id }
+        | Invocation::Resources { id, .. }
         | Invocation::Log { id }
         | Invocation::Comment { id, .. }
         | Invocation::Assign { id, .. }
@@ -231,6 +234,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         Invocation::Unclaim { id, .. } => vec![id],
         Invocation::BulkUpdate { updates } => updates.iter_mut().map(|(id, _)| id).collect(),
         Invocation::PrCheck { id } => id.iter_mut().collect(),
+        Invocation::Context { story, .. } => story.iter_mut().collect(),
 
         Invocation::Phase { action } => match action {
             PhaseAction::Add { id, .. } | PhaseAction::Remove { id } => vec![id],
@@ -255,13 +259,18 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
             | AttachmentAction::Save { id, .. } => vec![id],
         },
         Invocation::Engine { action } => match action {
+            EngineAction::ResetCheck { story } => vec![story],
             EngineAction::Start { epic, .. } => epic.iter_mut().collect(),
-            EngineAction::Status { .. }
+            EngineAction::Adopt { ids, .. } => ids.iter_mut().collect(),
+            EngineAction::Configure { .. }
+            | EngineAction::ResetTarget { .. }
+            | EngineAction::Status { .. }
             | EngineAction::Pause { .. }
             | EngineAction::Resume { .. }
             | EngineAction::Stop { .. }
             | EngineAction::Ack { .. } => Vec::new(),
         },
+        Invocation::Verifier { .. } => Vec::new(),
 
         Invocation::Help
         | Invocation::Project { .. }
@@ -286,7 +295,6 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::Export
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
-        | Invocation::Context { .. }
         | Invocation::Handoff { .. }
         | Invocation::Type { .. }
         | Invocation::Hooks { .. }

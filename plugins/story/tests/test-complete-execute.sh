@@ -81,7 +81,7 @@ out=$(cd "$repo" \
 assert_eq "$(jqf "$out" .ok)" "true" "window: ok"
 assert_eq "$(jqf "$out" '.removed.window')" "true" "window: reports the window as closed"
 assert_contains "$(jqf "$out" .display)" "closed its tmux window" "window: display names it"
-grep -q -- '-t @1' "$FAKE_TMUX_STATE/kill_window_args.log" \
+grep -q -- '-t @7' "$FAKE_TMUX_STATE/kill_window_args.log" \
   || fail_test "window: kill-window did not target the resolved window"
 assert_eq "$(cat "$FAKE_TMUX_STATE/kill_window_probe.log")" "exists" \
   "window: the worktree still existed at the moment the window was killed"
@@ -175,13 +175,15 @@ assert_eq "$(jqf "$out" .closed)" "true" "--no-clean: closed"
 assert_eq "$(jqf "$out" '.removed.worktrees|length')" "0" "--no-clean: nothing removed"
 [ -d "$repo/.claude/worktrees/$wncl" ] || fail_test "--no-clean: worktree was removed anyway"
 
-# --- STORY_DONE_STATE override ---
+# --- STORY_DONE_STATE is retired: refused by name, never silently ignored (SH-652)
 (cd "$repo" && story state add archived --super CLOSED >/dev/null 2>&1)
 ov=$(new_story "$repo" "Override")
 out=$(cd "$repo" && STORY_DONE_STATE=archived bash "$SCRIPT" complete execute "$ov" 2>&1)
-assert_eq "$(jqf "$out" .closed_as)" "archived" "override: honours STORY_DONE_STATE"
-assert_eq "$(cd "$repo" && story show "$ov" --json | jq -r '.story.story.state')" "archived" \
-  "override: story really moved into the overridden state"
+assert_eq "$(jqf "$out" .ok)" "false" "retired knob: refused"
+assert_eq "$(jqf "$out" .reason)" "story-done-state-retired" "retired knob: named reason"
+assert_contains "$(jqf "$out" .display)" "STORY_DONE_STATE" "retired knob: names the knob"
+assert_eq "$(cd "$repo" && story show "$ov" --json | jq -r '.story.story.state')" "todo" \
+  "retired knob: nothing moved"
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" complete execute "$id" --bogus 2>&1)

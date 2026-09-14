@@ -50,8 +50,14 @@ approval, run `story update`.
 
 Run `story --version` and confirm it reports the new version.
 
+`story update` also reinstalls this plugin for every provider that has it
+registered, from the binary it just installed, and its output names each one.
+If it reports that the binary was updated but a plugin was not reinstalled,
+relay the error and run `story plugin reinstall` once to retry; do not re-run
+the whole update.
+
 ### 5. Next steps
 
-If the update changed plugin-facing behavior, suggest starting a fresh agent
-session so the reloaded CLI and any plugin changes take effect. Then use the
+The host loads the reinstalled plugin only in a new session: suggest starting
+a fresh agent session so the new CLI and plugin take effect. Then use the
 `story-context` skill to resume work.

@@ -9,6 +9,10 @@ fresh_tmux_state() {
   FAKE_TMUX_STATE="$(mktemp -d /tmp/story-test-tmux.XXXXXX)"
   export FAKE_TMUX_STATE
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
+  # SH-672: every recovery shape runs on a busy server.
+  for i in 1 2 3 4 5 6; do
+    printf 'manual:SH-%s\tclaude\t0\n' "$i" >>"$FAKE_TMUX_STATE/agent_windows"
+  done
 }
 
 dispatch_real() {
@@ -69,6 +73,8 @@ submitted=$(cat "$FAKE_TMUX_STATE/submitted" 2>/dev/null || printf '')
 assert_contains "$submitted" "resuming work already started" "prompt: names resumed work"
 assert_contains "$submitted" "previous agent" "prompt: names prior-agent uncertainty"
 assert_contains "$submitted" "Implement the approved work" "prompt: ordinary charter remains"
+assert_contains "$submitted" "story help obviation-review" "prompt: resumed work requires review"
+assert_contains "$submitted" "story load-context --story $id_wt" "prompt: review names resumed story"
 resume_comment=$(cd "$repo_wt" && story show "$id_wt" --json \
   | jq -r '.story.story.comments[-1].text')
 repo_wt_real=$(cd "$repo_wt" && pwd -P)
@@ -109,7 +115,9 @@ branch_oid=$(cd "$repo_branch" && git rev-parse "worktree-$id_branch")
 (cd "$repo_branch" && git worktree remove "$branch_wt")
 (cd "$repo_branch" && story move "$id_branch" in-progress >/dev/null)
 
-resumed_branch=$(dispatch_real "$repo_branch" "$id_branch" --resume)
+unknown_branch=$(dispatch_real "$repo_branch" "$id_branch" --resume)
+assert_eq "$(jqf "$unknown_branch" .reason)" resume-provider-unknown "branch: missing launch identity requires an explicit provider"
+resumed_branch=$(dispatch_real "$repo_branch" "$id_branch" --resume --agent=claude)
 assert_eq "$(jqf "$resumed_branch" .ok)" "true" "branch: resume succeeds"
 assert_eq "$(jqf "$resumed_branch" .worktree_reused)" "false" "branch: tree reconstructed"
 assert_eq "$(jqf "$resumed_branch" .branch_reused)" "true" "branch: existing branch reused"
@@ -132,6 +140,67 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/respawn_pane_args.log" 2>/dev/null || p
 [ ! -f "$FAKE_TMUX_STATE/new_window_args.log" ] \
   || fail_test "window: opened a competing window"
 
+# SH-650: a resume relaunches the provider the surviving window records.
+# `@storyhook-agent` on the window is a fact about the thing being resumed;
+# `STORY_AGENT` is the caller's own convention (SH-630), and only an explicit
+# `--agent=` outranks the record. Without this a Codex story whose pane died
+# was respawned as Claude, its window option silently rewritten, and its
+# worktree looked for in Claude's container. The fixture is a Codex dispatch:
+# the Codex container (`.codex/worktrees/`) and a window tagged codex.
+provider_case() {
+  local label="$1"
+  shift
+  fresh_tmux_state
+  repo=$(mk_story_repo RPV)
+  id=$(new_story "$repo" "Provider adoption: $label")
+  (cd "$repo" \
+    && git worktree add -q --no-track -b "worktree-$id" ".codex/worktrees/$id" HEAD \
+    && story move "$id" in-progress >/dev/null)
+  export FAKE_TMUX_PANES="$id	1	%7"
+  printf 'codex' > "$FAKE_TMUX_STATE/storyhook_agent"
+  out=$(dispatch_real "$repo" "$id" --resume "$@")
+}
+assert_codex_resumed() {
+  local label="$1"
+  assert_eq "$(jqf "$out" .ok)" "true" "provider ($label): resume succeeds"
+  assert_eq "$(jqf "$out" .window_reused)" "true" "provider ($label): pane reused"
+  assert_eq "$(jqf "$out" .agent)" "codex" "provider ($label): the recorded provider is relaunched"
+  assert_contains "$(cat "$FAKE_TMUX_STATE/respawn_pane_args.log" 2>/dev/null || printf '')" \
+    " codex " "provider ($label): respawn launches codex"
+  assert_contains "$(jqf "$out" .worktree_path)" "/.codex/worktrees/$id" \
+    "provider ($label): resumed in the codex container"
+}
+provider_case "bare"
+assert_codex_resumed "bare"
+STORY_AGENT=claude provider_case "STORY_AGENT=claude"
+assert_codex_resumed "STORY_AGENT=claude"
+# Explicit provider changes preserve the verified surviving worktree.
+provider_case "--agent=claude" --agent=claude
+assert_eq "$(jqf "$out" .ok)" true "provider override: resume succeeds"
+assert_eq "$(jqf "$out" .agent)" claude "provider override: launches Claude"
+assert_contains "$(jqf "$out" .worktree_path)" ".codex/worktrees/" \
+  "provider override: preserves the Codex-created worktree"
+unset STORY_AGENT
+
+# The window gone entirely, only the worktree left: its container names the
+# provider that created it (`.codex/worktrees/`), and a resume that guessed
+# claude would look in `.claude/worktrees/`, find only the branch, and fail to
+# reattach it. mk_dispatched builds the claude container, so build codex's by
+# hand.
+fresh_tmux_state
+unset FAKE_TMUX_PANES
+repo_container=$(mk_story_repo RPC)
+id_container=$(new_story "$repo_container" "Provider from the worktree container")
+(cd "$repo_container" \
+  && git worktree add -q --no-track -b "worktree-$id_container" ".codex/worktrees/$id_container" HEAD \
+  && story move "$id_container" in-progress >/dev/null)
+container=$(STORY_AGENT=claude dispatch_real "$repo_container" "$id_container" --resume)
+assert_eq "$(jqf "$container" .ok)" "true" "container: resume succeeds"
+assert_eq "$(jqf "$container" .agent)" "codex" "container: provider read from the worktree container"
+assert_eq "$(jqf "$container" .worktree_reused)" "true" "container: the codex worktree is the one reused"
+assert_contains "$(jqf "$container" .worktree_path)" "/.codex/worktrees/$id_container" \
+  "container: resumed in the codex container"
+
 # A pane can outlive both git resources. Resume creates a fresh branch and
 # worktree, then reuses that exact pane instead of opening a competitor.
 fresh_tmux_state
@@ -140,13 +209,9 @@ id_pane_only=$(new_story "$repo_pane_only" "Abandoned pane only")
 (cd "$repo_pane_only" && story move "$id_pane_only" in-progress >/dev/null)
 export FAKE_TMUX_PANES="$id_pane_only	1	%8"
 resumed_pane_only=$(dispatch_real "$repo_pane_only" "$id_pane_only" --resume)
-assert_eq "$(jqf "$resumed_pane_only" .ok)" "true" "pane only: resume succeeds"
-assert_eq "$(jqf "$resumed_pane_only" .worktree_created)" "true" \
-  "pane only: missing worktree created"
-assert_eq "$(jqf "$resumed_pane_only" .branch_created)" "true" \
-  "pane only: missing branch created"
-assert_eq "$(jqf "$resumed_pane_only" .window_reused)" "true" \
-  "pane only: surviving pane reused"
+assert_eq "$(jqf "$resumed_pane_only" .ok)" false "pane only: unverified ownership refuses"
+assert_eq "$(jqf "$resumed_pane_only" .reason)" resource-identity-unsafe "pane only: identity diagnostic"
+[ ! -f "$FAKE_TMUX_STATE/respawn_pane_args.log" ] || fail_test "pane only: unowned session was replaced"
 
 # Unsafe identities and self-replacement refuse without damaging evidence.
 fresh_tmux_state
@@ -158,7 +223,7 @@ printf 'not yours\n' >"$repo_unsafe/.claude/worktrees/$id_unsafe/evidence.txt"
 (cd "$repo_unsafe" && story move "$id_unsafe" in-progress >/dev/null)
 unsafe=$(dispatch_real "$repo_unsafe" "$id_unsafe" --resume)
 assert_eq "$(jqf "$unsafe" .ok)" "false" "unsafe: unregistered path refuses"
-assert_eq "$(jqf "$unsafe" .reason)" "resume-unsafe" "unsafe: typed reason"
+assert_eq "$(jqf "$unsafe" .reason)" "resource-identity-unsafe" "unsafe: typed reason"
 assert_eq "$(cat "$repo_unsafe/.claude/worktrees/$id_unsafe/evidence.txt")" "not yours" \
   "unsafe: evidence preserved"
 
@@ -169,8 +234,8 @@ id_wrong=$(new_story "$repo_wrong" "Expected path on the wrong branch")
   ".claude/worktrees/$id_wrong" HEAD)
 (cd "$repo_wrong" && story move "$id_wrong" in-progress >/dev/null)
 wrong=$(dispatch_real "$repo_wrong" "$id_wrong" --resume)
-assert_eq "$(jqf "$wrong" .reason)" "resume-unsafe" "wrong branch: typed refusal"
-assert_contains "$(jqf "$wrong" .display)" "not \`worktree-$id_wrong\`" \
+assert_eq "$(jqf "$wrong" .reason)" "resource-identity-unsafe" "wrong branch: typed refusal"
+assert_contains "$(jqf "$wrong" .display)" "unrelated branch other-$id_wrong" \
   "wrong branch: both identities reported"
 [ -d "$repo_wrong/.claude/worktrees/$id_wrong" ] \
   || fail_test "wrong branch: existing worktree was removed"

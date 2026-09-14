@@ -3,12 +3,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{CLEANUP_LEASE_MARKER, CLEANUP_LEASE_VERSION, StoryCleanupLease, SuperState};
+#[cfg(test)]
+use crate::domain::CLEANUP_LEASE_MARKER;
+use crate::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, SuperState};
 use crate::error::AppError;
 use crate::process::{Captured, run_captured};
 use crate::store::{ReadOps, Store, StoryQuery};
@@ -186,7 +189,33 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                 }
                 continue;
             }
-            match clean_candidate(&repository, &lease, dry_run) {
+            let options = super::resources::ResourceOptions {
+                lease_json: Some(serde_json::to_string(&lease)?),
+                ..Default::default()
+            };
+            let observed =
+                super::resources::ResourceService::new(self.ctx).resolve(&lease.story_id, &options);
+            let result = match observed {
+                Ok(report) if report.status == "resolved" && report.pane.is_none() => {
+                    clean_candidate(&lease.repository_path, &lease, dry_run)
+                }
+                Ok(report) => Err(CleanupSkip {
+                    story_id: lease.story_id.clone(),
+                    reason: "resource-identity-unsafe".into(),
+                    detail: format!(
+                        "resource status {}; panes {:?}; {}",
+                        report.status,
+                        report.pane,
+                        report.diagnostics.join("; ")
+                    ),
+                }),
+                Err(error) => Err(CleanupSkip {
+                    story_id: lease.story_id.clone(),
+                    reason: "resource-unverifiable".into(),
+                    detail: error.to_string(),
+                }),
+            };
+            match result {
                 Ok(removal) => removed.push(removal),
                 Err(issue) if is_operational_failure(&issue.reason) => {
                     failed.push(CleanupFailure {
@@ -272,8 +301,11 @@ fn nothing_left(repository: &Path, lease: &StoryCleanupLease) -> bool {
     {
         return false;
     }
-    git_text(repository, &["worktree", "list", "--porcelain"])
-        .is_ok_and(|listing| worktree_record(&listing, &lease.worktree_path).is_none())
+    super::resources::git::inventory(repository).is_ok_and(|records| {
+        records
+            .iter()
+            .all(|record| record.path != lease.worktree_path)
+    })
 }
 
 fn is_operational_failure(reason: &str) -> bool {
@@ -282,6 +314,7 @@ fn is_operational_failure(reason: &str) -> bool {
         "fetch-failed"
             | "remove-worktree-failed"
             | "delete-local-branch-failed"
+            | "postcondition-unverifiable"
             | "postcondition-failed"
     )
 }
@@ -326,76 +359,43 @@ fn discover_worktree_markers(
     conflicts: &mut BTreeSet<String>,
     skipped: &mut Vec<CleanupSkip>,
 ) {
-    let Ok(output) = git(repository, &["worktree", "list", "--porcelain", "-z"]) else {
-        return;
+    let records = match super::resources::git::inventory(repository) {
+        Ok(records) => records,
+        Err(error) => {
+            skipped.push(CleanupSkip {
+                story_id: String::new(),
+                reason: "worktree-unverifiable".into(),
+                detail: error.to_string(),
+            });
+            return;
+        }
     };
-    if !output.status.success() {
-        return;
-    }
-    for field in output.stdout.split(|byte| *byte == 0) {
-        let Some(raw) = field.strip_prefix(b"worktree ") else {
-            continue;
-        };
-        let path = PathBuf::from(String::from_utf8_lossy(raw).as_ref());
-        if path == repository || !path.exists() {
+    for record in records {
+        let path = record.path;
+        if path == repository {
             continue;
         }
-        let Ok(git_dir) = git_text(&path, &["rev-parse", "--absolute-git-dir"]) else {
-            continue;
-        };
-        let marker = Path::new(&git_dir).join(CLEANUP_LEASE_MARKER);
-        let encoded = match fs::read(&marker) {
-            Ok(value) => value,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                skipped.push(CleanupSkip {
-                    story_id: path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
-                    reason: "missing-lease".into(),
-                    detail: format!("{} has no StoryHook cleanup lease", path.display()),
-                });
-                continue;
-            }
-            Err(error) => {
-                skipped.push(CleanupSkip {
-                    story_id: path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
-                    reason: "invalid-lease".into(),
-                    detail: format!("cannot read {}: {error}", marker.display()),
-                });
-                continue;
-            }
-        };
-        match serde_json::from_slice::<StoryCleanupLease>(&encoded) {
-            Ok(lease) => {
-                let marker_path = path.canonicalize().ok();
-                if marker_path.as_deref() != Some(lease.worktree_path.as_path()) {
-                    skipped.push(CleanupSkip {
-                        story_id: lease.story_id,
-                        reason: "worktree-mismatch".into(),
-                        detail: format!(
-                            "{} names a different worktree than {}",
-                            marker.display(),
-                            path.display()
-                        ),
-                    });
-                    continue;
-                }
-                insert_lease(project, lease, leases, conflicts, skipped);
-            }
+        let story_id = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        match super::cleanup_lease::marker_at_registered(&path) {
+            Ok(Some(lease)) => insert_lease(project, lease, leases, conflicts, skipped),
+            Ok(None) => skipped.push(CleanupSkip {
+                story_id,
+                reason: "missing-lease".into(),
+                detail: format!("{} has no StoryHook cleanup lease", path.display()),
+            }),
             Err(error) => skipped.push(CleanupSkip {
-                story_id: path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-                reason: "invalid-lease".into(),
-                detail: format!("{} is malformed: {error}", marker.display()),
+                story_id,
+                reason: if error.to_string().contains("mismatch") {
+                    "worktree-mismatch"
+                } else {
+                    "invalid-lease"
+                }
+                .into(),
+                detail: error.to_string(),
             }),
         }
     }
@@ -442,9 +442,11 @@ fn clean_candidate(
             ));
         }
     }
-    let listing = git_text(repository, &["worktree", "list", "--porcelain"])
-        .map_err(|detail| refuse("worktree-unverifiable", detail))?;
-    let record = worktree_record(&listing, &lease.worktree_path);
+    let records = super::resources::git::inventory(repository)
+        .map_err(|error| refuse("worktree-unverifiable", error.to_string()))?;
+    let record = records
+        .iter()
+        .find(|record| record.path == lease.worktree_path);
     if let Some(record) = record {
         if record.locked {
             return Err(refuse(
@@ -470,20 +472,14 @@ fn clean_candidate(
     }
 
     ensure_window_absent(lease).map_err(|detail| refuse("tmux-window-open", detail))?;
-    let default = git_text(
-        repository,
-        &[
-            "symbolic-ref",
-            "--quiet",
-            "--short",
-            "refs/remotes/origin/HEAD",
-        ],
-    )
-    .map_err(|detail| refuse("default-branch-unverifiable", detail))?;
-    let default_branch = default.strip_prefix("origin/").unwrap_or(&default);
+    let default_branch = origin_default_branch(repository)
+        .map_err(|detail| refuse("default-branch-unverifiable", detail))?;
+    let default_branch = default_branch.as_str();
     if matches!(lease.branch.as_str(), "main" | "master") || lease.branch == default_branch {
         return Err(refuse("protected-branch", lease.branch.clone()));
     }
+    super::resources::validate_lease(lease)
+        .map_err(|error| refuse("worktree-mismatch", error.to_string()))?;
     let default_spec = format!("+refs/heads/{default_branch}:refs/remotes/origin/{default_branch}");
     let fetch = git(repository, &["fetch", "--quiet", "origin", &default_spec])
         .map_err(|error| refuse("fetch-failed", error))?;
@@ -551,13 +547,16 @@ fn clean_candidate(
             ],
         )
         .map_err(|detail| refuse("remove-worktree-failed", detail))?;
-        let _ = git(repository, &["worktree", "prune"]);
     }
     if removed_local_branch {
         run_git(repository, &["branch", "-D", &lease.branch])
             .map_err(|detail| refuse("delete-local-branch-failed", detail))?;
     }
-    if lease.worktree_path.exists() || ref_exists(repository, &local_ref) {
+    let registration_remains = super::resources::git::inventory(repository)
+        .map_err(|error| refuse("postcondition-unverifiable", error.to_string()))?
+        .iter()
+        .any(|record| record.path == lease.worktree_path);
+    if registration_remains || lease.worktree_path.exists() || ref_exists(repository, &local_ref) {
         return Err(refuse(
             "postcondition-failed",
             "worktree path or local branch remains".into(),
@@ -574,59 +573,14 @@ fn clean_candidate(
 }
 
 fn ensure_window_absent(lease: &StoryCleanupLease) -> Result<(), String> {
-    if !lease.tmux.socket_path.exists() {
-        return Ok(());
+    let names = super::resources::lease_names(lease, &BTreeSet::new());
+    let panes = super::resources::tmux::panes(&lease.tmux.socket_path, &names)
+        .map_err(|e| format!("cannot prove tmux window absence: {e}"))?;
+    if panes.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("tmux windows are still open: {panes:?}"))
     }
-    let socket = lease.tmux.socket_path.to_string_lossy();
-    let mut command = Command::new("tmux");
-    command.args([
-        "-S",
-        socket.as_ref(),
-        "list-windows",
-        "-a",
-        "-F",
-        "#{window_name}",
-    ]);
-    let output = run_captured(command, Duration::from_secs(5))
-        .map_err(|error| format!("cannot inspect tmux: {}", error.detail()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "cannot prove tmux window absence: {}",
-            stderr(&output)
-        ));
-    }
-    let names = String::from_utf8_lossy(&output.stdout);
-    if names.lines().any(|name| name == lease.story_id) {
-        return Err(format!("tmux window `{}` is still open", lease.story_id));
-    }
-    Ok(())
-}
-
-#[derive(Default)]
-struct WorktreeRecord {
-    branch: Option<String>,
-    locked: bool,
-}
-
-fn worktree_record(listing: &str, wanted: &Path) -> Option<WorktreeRecord> {
-    let mut path: Option<&Path> = None;
-    let mut record = WorktreeRecord::default();
-    for line in listing.lines().chain(std::iter::once("")) {
-        if let Some(value) = line.strip_prefix("worktree ") {
-            if path == Some(wanted) {
-                return Some(record);
-            }
-            path = Some(Path::new(value));
-            record = WorktreeRecord::default();
-        } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
-            record.branch = Some(value.into());
-        } else if line.starts_with("locked") {
-            record.locked = true;
-        } else if line.is_empty() && path == Some(wanted) {
-            return Some(record);
-        }
-    }
-    None
 }
 
 fn canonical(path: &Path) -> Result<PathBuf, String> {
@@ -645,6 +599,30 @@ fn git_text(cwd: &Path, args: &[&str]) -> Result<String, String> {
         return Err(stderr(&output));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// The name of origin's default branch, asked of origin itself (`git
+/// ls-remote --symref origin HEAD`) — never the local `refs/remotes/origin/HEAD`
+/// cache, which git writes at clone time and no fetch refreshes, so it kept
+/// answering `main` after this repository's default moved to `dev` (SH-691);
+/// and never a literal. An origin that does not answer, or that advertises no
+/// symbolic HEAD (unborn or detached: `ls-remote` then prints no `ref:` line
+/// at exit 0), is an error naming why — absence is not an answer (SH-372).
+/// The plugin's `default_branch` and the verifier bundle's
+/// `origin-default-branch.sh` are this derivation's shell copies.
+fn origin_default_branch(repository: &Path) -> Result<String, String> {
+    let advertised = git_text(repository, &["ls-remote", "--symref", "origin", "HEAD"])
+        .map_err(|detail| format!("origin did not answer: {detail}"))?;
+    advertised
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .find(|(target, name)| *name == "HEAD" && target.starts_with("ref: "))
+        .and_then(|(target, _)| target.strip_prefix("ref: refs/heads/"))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            "origin advertises no symbolic HEAD (its default branch is unborn or detached)"
+                .to_string()
+        })
 }
 fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
     let output = git(cwd, args)?;
@@ -731,6 +709,7 @@ mod tests {
             generation: Some(VerificationGeneration {
                 lease: None,
                 landed: true,
+                overridden: false,
                 reap_marker: marker,
             }),
         }
@@ -906,6 +885,47 @@ mod tests {
         protected.branch = "dev".into();
         let refusal = clean_candidate(&repo.checkout, &protected, false).unwrap_err();
         assert_eq!(refusal.reason, "protected-branch");
+    }
+
+    /// SH-691: the default branch is origin's own answer, not the local
+    /// `refs/remotes/origin/HEAD` cache — here the cache is made to say `main`,
+    /// a branch origin does not even have, and origin's `dev` stays protected.
+    #[test]
+    fn the_default_branch_is_asked_of_origin_not_the_local_cache() {
+        let repo = Repo::new(true);
+        run_git(
+            &repo.checkout,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        )
+        .unwrap();
+        let mut protected = repo.lease.clone();
+        protected.worktree_path = repo.root().join("already-absent");
+        protected.branch = "dev".into();
+        let refusal = clean_candidate(&repo.checkout, &protected, false).unwrap_err();
+        assert_eq!(refusal.reason, "protected-branch");
+    }
+
+    /// SH-691: an origin whose HEAD is detached advertises no default branch;
+    /// that is unverifiable, never a guess of `main`.
+    #[test]
+    fn an_origin_without_a_default_branch_is_unverifiable_never_guessed() {
+        let repo = Repo::new(true);
+        let origin = repo.root().join("origin.git");
+        let tip = git_text(&origin, &["rev-parse", "refs/heads/dev"]).unwrap();
+        run_git(&origin, &["update-ref", "--no-deref", "HEAD", &tip]).unwrap();
+        let mut lease = repo.lease.clone();
+        lease.worktree_path = repo.root().join("already-absent");
+        let refusal = clean_candidate(&repo.checkout, &lease, false).unwrap_err();
+        assert_eq!(refusal.reason, "default-branch-unverifiable");
+        assert!(
+            refusal.detail.contains("no symbolic HEAD"),
+            "{}",
+            refusal.detail
+        );
     }
 
     #[test]

@@ -155,6 +155,21 @@ skills; current Codex discovers the shared `hooks/hooks.json` by convention. A l
 non-managed plugin may ask you to review/trust those SessionStart, PostToolUse(Bash), and
 Stop hooks before they run.
 
+#### Upgrading
+
+The plugin travels inside the binary, so a new `story` carries a new plugin. Every path
+that replaces the binary — `make install`, `story update`, and the installer script —
+finishes by reinstalling the plugin for every provider that has the storyhook
+marketplace registered, from the binary just installed. A provider that was never
+installed is left alone. To do the same by hand, or after a failed refresh:
+
+```bash
+story plugin reinstall
+```
+
+`story doctor install` reports a provider still registered at an older release as
+`STALE RELEASE`; a reinstall clears it.
+
 #### Lifecycle router verbs
 
 The `story` skill covers a story end to end. In Claude, these are `/story` commands;
@@ -187,7 +202,8 @@ the adapter's host default, so `story.sh dispatch SH-123 --agent=codex` can laun
 from either host. The legacy `STORY_AGENT=claude-code` value remains a warned
 compatibility alias. Claude keeps its existing
 `.claude/worktrees/` and launch contract. Codex uses `.codex/worktrees/`, launches
-`codex --no-alt-screen`, confirms the interactive screen, enters Plan mode with
+`codex --no-alt-screen` with the update chooser and TUI animations switched off for that
+one managed process, confirms the interactive screen, enters Plan mode with
 Shift+Tab, and submits the bracketed-pasted charter with Tab. A failed readiness or
 Plan-mode check rolls back the claim and worktree before any charter is submitted.
 
@@ -401,19 +417,35 @@ story claim <id> [--comment <text> | --no-comment] [--dry-run]
 story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>] [--comment <text> | --no-comment] [--dry-run]
 story unclaim <id> [--comment <text> | --no-comment] [--dry-run]
 story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]
+story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]
+story engine adopt <id> [<id> ...] [--run <id>]
 story engine status [--run <run-id>]
 story engine pause [--run <run-id>]
 story engine resume [--run <run-id>]
 story engine stop [--run <run-id>] [--now]
 story engine ack [--run <run-id>]
+story verifier status
+story verifier start
+story verifier stop
+story verifier drain
+story verifier ack <incident-id> [--leave-stopped]
+story resources <id> [--json]
 story cleanup [--dry-run]
 story summary
 story report [--html]
 story search <query>
 story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
-story context [--format markdown|json]
-story load-context [--format markdown|json]   # alias of context
+story context [--format markdown|json] [--story <id>]
+story load-context [--format markdown|json] [--story <id>]   # alias of context
+story session-eligibility <id> --json   # read-only active-session eligibility snapshot
 story handoff [--since <duration>]
+
+story continuation capabilities --json
+story continuation request <id> --stdin --json
+story continuation status <id> --json
+story continuation receipt <id> <request> --stdin --json
+story continuation retry <id> <request> --json
+story continuation ack <id> <request> --reviewed-seq <n> --head <sha> --provider codex|claude --session-id <session> --json
 
 story export
 story import [<file>]
@@ -445,6 +477,7 @@ story pr-check [<id>]
 story github-auth login|status|logout
 story plugin install <target>
 story plugin uninstall <target>
+story plugin reinstall
 
 story web start [--port <PORT>]
 story web stop
@@ -533,8 +566,8 @@ Nothing has been read or written. Re-run it naming the story's own project:
 ## States
 
 - Every project state maps to exactly one superstate: `OPEN` or `CLOSED`.
-- Every project has `todo`, `in-progress` and `blocked` as `OPEN` states and
-  `done` as a `CLOSED` one. Those four cannot be removed and their superstates
+- Every project has `todo`, `in-progress`, `verifying` and `blocked` as `OPEN`
+  states and `done` and `dropped` as `CLOSED` states. Those six cannot be removed and their superstates
   cannot be changed; anything else you add is yours to arrange. A project
   created before this rule reports it in `story doctor`, and
   `story doctor --fix` adds whatever is missing.
@@ -550,11 +583,22 @@ Nothing has been read or written. Re-run it naming the story's own project:
   commit *claims* (`Closes SH-1`), as opposed to merely names (`Refs SH-1`).
 - There is no rename: a slug is recorded in every state-change event ever
   written. Add the new state, migrate to it, and remove the old one — which is
-  therefore not a way around the four states every project must have.
+  therefore not a way around the six states every project must have.
 
 Configure states from the CLI (`story state …`), the dashboard
 (**Settings → Statuses**), or the TUI (press `s`) — all three go through the
 same operations.
+
+### Dropped status
+
+`done` records completed work; `dropped` records deliberately abandoned work. Both
+have the `CLOSED` superstate. `story close <id> "reason"` moves a story to
+`dropped` and records the reason. The dashboard calls this action **Drop**.
+
+Existing `closed`/CLOSED statuses are migrated to `dropped`, preserving history.
+Conflicting custom `dropped` definitions must be resolved with the previous
+binary before upgrading; the migration reports the project and leaves it intact.
+See [the migration contract](docs/spec/dropped-state.md).
 
 ### Editing a state that still holds stories
 
@@ -634,6 +678,14 @@ choices alongside attended Dispatch, and shows the active configuration.
 | `draining` | A stop is in progress; no new claims. This is irreversible. | Wait for lanes to clear, or use `stop --now`. |
 | `halted` | Three consecutive hard stops tripped the breaker. Preserved work needs inspection. | Diagnose each quarantine before cleanup or redispatch. |
 | `finished` | The queue drained or an immediate stop completed. | Review the stop reason, then acknowledge it. |
+
+`story engine adopt SH-1 SH-2` counts existing manual dispatches toward the
+current run's lane limit. It validates each live pane and worktree lease,
+requires enough idle capacity, and applies the whole batch atomically.
+Adopted bindings release at verification or unclaim without cleaning resources.
+
+`story engine configure --lanes 6` changes a live run without restarting it.
+Omitted settings stay unchanged; occupied lanes finish when capacity shrinks.
 
 `story engine status` shows the selected run, its provider configuration,
 state, stop reason, hard-stop streak, and each lane's story and elapsed time.
@@ -795,6 +847,7 @@ Open the URL printed on start — `http://127.0.0.1:<port>` by default. If Tails
 - **Detail drawer** — click any card or row to view and edit a story's full detail: title, state, priority, assignee, type, labels, block/unblock, comments, and relationships, plus reopen and delete.
 - Faceted filters (priority, assignee, type, state) and free-text search, shared between both project views.
 - Live updates over a server-sent-events stream — every write, from any client, appears without a reload — with a slow poll as a fallback for the rare case a push is missed. Dark mode follows your system theme.
+- Times are shown in your browser's timezone. Hover any date or time for the stored UTC instant and the zone it is shown in; the store, the API and every sort stay UTC (`docs/spec/local-time-display.md`).
 
 It's a single self-contained page with no external dependencies (no CDN, no build step) and no mocked data — every action goes through the same validated, event-sourced write path as the CLI.
 
@@ -895,6 +948,7 @@ Only list hostnames that are themselves no more exposed than your tailnet.
 Global flags:
 
 - `--json` emits a structured JSON response envelope
+- timestamps in `--json` are RFC3339 UTC (`2026-09-12T20:31:59Z`); human output shows the same instants in the process's timezone with an explicit offset (`2026-09-12T13:31:59-07:00`), and `TZ=UTC` reproduces the stored string
 - `--quiet` suppresses normal success output
 - `--no-hooks` skips this command's git hooks
 - `--store-path <file>` names the store file for this command, overriding `$STORYHOOK_STORE_PATH`
@@ -1025,8 +1079,9 @@ make scratch       # a shell with a throwaway store and this checkout's binary
 ```
 
 `make test` rather than a bare `cargo test`: the wrapper isolates the data
-directory, contains the daemons the suite starts, and takes a machine-wide lock
-so two suites do not contend. A bare `cargo test` is safe — a test build refuses
+directory, contains the daemons the suite starts, and takes the repository's
+`gate` lock so two suites of one clone do not contend (a different repository
+has its own). A bare `cargo test` is safe — a test build refuses
 to resolve a real store — but it is not the gate.
 
 `make scratch` is how to exercise a change by hand. `./target/debug/story`, run

@@ -1,7 +1,7 @@
 //! The state set every project must have, and what happens to one that lacks it
 //! (SH-125).
 //!
-//! `todo`, `in-progress`, `verifying` and `blocked` OPEN; `done` and `closed`
+//! `todo`, `in-progress`, `verifying` and `blocked` OPEN; `done` and `dropped`
 //! CLOSED. A project may hold
 //! as many further states as it likes; it may not hold fewer than these.
 //!
@@ -79,7 +79,7 @@ fn slugs(fixture: &ServiceFixture) -> Vec<String> {
 
 /// A project whose catalog predates the floor: no `blocked`.
 /// One state short of the floor, and exactly one — `blocked`. Carrying
-/// `closed` (SH-505) is what keeps that true: without it this fixture would be
+/// `dropped` (SH-505) is what keeps that true: without it this fixture would be
 /// two short, and every assertion below about *the* missing state would be
 /// about a different subject.
 fn below_the_floor() -> ServiceFixture {
@@ -88,7 +88,7 @@ fn below_the_floor() -> ServiceFixture {
         state("in-progress", SuperState::Open),
         state("verifying", SuperState::Open),
         state("done", SuperState::Closed),
-        state("closed", SuperState::Closed),
+        state("dropped", SuperState::Closed),
     ])
 }
 
@@ -129,12 +129,14 @@ fn the_floor_is_six_states_and_their_superstates() {
             ("verifying", &SuperState::Open),
             ("blocked", &SuperState::Open),
             ("done", &SuperState::Closed),
-            // After `done`, and the order is load-bearing: two functions take
-            // the FIRST CLOSED state they find — `service::project::
-            // closed_state`, which names the state in every generated
-            // AGENTS.md, and `service::pr_check`, where a merged PR closes its
-            // story and abandonment would be a lie (SH-505).
-            ("closed", &SuperState::Closed),
+            // After `done`, deliberately: `default_states` mirrors this order
+            // into every new board, and completion should be the first CLOSED
+            // column a reader sees. Nothing resolves by this position — both
+            // CLOSED states are named (SH-505, SH-652); the two functions that
+            // once searched for "the first CLOSED state" now call
+            // `domain::completion_state`, and `tests/completion_state_search.rs`
+            // fences the search itself.
+            ("dropped", &SuperState::Closed),
         ]
     );
 }
@@ -171,7 +173,7 @@ fn doctor_fix_adds_the_missing_state_and_says_so() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
     assert!(findings(&ctx).is_empty());
@@ -187,7 +189,7 @@ fn doctor_fix_adds_nothing_to_a_conforming_project() {
 }
 
 /// The `agentics` shape from the live store: `todo|done` — two states short
-/// when this was written, four since `closed` and `verifying` joined the floor.
+/// when this was written, four since `dropped` and `verifying` joined the floor.
 #[test]
 fn doctor_fix_repairs_a_two_state_project_in_one_pass() {
     let fixture = ServiceFixture::with_states(&[
@@ -205,7 +207,7 @@ fn doctor_fix_repairs_a_two_state_project_in_one_pass() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ]
     );
 }
@@ -270,7 +272,7 @@ fn a_repair_leaves_the_state_new_stories_open_in_alone() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ],
         "a missing OPEN state joins the end of the OPEN run"
     );
@@ -386,7 +388,7 @@ fn importing_a_document_below_the_floor_repairs_its_catalog() {
             "verifying",
             "blocked",
             "done",
-            "closed"
+            "dropped"
         ],
         "an import repairs rather than refuses: the document may be older than the floor"
     );
@@ -408,7 +410,7 @@ fn doctor_notices_a_project_at_the_floor_with_no_active_role_state() {
         state("verifying", SuperState::Open),
         state("blocked", SuperState::Open),
         state("done", SuperState::Closed),
-        state("closed", SuperState::Closed),
+        state("dropped", SuperState::Closed),
     ]);
     let ctx = fixture.ctx();
     assert!(
@@ -457,7 +459,7 @@ fn doctor_fix_does_not_guess_which_state_should_be_active() {
         state("verifying", SuperState::Open),
         state("blocked", SuperState::Open),
         state("done", SuperState::Closed),
-        state("closed", SuperState::Closed),
+        state("dropped", SuperState::Closed),
     ]);
     let ctx = fixture.ctx();
     let message = fix(&ctx).expect("fixing");
@@ -577,13 +579,14 @@ fn doctor_fix_does_not_guess_a_blocked_reason() {
 /// `default_states` claims, in its own doc comment, to be "exactly
 /// [`REQUIRED_STATES`], in that order". Nothing checked it.
 ///
-/// The claim is load-bearing in a way that is easy to miss: a project's catalog
-/// order is what `service::project::closed_state` and `service::pr_check` read
-/// when they take "the first CLOSED state", so a twin that drifted into listing
-/// `closed` before `done` would scaffold an AGENTS.md telling every agent to
-/// finish its work by abandoning the story, and would land every merged PR in
-/// the abandoned state — with the floor itself still correct and every test of
-/// the floor still green.
+/// The claim used to be load-bearing for a resolver: until SH-652
+/// `service::project::closed_state` and `service::pr_check` took "the first
+/// CLOSED state", so a twin that listed `dropped` before `done` would have
+/// scaffolded an AGENTS.md telling every agent to abandon its work (and
+/// pr_check, reading a BTreeMap, did exactly that regardless). Both now call
+/// `domain::completion_state`, which names the slug; what this order still
+/// decides is every new project's board — completion before abandonment — and
+/// a twin that drifted would ship a board the floor's own tests never see.
 ///
 /// Two hand-written lists that must agree, with nothing checking they do, is
 /// the shape this project has already paid for in SH-136, SH-198, SH-258,

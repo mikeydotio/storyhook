@@ -37,7 +37,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::github_remote::{GithubApiBase, GithubRepo};
 use crate::domain::pr_url::{PullRequestRef, parse_pr_url};
-use crate::domain::{StoryEvent, SuperState, has_children};
+use crate::domain::{
+    COMPLETION_STATE_SLUG, StoryEvent, SuperState, VERIFYING_STATE_SLUG, completion_state,
+    has_children,
+};
 use crate::error::AppError;
 use crate::github::api::{GithubApi, GithubApiFactory};
 use crate::output::Response;
@@ -46,6 +49,7 @@ use crate::store::{ExpectedSeq, PrLink, ReadOps, Store, StoreError, StoryNo};
 use super::github::RealGithubApiFactory;
 use super::pr_link::{PrLinkService, configured_github_api_override, configured_github_repos};
 use super::story::state_transition_events;
+use super::verification::VERIFICATION_UNCERTIFIED_MERGE_PREFIX;
 use super::{Ctx, append_and_fold, project_prefix, resolve_story};
 
 impl<'ctx, S: Store> PrLinkService<'ctx, S> {
@@ -161,6 +165,7 @@ pub fn run_check<S: Store>(
     let mut merged: Vec<String> = Vec::new();
     let mut closed_without_merging: Vec<String> = Vec::new();
     let mut closed_stories: Vec<String> = Vec::new();
+    let mut left_verifying: Vec<String> = Vec::new();
     // Per-link GitHub API failures, isolated from one another: one
     // repository's error must not stop another repository's links in the
     // same run from being checked. Non-empty at the end turns this call
@@ -197,7 +202,7 @@ pub fn run_check<S: Store>(
 
         if status.merged {
             merged.push(link.url.clone());
-            ctx.store().write(|tx| {
+            ctx.write_stories(|tx| {
                 let row = tx
                     .story(project, story_no)?
                     .ok_or_else(|| StoreError::NotFound(format!("story {story_no} not found")))?;
@@ -210,20 +215,41 @@ pub fn run_check<S: Store>(
                 // still something to close — a story a person already closed
                 // by hand is not reopened-and-reclosed by this.
                 if link.close_on_merge && !row.archived && !has_children(&row.snapshot) {
-                    let closed_state = states
-                        .values()
-                        .find(|state| state.super_state == SuperState::Closed)
-                        .cloned()
-                        .ok_or_else(|| {
-                            StoreError::Invariant("project has no CLOSED-mapped state".to_string())
-                        })?;
-                    events.extend(state_transition_events(
-                        &closed_state,
-                        row.awaiting.is_some(),
-                        &now,
-                        Vec::new(),
-                    ));
-                    closed_stories.push(story_no.to_id(&prefix));
+                    if row.state == VERIFYING_STATE_SLUG {
+                        // A merge the central verifier did not make is a fact
+                        // to record, never a completion (SH-692): nothing
+                        // certified the merge tree. The story stays
+                        // `verifying`; the verifier's own entry path
+                        // classifies a merged pull request, and an operator
+                        // can complete it by hand with a recorded reason.
+                        let id = story_no.to_id(&prefix);
+                        events.push(StoryEvent::StoryCommentAdded {
+                            at: now.clone(),
+                            text: format!(
+                                "{VERIFICATION_UNCERTIFIED_MERGE_PREFIX} pull request {} was merged outside central verification while this story was verifying; its merge tree carries no receipt from this verifier. The story stays in `verifying`: the verifier's next attempt classifies the merged pull request, or complete it by hand with `story move {id} done \"<reason>\"`.",
+                                link.url
+                            ),
+                        });
+                        left_verifying.push(id);
+                    } else {
+                        // The completion state by name, never "the first
+                        // CLOSED state": `states` is a BTreeMap, so that
+                        // search answered `closed` — abandonment — on every
+                        // default catalog (SH-652).
+                        let completion =
+                            completion_state(&tx.states(project)?).ok_or_else(|| {
+                                StoreError::Invariant(format!(
+                                    "project has no CLOSED `{COMPLETION_STATE_SLUG}` state"
+                                ))
+                            })?;
+                        events.extend(state_transition_events(
+                            &completion,
+                            row.awaiting.is_some(),
+                            &now,
+                            Vec::new(),
+                        ));
+                        closed_stories.push(story_no.to_id(&prefix));
+                    }
                 }
                 append_and_fold(
                     tx,
@@ -254,7 +280,7 @@ pub fn run_check<S: Store>(
             })?;
         } else if status.state == "closed" {
             closed_without_merging.push(link.url.clone());
-            ctx.store().write(|tx| {
+            ctx.write_stories(|tx| {
                 let row = tx
                     .story(project, story_no)?
                     .ok_or_else(|| StoreError::NotFound(format!("story {story_no} not found")))?;
@@ -290,6 +316,12 @@ pub fn run_check<S: Store>(
     );
     if !closed_stories.is_empty() {
         message.push_str(&format!("\nclosed: {}", closed_stories.join(", ")));
+    }
+    if !left_verifying.is_empty() {
+        message.push_str(&format!(
+            "\nleft verifying (merged without a verdict): {}",
+            left_verifying.join(", ")
+        ));
     }
     if !skipped.is_empty() {
         message.push_str(&format!(

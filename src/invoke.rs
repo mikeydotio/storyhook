@@ -21,7 +21,6 @@
 //! the services. `tests/invoker_seam.rs` now asserts that neither it nor
 //! anything it reached can come back.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -30,14 +29,14 @@ use crate::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, CrashesAction,
     DaemonAction, EngineAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
     NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction,
-    StoreAction, TokenAction, TypeAction, UnclaimComment, WebAction,
+    StoreAction, TokenAction, TypeAction, UnclaimComment, VerifierAction, WebAction,
 };
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{FieldEdit, StateChanges, SuperState, TypeChanges, TypeDef};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::help_topics;
-use crate::output::{ConfirmationPlan, EngineRunView, Response, render_html_report};
+use crate::output::{ConfirmationPlan, EngineRunView, Response};
 use crate::service::engine::{EngineService, ShellDispatcher, StartRequest, StoreOnlyDispatcher};
 use crate::service::{
     AttachmentService, CatalogService, CleanupService, Clock, ConfigService, Ctx, DeleteOutcome,
@@ -344,7 +343,28 @@ pub fn create_store(cwd: &Path, requested: &str) -> Result<Response, AppError> {
 /// passes through — the CLI, the TUI, the dashboard's routes and a hand-built
 /// `InvokeRequest` — so no arm has to remember, and the arms below may treat
 /// their `id` as canonical. See [`story_ids`].
-pub fn dispatch<S: Store>(
+pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Response, AppError> {
+    let notice = matches!(
+        &invocation,
+        Invocation::Next { .. }
+            | Invocation::Context { .. }
+            | Invocation::Summary
+            | Invocation::Engine {
+                action: EngineAction::Status { .. }
+            }
+    );
+    let response = dispatch_inner(ctx, invocation)?;
+    if notice && let Some(activity) = ctx.verification_activity() {
+        return Ok(Response::WithVerifier {
+            response: Box::new(response),
+            verifiers: vec![activity.status(ctx)?],
+            unavailable: None,
+        });
+    }
+    Ok(response)
+}
+
+fn dispatch_inner<S: Store>(
     ctx: &Ctx<'_, S>,
     mut invocation: Invocation,
 ) -> Result<Response, AppError> {
@@ -400,7 +420,7 @@ pub fn dispatch<S: Store>(
                 view.warnings.extend(crate::block_notice::warnings(
                     ctx,
                     &id,
-                    awaiting.as_deref(),
+                    view.story.awaiting.as_deref(),
                     &view.story.relationships,
                 ));
             }
@@ -571,13 +591,19 @@ pub fn dispatch<S: Store>(
         Invocation::Plugin { action } => {
             let service = SystemService::new(ctx);
             match action {
-                PluginAction::Install { target } => service.install_plugin(&target),
-                PluginAction::Uninstall { target } => service.uninstall_plugin(&target),
+                PluginAction::Install { target } => {
+                    service.install_plugin(&target).map(Response::Message)
+                }
+                PluginAction::Uninstall { target } => {
+                    service.uninstall_plugin(&target).map(Response::Message)
+                }
+                PluginAction::Reinstall => {
+                    service.reinstall_plugins().map(plugin_reinstall_response)
+                }
                 PluginAction::Run { .. } => Err(AppError::Storage(
                     "internal: `story plugin run` reached the daemon".to_string(),
                 )),
             }
-            .map(Response::Message)
         }
         Invocation::Phase { action } => dispatch_phase(ctx, action),
         Invocation::Epic { action } => dispatch_epic(ctx, action),
@@ -671,6 +697,12 @@ pub fn dispatch<S: Store>(
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
         Invocation::Engine { action } => dispatch_engine(ctx, action),
+        Invocation::Verifier { action } => dispatch_verifier(ctx, action),
+        Invocation::Resources { id, options } => {
+            crate::service::resources::ResourceService::new(ctx)
+                .resolve(&id, &options)
+                .map(|report| Response::Resources(Box::new(report)))
+        }
         Invocation::Cleanup { dry_run } => CleanupService::new(ctx)
             .run(dry_run)
             .map(|report| Response::Cleanup(Box::new(report))),
@@ -678,15 +710,10 @@ pub fn dispatch<S: Store>(
             .map(|summary| Response::Summary(Box::new(summary))),
         Invocation::Report { html } => {
             if html {
-                let data = query(ctx, |service| service.report_data())?;
-                let ready: BTreeSet<&str> = data.ready_ids.iter().map(String::as_str).collect();
-                let blocked: BTreeSet<&str> = data.blocked_ids.iter().map(String::as_str).collect();
-                Ok(Response::Message(render_html_report(
-                    &data.summary,
-                    &data.stories,
-                    &|id| ready.contains(id),
-                    &|id| blocked.contains(id),
-                )))
+                // Data only: the client renders the document in its own zone
+                // (SH-679, `Response::HtmlReport`).
+                query(ctx, |service| service.report_data())
+                    .map(|data| Response::HtmlReport(Box::new(data)))
             } else {
                 query(ctx, |service| service.report_summary())
                     .map(|summary| Response::Summary(Box::new(summary)))
@@ -695,9 +722,58 @@ pub fn dispatch<S: Store>(
         Invocation::Graph { mode } => {
             query(ctx, |service| service.graph(&mode)).map(|graph| Response::Graph(Box::new(graph)))
         }
-        Invocation::Context { format } => {
+        Invocation::Continuation { id, action } => {
+            use crate::cli::ContinuationAction;
+            use crate::service::continuation::{ContinuationService, PythonRuntime};
+            let runtime = PythonRuntime::installed(ctx.env().clone());
+            let service = ContinuationService::new(ctx, &runtime);
+            let input =
+                || -> Result<serde_json::Value, AppError> {
+                    crate::service::continuation::parse_document(ctx.stdin().ok_or_else(|| {
+                        AppError::Usage("continuation requires JSON on stdin".into())
+                    })?)
+                };
+            let answer = match action {
+                ContinuationAction::Capabilities => {
+                    serde_json::json!({"result":"ok","continuation_protocol":1})
+                }
+                ContinuationAction::Status => service.status(&id)?,
+                ContinuationAction::Request => {
+                    let (record, native_feedback) = service.request_with_receipt(&id, input()?)?;
+                    serde_json::json!({"result":"ok","continuation":record,"native_feedback":native_feedback})
+                }
+                ContinuationAction::Receipt { request } => {
+                    serde_json::json!({"result":"ok","continuation":service.receipt(&id,&request,&input()?)?})
+                }
+                ContinuationAction::Retry { request } => {
+                    serde_json::json!({"result":"ok","continuation":service.retry(&id,&request)?})
+                }
+                ContinuationAction::Ack {
+                    request,
+                    reviewed_seq,
+                    head,
+                    provider,
+                    session_id,
+                } => {
+                    serde_json::json!({"result":"ok","continuation":service.ack(&id,&request,reviewed_seq,&head,&provider,&session_id)?})
+                }
+            };
+            Ok(Response::RawJson(serde_json::to_string(&answer)?))
+        }
+        Invocation::SessionEligibility { id } => {
+            let eligibility = query(ctx, |service| service.session_eligibility(&id))?;
+            Ok(Response::RawJson(serde_json::to_string(
+                &serde_json::json!({
+                    "result": "ok", "session_eligibility": eligibility
+                }),
+            )?))
+        }
+        Invocation::Context { format, story } => {
             let json = format.as_deref() == Some("json");
-            let document = query(ctx, |service| service.context(json))?;
+            let document = query(ctx, |service| match story.as_deref() {
+                Some(id) => service.context_for_story(id, json),
+                None => service.context(json),
+            })?;
             // `RawJson` for the JSON form: the document *is* the result, so the
             // `--json` envelope has nothing to add, and wrapping it as an
             // escaped string double-encodes it (SH-66, the `export --json`
@@ -944,10 +1020,107 @@ pub fn dispatch<S: Store>(
     }
 }
 
+/// `story verifier ack <incident-id>`: the CLI door onto the same
+/// acknowledgement `POST .../verification/ack` performs (SH-666).
+fn dispatch_verifier<S: Store>(
+    ctx: &Ctx<'_, S>,
+    action: VerifierAction,
+) -> Result<Response, AppError> {
+    use crate::service::verification_control::{VerificationAcknowledgement, VerificationAction};
+    let activity = ctx.verification_activity().ok_or_else(|| {
+        AppError::Validation(
+            "verifier runtime unavailable; run this command through the daemon".into(),
+        )
+    })?;
+    let receipt = match action {
+        VerifierAction::Status => None,
+        VerifierAction::Start => Some(
+            activity
+                .control_with_receipt(
+                    ctx.store(),
+                    ctx.project(),
+                    VerificationAction::Start,
+                    &ctx.now(),
+                )?
+                .1,
+        ),
+        VerifierAction::Stop => Some(
+            activity
+                .control_with_receipt(
+                    ctx.store(),
+                    ctx.project(),
+                    VerificationAction::Stop,
+                    &ctx.now(),
+                )?
+                .1,
+        ),
+        VerifierAction::Drain => Some(
+            activity
+                .control_with_receipt(
+                    ctx.store(),
+                    ctx.project(),
+                    VerificationAction::Drain,
+                    &ctx.now(),
+                )?
+                .1,
+        ),
+        VerifierAction::Ack { incident_id } => Some(
+            activity
+                .acknowledge_with_receipt(
+                    ctx,
+                    &incident_id,
+                    Some(VerificationAcknowledgement::Retry),
+                )?
+                .1,
+        ),
+        VerifierAction::AckLeaveStopped { incident_id } => Some(
+            activity
+                .acknowledge_with_receipt(
+                    ctx,
+                    &incident_id,
+                    Some(VerificationAcknowledgement::LeaveStopped),
+                )?
+                .1,
+        ),
+    };
+    let mut status = activity.status(ctx)?;
+    status.command_receipt = receipt;
+    Ok(Response::VerifierStatus(Box::new(status)))
+}
+
 fn dispatch_engine<S: Store>(ctx: &Ctx<'_, S>, action: EngineAction) -> Result<Response, AppError> {
     let store_only = StoreOnlyDispatcher;
     let service = EngineService::new(ctx, &store_only);
     let view = match action {
+        EngineAction::ResetCheck { story } => {
+            ctx.store().read(|tx| {
+                let prefix = crate::service::project_prefix(tx, ctx.project())?;
+                let (number, _) =
+                    crate::service::resolve_story(tx, ctx.project(), &prefix, &story)?;
+                crate::service::engine::reset::refuse_reserved(tx, ctx.project(), number)?;
+                Ok(())
+            })?;
+            return Ok(Response::Message(format!(
+                "story `{story}` has no pending engine reset"
+            )));
+        }
+        EngineAction::ResetTarget { run, token } => {
+            return Ok(Response::EngineReset(Box::new(
+                service.reset_target(&run, &token)?,
+            )));
+        }
+        EngineAction::Adopt { run, ids } => {
+            let run_id = service.resolve_run_id(run.as_ref())?;
+            service.adopt(
+                &run_id,
+                &ids,
+                &crate::service::engine::adoption::LiveDispatchInspector,
+            )?
+        }
+        EngineAction::Configure { run, patch } => {
+            let run_id = service.resolve_run_id(run.as_ref())?;
+            service.configure_patch(&run_id, patch)?
+        }
         EngineAction::Start {
             epic,
             lanes,
@@ -985,12 +1158,11 @@ fn dispatch_engine<S: Store>(ctx: &Ctx<'_, S>, action: EngineAction) -> Result<R
         EngineAction::Stop { run, now: true } => {
             let run_id = service.resolve_run_id(run.as_ref())?;
             let selected = one_engine_view(service.status(Some(&run_id))?, &run_id)?;
-            if selected.lanes.iter().all(|lane| {
-                matches!(
-                    lane.state,
-                    EngineLaneState::Idle | EngineLaneState::Quarantined
-                )
-            }) {
+            if selected
+                .lanes
+                .iter()
+                .all(|lane| matches!(lane.state, EngineLaneState::Idle))
+            {
                 service.stop(&run_id, true)?
             } else {
                 let script =
@@ -1843,6 +2015,18 @@ fn crashes_ledger_message(ledger: &[crate::daemon::crash::CrashRecord]) -> Strin
     body
 }
 
+/// A reinstall's findings ride the warnings channel: what was *not* done —
+/// copies left behind without a registration, a config that could not be read
+/// — must reach the person, never be folded into the success text where a
+/// `--json` reader would have to grep for it.
+fn plugin_reinstall_response(report: crate::plugin::reinstall::Report) -> Response {
+    if report.warnings.is_empty() {
+        Response::Message(report.message)
+    } else {
+        Response::MessageWithWarnings(report.message, report.warnings)
+    }
+}
+
 /// `story update` — self-update, which touches no project data at all.
 ///
 /// Unconditional (SH-408): `src/update.rs` rides `ureq`, which has been an
@@ -1854,7 +2038,7 @@ fn update(check: bool, force: bool) -> Result<Response, AppError> {
 
     let outcome = crate::update::run(check, force)?;
     let is_terminal = std::io::stderr().is_terminal();
-    let health = if is_terminal && matches!(&outcome, crate::update::Outcome::Replaced(_)) {
+    let health = if is_terminal && matches!(&outcome, crate::update::Outcome::Replaced { .. }) {
         // `main` has already published a global `--store-path` into the
         // process environment, so resolving here inspects that store's own
         // agent without opening the store. This diagnostic is best-effort: an
@@ -1876,15 +2060,19 @@ fn update_response(
 ) -> Response {
     match outcome {
         crate::update::Outcome::Unchanged(message) => Response::Message(message),
-        crate::update::Outcome::Replaced(message) => {
-            let warning = if is_terminal {
-                health.and_then(crate::daemon::agent::warning)
+        crate::update::Outcome::Replaced {
+            message,
+            mut warnings,
+        } => {
+            // The plugin reinstall's own findings first (they are about what
+            // this update did), the agent's last (it is about the next login).
+            if is_terminal && let Some(warning) = health.and_then(crate::daemon::agent::warning) {
+                warnings.push(warning);
+            }
+            if warnings.is_empty() {
+                Response::Message(message)
             } else {
-                None
-            };
-            match warning {
-                Some(warning) => Response::MessageWithWarnings(message, vec![warning]),
-                None => Response::Message(message),
+                Response::MessageWithWarnings(message, warnings)
             }
         }
     }
@@ -1902,6 +2090,13 @@ mod update_response_tests {
         }
     }
 
+    fn replaced(message: &str) -> crate::update::Outcome {
+        crate::update::Outcome::Replaced {
+            message: message.to_string(),
+            warnings: Vec::new(),
+        }
+    }
+
     fn assert_message_only(response: Response) {
         assert!(
             matches!(response, Response::Message(_)),
@@ -1911,11 +2106,7 @@ mod update_response_tests {
 
     #[test]
     fn a_successful_replacement_at_a_terminal_reports_a_stale_agent() {
-        let response = update_response(
-            crate::update::Outcome::Replaced("updated".to_string()),
-            true,
-            Some(&stale()),
-        );
+        let response = update_response(replaced("updated"), true, Some(&stale()));
 
         let Response::MessageWithWarnings(message, warnings) = response else {
             panic!("a stale agent must travel as a structured warning")
@@ -1923,6 +2114,36 @@ mod update_response_tests {
         assert_eq!(message, "updated");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("/old/story"));
+    }
+
+    /// The reinstall's findings reach the person whether or not the agent
+    /// has anything to say, in every mode — they are about what this update
+    /// just did, not about a terminal.
+    #[test]
+    fn plugin_reinstall_warnings_travel_and_precede_the_agents() {
+        let outcome = crate::update::Outcome::Replaced {
+            message: "updated".to_string(),
+            warnings: vec!["Codex: copies remain".to_string()],
+        };
+        let Response::MessageWithWarnings(message, warnings) =
+            update_response(outcome, true, Some(&stale()))
+        else {
+            panic!("reinstall findings must travel as structured warnings")
+        };
+        assert_eq!(message, "updated");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(warnings[0], "Codex: copies remain");
+        assert!(warnings[1].contains("/old/story"), "{warnings:?}");
+
+        let outcome = crate::update::Outcome::Replaced {
+            message: "updated".to_string(),
+            warnings: vec!["Codex: copies remain".to_string()],
+        };
+        let Response::MessageWithWarnings(_, warnings) = update_response(outcome, false, None)
+        else {
+            panic!("reinstall findings must travel even away from a terminal")
+        };
+        assert_eq!(warnings, vec!["Codex: copies remain".to_string()]);
     }
 
     #[test]
@@ -1936,11 +2157,7 @@ mod update_response_tests {
 
     #[test]
     fn a_non_terminal_update_never_reports_the_agent() {
-        assert_message_only(update_response(
-            crate::update::Outcome::Replaced("updated".to_string()),
-            false,
-            Some(&stale()),
-        ));
+        assert_message_only(update_response(replaced("updated"), false, Some(&stale())));
     }
 
     #[test]
@@ -1955,11 +2172,7 @@ mod update_response_tests {
                 exe: PathBuf::from("/installed/story"),
             },
         ] {
-            assert_message_only(update_response(
-                crate::update::Outcome::Replaced("updated".to_string()),
-                true,
-                Some(&health),
-            ));
+            assert_message_only(update_response(replaced("updated"), true, Some(&health)));
         }
     }
 }
@@ -2471,13 +2684,19 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
             })),
         },
         Invocation::Plugin { action } => match action {
-            PluginAction::Install { target } => system::install_plugin(&target, root),
-            PluginAction::Uninstall { target } => system::uninstall_plugin(&target, root),
+            PluginAction::Install { target } => {
+                system::install_plugin(&target, root).map(Response::Message)
+            }
+            PluginAction::Uninstall { target } => {
+                system::uninstall_plugin(&target, root).map(Response::Message)
+            }
+            PluginAction::Reinstall => {
+                system::reinstall_plugins(root).map(plugin_reinstall_response)
+            }
             PluginAction::Run { .. } => Err(AppError::Storage(
                 "internal: `story plugin run` reached the daemon".to_string(),
             )),
-        }
-        .map(Response::Message),
+        },
         // Reached only when no project could be resolved. `claude-md` and
         // `cursor-rules` take nothing from a project at all; `agents-md` falls
         // back to the default prefix and `done`, which is exactly what the
@@ -2671,6 +2890,11 @@ pub fn reads_stdin(invocation: &Invocation) -> bool {
         // in normal use — same as `Import` with no `--file`, which has read
         // stdin unconditionally since before this function existed.
         Invocation::SessionStart => true,
+        Invocation::Continuation {
+            action:
+                crate::cli::ContinuationAction::Request | crate::cli::ContinuationAction::Receipt { .. },
+            ..
+        } => true,
         _ => false,
     }
 }
@@ -2708,7 +2932,9 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Engine { .. }
+        | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
+        | Invocation::Resources { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
@@ -2736,6 +2962,8 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Export
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
+        | Invocation::Continuation { .. }
+        | Invocation::SessionEligibility { .. }
         | Invocation::Context { .. }
         | Invocation::Handoff { .. }
         | Invocation::Phase { .. }
@@ -2916,7 +3144,9 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Claim { .. } => "claim",
         Invocation::Unclaim { .. } => "unclaim",
         Invocation::Engine { .. } => "engine",
+        Invocation::Verifier { .. } => "verifier",
         Invocation::Cleanup { .. } => "cleanup",
+        Invocation::Resources { .. } => "resources",
         Invocation::Summary => "summary",
         Invocation::Report { .. } => "report",
         Invocation::Doctor { .. } => "doctor",
@@ -2939,6 +3169,8 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Decompose { .. } => "decompose",
         Invocation::Export => "export",
         Invocation::ImportProject { .. } => "import-project",
+        Invocation::Continuation { .. } => "continuation",
+        Invocation::SessionEligibility { .. } => "session-eligibility",
         Invocation::Context { .. } => "context",
         Invocation::Handoff { .. } => "handoff",
         Invocation::Phase { .. } => "phase",
@@ -3706,6 +3938,7 @@ pub struct StoreInvoker<'a, S: Store> {
     cwd: PathBuf,
     env: Environment,
     hook_depth: u32,
+    verification_activity: Option<&'a crate::daemon::verification::VerificationActivity>,
 }
 
 impl<'a, S: Store> StoreInvoker<'a, S> {
@@ -3716,6 +3949,7 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
             cwd: cwd.into(),
             env,
             hook_depth: 0,
+            verification_activity: None,
         }
     }
 
@@ -3723,6 +3957,15 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
     #[must_use]
     pub fn hook_depth(mut self, hook_depth: u32) -> Self {
         self.hook_depth = hook_depth;
+        self
+    }
+
+    /// Supplies the daemon's shared verifier runtime to scoped commands.
+    pub fn verification_activity(
+        mut self,
+        activity: &'a crate::daemon::verification::VerificationActivity,
+    ) -> Self {
+        self.verification_activity = Some(activity);
         self
     }
 
@@ -4041,7 +4284,9 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Claim { .. }
         | Invocation::Unclaim { .. }
         | Invocation::Engine { .. }
+        | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
+        | Invocation::Resources { .. }
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
@@ -4067,6 +4312,8 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Import { .. }
         | Invocation::Decompose { .. }
         | Invocation::Export
+        | Invocation::Continuation { .. }
+        | Invocation::SessionEligibility { .. }
         | Invocation::Context { .. }
         | Invocation::Handoff { .. }
         | Invocation::Phase { .. }
@@ -4168,14 +4415,30 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
                     describe_unscoped(&request.invocation)
                 )));
             }
-            return dispatch_unscoped_with_stdin(
+            let lane_budget = matches!(request.invocation, Invocation::LaneBudget);
+            let response = dispatch_unscoped_with_stdin(
                 self.store,
                 &self.env,
                 &self.cwd,
                 &now,
                 request.invocation,
                 request.stdin.as_deref(),
-            );
+            )?;
+            if lane_budget && let Some(activity) = self.verification_activity {
+                let projects = self.store.read(|tx| tx.projects())?;
+                let mut verifiers = Vec::new();
+                for project in projects {
+                    let ctx = Ctx::new(self.store, project.id, &self.cwd, self.env.clone())
+                        .no_hooks(true);
+                    verifiers.push(activity.status(&ctx)?);
+                }
+                return Ok(Response::WithVerifier {
+                    response: Box::new(response),
+                    verifiers,
+                    unavailable: None,
+                });
+            }
+            return Ok(response);
         }
 
         let Some(project) = self.resolve_project(request.project.as_ref())? else {
@@ -4238,7 +4501,8 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             .hook_depth(self.hook_depth)
             .with_stdin(request.stdin)
             .with_github_token(request.github_token)
-            .with_provenance(provenance);
+            .with_provenance(provenance)
+            .with_verification_activity(self.verification_activity);
         dispatch(&ctx, request.invocation)
     }
 }
@@ -5277,5 +5541,50 @@ mod project_creation_target_tests {
                 "{invocation:?} must not name a creation target"
             );
         }
+    }
+}
+
+/// Adds live verifier notices without starting a daemon or changing the caller's tmux census.
+pub fn lane_budget_with_verifier_notices(
+    env: &Environment,
+    cwd: &std::path::Path,
+    response: Response,
+) -> Response {
+    use crate::daemon::lifecycle;
+    let result =
+        (|| -> Result<Vec<crate::daemon::verification::status::VerifierStatus>, String> {
+            let daemon =
+                lifecycle::read_info(env).ok_or_else(|| "daemon is not running".to_string())?;
+            lifecycle::hello(&daemon).map_err(|e| e.to_string())?;
+            let request = crate::api::wire::WireRequest::new(Invocation::LaneBudget, cwd);
+            let remote = HttpInvoker::send(
+                env,
+                &daemon,
+                &request,
+                None,
+                lifecycle::RECORD_POLL,
+                lifecycle::SERVED_PATIENCE,
+                false,
+            )
+            .map_err(|e| format!("{e:?}"))?
+            .map_err(|e| e.to_string())?;
+            match remote {
+                Response::WithVerifier { verifiers, .. } => Ok(verifiers),
+                _ => Err("daemon does not provide verifier status; update the daemon".into()),
+            }
+        })();
+    match result {
+        Ok(verifiers) => Response::WithVerifier {
+            response: Box::new(response),
+            verifiers,
+            unavailable: None,
+        },
+        Err(error) => Response::WithVerifier {
+            response: Box::new(response),
+            verifiers: Vec::new(),
+            unavailable: Some(format!(
+                "verifier status unavailable: {error}; story verifier status"
+            )),
+        },
     }
 }

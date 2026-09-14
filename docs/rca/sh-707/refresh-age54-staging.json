@@ -1,0 +1,43 @@
+{
+  "plugin_id": "greenlight-sh707-age54@personal",
+  "version": "3.9.1+codex.20260913065353",
+  "source": "/Users/mikey/plugins/greenlight-sh707-age54",
+  "marketplace": "/Users/mikey/.agents/plugins/marketplace.json",
+  "artifact_sha256": "c58e1bcafcb38756e1473fd972be896a2f67971fb1e5c3e98a621350792e29be",
+  "existing_registration_preserved": true,
+  "installed": false,
+  "native_trust_changed": false,
+  "helper_commands": [
+    {
+      "helper": "read_marketplace_name.py",
+      "arguments": [
+        "--marketplace-path",
+        "/Users/mikey/.agents/plugins/marketplace.json"
+      ],
+      "exit_status": 0,
+      "stdout": "personal\n",
+      "stderr": ""
+    },
+    {
+      "helper": "create_basic_plugin.py",
+      "arguments": [
+        "greenlight-sh707-age54",
+        "--with-marketplace"
+      ],
+      "exit_status": 0,
+      "stdout": "Created plugin scaffold: /Users/mikey/plugins/greenlight-sh707-age54\nplugin manifest: /Users/mikey/plugins/greenlight-sh707-age54/.codex-plugin/plugin.json\nmarketplace manifest: /Users/mikey/.agents/plugins/marketplace.json\n",
+      "stderr": ""
+    }
+  ],
+  "source_commit": "dfd8aebda5c3fa33dec87bc93c4925fff7264809",
+  "plugin_tree": "c49f3ec2dcbadb8c66780047922aed20d1d5c4a8",
+  "original_enabled": true,
+  "old_candidate_enabled": false,
+  "new_candidate_installed": false,
+  "old_source_and_archive_preserved": true,
+  "existing_cache_files_preserved": 435,
+  "live_config_and_native_trust_byte_identical": true,
+  "native_host_validated": false,
+  "release_certified": false,
+  "operator_install_command": "codex plugin add greenlight-sh707-age54@personal --json"
+}

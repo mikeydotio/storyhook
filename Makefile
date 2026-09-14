@@ -155,9 +155,9 @@ STORYHOOK_MAKE_NO_EXEC := $(strip \
 # which is what makes running this target the thing that installs the gate
 # rather than a ritual someone has to remember. The postlude WRITES THE RECEIPT
 # naming the tree that just went green, and it is the LAST recipe line on
-# purpose: make aborts the recipe at the first failing line, so "no receipt
-# unless every leg passed" is true by construction rather than by exit-code
-# plumbing. Anything appended after it starts certifying failed runs.
+# purpose: the private body aggregates leg failures, then make refuses this
+# following line unless both the body and orphan cleanup passed. Anything
+# appended after it starts certifying failed runs.
 #
 # The gate it feeds replaced a Claude Code PreToolUse hook that was SIGTERMed at
 # its own 900-second ceiling, after which the push proceeded ungated and
@@ -200,15 +200,19 @@ test: check-no-orphan-servers
 _test-full-body: E2E=1
 _test-full-body: _test-body
 
+_test-body _test-changed-body: SHELL := /bin/bash
+
 _test-body:
 	@bash scripts/release-status.sh || true
-	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
-	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
-	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core
-	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
-	bash scripts/leg.sh --reuse build -- cargo build
-	bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
-	$(if $(E2E),bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
+	@. scripts/gate-legs.sh; gate_init; \
+	gate_run fmt bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check; \
+	gate_run clippy bash scripts/leg.sh --reuse clippy -- python3 scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
+	gate_run rust-suite bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core; \
+	gate_run rust-contracts bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts; \
+	gate_run build bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build; \
+	gate_run plugin bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh; \
+	$(if $(E2E),gate_run e2e bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true); \
+	gate_finish
 
 # The selective tier (SH-429). Identical to `test` except the rust-suite leg
 # runs `scripts/run-changed.sh` (which asks `scripts/select-tests.sh` what is
@@ -236,13 +240,15 @@ test-changed: check-no-orphan-servers
 
 _test-changed-body:
 	@bash scripts/release-status.sh || true
-	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
-	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
-	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-changed.sh
-	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
-	bash scripts/leg.sh --reuse build -- cargo build
-	bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
-	@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true
+	@. scripts/gate-legs.sh; gate_init; \
+	gate_run fmt bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check; \
+	gate_run clippy bash scripts/leg.sh --reuse clippy -- python3 scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
+	gate_run rust-suite bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-changed.sh; \
+	gate_run rust-contracts bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts; \
+	gate_run build bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build; \
+	gate_run plugin bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh; \
+	bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true; \
+	gate_finish
 
 # Installs the e2e/ Node toolchain and the browsers e2e/playwright.config.ts
 # names (chromium, webkit -- SH-335). Not part of either gate target itself --
@@ -413,14 +419,28 @@ scratch-clean:
 # install(1) replaces the file with a fresh inode: new invocations get a
 # cleanly-signed binary and the running process keeps its old mapping.
 #
-# Note this does NOT restart a running dashboard daemon; it keeps serving the
-# old code until restarted (see SH-54).
-#
 # Reports the WHOLE `--version` line, not just the bare semver -- SH-406
 # stamps every build with a build id derived from its tracked git content
 # (build.rs), so two installs of the same VERSION distinguish themselves here
 # whenever their tracked content differs.
+#
+# Then reinstalls the plugin for every provider that has it registered
+# (SH-667). The plugin travels inside the binary and is projected per version,
+# so until this line every `make install` left Claude Code and Codex pinned at
+# the previous release's projection -- the STALE RELEASE `story doctor
+# install` reports, and what SH-584's RCA found. It runs the binary JUST
+# INSTALLED, never whatever `story` is on PATH: only that binary embeds the
+# payload being installed. The verb is daemon-routed, and a daemon of another
+# build stands down for the new client, so this install implicitly reseats the
+# daemon on the new binary -- which `scripts/release.sh` does by hand anyway.
+#
+# `|| echo` on purpose: this target is the recovery `StoreError::SchemaTooNew`
+# prescribes and stays ungated (docs/spec/release-lockstep.md), and
+# `scripts/release.sh` runs it under `set -e` between `daemon stop` and `daemon
+# start`. A plugin refresh that failed the install would leave that machine
+# with no daemon at all. The failure is named, with its retry, never swallowed.
 install: release-build
 	@mkdir -p "$(INSTALL_DIR)"
 	install -m 755 target/release/story "$(INSTALL_DIR)/story"
 	@echo "Installed $$("$(INSTALL_DIR)/story" --version) to $(INSTALL_DIR)/story"
+	"$(INSTALL_DIR)/story" plugin reinstall || echo "warning: the provider plugins were not reinstalled (exit $$?); run \`story plugin reinstall\`" >&2

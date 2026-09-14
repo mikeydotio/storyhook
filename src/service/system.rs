@@ -38,7 +38,7 @@ use crate::error::AppError;
 use crate::store::Store;
 use crate::{event_hooks, hooks, plugin};
 
-use super::project::closed_state;
+use super::project::completion_state_slug;
 use super::{Ctx, project_prefix, templates};
 
 /// The scaffolding, git-hook and plugin commands.
@@ -61,10 +61,12 @@ impl<'ctx, S: Store> SystemService<'ctx, S> {
         match kind {
             "agents-md" => {
                 let project = self.ctx.project();
-                let (prefix, done) = self
-                    .ctx
-                    .store()
-                    .read(|tx| Ok((project_prefix(tx, project)?, closed_state(tx, project)?)))?;
+                let (prefix, done) = self.ctx.store().read(|tx| {
+                    Ok((
+                        project_prefix(tx, project)?,
+                        completion_state_slug(tx, project)?,
+                    ))
+                })?;
                 Ok(templates::agents_md(&prefix, &done))
             }
             "claude-md" => Ok(templates::claude_md()),
@@ -112,6 +114,11 @@ impl<'ctx, S: Store> SystemService<'ctx, S> {
     pub fn uninstall_plugin(&self, target: &str) -> Result<String, AppError> {
         uninstall_plugin(target, self.ctx.cwd())
     }
+
+    /// Reinstalls the plugin for every provider that has it registered.
+    pub fn reinstall_plugins(&self) -> Result<plugin::reinstall::Report, AppError> {
+        reinstall_plugins(self.ctx.cwd())
+    }
 }
 
 // --- the project-less half --------------------------------------------------
@@ -149,4 +156,10 @@ pub fn install_plugin(target: &str, cwd: &std::path::Path) -> Result<String, App
 /// Removes the plugin named by `target` from the checkout at `cwd`.
 pub fn uninstall_plugin(target: &str, cwd: &std::path::Path) -> Result<String, AppError> {
     plugin::uninstall(target, cwd)
+}
+
+/// Reinstalls the plugin for every provider whose configuration registers the
+/// storyhook marketplace, from this binary's embedded release (SH-667).
+pub fn reinstall_plugins(cwd: &std::path::Path) -> Result<plugin::reinstall::Report, AppError> {
+    plugin::reinstall::run(cwd)
 }

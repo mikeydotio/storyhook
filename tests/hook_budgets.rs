@@ -350,6 +350,9 @@ fn the_manifest_currently_declares_exactly_these_hooks() {
     assert_eq!(
         scripts,
         vec![
+            "codex-stop.sh",
+            "continuation.sh",
+            "continuation.sh",
             "full-auto.sh",
             "full-auto.sh",
             "full-auto.sh",
@@ -383,7 +386,13 @@ fn hook_manifest_has_the_shared_provider_contract() {
     events.sort_unstable();
     assert_eq!(
         events,
-        ["PostToolUse", "PreToolUse", "SessionStart", "Stop"]
+        [
+            "PostCompact",
+            "PostToolUse",
+            "PreToolUse",
+            "SessionStart",
+            "Stop"
+        ]
     );
 
     // One row per (event, matcher). `PreToolUse` retains Claude's plan-tool
@@ -414,35 +423,52 @@ fn hook_manifest_has_the_shared_provider_contract() {
         ("PreToolUse", "AskUserQuestion", "full-auto.sh", 10),
         ("PreToolUse", "request_user_input", "full-auto.sh", 10),
         ("PostToolUse", "Bash", "post-git.sh", 10),
+        ("PostCompact", "manual|auto", "continuation.sh", 10),
+        ("Stop", "*", "continuation.sh", 10),
         ("Stop", "*", "stop-handoff.sh", 15),
+        ("Stop", "*", "codex-stop.sh", 50),
     ];
 
     // Compared as a set in both directions, because looking each expected entry
     // up by matcher below can only ever prove the manifest has AT LEAST these --
     // a fourth PreToolUse matcher wiring some other tool would otherwise be
     // invisible here.
-    let mut declared_pairs: Vec<(String, String)> = hooks
+    let mut declared_pairs: Vec<(String, String, String)> = hooks
         .iter()
         .flat_map(|(event, matchers)| {
             matchers
                 .as_array()
                 .unwrap_or_else(|| panic!("{event} must be an array of matchers"))
                 .iter()
-                .map(move |entry| {
-                    (
-                        event.clone(),
-                        entry["matcher"]
-                            .as_str()
-                            .unwrap_or_else(|| panic!("{event} entry declares no matcher"))
-                            .to_string(),
-                    )
+                .flat_map(move |entry| {
+                    entry["hooks"].as_array().unwrap().iter().map(move |hook| {
+                        (
+                            event.clone(),
+                            entry["matcher"].as_str().unwrap().to_string(),
+                            hook["command"].as_str().unwrap().to_string(),
+                        )
+                    })
                 })
         })
         .collect();
     declared_pairs.sort();
-    let mut expected_pairs: Vec<(String, String)> = expected
+    let command_for = |event: &str, script: &str| {
+        let argument = match (event, script) {
+            ("PostCompact", "continuation.sh") => " compact",
+            ("Stop", "continuation.sh") => " stop",
+            _ => "",
+        };
+        format!("bash \"${{PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}/hooks/{script}\"{argument}")
+    };
+    let mut expected_pairs: Vec<(String, String, String)> = expected
         .iter()
-        .map(|(event, matcher, _, _)| ((*event).to_string(), (*matcher).to_string()))
+        .map(|(event, matcher, script, _)| {
+            (
+                (*event).to_string(),
+                (*matcher).to_string(),
+                command_for(event, script),
+            )
+        })
         .collect();
     expected_pairs.sort();
     assert_eq!(
@@ -457,9 +483,13 @@ fn hook_manifest_has_the_shared_provider_contract() {
             .as_array()
             .unwrap_or_else(|| panic!("hooks.json's {event} entry must be an array"))
             .iter()
-            .find(|entry| entry["matcher"] == matcher)
-            .unwrap_or_else(|| panic!("hooks.json declares no {event} matcher `{matcher}`"));
-        let command = &declaration["hooks"][0];
+            .filter(|entry| entry["matcher"] == matcher)
+            .flat_map(|entry| entry["hooks"].as_array().unwrap())
+            .find(|hook| hook["command"] == command_for(event, script))
+            .unwrap_or_else(|| {
+                panic!("hooks.json declares no {event} matcher `{matcher}` for {script}")
+            });
+        let command = declaration;
         assert_eq!(
             command["type"], "command",
             "{event} must remain a command hook"
@@ -472,7 +502,7 @@ fn hook_manifest_has_the_shared_provider_contract() {
             command_text.contains("${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}"),
             "{event} does not resolve either provider's installed plugin root: {command_text}"
         );
-        assert!(command_text.ends_with(&format!("/hooks/{script}\"")));
+        assert_eq!(command_text, command_for(event, script));
     }
 
     let codex_manifest = repo_root().join("plugins/story/.codex-plugin/plugin.json");
@@ -485,6 +515,53 @@ fn hook_manifest_has_the_shared_provider_contract() {
         codex.get("hooks").is_none(),
         "current Codex validation rejects an explicit hooks field; hooks are default-discovered"
     );
+}
+
+/// Delegated Python calls have their own deadlines and cumulative outer budget.
+/// The shell-only detector cannot see these calls, so measure their literal
+/// bounds against the same declared manifest rather than exempting the wrapper.
+#[test]
+fn administrative_python_calls_fit_their_hook_budgets() {
+    let hooks = storyhook_test_support::all_declared_hooks();
+    for (source, event, calls) in [
+        ("session_handoff.py", "Stop", 1),
+        ("compact_receipt.py", "PostCompact", 2),
+    ] {
+        let text = std::fs::read_to_string(storyhook_test_support::hook_script(source))
+            .expect("administrative Python hook source");
+        let deadline = text
+            .split("'--deadline', '")
+            .nth(1)
+            .and_then(|suffix| suffix.split('\'').next())
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("delegated CLI call has a literal inner deadline");
+        let bounds: Vec<u64> = text
+            .split("timeout=")
+            .skip(1)
+            .map(|suffix| {
+                suffix
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .expect("every delegated call has a literal outer bound")
+            })
+            .collect();
+        assert_eq!(
+            bounds.len(),
+            calls,
+            "{source} call count changed; review its cumulative budget"
+        );
+        assert!(bounds.iter().all(|bound| *bound > deadline));
+        let hook = hooks
+            .iter()
+            .find(|hook| hook.event == event && hook.script == "continuation.sh")
+            .expect("administrative wrapper is declared for its native event");
+        assert!(
+            Duration::from_secs(bounds.iter().sum()) + MIN_WRAPPER_MARGIN < hook.timeout,
+            "{source} can exhaust {event}'s outer timeout before its bounded calls finish"
+        );
+    }
 }
 
 fn repo_root() -> &'static std::path::Path {

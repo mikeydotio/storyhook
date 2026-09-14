@@ -16,12 +16,14 @@ use std::time::{Duration, Instant};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::service::engine::elapsed_secs;
+use crate::service::gate_output::OutputObservation;
 use crate::service::gate_progress::{self, GATE_PROGRESS_PREFIX, VerificationProgressView};
 use crate::service::verification::GenerationWrite;
 use crate::service::{Ctx, VerificationCandidate, VerificationQueue};
 use crate::store::VerificationIncident;
 use crate::store::{GlobalSeq, ReadOps, Store};
 
+use super::verification::evidence::AttemptEvidence;
 use super::verification::{ActiveVerification, VerificationActivity, journal_path};
 
 /// Dashboard wire shape for a story waiting in the verification queue or
@@ -78,7 +80,11 @@ pub enum VerificationStatus {
 /// Infrastructure evidence inherited by candidates waiting behind the head.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct VerificationBlocker {
-    /// Display id of the candidate that encountered the failure.
+    /// The incident's own id — what `story verifier ack` takes (SH-666).
+    pub incident_id: String,
+    /// Display id of the candidate the failure was first hit on. It is the
+    /// story the verifier happened to be serving, never the cause: every
+    /// infrastructure incident is the verifier's own (SH-666).
     pub story_id: String,
     /// RFC3339 time of the first failed attempt.
     pub first_failed_at: String,
@@ -126,7 +132,11 @@ fn supersedes(candidate: &VerificationCandidate, active: &ActiveVerification) ->
         && candidate.verifying_generation != active.generation
 }
 
-fn matching_progress(
+/// The journal's fold for exactly `candidate`'s generation, or `None` when
+/// the journal is absent or belongs to another generation. Shared with the
+/// verifier's withdrawal record (SH-692), which names the leg an attempt
+/// was on when it was cancelled.
+pub(crate) fn matching_progress(
     env: &Environment,
     candidate: &VerificationCandidate,
 ) -> Option<gate_progress::GateProgress> {
@@ -134,6 +144,32 @@ fn matching_progress(
     let text = std::fs::read_to_string(journal_path(env, candidate)).ok()?;
     let progress = gate_progress::fold(&text);
     (progress.run.as_ref()?.generation == generation).then_some(progress)
+}
+
+/// New journals identify the process attempt as well as the generation.
+/// Legacy generation-only journals remain readable but cannot bind raw logs.
+pub(crate) fn matching_active_progress(
+    env: &Environment,
+    candidate: &VerificationCandidate,
+    active: &ActiveVerification,
+) -> Option<gate_progress::GateProgress> {
+    let progress = matching_progress(env, candidate)?;
+    identifies_active_attempt(&progress, active).then_some(progress)
+}
+
+/// Match an already-read journal without reopening it between identity and
+/// metadata checks. Legacy journals may omit UUID, but a present UUID is binding.
+pub(crate) fn identifies_active_attempt(
+    progress: &gate_progress::GateProgress,
+    active: &ActiveVerification,
+) -> bool {
+    progress.run.as_ref().is_some_and(|run| {
+        Some(run.generation) == active.generation.map(|generation| generation.get())
+            && run
+                .attempt_id
+                .as_ref()
+                .is_none_or(|id| id == &active.attempt_id)
+    })
 }
 
 /// Builds the exact dashboard status for one consistent ordered queue
@@ -157,6 +193,28 @@ pub fn status_snapshot_with_incident(
     env: &Environment,
     now: &str,
 ) -> Vec<StoryVerificationStatus> {
+    let evidence = AttemptEvidence::read(ordered, active, env);
+    let incident_is_current = evidence.incident_is_current(ordered, active, incident);
+    status_snapshot_with_evidence(
+        ordered,
+        active,
+        incident,
+        now,
+        &evidence,
+        incident_is_current,
+    )
+}
+
+/// Projects one already-read journal and incident classification for every consumer.
+pub(crate) fn status_snapshot_with_evidence(
+    ordered: &[VerificationCandidate],
+    active: Option<&ActiveVerification>,
+    incident: Option<&VerificationIncident>,
+    now: &str,
+    evidence: &AttemptEvidence,
+    incident_is_current: bool,
+) -> Vec<StoryVerificationStatus> {
+    let incident = incident.filter(|_| incident_is_current);
     let waiting: Vec<&VerificationCandidate> = ordered
         .iter()
         .filter(|candidate| {
@@ -181,8 +239,8 @@ pub fn status_snapshot_with_incident(
                     halted: incident.halted,
                 }
             } else if let Some(held) = active.filter(|held| owns(candidate, held)) {
-                let progress = matching_progress(env, candidate);
-                let (current_step, tests) = progress
+                let (current_step, tests) = evidence
+                    .progress
                     .as_ref()
                     .and_then(gate_progress::GateProgress::current_step)
                     .and_then(|step| {
@@ -235,11 +293,15 @@ pub fn status_snapshot_with_incident(
                         .and_then(|since| elapsed_secs(since, now)),
                     position,
                     blocked_by: incident.and_then(|incident| {
+                        if candidate.project != incident.project {
+                            return None;
+                        }
                         let head = ordered.iter().find(|candidate| {
                             candidate.project == incident.project
                                 && candidate.verifying_generation == Some(incident.generation)
                         })?;
                         Some(VerificationBlocker {
+                            incident_id: incident.incident_id.clone(),
                             story_id: head.story_id.clone(),
                             first_failed_at: incident.first_failed_at.clone(),
                             last_failed_at: incident.last_failed_at.clone(),
@@ -326,9 +388,10 @@ fn ahead_counts(ordered: &[VerificationCandidate], index: usize) -> (usize, usiz
 /// Seconds since any producer last changed the journal. File modification is
 /// the activity signal because every appended event changes it, including
 /// `case` lines that intentionally carry no embedded timestamp (SH-549).
+#[cfg(test)]
 fn seconds_since_journal_activity(path: &std::path::Path, now: &str) -> Option<u64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    let modified = chrono::DateTime::<chrono::Utc>::from(modified);
+    let modified = crate::service::gate_output::metadata_time(modified).ok()?;
     let now = chrono::DateTime::parse_from_rfc3339(now)
         .ok()?
         .with_timezone(&chrono::Utc);
@@ -345,11 +408,41 @@ pub fn publish_once(
     now: &str,
     activity: &VerificationActivity,
 ) -> Result<bool, AppError> {
-    let ordered = VerificationQueue::new(store).ordered()?;
-    let active = activity.active();
-    let incident = store.read(|tx| tx.verification_incident())?;
-    let statuses =
-        status_snapshot_with_incident(&ordered, active.as_ref(), incident.as_ref(), env, now);
+    // Per project, so a queued story's position and blocker are its own
+    // project's (SH-648) — the same slices its worker and its dashboard read.
+    let projects = store.read(|tx| tx.projects())?;
+    let mut moved = false;
+    for project in projects {
+        moved |= publish_project(store, env, now, activity, project.id)?;
+    }
+    Ok(moved)
+}
+
+fn publish_project(
+    store: &impl Store,
+    env: &Environment,
+    now: &str,
+    activity: &VerificationActivity,
+    project: crate::store::ProjectId,
+) -> Result<bool, AppError> {
+    let (ordered, active, incident) = activity.read_project(store, project, |tx, active, _| {
+        Ok((
+            crate::service::verification::ordered_candidates_for(tx, project)?,
+            active.cloned(),
+            tx.verification_incident(project)?,
+        ))
+    })?;
+    let evidence = AttemptEvidence::read(&ordered, active.as_ref(), env);
+    let incident_is_current =
+        evidence.incident_is_current(&ordered, active.as_ref(), incident.as_ref());
+    let statuses = status_snapshot_with_evidence(
+        &ordered,
+        active.as_ref(),
+        incident.as_ref(),
+        now,
+        &evidence,
+        incident_is_current,
+    );
     let mut moved = false;
     for (candidate, (_, _, status)) in ordered.iter().zip(statuses) {
         let ctx = Ctx::new(
@@ -376,18 +469,42 @@ pub fn publish_once(
                 }
             )
         } else if matches!(&status, VerificationStatus::Running { .. }) {
-            let journal = journal_path(env, candidate);
-            let progress = matching_progress(env, candidate).unwrap_or_default();
+            let held = active
+                .as_ref()
+                .expect("running status requires an active owner");
+            let progress = evidence.progress.clone().unwrap_or_default();
             let elapsed_seconds = active
                 .as_ref()
                 .filter(|held| owns(candidate, held))
                 .and_then(|held| elapsed_secs(&held.started_at, now));
-            let seconds_since_last_event = seconds_since_journal_activity(&journal, now);
+            let seconds_since_structured_progress = progress
+                .run
+                .as_ref()
+                .and(evidence.last_evidence_at.as_deref())
+                .and_then(|at| elapsed_secs(at, now));
+            let authenticated = progress
+                .run
+                .as_ref()
+                .and_then(|run| run.attempt_id.as_deref())
+                == Some(held.attempt_id.as_str());
+            let reference = authenticated.then_some(progress.output.as_ref()).flatten();
+            let mut output = activity.observe_output(held, reference, now);
+            if let Some(error) = &progress.output_error {
+                output = OutputObservation::Unavailable(error.clone());
+            }
+            if progress
+                .items
+                .iter()
+                .any(|item| item.label == "release gate" && item.effective_status().is_terminal())
+            {
+                output = OutputObservation::NotCapturing;
+            }
             gate_progress::render(
                 &VerificationProgressView::Running {
                     progress: &progress,
                     elapsed_seconds,
-                    seconds_since_last_event,
+                    seconds_since_structured_progress,
+                    output: &output,
                 },
                 now,
             )
@@ -436,23 +553,53 @@ pub fn publish_once(
                 evidence_at,
             );
             if let Some(blocker) = blocked_by {
-                rendered.push_str(&format!(
-                    "\nVerifier {} since {}; blocked by {}: {}\n",
-                    if blocker.halted { "HALTED" } else { "RETRYING" },
-                    blocker.first_failed_at,
-                    blocker.story_id,
-                    blocker.detail
-                ));
+                rendered.push_str(&render_blocker(&blocker));
             }
             rendered
         };
-        if let GenerationWrite::Applied(wrote) = VerificationQueue::new(store)
-            .upsert_generation_comment(&ctx, candidate, GATE_PROGRESS_PREFIX, &body)?
+        if let Some(GenerationWrite::Applied(wrote)) = activity
+            .if_current(project, active.as_ref(), || {
+                VerificationQueue::new(store).upsert_generation_comment(
+                    &ctx,
+                    candidate,
+                    GATE_PROGRESS_PREFIX,
+                    &body,
+                    incident.as_ref(),
+                )
+            })
+            .transpose()?
         {
             moved |= wrote;
         }
     }
     Ok(moved)
+}
+
+/// The line every waiting candidate carries while the head is stalled.
+///
+/// It names the incident as the **verifier's** and the head story as where it
+/// was first hit, never as a blocker: "blocked by SH-648" was read as a story
+/// dependency by the operator who filed SH-666, on a halt whose cause was the
+/// verifier's own script contract. The halted form also says how the queue
+/// resumes, because the reader is in a terminal.
+fn render_blocker(blocker: &VerificationBlocker) -> String {
+    let VerificationBlocker {
+        incident_id,
+        story_id,
+        first_failed_at,
+        detail,
+        halted,
+        ..
+    } = blocker;
+    if *halted {
+        format!(
+            "\nVerifier HALTED since {first_failed_at} on an infrastructure failure of the verifier itself, first hit while verifying {story_id} ({story_id} is not at fault): {detail}\nThe queue resumes once the cause is fixed and the incident is acknowledged: story verifier ack {incident_id}\n"
+        )
+    } else {
+        format!(
+            "\nVerifier RETRYING since {first_failed_at} on an infrastructure failure of the verifier itself, first hit while verifying {story_id} ({story_id} is not at fault): {detail}\n"
+        )
+    }
 }
 
 /// Runs the publisher until daemon shutdown, sleeping in short increments so

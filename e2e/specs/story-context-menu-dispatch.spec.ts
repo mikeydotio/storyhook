@@ -156,7 +156,7 @@ test("Dispatch is absent for a story with no checkout, and no stray separator is
   await expect(menu.locator(".ctxmenu-item")).toHaveCount(7);
   await expect(menu.locator(".ctxmenu-item", { hasText: "Set Status" })).toBeVisible();
   await expect(menu.locator(".ctxmenu-item", { hasText: "Set Priority" })).toBeVisible();
-  await expect(menu.locator(".ctxmenu-item", { hasText: "Close" })).toBeVisible();
+  await expect(menu.locator(".ctxmenu-item", { hasText: "Drop" })).toBeVisible();
   await expect(menu.locator(".ctxmenu-item", { hasText: "Delete" })).toBeVisible();
   await expect(menu.locator(".ctxmenu-sep")).toHaveCount(2);
 

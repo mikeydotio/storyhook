@@ -170,9 +170,10 @@ struct Serving<'a, S: Store> {
     /// answered off the store thread, so it is not reached through
     /// [`dispatch`] the way everything else in this struct is.
     dispatch_registry: Arc<crate::api::dispatch::DispatchRegistry>,
-    /// The exact verification generation currently owned by the serialized
-    /// verifier (SH-549). Shared with the progress publisher and REST board;
-    /// queue ordering alone cannot answer this once priorities change.
+    /// The exact verification generation each project's verifier currently
+    /// owns (SH-549; one worker per project since SH-648). Shared with the
+    /// progress publisher and REST board; queue ordering alone cannot answer
+    /// this once priorities change.
     verification_activity: crate::daemon::verification::VerificationActivity,
     /// Engine controls are answered on per-connection workers, never the
     /// fixed store-dispatch pool. This controller owns the persistent store
@@ -266,7 +267,8 @@ where
     // its own reason, so a write that landed before this daemon started is
     // history, never news.
     let watcher = crate::daemon::watch::ChangeWatcher::new(store);
-    let verification_activity = crate::daemon::verification::VerificationActivity::new();
+    let verification_activity =
+        crate::daemon::verification::VerificationActivity::new().with_bus(bus.clone());
     let serving = Serving {
         store,
         env: env.clone(),
@@ -338,6 +340,18 @@ where
             let stop = Arc::clone(&stop);
             let env = env.clone();
             scope.spawn(move || watch_parent(&env, &stop));
+        }
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            let bus = bus.clone();
+            scope.spawn(move || crate::daemon::block_delivery::poll(store, &env, &bus, &stop));
+        }
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            let bus = bus.clone();
+            scope.spawn(move || crate::daemon::continuation::poll(store, &env, &bus, &stop));
         }
         // The unattended GitHub poll (SH-212) — absent entirely without the
         // `github-pr` feature, the same way `pr_check::run_check`, the
@@ -1469,6 +1483,7 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
     let entry = serving.inflight.enter();
     let surface = rpc::Surface {
         store: serving.store,
+        verification_activity: &serving.verification_activity,
         env: &serving.env,
         token: &serving.token,
         hello: &serving.hello,

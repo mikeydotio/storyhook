@@ -170,6 +170,14 @@ pub(super) fn put_engine_lane(
     conn: &Connection,
     lane: &EngineLaneRecord,
 ) -> Result<(), StoreError> {
+    let adopted_identity = lane
+        .adopted_identity
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            StoreError::Invariant(format!("cannot encode adopted identity: {error}"))
+        })?;
     let cleanup_lease = lane
         .cleanup_lease
         .as_ref()
@@ -184,8 +192,8 @@ pub(super) fn put_engine_lane(
                  (run_id, lane_index, state, story_id, window_name, worktree_path, \
                   dispatched_at, last_observed_at, outcome, outcome_detail, \
                   last_progress_seq, last_progress_at, pane_id, cleanup_lease_json, \
-                  probe_detail) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+                  probe_detail, adopted_identity_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
              ON CONFLICT (run_id, lane_index) DO UPDATE SET \
                  state = excluded.state, story_id = excluded.story_id, \
                  window_name = excluded.window_name, worktree_path = excluded.worktree_path, \
@@ -196,7 +204,7 @@ pub(super) fn put_engine_lane(
                  last_progress_at = excluded.last_progress_at, \
                  pane_id = excluded.pane_id, \
                  cleanup_lease_json = excluded.cleanup_lease_json, \
-                 probe_detail = excluded.probe_detail",
+                 probe_detail = excluded.probe_detail, adopted_identity_json = excluded.adopted_identity_json",
             params![
                 lane.run_id,
                 lane.lane_index,
@@ -213,6 +221,7 @@ pub(super) fn put_engine_lane(
                 lane.pane_id,
                 cleanup_lease,
                 lane.probe_detail,
+                adopted_identity,
             ],
         ),
         "writing an engine lane",
@@ -240,9 +249,9 @@ pub(super) fn put_verification_incident(
     incident: &VerificationIncident,
 ) -> Result<(), StoreError> {
     sql(conn.execute(
-        "INSERT INTO verification_incident (singleton, incident_id, project_id, story_no, generation, disposition, state, attempts, detail, first_failed_at, last_failed_at) \
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
-         ON CONFLICT(singleton) DO UPDATE SET incident_id=excluded.incident_id, project_id=excluded.project_id, story_no=excluded.story_no, generation=excluded.generation, disposition=excluded.disposition, state=excluded.state, attempts=excluded.attempts, detail=excluded.detail, first_failed_at=excluded.first_failed_at, last_failed_at=excluded.last_failed_at",
+        "INSERT INTO verification_incident (incident_id, project_id, story_no, generation, disposition, state, attempts, detail, first_failed_at, last_failed_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+         ON CONFLICT(project_id) DO UPDATE SET incident_id=excluded.incident_id, story_no=excluded.story_no, generation=excluded.generation, disposition=excluded.disposition, state=excluded.state, attempts=excluded.attempts, detail=excluded.detail, first_failed_at=excluded.first_failed_at, last_failed_at=excluded.last_failed_at",
         params![incident.incident_id, incident.project.get(), incident.story.get(), incident.generation.get(),
             incident.disposition.as_str(), if incident.halted { "halted" } else { "retrying" },
             incident.attempts, incident.detail, incident.first_failed_at, incident.last_failed_at],
@@ -256,7 +265,7 @@ pub(super) fn clear_verification_incident(
 ) -> Result<bool, StoreError> {
     Ok(sql(
         conn.execute(
-            "DELETE FROM verification_incident WHERE singleton = 1 AND incident_id = ?1",
+            "DELETE FROM verification_incident WHERE incident_id = ?1",
             params![incident_id],
         ),
         "clearing the verification incident",
@@ -1492,4 +1501,27 @@ pub(super) fn delete_attachment_blob(
         "deleting an attachment blob",
     )?;
     Ok(removed > 0)
+}
+
+pub(super) fn put_verification_enabled(
+    conn: &Connection,
+    project: ProjectId,
+    enabled: bool,
+) -> Result<(), StoreError> {
+    sql(conn.execute("INSERT INTO verification_control (project_id, enabled) VALUES (?1, ?2) ON CONFLICT(project_id) DO UPDATE SET enabled = excluded.enabled", rusqlite::params![project.get(), enabled]), "writing verifier admission permission")?;
+    Ok(())
+}
+
+pub(super) fn put_verification_recovery(
+    conn: &Connection,
+    project: ProjectId,
+    recovery: &crate::store::VerificationRecovery,
+) -> Result<(), StoreError> {
+    let receipt = serde_json::to_string(recovery).map_err(|e| {
+        StoreError::from(crate::error::AppError::Storage(format!(
+            "serializing project {project} verifier recovery: {e}"
+        )))
+    })?;
+    sql(conn.execute("INSERT INTO verification_recovery(project_id, receipt) VALUES (?1, ?2) ON CONFLICT(project_id) DO UPDATE SET receipt=excluded.receipt", params![project.get(), receipt]), "writing verifier recovery")?;
+    Ok(())
 }

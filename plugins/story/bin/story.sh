@@ -138,7 +138,9 @@ set -euo pipefail
 # helper accepts the argv that daemon requires. Protocol 3 advances helper and
 # daemon together for the versioned cleanup-lease environment and receipt: an
 # older helper must never be mistaken for one that proves exact postconditions.
-DISPATCH_PROTOCOL=4
+# Protocol 5 requires native notify --interrupt and session-bound resume argv.
+# An older helper would paste --interrupt as prompt text, so it must be refused.
+DISPATCH_PROTOCOL=5
 
 # Shared tmux/worktree/pane-readiness mechanics (window/worktree naming,
 # git-safety helpers, the readiness gate, confirmed-send) live in
@@ -163,6 +165,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 # unattended session must call back into to reclaim its own worktree.
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd)"
+source "$STORY_PLUGIN_ROOT/lib/codex-bootstrap.sh"
+source "$STORY_PLUGIN_ROOT/lib/resources.sh"
 AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
@@ -317,7 +321,7 @@ compose_claude_launch_tpl() {
 
 compose_codex_launch_tpl() {
   local mode="$1" model="$2" effort="$3" speed="$4"
-  local cmd="codex --no-alt-screen -c check_for_update_on_startup=false"
+  local cmd="codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false"
   [ "$mode" = "base" ] || cmd="$cmd --approve-for-me --dangerously-bypass-hook-trust"
   [ -z "$model" ] || cmd="$cmd -m $model"
   [ -z "$effort" ] || cmd="$cmd -c model_reasoning_effort=\"$effort\""
@@ -340,11 +344,22 @@ configure_agent() {
     ;;
   codex)
     AGENT_LABEL="Codex"
-    # Storyhook owns this child session's startup lifecycle. A newly available
-    # Codex version otherwise inserts an interactive update chooser before the
-    # prompt, so the readiness gate correctly refuses to type and rolls the
-    # dispatch back. Suppress that chooser for this one managed process; the
-    # user's durable Codex update preference remains untouched.
+    # Storyhook owns this child session's startup lifecycle, so two startup
+    # behaviours are suppressed for THIS managed process only; the user's own
+    # durable Codex preferences remain untouched.
+    #   check_for_update_on_startup=false: a newly available Codex version
+    #   otherwise inserts an interactive update chooser before the prompt, so
+    #   the readiness gate correctly refuses to type and rolls the dispatch
+    #   back.
+    #   tui.animations=false: Codex 0.154.0 decorates the idle composer of an
+    #   Astra model with an animated Braille "sparkle" (and every model with a
+    #   shimmer and spinner). The empty-input check that confirms a submission
+    #   reads that very row (input_state, lib/session.sh), and the decoration
+    #   made the placeholder unrecognisable, so every autonomous dispatch
+    #   refused with bootstrap-submit-unconfirmed after a primer that had in
+    #   fact been submitted (SH-694). Off, the row is the plain placeholder.
+    #   input_box_text (lib/session.sh) also strips the decoration itself, so
+    #   a launch override that leaves animations on is covered as well.
     DEFAULT_LAUNCH_TPL=$(compose_codex_launch_tpl base "" "" "")
     DEFAULT_AUTO_LAUNCH_TPL=$(compose_codex_launch_tpl auto "" "" "")
     DEFAULT_WORKTREE_IGNORE_PATH=".codex/worktrees/"
@@ -438,26 +453,34 @@ LAUNCH_TPL="${STORY_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
 # It had been true of neither half since the --auto charter landed. The ‘ ’
 # quotes deliberately break the ASCII half; UTF-8 already rides this pipeline,
 # since READY_PROMPT_GLYPH is U+276F and appears in every capture.)
-PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit and push the work, open one pull request whose body references story <n>, link it with ‘story link-pr <n> PR-URL’, and comment the PR link on <n>. Then move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair the existing PR without rewriting published history, run the new and impacted tests, push, move <n> back to verifying, and stop again. Do not run make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them.}"
+# One review pointer shared by attended and autonomous built-in charters.
+OBVIATION_REVIEW_CLAUSE="Before implementation, run ‘story help obviation-review’ and ‘story load-context --story <n>’, then follow the review procedure for every candidate. Repeat the review when resuming work."
+PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. $OBVIATION_REVIEW_CLAUSE When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story <n>. Then, from inside this worktree, move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move <n> back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them.}"
 # Claude's ExitPlanMode tool gives the PreToolUse hook an approval boundary at
 # which it can remind the model to persist the plan. Codex may surface the
 # compatibility event, but rejects its bare allow decision; the TUI watcher
 # owns approval instead. Its built-in charter therefore carries persistence
 # across the turn itself: make it step one of the approved plan, then the plan
 # is the instruction Codex resumes from.
-# The same provider clause owns PR-title traceability: every Codex-authored PR
-# carries the resolved story id where an operator can see it in a PR list.
 # Kept provider-specific so Claude's established prompt stays byte-identical,
 # and applied only to built-ins so STORY_PROMPT and the two autonomous overrides
 # remain wholesale overrides rather than unexpectedly acquiring policy text.
-CODEX_BUILTIN_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it. Ensure every linked pull request title contains the exact story ID <n>."
+# PR-title traceability moved to the verifier with submission (SH-647): the
+# verifier titles every pull request it opens "<n>: <title>", so neither the
+# agent nor this clause needs to.
+# Explicit readiness declaration for autonomous Codex; no model classification
+# is required when the child follows this protocol. Keep the charter shell-inert.
+CODEX_AUTO_PLAN_CLAUSE="In Codex Default mode, present a completed implementation plan as one JSON object with exactly four fields: type set to storyhook.implementation-plan, version set to integer 1, story_id set to <n>, and plan set to the complete plan text as a JSON string. Output only that object, without fences or surrounding prose. In Plan mode, use the native proposed_plan envelope instead. Use this declaration only for a complete implementation plan, never for operational permissions or unresolved choices. Approval applies to the decoded plan text and grants no additional permissions."
+CODEX_BUILTIN_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it."
 RESUME_PROMPT_CLAUSE="You are resuming work already started and left behind by a previous agent. Before changing anything, inspect the worktree, git status, git log, git diff, story comments, and relevant tests to determine exactly where it stopped. The previous agent may have encountered an error or stopped uncleanly. Preserve valid existing work, then continue under every remaining instruction in this charter."
 # The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
 # last human interaction: plan approval is scoped by provider events (with one
 # exact-gated tmux Return for Claude), and question refusal is provider-native;
 # targeted testing and repair remain the child's own call. The daemon-owned
-# verifier takes over after the child publishes exactly one linked PR and moves
-# the story to `verifying`; it owns the full suite, merge, closure, and reap.
+# verifier takes over after the child commits and moves the story to
+# `verifying` from inside its worktree (SH-647); it owns submission -- pushing
+# the branch and opening the pull request -- and then the full suite, merge,
+# closure, and reap.
 #
 # It used to open by anchoring every `story` write at the main checkout,
 # because a worktree carried its own copy of the tracker and a write made
@@ -474,7 +497,7 @@ RESUME_PROMPT_CLAUSE="You are resuming work already started and left behind by a
 # charters can never drift on the obligations they share. STORY_AUTO_PROMPT
 # and STORY_AUTO_PROMPT_SOLO still let a caller override either wholesale, same
 # as STORY_PROMPT always has for the attended template.
-AUTO_PROMPT_HEAD="Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. This is an AUTONOMOUS session: the user approves your plan once and is then unavailable -- ask no further questions after that approval and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision, first judge whether it has one clear best answer: when it does, research current best practice for it, decide it yourself, and note the decision and your reasoning as a comment on <n>."
+AUTO_PROMPT_HEAD="Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. $OBVIATION_REVIEW_CLAUSE This is an AUTONOMOUS session: nobody is available to answer questions. Investigate and present a complete implementation plan. StoryHook approves it automatically. Do not request a human approval reply. After approval, proceed autonomously and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision, first judge whether it has one clear best answer: when it does, research current best practice for it, decide it yourself, and note the decision and your reasoning as a comment on <n>. For every decision comment, include Context: the relevant facts and constraints. Question: the question being answered. Decision: the chosen answer. Rationale: why it was chosen, including alternatives and trade-offs where relevant. Make each comment understandable without this session or local files. Record it immediately, before you resume the work."
 # SH-371: both decision clauses say WHEN, not just what — record the outcome
 # the moment it is reached, before resuming the work. A council writes its trail
 # into a directory relative to wherever the agent was standing, which for a
@@ -501,7 +524,7 @@ AUTO_SOLO_CLAUSE="When a decision has two or more genuinely defensible answers -
 # with a single right answer independent of whether council-vote is
 # reachable, so it does not vary between COUNCIL and SOLO.
 AUTO_SCOPE_CLAUSE="When you uncover a second problem while working <n>, prefer adopting it into <n> over filing a new story: fix it in its own commit with its own regression test, and comment on <n> what you adopted and why -- that is two hats intact, since two hats governs commits, not stories. Adopt and fix it now only while at least half your context window is still unused and the extra work is small enough to finish and test in this session. Otherwise widen <n> to cover it without doing the work now -- comment what you found and leave <n> open rather than closing it, so the next session picks up where you stopped. If you cannot tell how much context remains, treat it as spent. File a new story only for work that is genuinely separate, genuinely too large for one session, or blocked on something you cannot reach."
-AUTO_PROMPT_TAIL="Implement the approved work and run only its new and directly impacted tests. Commit and push the work, open exactly one pull request whose body references story <n>, link it with ‘story link-pr <n> PR-URL’, and comment the PR link on <n>. Then move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair the existing PR without rewriting published history, run the new and impacted tests, push, move <n> back to verifying, and stop again. Do not run make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them. If you hit a hard stop you cannot resolve before submission, post a comment on <n> with full diagnostics, run ‘story block <n> the-reason’, leave the worktree intact, and stop."
+AUTO_PROMPT_TAIL="Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story <n>. Then, from inside this worktree, move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move <n> back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them. If you hit a hard stop you cannot resolve before submission, post a comment on <n> with full diagnostics, run ‘story block <n> the-reason’, leave the worktree intact, and stop."
 AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-$AUTO_PROMPT_HEAD $AUTO_COUNCIL_CLAUSE $AUTO_SCOPE_CLAUSE $AUTO_PROMPT_TAIL}"
 AUTO_PROMPT_SOLO_TPL="${STORY_AUTO_PROMPT_SOLO:-$AUTO_PROMPT_HEAD $AUTO_SOLO_CLAUSE $AUTO_SCOPE_CLAUSE $AUTO_PROMPT_TAIL}"
 # Which charter --auto gets: 'auto' (default) probes council_vote_available
@@ -587,10 +610,16 @@ PASTE_SETTLE_DELAY="${STORY_PASTE_SETTLE_DELAY:-0.2}"
 READY_ACCEPT_PATTERN="${STORY_READY_ACCEPT_PATTERN:-esc to interrupt|Working|Thinking|Crunching|tokens|to interrupt}"
 CAPTURE_LINES="${STORY_CAPTURE_LINES:-200}"
 DRY_RUN="${STORY_DRY_RUN:-}"
-# State `complete` closes a story into. Empty means "ask the CLI for the
-# project's state catalog and take the first CLOSED-superstate entry" — see
-# story_closed_state.
-DONE_STATE="${STORY_DONE_STATE:-}"
+# The completion state: what `complete` closes a story into, what `reap`
+# accepts as finished work, and what `<done-state>` renders as. Deliberately
+# NOT env-overridable and not read from the catalog (SH-652): it is the
+# REQUIRED `done` state the verifier writes after a green merge
+# (`domain::COMPLETION_STATE_SLUG`, pinned equal by tests/plugin_contract.rs),
+# spelled here the way `verifying` is spelled in the charters — a protocol
+# constant, not a preference. The old `STORY_DONE_STATE` override is refused
+# by name below the router, because a knob the daemon cannot see is a knob
+# that makes this helper disagree with the verifier about one store fact.
+COMPLETION_STATE="done"
 # `doctor`'s throwaway readiness probe: what it launches, and the scratch
 # window it launches into. Kept separate from LAUNCH_TPL so probing a build
 # never depends on a dispatch-time override.
@@ -1026,7 +1055,31 @@ dispatch_ready_note() {
     pid-exited)
       printf 'the launched process exited before its SessionStart hook could publish a dispatch sentinel — check `pane_tail` below for why it quit'
       ;;
+    # One arm per initialization phase (SH-694). A single sentence used to
+    # blame hook identity for all of them, which was false for every phase
+    # but one and sent the first diagnosis of a screen-read failure after the
+    # hook. Each arm says what was observed, what was and was not typed, and
+    # where to look next; the caller appends "No story charter was delivered".
+    bootstrap-plan-unconfirmed)
+      printf 'Codex initialization failed (bootstrap-plan-unconfirmed): Plan mode could not be confirmed before the task-free initialization turn (%s). Nothing was typed into that pane' "$PLAN_MODE_REASON"
+      ;;
+    bootstrap-submit-unconfirmed)
+      printf 'Codex initialization failed (bootstrap-submit-unconfirmed): the task-free initialization turn was pasted, but the input row never read as empty within the confirmation window, so its submission could not be confirmed from the screen. The turn may still have reached Codex and run its SessionStart hook; it authorizes no work and carries no story instructions. Check `pane_tail` for a decorated or unexpected composer row: Codex 0.154.0 animates the idle placeholder of an Astra model unless the launch passes `-c tui.animations=false`'
+      ;;
+    bootstrap-incomplete)
+      printf 'Codex initialization failed (bootstrap-incomplete): its SessionStart hook published the dispatch sentinel, but within the poll budget the private receipt and transcript did not prove the stopped initialization turn completed without model work, or the composer did not read as empty and in Plan mode again afterwards'
+      ;;
+    bootstrap-cleanup-failed)
+      printf 'Codex initialization failed (bootstrap-cleanup-failed): the initialization turn completed, but its private receipt could not be removed from the worktree'\''s git directory, so the charter was withheld'
+      ;;
+    bootstrap-*)
+      printf 'Codex initialization failed (%s) before the story charter was delivered' "$WAIT_READY_REASON"
+      ;;
     no-sentinel)
+      if [ "$AGENT" = codex ]; then
+        printf 'Codex runs SessionStart only after the first prompt. Its initialization prompt was submitted, but no dispatch sentinel appeared; check the enabled Storyhook hook package and hook errors. No story charter was delivered'
+        return
+      fi
       printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel. Possible causes: the plugin'\''s hooks are not installed in that worktree; %s has not started yet; the sentinel write failed silently on the daemon side (check daemon.log for a "could not publish its dispatch sentinel" warning, SH-544); or the daemon was too slow or busy to answer the hook'\''s own request within its budget (run `story doctor install` to check daemon health)' "$AGENT_LABEL"
       ;;
     hook-identity-missing)
@@ -1060,6 +1113,7 @@ claim_rollback_note() {
   else
     printf ' WARNING: story %s is now stranded at `%s` with no worktree/window — run `story unclaim %s`, or `story move %s %s --if-state %s` if that refuses.' \
       "$id" "$claimed_state" "$id" "$id" "$pre_state" "$claimed_state"
+    return 1
   fi
 }
 
@@ -1069,36 +1123,32 @@ claim_rollback_note() {
 # for machine parsing; path and branch are read as whole lines so spaces remain
 # intact.
 registered_worktree_branch() {
-  local target="$1" line current="" branch="" found=false
-  while IFS= read -r line; do
-    case "$line" in
-      worktree\ *)
-        if [ "$found" = true ]; then
-          printf '%s' "${branch:-DETACHED}"
-          return 0
-        fi
-        current="${line#worktree }"
-        branch=""
-        [ "$current" != "$target" ] || found=true
-        ;;
-      branch\ *)
-        [ "$found" != true ] || branch="${line#branch refs/heads/}"
-        ;;
-      '')
-        if [ "$found" = true ]; then
-          printf '%s' "${branch:-DETACHED}"
-          return 0
-        fi
-        current=""
-        branch=""
-        ;;
-    esac
-  done < <(git worktree list --porcelain 2>/dev/null)
-  if [ "$found" = true ]; then
-    printf '%s' "${branch:-DETACHED}"
-    return 0
-  fi
-  return 1
+  git worktree list --porcelain -z | python3 -c '
+import sys
+try:
+    listing = sys.stdin.buffer.read().decode("utf-8")
+    if not listing.startswith("worktree ") or not listing.endswith("\0\0"):
+        print("Git worktree inventory was unavailable or incomplete", file=sys.stderr)
+        sys.exit(2)
+    records = listing.split("\0\0")
+    for record in records:
+        fields = record.split("\0")
+        if "worktree " + sys.argv[1] in fields:
+            branch = next((f[len("branch refs/heads/"):] for f in fields if f.startswith("branch refs/heads/")), "DETACHED")
+            print(branch, end="")
+            sys.exit(0)
+    sys.exit(1)
+except UnicodeError as error:
+    print(error, file=sys.stderr)
+    sys.exit(2)
+' "$1"
+}
+
+# Only a successful inventory with no registration proves absence.
+registration_absent() {
+  local status=0
+  registered_worktree_branch "$1" >/dev/null || status=$?
+  [ "$status" -eq 1 ]
 }
 
 # cleanup_dispatch_git <path> <branch> <worktree-created> <branch-created> —
@@ -1107,6 +1157,10 @@ registered_worktree_branch() {
 # targets, even when a later provider handoff fails.
 cleanup_dispatch_git() {
   local path="$1" branch="$2" worktree_created="$3" branch_created="$4"
+  if [ -n "${require_absent:-}" ] && [ "$worktree_created" = false ] && [ "$branch_created" = false ]; then
+    DISPATCH_CLEANUP_NOTE="the guarded continuation retained its original worktree, branch, and cleanup lease"
+    return 0
+  fi
   # A failed handoff must not leave a marker that a later manual transition
   # could mistake for a successful dispatch. This is safe for a resumed
   # worktree too: the current attempt replaced the marker with its own exact
@@ -1124,8 +1178,7 @@ cleanup_dispatch_git() {
   if [ "$worktree_created" = true ]; then
     git worktree remove --force "$path" >/dev/null 2>&1 \
       || failure="${failure:+$failure; }git worktree remove refused for $path"
-    git worktree prune >/dev/null 2>&1 || true
-    if registered_worktree_branch "$path" >/dev/null 2>&1 || [ -e "$path" ]; then
+    if ! registration_absent "$path" || [ -e "$path" ]; then
       failure="${failure:+$failure; }worktree remains at $path"
     fi
   fi
@@ -1141,6 +1194,29 @@ cleanup_dispatch_git() {
     return 1
   fi
   return 0
+}
+
+# Called only within cmd_dispatch: its local resource-ownership facts are the
+# transaction this rollback consumes. An uncertain stop must not release work.
+rollback_dispatch_attempt() {
+  local stopped stop_error
+  DISPATCH_ROLLBACK_CLAIMED="$reused_claim"
+  stopped=$(python3 "$STORY_PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pane_pid" 2>&1) || true
+  if [ "$(printf '%s' "$stopped" | jq -r '.ok // false' 2>/dev/null || printf false)" != true ]; then
+    stop_error=$(printf '%s' "$stopped" | jq -r '.error // "no termination result"' 2>/dev/null) || stop_error="${stopped:-no termination result}"
+    DISPATCH_CLEANUP_NOTE="WARNING: startup cleanup could not be confirmed: $stop_error; claim and Git resources were preserved"
+    DISPATCH_ROLLBACK_CLAIMED=true
+    DISPATCH_ROLLBACK_NOTE=""
+    return
+  fi
+  if cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created"; then
+    DISPATCH_CLEANUP_NOTE="the owned startup pane and processes were stopped; $DISPATCH_CLEANUP_NOTE"
+    DISPATCH_ROLLBACK_NOTE=$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state") \
+      || DISPATCH_ROLLBACK_CLAIMED=true
+  else
+    DISPATCH_ROLLBACK_CLAIMED=true
+    DISPATCH_ROLLBACK_NOTE=" The claim was preserved because Git cleanup is incomplete."
+  fi
 }
 
 dispatch_cleanup_note() {
@@ -1426,7 +1502,84 @@ cmd_capabilities() {
     '{ok:true, agent:$agent} + $caps'
 }
 
+# configure_dispatch_provider <agent> — resolve the provider and the
+# model/effort/speed selectors for ONE dispatch, and compose the launch
+# templates from them. Assigns cmd_dispatch's own locals (bash scopes a
+# caller's `local`s dynamically over the functions it calls): resolved_model,
+# resolved_effort, resolved_speed, effective_model, launch_source,
+# launch_overridden, ignored_general_override, plus configure_agent's globals
+# and LAUNCH_TPL/READY_LAUNCH_BIN. Reads cmd_dispatch's requested_* flags,
+# auto and full_auto.
+#
+# Called once per dispatch, AFTER the story is identified and BEFORE the
+# tmux/worktree gates and the claim, so an invalid provider or selector can
+# never claim a story or create a worktree. It used to run before the story
+# was even looked up; SH-650 moved it, because which provider a RESUME should
+# relaunch is a fact recorded on the surviving window (surviving_window_
+# provider), and that window is named by the canonical story id.
+configure_dispatch_provider() {
+  # The caller has already applied the precedence (explicit flag, then a
+  # resumed window's record, then STORY_AGENT); this only configures it.
+  configure_agent "$1"
+
+  # model/effort/speed selectors (SH-517): explicit flag > STORY_MODEL/
+  # STORY_EFFORT/STORY_SPEED > provider default -- the same precedence
+  # --agent already has beneath STORY_AGENT, above. Resolved and validated
+  # here, before any claim/worktree side effect, same as --agent.
+  resolved_model="${requested_model:-${STORY_MODEL:-}}"
+  resolved_effort="${requested_effort:-${STORY_EFFORT:-}}"
+  resolved_speed="${requested_speed:-${STORY_SPEED:-standard}}"
+  if [ -n "$resolved_model" ] || [ -n "$resolved_effort" ] || [ "$resolved_speed" != standard ]; then
+    validate_agent_model "$resolved_model"
+    validate_agent_effort "$resolved_effort"
+    validate_agent_speed "$resolved_speed"
+    # $STORY_LAUNCH_CMD/$STORY_FULL_AUTO_LAUNCH_CMD are wholesale operator
+    # overrides (configure_agent, above) with no seam to splice a selector
+    # into without guessing at their shape. Refuse by name rather than
+    # silently ignore the selector or mangle the operator's own command
+    # line -- the same posture SH-511's header comment already commits to
+    # for a launch override that weakens unattendedness.
+    [ "$AUTO_LAUNCH_OVERRIDDEN" != true ] \
+      || fail "--model/--effort/--speed cannot be combined with \$STORY_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_LAUNCH_CMD, or drop the selector."
+    [ -z "$full_auto" ] || [ "$FULL_AUTO_LAUNCH_OVERRIDDEN" != true ] \
+      || fail "--model/--effort/--speed cannot be combined with \$STORY_FULL_AUTO_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_FULL_AUTO_LAUNCH_CMD, or drop the selector."
+    LAUNCH_TPL=$(compose_launch_tpl base "$resolved_model" "$resolved_effort" "$resolved_speed")
+    AUTO_LAUNCH_TPL=$(compose_launch_tpl auto "$resolved_model" "$resolved_effort" "$resolved_speed")
+    FULL_AUTO_LAUNCH_TPL="$AUTO_LAUNCH_TPL"
+  fi
+  # Reported in the result JSON below. Claude always launches SOME model
+  # (opusplan is baked into its templates even unselected); Codex has no
+  # such default -- an unselected Codex model stays "" and is omitted from
+  # the JSON entirely, the same presence-signals-selection contract effort
+  # already has.
+  effective_model="$resolved_model"
+  [ -n "$effective_model" ] || { [ "$AGENT" != claude ] || effective_model="opusplan"; }
+
+  launch_source="$AUTO_LAUNCH_SOURCE" launch_overridden="$AUTO_LAUNCH_OVERRIDDEN"
+  ignored_general_override=""
+  if [ -n "$full_auto" ]; then
+    LAUNCH_TPL="$FULL_AUTO_LAUNCH_TPL"
+    launch_source="$FULL_AUTO_LAUNCH_SOURCE"
+    launch_overridden="$FULL_AUTO_LAUNCH_OVERRIDDEN"
+    ignored_general_override="$FULL_AUTO_IGNORED_GENERAL_OVERRIDE"
+    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
+  elif [ -n "$auto" ]; then
+    LAUNCH_TPL="$AUTO_LAUNCH_TPL"
+    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
+  fi
+}
+
 # ---- subcommand: dispatch ---------------------------------------------------
+CONTINUATION_PROMPT_CLAUSE='Context capacity alone is not a story blocker. Unknown capacity alone must not defer already assigned work. If context pressure prevents reliable continuation, or the adoption rubric requires deferring additional work, preserve the story and worktree and end with exactly one JSON object whose type is storyhook.session-handoff, version is integer 1, story_id is <n>, kind is context, and evidence contains nonempty context and outstanding_work strings plus approved scope and test evidence when available. StoryHook records this handoff and continues through the provider native context mechanism. Previously adopted work is assigned work in the continuing session. Never block solely for context, erase queued corrections, or type /compact. In Plan mode continue planning and defer continuation acknowledgement until ordinary plan approval switches to Default mode, then review and acknowledge before implementation. For likely-obviated work in Plan mode use the same envelope with kind obviation-review and evidence containing context, original_state and all unique candidate story IDs in candidates. This records a pending human review hold and grants no implementation permission.'
+# Revalidate the persisted dead-pane ownership before guarded recovery effects.
+continuation_preflight() {
+  local answer
+  answer=$(printf '%s' "$continuation_record" | python3 "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" resume-preflight) \
+    || refuse "continuation-unsafe" "continuation ownership preflight could not run; retained work was preserved."
+  [ "$(printf '%s' "$answer" | jq -r '.ok // false')" = true ] \
+    || refuse "continuation-unsafe" "continuation ownership preflight refused: $(printf '%s' "$answer" | jq -r '.detail // "no diagnostic"'). Retained work was preserved."
+}
+
 cmd_dispatch() {
   # <story-id> XOR --next may appear before or after --auto/--full-auto/--force/--agent; anything past
   # that (a second positional, an unknown flag) is a hard fail rather than
@@ -1437,9 +1590,10 @@ cmd_dispatch() {
   # see the NEXT MODE section below for why this is a second mode and not a
   # rewrite of the id-directed claim, which since SH-482 goes through the same
   # verb as `story claim <id>`.
-  local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--over-budget] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
+  local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
   local id="" auto="" full_auto="" want_next="" force="" resume="" over_budget="" requested_agent=""
   local requested_model="" requested_effort="" requested_speed=""
+  local require_absent="" continuation_file="" continuation_record=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --auto)
@@ -1454,9 +1608,19 @@ cmd_dispatch() {
       --resume)
         [ -z "$resume" ] || fail "--resume may be specified only once — usage: $usage"
         resume=1; shift ;;
+      --require-absent)
+        [ -z "$require_absent" ] || fail "--require-absent may be specified only once"
+        require_absent=1; shift ;;
+      --continuation-file=*)
+        [ -z "$continuation_file" ] || fail "--continuation-file may be specified only once"
+        continuation_file="${1#--continuation-file=}"
+        [ -n "$continuation_file" ] || fail "--continuation-file requires a file path"
+        shift ;;
       --over-budget)
         [ -z "$over_budget" ] || fail "--over-budget may be specified only once — usage: $usage"
-        over_budget=1; shift ;;
+        over_budget=1
+        printf 'story.sh: --over-budget is deprecated and has no effect; manual dispatch has no lane budget\n' >&2
+        shift ;;
       --agent=*)
         [ -z "$requested_agent" ] || fail "--agent may be specified only once — usage: story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
         requested_agent="${1#--agent=}"
@@ -1494,6 +1658,10 @@ cmd_dispatch() {
     esac
   done
   [ -n "$id" ] || [ -n "$want_next" ] || fail "usage: $usage"
+  [ -z "$require_absent" ] || { [ -n "$resume" ] && [ -n "$continuation_file" ]; } \
+    || fail "--require-absent requires --resume and --continuation-file"
+  [ -z "$continuation_file" ] || [ -n "$require_absent" ] \
+    || fail "--continuation-file requires --require-absent"
   [ -z "$want_next" ] || [ -z "$force" ] \
     || fail "--force requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
   [ -z "$want_next" ] || [ -z "$resume" ] \
@@ -1506,60 +1674,12 @@ cmd_dispatch() {
     || fail "--full-auto requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> --auto --full-auto [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
   [ -z "$id" ] || valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
-  # The explicit dispatch option outranks STORY_AGENT. Both are resolved
-  # before the tmux/story/checkout gates, so an invalid provider can never
-  # claim a story or create a worktree.
-  if [ -n "$requested_agent" ]; then
-    configure_agent "$requested_agent"
-  else
-    configure_agent "${STORY_AGENT:-claude}"
-  fi
-
-  # model/effort/speed selectors (SH-517): explicit flag > STORY_MODEL/
-  # STORY_EFFORT/STORY_SPEED > provider default -- the same precedence
-  # --agent already has beneath STORY_AGENT, above. Resolved and validated
-  # here, before any claim/worktree side effect, same as --agent.
-  local resolved_model="${requested_model:-${STORY_MODEL:-}}"
-  local resolved_effort="${requested_effort:-${STORY_EFFORT:-}}"
-  local resolved_speed="${requested_speed:-${STORY_SPEED:-standard}}"
-  if [ -n "$resolved_model" ] || [ -n "$resolved_effort" ] || [ "$resolved_speed" != standard ]; then
-    validate_agent_model "$resolved_model"
-    validate_agent_effort "$resolved_effort"
-    validate_agent_speed "$resolved_speed"
-    # $STORY_LAUNCH_CMD/$STORY_FULL_AUTO_LAUNCH_CMD are wholesale operator
-    # overrides (configure_agent, above) with no seam to splice a selector
-    # into without guessing at their shape. Refuse by name rather than
-    # silently ignore the selector or mangle the operator's own command
-    # line -- the same posture SH-511's header comment already commits to
-    # for a launch override that weakens unattendedness.
-    [ "$AUTO_LAUNCH_OVERRIDDEN" != true ] \
-      || fail "--model/--effort/--speed cannot be combined with \$STORY_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_LAUNCH_CMD, or drop the selector."
-    [ -z "$full_auto" ] || [ "$FULL_AUTO_LAUNCH_OVERRIDDEN" != true ] \
-      || fail "--model/--effort/--speed cannot be combined with \$STORY_FULL_AUTO_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_FULL_AUTO_LAUNCH_CMD, or drop the selector."
-    LAUNCH_TPL=$(compose_launch_tpl base "$resolved_model" "$resolved_effort" "$resolved_speed")
-    AUTO_LAUNCH_TPL=$(compose_launch_tpl auto "$resolved_model" "$resolved_effort" "$resolved_speed")
-    FULL_AUTO_LAUNCH_TPL="$AUTO_LAUNCH_TPL"
-  fi
-  # Reported in the result JSON below. Claude always launches SOME model
-  # (opusplan is baked into its templates even unselected); Codex has no
-  # such default -- an unselected Codex model stays "" and is omitted from
-  # the JSON entirely, the same presence-signals-selection contract effort
-  # already has.
-  local effective_model="$resolved_model"
-  [ -n "$effective_model" ] || { [ "$AGENT" != claude ] || effective_model="opusplan"; }
-
-  local launch_source="$AUTO_LAUNCH_SOURCE" launch_overridden="$AUTO_LAUNCH_OVERRIDDEN"
-  local ignored_general_override=""
-  if [ -n "$full_auto" ]; then
-    LAUNCH_TPL="$FULL_AUTO_LAUNCH_TPL"
-    launch_source="$FULL_AUTO_LAUNCH_SOURCE"
-    launch_overridden="$FULL_AUTO_LAUNCH_OVERRIDDEN"
-    ignored_general_override="$FULL_AUTO_IGNORED_GENERAL_OVERRIDE"
-    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
-  elif [ -n "$auto" ]; then
-    LAUNCH_TPL="$AUTO_LAUNCH_TPL"
-    READY_LAUNCH_BIN="${LAUNCH_TPL%% *}"
-  fi
+  # Provider and selectors are resolved by configure_dispatch_provider once the
+  # story is identified (below); declared here so its assignments land in this
+  # scope.
+  local resolved_model="" resolved_effort="" resolved_speed="" effective_model=""
+  local launch_source="" launch_overridden="" ignored_general_override=""
+  local window_provider=""
 
   # A named target is identified before the tmux/worktree gates because an
   # epic never crosses either boundary: it is an engine scope, not a story to
@@ -1574,18 +1694,41 @@ cmd_dispatch() {
     if [ "$result" != "ok" ]; then
       fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
     fi
+    local reset_check
+    reset_check=$(story_cli engine reset-check "$id" --json)       || refuse "reset-in-progress" "dispatch refused: $reset_check"
     # Every later resource name and the engine scope use the canonical id.
     id=$(canonical_story_id "$show_json" "$id")
     title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
     state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
 
+    if [ -n "$require_absent" ]; then
+      [ -f "$continuation_file" ] && [ ! -L "$continuation_file" ] \
+        || refuse "continuation-unsafe" "continuation record is not an ordinary retained file."
+      continuation_record=$(cat "$continuation_file") \
+        || refuse "continuation-unsafe" "cannot read the retained continuation record."
+      [ "$(printf '%s' "$continuation_record" | jq -r '.story_id // ""')" = "$id" ] \
+        || refuse "continuation-unsafe" "continuation record belongs to another story."
+      continuation_preflight
+      local continuation_socket="${TMUX:-}"
+      [ "${continuation_socket%%,*}" = "$(printf '%s' "$continuation_record" | jq -r '.capture.socket')" ] \
+        || refuse "continuation-unsafe" "dispatcher socket differs from the captured continuation."
+      TARGET_SESSION=$(tmux display-message -p -t "$(printf '%s' "$continuation_record" | jq -r '.capture.pane')" '#{session_name}') \
+        || refuse "continuation-unsafe" "cannot resolve the retained pane session."
+      [ -n "$TARGET_SESSION" ] || refuse "continuation-unsafe" "retained pane has no session."
+      [ "$(story_cli --deadline 2 continuation capabilities --json | jq -r '.continuation_protocol // 0')" = 1 ] \
+        || refuse "continuation-unavailable" "guarded resume requires the installed continuation protocol."
+      [ "$(story_cli session-eligibility "$id" --json | jq -r '.session_eligibility.eligible // false')" = true ] \
+        || refuse "continuation-ineligible" "the retained story is not eligible to continue."
+    fi
+
+
     # SH-499: epic identity is the explicit type, never the mere presence of
     # a parent-of edge. Ordinary stories with subtasks still reach ID MODE.
     if [ "$(printf '%s' "$show_json" | jq -r '.story.story.story_type // ""')" = "epic" ]; then
+      # An epic has no dispatch resources to read a provider from.
+      configure_dispatch_provider "${requested_agent:-${STORY_AGENT:-claude}}"
       [ -z "$resume" ] \
         || fail "--resume applies only to an ordinary named story — $id is an epic and has no story worktree or pane to reconstruct."
-      [ -z "$over_budget" ] \
-        || fail "--over-budget applies only to a dispatch that opens a session — $id is an epic, whose engine run fills its own lanes under the budget."
       # An epic dispatch never reaches LAUNCH_TPL -- SH-468's engine run
       # payload carries only agent/lanes, the same "engine lanes keep
       # today's behavior" boundary SH-517 already draws for --full-auto.
@@ -1621,6 +1764,48 @@ cmd_dispatch() {
   enter_checkout
   local dir="$PROJECT_ROOT"
 
+  # Origin's default branch, resolved ONCE for every mode (SH-691): the
+  # resume inventory below asks whether the expected branch is protected,
+  # and Step 8 bases the worktree on it. Three sources, stated in the
+  # receipt as `base_source`: `origin` (asked of the remote — default_branch,
+  # one round trip every mode now pays, --resume and dry-run included),
+  # `cache` (origin did not answer; the local origin/HEAD cache, stale by
+  # construction, said so in the warning), `none` (no cache either — Step 8
+  # bases the work on the local checkout). Never a literal: the old `main`
+  # fallback is how five stories' pull requests reached the wrong branch.
+  # Resolved before the claim, so an unanswerable origin needs no rollback.
+  local default="" default_source="" default_reason=""
+  if default=$(default_branch 2>&1); then
+    default_source=origin
+  else
+    default_reason=$(printf '%s' "$default" | tr '\n' ' ')
+    if default=$(cached_default_branch); then
+      default_source=cache
+    else
+      default=""
+      default_source=none
+    fi
+  fi
+
+  # The provider, and everything composed from it. SH-650: a resume relaunches
+  # the provider the abandoned dispatch recorded, unless the caller named one
+  # explicitly. Precedence is the explicit flag, then the surviving record
+  # (the shared resource reader), then STORY_AGENT, then claude: the record is
+  # a fact about the thing being resumed, the environment variable is the
+  # caller's claim about itself (SH-630), and a resume that silently switched
+  # provider on that claim would rewrite the window option with a lie and look
+  # for the worktree in the wrong container. NEXT MODE has no story yet and
+  # cannot resume, so it reads no record. Resolved here, from the checkout,
+  # because the worktree half of the record needs the repository.
+  if [ -n "$id" ] && [ -n "$resume" ] && [ -z "$requested_agent" ]; then
+    load_story_resources "$id"
+    window_provider="$RESOURCE_PROVIDER"
+    if [ -z "$window_provider" ] && [ "$(printf '%s' "$RESOURCE_REPORT" | jq -r .status)" = resolved ]; then
+      refuse "resume-provider-unknown" "surviving resources record no launch provider; use dispatch --resume --agent=<provider>"
+    fi
+  fi
+  configure_dispatch_provider "${requested_agent:-${window_provider:-${STORY_AGENT:-claude}}}"
+
   # The target SESSION is knowable before either claim mode runs even though
   # NEXT MODE's window name is not. ID MODE needs it now for its transactional
   # intent comment; NEXT MODE carries it forward to the post-handoff resource
@@ -1631,7 +1816,13 @@ cmd_dispatch() {
     if [ -n "$DRY_RUN" ]; then
       dispatch_session="<current-session>"
     else
-      dispatch_session=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || printf '')
+      if [ -n "${RESOURCE_PANE:-}" ]; then
+        dispatch_session=$(tmux display-message -p -t "$RESOURCE_PANE" '#{session_name}') || fail "cannot inspect surviving session"
+      elif [[ "$RESOURCE_CALLER_SOCKET" = /* ]]; then
+        dispatch_session=$(command tmux -S "$RESOURCE_CALLER_SOCKET" display-message -p -t "$RESOURCE_CALLER_PANE" '#{session_name}') || fail "cannot inspect caller session"
+      else
+        dispatch_session=$(command tmux display-message -p -t "${TMUX_PANE:-}" '#{session_name}') || fail "cannot inspect caller session"
+      fi
       [ -n "$dispatch_session" ] \
         || fail "cannot resolve the tmux session that would receive this dispatch — no claim was made."
     fi
@@ -1650,8 +1841,31 @@ cmd_dispatch() {
   if [ -n "$id" ]; then
     wname=$(resolve_wname "$id")
     wt_container="${WORKTREE_IGNORE_PATH%/}"
-    worktree_path="$dir/$wt_container/$wname"
-    worktree_branch="worktree-$wname"
+    load_story_resources "$id"
+    dir="$RESOURCE_REPOSITORY"
+    PROJECT_ROOT="$dir"
+    CDPATH= cd -- "$dir" || fail "cannot enter resolved repository $dir"
+    wname="$RESOURCE_WINDOW"
+    worktree_path="${RESOURCE_WORKTREE:-$dir/$wt_container/$wname}"
+    worktree_branch="$RESOURCE_BRANCH"
+
+    if [ -n "$require_absent" ]; then
+      worktree_path=$(printf '%s' "$continuation_record" | jq -r '.capture.lease.worktree_path')
+      worktree_branch=$(printf '%s' "$continuation_record" | jq -r '.capture.lease.branch')
+      [ "$(printf '%s' "$continuation_record" | jq -r '.capture.lease.repository_path')" = "$dir" ] \
+        || refuse "continuation-unsafe" "continuation lease names another repository."
+      [ "$(printf '%s' "$continuation_record" | jq -r '.capture.provider')" = "$AGENT" ] \
+        && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.model')" = "$effective_model" ] \
+        && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.effort')" = "$resolved_effort" ] \
+        && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.speed')" = "$resolved_speed" ] \
+        || refuse "continuation-unsafe" "provider or launch selectors differ from the captured continuation."
+      local expected_autonomy=auto
+      [ -z "$full_auto" ] || expected_autonomy="full-auto"
+      [ -n "$auto" ] && [ "$(printf '%s' "$continuation_record" | jq -r '.capture.autonomy_mode')" = "$expected_autonomy" ] \
+        || refuse "continuation-unsafe" "autonomy mode differs from the captured continuation."
+      [ "$launch_overridden" = false ] \
+        || refuse "continuation-unsafe" "guarded recovery cannot preserve captured settings through a wholesale launcher override."
+    fi
 
     if registered_branch=$(registered_worktree_branch "$worktree_path"); then
       registered_worktree=true
@@ -1674,14 +1888,21 @@ cmd_dispatch() {
       artifacts_exist=true
       branch_status="present"
       branch_reused=true
-      is_protected_branch "$worktree_branch" && refuse "resume-unsafe" \
+      is_protected_branch "$worktree_branch" "$default" && refuse "resume-unsafe" \
         "story $id's expected branch \`$worktree_branch\` is protected by repository policy; refusing to use it as a disposable story branch."
     elif [ "$registered_worktree" = true ]; then
       refuse "resume-unsafe" \
         "story $id's registered worktree names branch \`$worktree_branch\`, but that local branch does not exist; refusing to infer ownership from an inconsistent registration."
     fi
 
-    existing_pane=$(pane_for_window "$wname") || existing_pane=""
+    existing_pane=$(resource_find_pane) || refuse "resource-query-failed" "cannot inspect existing dispatch window"
+    if [ -n "$require_absent" ]; then
+      [ "$registered_worktree" = true ] && [ "$branch_reused" = true ] \
+        || refuse "continuation-unsafe" "guarded continuation requires the original worktree and branch."
+      [ -n "$existing_pane" ] && [ "$existing_pane" = "$(printf '%s' "$continuation_record" | jq -r '.capture.pane')" ] \
+        || refuse "continuation-unsafe" "the exact retained pane is missing; automatic recreation is unavailable."
+      continuation_preflight
+    fi
     if [ -n "$existing_pane" ]; then
       resources_exist=true
       artifacts_exist=true
@@ -1716,8 +1937,8 @@ cmd_dispatch() {
         "$recovery_display" \
         "$(jq -n --argjson resources "$resources_json" '{resources:$resources}')"
     fi
-    if [ -n "$resume" ] && [ -n "$existing_pane" ] \
-       && [ "$existing_pane" = "${TMUX_PANE:-}" ]; then
+    if [ -n "$resume" ] && [ -z "$require_absent" ] && [ -n "$existing_pane" ] \
+       && resource_is_self "$existing_pane"; then
       refuse_with "resume-unsafe" \
         "story $id's surviving window is the current pane \`$existing_pane\`; refusing to kill and respawn the dispatcher itself." \
         "$(jq -n --argjson resources "$resources_json" '{resources:$resources}')"
@@ -1725,47 +1946,13 @@ cmd_dispatch() {
     [ -z "$resume" ] || [ "$resources_exist" != true ] || resumed=true
   fi
 
-  # THE LANE BUDGET (SH-655). D14 promises a machine-wide lane budget, and
-  # until this gate only the engine consulted it, over its own lanes; a
-  # dispatch typed by hand opened the same worktree, the same window and the
-  # same cold workspace build and counted for nothing — seven of them were
-  # measured at load 33 on ten cores. The gate sits here, ahead of BOTH modes'
-  # claim writes and every other side effect, the same place the ready gate
-  # stands: a refusal leaves no claim, no worktree and no window behind.
-  #
-  # It applies exactly when this dispatch would ADD a live session: a new
-  # window is about to open (a `--resume` that found its pane reuses one, so
-  # it adds nothing; a `--resume` whose window is gone, and every `--force`,
-  # open one), and the engine is not the caller — `--full-auto` lanes are
-  # already counted and refused inside the engine's own transaction, and a
-  # second refusal here would read to the engine as a dispatch failure.
-  #
-  # `story lane-budget` takes the census from THIS shell's tmux server, which
-  # is why it is store-free and never starts a daemon. Its three-valued
-  # answer is honoured as written (SH-626): an unanswered census is no
-  # evidence, so the dispatch proceeds and says so on stderr, rather than
-  # refusing over a server nobody could ask or — worse — reading silence as
-  # room. An older `story` that lacks the verb answers the same way. What a
-  # live session IS, and why a dead pane is not one, is the verb's own doc.
-  if [ -z "$existing_pane" ] && [ -z "$full_auto" ]; then
-    local census_json census_probe census_live census_budget
-    census_json=$(story_cli lane-budget --json 2>/dev/null) || census_json=""
-    census_probe=$(printf '%s' "$census_json" | jq -r '.probe // empty' 2>/dev/null || printf '')
-    if [ "$census_probe" = counted ]; then
-      census_live=$(printf '%s' "$census_json" | jq -r '.live')
-      census_budget=$(printf '%s' "$census_json" | jq -r '.budget')
-      if [ "$census_live" -ge "$census_budget" ] && [ -z "$over_budget" ]; then
-        refuse_with "lane-budget" \
-          "$census_live agent sessions are live on this machine ($(printf '%s' "$census_json" | jq -r '.windows | join(", ")')) against a lane budget of $census_budget; end one, or pass --over-budget to dispatch past it." \
-          "$(printf '%s' "$census_json" | jq '{lane_budget: .}')"
-      fi
-      [ -z "$over_budget" ] || [ "$census_live" -lt "$census_budget" ] \
-        || printf 'story.sh: dispatching past the lane budget on --over-budget (%s live against %s)\n' "$census_live" "$census_budget" >&2
-    else
-      printf 'story.sh: the lane budget could not be measured (%s); dispatching without it\n' \
-        "$(printf '%s' "$census_json" | jq -r '.detail // "story lane-budget gave no answer"' 2>/dev/null || printf 'story lane-budget gave no answer')" >&2
-    fi
+  # A resumed claim must still refer to the inventory just reviewed.
+  if [ "$resumed" = true ] && [ -z "$DRY_RUN" ]; then
+    revalidate_story_resources
   fi
+
+  # SH-672: manual concurrency belongs to the operator. The census is an
+  # explicit informational command, never an admission check at this door.
 
   # Steps 4-6: story identified, verified ready, and claimed. Two mutually
   # exclusive paths — ID MODE (a caller-named story) and NEXT MODE (SH-344,
@@ -1938,7 +2125,11 @@ cmd_dispatch() {
   # NEXT mode learns its deterministic resource names only after the atomic
   # claim chooses an id. Resume is intentionally unavailable in this mode.
   if [ -n "$want_next" ]; then
-    wname=$(resolve_wname "$id")
+    load_story_resources "$id"
+    if [ -n "$RESOURCE_WORKTREE" ] || local_branch_exists "$RESOURCE_BRANCH" || [ -n "$(resource_find_pane)" ]; then
+      fail "claimed story $id already has resources; refusing a duplicate dispatch.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    fi
+    wname="$RESOURCE_WINDOW"
     wt_container="${WORKTREE_IGNORE_PATH%/}"
     worktree_path="$dir/$wt_container/$wname"
     worktree_branch="worktree-$wname"
@@ -1982,7 +2173,14 @@ cmd_dispatch() {
       [ -z "${STORY_AUTO_PROMPT_SOLO:-}" ] && prompt_builtin="true"
     fi
   fi
+  if [ -n "$require_absent" ]; then
+    [ "$prompt_builtin" = true ] && [ -f "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" ] \
+      || refuse "continuation-unavailable" "guarded recovery requires the supported builtin continuation charter and runtime."
+  fi
   if [ "$AGENT" = "codex" ] && [ "$prompt_builtin" = "true" ]; then
+    if [ -n "$auto" ]; then
+      prompt_tpl="$prompt_tpl $CODEX_AUTO_PLAN_CLAUSE"
+    fi
     prompt_tpl="$prompt_tpl $CODEX_BUILTIN_CLAUSE"
   fi
   # Keep legacy placeholders available to wholesale prompt overrides even
@@ -1991,7 +2189,7 @@ cmd_dispatch() {
   local auto_marker="" full_auto_marker="" marker_tmux_args=""
   reap_cmd="bash \"$SELF_PATH\" --project \"$PROJECT_SLUG\" reap \"$id\""
   if [ -n "$auto" ]; then
-    completion_state=$(story_closed_state)
+    completion_state=$(story_completion_state)
   fi
   launch_cmd=$(render_template "$LAUNCH_TPL" "$id" "$wname" "$dir")
   if [ -n "$full_auto" ]; then
@@ -2095,6 +2293,7 @@ cmd_dispatch() {
       --argjson forced "$([ -n "$force" ] && echo true || echo false)" \
       --argjson reused_claim "$reused_claim" \
       --argjson resume_requested "$([ -n "$resume" ] && echo true || echo false)" \
+      --argjson require_absent "$([ -n "$require_absent" ] && echo true || echo false)" \
       --argjson resumed "$resumed" --argjson resources "$resources_json" \
       --argjson worktree_reused "$worktree_reused" --argjson branch_reused "$branch_reused" \
       --argjson window_reused "$window_reused" --arg pane "$existing_pane" \
@@ -2116,8 +2315,8 @@ cmd_dispatch() {
           + (if $worktree_reused then []
              elif $branch_reused then [("git worktree add " + $wtpath + " " + $wtbranch)]
              else [("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>")] end)
-          + [(if $window_reused then
-               ("tmux respawn-pane -k -c " + $wtpath + $marker_tmux_args + "-t " + $pane + " " + $launch)
+          + [(if $window_reused or $require_absent then
+               ("tmux respawn-pane " + (if $require_absent then "" else "-k " end) + "-c " + $wtpath + $marker_tmux_args + "-t " + $pane + " " + $launch)
              else
                ("tmux new-window " + $target + $detach + $marker_tmux_args + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
                 + " \\; set-window-option -t " + $wname + " remain-on-exit on"
@@ -2126,6 +2325,9 @@ cmd_dispatch() {
                 + " \\; set-window-option -t " + $wname + " @storyhook-agent " + $agent)
              end),
           (if $agent == "codex" then ("tmux send-keys -t <pane> " + $plan_key + " # if Plan footer is absent") else empty end),
+          (if $agent == "codex" and $auto then
+             "initialize Codex with one task-free prompt; require attempt-bound exact hooks and transcript turn completion"
+           else empty end),
           (if $auto then
              ("tmux run-shell -b -t <pane> env STORYHOOK_AUTO=" + $auto_marker
               + " STORYHOOK_FULL_AUTO=" + $full_auto_marker + " bash " + $approval_hook
@@ -2159,25 +2361,27 @@ cmd_dispatch() {
   # Step 7: idempotently gitignore the per-story worktree CONTAINER dir,
   # BEFORE the worktree materializes. Best-effort — never flips ok to false.
   local gitignore_result="already-ignored"
-  if [ "$ignore_status" = "not-ignored" ]; then
+  if [ "$ignore_status" = "not-ignored" ] && [ -z "$require_absent" ]; then
     gitignore_result=$(append_worktree_ignore "$dir")
   fi
 
   # Step 8: fetch origin/<default> (best-effort, quiet) and resolve the
-  # commit the new worktree will be based on. THREE tiers: FRESH (fetch ok +
-  # ref resolves), CACHED (fetch failed but a prior origin/<default> ref
-  # exists), HEAD-FALLBACK (origin/<default> has never resolved at all —
-  # offline and never fetched). Deliberately NOT routed through
-  # freshen_base_ref: that helper's documented contract is "any fetch
-  # failure is swallowed" (it exists for branch_is_merged, which only needs
-  # SOME usable ref, never freshness metadata) — inlining the fetch here and
-  # capturing its OWN exit code is what lets base_fresh distinguish
-  # "resolves" from "was just refreshed". Either way dispatch never blocks
-  # on network. On any hard failure from here on, the claim above is rolled
+  # commit the new worktree will be based on. <default> is the branch
+  # resolved above (origin's own answer, or the local cache when origin did
+  # not answer, or nothing). THREE tiers: FRESH (fetch ok + ref resolves),
+  # CACHED (fetch failed but a prior origin/<default> ref exists),
+  # HEAD-FALLBACK (origin/<default> has never resolved at all, or no default
+  # branch could be established — offline and never fetched). Deliberately
+  # NOT routed through freshen_base_ref: that helper's documented contract
+  # is "any fetch failure is swallowed" (it exists for branch_is_merged,
+  # which only needs SOME usable ref, never freshness metadata) — inlining
+  # the fetch here and capturing its OWN exit code is what lets base_fresh
+  # distinguish "resolves" from "was just refreshed". Either way dispatch
+  # never blocks on network, and every fallback is stated in the warning
+  # (SH-691). On any hard failure from here on, the claim above is rolled
   # back via claim_rollback_note so a failed dispatch never strands the
   # story in the claimed state.
-  local default fetch_rc=0
-  default=$(default_branch)
+  local fetch_rc=0
   local base_oid="" base_fresh=false base_note=""
   if [ "$worktree_reused" = true ]; then
     base_oid=$(git -C "$worktree_path" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
@@ -2188,9 +2392,14 @@ cmd_dispatch() {
       || fail "cannot resolve the surviving branch \`$worktree_branch\` to a commit.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     base_note="reattached surviving branch $worktree_branch at ${base_oid:0:8}; no base refresh or reset was attempted"
   else
-    git fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" \
-      >/dev/null 2>&1 || fetch_rc=$?
-    if base_oid=$(git rev-parse --verify --quiet "refs/remotes/origin/$default^{commit}" 2>/dev/null) \
+    if [ -n "$default" ]; then
+      git fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" \
+        >/dev/null 2>&1 || fetch_rc=$?
+    else
+      fetch_rc=1
+    fi
+    if [ -n "$default" ] \
+       && base_oid=$(git rev-parse --verify --quiet "refs/remotes/origin/$default^{commit}" 2>/dev/null) \
        && [ -n "$base_oid" ]; then
       if [ "$fetch_rc" -eq 0 ]; then
         base_fresh=true
@@ -2198,13 +2407,20 @@ cmd_dispatch() {
         base_note="couldn't refresh origin/$default (offline?); based on last-known origin/$default @ ${base_oid:0:8}"
       fi
     elif base_oid=$(git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) && [ -n "$base_oid" ]; then
-      base_note="could not determine origin/$default; new work is based on the local checkout, NOT the latest origin tip"
+      if [ -n "$default" ]; then
+        base_note="could not determine origin/$default; new work is based on the local checkout, NOT the latest origin tip"
+      else
+        base_note="no default branch could be established ($default_reason; no local origin/HEAD cache either); new work is based on the local checkout, NOT an origin tip"
+      fi
       if [ -n "$REQUIRE_FRESH_BASE" ]; then
-        fail "could not determine a fresh origin/$default and STORY_REQUIRE_FRESH_BASE is set — refusing to dispatch on a possibly-stale base.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+        fail "could not determine a fresh origin/${default:-<default>} and STORY_REQUIRE_FRESH_BASE is set — refusing to dispatch on a possibly-stale base.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
       fi
     else
-      fail "cannot resolve a base commit for the new worktree (no origin/$default and HEAD has no commits).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+      fail "cannot resolve a base commit for the new worktree (no origin/${default:-<default>} and HEAD has no commits).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
+  fi
+  if [ "$default_source" = cache ]; then
+    base_note="${base_note:+$base_note; }default branch \`$default\` is the local origin/HEAD cache and may be stale (origin did not answer: $default_reason) — \`git remote set-head origin -a\` refreshes it"
   fi
 
   # Step 9: preserve a valid existing worktree, reattach a branch-only find,
@@ -2296,19 +2512,36 @@ cmd_dispatch() {
   # itself is the only fact that can only be true if new-window succeeded, so
   # it alone decides failure; stderr is still discarded either way since none
   # of these calls has a message worth surfacing on the happy path.
+  local CODEX_BOOTSTRAP_FILE="" CODEX_BOOTSTRAP_TOKEN="" CODEX_BOOTSTRAP_PHASE=not-started
+  if [ "$AGENT" = codex ] && [ -n "$auto" ]; then
+    if ! codex_bootstrap_prepare "$worktree_path"; then
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+      fail "could not prepare Codex initialization metadata. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    fi
+  fi
   local new_window_args pane="" window set_target
   set_target="$wname"
   [ -n "$TARGET_SESSION" ] && set_target="$TARGET_SESSION:$wname"
   if [ -n "$existing_pane" ]; then
+    # The pane ID survives respawn; its process identity must still match.
+    revalidate_story_resources
     pane="$existing_pane"
-    # This file is a generated SessionStart witness, not project work. A
-    # replacement process must publish its own witness before handoff.
-    rm -f "$worktree_path/.claude/dispatch-sentinel.json"
+    local respawn_flag=-k respawn_command="$launch_cmd"
+    if [ -n "$require_absent" ]; then
+      continuation_preflight
+      respawn_flag=""
+      # This runs only after tmux atomically accepts the dead pane. Removing
+      # the witness earlier can erase a replacement session's evidence even
+      # when the subsequent no-k respawn correctly refuses that live owner.
+      respawn_command="rm -f -- $(posix_quote_word "$worktree_path/.claude/dispatch-sentinel.json") && exec $launch_cmd"
+    else
+      rm -f "$worktree_path/.claude/dispatch-sentinel.json"
+    fi
     # shellcheck disable=SC2086 # lane_ceiling_tmux_args is a deliberate word list
-    if ! tmux respawn-pane -k -c "$worktree_path" \
+    if ! tmux respawn-pane ${respawn_flag:+"$respawn_flag"} -c "$worktree_path" \
          -e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" \
-         -e "STORYHOOK_DISPATCH=1" $lane_ceiling_tmux_args \
-         -t "$pane" "$launch_cmd" 2>/dev/null; then
+         -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args \
+         -t "$pane" "$respawn_command" 2>/dev/null; then
       cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
       fail "failed to respawn surviving tmux pane \`$pane\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
@@ -2320,7 +2553,7 @@ cmd_dispatch() {
   else
     new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
     # shellcheck disable=SC2206 # lane_ceiling_tmux_args is a deliberate word list
-    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" $lane_ceiling_tmux_args "${new_window_args[@]}")
+    new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args "${new_window_args[@]}")
     [ -z "$FOREGROUND" ] && new_window_args=(-d "${new_window_args[@]}")
     [ -n "$TARGET_SESSION" ] && new_window_args=(-t "$TARGET_SESSION:" "${new_window_args[@]}")
     pane=$(tmux new-window "${new_window_args[@]}" "$launch_cmd" \; \
@@ -2345,6 +2578,8 @@ cmd_dispatch() {
   local pane_pid
   pane_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || printf '')
 
+  local DISPATCH_ROLLBACK_CLAIMED="$reused_claim" DISPATCH_ROLLBACK_NOTE=""
+
   # Publish the durable-cleanup handoff before any gate that can leave this
   # window/worktree behind. Every rollback path calls cleanup_dispatch_git,
   # which removes this attempt's marker before preserving or deleting Git
@@ -2353,23 +2588,19 @@ cmd_dispatch() {
   # the project's mutable checkout registration.
   if ! write_cleanup_lease_marker \
       "$PROJECT_SLUG" "$id" "$dir" "$worktree_path" "$worktree_branch" "$pane"; then
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse "cleanup-lease-unavailable" \
-      "[story] $id → the agent window opened, but dispatch could not record its exact cleanup identity. Nothing was typed into that pane; $(dispatch_cleanup_note). The diagnostic window was preserved."
+      "[story] $id → the agent window opened, but dispatch could not record its exact cleanup identity. Nothing was typed into that pane; $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE"
   fi
 
-  # Step 11: readiness GATE before typing the prompt. This gates (SH-226); it
-  # used to only annotate. An unconfirmed pane gets no text at all: the charter
-  # is an autonomous instruction document whose backticked spans a shell executes
-  # as commands, so "type it anyway and warn" is not a safe default when nobody
-  # is watching the pane. The window is deliberately left standing — it is the
-  # only place the launch failure's own words survive — while the worktree,
-  # branch and any claim created by this dispatch are rolled back so an
-  # immediate retry is not answered with "already dispatched?" (the collision
-  # guard keys on worktree/branch). A forced pre-existing claim stays put.
+  # Step 11: the charter needs both process identity and provider readiness.
+  # Codex first sends a task-free initialization turn to trigger its deferred
+  # hook. Capture failure evidence before terminating this attempt's process
+  # tree; only confirmed termination permits Git/claim rollback. An uncertain
+  # owner or a potentially submitted charter preserves resources instead.
   local provider_ready=false
   if [ "$AGENT" = "codex" ] && [ -n "$auto" ]; then
-    wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" "$STORY_PLUGIN_ROOT" \
+    codex_bootstrap_ready "$pane" "$pane_pid" "$worktree_path" "$launch_cmd" \
       && provider_ready=true
   elif [ "$AGENT" = "codex" ]; then
     wait_ready "$pane" "$launch_cmd" && provider_ready=true
@@ -2379,16 +2610,18 @@ cmd_dispatch() {
   if [ "$provider_ready" != true ]; then
     local ready_tail
     ready_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse_with pane-not-ready \
-      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). Nothing was typed into that pane. The window is left open so you can look at it; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → could not confirm $AGENT_LABEL is running in window \`$wname\` ($(dispatch_ready_note)). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg cmd "$WAIT_READY_COMMAND" \
             --arg wreason "$WAIT_READY_REASON" --arg tail "$ready_tail" \
-            --arg pattern "$READY_PROCESS_PATTERN" --argjson claimed "$reused_claim" \
+            --arg bootstrap "$CODEX_BOOTSTRAP_PHASE" \
+            --arg pattern "$READY_PROCESS_PATTERN" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:false, pane_command:$cmd,
               wait_ready_reason:$wreason, ready_process_pattern:$pattern,
+              bootstrap_phase:$bootstrap,
               pane_tail:$tail, claimed:$claimed}')"
   fi
   local readiness_confirmed=true
@@ -2400,12 +2633,12 @@ cmd_dispatch() {
   if ! ensure_provider_plan_mode "$pane"; then
     local mode_tail
     mode_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse_with plan-mode-unconfirmed \
-      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). Nothing was typed into that pane. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL is ready in window \`$wname\`, but its Plan mode could not be confirmed ($PLAN_MODE_REASON). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg reason "$PLAN_MODE_REASON" --arg tail "$mode_tail" \
-            --argjson claimed "$reused_claim" \
+            --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, plan_mode_confirmed:false,
               plan_mode_reason:$reason, pane_tail:$tail, claimed:$claimed}')"
@@ -2418,14 +2651,47 @@ cmd_dispatch() {
      && ! schedule_plan_approval "$pane" "$pane_pid" "$auto_marker" "$full_auto_marker"; then
     local approval_tail
     approval_tail=$(pane_tail "$pane")
-    cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+    rollback_dispatch_attempt
     refuse_with plan-approval-unarmed \
-      "[story] $id → $AGENT_LABEL Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. Nothing was typed into that pane. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL Plan mode is confirmed in window \`$wname\`, but its autonomous plan-approval watcher could not be armed. No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
-            --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$reused_claim" \
+            --arg pane "$pane" --arg tail "$approval_tail" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, plan_mode_confirmed:true,
               plan_approval_armed:false, pane_tail:$tail, claimed:$claimed}')"
+  fi
+
+  if [ -n "$auto" ] && [ "$prompt_builtin" = true ] \
+     && [ -f "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" ]; then
+    local continuation_capabilities
+    continuation_capabilities=$(story_cli --deadline 2 continuation capabilities --json 2>/dev/null) || continuation_capabilities='{}'
+    if [ "$(printf '%s' "$continuation_capabilities" | jq -r '.continuation_protocol // 0')" = 1 ]; then
+      local registration registration_input autonomy_mode=auto
+      [ -z "$full_auto" ] || autonomy_mode="full-auto"
+      registration_input=$(jq -n --arg id "$id" --arg cwd "$worktree_path" \
+        --arg socket "$(printf '%s' "$DISPATCH_CLEANUP_LEASE" | jq -r '.tmux.socket_path')" \
+        --arg pane "$pane" --arg provider "$AGENT" --arg model "$effective_model" \
+        --arg effort "$resolved_effort" --arg speed "$resolved_speed" --arg autonomy "$autonomy_mode" \
+        '{story_id:$id,cwd:$cwd,socket:$socket,pane:$pane,provider:$provider,model:$model,
+          effort:$effort,speed:$speed,autonomy_mode:$autonomy}')
+      registration=$(printf '%s' "$registration_input" | python3 "$STORY_PLUGIN_ROOT/lib/continuation_runtime.py" register) || registration='{}'
+      if [ "$(printf '%s' "$registration" | jq -r '.ok // false')" != true ]; then
+        if [ -n "$require_absent" ]; then
+          rollback_dispatch_attempt
+          refuse "continuation-unavailable" "native continuation ownership registration failed: $(printf '%s' "$registration" | jq -r '.detail // "no diagnostic"'). No story charter was delivered."
+        fi
+        auto_note="$auto_note Native context continuation unavailable: $(printf '%s' "$registration" | jq -r '.detail // "ownership registration failed"')."
+      else
+        prompt="$prompt $(render_template "$CONTINUATION_PROMPT_CLAUSE" "$id" "$wname" "$dir")"
+      fi
+    elif [ -n "$require_absent" ]; then
+      rollback_dispatch_attempt
+      refuse "continuation-unavailable" "native continuation capability disappeared before ownership registration. No story charter was delivered."
+    else
+      auto_note="$auto_note Native context continuation unavailable: the installed service does not advertise continuation protocol 1."
+    fi
+  elif [ -n "$auto" ] && [ "$prompt_builtin" = true ]; then
+    auto_note="$auto_note Native context continuation unavailable: the runtime adapter is not installed."
   fi
 
   # Step 12: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes
@@ -2444,11 +2710,11 @@ cmd_dispatch() {
       # Nothing reached the input box, so nothing was submitted (guaranteed by
       # send_prompt_confirmed: no Enter is sent before receipt is observed).
       # Safe to roll everything back, exactly as a failed window-open does.
-      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+      rollback_dispatch_attempt
       refuse_with handoff-undelivered \
-      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. The window is left open; $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")" \
+      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
         "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
-              --arg pane "$pane" --arg tail "$send_tail" --argjson claimed "$reused_claim" \
+              --arg pane "$pane" --arg tail "$send_tail" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
               '{id:$id, window:$window, window_name:$wname, pane:$pane,
                 readiness_confirmed:true, delivery_phase:"undelivered",
                 pane_tail:$tail, claimed:$claimed}')"
@@ -2540,7 +2806,8 @@ cmd_dispatch() {
     --argjson window_reused "$window_reused" --argjson worktree_created "$worktree_created" \
     --argjson branch_created "$branch_created" \
     --arg warning "$warning" --arg tail "$tail_evidence" --arg display "$display" \
-    --arg default "$default" --arg base_oid "$base_oid" --argjson base_fresh "$base_fresh" \
+    --arg default "$default" --arg default_source "$default_source" \
+    --arg base_oid "$base_oid" --argjson base_fresh "$base_fresh" \
     --arg wtbranch "$worktree_branch" --arg wtpath "$worktree_path" \
     --arg session "$TARGET_SESSION" --argjson session_created "$session_created" \
     --arg pane_pid "$pane_pid" \
@@ -2560,7 +2827,9 @@ cmd_dispatch() {
       readiness_confirmed: $ready, plan_mode_confirmed: $plan,
       prompt_confirmed: $pconf, prompt_accepted: $paccept,
       claimed: true, gitignore: $gitignore,
-      base_branch: $default, base_ref: ("origin/" + $default),
+      base_branch: (if $default == "" then null else $default end),
+      base_ref: (if $default == "" then null else "origin/" + $default end),
+      base_source: $default_source,
       base_oid: $base_oid, base_fresh: $base_fresh,
       worktree_branch: $wtbranch, worktree_path: $wtpath,
       cleanup_lease: $cleanup_lease
@@ -2797,7 +3066,7 @@ cmd_ensure_cli() {
      display:("[story] the CLI is installed (" + (if $version == "" then "version unknown" else $version end) + ").")}'
 }
 
-# cmd_context [--full] — `story load-context` already IS the "comprehensive
+# cmd_context [--full] [--story <id>] — `story load-context` already IS the "comprehensive
 # project overview" the skill used to assemble by hand from `story context`
 # plus a separate `story next --count 3 --json` call; it has covered both
 # since the CLI renamed `context` to `load-context` (see `story help
@@ -2807,17 +3076,24 @@ cmd_ensure_cli() {
 # here the CLI has no opinion on at all (`--stale` REQUIRES a value; there is
 # no default to drift from) rather than hard-coding it a second place.
 cmd_context() {
-  local full=""
+  local full="" review_story=""
+  local -a args=(load-context)
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --full) full=1; shift ;;
-      *) fail "unknown argument \`$1\` — usage: story.sh context [--full]" ;;
+      --story)
+        [ -z "$review_story" ] || fail "--story may be given only once."
+        [ "$#" -ge 2 ] && [ -n "$2" ] || fail "--story needs a story id."
+        case "$2" in -*) fail "--story needs a story id." ;; esac
+        review_story="$2"; args+=(--story "$2"); shift 2 ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh context [--full] [--story <id>]" ;;
     esac
   done
   require_story
 
   local body
-  body=$(story_cli load-context 2>/dev/null) || true
+  # A failed evidence read must never be presented as a successful review.
+  body=$(story_cli "${args[@]}" 2>&1) || fail "story load-context: $body"
   [ -n "$body" ] || fail "story load-context produced no output."
 
   if [ -n "$full" ]; then
@@ -2892,46 +3168,12 @@ cmd_handoff() {
 
 # ---- subcommand: triage -------------------------------------------------------
 #
-# _find_blocking_cycles — READ-ONLY. stdin is `<blocker-id>\t<blocked-id>`
-# edges, one per line (blocker must close before blocked is ready); echoes
-# every story id that sits on a cycle, one per line, empty when there is
-# none. Kahn's algorithm: repeatedly strip a node with no remaining
-# unresolved blocker, decrementing its neighbors' counts; whatever is left
-# once nothing more can be stripped cannot be explained by anything BUT a
-# cycle, because every acyclic path bottoms out at a node with in-degree
-# zero. This is what skills/story-triage/SKILL.md used to hand to the model
-# as "eyeball `story graph`'s output ... this is a manual check" — the CLI
-# does not expose raw edges via `story graph`, but `story list --json`
-# already carries every story's own `blocked-by` relationships, which is
-# all a cycle check needs. Bare (no --include-closed): a closed story is
-# never a blocker worth resolving -- `is_ready` already treats a
-# `blocked-by` edge to a closed story as non-blocking -- so SH-409's
-# default exclusion narrows this edge set to exactly the ones a cycle
-# here could actually stall, not fewer.
+# stdin is blocker-id<TAB>dependent-id. Strongly connected components identify
+# exact cycle members; Kahn residuals would also include downstream dependents.
+# Closed stories have no outgoing dependency rows in the open-story snapshot,
+# so a satisfied dependency cannot complete an unresolved cycle.
 _find_blocking_cycles() {
-  awk -F'\t' '
-    NF == 2 { blocker[NR]=$1; blocked[NR]=$2; nodes[$1]=1; nodes[$2]=1; n=NR }
-    END {
-      for (i=1;i<=n;i++) {
-        indeg[blocked[i]]++
-        adj[blocker[i]] = adj[blocker[i]] (adj[blocker[i]] == "" ? "" : "\x1f") blocked[i]
-      }
-      qn=0
-      for (id in nodes) if (indeg[id]+0 == 0) { queue[qn++]=id; queued[id]=1 }
-      qi=0
-      while (qi<qn) {
-        cur=queue[qi++]
-        removed[cur]=1
-        split(adj[cur], parts, "\x1f")
-        for (k in parts) {
-          nb=parts[k]
-          if (nb == "") continue
-          indeg[nb]--
-          if (indeg[nb] == 0 && !(nb in queued)) { queue[qn++]=nb; queued[nb]=1 }
-        }
-      }
-      for (id in nodes) if (!(id in removed)) print id
-    }'
+  python3 "$STORY_PLUGIN_ROOT/lib/blocking_cycles.py"
 }
 
 # cmd_triage — SH-308. Gathers the four reads story-triage's own step 1 used
@@ -2943,33 +3185,39 @@ _find_blocking_cycles() {
 # unambiguous CLI invocation with nothing to parse, and re-wrapping an
 # already-trivial call here would be complexity this story does not buy
 # anything with.
+# Every triage finding must rest on a successful, complete CLI response. A
+# transport failure or malformed envelope is never evidence of a clean backlog.
+triage_read() {
+  local out
+  if ! out=$(story_cli "$@" --json 2>&1); then
+    fail "triage: story $* failed: $out"
+  fi
+  if ! printf '%s' "$out" | jq -s -e '
+    length == 1 and (.[0] | type == "object" and .result == "ok"
+      and (.stories | type) == "array")
+  ' >/dev/null 2>&1; then
+    fail "triage: story $* returned an invalid response: $out"
+  fi
+  printf '%s\n' "$out"
+}
+
 cmd_triage() {
   [ "$#" -eq 0 ] || fail "usage: story.sh triage"
   require_story
 
   local stale="${STORY_STALE_THRESHOLD:-3d}"
   local list_json stale_json blocked_json
-  list_json=$(story_cli list --json 2>/dev/null) || true
-  [ -n "$list_json" ] || fail "story list produced no output."
-
-  # NOT defaulted to empty on failure: `--blocked` is a boolean flag that
-  # cannot itself be malformed, but `--stale` takes a value
-  # (STORY_STALE_THRESHOLD is env-overridable), and a bad one is a real,
-  # user-facing error the CLI already names clearly -- swallowing it into
-  # "no stale stories" would silently hide exactly the mistake a caller most
-  # needs to see. Mirrors _load_ready_stories' own "never a default" rule.
-  stale_json=$(story_cli list --stale "$stale" --json 2>/dev/null) || true
-  if [ "$(printf '%s' "$stale_json" | jq -r '.result // ""' 2>/dev/null)" != "ok" ]; then
-    fail "$(printf '%s' "$stale_json" | jq -r --arg stale "$stale" '.error // ("story list --stale " + $stale + " emitted no result")' 2>/dev/null)"
-  fi
-  blocked_json=$(story_cli list --blocked --json 2>/dev/null) || blocked_json='{"stories":[]}'
+  list_json=$(triage_read list) || { printf '%s\n' "$list_json"; return 1; }
+  stale_json=$(triage_read list --stale "$stale") || { printf '%s\n' "$stale_json"; return 1; }
+  blocked_json=$(triage_read list --blocked) || { printf '%s\n' "$blocked_json"; return 1; }
 
   local edges cycle_ids cycle_json
   edges=$(printf '%s' "$list_json" | jq -r '
     .stories[]? | .story as $s
     | ($s.relationships[]? | select(.relation == "blocked-by") | [.other_id, $s.id] | @tsv)
   ')
-  cycle_ids=$(printf '%s\n' "$edges" | _find_blocking_cycles)
+  cycle_ids=$(printf '%s\n' "$edges" | _find_blocking_cycles 2>&1) \
+    || fail "triage: cycle analysis failed: $cycle_ids"
   cycle_json=$(printf '%s\n' "$cycle_ids" | jq -R -s 'split("\n") | map(select(length > 0))')
 
   # A full-project `list --json` is too big for --argjson: it goes on jq's own
@@ -3193,9 +3441,6 @@ cmd_scaffold_claude_md() { _cmd_scaffold_instructions claude-md CLAUDE.md "$@"; 
 # the CLI. This runs both and reports them together.
 
 cmd_capture() {
-  if [ -z "$DRY_RUN" ]; then
-    [ -n "${TMUX:-}" ] || fail "story capture requires tmux — run $AGENT_LABEL inside a tmux session."
-  fi
   local id="${1:-}"
   [ -n "$id" ] || fail "usage: story.sh capture <story-id>"
   shift
@@ -3214,12 +3459,11 @@ cmd_capture() {
   # the canonical id: the window it is hunting was named by `dispatch` from
   # the CANONICAL id, so `story.sh capture 5` would otherwise look for a
   # window no dispatch has ever created (SH-118).
-  local wname
-  if command -v "$STORY" >/dev/null 2>&1; then
-    resolve_checkout || true
-    id=$(canonical_story_id "$(story_cli show "$id" --json 2>/dev/null || printf '')" "$id")
-  fi
-  wname=$(resolve_wname "$id")
+  require_story
+  resolve_project || fail "$CHECKOUT_ERROR"
+  load_story_resources "$id"
+  id="$RESOURCE_ID"
+  local wname="$RESOURCE_WINDOW"
 
   if [ -n "$DRY_RUN" ]; then
     jq -n --arg wname "$wname" --arg lines "$CAPTURE_LINES" '
@@ -3233,7 +3477,7 @@ cmd_capture() {
   fi
 
   local pane transcript
-  pane=$(pane_for_window "$wname")
+  pane=$(resource_find_pane) || refuse "resource-query-failed" "cannot query capture target"
   [ -n "$pane" ] || fail "no live tmux window named \`$wname\` — dispatch it first with \`/story do $id\`."
   transcript=$(capture_pane_transcript "$pane") \
     || fail "failed to capture pane \`$pane\` (window \`$wname\`)."
@@ -3247,19 +3491,33 @@ cmd_capture() {
 
 # cmd_notify <story-id> <message> — resume the exact dispatched agent after
 # centralized verification returns its PR for repair (SH-521).
+#
+# Every refusal slug this verb can emit is classified BY NAME on the daemon
+# side (`NOTIFY_REFUSALS`, src/daemon/verification.rs) as either "no live
+# agent in that window" -- the verifier re-dispatches in place (SH-650) -- or
+# "something else", which parks the story. tests/notify_reasons.rs derives the
+# slugs from this function's own `refuse "..."` literals, so adding one here
+# without classifying it there fails the build rather than falling through to
+# whichever default happens to be safe.
 cmd_notify() {
-  local id="${1:-}" message="${2:-}"
-  [ -n "$id" ] && [ -n "$message" ] && [ "$#" -eq 2 ] \
-    || fail "usage: story.sh notify <story-id> <message>"
+  local id="${1:-}" message="${2:-}" expected="${4:-}" target="" diagnostic
+  if ! { [ -n "$id" ] && [ -n "$message" ] && \
+    { [ "$#" -eq 2 ] || { [ "$#" -eq 4 ] && [ "${3:-}" = --expected-target ] && [ -n "$expected" ] && [ "$message" != --interrupt ]; }; }; }; then
+    fail "usage: story.sh notify <story-id> <message> [--expected-target <target>] | <story-id> --interrupt"
+  fi
   valid_story_id "$id" \
     || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
   local wname pane buffer provider server
-  wname=$(resolve_wname "$id")
+  require_story
+  resolve_project || fail "$CHECKOUT_ERROR"
+  load_story_resources "$id"
+  id="$RESOURCE_ID"
+  wname="$RESOURCE_WINDOW"
   server="${TMUX:-}"
   server="${server%%,*}"
   server="${server:-default (TMUX_TMPDIR=${TMUX_TMPDIR:-/tmp})}"
-  if ! pane=$(pane_for_window "$wname" 2>&1); then
+  if ! pane=$(resource_find_pane 2>&1); then
     refuse "pane-query-failed" "could not query tmux window \`$wname\` on server \`$server\`: $pane; verification diagnostics remain on $id."
   fi
   [ -n "$pane" ] \
@@ -3269,9 +3527,33 @@ cmd_notify() {
   claude | codex) configure_agent "$provider" ;;
   *) refuse "pane-provider-unknown" "tmux window \`$wname\` has no valid StoryHook provider identity; refusing to type into an unverified pane." ;;
   esac
+  # A pane whose process has exited under remain-on-exit still answers the
+  # provider option and a FROZEN #{pane_current_command} (pane_is_dead's doc),
+  # so it passes both gates above and pane_runs below. Ask tmux the one
+  # question that distinguishes it, first: the verifier re-dispatches on this
+  # refusal (SH-650), and must never read a corpse as `delivery-failed`, the
+  # refusal that means the agent IS live and a respawn would kill it.
+  ! pane_is_dead "$pane" \
+    || refuse "pane-dead" "tmux window \`$wname\` pane \`$pane\` has exited (remain-on-exit); the dispatched $AGENT_LABEL process is gone, so the remediation cannot be typed into it."
   pane_runs "$pane" \
     || refuse "pane-changed" "tmux window \`$wname\` no longer runs the dispatched $AGENT_LABEL process; refusing to type into an unrelated pane."
 
+  if [ "$message" = --interrupt ] || [ -n "$expected" ]; then
+    target=$(python3 "$STORY_PLUGIN_ROOT/lib/interrupt-agent.py" target "$pane" "$provider" 2>&1) \
+      || refuse "target-changed" "could not bind the dispatched session: $target"
+    [ -z "$expected" ] || [ "$expected" = "$target" ] \
+      || refuse "target-changed" "the interrupted session was replaced; no prompt sent to $id."
+  fi
+  if [ "$message" = --interrupt ]; then
+    revalidate_story_resources
+    diagnostic=$(python3 "$STORY_PLUGIN_ROOT/lib/interrupt-agent.py" interrupt "$pane" "$provider" "$target" 2>&1) \
+      || refuse "interruption-failed" "native interruption/owned gate cleanup was not acknowledged for $id: $diagnostic"
+    jq -n --arg id "$id" --arg target "$target" \
+      '{ok:true,id:$id,target:$target,display:("[story] native interrupt sent to " + $id + "; captured gate children are stopped; session and worktree preserved.")}'
+    return 0
+  fi
+
+  revalidate_story_resources
   buffer="story-verify-$id"
   paste_prompt "$pane" "$message" "$buffer" \
     || refuse "delivery-failed" "could not paste the verification remediation into pane \`$pane\`."
@@ -3492,17 +3774,15 @@ cmd_doctor() {
 # branch of every merged PR that closed the issue, and storyhook has no such
 # linkage — the worktree directory name is the sole story<->branch tie.
 
-# story_closed_state — the slug `complete` moves a story into: the first
-# CLOSED-superstate state the project defines, or $STORY_DONE_STATE.
+# story_completion_state — the slug `complete` moves a story into and `reap`
+# accepts: the required `done` (SH-652). One function rather than a bare
+# `$COMPLETION_STATE` at each site so every reader of the fact has one door.
 #
-# Not hard-coded to "done": the state set is user-editable (this very repo
-# defines five states, not the three `story project new` seeds). Read from
-# `story state list` rather than from a file — see story_state_list.
-story_closed_state() {
-  if [ -n "$DONE_STATE" ]; then printf '%s' "$DONE_STATE"; return 0; fi
-  story_state_list | awk -F' *\\(' '
-    /\(CLOSED[,)]/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); print $1; exit }
-  '
+# Until SH-652 this scraped `story state list` for the first CLOSED state,
+# which disagreed with the verifier the moment a project ordered another
+# CLOSED state ahead of `done` — every green story then failed reap forever.
+story_completion_state() {
+  printf '%s' "$COMPLETION_STATE"
 }
 
 # _story_worktree_status <path> <caller-toplevel> — removable|current|locked|
@@ -3520,17 +3800,18 @@ story_closed_state() {
 # worktree feature locks the ones it creates, and reclaiming those is not this
 # verb's business.
 _story_worktree_status() {
-  local target="$1" cur="$2" locked
-  locked=$(git worktree list --porcelain 2>/dev/null | awk -v want="$target" '
-    function flush() { if (p == want) print (l ? "1" : "0") }
-    /^worktree / { flush(); p = substr($0, 10); l = 0 }
-    /^locked/    { l = 1 }
-    END          { flush() }')
-  [ -n "$locked" ] || { printf 'missing'; return 0; }
-  if [ "$target" = "$cur" ]; then printf 'current'; return 0; fi
-  if [ "$locked" = "1" ]; then printf 'locked'; return 0; fi
-  if [ -n "$(git -C "$target" status --porcelain 2>/dev/null)" ]; then printf 'dirty'; return 0; fi
-  printf 'removable'
+  local target="$1" cur="$2" locked dirty
+  [ -n "$target" ] || { printf missing; return 0; }
+  # The reader already parsed NUL-delimited Git records and checked identity.
+  locked=$(printf '%s' "$RESOURCE_REPORT" | jq -r --arg path "$target" '[.candidates[] | select(.worktree == $path and .registered)] | if length == 0 then "missing" else .[0].locked end')
+  [ "$locked" != missing ] || { printf missing; return 0; }
+  if [ "$target" = "$cur" ]; then printf current; return 0; fi
+  if [ "$locked" = true ]; then printf locked; return 0; fi
+  if ! dirty=$(git -C "$target" status --porcelain 2>&1); then
+    printf 'cannot inspect worktree %s: %s' "$target" "$dirty" >&2
+    return 1
+  fi
+  if [ -n "$dirty" ]; then printf dirty; else printf removable; fi
 }
 
 # _close_story_window <window-name> — close every matching window and prove
@@ -3549,22 +3830,16 @@ _story_worktree_status() {
 # SH-360). What differs between the three verbs is WHEN they call it and
 # whether they are allowed to, never how the window is found.
 _close_story_window() {
-  local wname="$1" pane window found=false attempts=0
-  while :; do
-    pane=$(pane_for_window "$wname") || return 2
-    [ -n "$pane" ] || break
-    found=true
-    attempts=$((attempts + 1))
-    [ "$attempts" -le 256 ] || return 2
-    window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
-    if [ -n "$window" ]; then
-      tmux kill-window -t "$window" 2>/dev/null || return 2
-    else
-      tmux kill-window -t "$pane" 2>/dev/null || return 2
-    fi
-  done
-  [ "$found" = true ] && return 0
-  return 1
+  local expected current remaining window
+  RESOURCE_CLOSE_ERROR=""
+  expected=$(printf '%s' "$RESOURCE_REPORT" | jq -c '.pane | if . == null then {} else del(.dead) end')
+  current=$(resource_window_snapshot 2>&1) || { RESOURCE_CLOSE_ERROR="$current"; return 2; }
+  [ "$current" = "$expected" ] || { RESOURCE_CLOSE_ERROR="terminal identity changed: expected $expected, observed $current"; return 2; }
+  window=$(printf '%s' "$current" | jq -r '.window_id // empty')
+  [ -n "$window" ] || return 1
+  RESOURCE_CLOSE_ERROR=$(tmux kill-window -t "$window" 2>&1) || return 2
+  remaining=$(resource_window_snapshot 2>&1) || { RESOURCE_CLOSE_ERROR="$remaining"; return 2; }
+  [ "$remaining" = '{}' ] || return 2
 }
 
 # _complete_prepare <id> — shared by plan and execute. Resolves the story,
@@ -3585,11 +3860,7 @@ _complete_prepare() {
   valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
   require_story
-  # The same lookup dispatch performs, for the same reason: a worktree created
-  # under one rule and cleaned up under another is SH-166 verbatim.
-  resolve_checkout || fail "$CHECKOUT_ERROR"
-  enter_checkout
-  CMP_DIR="$PROJECT_ROOT"
+  resolve_project || fail "$CHECKOUT_ERROR"
 
   local show_json result
   show_json=$(story_cli show "$id" --json 2>/dev/null) || true
@@ -3604,19 +3875,56 @@ _complete_prepare() {
   CMP_TITLE=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
   CMP_STATE=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
   CMP_SUPER=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
-  CMP_DONE_STATE=$(story_closed_state)
+  CMP_DONE_STATE=$(story_completion_state)
 
-  local wt_container wname
-  wname=$(resolve_wname "$id")
-  CMP_DEFAULT=$(default_branch)
+  load_story_resources "$id"
+  CMP_DIR="$RESOURCE_REPOSITORY"
+  PROJECT_ROOT="$CMP_DIR"
+  CDPATH= cd -- "$CMP_DIR" || fail "cannot enter resolved repository $CMP_DIR"
+  CMP_WNAME="$RESOURCE_WINDOW"
+  CMP_WT_PATH="$RESOURCE_WORKTREE"
+  CMP_WT_BRANCH="$RESOURCE_BRANCH"
+
+  # Configuration and symlinked parents can redirect cleanup into an installed
+  # tree. Prove the actual targets before even fetching, let alone releasing a
+  # claim. All callers of this preparation share the non-overridable invariant.
+  local common_dir artifact_error
+  common_dir=$(git rev-parse --git-common-dir 2>&1) \
+    || refuse "installed-artifact-resource" "cannot resolve Git metadata for $id: $common_dir"
+  case "$common_dir" in /*) : ;; *) common_dir="$CMP_DIR/$common_dir" ;; esac
+  artifact_error=$(python3 "$STORY_PLUGIN_ROOT/lib/artifact-resources.py" \
+    "$CMP_DIR" "$common_dir" "$CMP_WT_PATH" 2>&1) \
+    || refuse "installed-artifact-resource" "cannot prepare $id: $artifact_error — no claim was released or resource removed."
+
+  if [ -n "${STORY_WORKTREE_IGNORE_PATH:-}" ]; then
+    local configured_target
+    configured_target="$STORY_WORKTREE_IGNORE_PATH/$(resolve_wname "$id")"
+    case "$configured_target" in /*) : ;; *) configured_target="$CMP_DIR/$configured_target" ;; esac
+    artifact_error=$(python3 "$STORY_PLUGIN_ROOT/lib/artifact-resources.py" \
+      "$CMP_DIR" "$common_dir" "$configured_target" 2>&1) \
+      || refuse "installed-artifact-resource" "cannot prepare $id: $artifact_error — no claim was released or resource removed."
+  fi
+
+  # Origin's default branch (SH-691): asked of origin; when origin does not
+  # answer, the local origin/HEAD cache is used and SAID to be used
+  # (CMP_DEFAULT_SOURCE, plus a note in every receipt that reports the
+  # default). A stale default can only PRESERVE a branch here — branch_is_merged
+  # answers "not merged" against the wrong ref, and a `worktree-*` name never
+  # collides with a default — so the read-only plan and the guarded execute
+  # keep working offline. Neither source → fail; never a literal.
+  CMP_DEFAULT_SOURCE=origin
+  CMP_DEFAULT_NOTE=""
+  if ! CMP_DEFAULT=$(default_branch 2>&1); then
+    local default_reason
+    default_reason=$(printf '%s' "$CMP_DEFAULT" | tr '\n' ' ')
+    CMP_DEFAULT=$(cached_default_branch) \
+      || fail "cannot establish origin's default branch, and this checkout has no origin/HEAD cache to fall back on: $default_reason"
+    CMP_DEFAULT_SOURCE=cache
+    CMP_DEFAULT_NOTE="default branch \`$CMP_DEFAULT\` is the local origin/HEAD cache and may be stale (origin did not answer: $default_reason) — \`git remote set-head origin -a\` refreshes it"
+  fi
   freshen_base_ref "$CMP_DEFAULT"
 
-  wt_container="${WORKTREE_IGNORE_PATH%/}"
-
-  CMP_WNAME="$wname"
-  CMP_WT_PATH="$CMP_DIR/$wt_container/$CMP_WNAME"
-  CMP_WT_BRANCH="worktree-$CMP_WNAME"
-  CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH" "$caller_toplevel")
+  CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH" "$caller_toplevel") || refuse "resource-query-failed" "cannot classify resolved worktree"
 
   # Window classification (SH-308) — read-only, safe under `plan`. `complete`
   # never touched tmux before this: it could remove a worktree out from under a
@@ -3633,10 +3941,10 @@ _complete_prepare() {
   # judgment call here.
   CMP_WINDOW_STATUS="none"
   CMP_WINDOW_PANE=""
-  if [ -n "${TMUX:-}" ]; then
-    CMP_WINDOW_PANE=$(pane_for_window "$CMP_WNAME") || CMP_WINDOW_PANE=""
+  if [ -z "$DRY_RUN" ] || [ -n "${TMUX:-}" ]; then
+    CMP_WINDOW_PANE=$(resource_find_pane) || refuse "resource-query-failed" "cannot query story window"
     if [ -n "$CMP_WINDOW_PANE" ]; then
-      if [ -n "${TMUX_PANE:-}" ] && [ "$CMP_WINDOW_PANE" = "$TMUX_PANE" ]; then
+      if resource_is_self "$CMP_WINDOW_PANE"; then
         CMP_WINDOW_STATUS="self"
       else
         CMP_WINDOW_STATUS="open"
@@ -3649,7 +3957,7 @@ _complete_prepare() {
   # <default> exists), so it is preserved rather than deleted.
   if ! local_branch_exists "$CMP_WT_BRANCH"; then
     CMP_BR_STATUS="missing"
-  elif is_protected_branch "$CMP_WT_BRANCH"; then
+  elif is_protected_branch "$CMP_WT_BRANCH" "$CMP_DEFAULT"; then
     CMP_BR_STATUS="protected"
   elif branch_is_merged "$CMP_WT_BRANCH" "$CMP_DEFAULT"; then
     CMP_BR_STATUS="deletable"
@@ -3671,7 +3979,8 @@ _complete_prepare() {
   # that work to be.
   CMP_BR_UNPUSHED=0
   if [ "$CMP_BR_STATUS" != "missing" ]; then
-    CMP_BR_UNPUSHED=$(git rev-list --count "refs/heads/$CMP_WT_BRANCH" --not --remotes 2>/dev/null || printf '0')
+    CMP_BR_UNPUSHED=$(git rev-list --count "refs/heads/$CMP_WT_BRANCH" --not --remotes) \
+      || refuse "resource-query-failed" "cannot inspect unpushed commits for $CMP_WT_BRANCH"
   fi
 
   # Nothing at all under the project's checkout is REPORTED, never
@@ -3686,10 +3995,11 @@ _complete_prepare() {
     CMP_NOTE=" Nothing named \`$CMP_WNAME\` exists under $CMP_DIR — if $id was dispatched before \`project link checkout\` recorded that directory, its worktree is elsewhere and is not cleaned up here."
   fi
 
-  # Closing is an action only when the story is still open AND we resolved a
-  # state to close it into.
+  # Closing is an action only when the story is still open. The state it
+  # closes into is the constant; a project below the required-states floor
+  # is reported by `story move` itself when the close runs.
   CMP_NEEDS_CLOSE=false
-  if [ "$CMP_SUPER" != "CLOSED" ] && [ -n "$CMP_DONE_STATE" ]; then
+  if [ "$CMP_SUPER" != "CLOSED" ]; then
     CMP_NEEDS_CLOSE=true
   fi
 
@@ -3722,7 +4032,8 @@ cmd_complete_plan() {
   jq -n \
     --arg id "$id" --arg title "$CMP_TITLE" --arg state "$CMP_STATE" \
     --arg super "$CMP_SUPER" --arg done_state "$CMP_DONE_STATE" \
-    --arg default "$CMP_DEFAULT" --arg wtpath "$CMP_WT_PATH" \
+    --arg default "$CMP_DEFAULT" --arg default_source "$CMP_DEFAULT_SOURCE" \
+    --arg default_note "$CMP_DEFAULT_NOTE" --arg wtpath "$CMP_WT_PATH" \
     --arg wtstatus "$CMP_WT_STATUS" --arg branch "$CMP_WT_BRANCH" \
     --arg brstatus "$CMP_BR_STATUS" --argjson close "$CMP_NEEDS_CLOSE" \
     --arg wname "$CMP_WNAME" --arg wstatus "$CMP_WINDOW_STATUS" \
@@ -3730,7 +4041,7 @@ cmd_complete_plan() {
     --arg note "$CMP_NOTE" '
     {
       ok: true, id: $id, title: $title, state: $state, superstate: $super,
-      default_branch: $default,
+      default_branch: $default, default_branch_source: $default_source,
       plan: {
         close: (if $close then { to: $done_state } else null end),
         worktree: { path: $wtpath, status: $wtstatus },
@@ -3758,6 +4069,7 @@ cmd_complete_plan() {
              elif $brstatus == "unmerged" then " -> PRESERVED (not merged into " + $default + ")"
              else " -> PRESERVED (" + $brstatus + ")" end)
         + (if $note == "" then "" else "\n " + $note end)
+        + (if $default_note == "" then "" else "\n  warning:  " + $default_note end)
       )
     }'
 }
@@ -3777,6 +4089,7 @@ cmd_complete_execute() {
   done
   _complete_prepare "$id"
   id="$CMP_ID"
+  revalidate_story_resources
 
   local -a removed_wt=() removed_bl=() failed=() skipped=() commands=()
   local closed=false close_note="" closed_window=false
@@ -3787,9 +4100,7 @@ cmd_complete_execute() {
   if [ -n "$no_close" ]; then
     skipped+=("close:$id(--no-close)")
   elif [ "$CMP_NEEDS_CLOSE" != true ]; then
-    if [ -z "$CMP_DONE_STATE" ]; then
-      close_note=" Could not close: this project defines no state with a CLOSED superstate."
-    fi
+    : # already CLOSED; nothing to move
   elif [ -n "$DRY_RUN" ]; then
     commands+=("story move $id $CMP_DONE_STATE")
     closed=true
@@ -3862,15 +4173,14 @@ cmd_complete_execute() {
           # do exactly that. Computed as a plain `if` beforehand instead.
           local force_prefix=""
           if [ -n "$force" ]; then force_prefix="--force "; fi
-          commands+=("git worktree remove ${force_prefix}$CMP_WT_PATH" "git worktree prune")
+          commands+=("git worktree remove ${force_prefix}$CMP_WT_PATH")
           removed_wt+=("$CMP_WT_PATH")
         else
           local -a rm_args=(worktree remove)
           [ -n "$force" ] && rm_args+=(--force)
           rm_args+=("$CMP_WT_PATH")
           if git "${rm_args[@]}" >/dev/null 2>&1; then
-            git worktree prune >/dev/null 2>&1 || true
-            if registered_worktree_branch "$CMP_WT_PATH" >/dev/null 2>&1 \
+                  if ! registration_absent "$CMP_WT_PATH" \
                || [ -e "$CMP_WT_PATH" ]; then
               failed+=("worktree:$CMP_WT_PATH(postcondition)")
             else
@@ -3959,25 +4269,9 @@ cmd_complete() {
 # because cleanup cannot prove that every matching window is gone.
 LEASE_TMUX_WINDOWS=""
 leased_story_windows() {
-  local lease="$1" story="$2" socket listing window_id window_name seen=""
-  socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
-  LEASE_TMUX_WINDOWS=""
-  if [ ! -e "$socket" ]; then
-    return 0
-  fi
-  if ! listing=$(tmux -S "$socket" list-windows -a -F '#{window_id} #{window_name}' 2>/dev/null); then
-    [ ! -e "$socket" ] && return 0
-    return 1
-  fi
-  [ -z "$listing" ] && return 0
-  while read -r window_id window_name; do
-    [[ "$window_id" =~ ^@[0-9]+$ ]] || return 1
-    [ "$window_name" = "$story" ] || continue
-    case "$seen" in *"|$window_id|"*) continue ;; esac
-    seen="${seen}|$window_id|"
-    LEASE_TMUX_WINDOWS="${LEASE_TMUX_WINDOWS:+$LEASE_TMUX_WINDOWS$'\n'}$window_id"
-  done <<< "$listing"
-  return 0
+  local snapshot
+  snapshot=$(resource_window_snapshot) || return 1
+  LEASE_TMUX_WINDOWS=$(printf '%s' "$snapshot" | jq -r '.window_id // empty')
 }
 
 # cmd_unclaim_leased <story-id> <lease-json> — release an engine-owned claim
@@ -4007,6 +4301,8 @@ cmd_unclaim_leased() {
   [ "$typed_id" = "$lease_story" ] \
     || refuse "cleanup-lease-story-mismatch" "story.sh unclaim: lease story `$lease_story` does not match requested story `$typed_id`."
 
+  load_story_resources "$typed_id" "$lease"
+  revalidate_story_resources
   _release_story unclaim "$lease_story"
   local unclaimed=false conflict=""
   case "$REL_RESULT" in
@@ -4018,17 +4314,13 @@ cmd_unclaim_leased() {
   leased_story_windows "$lease" "$lease_story" \
     || refuse "cleanup-lease-tmux-unverifiable" "story.sh unclaim: the leased tmux server exists but its story windows cannot be enumerated."
   local initial="$LEASE_TMUX_WINDOWS" removed=false failure=""
-  if [ -n "$initial" ]; then
-    local socket window_id
-    socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
-    while IFS= read -r window_id; do
-      if tmux -S "$socket" kill-window -t "$window_id" >/dev/null 2>&1; then
-        removed=true
-      else
-        failure="${failure:+$failure; }tmux refused to kill $window_id"
-      fi
-    done <<< "$initial"
-  fi
+  local close_status=0
+  _close_story_window "$RESOURCE_WINDOW" || close_status=$?
+  case "$close_status" in
+    0) removed=true ;;
+    1) ;;
+    *) failure="tmux identity changed or window closure could not be proved" ;;
+  esac
   local absent=false
   if leased_story_windows "$lease" "$lease_story"; then
     [ -n "$LEASE_TMUX_WINDOWS" ] || absent=true
@@ -4101,11 +4393,20 @@ leased_reap_receipt() {
       display:$display}'
 }
 
-# cmd_reap_leased <typed-story-id> <lease-json> — exact-target cleanup for the
-# centralized verifier or the dispatched worktree itself. No current checkout
-# or ambient provider participates.
-cmd_reap_leased() {
-  local typed_id="$1" lease="$2"
+# validate_cleanup_lease <verb> <typed-story-id> <lease-json> — the half of a
+# leased verb that is about the LEASE rather than about what the verb does
+# with it, shared by `reap` and `submit` so the two cannot drift (SH-136):
+# the wire-format gate, the project and story identity, and the proof that
+# the leased repository, worktree and branch are exactly what the lease says.
+# Refuses by name on the first failure, with <verb> in the message. On
+# success the caller is standing in the leased repository and these are set:
+#   LEASE_PROJECT LEASE_STORY LEASED_REPO LEASED_WORKTREE LEASED_BRANCH
+#   LEASE_SHOW_JSON LEASE_CANONICAL_ID LEASE_STATE LEASE_SUPER
+# What the verb requires of the story's STATE is the verb's own business
+# (reap: closed and in the completion state; submit: verifying), so it is
+# checked by the caller after this returns.
+validate_cleanup_lease() {
+  local verb="$1" typed_id="$2" lease="$3"
   if ! printf '%s' "$lease" | jq -e --argjson version "$CLEANUP_LEASE_VERSION" '
       type == "object" and .version == $version
       and (.project_slug | type == "string" and length > 0)
@@ -4115,79 +4416,93 @@ cmd_reap_leased() {
       and (.branch | type == "string" and length > 0)
       and (.tmux | type == "object")
       and (.tmux.socket_path | type == "string" and startswith("/"))' >/dev/null 2>&1; then
-    refuse "invalid-cleanup-lease" "story.sh reap: the cleanup lease is malformed or uses an unsupported version."
+    refuse "invalid-cleanup-lease" "story.sh $verb: the cleanup lease is malformed or uses an unsupported version."
   fi
 
-  local lease_project lease_story leased_repo leased_worktree leased_branch
-  lease_project=$(printf '%s' "$lease" | jq -r '.project_slug')
-  lease_story=$(printf '%s' "$lease" | jq -r '.story_id')
-  leased_repo=$(printf '%s' "$lease" | jq -r '.repository_path')
-  leased_worktree=$(printf '%s' "$lease" | jq -r '.worktree_path')
-  leased_branch=$(printf '%s' "$lease" | jq -r '.branch')
+  LEASE_PROJECT=$(printf '%s' "$lease" | jq -r '.project_slug')
+  LEASE_STORY=$(printf '%s' "$lease" | jq -r '.story_id')
+  LEASED_REPO=$(printf '%s' "$lease" | jq -r '.repository_path')
+  LEASED_WORKTREE=$(printf '%s' "$lease" | jq -r '.worktree_path')
+  LEASED_BRANCH=$(printf '%s' "$lease" | jq -r '.branch')
   valid_story_id "$typed_id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $typed_id)."
 
   require_story
   resolve_project || fail "$CHECKOUT_ERROR"
-  [ "$lease_project" = "$PROJECT_SLUG" ] \
-    || refuse "cleanup-lease-project-mismatch" "story.sh reap: lease project \`$lease_project\` does not match selected project \`$PROJECT_SLUG\`."
-  local show_json result canonical_id state super done_state
-  show_json=$(story_cli show "$typed_id" --json 2>/dev/null) || true
-  result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
-  [ "$result" = ok ] || fail "$(printf '%s' "$show_json" | jq -r --arg id "$typed_id" '.error // ("story `" + $id + "` not found")')"
-  canonical_id=$(canonical_story_id "$show_json" "$typed_id")
-  [ "$lease_story" = "$canonical_id" ] \
-    || refuse "cleanup-lease-story-mismatch" "story.sh reap: lease story \`$lease_story\` does not match requested story \`$canonical_id\`."
-  state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
-  super=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
-  done_state=$(story_closed_state)
+  [ "$LEASE_PROJECT" = "$PROJECT_SLUG" ] \
+    || refuse "cleanup-lease-project-mismatch" "story.sh $verb: lease project \`$LEASE_PROJECT\` does not match selected project \`$PROJECT_SLUG\`."
+  local result
+  LEASE_SHOW_JSON=$(story_cli show "$typed_id" --json 2>/dev/null) || true
+  result=$(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.result // ""' 2>/dev/null || printf '')
+  [ "$result" = ok ] || fail "$(printf '%s' "$LEASE_SHOW_JSON" | jq -r --arg id "$typed_id" '.error // ("story `" + $id + "` not found")')"
+  LEASE_CANONICAL_ID=$(canonical_story_id "$LEASE_SHOW_JSON" "$typed_id")
+  [ "$LEASE_STORY" = "$LEASE_CANONICAL_ID" ] \
+    || refuse "cleanup-lease-story-mismatch" "story.sh $verb: lease story \`$LEASE_STORY\` does not match requested story \`$LEASE_CANONICAL_ID\`."
+  LEASE_STATE=$(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.state // ""')
+  LEASE_SUPER=$(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.superstate // ""')
+
+  load_story_resources "$LEASE_CANONICAL_ID" "$lease"
+  local repository_real root worktree_real registered_branch branch_holder
+  repository_real=$(cd_resolve / "$LEASED_REPO") \
+    || refuse "cleanup-lease-repository-missing" "story.sh $verb: leased repository \`$LEASED_REPO\` is unreachable."
+  [ "$repository_real" = "$LEASED_REPO" ] \
+    || refuse "cleanup-lease-repository-mismatch" "story.sh $verb: leased repository path is not canonical (\`$LEASED_REPO\` resolves to \`$repository_real\`)."
+  root=$(repo_root "$LEASED_REPO") \
+    || refuse "cleanup-lease-repository-invalid" "story.sh $verb: leased repository \`$LEASED_REPO\` is not a Git worktree."
+  [ "$root" = "$LEASED_REPO" ] && ! is_linked_worktree "$LEASED_REPO" \
+    || refuse "cleanup-lease-repository-mismatch" "story.sh $verb: leased repository \`$LEASED_REPO\` is not its repository's main worktree."
+  CDPATH= cd -- "$LEASED_REPO" || refuse "cleanup-lease-repository-missing" "story.sh $verb: cannot enter leased repository \`$LEASED_REPO\`."
+  git check-ref-format --branch "$LEASED_BRANCH" >/dev/null 2>&1 \
+    || refuse "cleanup-lease-branch-invalid" "story.sh $verb: leased branch \`$LEASED_BRANCH\` is not a valid local branch name."
+  [ "$LEASED_WORKTREE" != "$LEASED_REPO" ] \
+    || refuse "cleanup-lease-worktree-mismatch" "story.sh $verb: leased worktree and repository paths are identical."
+  if [ -e "$LEASED_WORKTREE" ]; then
+    worktree_real=$(cd_resolve / "$LEASED_WORKTREE") \
+      || refuse "cleanup-lease-worktree-unreachable" "story.sh $verb: leased worktree \`$LEASED_WORKTREE\` cannot be resolved."
+    [ "$worktree_real" = "$LEASED_WORKTREE" ] \
+      || refuse "cleanup-lease-worktree-mismatch" "story.sh $verb: leased worktree path is not canonical (\`$LEASED_WORKTREE\` resolves to \`$worktree_real\`)."
+    [ "$(repo_root "$LEASED_WORKTREE" 2>/dev/null || printf '')" = "$LEASED_REPO" ] \
+      || refuse "cleanup-lease-worktree-mismatch" "story.sh $verb: \`$LEASED_WORKTREE\` does not belong to leased repository \`$LEASED_REPO\`."
+  fi
+  if registered_branch=$(registered_worktree_branch "$LEASED_WORKTREE"); then
+    [ "$registered_branch" = "$LEASED_BRANCH" ] \
+      || refuse "cleanup-lease-worktree-mismatch" "story.sh $verb: \`$LEASED_WORKTREE\` is registered on \`$registered_branch\`, not leased branch \`$LEASED_BRANCH\`."
+  elif [ -e "$LEASED_WORKTREE" ]; then
+    refuse "cleanup-lease-worktree-unregistered" "story.sh $verb: leased path \`$LEASED_WORKTREE\` exists but is not a registered worktree."
+  fi
+  branch_holder=$(branch_worktree_path "$LEASED_BRANCH" || printf '')
+  [ -z "$branch_holder" ] || [ "$branch_holder" = "$LEASED_WORKTREE" ] \
+    || refuse "cleanup-lease-branch-reused" "story.sh $verb: leased branch \`$LEASED_BRANCH\` is checked out at unexpected path \`$branch_holder\`."
+}
+
+# cmd_reap_leased <typed-story-id> <lease-json> — exact-target cleanup for the
+# centralized verifier or the dispatched worktree itself. No current checkout
+# or ambient provider participates.
+cmd_reap_leased() {
+  local typed_id="$1" lease="$2"
+  validate_cleanup_lease reap "$typed_id" "$lease"
+  local leased_worktree="$LEASED_WORKTREE" leased_branch="$LEASED_BRANCH"
+  local canonical_id="$LEASE_CANONICAL_ID" state="$LEASE_STATE" super="$LEASE_SUPER"
+  local done_state
+  done_state=$(story_completion_state)
   [ "$super" = CLOSED ] \
     || refuse "not-closed" "story.sh reap: $canonical_id is not closed (state \`$state\`) -- refusing to reclaim a worktree for a story that isn't done."
   [ "$state" = "$done_state" ] \
     || refuse "not-completion-state" "story.sh reap: $canonical_id is in CLOSED state \`$state\`, not completion state \`$done_state\`."
 
-  local repository_real root worktree_real registered_branch branch_holder
-  repository_real=$(cd_resolve / "$leased_repo") \
-    || refuse "cleanup-lease-repository-missing" "story.sh reap: leased repository \`$leased_repo\` is unreachable."
-  [ "$repository_real" = "$leased_repo" ] \
-    || refuse "cleanup-lease-repository-mismatch" "story.sh reap: leased repository path is not canonical (\`$leased_repo\` resolves to \`$repository_real\`)."
-  root=$(repo_root "$leased_repo") \
-    || refuse "cleanup-lease-repository-invalid" "story.sh reap: leased repository \`$leased_repo\` is not a Git worktree."
-  [ "$root" = "$leased_repo" ] && ! is_linked_worktree "$leased_repo" \
-    || refuse "cleanup-lease-repository-mismatch" "story.sh reap: leased repository \`$leased_repo\` is not its repository's main worktree."
-  CDPATH= cd -- "$leased_repo" || refuse "cleanup-lease-repository-missing" "story.sh reap: cannot enter leased repository \`$leased_repo\`."
-  git check-ref-format --branch "$leased_branch" >/dev/null 2>&1 \
-    || refuse "cleanup-lease-branch-invalid" "story.sh reap: leased branch \`$leased_branch\` is not a valid local branch name."
-  [ "$leased_worktree" != "$leased_repo" ] \
-    || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: leased worktree and repository paths are identical."
-  if [ -e "$leased_worktree" ]; then
-    worktree_real=$(cd_resolve / "$leased_worktree") \
-      || refuse "cleanup-lease-worktree-unreachable" "story.sh reap: leased worktree \`$leased_worktree\` cannot be resolved."
-    [ "$worktree_real" = "$leased_worktree" ] \
-      || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: leased worktree path is not canonical (\`$leased_worktree\` resolves to \`$worktree_real\`)."
-    [ "$(repo_root "$leased_worktree" 2>/dev/null || printf '')" = "$leased_repo" ] \
-      || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: \`$leased_worktree\` does not belong to leased repository \`$leased_repo\`."
-  fi
-  if registered_branch=$(registered_worktree_branch "$leased_worktree"); then
-    [ "$registered_branch" = "$leased_branch" ] \
-      || refuse "cleanup-lease-worktree-mismatch" "story.sh reap: \`$leased_worktree\` is registered on \`$registered_branch\`, not leased branch \`$leased_branch\`."
-  elif [ -e "$leased_worktree" ]; then
-    refuse "cleanup-lease-worktree-unregistered" "story.sh reap: leased path \`$leased_worktree\` exists but is not a registered worktree."
-  fi
-  branch_holder=$(branch_worktree_path "$leased_branch" || printf '')
-  [ -z "$branch_holder" ] || [ "$branch_holder" = "$leased_worktree" ] \
-    || refuse "cleanup-lease-branch-reused" "story.sh reap: leased branch \`$leased_branch\` is checked out at unexpected path \`$branch_holder\`."
-
   local default wt_status branch_status
-  default=$(default_branch)
+  # Asked of origin (SH-691): a reap deletes, so an unknown default is a
+  # refusal by name, never a cached or literal guess.
+  default=$(default_branch 2>&1) \
+    || refuse "default-branch-unknown" "story.sh reap: origin's default branch could not be established for $canonical_id, so nothing can be classed merged: $(printf '%s' "$default" | tr '\n' ' ')"
   freshen_base_ref "$default"
-  wt_status=$(_story_worktree_status "$leased_worktree" "")
+  wt_status=$(_story_worktree_status "$leased_worktree" "") || refuse "resource-query-failed" "cannot classify leased worktree"
   case "$wt_status" in
     dirty) refuse "dirty-worktree" "story.sh reap: $canonical_id's leased worktree ($leased_worktree) has uncommitted changes." ;;
     locked) refuse "locked-worktree" "story.sh reap: $canonical_id's leased worktree ($leased_worktree) is locked." ;;
   esac
   if ! local_branch_exists "$leased_branch"; then
     branch_status=missing
-  elif is_protected_branch "$leased_branch"; then
+  elif is_protected_branch "$leased_branch" "$default"; then
     branch_status=protected
   elif branch_is_merged "$leased_branch" "$default"; then
     branch_status=deletable
@@ -4202,10 +4517,10 @@ cmd_reap_leased() {
     || refuse "cleanup-lease-tmux-unverifiable" "story.sh reap: the leased tmux server exists but its story windows cannot be enumerated."
   local initial_tmux_windows="$LEASE_TMUX_WINDOWS"
 
+  revalidate_story_resources
   local reaped_wt=false reaped_br=false reaped_tmux=false failure=""
   if [ "$wt_status" != missing ]; then
     if git worktree remove "$leased_worktree" >/dev/null 2>&1; then
-      git worktree prune >/dev/null 2>&1 || true
       reaped_wt=true
     else
       failure="git worktree remove refused for $leased_worktree"
@@ -4218,18 +4533,16 @@ cmd_reap_leased() {
       failure="${failure:+$failure; }could not delete branch $leased_branch"
     fi
   fi
-  if [ -n "$initial_tmux_windows" ]; then
-    local socket window_id
-    socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
-    while IFS= read -r window_id; do
-      if tmux -S "$socket" kill-window -t "$window_id" >/dev/null 2>&1; then
-        reaped_tmux=true
-      fi
-    done <<< "$initial_tmux_windows"
-  fi
+  local close_status=0
+  _close_story_window "$RESOURCE_WINDOW" || close_status=$?
+  case "$close_status" in
+    0) reaped_tmux=true ;;
+    1) ;;
+    *) failure="${failure:+$failure; }tmux identity changed or window closure could not be proved" ;;
+  esac
 
   local registration_absent=false path_absent=false branch_absent=false tmux_absent=false
-  registered_worktree_branch "$leased_worktree" >/dev/null 2>&1 || registration_absent=true
+  registration_absent "$leased_worktree" && registration_absent=true
   [ -e "$leased_worktree" ] || path_absent=true
   local_branch_exists "$leased_branch" || branch_absent=true
   if leased_story_windows "$lease" "$canonical_id"; then
@@ -4253,6 +4566,180 @@ cmd_reap_leased() {
   leased_reap_receipt "$lease" "$ok" "$registration_absent" "$path_absent" \
     "$branch_absent" "$tmux_absent" "$reaped_wt" "$reaped_br" "$reaped_tmux" "$display"
   [ "$ok" = true ]
+}
+
+# submit_refuse <class> <reason> <message> [<extra-json>] — a submission
+# refusal, classified for the daemon: `repair` is the agent's to fix (the
+# story is returned to it with <message>), `infrastructure` is the verifier's
+# (recorded as a retryable incident; the story stays in verifying and the next
+# tick re-runs the same idempotent steps). The class travels in the receipt
+# because the helper is the only party that saw WHY — git's or gh's own words
+# — and a daemon that guessed from the reason token would be SH-312's
+# "ambiguous reported as definite" one layer over.
+submit_refuse() {
+  local class="$1" reason="$2" message="$3" extra="${4:-}"
+  [ -n "$extra" ] || extra='{}'
+  refuse_with "$reason" "$message" "$(jq -n --arg c "$class" --argjson e "$extra" '{class:$c} + $e')"
+}
+
+# leased_submit_receipt <lease-json> <pushed> <pull-request-json> <display> —
+# the typed receipt the daemon verifies field for field (CLEANUP_LEASE_VERSION
+# is the wire version of every leased receipt, submission included).
+leased_submit_receipt() {
+  local lease="$1" pushed="$2" pull_request="$3" display="$4"
+  jq -n --argjson version "$CLEANUP_LEASE_VERSION" \
+    --arg story "$(printf '%s' "$lease" | jq -r '.story_id')" \
+    --argjson lease "$lease" --argjson pushed "$pushed" \
+    --argjson pr "$pull_request" --arg display "$display" \
+    '{ok:true, receipt_version:$version, story_id:$story, lease:$lease,
+      pushed:$pushed, pull_request:$pr, display:$display}'
+}
+
+# cmd_submit_leased <typed-story-id> <lease-json> — the verifier's submission
+# step (SH-647): push the leased branch to origin, then open the pull request
+# against the repository's default branch or adopt the one already open for
+# that head, and hand back a receipt. Every step is idempotent on purpose:
+# `git push` of an already-pushed tip is a no-op, and adoption finds what a
+# crashed earlier run created, so a daemon restart at any point re-runs the
+# whole verb and converges. Runs on EVERY generation a leased story enters
+# verifying, linked PR or not — after a RED return the agent only commits, so
+# this is the one place the fix reaches the remote.
+#
+# The base is `default_branch()` — origin's own advertised default, asked of
+# the remote at submission time (SH-691: the local origin/HEAD cache went
+# stale when this repository's default moved, and a literal fallback answered
+# `main` where the cache was absent, so five pull requests landed on the
+# wrong branch and were certified there) — the same fact dispatch based the
+# worktree on; a PR against anything else is not this lane's. A submission
+# that cannot establish its base stops as the verifier's own retryable
+# incident; it never guesses one. There is no
+# --force: a rewritten branch is refused as `push-rejected` and returned to
+# the agent, whose charter forbids rewriting published history.
+#
+# Like reap, this verb records nothing on the story. The receipt is the only
+# record; the daemon writes the link and the comment under its generation
+# guard, so a submission recorded against a story that has since moved on is
+# a write that never happens rather than one that has to be retracted.
+cmd_submit_leased() {
+  local typed_id="$1" lease="$2"
+  validate_cleanup_lease submit "$typed_id" "$lease"
+  local canonical_id="$LEASE_CANONICAL_ID" worktree="$LEASED_WORKTREE" branch="$LEASED_BRANCH"
+  [ "$LEASE_STATE" = verifying ] \
+    || submit_refuse repair "not-verifying" "story.sh submit: $canonical_id is in state \`$LEASE_STATE\`, not \`verifying\`; only a story submitted for verification is pushed."
+  registered_worktree_branch "$worktree" >/dev/null 2>&1 \
+    || submit_refuse repair "cleanup-lease-worktree-missing" "story.sh submit: leased worktree \`$worktree\` is not a registered worktree; nothing to push."
+  local default
+  default=$(default_branch 2>&1) \
+    || submit_refuse infrastructure "default-branch-unknown" "story.sh submit: origin's default branch could not be established, so there is no base to open $canonical_id's pull request against: $(printf '%s' "$default" | tr '\n' ' ')"
+  ! is_protected_branch "$branch" "$default" \
+    || submit_refuse repair "protected-branch" "story.sh submit: leased branch \`$branch\` is protected; a story lane never submits the default branch itself."
+
+  local dirty dirty_json
+  dirty=$(git -C "$worktree" status --porcelain 2>/dev/null) \
+    || submit_refuse infrastructure "worktree-unverifiable" "story.sh submit: git status failed in \`$worktree\`."
+  if [ -n "$dirty" ]; then
+    dirty_json=$(printf '%s\n' "$dirty" | sed 's/^...//' | jq -R . | jq -s .)
+    submit_refuse repair "dirty-worktree" \
+      "story.sh submit: $canonical_id's worktree ($worktree) has uncommitted changes; commit or discard them, then run \`story move $canonical_id verifying\` again. Dirty: $(printf '%s' "$dirty_json" | jq -r 'join(", ")')." \
+      "$(jq -n --argjson f "$dirty_json" '{dirty_files:$f}')"
+  fi
+
+  local head_oid
+  freshen_base_ref "$default"
+  head_oid=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
+    || submit_refuse infrastructure "worktree-unverifiable" "story.sh submit: cannot resolve HEAD in \`$worktree\`."
+  if git -C "$worktree" merge-base --is-ancestor "$head_oid" "refs/remotes/origin/$default" 2>/dev/null; then
+    submit_refuse repair "nothing-to-submit" "story.sh submit: $canonical_id's branch \`$branch\` has no commits beyond origin/$default; commit the work, then run \`story move $canonical_id verifying\` again."
+  fi
+
+  local remote_before remote_after push_out push_rc=0 pushed=false
+  remote_before=$(git -C "$worktree" ls-remote --heads origin "$branch" 2>/dev/null | cut -f1)
+  if [ "$remote_before" != "$head_oid" ]; then
+    # HTTPS on purpose: an SSH remote needs an agent or a 1Password approval
+    # the daemon cannot give. GIT_TERMINAL_PROMPT=0 comes from the daemon, so a
+    # missing credential fails here rather than hanging for the daemon's life.
+    push_out=$(git -C "$worktree" -c 'url.https://github.com/.insteadOf=git@github.com:' \
+      push origin "refs/heads/$branch:refs/heads/$branch" 2>&1) || push_rc=$?
+    if [ "$push_rc" -ne 0 ]; then
+      case "$push_out" in
+        *rejected*|*non-fast-forward*|*"fetch first"*|*"stale info"*|*"hook declined"*|*"pre-push hook"*)
+          submit_refuse repair "push-rejected" "story.sh submit: origin refused \`$branch\` — the remote branch has history this worktree does not (published history was rewritten, or someone else pushed). Reconcile without rewriting, commit, then run \`story move $canonical_id verifying\` again. git said: $push_out" ;;
+        *)
+          submit_refuse infrastructure "push-failed" "story.sh submit: pushing \`$branch\` to origin failed: $push_out" ;;
+      esac
+    fi
+    pushed=true
+  fi
+  remote_after=$(git -C "$worktree" ls-remote --heads origin "$branch" 2>/dev/null | cut -f1)
+  [ "$remote_after" = "$head_oid" ] \
+    || submit_refuse infrastructure "push-unverified" "story.sh submit: origin/$branch is at \`${remote_after:-<absent>}\` after the push, not the worktree HEAD \`$head_oid\`."
+
+  # Adopt-or-create is a 0-or-1 decision: GitHub permits one open pull request
+  # per (head, base), and a fork's PR for the same head name is not ours
+  # (verify-pr.sh refuses cross-repository PRs for the same reason). Listed
+  # by HEAD alone (SH-691): a pull request already open for this head against
+  # any OTHER base is the misdirected shape that put five stories on `main`,
+  # and a listing by (head, base) cannot see it — `gh pr create` would then
+  # open a second one beside it and leave the wrong one for a person to
+  # merge. It is refused by name instead, with the remedy, the way
+  # `multiple-pull-requests` already is.
+  local fields=number,url,baseRefName,headRefOid,isCrossRepository
+  local listed open wrong_base count pr adopted title body url view_out
+  listed=$(cd "$worktree" && gh pr list --head "$branch" --state open \
+    --json "$fields" --limit 20 2>&1) \
+    || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh could not list pull requests for \`$branch\`: $listed"
+  open=$(printf '%s' "$listed" | jq -c '[.[] | select(.isCrossRepository == false)]' 2>/dev/null) \
+    || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh pr list returned something other than JSON: $listed"
+  wrong_base=$(printf '%s' "$open" | jq -c --arg b "$default" '[.[] | select(.baseRefName != $b)]')
+  if [ "$(printf '%s' "$wrong_base" | jq 'length')" -ne 0 ]; then
+    submit_refuse repair "wrong-base-pull-request" \
+      "story.sh submit: $(printf '%s' "$wrong_base" | jq -r 'map("#" + (.number|tostring) + " (" + .url + ") targets `" + .baseRefName + "`") | join("; ")') from \`$branch\` — not \`$default\`, origin's default branch — so it is not this lane's to adopt, and opening another beside it would leave the misdirected one for a person to merge. Retarget it ($(printf '%s' "$wrong_base" | jq -r --arg b "$default" 'map("`gh pr edit " + (.number|tostring) + " --base " + $b + "`") | join(", ")')) or close it, then run \`story move $canonical_id verifying\` again." \
+      "$(jq -n --argjson p "$wrong_base" '{wrong_base_pull_requests: $p}')"
+  fi
+  open=$(printf '%s' "$open" | jq -c --arg b "$default" '[.[] | select(.baseRefName == $b)]')
+  count=$(printf '%s' "$open" | jq 'length')
+  case "$count" in
+    0)
+      title="$canonical_id: $(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.title // ""')"
+      body="Story $canonical_id — $(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.title // ""')
+
+Submitted by the storyhook verifier from branch \`$branch\`. Verification, merge and cleanup are the verifier's; see \`story show $canonical_id\`."
+      url=$(cd "$worktree" && gh pr create --base "$default" --head "$branch" --title "$title" --body "$body" 2>&1) \
+        || submit_refuse infrastructure "pull-request-uncreated" "story.sh submit: gh pr create failed for \`$branch\`; if the pull request was created, the next attempt adopts it. gh said: $url"
+      url=$(printf '%s\n' "$url" | grep -E '^https?://' | tail -n 1)
+      [ -n "$url" ] || submit_refuse infrastructure "pull-request-uncreated" "story.sh submit: gh pr create printed no URL."
+      view_out=$(cd "$worktree" && gh pr view "$url" --json "$fields" 2>&1) \
+        || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh could not read back \`$url\`: $view_out"
+      pr=$(printf '%s' "$view_out" | jq -c . 2>/dev/null) \
+        || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh pr view returned something other than JSON: $view_out"
+      adopted=false ;;
+    1) pr=$(printf '%s' "$open" | jq -c '.[0]'); adopted=true ;;
+    *) submit_refuse repair "multiple-pull-requests" "story.sh submit: more than one open pull request targets \`$default\` from \`$branch\`: $(printf '%s' "$open" | jq -r 'map(.url) | join(", ")'). Close all but one, then run \`story move $canonical_id verifying\` again." ;;
+  esac
+  local pull_request display
+  # PR metadata can lag a successful push; the receipt names the head already
+  # verified against the origin branch, independently of GitHub's API view.
+  pull_request=$(printf '%s' "$pr" | jq -c --argjson adopted "$adopted" --arg head_oid "$head_oid" \
+    '{url:.url, number:.number, base:.baseRefName, head_oid:$head_oid, adopted:$adopted}')
+  if [ "$adopted" = true ]; then
+    display="[story] submit $canonical_id: \`$branch\` is on origin at ${head_oid:0:12}; adopted open pull request $(printf '%s' "$pr" | jq -r .url)."
+  else
+    display="[story] submit $canonical_id: \`$branch\` is on origin at ${head_oid:0:12}; opened pull request $(printf '%s' "$pr" | jq -r .url) against $default."
+  fi
+  leased_submit_receipt "$lease" "$pushed" "$pull_request" "$display"
+}
+
+# cmd_submit <story-id> — the router door to cmd_submit_leased. The lease is
+# REQUIRED: an agent has no business here (its last action is `story move <n>
+# verifying`, from inside its worktree, and the verifier does the rest), so a
+# call without one is refused by name rather than guessed at from cwd.
+cmd_submit() {
+  local id="${1:-}"
+  [ -n "$id" ] && [ "$#" -eq 1 ] || fail "usage: story.sh submit <story-id>"
+  valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+  [ -n "${STORYHOOK_REAP_LEASE_V1:-}" ] \
+    || submit_refuse repair "submit-requires-lease" "story.sh submit: this verb is the centralized verifier's and carries the dispatch lease in STORYHOOK_REAP_LEASE_V1. An agent commits its work and runs \`story move $id verifying\` from inside its worktree; the verifier pushes the branch and opens the pull request."
+  cmd_submit_leased "$id" "$STORYHOOK_REAP_LEASE_V1"
 }
 
 # cmd_reap <story-id> — reclaim a CLOSED story's worktree and branch, then
@@ -4328,6 +4815,7 @@ cmd_reap() {
 
   _complete_prepare "$id"
   id="$CMP_ID"
+  revalidate_story_resources
 
   if [ "$CMP_SUPER" != "CLOSED" ]; then
     refuse "not-closed" "story.sh reap: $id is not closed (state \`$CMP_STATE\`) -- refusing to reclaim a worktree for a story that isn't done."
@@ -4352,7 +4840,7 @@ cmd_reap() {
   if [ -n "$DRY_RUN" ]; then
     local -a commands=()
     if [ "$CMP_WT_STATUS" != "missing" ]; then
-      commands+=("git worktree remove $CMP_WT_PATH" "git worktree prune")
+      commands+=("git worktree remove $CMP_WT_PATH")
     fi
     [ "$CMP_BR_STATUS" = "deletable" ] && commands+=("git branch -d $CMP_WT_BRANCH")
     commands+=("tmux kill-window -t <window of $CMP_WNAME>")
@@ -4378,7 +4866,6 @@ cmd_reap() {
       # here -- dirty already refused above, and this process has already
       # left "current" behind), and that veto is a feature, not an
       # obstacle to route around.
-      git worktree prune >/dev/null 2>&1 || true
       reaped_wt=true
     else
       wt_fail="git worktree remove refused for $CMP_WT_PATH"
@@ -4414,7 +4901,12 @@ cmd_reap() {
 
   # Best-effort, LAST -- see _close_story_window for why nothing here needs a
   # guard past "was a pane found at all".
-  _close_story_window "$CMP_WNAME" || true
+  local close_status=0
+  _close_story_window "$CMP_WNAME" || close_status=$?
+  if [ "$close_status" -gt 1 ]; then
+    reap_ok=false
+    display="$display Could not prove tmux window absence; resources may require another guarded cleanup."
+  fi
 
   jq -n --arg id "$id" --argjson ok "$reap_ok" \
         --argjson rwt "$reaped_wt" --argjson rbr "$reaped_br" \
@@ -4592,7 +5084,7 @@ _close_release_window() {
       else
         local rc=$?
         [ "$rc" -ne 1 ] \
-          && RELEASE_WINDOW_ERROR="could not prove tmux window absence for $wname" \
+          && RELEASE_WINDOW_ERROR="could not prove tmux window absence for $wname: ${RESOURCE_CLOSE_ERROR:-postcondition remained false}" \
           || RELEASE_WINDOW="none"
       fi ;;
     *)
@@ -4601,7 +5093,7 @@ _close_release_window() {
       else
         local rc=$?
         [ "$rc" -eq 1 ] \
-          || RELEASE_WINDOW_ERROR="could not prove tmux window absence for $wname"
+          || RELEASE_WINDOW_ERROR="could not prove tmux window absence for $wname: ${RESOURCE_CLOSE_ERROR:-postcondition remained false}"
       fi
       ;;
   esac
@@ -4620,6 +5112,7 @@ cmd_unclaim() {
   _complete_prepare "$REL_ID"
   local id="$CMP_ID"
 
+  revalidate_story_resources
   _release_story unclaim "$id"
   case "$REL_RESULT" in
     ok) : ;;
@@ -4702,6 +5195,12 @@ cmd_unclaim() {
 # delete_merged_local_branch for exactly that reason.
 cmd_reset() {
   _parse_release_args "$RESET_USAGE" true "$@"
+  if [ -n "${STORYHOOK_ENGINE_RESET_V1:-}" ]; then
+    [ "$REL_FORCE" = true ] || refuse "engine-reset-force" "engine reset requires the explicit discard contract"
+    source "$STORY_PLUGIN_ROOT/lib/engine-reset.sh"
+    cmd_engine_reset "$REL_ID" "$STORYHOOK_ENGINE_RESET_V1"
+    return
+  fi
   _complete_prepare "$REL_ID"
   local id="$CMP_ID"
 
@@ -4737,6 +5236,7 @@ cmd_reset() {
     fi
   fi
 
+  revalidate_story_resources
   _release_story reset "$id"
   local unclaimed=false conflict=""
   case "$REL_RESULT" in
@@ -4753,7 +5253,7 @@ cmd_reset() {
     local -a dry_cmds=()
     [ "$REL_RESULT" = "ok" ] && dry_cmds+=("story unclaim $id")
     if [ "$CMP_WT_STATUS" != "missing" ]; then
-      dry_cmds+=("git worktree remove --force $CMP_WT_PATH" "git worktree prune")
+      dry_cmds+=("git worktree remove --force $CMP_WT_PATH")
     fi
     [ "$CMP_BR_STATUS" != "missing" ] && dry_cmds+=("git branch -D $CMP_WT_BRANCH")
     [ "$CMP_WINDOW_STATUS" != "self" ] && dry_cmds+=("tmux kill-window -t <window of $CMP_WNAME>")
@@ -4789,7 +5289,6 @@ cmd_reset() {
       rm_args=(worktree remove --force --force "$CMP_WT_PATH")
     fi
     if git "${rm_args[@]}" >/dev/null 2>&1; then
-      git worktree prune >/dev/null 2>&1 || true
       removed_wt=true
     else
       wt_fail="git worktree remove refused for $CMP_WT_PATH"
@@ -4805,7 +5304,7 @@ cmd_reset() {
     fi
   fi
 
-  if registered_worktree_branch "$CMP_WT_PATH" >/dev/null 2>&1 || [ -e "$CMP_WT_PATH" ]; then
+  if ! registration_absent "$CMP_WT_PATH" || [ -e "$CMP_WT_PATH" ]; then
     wt_fail="${wt_fail:-worktree cleanup postcondition failed for $CMP_WT_PATH}"
     removed_wt=false
   fi
@@ -4904,8 +5403,20 @@ done
 # Every command except dispatch and capabilities reads the provider from the
 # environment. Both resolve it only after parsing their own explicit
 # --agent override.
-if [ "${1:-}" != "dispatch" ] && [ "${1:-}" != "capabilities" ]; then
+if [ "${1:-}" = "doctor" ]; then
   configure_agent "${STORY_AGENT:-claude}"
+fi
+
+# A knob that lands nowhere is refused, never dropped (SH-357). STORY_DONE_STATE
+# used to choose the completion state for `complete`, `reap` and `<done-state>`;
+# since SH-652 the completion state is the required `done`, so a value here
+# would be silently ignored — and a user who exported it per the old README
+# would read `done` as a bug rather than a decision. Checked ahead of every
+# verb because the variable reaches this helper two ways: the user's own shell,
+# and the daemon's environment by `STORY_*` prefix passthrough.
+if [ -n "${STORY_DONE_STATE+set}" ]; then
+  refuse "story-done-state-retired" \
+    "STORY_DONE_STATE is set (\`${STORY_DONE_STATE}\`), but the completion state is no longer configurable: verified work lands in the required \`$COMPLETION_STATE\` state, and \`complete\`/\`reap\` use the same one (SH-652). Unset STORY_DONE_STATE. To close a story into a different CLOSED state, run \`story move <id> <state>\` yourself; \`reap\` will then refuse it as not completed, by design."
 fi
 
 case "${1:-}" in
@@ -4913,6 +5424,7 @@ case "${1:-}" in
   capabilities)  shift; cmd_capabilities "$@" ;;
   complete)   shift; cmd_complete "$@" ;;
   reap)       shift; cmd_reap "$@" ;;
+  submit)     shift; cmd_submit "$@" ;;
   unclaim)    shift; cmd_unclaim "$@" ;;
   reset)      shift; cmd_reset "$@" ;;
   view)       shift; cmd_view "$@" ;;
@@ -4928,5 +5440,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | submit <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] [--story <id>] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac

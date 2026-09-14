@@ -151,6 +151,10 @@ fn placeholder(token: &str) -> Option<&'static str> {
     Some(match token {
         "<id>" | "<a>" | "<b>" | "<story-id>" | "<epic-id>" | "<expected>" | "<blocker>" => "SH-1",
         "<run-id>" => "run-1",
+        "<incident-id>" => "2:28821",
+        "<request>" => "a2cb702b-12e8-46c4-831b-c78bf57e944b",
+        "<sha>" => "0123456789abcdef0123456789abcdef01234567",
+        "<session>" => "receiving-root-session",
         "<n>" | "<N>" => "1",
         "<PORT>" => "3456",
         "<PREFIX>" => "SH",

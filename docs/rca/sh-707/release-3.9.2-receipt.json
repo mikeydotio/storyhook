@@ -1,0 +1,376 @@
+{
+  "story_id": "SH-707",
+  "observed_at": "2026-09-13T22:57:54.390926+00:00",
+  "release": {
+    "repository": "mikeydotio/agentics",
+    "tag": "v3.9.2",
+    "commit": "da6db5643ef1a36f985078217e36174b17b2478c",
+    "plugins_tree": "997ec035f3b8dff4f0b8146b9166cb6df23319ff",
+    "greenlight_tree": "750c2dba8be5d8e14a871493dadc5197ce51234d",
+    "provenance": "GitHub Git-tree API for the immutable tagged commit; every installed blob and executable mode matched"
+  },
+  "installed_root": "/Users/mikey/.codex/plugins/cache/agentics/greenlight/3.9.2",
+  "inventory": {
+    ".claude-plugin/plugin.json": {
+      "git_blob": "1d0cac39a0fae8278042e23de21fc9443326456c",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "cea59c4d5a40030ac9b29e4a3602da7c454b98bc0d23054ff6fe3118f4b407d4"
+    },
+    "README.md": {
+      "git_blob": "fb3606d9f0e71ec0e7c2225984889fbea65a0a7b",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "10ee8319941d2d9860285d55e2317128f53accd7c34a7edc381bb2098d61c8ed"
+    },
+    "bin/greenlight-config.sh": {
+      "git_blob": "95cdefad85e2766788e200e719db4e1b937e0982",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "c3d48fde06191d9803b0307f4a6972205148dd9221a361b08fad7209a7d9ab12"
+    },
+    "bin/greenlight-explore.sh": {
+      "git_blob": "aa2fe9039c638b40ce9fc60ab1060314b8da4b11",
+      "git_mode": "100755",
+      "installed_mode": "0o755",
+      "sha256": "ce457f242452d6c2fe962852c046aac010e4bf389d0c43fd06173b03399469cd"
+    },
+    "hooks/greenlight.sh": {
+      "git_blob": "513f5c834d8285f1b88212ceceada6b16b4ddace",
+      "git_mode": "100755",
+      "installed_mode": "0o755",
+      "sha256": "32d955a48c3bc1c2c66895d2fc505892cea147180188334560f0fab92958c85b"
+    },
+    "hooks/hooks.json": {
+      "git_blob": "fd93972e9e26756fceb65c0db91f880dc8f00dfc",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "5664c2920dc9c8502dd3ec86cfe2315c5e453dc16b302fc10d5326bfc583670f"
+    },
+    "lib/config-write.sh": {
+      "git_blob": "95ec3ac6463ee638cb1287639b88f627566f12b5",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "3c19f03eab056d74bd56e5b4f34b81edace1db605c5af4253856ab2b4c66e2b8"
+    },
+    "lib/config.sh": {
+      "git_blob": "07d5dd5fdba01ba1bc4cb97a5025d93887227d9e",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "778fabfb8b75e9e504d5dc1c4da0796dfc97a14201cc7f53f76c0057faccd77a"
+    },
+    "references/default-config.yaml": {
+      "git_blob": "00c03547a0ff0ff58f9d113cfa195b22d35b4c80",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "6854dc94f2d18f65998a8e582a2241d0478656956618ac50e1180dab8f3f5d6a"
+    },
+    "skills/greenlight/SKILL.md": {
+      "git_blob": "c5b9b08da1e577decdbd92561176f4c7fb69efd9",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "1d2a017d854e93571a7a3ee926a04e9f053f5c41155e682a6c91ed5b22792671"
+    },
+    "tests/contract-helper.bash": {
+      "git_blob": "ca07020d1f7abfe3c1101b9b50307c6c2b9d506c",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "3c83798556127221f9b08df4b54837d65ff62a5663d5c98a479ab92f3f4f13e0"
+    },
+    "tests/greenlight-ai.bats": {
+      "git_blob": "62775de8bbf461713ddecd819efdc591d36a8667",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "fd19489c4dae31812f6f83a2f3fadb3bf775574b5cf169c22c38d8ae1772e883"
+    },
+    "tests/greenlight-codex.bats": {
+      "git_blob": "20bc127cab8671fbd194dcea37aefddfc2d521ca",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "2d0b5011e8d9776ca9645d93060cca14deb1c9b0c028de7ad8447f7cd3db66bf"
+    },
+    "tests/greenlight-config.bats": {
+      "git_blob": "f3de764ffddd05c2591c78bb5c305e76c6cab4f5",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "a05a415c22b1c150f456ebcebf6157b8620d1d234791a009ca04ebd7de156083"
+    },
+    "tests/greenlight-explore.bats": {
+      "git_blob": "23b62ddd178b029f5c47ab20d08792b2c22a6508",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "d3b47e9e4e7e89a24f81b84d3bdd05ce5e41698398f1ad457e9c6f37367e3f9a"
+    },
+    "tests/greenlight-manifest.bats": {
+      "git_blob": "512919d2298538086781047a7a078df2ecd7a2a8",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "50a229466d4e24f1fd6fd2e850f37cc0bc8a01c16a674f8a7e1b6d1685b350d3"
+    },
+    "tests/greenlight-policy.bats": {
+      "git_blob": "7aa04f0cc3e51793a8d22845c467ddd577181a96",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "2c678a81de7679c8fa3e2c3d3219c9b3daae502ee2b174a89dfaf3c76c859dd3"
+    },
+    "tests/greenlight-redirection.bats": {
+      "git_blob": "4ea12d6eb04dc69839af5b392495f3e0e468089c",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "f841b5d003d2c276553b3abb6992905a77b768ceb1442c47b9e4ec7f39271a72"
+    },
+    "tests/greenlight-story.bats": {
+      "git_blob": "ffa17b7186af16e4819a246067c3de3fdf6e2eec",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "4522e8ffa16831609fe2146d5705f4e2cff95ab9bfb1f1c0ca0e8bf5d1e4b5c5"
+    },
+    "tests/greenlight.bats": {
+      "git_blob": "5f723238dcfdcb3e0059d76a4fd368979e27004f",
+      "git_mode": "100644",
+      "installed_mode": "0o644",
+      "sha256": "a7caebb416ac280f98c25a1398fe832997ec30177ff1147136e06e968f8f1803"
+    },
+    "tests/run-tests.sh": {
+      "git_blob": "fb724aa07154a6df7e529601a4e6374ee0eed7ce",
+      "git_mode": "100755",
+      "installed_mode": "0o755",
+      "sha256": "86676d2b7a45bdc1911a4ea1dd4acdcbb69cf44baaad03b767bb46a0891d8952"
+    }
+  },
+  "file_count": 21,
+  "selected_plugins": {
+    "greenlight@agentics": true,
+    "greenlight@personal": false
+  },
+  "native_hooks_list": [
+    {
+      "key": "greenlight@agentics:hooks/hooks.json:pre_tool_use:0:0",
+      "eventName": "preToolUse",
+      "handlerType": "command",
+      "command": "bash \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/greenlight.sh\"",
+      "async": false,
+      "matcher": null,
+      "timeoutSec": 20,
+      "statusMessage": null,
+      "additionalContextLimit": null,
+      "sourcePath": "/Users/mikey/.codex/plugins/cache/agentics/greenlight/3.9.2/hooks/hooks.json",
+      "source": "plugin",
+      "pluginId": "greenlight@agentics",
+      "displayOrder": 11,
+      "enabled": true,
+      "isManaged": false,
+      "currentHash": "sha256:e7cd1e579c65088e3ff4b0fa8c16c5a5b01c8381c2ee486e560c4bb85632044e",
+      "trustStatus": "modified"
+    }
+  ],
+  "previously_trusted_hash": "sha256:cd0e38d792650e8c92bde2297bf4e1a86e5c48fa970e3e7c5f63ba586818e570",
+  "validation": {
+    "installed_identity_verified": true,
+    "installed_suite": {
+      "passed": 164,
+      "failed": 0,
+      "skipped": 0,
+      "exit_status": 0,
+      "command": "env -i HOME=<new disposable directory under /tmp> PATH=\"$PATH\" TMPDIR=/tmp LC_ALL=C bash /Users/mikey/.codex/plugins/cache/agentics/greenlight/3.9.2/tests/run-tests.sh",
+      "log": "release-3.9.2-bats.log"
+    },
+    "installed_manifest_controls": {
+      "passed": 20,
+      "results": [
+        {
+          "provider": "codex",
+          "case": "safe",
+          "root_variable": "PLUGIN_ROOT",
+          "stdout": "",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:35Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+        },
+        {
+          "provider": "codex",
+          "case": "read",
+          "root_variable": "PLUGIN_ROOT",
+          "stdout": "",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:35Z [ALLOW] Read: Read: readonly tool\n"
+        },
+        {
+          "provider": "codex",
+          "case": "deny",
+          "root_variable": "PLUGIN_ROOT",
+          "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:35Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+        },
+        {
+          "provider": "codex",
+          "case": "warning",
+          "root_variable": "PLUGIN_ROOT",
+          "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:35Z [PASS] Bash: known destructive command\n"
+        },
+        {
+          "provider": "codex",
+          "case": "malformed",
+          "root_variable": "PLUGIN_ROOT",
+          "stdout": "",
+          "stderr": "",
+          "exit_status": 0,
+          "log": ""
+        },
+        {
+          "provider": "codex",
+          "case": "unrelated",
+          "root_variable": "PLUGIN_ROOT",
+          "stdout": "",
+          "stderr": "",
+          "exit_status": 0,
+          "log": ""
+        },
+        {
+          "provider": "codex",
+          "case": "ai-quiet",
+          "root_variable": "PLUGIN_ROOT",
+          "stdout": "",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:35Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T22:53:35Z [ALLOW] Bash: AI confirmed safe\n"
+        },
+        {
+          "provider": "codex",
+          "case": "ai-context",
+          "root_variable": "PLUGIN_ROOT",
+          "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI analysis: Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:36Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T22:53:36Z [ALLOW] AI confirmed safe: Fixture says \"safe\"; $(never-execute) remains data.\n"
+        },
+        {
+          "provider": "codex",
+          "case": "ai-destructive",
+          "root_variable": "PLUGIN_ROOT",
+          "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI safety analysis: POTENTIALLY DESTRUCTIVE. Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:36Z [AI_RESULT] answer=true rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T22:53:36Z [PASS] Bash: AI determined command is potentially destructive\n"
+        },
+        {
+          "provider": "codex",
+          "case": "ai-invalid",
+          "root_variable": "PLUGIN_ROOT",
+          "stdout": "",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:36Z [AI_FAIL] invalid structured response: expected one object with boolean answer and nonempty string rationale\n2026-09-13T22:53:36Z [PASS] AI fallback failed, deferring to user\n"
+        },
+        {
+          "provider": "claude",
+          "case": "safe",
+          "root_variable": "CLAUDE_PLUGIN_ROOT",
+          "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Bash: safe readonly command(s)\"\n  }\n}\n",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:36Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+        },
+        {
+          "provider": "claude",
+          "case": "read",
+          "root_variable": "CLAUDE_PLUGIN_ROOT",
+          "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Read: readonly tool\"\n  }\n}\n",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:36Z [ALLOW] Read: Read: readonly tool\n"
+        },
+        {
+          "provider": "claude",
+          "case": "deny",
+          "root_variable": "CLAUDE_PLUGIN_ROOT",
+          "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:36Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+        },
+        {
+          "provider": "claude",
+          "case": "warning",
+          "root_variable": "CLAUDE_PLUGIN_ROOT",
+          "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:36Z [PASS] Bash: known destructive command\n"
+        },
+        {
+          "provider": "claude",
+          "case": "malformed",
+          "root_variable": "CLAUDE_PLUGIN_ROOT",
+          "stdout": "",
+          "stderr": "",
+          "exit_status": 0,
+          "log": ""
+        },
+        {
+          "provider": "claude",
+          "case": "unrelated",
+          "root_variable": "CLAUDE_PLUGIN_ROOT",
+          "stdout": "",
+          "stderr": "",
+          "exit_status": 0,
+          "log": ""
+        },
+        {
+          "provider": "claude",
+          "case": "ai-quiet",
+          "root_variable": "CLAUDE_PLUGIN_ROOT",
+          "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"AI confirmed safe\"\n  }\n}\n",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:36Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T22:53:36Z [ALLOW] Bash: AI confirmed safe\n"
+        },
+        {
+          "provider": "claude",
+          "case": "ai-context",
+          "root_variable": "CLAUDE_PLUGIN_ROOT",
+          "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"AI confirmed safe\",\n    \"additionalContext\": \"[greenlight] AI analysis: Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:36Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T22:53:36Z [ALLOW] AI confirmed safe: Fixture says \"safe\"; $(never-execute) remains data.\n"
+        },
+        {
+          "provider": "claude",
+          "case": "ai-destructive",
+          "root_variable": "CLAUDE_PLUGIN_ROOT",
+          "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI safety analysis: POTENTIALLY DESTRUCTIVE. Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:36Z [AI_RESULT] answer=true rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T22:53:36Z [PASS] Bash: AI determined command is potentially destructive\n"
+        },
+        {
+          "provider": "claude",
+          "case": "ai-invalid",
+          "root_variable": "CLAUDE_PLUGIN_ROOT",
+          "stdout": "",
+          "stderr": "",
+          "exit_status": 0,
+          "log": "2026-09-13T22:53:36Z [AI_FAIL] invalid structured response: expected one object with boolean answer and nonempty string rationale\n2026-09-13T22:53:36Z [PASS] AI fallback failed, deferring to user\n"
+        }
+      ]
+    },
+    "native_host_validated": false,
+    "native_review_required": true,
+    "full_repository_suite_run": false,
+    "central_release_gate_run_here": false
+  },
+  "preservation": {
+    "live_mutation_by_this_continuation": false,
+    "raw_private_configuration_copied": false,
+    "remaining_personal_cache_retained": true,
+    "age54_alias_staged_only": true,
+    "agentics_3_9_1_cache": "Absent on first inspection after user-reported release update; not deleted or restored by this lane."
+  },
+  "remaining_prerequisite": "Mikey reviews the changed greenlight@agentics 3.9.2 handler through native /hooks; then capture trusted status and a benign fresh-host invocation. No personal plugin installation or selection is required."
+}

@@ -25,6 +25,7 @@ use crate::embedded::EmbeddedFile;
 include!(concat!(env!("OUT_DIR"), "/embedded_marketplace.rs"));
 
 pub(crate) mod registration;
+pub mod reinstall;
 
 /// A provider storyhook installs its plugin into.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -558,7 +559,19 @@ pub fn run_helper(target: &str, args: &[String]) -> Result<ExitStatus, AppError>
     // installed-artifact guard admits nor one Codex's argv-prefix rule
     // matches (SH-632). A caller who set the variable deliberately keeps it,
     // and the helper's own `--agent` flag still outranks either.
-    if std::env::var_os("STORY_AGENT").is_none() {
+    let mut operands = args.iter();
+    let verb = loop {
+        match operands.next().map(String::as_str) {
+            Some("--project") => {
+                operands.next();
+            }
+            Some(value) if value.starts_with("--project=") => {}
+            value => break value,
+        }
+    };
+    if matches!(verb, Some("dispatch" | "capabilities" | "doctor"))
+        && std::env::var_os("STORY_AGENT").is_none()
+    {
         command.env("STORY_AGENT", "codex");
     }
     command.status().map_err(|error| {
@@ -1000,6 +1013,86 @@ fn record_managed_paths() {
     let _ = fs::write(&file, body);
 }
 
+/// Where `story plugin install <target>` records that it registered this
+/// provider on this machine: `<data dir>/provider-installs/<target>`.
+///
+/// `story doctor install` reads it to tell a *lost* registration from one
+/// that never existed (SH-671). SH-640 answered that question from the
+/// provider's own leftovers — its plugin cache — and on 2026-09-10 Claude
+/// Code 2.1.268 swept those along with the registration, so the doctor read
+/// a broken machine as a Codex-only one. The receipt is storyhook's file in
+/// storyhook's directory: no provider rewrite can take it, and it is per
+/// target, which the managed-path manifest (naming both providers on every
+/// install) is not.
+pub(crate) fn install_receipt_path(target: PluginTarget) -> Result<PathBuf, AppError> {
+    Ok(data_dir()?
+        .join("provider-installs")
+        .join(target.install_token()))
+}
+
+/// The receipt's contents, if one was written here: what the doctor quotes.
+pub(crate) fn install_receipt(target: PluginTarget) -> Result<Option<String>, AppError> {
+    let path = install_receipt_path(target)?;
+    match fs::read_to_string(&path) {
+        Ok(body) => Ok(Some(body)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AppError::Storage(format!(
+            "could not read the install receipt at `{}`: {error}",
+            path.display()
+        ))),
+    }
+}
+
+/// Writes the receipt once the provider's registration has succeeded —
+/// never before, so a registration that did not land is never claimed, and
+/// never on a failed reinstall, so an earlier install keeps being one.
+///
+/// Loud on failure, on purpose: the registration itself is done by now, and
+/// the message says so, but a receipt that could not be written means the
+/// doctor can no longer detect this install's loss — the operator must hear
+/// that rather than read `every component agrees` over it later.
+fn record_install_receipt(target: PluginTarget) -> Result<(), AppError> {
+    let path = install_receipt_path(target)?;
+    let context = |error: std::io::Error| {
+        AppError::Storage(format!(
+            "the {} plugin is registered, but its install receipt at `{}` could not be \
+             written: {error}. Until `story plugin install {}` succeeds again, `story doctor \
+             install` cannot tell this registration's loss from a provider that was never \
+             installed here.",
+            target.display_name(),
+            path.display(),
+            target.install_token()
+        ))
+    };
+    let parent = path
+        .parent()
+        .expect("the receipt path has a parent directory");
+    fs::create_dir_all(parent).map_err(context)?;
+    fs::write(
+        &path,
+        format!(
+            "version {}\ninstalled_at {}\n",
+            env!("CARGO_PKG_VERSION"),
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        ),
+    )
+    .map_err(context)
+}
+
+/// Removes the receipt on a deliberate uninstall. `Ok(Some(path))` names
+/// what was removed; `Ok(None)` means there was none.
+fn remove_install_receipt(target: PluginTarget) -> Result<Option<PathBuf>, AppError> {
+    let path = install_receipt_path(target)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(Some(path)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(AppError::Storage(format!(
+            "failed to remove the install receipt at `{}`: {error}",
+            path.display()
+        ))),
+    }
+}
+
 pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
     let warning = compatibility_alias_warning(target);
     let target = PluginTarget::parse(target)?;
@@ -1011,6 +1104,7 @@ pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
         PluginTarget::ClaudeCode => install_claude(project_root, &source),
         PluginTarget::Codex => install_codex(project_root, &source),
     }?;
+    record_install_receipt(target)?;
     Ok(format!("{}{message}", warning.unwrap_or_default()))
 }
 
@@ -1036,6 +1130,12 @@ fn uninstall_claude(project_root: &Path) -> Result<String, AppError> {
     // directory this install owns, the legacy layout included.
     for dir in remove_install_residue(PluginTarget::ClaudeCode)? {
         removed.push(format!("removed installed copies at {}", dir.display()));
+    }
+    if let Some(receipt) = remove_install_receipt(PluginTarget::ClaudeCode)? {
+        removed.push(format!(
+            "removed the install receipt at {}",
+            receipt.display()
+        ));
     }
 
     let claude_md_path = project_root.join("CLAUDE.md");
@@ -1065,6 +1165,12 @@ fn uninstall_codex(project_root: &Path) -> Result<String, AppError> {
         format!("removed `{PLUGIN_REF}` and the `{MARKETPLACE_NAME}` marketplace from Codex");
     for dir in remove_install_residue(PluginTarget::Codex)? {
         message.push_str(&format!("\nremoved installed copies at {}", dir.display()));
+    }
+    if let Some(receipt) = remove_install_receipt(PluginTarget::Codex)? {
+        message.push_str(&format!(
+            "\nremoved the install receipt at {}",
+            receipt.display()
+        ));
     }
 
     let home = home_dir()?;

@@ -67,14 +67,36 @@
         ]
       }
     ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/continuation.sh\" compact",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
+            "command": "bash \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/continuation.sh\" stop",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "bash \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/stop-handoff.sh\"",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "bash \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/codex-stop.sh\"",
+            "timeout": 50
           }
         ]
       }

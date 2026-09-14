@@ -24,12 +24,13 @@ claim the epic or launch a Codex pane directly. Show `display` and stop. Without
 helper refuses and names the engine remedy. Never add the engine-private `--full-auto` lane
 marker here.
 
-- `ok:false`: except for the one `resume-available` interaction above, show `display` and stop. The helper refuses before prompt delivery when the
+- `ok:false`: except for the one `resume-available` interaction above, show `display` and stop. The helper refuses before story-charter delivery when the
   story, worktree, Codex process, readiness proof, or Plan-mode footer is unsafe.
 - `ok:true`: show `display` verbatim. Surface `warning` and a fenced `pane_tail` when present.
 
 The helper owns the compare-and-swap claim, fresh base, `.codex/worktrees/<id>` worktree,
-tmux window, `codex --no-alt-screen` launch, readiness, Shift+Tab transition into Plan mode,
+tmux window, `codex --no-alt-screen` launch (update chooser and TUI animations off for the
+managed process), readiness, Shift+Tab transition into Plan mode,
 bracketed paste, and Tab submission. Do not repeat those side effects.
 
 With `--auto`, the helper adds `--approve-for-me` and
@@ -42,11 +43,24 @@ confirms that dialog disappeared. Automatic workspace-write review handles
 later tool approvals; the trusted packaged hook refuses
 `request_user_input` so the unattended session cannot wait for a person. A
 custom `STORY_LAUNCH_CMD` remains wholesale and is reported as potentially
-weakening that guarantee. Before arming the watcher or delivering the prompt,
-the helper requires a protocol-2 SessionStart sentinel whose `plugin_root`
-exactly matches the package that owns the helper. Missing, legacy, malformed,
-or mismatched hooks refuse and roll back. Attended dispatch is unchanged and
-continues to use screen readiness.
+weakening that guarantee. Autonomous dispatch first confirms the original live
+Codex process and Plan mode, then submits one task-free initialization turn:
+Codex invokes SessionStart only when its first turn begins. The matching packaged
+hook returns `continue:false`, suppressing ordinary context and stopping that turn
+before model work. A private attempt receipt binds the hook root, session and turn;
+the transcript must separately confirm completion with no assistant/tool work.
+Only then does the helper arm the watcher and deliver the story charter once.
+
+The protocol-2 SessionStart sentinel must still name the exact package that owns
+the helper. Missing, legacy, malformed, or mismatched hooks, an incomplete stopped
+turn, or incompatible launch overrides refuse before the charter. The refusal
+includes the initialization phase, reason and captured pane tail. Before rolling
+back new Git resources and the claim, the helper terminates the exact owned startup
+pane and its descendants. Uncertain ownership or cleanup preserves resources and
+reports the failure. Existing work and claims remain preserved on resume/force.
+Attended Codex continues to use screen readiness. See
+[the initialization contract](../../../docs/spec/codex-dispatch-initialization.md)
+for compatibility evidence and the failure matrix.
 
 Codex can surface a Claude-compatible `ExitPlanMode` hook event, but a bare
 `permissionDecision: "allow"` is unsupported and is not its plan-approval
@@ -58,13 +72,40 @@ that exact plan to the story its first implementation step. Custom `STORY_PROMPT
 and must carry any equivalent requirement themselves; `STORY_PROMPT_EXTRA` still
 appends after the built-in requirement.
 
+SH-676 supplements that menu with a synchronous, autonomous-only Codex Stop hook.
+A bounded, tool-free Luna classifier recognizes completed plans awaiting prose
+approval. In Default mode it supplies native continuation; in Plan mode it asks
+for the same plan in `proposed_plan` tags so the existing menu watcher can approve.
+Session/story checks and a persistent receipt allow at most one prose continuation.
+The classifier capability contract is currently verified only for Codex 0.154.0;
+other runtimes emit a diagnostic and retain the native menu path. See
+[the design and probe contract](../../../docs/spec/codex-auto-plan-continuation.md).
+
+SH-687 adds an explicit handoff for built-in autonomous Default-mode sessions:
+
+```json
+{"type":"storyhook.implementation-plan","version":1,"story_id":"SH-123","plan":"Complete implementation plan text"}
+```
+
+The entire assistant message must be this object, with exactly these fields and
+the assigned story ID. Valid requests bypass Luna. Malformed, embedded, quoted,
+unknown-version and mismatched-story requests do not fall back to classification.
+The approved content is the decoded `plan` text; posting it verbatim remains the
+first implementation step. The same receipt limits structured and prose paths
+together. Native Plan mode continues to use `proposed_plan`; JSON there redirects
+to native review without authorizing implementation. A typed transactional
+`story session-eligibility <id> --json` query supplies tracker facts before and
+after recognition. Schema validation records readiness, not proof of plan
+completeness or extra operational permission. Attended and custom prompts are
+unchanged; ordinary prose keeps its bounded classifier fallback.
+
 Codex has no stable machine-readable skill inventory. In `--auto`, council discovery
 therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit opt-in.
 
 ## Capture and doctor
 
 - `capture <id>`: run `bash "<story-helper>" capture <id>` and show `display`. The stable
-  launcher runs the helper as Codex, so no `STORY_AGENT` prefix is needed — and neither the
+  launcher uses provider-independent resource discovery, so no `STORY_AGENT` prefix is needed — and neither the
   installed-artifact guard nor Codex's own command rule admits one.
 - `doctor`: run `bash "<story-helper>" doctor` and show `display`. It reports
   the selected provider and independently confirms readiness, Plan mode, bracketed paste,
@@ -102,3 +143,20 @@ Codex's arm was measured live rather than assumed (SH-459, CLI 0.149.0): a match
 the model as the blocking reason. On both hosts a PreToolUse hook fails OPEN at its timeout, so
 a lane whose denial times out asks anyway and stalls — caught by the engine's stall ceiling and
 quarantined, never silent.
+
+Deterministic resource operations discover the actual worktree and recorded tmux socket. Do not set `STORY_AGENT` to locate Claude-created or custom worktrees. `dispatch --resume --agent=codex` changes the launch provider while preserving the resolved worktree.
+
+### Unsupported approval output
+
+`PreToolUse hook returned unsupported permissionDecision:allow` means a matching
+hook emitted an approval shape Codex does not support. Identify the producer
+across user, project, and plugin hook registrations before changing Storyhook.
+For an unchanged tool call, a hook with no objection must return no decision;
+optional feedback uses `additionalContext`. Preserve explicit denials and normal
+Codex permission handling. Do not add artificial `updatedInput` to silence the
+error: that field requests a tool-input rewrite.
+
+SH-707 reproduced this independently in Greenlight and a personal readonly hook,
+while installed and checkout Storyhook controls passed. See the
+[RCA and repair status](../../../docs/rca/sh-707-unsupported-hook-allow.md) and
+[Codex hook contract](https://developers.openai.com/codex/hooks).
