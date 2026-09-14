@@ -2190,8 +2190,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // periodic resync in case a `/api/events` push is ever missed.
   var SAFETY_POLL_INTERVAL_MS = 25000;
   var FOOTER_TICK_MS = 1000;
-  // How long a self-clearing notice is held before its fade begins (SH-304).
-  // Only a success/info notice ever gets one: an error has no timer at all
+  // Total lifetime of a self-clearing notice, including its fade (SH-720).
+  // Only a success/info/warn notice gets one: an error has no timer at all
   // now, rather than the doubled 9s one SH-196 gave it, because "long enough
   // to read a remedy" is a guess about a reader and "until you dismiss it"
   // is not.
@@ -4443,7 +4443,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     ]);
   }
 
-  /** Removes `node` after holding it `TOAST_LIFETIME_MS`, then fading it.
+  /** Removes `node` within `TOAST_LIFETIME_MS`, including its fade.
    *
    * The clock is not a bare `setTimeout`, because three states stop it:
    *
@@ -4460,8 +4460,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    *     the event catches a transition after the clock starts, and the state
    *     check catches a notice created after the transition already happened.
    *
-   * Pausing preserves what is left rather than restarting it, so a reader
-   * who hovers twice does not get a fresh three seconds each time.
+   * Pausing preserves the remaining hold rather than restarting it. The
+   * fade uses the final part of the lifetime and runs uninterrupted once begun.
    *
    * **All three are courtesies, and none is this dashboard's WCAG conformance
    * story** — a distinction this comment got wrong until SH-322, in a way
@@ -4494,7 +4494,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * SH-322 has
    * the full reasoning; `e2e/specs/notification-contract.spec.ts` fences it. */
   function scheduleAutoDismiss(node) {
-    var remaining = TOAST_LIFETIME_MS;
+    var remaining = TOAST_LIFETIME_MS - TOAST_FADE_MS;
     var startedAt = 0;
     var timer = null;
     var leaving = false;

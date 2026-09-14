@@ -69,8 +69,8 @@ import {
  * byte-identical to a loaded machine. One root cause surfacing twice: once as a
  * timeout, once as a failure that could not name itself.
  *
- * So the durations under test are unchanged at 3000/1000 and the *waiting* is
- * gone. `onAFrozenClock` pauses the page's clock, and `page.clock.runFor()`
+ * SH-720 changes the hold/fade durations to 2000/1000: three seconds total.
+ * `onAFrozenClock` pauses the page's clock, and `page.clock.runFor()`
  * advances it. Inside a frozen window the arithmetic is not merely robust to
  * machine load, it is independent of it — fake time moves only when a line here
  * says so — which is why the assertions below can pin a departure to the
@@ -124,28 +124,28 @@ import {
 
 cleanUpCreatedStories("Alpha Project");
 
-/** How long a success notice is held before its fade starts, plus the fade
- * itself — `TOAST_LIFETIME_MS` + `TOAST_FADE_MS` in `web_dashboard.html`,
- * restated here rather than imported because the dashboard is a single HTML
- * file with no module boundary a spec can reach into. */
-const SUCCESS_VISIBLE_MS = 3000;
+/** Independent contract values: the three-second lifetime includes the fade.
+ * Keeping these in the test prevents a production timing change from silently
+ * changing the expected behavior along with it. */
+const NOTICE_LIFETIME_MS = 3000;
 const FADE_MS = 1000;
+const SUCCESS_VISIBLE_MS = NOTICE_LIFETIME_MS - FADE_MS;
 
 /** Generous enough that a loaded machine's timer jitter cannot fail a test
  * whose subject is "this eventually goes away".
  *
  * Used only by the two real-clock canaries now, and reachable in both: each
- * begins its wait ~2.7s in, leaving 12.3s of the budget for an 8s ceiling. It
+ * begins its wait ~2.7s in, leaving 12.3s of the budget for a 7s ceiling. It
  * was NOT reachable in the two tests this story fixed, which is the defect
  * described in this file's header — a clocked test needs no ceiling at all,
  * because `runFor` returns with the DOM already settled. */
-const GONE_TIMEOUT = SUCCESS_VISIBLE_MS + FADE_MS + 4000;
+const GONE_TIMEOUT = NOTICE_LIFETIME_MS + 4000;
 
 /** How far a frozen clock is advanced to prove a notice has no timer at all.
  *
  * Thirty seconds, where the wall-clock version of this probe could only afford
  * 5.5. It costs nothing now, and it is comfortably past every lifetime this
- * dashboard has ever had — the deleted 4.5s and 9s ones and the current 3s+1s
+ * dashboard has ever had — the deleted 4.5s and 9s ones and the current 2s+1s
  * alike — so a regression to any of them fails here. */
 const NO_TIMER_HORIZON_MS = 30_000;
 
@@ -265,7 +265,7 @@ async function openFreshStory(page: Page, title: string): Promise<string> {
  * Advances a frozen clock through the whole remaining life of a self-clearing
  * notice, asserting at each boundary, and leaves the stack empty.
  *
- * `owed` is what the notice still has to run — the full lifetime for one that
+ * `owed` is the remaining hold — the full hold for one that
  * has never been paused, less whatever was burned before a pause for one that
  * has. Splitting the advance in three is what pins the two production
  * durations *separately*: a change to either the hold or the fade fails here,
@@ -348,6 +348,85 @@ test("a successful --auto dispatch also fades, and names itself autonomous", asy
   await cleanUp(page, title);
 });
 
+/** Produces an informational notice through the real column archive flow.
+ * Only the server preview is stubbed; the UI owns notice creation and expiry. */
+async function stubEmptyArchive(page: Page): Promise<void> {
+  await page.route("**/states/done/archive", (route) => route.fulfill({
+    status: 409,
+    contentType: "application/json",
+    body: JSON.stringify({ plan: { state: "done", ids: [] } }),
+  }));
+}
+
+for (const reducedMotion of ["no-preference", "reduce"] as const) {
+  test(`an informational notice expires at three seconds with motion ${reducedMotion}`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion });
+    await openClocked(page);
+    await openProject(page, "Alpha Project");
+    await stubEmptyArchive(page);
+
+    await onAFrozenClock(page, async () => {
+      await page.locator('.column[data-state="done"] .column-archive-btn').click();
+      const notice = page.locator("#toast-stack .toast.info");
+      await expect(notice).toHaveText("Nothing to archive in `done`");
+      if (reducedMotion === "reduce") {
+        expect(await notice.evaluate((node) => getComputedStyle(node).animationName)).toBe("none");
+      }
+      await runOutTheClock(page, SUCCESS_VISIBLE_MS);
+      await expect(page.locator("#toast-scroll")).not.toHaveAttribute("tabindex", "0");
+    });
+  });
+}
+
+test("a creation warning expires at three seconds", async ({ page }) => {
+  await openClocked(page);
+  await openProject(page, "Alpha Project");
+  // Keep the real creation response and add recoverable server advice.
+  await page.route("**/api/repos/*/story", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const response = await route.fetch();
+    const payload = await response.json();
+    await route.fulfill({ response, json: { ...payload, warnings: ["Review the story priority."] } });
+  });
+  const title = "SH-720 creation warning lifetime";
+  await page.locator("#new-story-btn").click();
+  await page.locator("#create-title").fill(title);
+
+  await onAFrozenClock(page, async () => {
+    await page.locator("#create-submit").click();
+    await expect(page.locator("#toast-stack .toast.warn")).toHaveText("Review the story priority.");
+    await runOutTheClock(page, SUCCESS_VISIBLE_MS);
+  });
+
+  await deleteStory(page, title);
+});
+
+test("overlapping notices keep independent three-second lifetimes", async ({ page }) => {
+  await openClocked(page);
+  await openProject(page, "Alpha Project");
+  await stubEmptyArchive(page);
+  const archive = page.locator('.column[data-state="done"] .column-archive-btn');
+  const notices = page.locator("#toast-stack .toast.info");
+
+  await onAFrozenClock(page, async () => {
+    await archive.click();
+    await expect(notices).toHaveCount(1);
+    await page.clock.runFor(500);
+    await archive.click();
+    await expect(notices).toHaveCount(2);
+    await page.clock.runFor(2499);
+    await expect(notices).toHaveCount(2);
+    await page.clock.runFor(1);
+    await expect(notices).toHaveCount(1);
+    await expect(notices).toHaveClass(/leaving/);
+    await page.clock.runFor(499);
+    await expect(notices).toHaveCount(1);
+    await page.clock.runFor(1);
+    await expect(notices).toHaveCount(0);
+    await expect(page.locator("#toast-scroll")).not.toHaveAttribute("tabindex", "0");
+  });
+});
+
 test("a refused attended dispatch is durable, keeps its diagnosis, and dismisses only by click", async ({
   page,
 }) => {
@@ -372,7 +451,7 @@ test("a refused attended dispatch is durable, keeps its diagnosis, and dismisses
     await expect(toast.locator(".notice-reason")).toHaveText("claim-conflict");
 
     // The whole point: no timer at all. Thirty seconds of it, which outlives
-    // the deleted 4.5s and 9s lifetimes and the current 3s+1s alike.
+    // the deleted 4.5s and 9s lifetimes and the current 2s+1s alike.
     await page.clock.runFor(NO_TIMER_HORIZON_MS);
     await expect(toast).toBeVisible();
 
@@ -494,16 +573,15 @@ test("pausing preserves what is left of the clock rather than restarting it", as
 
   // The load-bearing half of the SC 2.2.1 claim, and the half nothing tested
   // until SH-318. `scheduleAutoDismiss`'s own doc comment promises that
-  // "pausing preserves what is left rather than restarting it, so a reader who
-  // hovers twice does not get a fresh three seconds each time" — but every
+  // pausing preserves the remaining hold rather than restarting it — but every
   // other test here hovers immediately, when preserving and restarting are
   // indistinguishable because nothing has been spent yet. Spend some first and
   // the two come apart: a `resume()` that reset `remaining` to the full
-  // lifetime would owe 4000ms from the mouseleave below, and would still be on
+  // lifetime would owe 3000ms from the mouseleave below, and would still be on
   // screen at the last assertion.
   //
   // This is the one assertion in the file that a real clock cannot make
-  // honestly — the discrimination is a 1ms window on a 2000ms difference, and
+  // honestly — the discrimination is a 1ms window on a 1000ms difference, and
   // only fake time is that exact.
   const title = "SH-304 — a second hover grants no fresh lifetime";
   const id = await openFreshStory(page, title);
@@ -516,7 +594,7 @@ test("pausing preserves what is left of the clock rather than restarting it", as
     const toast = page.locator("#toast-stack .toast.success");
     await expect(toast).toBeVisible();
 
-    // Spend a third of the lifetime before pausing.
+    // Spend half the hold before pausing.
     await page.clock.runFor(BURNED_MS);
     await expect(toast).toBeVisible();
 
