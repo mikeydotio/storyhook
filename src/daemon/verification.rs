@@ -13,6 +13,8 @@ use serde::Deserialize;
 mod cleanup;
 mod control;
 pub(crate) mod evidence;
+#[cfg(test)]
+mod workspace_tests;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
 mod observation;
@@ -830,8 +832,12 @@ impl ShellVerificationActuator {
         project: ProjectId,
         operation: &str,
     ) -> Result<Captured, AppError> {
-        if let Some(workspace) = self.activity.workspace_for(project) {
-            workspace.command(&mut command);
+        // The helper must reuse our open description, not reopen and contend
+        // with its own verifier. Keep ownership through child termination too.
+        let workspace = self.activity.workspace_for(project);
+        command.env_remove("STORY_WORKSPACE_LOCK_FD");
+        if let Some(workspace) = &workspace {
+            workspace.dispatch_command(&mut command);
         }
         run_captured_cancellable(
             command,
