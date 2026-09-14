@@ -347,6 +347,16 @@ test("Set Priority is disabled while a move is still in flight", async ({
   await expect(
     menu.locator(".ctxmenu-item", { hasText: "Set Status" }),
   ).toHaveAttribute("aria-disabled", "true");
+  // SH-715: pointer hover must respect the same pending-state gate as click.
+  for (const label of ["Set Status", "Set Priority"]) {
+    const item = menu.locator(".ctxmenu-item", { hasText: label });
+    await item.hover();
+    await expect(page.locator(".ctxmenu-sub")).toHaveCount(0);
+    await expect(item).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".ctxmenu-sub")).toHaveCount(0);
+    await expect(menu).toBeVisible();
+  }
   await page.keyboard.press("Escape");
 
   gate.release();
