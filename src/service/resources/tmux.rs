@@ -28,6 +28,22 @@ pub struct ResourcePane {
 
 /// Inspects a recorded server, retaining duplicate-window evidence.
 pub fn panes(socket: &Path, names: &BTreeSet<String>) -> Result<Vec<ResourcePane>, AppError> {
+    inventory(socket, names, true)
+}
+
+/// Inspects every pane so cleanup never hides another pane behind the active one.
+pub(crate) fn all_panes(
+    socket: &Path,
+    names: &BTreeSet<String>,
+) -> Result<Vec<ResourcePane>, AppError> {
+    inventory(socket, names, false)
+}
+
+fn inventory(
+    socket: &Path,
+    names: &BTreeSet<String>,
+    active_only: bool,
+) -> Result<Vec<ResourcePane>, AppError> {
     match socket.try_exists() {
         Ok(false) => return Ok(Vec::new()),
         Ok(true) => {}
@@ -87,7 +103,7 @@ pub fn panes(socket: &Path, names: &BTreeSet<String>) -> Result<Vec<ResourcePane
                 "invalid tmux identity: {line:?}"
             )));
         }
-        if fields[6] != "1" {
+        if active_only && fields[6] != "1" {
             continue;
         }
         result.push(ResourcePane {
