@@ -83,7 +83,11 @@ Related: story show, story claim, story load-context
         m.insert(
             "daemon",
             "\
-Manage the per-store daemon and inspect its operational journal.
+Manage the local per-store daemon and inspect its operational journal.
+
+Start, restart, and status verify the daemon on loopback before reporting success.
+Their URL is local to this machine. Use `story web address` to copy the advertised
+dashboard address for sharing; local status does not confirm remote reachability.
 
   story daemon start [--port PORT]
   story daemon stop [--force]

@@ -9,6 +9,28 @@ use storyhook::service::{NewStoryInput, StoryService};
 use storyhook::store::{BlockAction, BlockDelivery, DeliveryStatus, ReadOps, Store, WriteOps};
 use storyhook_test_support::ServiceFixture;
 
+/// Run lock-release contracts without descriptors inherited by sibling tests.
+/// CLOEXEC closes at exec, so an unrelated concurrent fork can otherwise keep
+/// an owner's lock alive after the delivery helper and its descendants exit.
+fn isolated_ownership_test(name: &str) -> bool {
+    const CHILD: &str = "STORYHOOK_DELIVERY_AUTHORITY_CHILD";
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return false;
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(CHILD, name);
+    let output = storyhook_test_support::run_bounded(command, name, Duration::from_secs(60));
+    assert!(
+        output.status.success(),
+        "isolated {name} failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 fn fixture() -> ServiceFixture {
     let f = ServiceFixture::new();
     let mut git = storyhook::env::git_env::command(f.cwd());
@@ -150,6 +172,11 @@ fn workspace_contention_does_not_claim_or_starve_another_story() {
 
 #[test]
 fn admitted_helper_and_its_descendants_retain_exclusion_until_acknowledgement() {
+    if isolated_ownership_test(
+        "admitted_helper_and_its_descendants_retain_exclusion_until_acknowledgement",
+    ) {
+        return;
+    }
     for orphan in [false, true] {
         let f = fixture();
         let id = active(&f, "Delivery barrier");
@@ -393,6 +420,11 @@ fn project_identity_is_revalidated_after_workspace_acquisition_before_claim() {
 
 #[test]
 fn recovery_waits_for_inherited_ownership_and_keeps_other_work_runnable() {
+    if isolated_ownership_test(
+        "recovery_waits_for_inherited_ownership_and_keeps_other_work_runnable",
+    ) {
+        return;
+    }
     let f = fixture();
     let first = active(&f, "Interrupted helper");
     let second = active(&f, "Independent helper");
