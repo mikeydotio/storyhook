@@ -86,6 +86,8 @@ for (const mode of ["pointer", "Enter", "Space"]) {
       }
       await expect(page.locator("#dispatch-modal")).toHaveClass(/open/);
       const initial = await record(page, info, "initial-activation");
+      expect(initial.focus, "Dispatch must initially focus its heading, not Provider").toBe("dispatch-modal-header");
+      expect(initial.events).not.toContainEqual({ type: "focusin", target: "dispatch-agent" });
       expect(initial.open, "opening the dialog must not open a native picker").toEqual([]);
       await expect(page.locator("#dispatch-agent")).toHaveValue("claude");
 
@@ -95,6 +97,8 @@ for (const mode of ["pointer", "Enter", "Space"]) {
       const explicit = await record(page, info, "explicit-activation");
       expect(explicit.open, "positive control: native picker must be observable").toContain("dispatch-agent");
       await page.keyboard.press("Escape");
+      await expect(page.locator("#dispatch-modal")).not.toHaveClass(/open/);
+      await expect(entry === "drawer" ? page.locator("#dispatch-btn") : card).toBeFocused();
     });
   }
 }
@@ -111,9 +115,11 @@ test("catalog arrival and repeated Dispatch-to-New opens do not activate Provide
     await page.locator(".card", { hasText: "Wire up the auth flow" }).click();
     await page.locator("#dispatch-btn").click();
     await requested.held;
+    await expect(page.locator("#dispatch-modal-header")).toBeFocused();
     expect((await record(page, info, "catalog-pending")).open).toEqual([]);
     gate.release();
     await expect(page.locator("#dispatch-modal-submit")).toBeEnabled();
+    await expect(page.locator("#dispatch-modal-header")).toBeFocused();
     expect((await record(page, info, "catalog-arrived")).open).toEqual([]);
     for (let i = 0; i < 3; i++) {
       await page.locator("#dispatch-modal-cancel").click();
@@ -122,10 +128,41 @@ test("catalog arrival and repeated Dispatch-to-New opens do not activate Provide
       expect((await record(page, info, `new-after-dispatch-${i}`)).open).toEqual([]);
       await page.locator("#create-discard").click();
       await page.locator("#dispatch-btn").click();
+      await expect(page.locator("#dispatch-modal-header")).toBeFocused();
       expect((await record(page, info, `dispatch-reopened-${i}`)).open).toEqual([]);
     }
   } finally {
     gate.release();
     await page.unrouteAll({ behavior: "wait" });
   }
+});
+
+test("Dispatch heading preserves keyboard navigation and explicit provider changes", async ({ page }) => {
+  await page.locator(".card", { hasText: "Wire up the auth flow" }).click();
+  await page.locator("#dispatch-btn").click();
+  await expect(page.locator("#dispatch-modal-header")).toBeFocused();
+  await expect(page.locator("#dispatch-modal-submit")).toBeEnabled();
+  await page.keyboard.press("Shift+Tab");
+  await expect(page.locator("#dispatch-modal-submit")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#dispatch-client")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#dispatch-agent")).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  expect(await page.locator("#dispatch-agent").evaluate((node) => node.matches(":open"))).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dispatch-btn")).toBeFocused();
+  await page.locator("#dispatch-btn").click();
+  // Native popup key navigation is outside Playwright's DOM input transport
+  // on macOS. Selection uses its native-select API; opening was proved above.
+  await page.locator("#dispatch-agent").selectOption("codex");
+  await expect(page.locator("#dispatch-agent")).toHaveValue("codex");
+  await expect(page.locator("#dispatch-model option")).toContainText(["Default", "GPT-6 Astra"]);
+  await page.locator("#dispatch-modal-cancel").click();
+  await expect(page.locator("#dispatch-btn")).toBeFocused();
+  await page.locator("#dispatch-btn").click();
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#dispatch-client")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#dispatch-btn")).toBeFocused();
 });
