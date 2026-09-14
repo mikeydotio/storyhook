@@ -7328,8 +7328,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   ];
 
   /** The one sort key an OPEN column additionally offers (SH-407): the
-   * order `story next` would hand this queue out in
-   * (`state.data.next_ids`). Not offered on a CLOSED column -- nothing in
+   * assignment order (`state.data.next_ids`), or verifier ownership and
+   * candidate order for Verifying. Not offered on a CLOSED column -- nothing in
    * it is still waiting to be picked up, so there is no queue position to
    * show. */
   var NEXT_SORT_OPTIONS = [
@@ -8803,14 +8803,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return idx === -1 ? Infinity : idx;
   }
 
+  /** Verifier ownership precedes candidate order, even when a higher-priority
+   * arrival puts the owner later in the queue (SH-731). Keep scheduling policy
+   * on the server: held/stalled/landing candidates retain its relative order.
+   * Missing snapshot entries have no rank; the comparator breaks their ties. */
+  function verificationRank(id) {
+    var verifier = state.data && state.data.verifier;
+    if (verifier && verifier.active && verifier.active.story_id === id) return -1;
+    var ids = (verifier && verifier.verifying) || [];
+    var idx = ids.indexOf(id);
+    return idx === -1 ? Infinity : idx;
+  }
+
   /** Board card comparator (SH-305, replacing SH-128's single board-wide
    * version): builds a comparator for `slug`'s own `columnSortFor()` entry.
-   * Five keys — "priority" and "next" (each a *different axis* from time,
-   * so their own ordering never reverses with `dir`; `domain::ready_order`'s
-   * fixed ascending convention, SH-128/SH-407), "added" (`created_at`) and
-   * "modified" (`updated_at`, a *same-axis* pair that reverses with `dir`),
-   * and "completed" (`story.closed_at`, same-axis, SH-407) — each producing
-   * its own primary comparison, then a tiebreak chain.
+   * Five keys — "priority", "next", "added" (`created_at`), "modified"
+   * (`updated_at`), and "completed" (`story.closed_at`, SH-407) — each
+   * producing its own primary comparison, then a tiebreak chain.
+   * Verifying's Next sort reverses the whole order; assignment Next keeps
+   * unranked cards last in both directions.
    *
    * `created_at`/`updated_at`/`closed_at` are RFC3339 UTC strings of fixed,
    * `Z`-suffixed width (`StorySnapshot`'s own writer), so a plain
@@ -8847,6 +8858,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         return byPriority !== 0 ? byPriority : byNumber;
       }
       if (sort.key === "next") {
+        if (slug === "verifying") {
+          var vaRank = verificationRank(sa.id), vbRank = verificationRank(sb.id);
+          // Explicit comparisons keep two absent ranks out of Infinity -
+          // Infinity (NaN). Reverse ties too: Next down is the exact inverse.
+          var byVerification = vaRank < vbRank ? -1 : vaRank > vbRank ? 1 : byNumber;
+          return byVerification * dir;
+        }
         var ra = nextRank(sa.id), rb = nextRank(sb.id);
         // An unranked card (Infinity) sorts after every ranked one
         // regardless of `dir` -- naively multiplying `(ra - rb)` by a
