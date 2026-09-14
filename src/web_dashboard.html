@@ -7004,11 +7004,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * per Added/Modified/Priority x ascending/descending choice; the story
    * menu never sets it, so its own items are unaffected. `submenu`, when
    * present, is an opaque `{ariaLabel, items}` -- this function never reads
-   * either field, only forwards the whole object to `openSubmenu` on click
-   * (only the story menu's "Set Status" row has one); `closeMenu` is the
+   * either field, only forwards the whole object to `openSubmenu` on click.
+   * `hoverItem`, when supplied, owns mouse hover behavior for every row;
+   * flat menus omit it and retain explicit activation. `closeMenu` is the
    * owning menu's own close function, run before an ordinary item's
    * `onSelect`. */
-  function renderMenuNode(model, ariaLabel, closeMenu, openSubmenu) {
+  function renderMenuNode(model, ariaLabel, closeMenu, openSubmenu, hoverItem) {
     var node = el("div", { class: "ctxmenu", role: "menu", "aria-label": ariaLabel }, []);
     model.forEach(function(entry) {
       if (entry.separator) {
@@ -7016,6 +7017,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         return;
       }
       var disabled = !!entry.disabled;
+      var onPointerEnter = hoverItem ? function(evt) {
+        // Touch synthesizes pointerenter before a tap; only a mouse previews.
+        if (evt.pointerType === "mouse") hoverItem(evt.currentTarget, entry);
+      } : null;
       if (entry.submenu) {
         var arrow = emojiIcon("submenu", { className: "disclosure-icon", direction: "right" });
         arrow.classList.add("ctxmenu-arrow");
@@ -7024,8 +7029,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           role: "menuitem",
           tabIndex: -1,
           "aria-haspopup": "true",
+          "aria-expanded": "false",
           "aria-disabled": disabled ? "true" : null,
           title: entry.title || null,
+          onPointerEnter: onPointerEnter,
           onClick: function(evt) {
             evt.stopPropagation();
             if (disabled) return;
@@ -7047,6 +7054,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         tabIndex: -1,
         "aria-disabled": disabled ? "true" : null,
         title: disabledReason || entry.title || null,
+        onPointerEnter: onPointerEnter,
         onClick: function() {
           if (disabled) return;
           closeMenu(false);
@@ -7067,7 +7075,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var model = storyMenuModel(v, invoker);
     if (!model.length) return;
     storyMenuInvoker = invoker;
-    storyMenuNode = renderMenuNode(model, "Story actions", closeStoryMenu, openStorySubmenu);
+    storyMenuNode = renderMenuNode(model, "Story actions", closeStoryMenu, openStorySubmenu, hoverStoryMenuItem);
     storyMenuNode.tabIndex = -1;
     storyMenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
     storyMenuNode.addEventListener("keydown", bindStoryMenuKeys);
@@ -7101,8 +7109,31 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (restoreFocus && invoker && document.body.contains(invoker)) invoker.focus();
   }
 
+  /** Keeps pointer and keyboard navigation on the same roving menu item. */
+  function focusStoryMenuItem(item) {
+    var items = Array.prototype.slice.call(storyMenuNode.querySelectorAll(".ctxmenu-item"));
+    storyMenuFocusIndex = focusMenuItem(storyMenuNode, items.indexOf(item), storyMenuFocusIndex);
+  }
+
+  /** Previews a mouse-hovered submenu without entering it. No leave handler:
+   * the popover is a DOM sibling and must survive travel from its parent. */
+  function hoverStoryMenuItem(item, entry) {
+    focusStoryMenuItem(item);
+    if (entry.submenu && !entry.disabled) openStorySubmenu(item, entry.submenu, false);
+    else closeStorySubmenu();
+  }
+
   function bindStoryMenuKeys(e) {
-    handleMenuKeydown(e, storyMenuNode, storyMenuFocusIndex, function(v) { storyMenuFocusIndex = v; }, closeStoryMenu);
+    if (storySubmenuNode && (e.key === "Escape" || e.key === "ArrowLeft")) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeStorySubmenu(true);
+      return;
+    }
+    handleMenuKeydown(e, storyMenuNode, storyMenuFocusIndex, function(v) {
+      storyMenuFocusIndex = v;
+      closeStorySubmenu();
+    }, closeStoryMenu);
   }
 
   function storySubmenuItemNodes() {
@@ -7171,10 +7202,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * and the rare case where even the flipped position also overflows on a
    * narrow viewport. `submenu` is the opaque `{ariaLabel, items}` object
    * `renderMenuNode` forwarded from the model, unread by anything in
-   * between. */
-  function openStorySubmenu(parentItem, submenu) {
+   * between. Hover passes `enter = false`; explicit activation enters the
+   * first item, including when the same submenu is already visible. */
+  function openStorySubmenu(parentItem, submenu, enter) {
+    focusStoryMenuItem(parentItem);
+    if (storySubmenuParentItem === parentItem) {
+      if (enter !== false) storySubmenuFocusItem(0);
+      return;
+    }
     closeStorySubmenu();
     storySubmenuParentItem = parentItem;
+    parentItem.setAttribute("aria-expanded", "true");
     storySubmenuNode = renderStorySubmenuNode(submenu.ariaLabel, submenu.items);
     storySubmenuNode.tabIndex = -1;
     storySubmenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
@@ -7184,14 +7222,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var subRect = storySubmenuNode.getBoundingClientRect();
     var x = (rect.right + subRect.width <= window.innerWidth - 8) ? rect.right : rect.left - subRect.width;
     placeMenu(storySubmenuNode, x, rect.top);
-    storySubmenuFocusItem(0);
+    if (enter !== false) storySubmenuFocusItem(0);
   }
 
-  function closeStorySubmenu() {
+  /** Clears the open parent state and optionally restores its roving focus. */
+  function closeStorySubmenu(restoreFocus) {
+    var parent = storySubmenuParentItem;
+    if (parent) parent.setAttribute("aria-expanded", "false");
     if (storySubmenuNode && storySubmenuNode.parentNode) detach(storySubmenuNode);
     storySubmenuNode = null;
     storySubmenuFocusIndex = -1;
     storySubmenuParentItem = null;
+    if (restoreFocus && parent) focusStoryMenuItem(parent);
   }
 
   /** Bound to the submenu node itself, not the main menu's -- a DOM
@@ -7218,9 +7260,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     } else if (e.key === "Escape" || e.key === "ArrowLeft") {
       e.preventDefault();
       e.stopPropagation();
-      var parent = storySubmenuParentItem;
-      closeStorySubmenu();
-      if (parent) parent.focus();
+      closeStorySubmenu(true);
     } else if (e.key === "Tab") {
       closeStoryMenu(false);
     }
