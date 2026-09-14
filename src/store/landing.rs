@@ -53,7 +53,12 @@ pub(crate) fn validate_intent(tx: &impl ReadOps, intent: &LandingIntent) -> Resu
         ))
     };
     intent.certification.validate()?;
-    if tx.story_resets(intent.project)?.contains_key(&intent.story) {
+    if tx.story_resets(intent.project)?.contains_key(&intent.story)
+        || tx
+            .story_reset(intent.project, intent.story)?
+            .is_some_and(|reset| !reset.completed)
+        || tx.engine_reset(intent.project, intent.story)?.is_some()
+    {
         return Err(refuse("workspace reset is reserved"));
     }
     let project = tx
@@ -96,6 +101,11 @@ pub(crate) fn validate_intent(tx: &impl ReadOps, intent: &LandingIntent) -> Resu
     if story.state != VERIFYING_STATE_SLUG || story.superstate != SuperState::Open || is_epic(story)
     {
         return Err(refuse("submitted state changed"));
+    }
+    if story.awaiting.is_some() {
+        return Err(refuse(
+            "awaiting would hide unresolved merge authority from recovery",
+        ));
     }
     let events = tx.events_for(intent.project, intent.story)?;
     let generation = events.iter().rev().find_map(|event| match event.known() {

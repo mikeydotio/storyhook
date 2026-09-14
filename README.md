@@ -202,7 +202,8 @@ the adapter's host default, so `story.sh dispatch SH-123 --agent=codex` can laun
 from either host. The legacy `STORY_AGENT=claude-code` value remains a warned
 compatibility alias. Claude keeps its existing
 `.claude/worktrees/` and launch contract. Codex uses `.codex/worktrees/`, launches
-`codex --no-alt-screen`, confirms the interactive screen, enters Plan mode with
+`codex --no-alt-screen` with the update chooser and TUI animations switched off for that
+one managed process, confirms the interactive screen, enters Plan mode with
 Shift+Tab, and submits the bracketed-pasted charter with Tab. A failed readiness or
 Plan-mode check rolls back the claim and worktree before any charter is submitted.
 
@@ -415,13 +416,21 @@ story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
 story claim <id> [--comment <text> | --no-comment] [--dry-run]
 story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>] [--comment <text> | --no-comment] [--dry-run]
 story unclaim <id> [--comment <text> | --no-comment] [--dry-run]
+story reset <id> [--force]
 story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]
+story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]
+story engine adopt <id> [<id> ...] [--run <id>]
 story engine status [--run <run-id>]
 story engine pause [--run <run-id>]
 story engine resume [--run <run-id>]
 story engine stop [--run <run-id>] [--now]
 story engine ack [--run <run-id>]
-story verifier ack <incident-id>
+story verifier status
+story verifier start
+story verifier stop
+story verifier drain
+story verifier ack <incident-id> [--leave-stopped]
+story resources <id> [--json]
 story cleanup [--dry-run]
 story summary
 story report [--html]
@@ -429,7 +438,15 @@ story search <query>
 story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
 story context [--format markdown|json] [--story <id>]
 story load-context [--format markdown|json] [--story <id>]   # alias of context
+story session-eligibility <id> --json   # read-only active-session eligibility snapshot
 story handoff [--since <duration>]
+
+story continuation capabilities --json
+story continuation request <id> --stdin --json
+story continuation status <id> --json
+story continuation receipt <id> <request> --stdin --json
+story continuation retry <id> <request> --json
+story continuation ack <id> <request> --reviewed-seq <n> --head <sha> --provider codex|claude --session-id <session> --json
 
 story export
 story import [<file>]
@@ -493,15 +510,30 @@ Global flags — `--json`, `--quiet`, `--no-hooks`, `--store-path <file>`, `--pr
 `--deadline <secs>` — precede the verb and work on any command; see
 [Automation and scripting](#automation-and-scripting).
 
+### Native story reset
+
+`story reset <id>` stops the story's active work and returns it to `todo`.
+It preserves local branches and any request for human input. A locked worktree
+or uncommitted changes require `--force` to remove the worktree. A retry must
+supply `--force` again when that consent is required.
+
+The dashboard's reset action has a separate contract: it requires the exact
+story ID, deletes the owned worktree and branch, and clears awaiting input.
+
 ### Workspace cleanup
 
 Preview safe disk reclamation with `story cleanup --dry-run`, then run
-`story cleanup`. StoryHook considers only resources named by its versioned
-cleanup leases. It preserves a candidate unless the exact story tmux window
-is absent, the worktree is clean and unlocked, and every worktree, local, and
-origin branch tip is contained by the freshly fetched origin default branch.
-Eligible cleanup removes the worktree and its build artifacts plus the exact
-local and remote branches; it never removes the primary checkout.
+`story cleanup`. The centralized verifier reaps a finished story's window,
+worktree and local branch itself once its PR lands; `story cleanup` is that
+reap's retry path, never an independent reaper. StoryHook considers only
+resources named by its versioned cleanup leases, and preserves a candidate
+unless its story is CLOSED and carries the verifier's CLEANUP COMPLETE or
+CLEANUP REQUIRED comment, the exact story tmux window is absent, the worktree
+is clean and unlocked, and every worktree and local-branch tip is contained
+by the freshly fetched origin default branch. Eligible cleanup removes the
+worktree and its build artifacts plus the exact local branch; it never
+removes the primary checkout or a remote branch (the verifier's merge step
+owns that), and `--dry-run` names every candidate it declined and why.
 
 Automatic cleanup is enabled daily. Change it per project with
 `story project settings set cleanup.auto false` or
@@ -657,6 +689,14 @@ choices alongside attended Dispatch, and shows the active configuration.
 | `draining` | A stop is in progress; no new claims. This is irreversible. | Wait for lanes to clear, or use `stop --now`. |
 | `halted` | Three consecutive hard stops tripped the breaker. Preserved work needs inspection. | Diagnose each quarantine before cleanup or redispatch. |
 | `finished` | The queue drained or an immediate stop completed. | Review the stop reason, then acknowledge it. |
+
+`story engine adopt SH-1 SH-2` counts existing manual dispatches toward the
+current run's lane limit. It validates each live pane and worktree lease,
+requires enough idle capacity, and applies the whole batch atomically.
+Adopted bindings release at verification or unclaim without cleaning resources.
+
+`story engine configure --lanes 6` changes a live run without restarting it.
+Omitted settings stay unchanged; occupied lanes finish when capacity shrinks.
 
 `story engine status` shows the selected run, its provider configuration,
 state, stop reason, hard-stop streak, and each lane's story and elapsed time.
@@ -818,6 +858,7 @@ Open the URL printed on start — `http://127.0.0.1:<port>` by default. If Tails
 - **Detail drawer** — click any card or row to view and edit a story's full detail: title, state, priority, assignee, type, labels, block/unblock, comments, and relationships, plus reopen and delete.
 - Faceted filters (priority, assignee, type, state) and free-text search, shared between both project views.
 - Live updates over a server-sent-events stream — every write, from any client, appears without a reload — with a slow poll as a fallback for the rare case a push is missed. Dark mode follows your system theme.
+- Times are shown in your browser's timezone. Hover any date or time for the stored UTC instant and the zone it is shown in; the store, the API and every sort stay UTC (`docs/spec/local-time-display.md`).
 
 It's a single self-contained page with no external dependencies (no CDN, no build step) and no mocked data — every action goes through the same validated, event-sourced write path as the CLI.
 
@@ -918,6 +959,7 @@ Only list hostnames that are themselves no more exposed than your tailnet.
 Global flags:
 
 - `--json` emits a structured JSON response envelope
+- timestamps in `--json` are RFC3339 UTC (`2026-09-12T20:31:59Z`); human output shows the same instants in the process's timezone with an explicit offset (`2026-09-12T13:31:59-07:00`), and `TZ=UTC` reproduces the stored string
 - `--quiet` suppresses normal success output
 - `--no-hooks` skips this command's git hooks
 - `--store-path <file>` names the store file for this command, overriding `$STORYHOOK_STORE_PATH`

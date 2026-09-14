@@ -488,7 +488,7 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
     ) -> Result<RecordOutcome, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        Ok(self.ctx.store().write(|tx| {
+        Ok(self.ctx.write_stories(|tx| {
             // `Intent::Append`, not `resolve_open_story` (SH-279): a link
             // reaches only `referenced_by_commits` and `updated_at`, which is
             // the SH-261 argument for permitting an append against a closed

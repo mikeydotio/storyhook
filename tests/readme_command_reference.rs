@@ -147,6 +147,41 @@ fn extract_entries(markdown: &str) -> Vec<Entry> {
 // Test 1 — every documented invocation parses
 // ---------------------------------------------------------------------------
 
+/// Keep the command reference complete when the verifier help gains a control.
+#[test]
+fn the_readme_documents_every_verifier_help_invocation() {
+    let entries = extract_entries(&readme_text());
+    let help = storyhook::help_topics::get_help_topic("verifier").expect("verifier help");
+    for invocation in help.lines().take_while(|line| !line.trim().is_empty()) {
+        assert!(
+            entries.iter().any(|entry| entry.raw == invocation),
+            "README command reference omits verifier usage: {invocation}"
+        );
+    }
+}
+
+/// Keep continuation discovery aligned with the executable help contract.
+#[test]
+fn the_readme_documents_every_continuation_help_invocation() {
+    let entries = extract_entries(&readme_text());
+    let help = storyhook::help_topics::get_help_topic("continuation").expect("continuation help");
+    let usages: Vec<_> = help
+        .lines()
+        .take_while(|line| !line.trim().is_empty())
+        .collect();
+    assert_eq!(
+        usages.len(),
+        6,
+        "all six continuation operations must be documented"
+    );
+    for invocation in usages {
+        assert!(
+            entries.iter().any(|entry| entry.raw == invocation),
+            "README command reference omits continuation usage: {invocation}"
+        );
+    }
+}
+
 #[test]
 fn every_story_command_in_the_readme_parses() {
     let markdown = readme_text();
@@ -218,6 +253,10 @@ fn every_story_command_in_the_readme_parses() {
 /// `tests/checkout_path_readers.rs`'s `ALLOWED`: an entry cannot be added
 /// without writing down why, which is the review this list exists to force.
 const EXCLUDED_VERBS: &[(&str, &str)] = &[
+    (
+        "internal",
+        "private revocation protocol for managed replacement under workspace exclusion; not an operator command",
+    ),
     ("-h", "short alias; the reference documents `story --help`"),
     (
         "-V",
@@ -260,18 +299,28 @@ fn slice_to_top_level_close<'a>(source: &'a str, start_marker: &str) -> &'a str 
     panic!("no zero-indent closing brace found after: {start_marker}");
 }
 
-/// Every quoted string literal appearing before a `=>` on lines of `body`.
-/// `dispatch`'s arms are always `"verb" => ...` or `"a" | "b" => ...`, so
-/// this yields every verb string the match recognizes, and nothing from the
-/// arm bodies (only the first `=>` on a line bounds the scan, and the
-/// catch-all `_ => ...` contributes nothing, since `_` is never quoted).
+/// Quoted patterns on the outer match's arm lines. Rustfmt fixes their
+/// indentation; nested matches and arm-body strings are not input verbs.
 fn quoted_literals_before_arrow(body: &str) -> Vec<String> {
+    let arms: Vec<_> = body
+        .lines()
+        .filter_map(|line| {
+            let code = line.trim_start();
+            if !code.starts_with('"') {
+                return None;
+            }
+            let arrow = code.find("=>")?;
+            Some((line.len() - code.len(), &code[..arrow]))
+        })
+        .collect();
+    let Some(outer_indent) = arms.iter().map(|(indent, _)| *indent).min() else {
+        return Vec::new();
+    };
     let mut found = Vec::new();
-    for line in body.lines() {
-        let Some(arrow) = line.find("=>") else {
-            continue;
-        };
-        let prefix = &line[..arrow];
+    for (_, prefix) in arms
+        .into_iter()
+        .filter(|(indent, _)| *indent == outer_indent)
+    {
         let mut in_quotes = false;
         let mut current = String::new();
         for ch in prefix.chars() {
@@ -286,6 +335,29 @@ fn quoted_literals_before_arrow(body: &str) -> Vec<String> {
         }
     }
     found
+}
+
+#[test]
+fn dispatch_scan_keeps_outer_aliases_and_excludes_nested_option_arms() {
+    let source = r#"
+fn dispatch(args: &[String]) {
+    match args[0].as_str() {
+        "reset" => {
+            match args[1].as_str() {
+                "--force" if !force => force = true,
+                _ => panic!("invalid flag"),
+            }
+        }
+        "show" | "view" => example(),
+        "new-command" => example(),
+        _ => panic!("unknown command"),
+    }
+}
+"#;
+    assert_eq!(
+        quoted_literals_before_arrow(source),
+        ["reset", "show", "view", "new-command"]
+    );
 }
 
 fn dispatch_verbs() -> Vec<String> {

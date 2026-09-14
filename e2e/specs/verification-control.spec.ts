@@ -6,6 +6,35 @@ test.beforeEach(async ({ page }) => {
   await openProject(page, "Alpha Project");
 });
 
+test("verifier menu hosts non-editable commands and supports keyboard navigation", async ({ page }) => {
+  const stop = page.locator('.column[data-state="verifying"]')
+    .getByRole("button", { name: "Stop verifier", exact: true });
+  await stop.focus();
+  await stop.press("Enter");
+  const menu = page.getByRole("menu", { name: "Stop verifier" });
+  const items = menu.getByRole("menuitem");
+  await expect(items).toHaveCount(2);
+  // This is the no-typing invariant behind the direct keydown receiver entry.
+  await expect(menu.locator('input, textarea, select, [contenteditable]:not([contenteditable="false"])')).toHaveCount(0);
+  for (const item of await items.all()) {
+    await expect(item).toHaveJSProperty("isContentEditable", false);
+  }
+  await expect(items.nth(0)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(items.nth(0)).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(items.nth(0)).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(items.nth(1)).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(stop).toBeFocused();
+});
+
 test("verifier stop menu drains, persists after reload, and starts again", async ({ page }) => {
   const column = page.locator('.column[data-state="verifying"]');
   const stop = column.getByRole("button", { name: "Stop verifier", exact: true });
@@ -81,4 +110,34 @@ test("draining can escalate and restart waits for owned cleanup", async ({ page,
   mode = "stopped";
   await page.reload();
   await expect(column.getByRole("button", { name: "Start verifier", exact: true })).toBeEnabled();
+});
+
+test("stopped admission remains visible after an incident is acknowledged", async ({ page }) => {
+  const column = page.locator('.column[data-state="verifying"]');
+  await column.getByRole("button", { name: "Stop verifier", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Stop inflight verifications" }).click();
+  const banner = page.locator('#verification-banner-region');
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("Central verification stopped");
+  await expect(banner.getByRole("button", { name: "Start verifier", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(banner).toContainText("Central verification stopped");
+  await banner.getByRole("button", { name: "Start verifier", exact: true }).click();
+  await expect(column.getByRole("button", { name: "Stop verifier", exact: true })).toBeVisible();
+});
+
+test("overdue evidence warning is visible outside the verifier column", async ({ page, request }) => {
+  const slug = await projectSlug(request, "Alpha Project");
+  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.verification_incident = null;
+    data.verification_control = { state: "running" };
+    data.verifier = { control: "running", warning: "fixture verifier has no progress evidence for 61s; story verifier status; story daemon logs", recovery: { acknowledgement: null, request: null } };
+    await route.fulfill({ response, json: data });
+  });
+  await page.reload();
+  const banner = page.locator('#verification-banner-region');
+  await expect(banner).toContainText("no progress evidence for 61s");
+  await expect(banner).toContainText("story verifier status");
 });

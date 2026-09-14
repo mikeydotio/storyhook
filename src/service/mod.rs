@@ -30,12 +30,16 @@
 //! a write transaction open across that is a deadlock with a five-second fuse.
 
 pub mod attachment;
+pub mod block_delivery;
 pub mod catalog;
 pub mod cleanup;
 mod cleanup_lease;
 pub mod config;
+pub mod continuation;
 pub mod engine;
+pub(crate) mod executor_lock;
 pub mod gate_command;
+pub mod gate_output;
 pub mod gate_progress;
 pub mod git;
 pub mod git_links;
@@ -54,10 +58,12 @@ pub mod query;
 pub mod questionnaire;
 pub mod relation;
 pub mod reset;
+pub mod resources;
 pub mod session;
 pub mod settings;
 mod state_set;
 pub mod story;
+pub mod story_reset;
 pub mod system;
 pub mod templates;
 pub mod transfer;
@@ -105,9 +111,11 @@ pub use story::{FieldEdits, NewStoryInput, StoryService, default_unclaim_comment
 pub use system::SystemService;
 pub use transfer::{ImportBatch, TransferService};
 pub use verification::{
-    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX,
-    VERIFYING_STATE, VerificationCandidate, VerificationProblem, VerificationQueue,
-    acknowledge_verification_incident,
+    ReapMarker, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_CLEANUP_REQUIRED_PREFIX,
+    VERIFICATION_GREEN_PREFIX, VERIFICATION_OVERRIDDEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX,
+    VERIFICATION_UNCERTIFIED_MERGE_PREFIX, VERIFICATION_WITHDRAWN_PREFIX, VERIFYING_STATE,
+    VerificationCandidate, VerificationGeneration, VerificationProblem, VerificationQueue,
+    acknowledge_verification_incident, latest_generation,
 };
 
 /// Where a service reads "now" from.
@@ -156,6 +164,7 @@ pub struct Ctx<'a, S: Store> {
     stdin: Option<String>,
     github_token: Option<crate::domain::secret::GithubToken>,
     provenance: Provenance,
+    verification_activity: Option<&'a crate::daemon::verification::VerificationActivity>,
 }
 
 impl<'a, S: Store> Ctx<'a, S> {
@@ -183,7 +192,24 @@ impl<'a, S: Store> Ctx<'a, S> {
             stdin: None,
             github_token: None,
             provenance: Provenance::unrecorded(),
+            verification_activity: None,
         }
+    }
+
+    /// Supplies the daemon's shared verifier ownership registry.
+    pub fn with_verification_activity(
+        mut self,
+        activity: Option<&'a crate::daemon::verification::VerificationActivity>,
+    ) -> Self {
+        self.verification_activity = activity;
+        self
+    }
+
+    /// Returns the actual daemon runtime; absence never means an idle verifier.
+    pub fn verification_activity(
+        &self,
+    ) -> Option<&crate::daemon::verification::VerificationActivity> {
+        self.verification_activity
     }
 
     /// Supplies the standard input this invocation should read, instead of this
@@ -514,6 +540,12 @@ pub(crate) fn append_restored_and_fold(
     events: &[StoryEvent],
     provenance: &Provenance,
 ) -> Result<StorySnapshot, AppError> {
+    if events
+        .iter()
+        .any(|event| matches!(event, StoryEvent::StoryStateChanged { .. }))
+    {
+        story_reset::refuse_reserved(tx, project, story)?;
+    }
     let stored = tx.events_for(project, story)?;
     let (known, _) = partition_known(story, &stored);
     let index = query::story_map(tx, project)?;
@@ -552,6 +584,25 @@ pub(crate) fn append_and_fold_maintenance(
     for event in events {
         crate::domain::validate_event_for_append(event)?;
     }
+    // A durable reset owns state transfer until cleanup is proven. Keep
+    // discussion and metadata edits available while guarding every producer.
+    if events.iter().any(|event| {
+        matches!(
+            event,
+            StoryEvent::StoryStateChanged { .. }
+                | StoryEvent::StoryClosedAndArchived { .. }
+                | StoryEvent::StoryDeleted { .. }
+                | StoryEvent::StoryAwaitingSet { .. }
+                | StoryEvent::StoryStateCleared { .. }
+        )
+    }) {
+        engine::reset::refuse_reserved(&*tx, project, story)?;
+    }
+    // The same backstop for a transition (SH-692): a `verifying` story is
+    // completed only with a verdict or a recorded override, whichever door
+    // asked. `set_state` refuses earlier with the same words; this catches
+    // every other producer of a completion, present and future.
+    verification::refuse_uncertified_completion(&*tx, project, story, events)?;
     let head = tx.append_events(project, story, expected, events, provenance)?;
     let stored = tx.events_for(project, story)?;
     let (known, _unknown) = partition_known(story, &stored);

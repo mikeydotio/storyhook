@@ -88,7 +88,7 @@ fn web_dispatch_uses_default_server_despite_daemons_unrelated_tmux_context() {
         &helper,
         format!(
             r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=4
+DISPATCH_PROTOCOL=5
 set -eu
 export TMUX_TMPDIR='{}'
 socket=$(tmux display-message -p '#{{socket_path}}')
@@ -373,26 +373,29 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
 
     const RESULT_ENV: &str = "STORY_CALLBACK_RESULT";
     if let Some(result_path) = std::env::var_os(RESULT_ENV) {
-        let env = TestEnv::isolated();
+        let env = storyhook::env::Environment::at(Path::new(
+            &std::env::var_os("STORY_CALLBACK_HOME").expect("fixture home"),
+        ));
         let candidate = VerificationCandidate {
             blocked_by: Vec::new(),
             landing_pending: false,
             project: ProjectId::new(1),
-            project_slug: "fixture".into(),
-            story_id: "SH-CALLBACK-1".into(),
+            project_slug: std::env::var("STORY_CALLBACK_PROJECT").expect("fixture project"),
+            story_id: std::env::var("STORY_CALLBACK_ID").expect("fixture story"),
             title: "isolated callback".into(),
             priority: Priority::High,
             created_at: "2026-01-01T00:00:00Z".into(),
             verifying_since: None,
             verifying_generation: None,
+            blocking_revision: None,
             checkout: std::env::var_os("STORY_CALLBACK_CHECKOUT")
-                .expect("callback checkout")
+                .expect("fixture checkout")
                 .into(),
             cleanup_lease: None,
             pull_request: Err(VerificationProblem::MissingPullRequest),
         };
         let actuator = ShellVerificationActuator::with_paths(
-            env.environment(),
+            env,
             std::env::var_os("STORY_CALLBACK_HELPER")
                 .expect("callback helper")
                 .into(),
@@ -410,6 +413,26 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
         return;
     }
 
+    let env = TestEnv::isolated();
+    let project = env.project().with_local_origin().build();
+    let id = project.new_story("isolated callback");
+    let worktree = project.path().join("callback-worktree");
+    storyhook_test_support::git(
+        &env,
+        project.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &format!("worktree-{id}"),
+            worktree.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let project_slug = project.slug();
+    // The callback child starts this fixture's daemon with the private tmux
+    // adapter below, so the production resource reader sees those same servers.
+    env.stop_daemon();
     let scratch = scratch_dir();
     let tmux_root = scratch.path().join("sockets");
     let uid = scratch.path().metadata().expect("fixture directory").uid();
@@ -421,14 +444,6 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
     let unrelated_socket = socket_dir.join("unrelated");
     let _default_server = server(&default_socket);
     let _unrelated_server = server(&unrelated_socket);
-    let checkout = scratch.path().join("repo");
-    std::fs::create_dir(&checkout).expect("fixture checkout");
-    let mut git = storyhook::env::git_env::command(&checkout);
-    git.args(["init", "-q"]);
-    let output = ChildGuard::spawn_with_output(&mut git)
-        .expect("fixture git init")
-        .wait_with_output_within(STORY_COMMAND_DEADLINE, || "git init stalled".into());
-    assert!(output.status.success(), "fixture git init failed");
     let identity =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/lib/agent_identity.py");
     for socket in [&default_socket, &unrelated_socket] {
@@ -438,9 +453,9 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
                 "new-window",
                 "-d",
                 "-n",
-                "SH-CALLBACK-1",
+                &id,
                 "-c",
-                checkout.to_str().unwrap(),
+                worktree.to_str().unwrap(),
                 "/bin/cat",
             ],
         );
@@ -460,10 +475,10 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
         let mut register = Command::new("python3");
         register
             .arg(&identity)
-            .args(["register", "fixture", "SH-CALLBACK-1", "SH-CALLBACK-1"])
-            .arg(&checkout)
+            .args(["register", &project_slug, &id, &id])
+            .arg(&worktree)
             .args([pane.trim(), pid.trim(), "codex"])
-            .current_dir(&checkout)
+            .current_dir(project.path())
             .env("TMUX", format!("{},0,0", socket.display()));
         let output = ChildGuard::spawn_with_output(&mut register)
             .expect("fixture agent registration")
@@ -508,9 +523,11 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
         ("current", &helper, &default_socket, &unrelated_socket),
         ("legacy", &legacy_helper, &unrelated_socket, &default_socket),
     ] {
+        env.stop_daemon();
         let marker = format!("CALLBACK_FIXTURE_ONLY_584_{mode}");
         let result_path = scratch.path().join(format!("{mode}.json"));
         let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        env.apply(&mut command);
         command
             .args([
                 "--exact",
@@ -518,8 +535,11 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
                 "--nocapture",
             ])
             .env(RESULT_ENV, &result_path)
+            .env("STORY_CALLBACK_HOME", env.home())
+            .env("STORY_CALLBACK_PROJECT", &project_slug)
+            .env("STORY_CALLBACK_ID", &id)
+            .env("STORY_CALLBACK_CHECKOUT", project.path())
             .env("STORY_CALLBACK_HELPER", selected_helper)
-            .env("STORY_CALLBACK_CHECKOUT", &checkout)
             .env("STORY_CALLBACK_MESSAGE", &marker)
             .env("STORY_CALLBACK_INHERITED_TMUX", inherited_tmux.trim())
             .env("STORY_CALLBACK_INHERITED_PANE", inherited_pane.trim())

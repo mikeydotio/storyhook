@@ -14,10 +14,11 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::store::{
-    ExpectedSeq, GlobalSeq, PrLink, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryQuery,
-    StoryRow, VerificationFailureDisposition, VerificationIncident, WriteOps,
+    ExpectedSeq, GlobalSeq, PrLink, ProjectId, ReadOps, Store, StoreError, StoredEvent, StoryNo,
+    StoryQuery, StoryRow, VerificationFailureDisposition, VerificationIncident, WriteOps,
 };
 
+use super::gate_progress::GATE_PROGRESS_PREFIX;
 use super::story::{append_state_transition, state_transition_events};
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 
@@ -62,6 +63,14 @@ pub const VERIFICATION_GREEN_PREFIX: &str = "CENTRAL VERIFICATION GREEN —";
 /// Durable comment prefix proving post-merge resources were reclaimed.
 pub const VERIFICATION_CLEANUP_COMPLETE_PREFIX: &str = "CENTRAL VERIFICATION CLEANUP COMPLETE —";
 
+/// Durable comment prefix recording that the PR landed but the reap failed.
+///
+/// The verifier retries the reap itself (`next_cleanup`), and `story cleanup`
+/// is the same retry by hand or on the daemon's daily cadence (SH-653): both
+/// read this marker through [`latest_generation`], so the two never disagree
+/// about what "the verifier owns this workspace" means.
+pub const VERIFICATION_CLEANUP_REQUIRED_PREFIX: &str = "CENTRAL VERIFICATION CLEANUP REQUIRED —";
+
 /// Durable comment prefix for verifier infrastructure failures.
 pub(crate) const VERIFICATION_INFRASTRUCTURE_PREFIX: &str = "CENTRAL VERIFICATION INFRASTRUCTURE —";
 
@@ -69,6 +78,95 @@ pub(crate) const VERIFICATION_INFRASTRUCTURE_PREFIX: &str = "CENTRAL VERIFICATIO
 /// and opened or adopted its pull request (SH-647). One marked comment per
 /// generation: a resubmission that moves the branch replaces it.
 pub const VERIFICATION_SUBMITTED_PREFIX: &str = "CENTRAL VERIFICATION SUBMITTED —";
+
+/// The marker every withdrawal record starts with (SH-692): an attempt the
+/// verifier cancelled because its generation lost authority — the story left
+/// `verifying`, was resubmitted, or was blocked — judged nothing, and the
+/// story says so instead of ending on a PROGRESS comment that reads
+/// "running" for ever.
+pub const VERIFICATION_WITHDRAWN_PREFIX: &str = "CENTRAL VERIFICATION WITHDRAWN —";
+
+/// The marker a hand completion of a `verifying` story carries (SH-692): the
+/// operator's stated reason for overriding central verification, recorded in
+/// the same transaction as the move to `done`. Its presence is what lets the
+/// completion through [`refuse_uncertified_completion`] and what makes the
+/// story reap-eligible once its pull request is recorded merged.
+pub const VERIFICATION_OVERRIDDEN_PREFIX: &str = "CENTRAL VERIFICATION OVERRIDDEN —";
+
+/// The marker the GitHub poller leaves on a `verifying` story whose pull
+/// request merged outside central verification (SH-692). The poller records
+/// the fact and never completes the story: nothing certified the merge tree.
+pub const VERIFICATION_UNCERTIFIED_MERGE_PREFIX: &str = "CENTRAL VERIFICATION UNCERTIFIED MERGE —";
+
+/// What a caller is told when it tries to complete a `verifying` story with
+/// no verdict and no stated reason (SH-692). Names both ways out.
+pub(crate) fn override_refusal(id: &str) -> String {
+    format!(
+        "story `{id}` is under central verification; completing it by hand overrides the verifier and requires a reason: `story move {id} done \"<why>\"` records it as `{VERIFICATION_OVERRIDDEN_PREFIX} <why>` and the verifier withdraws its running attempt. To hand the story back without completing it, `story move {id} in-progress`."
+    )
+}
+
+/// The one rule every door shares (SH-692): a story leaves `verifying` for
+/// the completion state only with a verdict — the verifier's own GREEN,
+/// written in the same batch, or one posted for this generation — or with an
+/// operator's OVERRIDDEN reason in the batch. Called from
+/// [`super::append_and_fold`], the write path every service funnels through,
+/// so `story move`, `story set --state`, the dashboard's move and PATCH, epic
+/// materialisation and state-catalog migration cannot disagree about it.
+/// Costs one row read, and one events read only on the transitions it judges.
+pub(crate) fn refuse_uncertified_completion(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+    events: &[StoryEvent],
+) -> Result<(), AppError> {
+    let completes = events.iter().any(|event| {
+        matches!(event, StoryEvent::StoryStateChanged { state, .. } if state == COMPLETION_STATE_SLUG)
+    });
+    if !completes {
+        return Ok(());
+    }
+    let Some(row) = tx.story(project, story)? else {
+        return Ok(());
+    };
+    if row.state != VERIFYING_STATE {
+        return Ok(());
+    }
+    let carries_verdict = |text: &str| {
+        text.starts_with(VERIFICATION_GREEN_PREFIX)
+            || text.starts_with(VERIFICATION_OVERRIDDEN_PREFIX)
+    };
+    if events.iter().any(|event| {
+        matches!(event, StoryEvent::StoryCommentAdded { text, .. } if carries_verdict(text))
+    }) {
+        return Ok(());
+    }
+    if certified_for_current_stay(tx, project, story, &row)? {
+        return Ok(());
+    }
+    Err(AppError::Validation(override_refusal(&row.snapshot.id)))
+}
+
+/// Whether `row` carries a GREEN verdict for its current stay in
+/// `verifying` (SH-692). A GREEN from an earlier generation certified an
+/// earlier tree, not the one a completion now would record as landed, so
+/// only a verdict at or after the latest entry into `verifying` counts.
+/// Shared by [`refuse_uncertified_completion`] and `set_state`, so the door
+/// and the backstop cannot disagree about what needs no override.
+pub(crate) fn certified_for_current_stay(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+    row: &StoryRow,
+) -> Result<bool, StoreError> {
+    let entered_at = verifying_entry(tx, project, story)?.map(|(at, _)| at);
+    Ok(row.snapshot.comments.iter().any(|comment| {
+        comment.text.starts_with(VERIFICATION_GREEN_PREFIX)
+            && entered_at
+                .as_deref()
+                .is_none_or(|entered| comment.at.as_str() >= entered)
+    }))
+}
 
 /// Result of a write whose authority belongs to one verification generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,7 +246,7 @@ pub struct VerificationCandidate {
     pub title: String,
     /// Stored priority that ordered the queue.
     pub priority: Priority,
-    /// Creation timestamp used as the first tie-break.
+    /// Creation timestamp used to break equal-priority ties during cleanup.
     pub created_at: String,
     /// When this story most recently entered [`VERIFYING_STATE`], read from
     /// its own `StoryStateChanged` history rather than `updated_at` (SH-524):
@@ -157,12 +255,16 @@ pub struct VerificationCandidate {
     /// `None` for a [`Self::pull_request`] read that predates this field
     /// (`next_cleanup`'s completed-story pass, where wait time is moot) or
     /// for the vanishingly unlikely case no such event survives.
+    /// Breaks equal-priority verification ties, oldest entry first. Missing
+    /// timestamps follow known timestamps, without inventing a queue age.
     pub verifying_since: Option<String>,
     /// Exact change-feed position of the latest transition into
     /// [`VERIFYING_STATE`]. Unlike a story id or timestamp, this cannot be
     /// reused by a later submission of the same story, so verifier ownership
     /// and progress journals can reject stale attempts (SH-549).
     pub verifying_generation: Option<GlobalSeq>,
+    /// Latest durable block edge at admission; a transient hold revokes this attempt.
+    pub blocking_revision: Option<i64>,
     /// Registered checkout where the repository-side verifier runs.
     pub checkout: PathBuf,
     /// Exact disposable resources owned by this verification generation.
@@ -221,7 +323,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     }
 
     /// Returns all visible submissions, including holds and pending landings,
-    /// sorted by priority, creation time, then project/story identity.
+    /// sorted by priority, verification entry, then project/story identity.
     /// Queue positions count only runnable candidates from this snapshot.
     pub fn ordered(&self) -> Result<Vec<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| ordered_candidates(tx))?)
@@ -244,6 +346,70 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             Ok(ordered_candidates_for(tx, candidate.project)?
                 .into_iter()
                 .find(|current| current.story_id == candidate.story_id))
+        })?)
+    }
+
+    /// Records completed execution and optional cleanup incident in one transaction.
+    /// Completion of a pull request requires the separate durable landing authority.
+    pub(crate) fn record_generation_completed(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        verdict_comment: &str,
+        cleanup_detail: Option<&str>,
+    ) -> Result<GenerationWrite<Option<VerificationIncident>>, AppError> {
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(ctx.write_stories(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if !candidate_is_current(&*tx, &row, candidate)? {
+                return Ok(GenerationWrite::Superseded);
+            }
+            let mut events = Vec::new();
+            let already_recorded = tx.events_for(project, story_no)?.iter().any(|event| {
+                candidate.verifying_generation.is_none_or(|generation| event.global_seq > generation)
+                    && matches!(event.known(), Some(StoryEvent::StoryCommentAdded { text, .. }) if text == verdict_comment)
+            });
+            if !already_recorded {
+                events.push(StoryEvent::StoryCommentAdded {
+                    at: now.clone(), text: verdict_comment.to_string(),
+                });
+            }
+            let incident = if let Some(detail) = cleanup_detail {
+                let generation = candidate.verifying_generation.ok_or_else(|| {
+                    StoreError::Corrupt(format!("{} has no verification generation", candidate.story_id))
+                })?;
+                let incident_id = format!("{}:{}", project.get(), generation.get());
+                let previous = tx.verification_incident(project)?
+                    .filter(|incident| incident.incident_id == incident_id);
+                let incident = VerificationIncident {
+                    incident_id, project, story: story_no, generation,
+                    disposition: VerificationFailureDisposition::Permanent, halted: true,
+                    attempts: previous.as_ref().map_or(1, |incident| incident.attempts),
+                    first_failed_at: previous.as_ref().map_or_else(|| now.clone(), |incident| incident.first_failed_at.clone()),
+                    last_failed_at: previous.as_ref().map_or_else(|| now.clone(), |incident| incident.last_failed_at.clone()),
+                    detail: detail.to_string(),
+                };
+                let body = format!(
+                    "{VERIFICATION_INFRASTRUCTURE_PREFIX} HALTED\n\nThe completed verdict above remains valid. Post-gate cleanup failed. This halt stops the verifier's whole queue. The story remains verifying. Remediation dispatch and landing are suspended. Establish writer quiescence and repair retained resources. Then release the queue with: story verifier ack {}\n\n{}",
+                    incident.incident_id,
+                    crate::text_lint::quote_evidence(detail),
+                );
+                events.extend(marked_comment_events(&row, VERIFICATION_INFRASTRUCTURE_PREFIX, &body, &now));
+                Some(incident)
+            } else { None };
+            let states = tx.state_map(project)?;
+            if !events.is_empty() {
+                append_and_fold(tx, project, story_no, &prefix, &states,
+                    ExpectedSeq::Exact(row.head_seq), &events, ctx.provenance())?;
+            }
+            if let Some(incident) = &incident {
+                tx.put_verification_incident(incident)?;
+            } else {
+                clear_candidate_incident(tx, candidate)?;
+            }
+            Ok(GenerationWrite::Applied(incident))
         })?)
     }
 
@@ -277,10 +443,12 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             })?;
         let project = candidate.project;
         let now = ctx.now();
-        Ok(self.store.write(|tx| {
+        Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
-            if !candidate_is_current(&*tx, &row, candidate)? {
+            // Publication already happened. A new block withholds execution, but
+            // must not erase the observed PR from this unchanged submission.
+            if !submission_is_current(&*tx, &row, candidate)? {
                 return Ok(GenerationWrite::Superseded);
             }
             let registered =
@@ -361,7 +529,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     ) -> Result<GenerationWrite<()>, AppError> {
         let project = candidate.project;
         let now = ctx.now();
-        Ok(self.store.write(|tx| {
+        Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
             if !candidate_is_current(&*tx, &row, candidate)? {
@@ -409,7 +577,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         }
         let project = candidate.project;
         let now = ctx.now();
-        Ok(self.store.write(|tx| {
+        Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
             if row.state != "in-progress" || !candidate_is_latest_generation(&*tx, &row, candidate)?
@@ -451,7 +619,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         })?;
         let project = candidate.project;
         let now = ctx.now();
-        Ok(self.store.write(|tx| {
+        Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
             if !candidate_is_current(&*tx, &row, candidate)? {
@@ -528,20 +696,84 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         })?)
     }
 
-    /// Rewrites a marked comment only while `candidate` remains current.
+    /// Records that `candidate`'s attempt was withdrawn (SH-692): retracts the
+    /// generation's last PROGRESS comment, whose "running" would otherwise be
+    /// the story's final word, and appends `body`. Deliberately NOT
+    /// generation-guarded — a withdrawal is by definition written after the
+    /// generation lost authority — and written to the story in whatever state
+    /// it is now in, closed included, the way `story comment` is (SH-261): the
+    /// record is an observation about the attempt, not a change to the story.
+    /// Idempotent on an identical body. Returns whether anything was written.
+    pub(crate) fn record_generation_withdrawn(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        body: &str,
+    ) -> Result<bool, AppError> {
+        let project = candidate.project;
+        let now = ctx.now();
+        Ok(ctx.write_stories(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
+            if row
+                .snapshot
+                .comments
+                .iter()
+                .any(|comment| comment.text == body)
+            {
+                return Ok(false);
+            }
+            let mut events = Vec::new();
+            if let Some(progress) = row
+                .snapshot
+                .comments
+                .iter()
+                .rev()
+                .find(|comment| comment.text.starts_with(GATE_PROGRESS_PREFIX))
+            {
+                events.push(StoryEvent::StoryCommentRetracted {
+                    at: now.clone(),
+                    comment_at: progress.at.clone(),
+                    text: progress.text.clone(),
+                });
+            }
+            events.push(StoryEvent::StoryCommentAdded {
+                at: now.clone(),
+                text: body.to_string(),
+            });
+            let states = tx.state_map(project)?;
+            append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                ctx.provenance(),
+            )?;
+            Ok(true)
+        })?)
+    }
+
+    /// Rewrites a marked comment only while its generation and incident snapshot
+    /// remain current. An attempt can publish a new failure before releasing ownership.
     pub(crate) fn upsert_generation_comment(
         &self,
         ctx: &Ctx<'_, S>,
         candidate: &VerificationCandidate,
         marker: &str,
         body: &str,
+        expected_incident: Option<&VerificationIncident>,
     ) -> Result<GenerationWrite<bool>, AppError> {
         let project = candidate.project;
         let now = ctx.now();
-        Ok(self.store.write(|tx| {
+        Ok(ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
-            if !candidate_is_current(&*tx, &row, candidate)? {
+            if !candidate_is_current(&*tx, &row, candidate)?
+                || tx.verification_incident(project)?.as_ref() != expected_incident
+            {
                 return Ok(GenerationWrite::Superseded);
             }
             let events = marked_comment_events(&row, marker, body, &now);
@@ -572,7 +804,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             for project in tx.projects()? {
                 candidates.extend(cleanup_candidates_for(tx, project.id)?);
             }
-            sort_candidates(&mut candidates);
+            sort_cleanup_candidates(&mut candidates);
             Ok(candidates.into_iter().next())
         })?)
     }
@@ -588,15 +820,21 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     ) -> Result<Option<VerificationCandidate>, AppError> {
         Ok(self.store.read(|tx| {
             let mut candidates = cleanup_candidates_for(tx, project)?;
-            sort_candidates(&mut candidates);
+            sort_cleanup_candidates(&mut candidates);
             Ok(candidates.into_iter().next())
         })?)
     }
 }
 
-/// One project's `done` stories that passed central verification and have
-/// not yet been reaped (SH-648: the cleanup pass is per project, like the
-/// queue it follows).
+/// One project's `done` stories that passed central verification — or were
+/// completed over it by an operator's recorded override AND whose pull request
+/// is recorded merged (SH-692) — and have not yet been reaped (SH-648: the
+/// cleanup pass is per project, like the queue it follows).
+///
+/// The override alone is not enough: a reap deletes the branch and the
+/// worktree, and an overridden story whose pull request never merged may
+/// still be the only place that work lives. The merged link is the evidence
+/// that it landed, the same evidence the GREEN path carries implicitly.
 fn cleanup_candidates_for(
     tx: &impl ReadOps,
     project: ProjectId,
@@ -607,19 +845,12 @@ fn cleanup_candidates_for(
         let links = tx.pr_links(project.id)?;
         let rows = tx.stories(project.id, &StoryQuery::all().state(COMPLETION_STATE_SLUG))?;
         for row in rows {
-            let passed = row
-                .snapshot
-                .comments
-                .iter()
-                .any(|comment| comment.text.starts_with(VERIFICATION_GREEN_PREFIX));
-            let reaped = row.snapshot.comments.iter().any(|comment| {
-                comment
-                    .text
-                    .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
-            });
-            if !passed || reaped {
+            // Completion and cleanup evidence belongs to this submission,
+            // including the operator override path added after SH-653.
+            let events = tx.events_for(project.id, row.story_no)?;
+            let Some(generation) = latest_generation(&events) else {
                 continue;
-            }
+            };
             let pull_request = links
                 .iter()
                 .find(|(story_no, link)| {
@@ -627,6 +858,12 @@ fn cleanup_candidates_for(
                 })
                 .map(|(_, link)| link.clone())
                 .ok_or(VerificationProblem::MissingPullRequest);
+            let landed_by_override = generation.overridden && pull_request.is_ok();
+            if !(generation.landed || landed_by_override)
+                || generation.reap_marker == Some(ReapMarker::Complete)
+            {
+                continue;
+            }
             candidates.push(VerificationCandidate {
                 blocked_by: Vec::new(),
                 landing_pending: false,
@@ -640,8 +877,9 @@ fn cleanup_candidates_for(
                 // there is no queue wait left to report.
                 verifying_since: None,
                 verifying_generation: None,
+                blocking_revision: None,
                 checkout: checkout.clone(),
-                cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
+                cleanup_lease: generation.lease,
                 pull_request,
             });
         }
@@ -662,7 +900,7 @@ impl<S: Store> VerificationQueue<'_, S> {
     ) -> Result<(), AppError> {
         let project = ctx.project();
         let now = ctx.now();
-        self.store.write(|tx| {
+        ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, story_id)?;
             if row.superstate == SuperState::Closed {
@@ -738,15 +976,70 @@ fn completion_state_or_refuse(states: &[StateDef]) -> Result<StateDef, AppError>
     })
 }
 
+fn submission_is_current(
+    tx: &impl ReadOps,
+    row: &StoryRow,
+    candidate: &VerificationCandidate,
+) -> Result<bool, StoreError> {
+    if row.state != VERIFYING_STATE
+        || !candidate_is_latest_generation(tx, row, candidate)?
+        || tx
+            .story_resets(candidate.project)?
+            .contains_key(&row.story_no)
+        || tx.engine_reset(candidate.project, row.story_no)?.is_some()
+        || tx
+            .project(candidate.project)?
+            .is_none_or(|project| project.slug != candidate.project_slug)
+        || tx.checkout_path(candidate.project)?.as_ref() != Some(&candidate.checkout)
+        || latest_cleanup_lease(tx, candidate.project, row.story_no)? != candidate.cleanup_lease
+    {
+        return Ok(false);
+    }
+    let links = tx
+        .open_pr_links_for_story(candidate.project, row.story_no)?
+        .into_iter()
+        .filter(|link| link.close_on_merge)
+        .collect::<Vec<_>>();
+    Ok(match &candidate.pull_request {
+        Ok(previous) => links.len() == 1 && links[0].url == previous.url,
+        Err(VerificationProblem::MissingPullRequest) => links.is_empty(),
+        Err(_) => false,
+    })
+}
+
 fn candidate_is_current(
     tx: &impl ReadOps,
     row: &StoryRow,
     candidate: &VerificationCandidate,
 ) -> Result<bool, StoreError> {
-    if row.state != VERIFYING_STATE {
+    let stories = super::query::story_map(tx, candidate.project)?;
+    if row.state != VERIFYING_STATE
+        || tx
+            .story_resets(candidate.project)?
+            .contains_key(&row.story_no)
+        || tx
+            .story_reset(candidate.project, row.story_no)?
+            .is_some_and(|reset| !reset.completed)
+        || tx.engine_reset(candidate.project, row.story_no)?.is_some()
+        || crate::domain::is_blocked(&row.snapshot, &stories)
+        || blocking_revision(tx, candidate.project, row.story_no)? != candidate.blocking_revision
+    {
         return Ok(false);
     }
     candidate_is_latest_generation(tx, row, candidate)
+}
+
+fn blocking_revision(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<Option<i64>, StoreError> {
+    Ok(tx
+        .block_deliveries(project)?
+        .into_iter()
+        .rev()
+        .find(|d| d.story == story && d.action == crate::store::BlockAction::Interrupt)
+        .map(|d| d.id))
 }
 
 fn candidate_is_latest_generation(
@@ -754,6 +1047,13 @@ fn candidate_is_latest_generation(
     row: &StoryRow,
     candidate: &VerificationCandidate,
 ) -> Result<bool, StoreError> {
+    if tx
+        .story_reset(candidate.project, row.story_no)?
+        .is_some_and(|reset| !reset.completed)
+    {
+        return Ok(false);
+    }
+
     Ok(
         verifying_entry(tx, candidate.project, row.story_no)?.map(|(_, generation)| generation)
             == candidate.verifying_generation,
@@ -803,7 +1103,7 @@ fn marked_comment_events(row: &StoryRow, marker: &str, body: &str, now: &str) ->
 /// unlikely case no such event survives (SH-372: absence states nothing —
 /// this is not asserted as an invariant, since a caller degrading to "wait
 /// unknown" is safer than a queue read that can fail for one odd story).
-fn verifying_entry(
+pub(crate) fn verifying_entry(
     tx: &impl ReadOps,
     project: ProjectId,
     story: StoryNo,
@@ -853,7 +1153,13 @@ pub(crate) fn ordered_candidates_for(
         let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
         let resets = tx.story_resets(project.id)?;
         for row in rows {
-            if resets.contains_key(&row.story_no) {
+            if row.snapshot.awaiting.is_some()
+                || resets.contains_key(&row.story_no)
+                || tx.engine_reset(project.id, row.story_no)?.is_some()
+                || tx
+                    .story_reset(project.id, row.story_no)?
+                    .is_some_and(|reset| !reset.completed)
+            {
                 continue;
             }
             let links = tx
@@ -903,6 +1209,7 @@ pub(crate) fn ordered_candidates_for(
                 created_at: row.created_at,
                 verifying_since,
                 verifying_generation,
+                blocking_revision: blocking_revision(tx, project.id, row.story_no)?,
                 checkout: checkout.clone().unwrap_or_default(),
                 cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
                 pull_request,
@@ -913,36 +1220,142 @@ pub(crate) fn ordered_candidates_for(
     Ok(candidates)
 }
 
-/// The lease paired with the story's latest entry into verification.
+/// The verifier's durable verdict on a generation's post-merge resources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReapMarker {
+    /// `CENTRAL VERIFICATION CLEANUP COMPLETE —`: every leased resource was
+    /// verified absent.
+    Complete,
+    /// `CENTRAL VERIFICATION CLEANUP REQUIRED —`: the PR landed and the story
+    /// closed, but the reap failed and is owed a retry.
+    Required,
+}
+
+/// What the story's latest entry into verification left behind.
 ///
-/// The service writes the lease immediately after `StoryStateChanged`, in the
-/// same event batch. Requiring that adjacency means a later legacy/manual
-/// unleased submission shadows every older lease by construction rather than
-/// accidentally reusing stale resource ownership.
+/// Read from the story's event log by [`latest_generation`], in event order
+/// and never by timestamp (SH-336): storyhook timestamps have one-second
+/// precision and a verification writes several events inside one second.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerificationGeneration {
+    /// The lease paired with this generation, when the transition carried one.
+    ///
+    /// The service writes the lease immediately after `StoryStateChanged`, in
+    /// the same event batch. Requiring that adjacency means a later
+    /// legacy/manual unleased submission shadows every older lease by
+    /// construction rather than accidentally reusing stale resource ownership.
+    pub lease: Option<StoryCleanupLease>,
+    /// Whether the verifier landed **this** generation's PR (a GREEN comment
+    /// after the transition), as opposed to an earlier verification of a
+    /// story since reopened.
+    pub landed: bool,
+    /// Whether this generation carries an unretracted operator override.
+    /// Cleanup additionally requires its pull request to be recorded merged.
+    pub overridden: bool,
+    /// The reap marker the verifier wrote for **this** generation — a marker
+    /// from an earlier verification of the same story does not count, since a
+    /// reopened story's resources are a new lease's, not the old marker's.
+    /// `Complete` outranks `Required`; a marker retracted later is not one.
+    pub reap_marker: Option<ReapMarker>,
+}
+
+/// The story's latest verification generation, or `None` for a story that
+/// never entered `verifying`.
+///
+/// This is the one reader of a generation's lease and reap marker, shared by
+/// the verifier's own retry (`next_cleanup`) and by `story cleanup` (SH-653),
+/// so the two cannot disagree about which workspace the verifier owns.
+#[must_use]
+pub fn latest_generation(events: &[StoredEvent]) -> Option<VerificationGeneration> {
+    let verifying_index = events.iter().rposition(|event| {
+        matches!(
+            event.known(),
+            Some(StoryEvent::StoryStateChanged { state, .. }) if state == VERIFYING_STATE
+        )
+    })?;
+    let lease = events
+        .get(verifying_index + 1)
+        .and_then(|event| event.known())
+        .and_then(|event| match event {
+            StoryEvent::StoryCleanupLeaseRecorded { lease, .. } => Some(lease.as_ref().clone()),
+            _ => None,
+        });
+    let after = &events[verifying_index + 1..];
+    let retracted = |comment_at: &str, comment_text: &str| {
+        after.iter().any(|event| {
+            matches!(
+                event.known(),
+                Some(StoryEvent::StoryCommentRetracted { comment_at: at, text, .. })
+                    if at == comment_at && text == comment_text
+            )
+        })
+    };
+    let mut landed = false;
+    let mut overridden = false;
+    let mut reap_marker = None;
+    for event in after {
+        let Some(StoryEvent::StoryCommentAdded { at, text }) = event.known() else {
+            continue;
+        };
+        if retracted(at, text) {
+            continue;
+        }
+        if text.starts_with(VERIFICATION_GREEN_PREFIX) {
+            landed = true;
+            continue;
+        }
+        if text.starts_with(VERIFICATION_OVERRIDDEN_PREFIX) {
+            overridden = true;
+            continue;
+        }
+        let marker = if text.starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX) {
+            ReapMarker::Complete
+        } else if text.starts_with(VERIFICATION_CLEANUP_REQUIRED_PREFIX) {
+            ReapMarker::Required
+        } else {
+            continue;
+        };
+        if marker == ReapMarker::Complete || reap_marker.is_none() {
+            reap_marker = Some(marker);
+        }
+    }
+    Some(VerificationGeneration {
+        lease,
+        landed,
+        overridden,
+        reap_marker,
+    })
+}
+
+/// The lease paired with the story's latest entry into verification — see
+/// [`VerificationGeneration::lease`].
 fn latest_cleanup_lease(
     tx: &impl ReadOps,
     project: ProjectId,
     story: StoryNo,
 ) -> Result<Option<StoryCleanupLease>, AppError> {
     let events = tx.events_for(project, story)?;
-    let Some(verifying_index) = events.iter().rposition(|event| {
-        matches!(
-            event.known(),
-            Some(StoryEvent::StoryStateChanged { state, .. }) if state == VERIFYING_STATE
-        )
-    }) else {
-        return Ok(None);
-    };
-    Ok(events
-        .get(verifying_index + 1)
-        .and_then(|event| event.known())
-        .and_then(|event| match event {
-            StoryEvent::StoryCleanupLeaseRecorded { lease, .. } => Some(lease.as_ref().clone()),
-            _ => None,
-        }))
+    Ok(latest_generation(&events).and_then(|generation| generation.lease))
 }
 
 fn sort_candidates(candidates: &mut [VerificationCandidate]) {
+    candidates.sort_by(|left, right| {
+        left.priority
+            .cmp(&right.priority)
+            // An unknown wait must not outrank a known wait at equal priority.
+            .then_with(|| {
+                left.verifying_since
+                    .is_none()
+                    .cmp(&right.verifying_since.is_none())
+            })
+            .then_with(|| left.verifying_since.cmp(&right.verifying_since))
+            .then_with(|| left.project_slug.cmp(&right.project_slug))
+            .then_with(|| left.story_id.cmp(&right.story_id))
+    });
+}
+
+// Completed stories carry no queue-entry time; retain their cleanup order.
+fn sort_cleanup_candidates(candidates: &mut [VerificationCandidate]) {
     candidates.sort_by(|left, right| {
         left.priority
             .cmp(&right.priority)
@@ -955,6 +1368,585 @@ fn sort_candidates(candidates: &mut [VerificationCandidate]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::domain::provenance::Provenance;
+    use crate::domain::{CLEANUP_LEASE_VERSION, TmuxCleanupTarget};
+    use crate::store::{EventSeq, GlobalSeq, StoredEvent, StoredPayload};
+
+    fn stored(seq: i64, event: StoryEvent) -> StoredEvent {
+        StoredEvent {
+            seq: EventSeq::new(seq),
+            global_seq: GlobalSeq::ZERO,
+            kind: crate::domain::event_kind(&event).to_string(),
+            at: "2026-09-10T00:00:00Z".into(),
+            payload: StoredPayload::Known(event),
+            provenance: Provenance::unrecorded(),
+        }
+    }
+
+    fn state(seq: i64, state: &str) -> StoredEvent {
+        stored(
+            seq,
+            StoryEvent::StoryStateChanged {
+                at: "2026-09-10T00:00:00Z".into(),
+                state: state.into(),
+            },
+        )
+    }
+
+    fn comment(seq: i64, text: &str) -> StoredEvent {
+        stored(
+            seq,
+            StoryEvent::StoryCommentAdded {
+                at: "2026-09-10T00:00:00Z".into(),
+                text: text.into(),
+            },
+        )
+    }
+
+    fn lease_event(seq: i64) -> StoredEvent {
+        stored(
+            seq,
+            StoryEvent::StoryCleanupLeaseRecorded {
+                at: "2026-09-10T00:00:00Z".into(),
+                lease: Box::new(fixture_lease()),
+            },
+        )
+    }
+
+    fn fixture_lease() -> StoryCleanupLease {
+        StoryCleanupLease {
+            version: CLEANUP_LEASE_VERSION,
+            project_slug: "fixture".into(),
+            story_id: "SH-1".into(),
+            repository_path: "/repo".into(),
+            worktree_path: "/repo/.codex/worktrees/SH-1".into(),
+            branch: "worktree-SH-1".into(),
+            tmux: TmuxCleanupTarget {
+                socket_path: "/repo/tmux.sock".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_story_that_never_entered_verifying_has_no_generation() {
+        let events = [
+            state(1, "todo"),
+            comment(2, VERIFICATION_CLEANUP_COMPLETE_PREFIX),
+        ];
+        assert!(latest_generation(&events).is_none());
+    }
+
+    #[test]
+    fn the_lease_must_sit_immediately_after_the_latest_verifying_transition() {
+        let adjacent = [state(1, VERIFYING_STATE), lease_event(2)];
+        assert_eq!(
+            latest_generation(&adjacent).unwrap().lease,
+            Some(fixture_lease())
+        );
+
+        let separated = [
+            state(1, VERIFYING_STATE),
+            comment(2, "note"),
+            lease_event(3),
+        ];
+        assert_eq!(latest_generation(&separated).unwrap().lease, None);
+
+        let shadowed = [
+            state(1, VERIFYING_STATE),
+            lease_event(2),
+            state(3, "in-progress"),
+            state(4, VERIFYING_STATE),
+        ];
+        assert_eq!(
+            latest_generation(&shadowed).unwrap().lease,
+            None,
+            "a later unleased verification must not reuse an older generation's lease"
+        );
+    }
+
+    #[test]
+    fn a_reap_marker_counts_only_after_the_latest_verifying_transition() {
+        let stale = [
+            state(1, VERIFYING_STATE),
+            state(2, "done"),
+            comment(
+                3,
+                &format!("{VERIFICATION_CLEANUP_COMPLETE_PREFIX} verified absent."),
+            ),
+            state(4, "in-progress"),
+            state(5, VERIFYING_STATE),
+            state(6, "done"),
+        ];
+        assert_eq!(latest_generation(&stale).unwrap().reap_marker, None);
+
+        let current = [
+            state(1, VERIFYING_STATE),
+            state(2, "done"),
+            comment(
+                3,
+                &format!("{VERIFICATION_CLEANUP_REQUIRED_PREFIX} reap failed: x"),
+            ),
+        ];
+        assert_eq!(
+            latest_generation(&current).unwrap().reap_marker,
+            Some(ReapMarker::Required)
+        );
+    }
+
+    #[test]
+    fn landed_is_a_fact_about_the_latest_generation_only() {
+        let green = format!("{VERIFICATION_GREEN_PREFIX} merge tree `abc` passed `make test`.");
+        let earlier = [
+            state(1, VERIFYING_STATE),
+            comment(2, &green),
+            state(3, "done"),
+            state(4, "in-progress"),
+            state(5, VERIFYING_STATE),
+        ];
+        assert!(!latest_generation(&earlier).unwrap().landed);
+
+        let current = [
+            state(1, VERIFYING_STATE),
+            comment(2, &green),
+            state(3, "done"),
+        ];
+        assert!(latest_generation(&current).unwrap().landed);
+    }
+
+    #[test]
+    fn complete_outranks_required_and_a_marker_is_a_prefix_never_a_substring() {
+        let both = [
+            state(1, VERIFYING_STATE),
+            comment(
+                2,
+                &format!("{VERIFICATION_CLEANUP_REQUIRED_PREFIX} reap failed: x"),
+            ),
+            comment(
+                3,
+                &format!("{VERIFICATION_CLEANUP_COMPLETE_PREFIX} verified absent."),
+            ),
+        ];
+        assert_eq!(
+            latest_generation(&both).unwrap().reap_marker,
+            Some(ReapMarker::Complete)
+        );
+
+        let quoted = [
+            state(1, VERIFYING_STATE),
+            comment(
+                2,
+                &format!("the verifier wrote {VERIFICATION_CLEANUP_COMPLETE_PREFIX} earlier"),
+            ),
+        ];
+        assert_eq!(latest_generation(&quoted).unwrap().reap_marker, None);
+    }
+
+    #[test]
+    fn a_retracted_marker_no_longer_releases_the_generation() {
+        let text = format!("{VERIFICATION_CLEANUP_COMPLETE_PREFIX} verified absent.");
+        let events = [
+            state(1, VERIFYING_STATE),
+            comment(2, &text),
+            stored(
+                3,
+                StoryEvent::StoryCommentRetracted {
+                    at: "2026-09-10T00:00:01Z".into(),
+                    comment_at: "2026-09-10T00:00:00Z".into(),
+                    text: text.clone(),
+                },
+            ),
+        ];
+        assert_eq!(latest_generation(&events).unwrap().reap_marker, None);
+    }
+
+    #[test]
+    fn real_submission_receipts_report_verified_heads_in_central_comments() {
+        use crate::domain::SubmissionReceipt;
+        use storyhook_test_support::ChildGuard;
+
+        // Run the real helper against isolated Git remotes and endpoint data,
+        // then give its unmodified typed PR receipts to the production writer.
+        let capture = tempfile::NamedTempFile::new_in("/tmp").unwrap();
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("plugins/story/tests/test-submit-head-reporting.sh");
+        let mut command = std::process::Command::new("bash");
+        command
+            .arg(script)
+            .env_remove("STORYHOOK_TEST_HOME")
+            .env("SH713_RECEIPTS_PATH", capture.path());
+        let output = ChildGuard::spawn_with_output(&mut command)
+            .unwrap()
+            .wait_with_output_within(std::time::Duration::from_secs(120), || {
+                "isolated submission-head helper regression".into()
+            });
+        let captured = std::fs::read_to_string(capture.path()).unwrap();
+        let rows: Vec<serde_json::Value> = captured
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 6, "{output:?}\n{captured}");
+        let mut mismatches = Vec::new();
+        for row in rows {
+            let scenario = row["scenario"].as_str().unwrap();
+            let expected = row["expected_head"].as_str().unwrap();
+            let api_head = row["api_head"].as_str().unwrap();
+            let receipt: SubmissionReceipt =
+                serde_json::from_value(row["receipt"].clone()).unwrap();
+            assert!(receipt.ok);
+            let pull_request = receipt.pull_request.unwrap();
+
+            let fixture = storyhook_test_support::ServiceFixture::new();
+            fixture.link_origin("https://github.com/acme/widgets");
+            let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+            store
+                .write(|tx| {
+                    tx.set_checkout_path(
+                        ProjectId::new(fixture.project().get()),
+                        Some(fixture.cwd()),
+                    )
+                })
+                .unwrap();
+            let ctx = Ctx::new(
+                &store,
+                ProjectId::new(fixture.project().get()),
+                fixture.cwd(),
+                crate::env::Environment::at(fixture.cwd()),
+            )
+            .no_hooks(true);
+            let service = crate::service::StoryService::new(&ctx);
+            let id = service
+                .create(&crate::service::NewStoryInput {
+                    title: scenario.into(),
+                    ..Default::default()
+                })
+                .unwrap()
+                .id;
+            service
+                .set_state(&id, "verifying", None, None, None)
+                .unwrap();
+            let queue = VerificationQueue::new(&store);
+            let mut candidate = queue.next().unwrap().unwrap();
+            // The helper's project has been cleaned up; this service fixture
+            // owns the comment transaction, with the same submitted branch.
+            let mut lease = receipt.lease.unwrap();
+            lease.project_slug.clone_from(&candidate.project_slug);
+            lease.story_id.clone_from(&candidate.story_id);
+            candidate.cleanup_lease = Some(lease.clone());
+            assert!(
+                matches!(
+                    queue
+                        .record_generation_submitted(&ctx, &candidate, &pull_request)
+                        .unwrap(),
+                    GenerationWrite::Superseded
+                ),
+                "an invented candidate lease has no publication authority"
+            );
+            // The test-support crate has its own compiled domain type. Serialize
+            // across that boundary, then derive authority from the stored event.
+            fixture.append_cleanup_lease(
+                &id,
+                serde_json::from_value(serde_json::to_value(lease).unwrap()).unwrap(),
+            );
+            let candidate = queue.next().unwrap().unwrap();
+            assert!(matches!(
+                queue
+                    .record_generation_submitted(&ctx, &candidate, &pull_request)
+                    .unwrap(),
+                GenerationWrite::Applied(_)
+            ));
+            let story = store
+                .read(|tx| tx.story(ctx.project(), StoryNo::parse_id("SH", &id).unwrap()))
+                .unwrap()
+                .unwrap();
+            let comment = story
+                .snapshot
+                .comments
+                .iter()
+                .find(|comment| comment.text.starts_with(VERIFICATION_SUBMITTED_PREFIX))
+                .unwrap();
+            if !comment
+                .text
+                .contains(&format!("is on origin at {expected};"))
+                || (expected != api_head && comment.text.contains(api_head))
+            {
+                mismatches.push(format!("{scenario}: {}", comment.text));
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "central comments used stale PR metadata:\n{}",
+            mismatches.join("\n")
+        );
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    fn candidate(
+        priority: Priority,
+        verifying_since: Option<&str>,
+        project: &str,
+        id: &str,
+    ) -> VerificationCandidate {
+        VerificationCandidate {
+            blocked_by: Vec::new(),
+            landing_pending: false,
+            project: ProjectId::new(1),
+            project_slug: project.into(),
+            story_id: id.into(),
+            title: id.into(),
+            priority,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            verifying_since: verifying_since.map(str::to_string),
+            verifying_generation: None,
+            blocking_revision: None,
+            checkout: PathBuf::new(),
+            cleanup_lease: None,
+            pull_request: Err(VerificationProblem::MissingPullRequest),
+        }
+    }
+
+    #[test]
+    fn progress_write_rejects_a_changed_incident_even_in_the_same_generation() {
+        let f = storyhook_test_support::ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(f.store().path()).unwrap();
+        let ctx = Ctx::new(
+            &store,
+            ProjectId::new(f.project().get()),
+            f.cwd(),
+            crate::env::Environment::at(f.cwd()),
+        )
+        .no_hooks(true);
+        let service = crate::service::StoryService::new(&ctx);
+        let id = service
+            .create(&crate::service::NewStoryInput {
+                title: "Incident publication race".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        service
+            .set_state(&id, "verifying", None, None, None)
+            .unwrap();
+        let queue = VerificationQueue::new(&store);
+        let candidate = queue.next().unwrap().unwrap();
+        let record = || {
+            queue
+                .record_generation_incident(
+                    &ctx,
+                    &candidate,
+                    VerificationFailureDisposition::Retryable,
+                    "preflight unavailable",
+                    3,
+                )
+                .unwrap()
+        };
+        record();
+        let incident = store
+            .read(|tx| tx.verification_incident(ctx.project()))
+            .unwrap()
+            .unwrap();
+        let write = |expected| {
+            queue
+                .upsert_generation_comment(
+                    &ctx,
+                    &candidate,
+                    "progress",
+                    "progress current retry",
+                    expected,
+                )
+                .unwrap()
+        };
+        assert!(
+            matches!(write(None), GenerationWrite::Superseded),
+            "incident appeared after snapshot"
+        );
+        assert!(matches!(
+            write(Some(&incident)),
+            GenerationWrite::Applied(true)
+        ));
+        record();
+        let before = store
+            .read(|tx| tx.story(ctx.project(), StoryNo::parse_id("SH", &id).unwrap()))
+            .unwrap()
+            .unwrap()
+            .head_seq;
+        assert!(
+            matches!(write(Some(&incident)), GenerationWrite::Superseded),
+            "new failure while owner still held"
+        );
+        assert_eq!(
+            store
+                .read(|tx| tx.story(ctx.project(), StoryNo::parse_id("SH", &id).unwrap()))
+                .unwrap()
+                .unwrap()
+                .head_seq,
+            before
+        );
+        store
+            .write(|tx| tx.clear_verification_incident(&incident.incident_id))
+            .unwrap();
+        assert!(
+            matches!(write(Some(&incident)), GenerationWrite::Superseded),
+            "retired incident cannot be republished"
+        );
+    }
+
+    #[test]
+    fn blocked_generation_cannot_record_outcomes_or_comments() {
+        let f = storyhook_test_support::ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(f.store().path()).unwrap();
+        let ctx = Ctx::new(
+            &store,
+            ProjectId::new(f.project().get()),
+            f.cwd(),
+            crate::env::Environment::at(f.cwd()),
+        )
+        .no_hooks(true);
+        let id = crate::service::StoryService::new(&ctx)
+            .create(&crate::service::NewStoryInput {
+                title: "Blocked result race".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        crate::service::StoryService::new(&ctx)
+            .set_state(&id, "verifying", None, None, None)
+            .unwrap();
+        let queue = VerificationQueue::new(&store);
+        let c = queue.next().unwrap().unwrap();
+        crate::service::StoryService::new(&ctx)
+            .set_awaiting(&id, "repair")
+            .unwrap();
+        assert!(matches!(
+            queue
+                .upsert_generation_comment(&ctx, &c, "result", "stale", None)
+                .unwrap(),
+            GenerationWrite::Superseded
+        ));
+        assert!(matches!(
+            queue.record_generation_returned(&ctx, &c, "stale").unwrap(),
+            GenerationWrite::Superseded
+        ));
+        assert!(matches!(
+            queue
+                .record_generation_completed(
+                    &ctx,
+                    &c,
+                    "CENTRAL VERIFICATION RED — stale",
+                    Some("stale cleanup")
+                )
+                .unwrap(),
+            GenerationWrite::Superseded
+        ));
+        assert!(
+            store
+                .read(|tx| tx.verification_incident(ctx.project()))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn completed_execution_is_idempotent_and_cannot_close_the_story() {
+        let f = storyhook_test_support::ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(f.store().path()).unwrap();
+        let ctx = Ctx::new(
+            &store,
+            ProjectId::new(f.project().get()),
+            f.cwd(),
+            crate::env::Environment::at(f.cwd()),
+        )
+        .no_hooks(true);
+        let service = crate::service::StoryService::new(&ctx);
+        let id = service
+            .create(&crate::service::NewStoryInput {
+                title: "atomic completion".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        service
+            .set_state(&id, "verifying", None, None, None)
+            .unwrap();
+        let queue = VerificationQueue::new(&store);
+        let candidate = queue.next().unwrap().unwrap();
+        let snapshot = || {
+            store
+                .read(|tx| tx.story(ctx.project(), StoryNo::parse_id("SH", &id).unwrap()))
+                .unwrap()
+                .unwrap()
+        };
+        let record = || {
+            queue
+                .record_generation_completed(
+                    &ctx,
+                    &candidate,
+                    "CENTRAL VERIFICATION RED — named failure",
+                    Some("retained cleanup"),
+                )
+                .unwrap()
+        };
+        let first = record();
+        let recorded = snapshot();
+        assert_eq!(recorded.state, "verifying");
+        assert_eq!(record(), first);
+        assert_eq!(snapshot().head_seq, recorded.head_seq);
+        service
+            .set_state(&id, "verifying", None, Some("verifying"), None)
+            .unwrap();
+        assert!(matches!(record(), GenerationWrite::Superseded));
+        let next = queue.next().unwrap().unwrap();
+        queue
+            .record_generation_completed(
+                &ctx,
+                &next,
+                "CENTRAL VERIFICATION RED — named failure",
+                Some("retained cleanup"),
+            )
+            .unwrap();
+        assert_eq!(
+            snapshot()
+                .snapshot
+                .comments
+                .iter()
+                .filter(|comment| comment.text == "CENTRAL VERIFICATION RED — named failure")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn queue_order_handles_missing_times_and_all_identity_ties() {
+        let early = Some("2026-01-01T00:01:00Z");
+        let late = Some("2026-01-01T00:02:00Z");
+        let expected = [
+            candidate(Priority::High, None, "z", "Z-9"),
+            candidate(Priority::Medium, early, "a", "A-1"),
+            candidate(Priority::Medium, early, "a", "A-2"),
+            candidate(Priority::Medium, early, "b", "B-1"),
+            candidate(Priority::Medium, late, "a", "A-3"),
+            candidate(Priority::Medium, None, "a", "A-4"),
+            candidate(Priority::Medium, None, "a", "A-5"),
+            candidate(Priority::Medium, None, "b", "B-2"),
+            candidate(Priority::Low, early, "a", "A-6"),
+        ];
+
+        // Check every pair in both directions, including self-equality.
+        // This also prevents an unstable input order from deciding ties.
+        for left in 0..expected.len() {
+            for right in 0..expected.len() {
+                let mut actual = vec![expected[left].clone(), expected[right].clone()];
+                sort_candidates(&mut actual);
+                assert_eq!(
+                    actual,
+                    [
+                        expected[left.min(right)].clone(),
+                        expected[left.max(right)].clone()
+                    ]
+                );
+            }
+        }
+    }
 
     #[test]
     fn multiple_pr_diagnosis_names_every_ambiguous_link() {

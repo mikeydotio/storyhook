@@ -1,0 +1,720 @@
+[
+  {
+    "status": "packaging-parity",
+    "release_certified": false,
+    "active_host_validated": false,
+    "source": {
+      "commit": "c25f78e2337013370ac69bc2265d47f2431359c4",
+      "tree": "b241a4bb7556a928cdfff18b895a74b4e7fce6fb",
+      "plugin_tree": "bdaf301e75e55c487d74b8a509dc7b72aaa8c001",
+      "version": "3.9.1",
+      "files": {
+        ".claude-plugin/plugin.json": {
+          "sha256": "1c2a9051217b079814239f6c3049dace7dc5b0d7a981c493bffab9a131944300",
+          "mode": "100644"
+        },
+        "README.md": {
+          "sha256": "6ca72abeb36b4df4ee1dffff04f12d5ba07257e387b99c7e846eeebd865b9ab5",
+          "mode": "100644"
+        },
+        "bin/greenlight-explore.sh": {
+          "sha256": "e1d45b61c7bcfd83b964998b84c97c270cd0b71305240ba80710aede96aa7272",
+          "mode": "100755"
+        },
+        "hooks/greenlight.sh": {
+          "sha256": "8b9bff8459c452fd74b4bf659a26112060abcf2b9431f2bc6709e4c55be2db23",
+          "mode": "100755"
+        },
+        "hooks/hooks.json": {
+          "sha256": "46d37910f1d87d145346adb31f81bc15f8503b997f1041583216c787ec5ec60c",
+          "mode": "100644"
+        },
+        "references/default-config.yaml": {
+          "sha256": "fb6ea2e5e92f72c0f48aa42b10eff537849e77ca1f4155327e65f0ff264e60f7",
+          "mode": "100644"
+        },
+        "skills/greenlight/SKILL.md": {
+          "sha256": "20e8e107fe5dde08937cb0a513cb5dd2cd4ddfedfb48316eeee23a3c578d37ba",
+          "mode": "100644"
+        },
+        "tests/greenlight-explore.bats": {
+          "sha256": "6240dbf5497d6215b06495a3a947a595efd0a0ead4492735678ebf4e56c0b2e9",
+          "mode": "100644"
+        },
+        "tests/greenlight-story.bats": {
+          "sha256": "c5159499915c7e68d73a269b59fdb9ff750560c4336332d044d05818670a7f19",
+          "mode": "100644"
+        },
+        "tests/greenlight.bats": {
+          "sha256": "1898574774b8e92c3b740a98a6ae5ea8df6506489186badd29d211659ad8fb54",
+          "mode": "100644"
+        },
+        "tests/run-tests.sh": {
+          "sha256": "86676d2b7a45bdc1911a4ea1dd4acdcbb69cf44baaad03b767bb46a0891d8952",
+          "mode": "100755"
+        }
+      },
+      "marketplace_root": "/private/tmp/sh707-install-rehearsal-verified/baseline marketplace"
+    },
+    "installer": {
+      "pluginId": "greenlight@sh707-install",
+      "name": "greenlight",
+      "marketplaceName": "sh707-install",
+      "version": "3.9.1",
+      "installedPath": "/private/tmp/sh707-install-rehearsal-verified/codex-home/plugins/cache/sh707-install/greenlight/3.9.1",
+      "authPolicy": "ON_INSTALL"
+    },
+    "registration": {
+      "source_type": "local",
+      "source": "/private/tmp/sh707-install-rehearsal-verified/baseline marketplace"
+    },
+    "plugin": {
+      "enabled": true
+    },
+    "hook_trust": {},
+    "stage": "baseline",
+    "codex_version": "codex-cli 0.154.0",
+    "label": "unreleased candidate packaging test; isolated installation only",
+    "listing": {
+      "installed": [
+        {
+          "pluginId": "greenlight@sh707-install",
+          "name": "greenlight",
+          "marketplaceName": "sh707-install",
+          "version": "3.9.1",
+          "installed": true,
+          "enabled": true,
+          "source": {
+            "source": "local",
+            "path": "/private/tmp/sh707-install-rehearsal-verified/baseline marketplace/plugins/greenlight"
+          },
+          "marketplaceSource": {
+            "sourceType": "local",
+            "source": "/private/tmp/sh707-install-rehearsal-verified/baseline marketplace"
+          },
+          "installPolicy": "AVAILABLE",
+          "authPolicy": "ON_INSTALL"
+        }
+      ],
+      "available": []
+    },
+    "contracts": [
+      {
+        "provider": "codex",
+        "case": "safe",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Bash: safe readonly command(s)\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:54Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+      },
+      {
+        "provider": "codex",
+        "case": "read",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Read: readonly tool\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:54Z [ALLOW] Read: Read: readonly tool\n"
+      },
+      {
+        "provider": "codex",
+        "case": "deny",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:55Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+      },
+      {
+        "provider": "codex",
+        "case": "warning",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:55Z [PASS] Bash: known destructive command\n"
+      },
+      {
+        "provider": "codex",
+        "case": "malformed",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      },
+      {
+        "provider": "codex",
+        "case": "unrelated",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      },
+      {
+        "provider": "claude",
+        "case": "safe",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Bash: safe readonly command(s)\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:55Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+      },
+      {
+        "provider": "claude",
+        "case": "read",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Read: readonly tool\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:55Z [ALLOW] Read: Read: readonly tool\n"
+      },
+      {
+        "provider": "claude",
+        "case": "deny",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:55Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+      },
+      {
+        "provider": "claude",
+        "case": "warning",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:55Z [PASS] Bash: known destructive command\n"
+      },
+      {
+        "provider": "claude",
+        "case": "malformed",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      },
+      {
+        "provider": "claude",
+        "case": "unrelated",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      }
+    ]
+  },
+  {
+    "status": "packaging-parity",
+    "release_certified": false,
+    "active_host_validated": false,
+    "source": {
+      "commit": "af73549175847d158c5a59de772f6cfee7b256f5",
+      "tree": "4c3280b979086902a430bb03da3fc1fd8ea46fab",
+      "plugin_tree": "cc6218edc11364f546b7062f57dae232854122b1",
+      "version": "3.9.1",
+      "files": {
+        ".claude-plugin/plugin.json": {
+          "sha256": "1c2a9051217b079814239f6c3049dace7dc5b0d7a981c493bffab9a131944300",
+          "mode": "100644"
+        },
+        "README.md": {
+          "sha256": "6ca72abeb36b4df4ee1dffff04f12d5ba07257e387b99c7e846eeebd865b9ab5",
+          "mode": "100644"
+        },
+        "bin/greenlight-explore.sh": {
+          "sha256": "e1d45b61c7bcfd83b964998b84c97c270cd0b71305240ba80710aede96aa7272",
+          "mode": "100755"
+        },
+        "hooks/greenlight.sh": {
+          "sha256": "acb689a49f2694086d40846f11da12d5b87a4326c7742adc3a021292cef626ac",
+          "mode": "100755"
+        },
+        "hooks/hooks.json": {
+          "sha256": "5664c2920dc9c8502dd3ec86cfe2315c5e453dc16b302fc10d5326bfc583670f",
+          "mode": "100644"
+        },
+        "references/default-config.yaml": {
+          "sha256": "fb6ea2e5e92f72c0f48aa42b10eff537849e77ca1f4155327e65f0ff264e60f7",
+          "mode": "100644"
+        },
+        "skills/greenlight/SKILL.md": {
+          "sha256": "457a2103d157d571c05e13eb304d0169b7f601f775888a1cc6bce176d0a11714",
+          "mode": "100644"
+        },
+        "tests/contract-helper.bash": {
+          "sha256": "3c83798556127221f9b08df4b54837d65ff62a5663d5c98a479ab92f3f4f13e0",
+          "mode": "100644"
+        },
+        "tests/greenlight-ai.bats": {
+          "sha256": "fd19489c4dae31812f6f83a2f3fadb3bf775574b5cf169c22c38d8ae1772e883",
+          "mode": "100644"
+        },
+        "tests/greenlight-codex.bats": {
+          "sha256": "2d0b5011e8d9776ca9645d93060cca14deb1c9b0c028de7ad8447f7cd3db66bf",
+          "mode": "100644"
+        },
+        "tests/greenlight-explore.bats": {
+          "sha256": "6240dbf5497d6215b06495a3a947a595efd0a0ead4492735678ebf4e56c0b2e9",
+          "mode": "100644"
+        },
+        "tests/greenlight-manifest.bats": {
+          "sha256": "b19c3f740b843b46525e530a05953e553b03649afb2128862ebf0aaf05963189",
+          "mode": "100644"
+        },
+        "tests/greenlight-story.bats": {
+          "sha256": "c5159499915c7e68d73a269b59fdb9ff750560c4336332d044d05818670a7f19",
+          "mode": "100644"
+        },
+        "tests/greenlight.bats": {
+          "sha256": "1898574774b8e92c3b740a98a6ae5ea8df6506489186badd29d211659ad8fb54",
+          "mode": "100644"
+        },
+        "tests/run-tests.sh": {
+          "sha256": "86676d2b7a45bdc1911a4ea1dd4acdcbb69cf44baaad03b767bb46a0891d8952",
+          "mode": "100755"
+        }
+      },
+      "marketplace_root": "/private/tmp/sh707-install-rehearsal-verified/candidate marketplace"
+    },
+    "installer": {
+      "pluginId": "greenlight@sh707-install",
+      "name": "greenlight",
+      "marketplaceName": "sh707-install",
+      "version": "3.9.1",
+      "installedPath": "/private/tmp/sh707-install-rehearsal-verified/codex-home/plugins/cache/sh707-install/greenlight/3.9.1",
+      "authPolicy": "ON_INSTALL"
+    },
+    "registration": {
+      "source_type": "local",
+      "source": "/private/tmp/sh707-install-rehearsal-verified/candidate marketplace"
+    },
+    "plugin": {
+      "enabled": true
+    },
+    "hook_trust": {},
+    "stage": "candidate",
+    "codex_version": "codex-cli 0.154.0",
+    "label": "unreleased candidate packaging test; isolated installation only",
+    "listing": {
+      "installed": [
+        {
+          "pluginId": "greenlight@sh707-install",
+          "name": "greenlight",
+          "marketplaceName": "sh707-install",
+          "version": "3.9.1",
+          "installed": true,
+          "enabled": true,
+          "source": {
+            "source": "local",
+            "path": "/private/tmp/sh707-install-rehearsal-verified/candidate marketplace/plugins/greenlight"
+          },
+          "marketplaceSource": {
+            "sourceType": "local",
+            "source": "/private/tmp/sh707-install-rehearsal-verified/candidate marketplace"
+          },
+          "installPolicy": "AVAILABLE",
+          "authPolicy": "ON_INSTALL"
+        }
+      ],
+      "available": []
+    },
+    "contracts": [
+      {
+        "provider": "codex",
+        "case": "safe",
+        "root_variable": "PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:56Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+      },
+      {
+        "provider": "codex",
+        "case": "read",
+        "root_variable": "PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:56Z [ALLOW] Read: Read: readonly tool\n"
+      },
+      {
+        "provider": "codex",
+        "case": "deny",
+        "root_variable": "PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:56Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+      },
+      {
+        "provider": "codex",
+        "case": "warning",
+        "root_variable": "PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:56Z [PASS] Bash: known destructive command\n"
+      },
+      {
+        "provider": "codex",
+        "case": "malformed",
+        "root_variable": "PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      },
+      {
+        "provider": "codex",
+        "case": "unrelated",
+        "root_variable": "PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      },
+      {
+        "provider": "codex",
+        "case": "ai-quiet",
+        "root_variable": "PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:57Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T01:58:57Z [ALLOW] Bash: AI confirmed safe\n"
+      },
+      {
+        "provider": "codex",
+        "case": "ai-context",
+        "root_variable": "PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI analysis: Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:57Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T01:58:57Z [ALLOW] AI confirmed safe: Fixture says \"safe\"; $(never-execute) remains data.\n"
+      },
+      {
+        "provider": "codex",
+        "case": "ai-destructive",
+        "root_variable": "PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI safety analysis: POTENTIALLY DESTRUCTIVE. Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:57Z [AI_RESULT] answer=true rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T01:58:57Z [PASS] Bash: AI determined command is potentially destructive\n"
+      },
+      {
+        "provider": "codex",
+        "case": "ai-invalid",
+        "root_variable": "PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:57Z [AI_FAIL] invalid structured response: expected one object with boolean answer and nonempty string rationale\n2026-09-13T01:58:57Z [PASS] AI fallback failed, deferring to user\n"
+      },
+      {
+        "provider": "claude",
+        "case": "safe",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Bash: safe readonly command(s)\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:57Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+      },
+      {
+        "provider": "claude",
+        "case": "read",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Read: readonly tool\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:57Z [ALLOW] Read: Read: readonly tool\n"
+      },
+      {
+        "provider": "claude",
+        "case": "deny",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:57Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+      },
+      {
+        "provider": "claude",
+        "case": "warning",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:57Z [PASS] Bash: known destructive command\n"
+      },
+      {
+        "provider": "claude",
+        "case": "malformed",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      },
+      {
+        "provider": "claude",
+        "case": "unrelated",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      },
+      {
+        "provider": "claude",
+        "case": "ai-quiet",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"AI confirmed safe\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:58Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T01:58:58Z [ALLOW] Bash: AI confirmed safe\n"
+      },
+      {
+        "provider": "claude",
+        "case": "ai-context",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"AI confirmed safe\",\n    \"additionalContext\": \"[greenlight] AI analysis: Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:58Z [AI_RESULT] answer=false rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T01:58:58Z [ALLOW] AI confirmed safe: Fixture says \"safe\"; $(never-execute) remains data.\n"
+      },
+      {
+        "provider": "claude",
+        "case": "ai-destructive",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] AI safety analysis: POTENTIALLY DESTRUCTIVE. Fixture says \\\"safe\\\"; $(never-execute) remains data.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:58Z [AI_RESULT] answer=true rationale=Fixture says \"safe\"; $(never-execute) remains data.\n2026-09-13T01:58:58Z [PASS] Bash: AI determined command is potentially destructive\n"
+      },
+      {
+        "provider": "claude",
+        "case": "ai-invalid",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:58Z [AI_FAIL] invalid structured response: expected one object with boolean answer and nonempty string rationale\n2026-09-13T01:58:58Z [PASS] AI fallback failed, deferring to user\n"
+      }
+    ]
+  },
+  {
+    "status": "packaging-parity",
+    "release_certified": false,
+    "active_host_validated": false,
+    "source": {
+      "commit": "c25f78e2337013370ac69bc2265d47f2431359c4",
+      "tree": "b241a4bb7556a928cdfff18b895a74b4e7fce6fb",
+      "plugin_tree": "bdaf301e75e55c487d74b8a509dc7b72aaa8c001",
+      "version": "3.9.1",
+      "files": {
+        ".claude-plugin/plugin.json": {
+          "sha256": "1c2a9051217b079814239f6c3049dace7dc5b0d7a981c493bffab9a131944300",
+          "mode": "100644"
+        },
+        "README.md": {
+          "sha256": "6ca72abeb36b4df4ee1dffff04f12d5ba07257e387b99c7e846eeebd865b9ab5",
+          "mode": "100644"
+        },
+        "bin/greenlight-explore.sh": {
+          "sha256": "e1d45b61c7bcfd83b964998b84c97c270cd0b71305240ba80710aede96aa7272",
+          "mode": "100755"
+        },
+        "hooks/greenlight.sh": {
+          "sha256": "8b9bff8459c452fd74b4bf659a26112060abcf2b9431f2bc6709e4c55be2db23",
+          "mode": "100755"
+        },
+        "hooks/hooks.json": {
+          "sha256": "46d37910f1d87d145346adb31f81bc15f8503b997f1041583216c787ec5ec60c",
+          "mode": "100644"
+        },
+        "references/default-config.yaml": {
+          "sha256": "fb6ea2e5e92f72c0f48aa42b10eff537849e77ca1f4155327e65f0ff264e60f7",
+          "mode": "100644"
+        },
+        "skills/greenlight/SKILL.md": {
+          "sha256": "20e8e107fe5dde08937cb0a513cb5dd2cd4ddfedfb48316eeee23a3c578d37ba",
+          "mode": "100644"
+        },
+        "tests/greenlight-explore.bats": {
+          "sha256": "6240dbf5497d6215b06495a3a947a595efd0a0ead4492735678ebf4e56c0b2e9",
+          "mode": "100644"
+        },
+        "tests/greenlight-story.bats": {
+          "sha256": "c5159499915c7e68d73a269b59fdb9ff750560c4336332d044d05818670a7f19",
+          "mode": "100644"
+        },
+        "tests/greenlight.bats": {
+          "sha256": "1898574774b8e92c3b740a98a6ae5ea8df6506489186badd29d211659ad8fb54",
+          "mode": "100644"
+        },
+        "tests/run-tests.sh": {
+          "sha256": "86676d2b7a45bdc1911a4ea1dd4acdcbb69cf44baaad03b767bb46a0891d8952",
+          "mode": "100755"
+        }
+      },
+      "marketplace_root": "/private/tmp/sh707-install-rehearsal-verified/baseline marketplace"
+    },
+    "installer": {
+      "pluginId": "greenlight@sh707-install",
+      "name": "greenlight",
+      "marketplaceName": "sh707-install",
+      "version": "3.9.1",
+      "installedPath": "/private/tmp/sh707-install-rehearsal-verified/codex-home/plugins/cache/sh707-install/greenlight/3.9.1",
+      "authPolicy": "ON_INSTALL"
+    },
+    "registration": {
+      "source_type": "local",
+      "source": "/private/tmp/sh707-install-rehearsal-verified/baseline marketplace"
+    },
+    "plugin": {
+      "enabled": true
+    },
+    "hook_trust": {},
+    "stage": "rollback",
+    "codex_version": "codex-cli 0.154.0",
+    "label": "unreleased candidate packaging test; isolated installation only",
+    "listing": {
+      "installed": [
+        {
+          "pluginId": "greenlight@sh707-install",
+          "name": "greenlight",
+          "marketplaceName": "sh707-install",
+          "version": "3.9.1",
+          "installed": true,
+          "enabled": true,
+          "source": {
+            "source": "local",
+            "path": "/private/tmp/sh707-install-rehearsal-verified/baseline marketplace/plugins/greenlight"
+          },
+          "marketplaceSource": {
+            "sourceType": "local",
+            "source": "/private/tmp/sh707-install-rehearsal-verified/baseline marketplace"
+          },
+          "installPolicy": "AVAILABLE",
+          "authPolicy": "ON_INSTALL"
+        }
+      ],
+      "available": []
+    },
+    "contracts": [
+      {
+        "provider": "codex",
+        "case": "safe",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Bash: safe readonly command(s)\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:58Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+      },
+      {
+        "provider": "codex",
+        "case": "read",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Read: readonly tool\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:58Z [ALLOW] Read: Read: readonly tool\n"
+      },
+      {
+        "provider": "codex",
+        "case": "deny",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:59Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+      },
+      {
+        "provider": "codex",
+        "case": "warning",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:59Z [PASS] Bash: known destructive command\n"
+      },
+      {
+        "provider": "codex",
+        "case": "malformed",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      },
+      {
+        "provider": "codex",
+        "case": "unrelated",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      },
+      {
+        "provider": "claude",
+        "case": "safe",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Bash: safe readonly command(s)\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:59Z [ALLOW] Bash: Bash: safe readonly command(s)\n"
+      },
+      {
+        "provider": "claude",
+        "case": "read",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"allow\",\n    \"permissionDecisionReason\": \"Read: readonly tool\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:59Z [ALLOW] Read: Read: readonly tool\n"
+      },
+      {
+        "provider": "claude",
+        "case": "deny",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"deny\",\n    \"permissionDecisionReason\": \"greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:59Z [DENY] Bash: greenlight: 'rm' is destructive/privileged and is not permitted during plan exploration.\n"
+      },
+      {
+        "provider": "claude",
+        "case": "warning",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "{\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"additionalContext\": \"[greenlight] Detected file deletion: `rm` \u2014 requesting user confirmation.\"\n  }\n}\n",
+        "stderr": "",
+        "exit_status": 0,
+        "log": "2026-09-13T01:58:59Z [PASS] Bash: known destructive command\n"
+      },
+      {
+        "provider": "claude",
+        "case": "malformed",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      },
+      {
+        "provider": "claude",
+        "case": "unrelated",
+        "root_variable": "CLAUDE_PLUGIN_ROOT",
+        "stdout": "",
+        "stderr": "",
+        "exit_status": 0,
+        "log": ""
+      }
+    ]
+  }
+]

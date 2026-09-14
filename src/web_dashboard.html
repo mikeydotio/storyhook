@@ -1300,7 +1300,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    z-index 50: above the app workspace, below every modal (51), since the
    delete modal a menu item can open must be able to cover it. */
 .ctxmenu {
-  position: fixed; min-width: 12rem; max-height: 20rem; overflow-y: auto;
+  position: fixed; min-width: 12rem; max-height: min(20rem, calc(100dvh - 16px)); overflow-y: auto;
   background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-sm);
   box-shadow: var(--shadow-lg); padding: 0.375rem; z-index: 50;
 }
@@ -1943,7 +1943,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
 <div class="backdrop" id="dispatch-modal-backdrop" data-overlay="dispatch-modal" hidden></div>
 <div class="modal" id="dispatch-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="dispatch-modal-header">
-  <div class="modal-header" id="dispatch-modal-header">Dispatch story</div>
+  <div class="modal-header" id="dispatch-modal-header" tabindex="-1">Dispatch story</div>
   <div class="modal-body">
     <div class="field-grid">
       <div class="field"><label for="dispatch-client">Client</label>
@@ -2016,7 +2016,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       </div>
       <div class="engine-stop-choice">
         <strong>Stop now</strong>
-        <span>Active claims are released and their windows are closed. Branches and worktrees are preserved.</span>
+        <span>Unfinished stories are reset: their windows, worktrees, local branches, and uncommitted work are removed. Stories already verifying continue unchanged.</span>
       </div>
     </div>
     <div class="modal-error" id="engine-stop-modal-error"></div>
@@ -2025,23 +2025,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     <button type="button" class="btn btn-ghost" id="engine-stop-cancel">Cancel</button>
     <button type="button" class="btn btn-warn" id="engine-stop-drain">Drain</button>
     <button type="button" class="btn btn-danger-solid" id="engine-stop-now">Stop now</button>
-  </div>
-</div>
-
-<div class="backdrop" id="reset-modal-backdrop" data-overlay="reset-modal" hidden></div>
-<div class="modal" id="reset-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="reset-modal-header">
-  <div class="modal-header" id="reset-modal-header">Reset story</div>
-  <div class="modal-body">
-    <p id="reset-modal-summary"></p>
-    <p>The story returns to Todo. Its worktree and tmux window are removed. Branches, commits, and story history are preserved.</p>
-    <label><input type="checkbox" id="reset-force" aria-describedby="reset-force-warning"> Force</label>
-    <p id="reset-force-warning">Force permanently discards uncommitted worktree changes and removes locked worktrees.</p>
-    <div class="modal-error" id="reset-modal-error" role="alert"></div>
-    <div id="reset-modal-progress" role="status"></div>
-  </div>
-  <div class="modal-footer">
-    <button type="button" class="btn btn-ghost" id="reset-modal-cancel">Cancel</button>
-    <button type="button" class="btn btn-danger-solid" id="reset-modal-submit">Reset story</button>
   </div>
 </div>
 
@@ -2057,6 +2040,35 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   <div class="modal-footer">
     <button type="button" class="btn btn-ghost" id="close-modal-cancel">Cancel</button>
     <button type="button" class="btn btn-primary" id="close-modal-submit">Drop story</button>
+  </div>
+</div>
+
+<div class="backdrop" id="verify-override-backdrop" data-overlay="verify-override-modal" hidden></div>
+<div class="modal" id="verify-override-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="verify-override-header">
+  <div class="modal-header" id="verify-override-header">Override verification?</div>
+  <div class="modal-body">
+    <div id="verify-override-summary"></div>
+    <div class="field"><label for="verify-override-reason">Reason</label>
+      <input type="text" id="verify-override-reason" placeholder="Why is this story done without the verifier's verdict?" autocomplete="off"></div>
+    <div class="modal-error" id="verify-override-error"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="verify-override-cancel">Cancel</button>
+    <button type="button" class="btn btn-primary" id="verify-override-submit">Override and complete</button>
+  </div>
+</div>
+
+<div class="backdrop" id="reset-modal-backdrop" data-overlay="reset-modal" hidden></div>
+<div class="modal" id="reset-modal" tabindex="-1" aria-hidden="true" role="alertdialog" aria-modal="true" aria-labelledby="reset-modal-header" aria-describedby="reset-modal-summary">
+  <div class="modal-header" id="reset-modal-header">Reset story</div>
+  <div class="modal-body">
+    <p id="reset-modal-summary"></p>
+    <div class="field"><label for="reset-confirmation">Type the story ID to confirm</label><input id="reset-confirmation" type="text" autocomplete="off" spellcheck="false"></div>
+    <div class="modal-error" id="reset-modal-error" role="status" aria-live="polite"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="reset-modal-cancel">Cancel</button>
+    <button type="button" class="btn btn-danger-solid" id="reset-modal-submit">Reset story</button>
   </div>
 </div>
 
@@ -2783,6 +2795,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // sequence under one in-flight claim.
     engineAcknowledgements: Object.create(null),
     verificationRequests: Object.create(null),
+    verificationObservations: Object.create(null),
     engineLanes: 1,
     // Story id -> {handle, timer, agent, auto} for a dispatch this tab is polling
     // (SH-50). Keyed per-story rather than one global slot, matching the
@@ -2791,6 +2804,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // by OUTCOME, not by mode: a success toasts and clears itself, a failure
     // stays until dismissed (SH-304) -- see `finishDispatch`.
     dispatches: {},
+    resets: Object.create(null),
     // Durable rows for --auto dispatches that did NOT succeed, newest first
     // -- see `addDispatchHistoryRow`/`buildDispatchHistoryRow`. Not persisted
     // across a reload: it exists to survive a self-clearing notice's own
@@ -3084,7 +3098,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var current = document.activeElement;
     var first = candidates[0];
     var last = candidates[candidates.length - 1];
-    if (e.shiftKey && current === first) {
+    // Static initial focus (such as a dialog heading) may precede every
+    // tab stop. Reverse Tab must wrap there too, while preserving notice
+    // controls that genuinely precede it in the document's eligible order.
+    var beforeFirst = current && activeSurface.contains(current) &&
+      (first.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_PRECEDING);
+    if (e.shiftKey && (current === first || beforeFirst)) {
       e.preventDefault();
       last.focus();
     } else if (!e.shiftKey && current === last) {
@@ -5175,7 +5194,21 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function renderVerificationBanner() {
     var mount = $("verification-banner-region");
     var incident = state.data && state.data.verification_incident;
-    var visible = !!(incident && incident.halted);
+    var halted = !!(incident && incident.halted);
+    var verifier = state.data && state.data.verifier;
+    var control = state.data && state.data.verification_control;
+    var mode = control && control.state;
+    var recovery = verifier && verifier.recovery;
+    var request = recovery && recovery.request;
+    var requestState = request && request.outcome && request.outcome.state;
+    var transition = JSON.stringify([mode, verifier && verifier.active && verifier.active.attempt_id, request && request.id, requestState]);
+    var observation = state.verificationObservations[state.repoId] || { halted: false, transition: null, resumed: false };
+    if (observation.halted && !halted) observation.resumed = true;
+    else if (observation.resumed && observation.transition !== transition) observation.resumed = false;
+    observation.halted = halted;
+    observation.transition = transition;
+    state.verificationObservations[state.repoId] = observation;
+    var visible = halted || !!(mode && mode !== "running") || !!(verifier && verifier.warning) || observation.resumed || requestState === "scheduled";
     mount.hidden = !visible;
     if (!visible) {
       delete mount.dataset.fingerprint;
@@ -5183,9 +5216,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return;
     }
     var pending = state.verificationRequests[state.repoId];
-    var fingerprint = JSON.stringify([incident, pending]);
+    var fingerprint = JSON.stringify([incident, pending, verifier, mode, observation.resumed]);
     if (mount.dataset.fingerprint === fingerprint) return;
     clear(mount);
+    if (!halted) {
+      var title = mode === "stopped" ? "Central verification stopped" : mode === "stopping" ? "Central verification stopping" : mode === "draining" ? "Central verification draining" : observation.resumed ? "Central verification halt cleared" : requestState === "scheduled" ? "Central verification retry scheduled" : "Central verification needs attention";
+      var children = [el("div", { class: "engine-banner-title" }, [title])];
+      if (verifier && verifier.warning) children.push(el("div", {}, [verifier.warning]));
+      if (request) children.push(el("div", {}, ["Recovery request ", el("code", {}, [request.id]), ": ", requestState]));
+      if (request && request.admission) children.push(el("div", {}, ["Attempt ", el("code", {}, [request.admission.attempt_id]), " on ", request.admission.story_id]));
+      if (recovery && recovery.acknowledgement) children.push(el("div", {}, ["Acknowledged ", recovery.acknowledgement.incident.incident_id, " at ", timeNode(recovery.acknowledgement.at, "second")]));
+      if (mode === "stopped") children.push(el("button", { type: "button", class: "btn", disabled: !!pending, onClick: function() { submitVerificationRequest("control", { action: "start" }); } }, ["Start verifier"]));
+      children.push(el("div", {}, ["Diagnostics: ", el("code", {}, ["story verifier status"]), " · ", el("code", {}, ["story daemon logs"])]));
+      mount.appendChild(el("article", { class: "engine-banner", role: "status" }, children));
+      mount.dataset.fingerprint = fingerprint;
+      measureNoticeBands();
+      return;
+    }
     mount.appendChild(el("article", { class: "engine-banner verification-halted-banner" }, [
       el("div", { class: "engine-banner-head" }, [
         el("div", { class: "engine-banner-title" }, ["Central verification halted"]),
@@ -5201,7 +5248,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       el("div", { class: "engine-banner-meta" }, [
         el("span", {}, ["First hit on ", el("code", {}, [incident.story_id]), " (not its fault)"]),
         el("span", {}, [String(incident.attempts) + " attempt" + (incident.attempts === 1 ? "" : "s")]),
-        el("span", {}, ["First failure ", el("code", {}, [incident.first_failed_at])])
+        el("span", {}, ["First failure ", el("code", {}, [timeNode(incident.first_failed_at, "second")])])
       ]),
       el("div", { class: "engine-banner-quarantines" }, [incident.detail])
     ]));
@@ -5227,6 +5274,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       boardFetchFloor = boardFetchTicket;
       if (state.data) {
         if (response.state) state.data.verification_control = { state: response.state };
+        if (response.verifier) state.data.verifier = response.verifier;
         var incident = state.data.verification_incident;
         if (incident && incident.incident_id === response.acknowledged) state.data.verification_incident = null;
       }
@@ -5377,6 +5425,56 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var control = el("div", { class: "engine-launch" }, [button]);
     syncEngineControl(control);
     return control;
+  }
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+  /** The viewer's local wall-clock for a stored RFC3339 UTC instant (SH-679).
+   * `mode` is "date" (YYYY-MM-DD), "minute" (YYYY-MM-DD HH:MM) or "second"
+   * (YYYY-MM-DD HH:MM:SS). Display only: every sort key and threshold still
+   * compares the raw server string (docs/spec/recency-ordering.md). The shape
+   * stays ISO-like rather than locale-formatted so the fixed-width metadata
+   * columns keep their width and a value reads the same as the CLI prints it.
+   * An unparseable value is shown as received: the stored string is the only
+   * evidence, and hiding it would be worse than showing it unconverted. */
+  function localStamp(at, mode) {
+    if (!at) return "";
+    var ms = Date.parse(at);
+    if (!Number.isFinite(ms)) return String(at);
+    var d = new Date(ms);
+    var date = d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+    if (mode === "date") return date;
+    var time = pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    if (mode === "second") time += ":" + pad2(d.getSeconds());
+    return date + " " + time;
+  }
+
+  /** The IANA zone the browser is converting into, for the hover title; "" when
+   * the runtime cannot say. Resolved once: a page's zone does not change
+   * between renders, and a list paints one <time> per row. */
+  var viewerZoneName = null;
+  function viewerZone() {
+    if (viewerZoneName !== null) return viewerZoneName;
+    try {
+      var zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      viewerZoneName = zone ? String(zone) : "";
+    } catch (_error) {
+      viewerZoneName = "";
+    }
+    return viewerZoneName;
+  }
+
+  /** The one door for an absolute time in this page: a <time> whose text is
+   * `localStamp(at, mode)`, whose `datetime` is the stored instant, and whose
+   * title names that instant as UTC and the zone it is shown in. Callers pass
+   * a non-empty `at`; tests/dashboard_local_time.rs refuses any `*_at` field
+   * rendered around this function. */
+  function timeNode(at, mode) {
+    var zone = viewerZone();
+    return el("time", {
+      datetime: at,
+      title: at + " UTC" + (zone ? " · shown in " + zone : "")
+    }, [localStamp(at, mode)]);
   }
 
   function formatEngineElapsed(startedAt) {
@@ -6045,7 +6143,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       }
     });
     showBackdrop("dispatch-modal-backdrop");
-    activateOverlay("dispatch-modal", "dispatch-agent");
+    // Safari can present a native select's picker when it receives initial
+    // focus. Start at the heading so Provider requires explicit navigation.
+    activateOverlay("dispatch-modal", "dispatch-modal-header");
     // Preserve the invoker explicitly so Cancel/Escape does not return focus
     // to <body>. Context-menu actions remove their menu node before invoking
     // us, and WebKit pointer clicks do not necessarily focus footer buttons.
@@ -6675,11 +6775,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           : null,
         onSelect: function() { openDispatchModal(st.id, invoker); }
       },
-      dispatchHidden ? null : {
-        label: "Reset", danger: true,
-        disabled: dispatchInFlight || !!state.pending[st.id],
-        onSelect: function() { openResetModal(st.id, st.title); }
-      },
       { separator: true },
       (function() {
         var items = statusMenuItems(st);
@@ -6709,6 +6804,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         submenu: { ariaLabel: "Set priority", items: priorityMenuItems(st) }
       },
       { separator: true },
+      isClosed || st.story_type === "epic" ? null : {
+        label: "Reset…", danger: true,
+        disabled: !!state.pending[st.id] || !!state.resets[state.repoId + "/" + st.id],
+        disabledReason: state.resets[state.repoId + "/" + st.id] ? "A reset is already in progress for this story" : null,
+        onSelect: function() { openResetModal(st.id, st.title, invoker); }
+      },
       canCloseStory(st) ? {
         label: "Drop",
         disabled: !!state.pending[st.id],
@@ -6933,11 +7034,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * per Added/Modified/Priority x ascending/descending choice; the story
    * menu never sets it, so its own items are unaffected. `submenu`, when
    * present, is an opaque `{ariaLabel, items}` -- this function never reads
-   * either field, only forwards the whole object to `openSubmenu` on click
-   * (only the story menu's "Set Status" row has one); `closeMenu` is the
+   * either field, only forwards the whole object to `openSubmenu` on click.
+   * `hoverItem`, when supplied, owns mouse hover behavior for every row;
+   * flat menus omit it and retain explicit activation. `closeMenu` is the
    * owning menu's own close function, run before an ordinary item's
    * `onSelect`. */
-  function renderMenuNode(model, ariaLabel, closeMenu, openSubmenu) {
+  function renderMenuNode(model, ariaLabel, closeMenu, openSubmenu, hoverItem) {
     var node = el("div", { class: "ctxmenu", role: "menu", "aria-label": ariaLabel }, []);
     model.forEach(function(entry) {
       if (entry.separator) {
@@ -6945,6 +7047,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         return;
       }
       var disabled = !!entry.disabled;
+      var onPointerEnter = hoverItem ? function(evt) {
+        // Touch synthesizes pointerenter before a tap; only a mouse previews.
+        if (evt.pointerType === "mouse") hoverItem(evt.currentTarget, entry);
+      } : null;
       if (entry.submenu) {
         var arrow = emojiIcon("submenu", { className: "disclosure-icon", direction: "right" });
         arrow.classList.add("ctxmenu-arrow");
@@ -6953,8 +7059,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           role: "menuitem",
           tabIndex: -1,
           "aria-haspopup": "true",
+          "aria-expanded": "false",
           "aria-disabled": disabled ? "true" : null,
           title: entry.title || null,
+          onPointerEnter: onPointerEnter,
           onClick: function(evt) {
             evt.stopPropagation();
             if (disabled) return;
@@ -6976,6 +7084,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         tabIndex: -1,
         "aria-disabled": disabled ? "true" : null,
         title: disabledReason || entry.title || null,
+        onPointerEnter: onPointerEnter,
         onClick: function() {
           if (disabled) return;
           closeMenu(false);
@@ -6996,7 +7105,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var model = storyMenuModel(v, invoker);
     if (!model.length) return;
     storyMenuInvoker = invoker;
-    storyMenuNode = renderMenuNode(model, "Story actions", closeStoryMenu, openStorySubmenu);
+    storyMenuNode = renderMenuNode(model, "Story actions", closeStoryMenu, openStorySubmenu, hoverStoryMenuItem);
     storyMenuNode.tabIndex = -1;
     storyMenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
     storyMenuNode.addEventListener("keydown", bindStoryMenuKeys);
@@ -7030,8 +7139,31 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (restoreFocus && invoker && document.body.contains(invoker)) invoker.focus();
   }
 
+  /** Keeps pointer and keyboard navigation on the same roving menu item. */
+  function focusStoryMenuItem(item) {
+    var items = Array.prototype.slice.call(storyMenuNode.querySelectorAll(".ctxmenu-item"));
+    storyMenuFocusIndex = focusMenuItem(storyMenuNode, items.indexOf(item), storyMenuFocusIndex);
+  }
+
+  /** Previews a mouse-hovered submenu without entering it. No leave handler:
+   * the popover is a DOM sibling and must survive travel from its parent. */
+  function hoverStoryMenuItem(item, entry) {
+    focusStoryMenuItem(item);
+    if (entry.submenu && !entry.disabled) openStorySubmenu(item, entry.submenu, false);
+    else closeStorySubmenu();
+  }
+
   function bindStoryMenuKeys(e) {
-    handleMenuKeydown(e, storyMenuNode, storyMenuFocusIndex, function(v) { storyMenuFocusIndex = v; }, closeStoryMenu);
+    if (storySubmenuNode && (e.key === "Escape" || e.key === "ArrowLeft")) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeStorySubmenu(true);
+      return;
+    }
+    handleMenuKeydown(e, storyMenuNode, storyMenuFocusIndex, function(v) {
+      storyMenuFocusIndex = v;
+      closeStorySubmenu();
+    }, closeStoryMenu);
   }
 
   function storySubmenuItemNodes() {
@@ -7100,10 +7232,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * and the rare case where even the flipped position also overflows on a
    * narrow viewport. `submenu` is the opaque `{ariaLabel, items}` object
    * `renderMenuNode` forwarded from the model, unread by anything in
-   * between. */
-  function openStorySubmenu(parentItem, submenu) {
+   * between. Hover passes `enter = false`; explicit activation enters the
+   * first item, including when the same submenu is already visible. */
+  function openStorySubmenu(parentItem, submenu, enter) {
+    focusStoryMenuItem(parentItem);
+    if (storySubmenuParentItem === parentItem) {
+      if (enter !== false) storySubmenuFocusItem(0);
+      return;
+    }
     closeStorySubmenu();
     storySubmenuParentItem = parentItem;
+    parentItem.setAttribute("aria-expanded", "true");
     storySubmenuNode = renderStorySubmenuNode(submenu.ariaLabel, submenu.items);
     storySubmenuNode.tabIndex = -1;
     storySubmenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
@@ -7113,14 +7252,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var subRect = storySubmenuNode.getBoundingClientRect();
     var x = (rect.right + subRect.width <= window.innerWidth - 8) ? rect.right : rect.left - subRect.width;
     placeMenu(storySubmenuNode, x, rect.top);
-    storySubmenuFocusItem(0);
+    if (enter !== false) storySubmenuFocusItem(0);
   }
 
-  function closeStorySubmenu() {
+  /** Clears the open parent state and optionally restores its roving focus. */
+  function closeStorySubmenu(restoreFocus) {
+    var parent = storySubmenuParentItem;
+    if (parent) parent.setAttribute("aria-expanded", "false");
     if (storySubmenuNode && storySubmenuNode.parentNode) detach(storySubmenuNode);
     storySubmenuNode = null;
     storySubmenuFocusIndex = -1;
     storySubmenuParentItem = null;
+    if (restoreFocus && parent) focusStoryMenuItem(parent);
   }
 
   /** Bound to the submenu node itself, not the main menu's -- a DOM
@@ -7147,9 +7290,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     } else if (e.key === "Escape" || e.key === "ArrowLeft") {
       e.preventDefault();
       e.stopPropagation();
-      var parent = storySubmenuParentItem;
-      closeStorySubmenu();
-      if (parent) parent.focus();
+      closeStorySubmenu(true);
     } else if (e.key === "Tab") {
       closeStoryMenu(false);
     }
@@ -9625,6 +9766,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         openDropBlockedReasonModal(id);
         return;
       }
+      // SH-692: a `verifying` card belongs to the central verifier. Dropping
+      // it on Done is an override, which needs the operator's reason — the
+      // service refuses the bare move — so the drop defers to a prompt that,
+      // unlike Blocked's, is NOT skippable: no reason, no move.
+      if (currentSlug === "verifying" && targetSlug === "done") {
+        openVerifyOverrideModal(id);
+        return;
+      }
       moveStory(id, targetSlug, isClosed);
     });
   }
@@ -9700,7 +9849,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `reason` (SH-205) is optional and only meaningful alongside a move into
    * an OPEN state — the server refuses it combined with a close, so it is
    * never sent on the `targetIsClosed` path. */
-  function moveStory(id, targetSlug, targetIsClosed, reason) {
+  function moveStory(id, targetSlug, targetIsClosed, reason, comment) {
     var story = findStory(id);
     if (!story) return;
     var originSlug = story.story.state;
@@ -9710,9 +9859,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     var body = { state: targetSlug };
     if (reason) body.reason = reason;
+    // `comment` (SH-692) is the override reason a Verifying -> Done move
+    // carries; it rides the closed path only, as `story move <id> done
+    // "<why>"` does, and is absent from every other drop.
+    var closedBody = { state: targetSlug };
+    if (comment) closedBody.comment = comment;
 
     var request = targetIsClosed
-      ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", { state: targetSlug })
+      ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", closedBody)
       : (stateSuperstate(originSlug) === "CLOSED"
           ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/reopen", {})
           : api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", body));
@@ -10804,11 +10958,34 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return pill;
   }
 
+  // Keep generated DOM separate from live attributes such as roving tabindex.
+  // Weak keys release snapshots when their old list slots are removed.
+  var listSlotSnapshots = new WeakMap();
+
+  /** List layouts have fixed ordered slots; optional values stay inside them.
+   * Compare each slot's generated output so changing a date or Details value
+   * cannot detach an unchanged focused control in another slot. */
+  function reconcileListSlots(parent, candidateParent) {
+    var candidates = Array.prototype.slice.call(candidateParent.children);
+    candidates.forEach(function(candidate, index) {
+      var previous = parent.children[index];
+      var rendered = previous && listSlotSnapshots.get(previous);
+      if (rendered && rendered.isEqualNode(candidate)) return;
+      listSlotSnapshots.set(candidate, candidate.cloneNode(true));
+      if (previous) {
+        parent.insertBefore(candidate, previous);
+        detach(previous);
+      }
+      else parent.appendChild(candidate);
+    });
+    while (parent.children.length > candidates.length) detach(parent.lastElementChild);
+  }
+
   function populateListRow(row, v, ready, blocked) {
     var st = v.story;
     var engineLane = engineLaneForStory(st.id);
     var engineLaneDesc = engineLaneDescription(engineLane);
-    var updated = (st.updated_at || "").slice(0, 10);
+    var updated = st.updated_at ? timeNode(st.updated_at, "date") : "";
     var order = nextRank(st.id);
     row.setAttribute(
       "aria-label",
@@ -10816,21 +10993,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     );
     row.style.borderLeft = blocked[st.id] ? "3px solid var(--danger)" : "";
 
-    /* SH-425: build the candidate cells off-tree and destroy the live row's
-       children only when their rendered output actually changed. The list used
-       to clear every reused row on every render, even when a comment or another
-       story's mutation changed nothing this row displays. Besides needless DOM
-       churn, that discarded focus inside `.row-actions-btn`; SH-401's press gate
-       protects a primary pointer gesture, but it deliberately does not turn a
-       no-op render into a reason to replace an unchanged subtree.
-
-       Compare the output rather than a hand-built input fingerprint, matching
-       populateCard's SH-399 rule: this renderer reaches through helpers into
-       metadata and other state (`buildTypeBadge`, `buildStatePill`,
-       `priorityDot`, `labelChips`, `memberName`, `nextRank`), so its argument is
-       not its complete input. Move the detached children with appendChild so
-       their listeners survive; never parse the stored serialization back into
-       the live row. */
+    /* SH-425: build cells off-tree and retain unchanged cells with their listeners.
+       Output includes metadata and helper state, so it is the comparison key.
+       Exact timestamp metadata can change without changing the Actions cell. */
     var next = el("tr", {}, []);
     var badge = buildTypeBadge(st.story_type);
     next.appendChild(el("td", { class: "col-id" }, badge ? [badge, " ", st.id] : [st.id]));
@@ -10859,12 +11024,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }, [emojiIcon("actions")]);
     next.appendChild(el("td", { class: "col-actions" }, [rowActionsBtn]));
 
-    var rendered = next.innerHTML;
-    if (row.dataset.rendered !== rendered) {
-      clear(row);
-      while (next.firstChild) row.appendChild(next.firstChild);
-      row.dataset.rendered = rendered;
-    }
+    reconcileListSlots(row, next);
   }
 
   /** Keyed mobile-list reconcile. The title button, rather than the `<li>`,
@@ -10932,7 +11092,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var shownState = v.display_state || st.state;
     var promoted = shownState !== st.state;
     var order = nextRank(id);
-    var updated = (st.updated_at || "").slice(0, 10) || "—";
+    var updated = st.updated_at ? timeNode(st.updated_at, "date") : "—";
     var detailsId = "mobile-story-details-" + id;
     item.style.borderLeft = blocked[id] ? "3px solid var(--danger)" : "";
 
@@ -10998,12 +11158,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     appendMobileDetail(details, "Full Auto", engineLaneDesc || "—");
     next.appendChild(details);
 
-    var rendered = next.innerHTML;
-    if (item.dataset.rendered !== rendered) {
-      clear(item);
-      while (next.firstChild) item.appendChild(next.firstChild);
-      item.dataset.rendered = rendered;
-    }
+    reconcileListSlots(item, next);
   }
 
   /** Briefly highlights a row that either just appeared or has a field
@@ -11242,7 +11397,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       } else {
         candidate.dataset.drawerRendered = rendered;
         chosen = candidate;
-        if (previous) parent.replaceChild(chosen, previous);
+        if (previous) {
+          parent.insertBefore(chosen, previous);
+          detach(previous);
+        }
         else {
           parent.insertBefore(chosen, cursor);
           inPosition = true;
@@ -11777,6 +11935,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return o;
     }));
     stateSelect.addEventListener("change", function() {
+      // SH-692: the same override prompt the board drop uses; the select
+      // shows `verifying` again until the reason is submitted.
+      if (st.state === "verifying" && stateSelect.value === "done") {
+        stateSelect.value = st.state;
+        openVerifyOverrideModal(st.id);
+        return;
+      }
       var closed = stateSuperstate(stateSelect.value) === "CLOSED";
       var wasClosed = stateSuperstate(st.state) === "CLOSED";
       var path = wasClosed && !closed ? "reopen" : "move";
@@ -12238,7 +12403,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var list = el("div", { class: "comments" }, []);
       comments.slice().reverse().forEach(function(c) {
         list.appendChild(el("div", { class: "comment" }, [
-          el("div", { class: "comment-meta" }, [(c.at || "").replace("T", " ").slice(0, 16)]),
+          el("div", { class: "comment-meta" }, [c.at ? timeNode(c.at, "minute") : ""]),
           el("div", { class: "comment-text md" }, [renderMarkdown(c.text, st.id)])
         ]));
       });
@@ -12266,13 +12431,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var list = el("div", { class: "referenced-by-list" }, []);
     commits.forEach(function(c) {
       list.appendChild(el("div", { class: "referenced-by-row" }, [
-        el("span", { class: "referenced-by-meta" }, [(c.at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-meta" }, [c.at ? timeNode(c.at, "minute") : ""]),
         el("span", { class: "referenced-by-text" }, ["[git] " + c.sha.slice(0, 7) + ": " + c.subject])
       ]));
     });
     prs.forEach(function(p) {
       list.appendChild(el("div", { class: "referenced-by-row" }, [
-        el("span", { class: "referenced-by-meta" }, [(p.linked_at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-meta" }, [p.linked_at ? timeNode(p.linked_at, "minute") : ""]),
         el("span", { class: "referenced-by-text" }, [
           el("a", { href: p.url, target: "_blank", rel: "noopener" }, [
             "PR " + p.owner + "/" + p.repo + "#" + p.number
@@ -12285,7 +12450,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // is half of one. Same storyRef() affordance the relationships list uses.
     mentions.forEach(function(m) {
       list.appendChild(el("div", { class: "referenced-by-row" }, [
-        el("span", { class: "referenced-by-meta" }, [(m.at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-meta" }, [m.at ? timeNode(m.at, "minute") : ""]),
         el("span", { class: "referenced-by-text" }, [
           storyRef(m.other_id),
           " " + m.snippet
@@ -15075,61 +15240,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** The story being deliberately closed, and the claim that prevents a held
    * Enter or double press from issuing several state changes. Kept separate for
    * the same subject-vs-request reason the delete modal documents below. */
-  var resetModalTarget = null;
-  var resetModalInFlight = false;
-  var resetModalOpenFrame = null;
-
-  function setResetModalInFlight(value) {
-    resetModalInFlight = value;
-    ["reset-modal-submit", "reset-modal-cancel", "reset-force"].forEach(function(id) { $(id).disabled = value; });
-    $("reset-modal-progress").textContent = value ? "Resetting workspace…" : "";
-  }
-
-  /** Pin the project as well as the story: navigation cannot retarget cleanup. */
-  function openResetModal(id, title) {
-    resetModalTarget = { id: id, repo: state.repoId };
-    setResetModalInFlight(false);
-    $("reset-force").checked = false;
-    $("reset-modal-summary").textContent = "Reset " + id + (title ? " — " + title : "") + "?";
-    $("reset-modal-error").textContent = "";
-    showBackdrop("reset-modal-backdrop");
-    activateOverlay("reset-modal", "reset-modal-cancel");
-    resetModalOpenFrame = requestAnimationFrame(function() {
-      resetModalOpenFrame = null;
-      if (overlayStack[overlayStack.length - 1] !== "reset-modal") return;
-      $("reset-modal").classList.add("open");
-      $("reset-modal").setAttribute("aria-hidden", "false");
-    });
-  }
-
-  function closeResetModal() {
-    if (resetModalInFlight) return;
-    if (resetModalOpenFrame !== null) cancelAnimationFrame(resetModalOpenFrame);
-    resetModalOpenFrame = null;
-    resetModalTarget = null;
-    hideBackdrop("reset-modal-backdrop");
-    $("reset-modal").classList.remove("open");
-    $("reset-modal").setAttribute("aria-hidden", "true");
-    releaseOverlay("reset-modal");
-  }
-
-  function submitResetStory() {
-    if (resetModalInFlight || !resetModalTarget) return;
-    var target = resetModalTarget;
-    setResetModalInFlight(true);
-    api("POST", repoApiBase(target.repo) + "/story/" + encodeURIComponent(target.id) + "/reset", { force: $("reset-force").checked })
-      .then(function(resp) {
-        setResetModalInFlight(false);
-        closeResetModal();
-        toast(target.id + " reset to Todo", "success");
-        if (state.repoId === target.repo) handleMutationSuccess(resp);
-      })
-      .catch(function(err) {
-        setResetModalInFlight(false);
-        $("reset-modal-error").textContent = describeMutationFailure(err);
-      });
-  }
-
   var closeModalStoryId = null;
   var closeModalInFlight = false;
   var closeModalOpenFrame = null;
@@ -15201,6 +15311,142 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         setCloseModalInFlight(false);
         $("close-modal-error").textContent = describeMutationFailure(err);
       });
+  }
+
+  /** The story id the verification-override prompt (SH-692) is open for, or
+   * `null`. Opened by a Verifying -> Done drop on the board and by the
+   * drawer's state select; both are the same override, so both read the
+   * same reason and send the same `/move` with `comment`. */
+  var verifyOverrideStoryId = null;
+  var verifyOverrideInFlight = false;
+  var verifyOverrideOpenFrame = null;
+
+  function setVerifyOverrideInFlight(value) {
+    verifyOverrideInFlight = value;
+    $("verify-override-submit").disabled = value;
+    $("verify-override-cancel").disabled = value;
+  }
+
+  function openVerifyOverrideModal(id) {
+    var story = findStory(id);
+    verifyOverrideStoryId = id;
+    setVerifyOverrideInFlight(false);
+    $("verify-override-summary").textContent =
+      id + (story ? " — " + story.story.title : "") +
+      " is under central verification. Completing it by hand overrides the verifier: " +
+      "its running attempt is cancelled and your reason is recorded on the story.";
+    $("verify-override-reason").value = "";
+    $("verify-override-error").textContent = "";
+    showBackdrop("verify-override-backdrop");
+    activateOverlay("verify-override-modal", "verify-override-reason");
+    verifyOverrideOpenFrame = requestAnimationFrame(function() {
+      verifyOverrideOpenFrame = null;
+      // Same guard as the close modal: a rapid Escape/Cancel between the
+      // synchronous activation and this frame must not reopen the surface.
+      if (overlayStack[overlayStack.length - 1] !== "verify-override-modal") return;
+      $("verify-override-modal").classList.add("open");
+      $("verify-override-modal").setAttribute("aria-hidden", "false");
+    });
+  }
+
+  function closeVerifyOverrideModal() {
+    if (verifyOverrideInFlight) return;
+    if (verifyOverrideOpenFrame !== null) {
+      cancelAnimationFrame(verifyOverrideOpenFrame);
+      verifyOverrideOpenFrame = null;
+    }
+    verifyOverrideStoryId = null;
+    hideBackdrop("verify-override-backdrop");
+    $("verify-override-modal").classList.remove("open");
+    $("verify-override-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("verify-override-modal");
+  }
+
+  /** The one door out that moves the card: a non-empty reason. Cancel,
+   * backdrop and Escape leave the story exactly where it was, in
+   * `verifying` — the prompt gates the move, unlike Blocked's. */
+  function submitVerifyOverride() {
+    if (verifyOverrideInFlight) return;
+    var id = verifyOverrideStoryId;
+    if (!id) return;
+    var reason = $("verify-override-reason").value.trim();
+    if (!reason) {
+      $("verify-override-error").textContent = "A reason for overriding verification is required.";
+      return;
+    }
+    verifyOverrideStoryId = null;
+    closeVerifyOverrideModal();
+    moveStory(id, "done", true, undefined, reason);
+  }
+
+  // Captured identity keeps a delayed reset result scoped to its original project.
+  var resetModal = null;
+
+  function openResetModal(id, title, invoker) {
+    var project = state.repoId;
+    var key = project + "/" + id;
+    if (state.resets[key]) return;
+    resetModal = { id: id, project: project, key: key, base: repoApiBase(project), busy: false };
+    $("reset-confirmation").value = "";
+    $("reset-modal-error").textContent = "";
+    $("reset-modal-summary").textContent = "Reset " + id + " — " + title + "? This stops its worker and returns it to todo. Its worktree, local branch, and all uncommitted or unpushed work will be permanently removed. Remote branches and pull requests remain. Type " + id + " exactly to confirm.";
+    setResetBusy(false);
+    showBackdrop("reset-modal-backdrop");
+    $("reset-modal").classList.add("open");
+    $("reset-modal").setAttribute("aria-hidden", "false");
+    activateOverlay("reset-modal", "reset-modal-cancel");
+    if (invoker) overlayReturnFocus["reset-modal"] = invoker;
+  }
+
+  function setResetBusy(busy) {
+    if (resetModal) resetModal.busy = busy;
+    ["reset-modal-submit", "reset-modal-cancel", "reset-confirmation"].forEach(function(id) { $(id).disabled = busy; });
+    $("reset-modal").setAttribute("aria-busy", String(busy));
+  }
+
+  function closeResetModal() {
+    if (!resetModal || resetModal.busy) return;
+    resetModal = null;
+    hideBackdrop("reset-modal-backdrop");
+    $("reset-modal").classList.remove("open");
+    $("reset-modal").setAttribute("aria-hidden", "true");
+    releaseOverlay("reset-modal");
+  }
+
+  function submitResetStory() {
+    var target = resetModal;
+    if (!target || target.busy || state.resets[target.key]) return;
+    if ($("reset-confirmation").value !== target.id) {
+      $("reset-modal-error").textContent = "Type " + target.id + " exactly to confirm.";
+      return;
+    }
+    state.resets[target.key] = true;
+    setResetBusy(true);
+    $("reset-modal-error").textContent = "Resetting " + target.id + "…";
+    var endpoint = target.base + "/story/" + encodeURIComponent(target.id) + "/reset";
+    function observe(response) {
+      var result = response && response.reset;
+      if (!result || result.story !== target.id || !result.handle) throw new Error("Invalid reset response for " + target.id);
+      if (result.state === "ok") return;
+      if (result.state === "error") throw new Error(result.detail || "Reset failed; retry to finish cleanup.");
+      if (result.state !== "running") throw new Error("Unknown reset state for " + target.id);
+      return new Promise(function(resolve) { setTimeout(resolve, 1000); }).then(function() {
+        return api("GET", endpoint + "/" + encodeURIComponent(result.handle), null);
+      }).then(observe);
+    }
+    api("POST", endpoint, { confirmation: target.id }).then(observe).then(function() {
+      delete state.resets[target.key];
+      if (resetModal === target) { setResetBusy(false); closeResetModal(); }
+      toast(target.id + " reset to todo", "success");
+      if (state.repoId === target.project) fetchData();
+    }).catch(function(error) {
+      delete state.resets[target.key];
+      if (resetModal === target) {
+        setResetBusy(false);
+        $("reset-modal-error").textContent = describeMutationFailure(error);
+      } else toast(describeMutationFailure(error), "error");
+      if (state.repoId === target.project) fetchData();
+    });
   }
 
   /** The story id the delete modal (SH-197) is currently open for, or
@@ -15496,13 +15742,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // an allowlist entry reading "this one is correct by accident", which is a
     // note that rots.
     bindEnterSubmit($("drop-blocked-reason-input"), submitDropBlockedReasonModal);
-    $("reset-modal-cancel").addEventListener("click", closeResetModal);
-    $("reset-modal-backdrop").addEventListener("click", closeResetModal);
-    $("reset-modal-submit").addEventListener("click", submitResetStory);
     $("close-modal-cancel").addEventListener("click", closeCloseModal);
     $("close-modal-backdrop").addEventListener("click", closeCloseModal);
     $("close-modal-submit").addEventListener("click", submitCloseStory);
     bindEnterSubmit($("close-reason"), submitCloseStory);
+    $("verify-override-cancel").addEventListener("click", closeVerifyOverrideModal);
+    $("verify-override-backdrop").addEventListener("click", closeVerifyOverrideModal);
+    $("verify-override-submit").addEventListener("click", submitVerifyOverride);
+    bindEnterSubmit($("verify-override-reason"), submitVerifyOverride);
+    $("reset-modal-cancel").addEventListener("click", closeResetModal);
+    $("reset-modal-backdrop").addEventListener("click", closeResetModal);
+    $("reset-modal-submit").addEventListener("click", submitResetStory);
     $("delete-modal-cancel").addEventListener("click", closeDeleteModal);
     $("delete-modal-backdrop").addEventListener("click", closeDeleteModal);
     $("delete-modal-close-instead").addEventListener("click", closeInsteadOfDelete);
@@ -15579,6 +15829,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         }
         if (overlayStack[overlayStack.length - 1] === "close-modal") {
           closeCloseModal();
+          return;
+        }
+        // The override prompt (SH-692) has the same standing as Close: it may
+        // sit over the drawer, and Escape dismisses only it, leaving the card
+        // in Verifying.
+        if (overlayStack[overlayStack.length - 1] === "verify-override-modal") {
+          closeVerifyOverrideModal();
           return;
         }
         // Read BEFORE the closers run, not after (SH-324). An open editor

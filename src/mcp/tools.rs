@@ -1012,9 +1012,11 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
 
         Invocation::Claim { .. } => Some("story_claim"),
         Invocation::Unclaim { .. } => Some("story_unclaim"),
-        Invocation::Reset { .. } => None,
+        Invocation::Reset { .. } | Invocation::SupersedeBlockDeliveries { .. } => None,
 
-        Invocation::Help
+        Invocation::Continuation { .. }
+        | Invocation::SessionEligibility { .. }
+        | Invocation::Help
         | Invocation::Project { .. }
         | Invocation::Publish { .. }
         | Invocation::MemberAdd { .. }
@@ -1065,7 +1067,7 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
         | Invocation::ProjectSnapshot
         | Invocation::History { .. }
         | Invocation::Attachment { .. } => None,
-        Invocation::Cleanup { .. } => None,
+        Invocation::Cleanup { .. } | Invocation::Resources { .. } => None,
     }
 }
 

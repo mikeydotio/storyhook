@@ -62,19 +62,10 @@ story --project "$slug" project link checkout "$other" >/dev/null
 
 out=$(cd "$repo/.claude/worktrees/$switched_name" \
   && bash "$SCRIPT" --project "$slug" reap "$switched_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "switched checkout: exact reap succeeds"
-assert_eq "$(jqf "$out" .receipt_version)" "1" \
-  "switched checkout: direct reap returns a typed receipt"
-assert_eq "$(jqf "$out" '.postconditions.worktree_registration_absent')" "true" \
-  "switched checkout: original registration absent"
-assert_eq "$(jqf "$out" '.postconditions.worktree_path_absent')" "true" \
-  "switched checkout: original path absent"
-assert_eq "$(jqf "$out" '.postconditions.branch_absent')" "true" \
-  "switched checkout: original branch absent"
-[ ! -d "$repo/.claude/worktrees/$switched_name" ] \
-  || fail_test "switched checkout: original worktree survived"
-(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$switched_name") \
-  && fail_test "switched checkout: original branch survived"
+assert_eq "$(jqf "$out" .ok)" false "switched checkout: duplicate story ownership refuses"
+assert_eq "$(jqf "$out" .reason)" resource-identity-unsafe "switched checkout: ambiguity is explicit"
+[ -d "$repo/.claude/worktrees/$switched_name" ] || fail_test "switched checkout: original evidence lost"
+[ -d "$other_root/unexpected-worktree" ] || fail_test "switched checkout: replacement evidence lost"
 
 # Origin fix: centralized cleanup carries the original dispatch identity. From
 # the clean replacement checkout, with no same-named target to collide with,

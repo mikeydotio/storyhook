@@ -15,6 +15,70 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> = std::
         let mut m = BTreeMap::new();
 
         m.insert("ste", include_str!("help/ste.txt"));
+        m.insert("continuation", r#"story continuation capabilities --json
+story continuation request <id> --stdin --json
+story continuation status <id> --json
+story continuation receipt <id> <request> --stdin --json
+story continuation retry <id> <request> --json
+story continuation ack <id> <request> --reviewed-seq <n> --head <sha> --provider codex|claude --session-id <session> --json
+
+Durable autonomous context handoffs preserve the story, branch, worktree, dirty
+files, approved scope, and launch settings. Context exhaustion is not a task
+dependency and does not clear existing holds. The daemon accepts handoffs only
+when the installed runtime can validate the current autonomous root session.
+
+Request reads the strict storyhook.session-handoff v1 envelope, original provider
+Stop payload, and provider from stdin. The native Stop hook returns the fixed
+continuation feedback after durable acceptance. Live providers use their native
+continuation and automatic compaction; the daemon never injects terminal input.
+Only a positively absent provider with retained owned resources may resume.
+
+Status returns result, story_id, snapshot_seq, and requests (each with id,
+generation, capture, handoff, status, phase, revision and diagnostics).
+Request/receipt/retry/ack return result and continuation. Request adds
+native_feedback: true only for the atomic creator of accepted context feedback;
+duplicates and administrative/held requests never replay feedback. Capabilities returns
+continuation_protocol: 1. All commands return JSON. Receipt is a provider-hook
+operation: it records native compaction evidence, never implementation approval.
+
+Before ack, reread the story, comments, relationships and durable handoff;
+inspect Git status/history/diff and relevant tests, and repeat obviation review.
+Pass the exact current snapshot_seq, Git HEAD, provider and root session ID.
+Plan mode defers acknowledgement until ordinary plan approval permits Default
+mode. Before moving to verifying, repeat the current review and refresh ack:
+a new durable correction or different HEAD invalidates the prior fence. Submit
+from the retained worktree and branch with all tracked, staged and untracked
+work committed (a clean worktree).
+Acknowledgement does not drain or certify unrecorded provider input queues.
+
+Retry never clears blockers or replays ambiguous live delivery. Resolve the
+reported ownership/observation issue first. A matching late acknowledgement can
+resolve an observation timeout. Three consecutive handoffs without changed HEAD
+or dirty content require attention. Obviation-review handoffs preserve evidence
+and reciprocal obviated-by edges and park open work for human determination;
+they never approve or close implementation.
+"#);
+
+        m.insert(
+            "session-eligibility",
+            r#"story session-eligibility <id>
+
+Read the tracker facts for continuing an already active autonomous session.
+Always returns JSON: result plus session_eligibility containing schema_version
+(1), story_id, eligible (boolean), and reason (eligible, closed, inactive,
+awaiting, or blocked). All facts use one read transaction and the domain's
+configured active-state and readiness rules. Bare numeric IDs are accepted.
+
+This does not claim work, approve a plan, validate a provider session, or grant
+operational permissions. Missing stories, unreadable data, and an unresolved
+active role are errors, never eligible. A provider must recheck before acting.
+
+Example:
+  story session-eligibility SH-1 --json
+
+Related: story show, story claim, story load-context
+"#,
+        );
 
         m.insert(
             "daemon",
@@ -47,9 +111,10 @@ per line. Plain output uses color only at a terminal (NO_COLOR disables it).
 Each record labels its source, stream, process and story/request context.
 Use --store-path to inspect a different store.
 
-The daemon opens storyhook-verifier:verification on the default tmux server
-as a continuous log view. STORYHOOK_VERIFIER_MIRROR=0 disables that view,
-without disabling the journal. A missing tmux is non-fatal.
+The daemon opens a store-specific activity window in storyhook-verifier on
+the default tmux server. Each project's verification uses a separate window.
+STORYHOOK_VERIFIER_MIRROR=0 disables these views without disabling the journal.
+A missing tmux or Python 3 activity helper is non-fatal.
 
 Daily files live at <daemon state directory>/activity/YYYY-MM-DD.jsonl.
 They are private, append across restarts, and are not automatically deleted.
@@ -340,31 +405,66 @@ Related:
         );
 
         m.insert(
+            "resources",
+            r#"story resources <id> [--lease-json JSON] [--window-name NAME]
+                [--worktree-root <PATH>] [--tmux-socket <PATH>] [--json]
+
+Inspect existing story resources independently of the caller's LLM. The reader
+combines recorded dispatch/cleanup identity, private Git markers and the complete
+Git worktree inventory, including custom paths and both legacy provider roots.
+
+JSON returns resources with status resolved, absent, ambiguous, invalid or
+unavailable; candidate provenance and diagnostics remain visible on refusal.
+This is a read-only observation, not permission to remove dirty or protected work.
+
+--lease-json binds an exact existing cleanup lease. --window-name and
+--worktree-root add discovery hints without excluding other evidence.
+--tmux-socket supplies the legacy server locator; a recorded lease wins over
+it. Otherwise the client carries its current/default socket to the daemon.
+Missing sockets prove absence on that server; failed observations never do.
+
+Conflicting live identities refuse selection, including under a helper's
+--force option. Repair stale registrations explicitly; discovery never prunes.
+Provider selection is required only when launching a session. Deterministic
+reset, unclaim, completion, cleanup and capture do not need STORY_AGENT.
+"#,
+        );
+
+        m.insert(
             "cleanup",
             r#"story cleanup [--dry-run]
 
-Safely remove inactive StoryHook-owned story workspaces. A candidate is
-eligible only when its versioned cleanup lease matches the current project,
-its exact tmux window is absent, the worktree is clean and unlocked, and
-every worktree/local/origin branch tip is contained by a freshly fetched
-origin default branch.
+Retry the centralized verifier's reap of a finished story's workspace. The
+verifier reaps a story's tmux window, worktree and local branch itself once
+its PR lands; cleanup is that reap's retry path and never an independent
+reaper. A candidate is eligible only when its versioned cleanup lease
+matches the current project, its story is CLOSED and carries the verifier's
+CENTRAL VERIFICATION CLEANUP COMPLETE or CLEANUP REQUIRED comment on its
+latest verification, its exact tmux window is absent, the worktree is clean
+and unlocked, and every worktree and local-branch tip is contained by a
+freshly fetched origin default branch.
 
 Cleanup removes the exact leased worktree, its contained build artifacts,
-and the exact local and origin branches. It never removes the main checkout
-or shared build artifacts outside an eligible worktree. Missing or malformed
-leases, unverifiable tmux/Git state, dirty work, and unmerged commits are
-reported and preserved.
+and the exact local branch. It never removes the main checkout, shared build
+artifacts outside an eligible worktree, or a remote branch: the verifier's
+merge step deletes the remote branch, and cleanup neither reads nor writes
+it, so nothing on the remote can be lost by this command. Open stories,
+stories the verifier has not marked, missing or malformed leases,
+unverifiable tmux/Git state, dirty work, and unmerged commits are reported
+and preserved.
 
 --dry-run applies every read-only preflight and reports reclaimed bytes, but
-does not remove resources. JSON output includes removed and skipped arrays
-with stable reason strings.
+does not remove resources, and lists every candidate it declined with the
+reason (story-open, not-verifier-released, unknown-story, dirty-worktree,
+unmerged-work, ...). JSON output includes removed and skipped arrays with
+the same stable reason strings.
 
 The daemon runs the same service daily by default. Configure it per project:
 
   story project settings set cleanup.auto false
   story project settings set cleanup.interval 12h
 
-Remote fetch and deletion use Git's configured origin credentials. An
+The default-branch fetch uses Git's configured origin credentials. An
 authentication or network failure fails closed: the report names the failed
 step and a later explicit or scheduled pass can retry idempotently.
 "#,
@@ -835,6 +935,13 @@ each new assignment, not only once per agent session.
    story. Stop implementation; leave the story open, without closing,
    unclaiming, deleting its worktree, or waiting for an interactive answer.
 
+In Plan mode with supported autonomous continuation capability, emit the strict
+storyhook.session-handoff v1 obviation-review envelope instead of attempting a
+tracker write. Include context, every matching candidate ID, and original_state
+in evidence. The trusted supervisor records the same reciprocal relationships,
+evidence, and guarded open blocked transition. It preserves prior holds and
+does not approve implementation or decide the human determination.
+
 This is a human review, not a dependency waiting to finish: do not use
 blocked-by or story block --on for it. An obviated-by relationship prevents
 readiness even when the other story is done; completion cannot clear this
@@ -1230,7 +1337,7 @@ Full Auto engine events:
   A Full Auto run (`story engine start`) raises four more events through this
   same mechanism: on_engine_run_started, on_engine_run_halted,
   on_engine_run_drained, on_engine_lane_quarantined, and
-  on_verification_halted. storyhook ships no
+  on_verification_halted, on_verification_resumed. storyhook ships no
   notification stack of its own — bind whichever of these you care about to a
   command (ntfy, terminal-notifier, a curl to Slack) the same way you would
   on_create or on_close. See `docs/spec/full-auto-engine.md`'s
@@ -1889,6 +1996,14 @@ When --if-state and/or --reason are used, they must come immediately
 after <state>, in either order; everything past them is treated as
 free-text comment. New comments must pass the checks in `story help ste`.
 
+A story in `verifying` is owned by the central verifier. Moving it to
+`done` by hand overrides that verification and requires the comment:
+`story move <id> done "<why>"`. The reason is recorded on the story as
+`CENTRAL VERIFICATION OVERRIDDEN — <why>`; a bare move is refused. The
+verifier cancels its running attempt, records the withdrawal on the
+story, and moves on to the next queued story. To hand the story back
+without completing it, move it to `in-progress` instead.
+
 When to use:
   To update the status of a story as you work on it, or to close
   it when complete.
@@ -1897,6 +2012,7 @@ Examples:
   story move SH-1 in-progress                          # Start working on it
   story move SH-1 done                                 # Mark as done
   story move SH-1 done "shipped v2.1"                  # Done with comment
+  story move SH-1 done "merged by hand; gate re-run"   # Override verification
   story move SH-1 in-progress --if-state todo          # Claim only if still todo
   story move SH-1 blocked --reason "waiting on SH-9"   # Block with a reason
 
@@ -2044,9 +2160,21 @@ When to use:
   To record progress notes, decisions, blockers, or context that
   should be preserved in the story's event log.
 
+When recording a decision, include:
+  Context: the relevant facts and constraints.
+  Question: the question being answered.
+  Decision: the chosen answer.
+  Rationale: why it was chosen, including alternatives and trade-offs
+    where relevant.
+
+Make each decision comment understandable without this session or local files.
+Record it immediately, before resuming work. This applies to researched
+decisions, council outcomes, and fallback decisions. These are ordinary
+comment fields, not CLI flags or a required format for progress notes.
+
 Examples:
   story comment SH-1 "Started implementing the auth middleware"
-  story comment SH-3 "Decided to use JWT instead of sessions"
+  story comment SH-3 "Context: A script reads this output. Question: Which output format should the script use? Decision: Use JSON. Rationale: Named fields remain clear when display text changes."
 
 Related:
   story show <id>  — View a story including its comments
@@ -2327,7 +2455,17 @@ still be unused, and the added work should be small next to what is
 left of it — adopt it into the story's scope without doing it now:
 comment what you found and leave the story open rather than closing
 it, so the next session picks up exactly where you stopped. If you
-cannot tell how much context remains, treat it as spent.
+cannot tell how much context remains, treat it as spent for adopting EXTRA work
+in this context. Previously adopted work is assigned work in the next context;
+do not repeatedly defer that same approved scope because no token counter exists.
+
+When autonomous continuation capability is available, finish durable handoff
+evidence and emit the supported storyhook.session-handoff context envelope at
+Stop (see story help continuation). Native continuation/compaction retains the
+session; proven-absent recovery retains the same worktree, branch, approved plan
+and commits. Context exhaustion alone is not a story block. Keep real holds and
+obviation decisions intact. If capability is unavailable, retain the evidence
+and report the missing capability explicitly; do not invent delivery success.
 
 Never file for either reason alone. A discovery that belongs to this
 story is never better served by a new story than by a comment on this
@@ -2766,6 +2904,8 @@ Use `story delete <id> [--force]` for permanent story removal.
         m.insert(
             "engine",
             r#"story engine start [--epic <id>] [--lanes <n>] [--agent claude|codex] [--model <id>] [--effort <id>] [--speed standard|fast]
+story engine configure (--lanes <n> | --model <id> | --effort <id> | --speed standard|fast) [--run <id>]
+story engine adopt <id> [<id> ...] [--run <id>]
 story engine status [--run <id>]
 story engine pause [--run <id>]
 story engine resume [--run <id>]
@@ -2773,6 +2913,21 @@ story engine stop [--run <id>] [--now]
 story engine ack [--run <id>]
 
 Control one Full Auto run for the selected project.
+
+adopt
+  Binds named live manual dispatches to idle lanes of the current running
+  or paused run. Every story needs its original readable worktree lease
+  and exact live provider pane. The entire batch must fit current capacity.
+  Adoption preserves claims and agents. Identical retries consume no extra
+  capacity. Adopted bindings release at verification, closure, or unclaim;
+  blocked or failed work is quarantined. Engine-created lanes retain their
+  existing verification ownership. Automatic adoption at start is not supported.
+
+configure
+  Changes only supplied settings on a running or paused run; at least one
+  setting is required. Omitted settings and the agent stay unchanged.
+  Existing work keeps its settings. Lowering capacity preserves occupied
+  lanes and waits for them to drain before claiming more work.
 
 start
   Starts a project-wide run, or narrows it to an epic's descendant
@@ -2790,8 +2945,10 @@ status / pause / resume / stop / ack
 
   pause stops new claims but keeps the run resumable. resume returns a
   paused run to running. stop drains occupied lanes and finishes once
-  they are idle; --now releases active claims and closes their windows
-  while preserving worktrees and branches. ack clears the persistent
+  they are idle; --now discards unfinished work in this run, removes its
+  windows, worktrees and local branches, and restores its stories. Stories
+  already verifying continue unchanged. Failed cleanup retains ownership
+  for retry without blocking the story. ack clears the persistent
   stop notification and is idempotent.
 
   Human output shows the run and its lanes as a table. --json returns
@@ -2811,29 +2968,46 @@ Examples:
 
         m.insert(
             "verifier",
-            r#"story verifier ack <incident-id>
+            r#"story verifier status
+story verifier start
+story verifier stop
+story verifier drain
+story verifier ack <incident-id> [--leave-stopped]
 
-Release the centralized verifier after an infrastructure halt.
+Inspect and control this project's centralized verifier.
 
-  The verifier stops its whole queue when it cannot run at all -- its
-  script refused by name, the registered checkout unreadable, a gate that
-  cannot be spawned -- rather than reporting the same failure as a red
-  verdict on every story in turn. The halt is recorded as one incident,
-  named on the story it was first hit on and on every story waiting
-  behind it, with the incident id. No story is at fault for it.
+  status reports admission independently from infrastructure incidents,
+  actual owned attempt, verifying and held stories, failure age and cause,
+  attempts/retries, acknowledgement, and the latest recovery request.
+  --json carries these facts under verifier; timestamps remain UTC.
 
-  ack names that exact incident and clears it, so the verifier's next
-  tick attempts the queue again. Acknowledging changes nothing about the
-  cause: fix what the halt comment names first, or the same incident
-  returns on the next attempt. A stale id (an older comment, a newer
-  incident) is refused rather than clearing whichever incident is
-  current; an incident still retrying on its own is refused too.
+  start enables admission without clearing a halt. drain prevents new
+  admission while owned work finishes. stop also cancels owned work.
+  Starting while stopped work still owns an attempt is refused.
 
-  The dashboard's "Acknowledge and retry" button performs the same
-  acknowledgement.
+  ack validates the exact halted incident and enables admission atomically.
+  --leave-stopped clears the incident but disables admission; start resumes it.
+  Fix the reported infrastructure cause before retrying. A stale id, an
+  incident still retrying, or an owned attempt prevents explicit retry.
+
+  Acknowledgement answers with its own correlated recovery request, initially
+  scheduled. It does not claim a gate started. The worker records the actual
+  admitted attempt or a concrete reason no admission occurred. Read status
+  and story daemon logs for that evidence. The dashboard uses the same controls.
+
+  load-context, next, summary, engine status and lane-budget expose unhealthy
+  verifier warnings. No progress evidence beyond the publisher interval is
+  overdue; waiting behind a progressing owner is ordinary queueing.
+
+  Hooks: on_verification_halted and on_verification_resumed. A resumed event
+  explicitly states whether admission was left stopped. Bind notifications
+  through the ordinary [hooks] configuration.
 
 Examples:
+  story verifier status --json
   story verifier ack 2:28821
+  story verifier ack 2:28821 --leave-stopped
+  story verifier start
 "#,
         );
 
@@ -3415,6 +3589,37 @@ pub fn all_topics_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::get_help_topic;
+
+    #[test]
+    fn comment_help_requires_self_contained_decisions() {
+        let help = super::get_help_topic("comment").expect("comment help exists");
+        for requirement in [
+            "Context: the relevant facts and constraints",
+            "Question: the question being answered",
+            "Decision: the chosen answer",
+            "Rationale: why it was chosen",
+            "alternatives and trade-offs",
+            "without this session or local files",
+        ] {
+            assert!(
+                help.contains(requirement),
+                "missing decision guidance: {requirement}"
+            );
+        }
+    }
+
+    #[test]
+    fn comment_help_decision_example_includes_the_question_and_context() {
+        let help = super::get_help_topic("comment").expect("comment help exists");
+        let examples = help.split("Examples:").nth(1).expect("comment examples");
+        let decision = examples
+            .lines()
+            .find(|line| line.contains("story comment") && line.contains("Decision:"))
+            .expect("a complete decision-comment example");
+        for field in ["Context:", "Question:", "Decision:", "Rationale:"] {
+            assert!(decision.contains(field), "example omits {field}");
+        }
+    }
 
     #[test]
     fn the_new_topic_names_the_service_defaults() {

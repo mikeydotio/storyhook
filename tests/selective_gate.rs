@@ -1069,6 +1069,7 @@ fn this_checkouts_impact_manifest_covers_every_checkout_reader_and_named_escape(
 
     for required in [
         ("checkout_path_readers", ":(glob)src/**/*.rs"),
+        ("dashboard_local_time", "src/web_dashboard.html"),
         ("dead_public_surface", ":(glob)src/**/*.rs"),
         ("golden_cli", ":(glob)src/**/*.rs"),
         ("portfile_fixture_hygiene", ":(glob)tests/**/*.rs"),
@@ -1176,4 +1177,93 @@ fn test_changed_enrolls_first_and_certifies_last() {
         last_nonblank.contains("gate-receipt.sh postlude"),
         "the LAST line of test-changed must write the receipt, got: {last_nonblank}"
     );
+}
+
+#[test]
+fn changed_nested_test_modules_need_explicit_owners_and_never_emit_paths() {
+    for declared in [false, true] {
+        let repo = SelectRepo::new();
+        repo.write(
+            "tests/story_reset.rs",
+            "#[path=\"story_reset/card.rs\"] mod card;\n",
+        );
+        repo.write("tests/story_reset/card.rs", "#[test] fn reset() {}\n");
+        if declared {
+            repo.write_impact_map(&[
+                ("scanner_test", "tests/scanner_test.rs"),
+                ("story_reset", "tests/story_reset/card.rs"),
+            ]);
+        }
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-qm", "add split test target"]);
+        let base = repo.tree();
+        assert_ok(&repo.certify("gate", None), "fixture: certifying baseline");
+        repo.write_map(&base, &[("story_priority", "src/a.rs")]);
+        repo.commit(
+            "tests/story_reset/card.rs",
+            "#[test] fn reset_changed() {}\n",
+            "change nested test",
+        );
+        let out = repo.select_tests();
+        assert_ok(&out, "select nested test changes");
+        assert_eq!(
+            selection_lines(&out),
+            if declared {
+                vec!["scanner_test".to_string(), "story_reset".to_string()]
+            } else {
+                vec!["ALL".to_string()]
+            }
+        );
+    }
+}
+
+#[test]
+fn deleted_test_target_never_selects_a_nonexistent_binary() {
+    let repo = SelectRepo::new();
+    repo.commit(
+        "tests/removed.rs",
+        "#[test] fn removed() {}\n",
+        "add removable test",
+    );
+    let base = repo.tree();
+    assert_ok(&repo.certify("gate", None), "fixture: certifying baseline");
+    repo.write_map(&base, &[("story_priority", "src/a.rs")]);
+    std::fs::remove_file(repo.path().join("tests/removed.rs")).unwrap();
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-qm", "remove test target"]);
+    let out = repo.select_tests();
+    assert_ok(&out, "select after test target deletion");
+    assert_eq!(selection_lines(&out), vec!["ALL".to_string()]);
+}
+
+/// Drive the public Makefile and production selector/cache/receipt flow while
+/// replacing only expensive validation leaf commands inside a disposable repo.
+fn selective_receipt_scenario(scenario: &str) {
+    let output = Command::new("python3")
+        .env_clear()
+        .envs(storyhook_test_support::daemon_containment())
+        .env("PATH", std::env::var_os("PATH").expect("PATH exists"))
+        .arg("-B")
+        .arg(checkout().join("tests/support/selective_receipt.py"))
+        .arg(checkout())
+        .arg(scenario)
+        .current_dir(checkout())
+        .output()
+        .expect("running the isolated selective receipt fixture");
+    assert_ok(&output, "selective receipt provenance and reuse");
+}
+
+#[test]
+fn cached_selective_checks_retain_changed_tier_without_reexecution() {
+    selective_receipt_scenario("subset");
+}
+
+#[test]
+fn selector_all_reuses_the_ordinary_core_receipt_and_earns_gate() {
+    selective_receipt_scenario("all");
+}
+
+#[test]
+fn missing_selective_tier_refuses_instead_of_certifying_gate() {
+    selective_receipt_scenario("missing");
 }
