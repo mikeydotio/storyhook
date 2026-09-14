@@ -19,7 +19,8 @@ pub struct WorktreeRecord {
     pub prunable: bool,
 }
 
-/// Runs one read-only Git observation with contextual, bounded failure.
+/// Runs one checked Git command with contextual, bounded failure.
+/// Mutation callers must establish ownership before invoking this primitive.
 pub fn text(cwd: &Path, args: &[&str]) -> Result<String, AppError> {
     let mut command = git_env::command(cwd);
     command.args(args);

@@ -54,10 +54,23 @@ pub(super) fn validate(
     if &actual_repository != repository {
         return Err(refuse("repository identity changed"));
     }
-    if let Some(branch) = &report.branch {
-        let default = super::super::cleanup::origin_default_branch(repository).map_err(refuse)?;
-        if matches!(branch.as_str(), "main" | "master") || branch == &default {
+    if let Some(branch) = &report.branch
+        && git::branch_exists(repository, branch)?
+    {
+        if matches!(branch.as_str(), "main" | "master")
+            || records[0].branch.as_ref() == Some(branch)
+        {
             return Err(refuse(format!("protected branch {branch}")));
+        }
+        if git::text(repository, &["remote"])?
+            .lines()
+            .any(|remote| remote == "origin")
+        {
+            let default =
+                super::super::cleanup::origin_default_branch(repository).map_err(refuse)?;
+            if branch == &default {
+                return Err(refuse(format!("protected branch {branch}")));
+            }
         }
     }
     if let Some(worktree) = &report.worktree {
@@ -107,9 +120,11 @@ pub(super) fn validate(
 
 pub(super) fn remove(
     report: &ResourceReport,
+    paths: &[crate::store::ResetPathIdentity],
     caller: &Path,
     env: &crate::env::Environment,
 ) -> Result<(), AppError> {
+    super::identity::validate(paths)?;
     validate(report, caller, env)?;
     if let Some(socket) = &report.socket_path {
         let names = BTreeSet::from([report.window_name.clone()]);
@@ -149,6 +164,7 @@ pub(super) fn remove(
     } else if report.pane.is_some() {
         return Err(refuse("tmux window has no recorded socket"));
     }
+    super::identity::validate(paths)?;
     validate(report, caller, env)?;
     let Some(repository) = &report.repository else {
         return Ok(());
@@ -174,6 +190,7 @@ pub(super) fn remove(
             return Err(refuse("worktree registration or path remains"));
         }
     }
+    super::identity::validate(paths)?;
     if let Some(branch) = &report.branch {
         if git::branch_exists(repository, branch)? {
             git::text(repository, &["branch", "-D", "--", branch])?;
