@@ -261,8 +261,11 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 
 /* ---- Topbar ---- */
 .dashboard-header { flex-shrink: 0; min-width: 0; }
+/* Toolbar groups must reflow before their minimum widths enlarge the page.
+   Hidden body overflow still permits focus to scroll that enlarged page,
+   leaving the board's left edge unreachable through its own scrollbar. */
 .topbar {
-  display: flex; align-items: center; gap: 1rem;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
   padding: 0.75rem 1.25rem;
   background: var(--bg-raised);
   border-bottom: 1px solid var(--border);
