@@ -137,3 +137,72 @@ for (const { width, motion } of [
     await expectShellAtOrigin(page);
   });
 }
+
+for (const motion of ["no-preference", "reduce"] as const) {
+  test(`a live reorder preserves the reading position of a focused story (${motion})`, async ({ page, request }) => {
+    await page.emulateMedia({ reducedMotion: motion });
+    await seedToken(page);
+    await page.goto("/");
+    await openProject(page, "Alpha Project");
+    const { card, id, slug } = await createCard(page, request, "SH-729 focused reorder", "todo");
+    const board = page.locator("#board-view");
+    await card.focus();
+    await board.evaluate(n => { n.scrollLeft = n.scrollWidth; });
+    const right = await board.evaluate(n => n.scrollLeft);
+    expect(right).toBeGreaterThan(0);
+    const changed = await request.post(`/api/repos/${slug}/story/${id}/priority`, {
+      headers, data: { priority: "critical" },
+    });
+    expect(changed.ok(), await changed.text()).toBe(true);
+    await expect(board.locator('.column[data-state="todo"] .card').first()).toHaveAttribute("data-id", id!);
+    await expect(card).toBeFocused();
+    await awaitSettled(board);
+    expect(await board.evaluate(n => n.scrollLeft)).toBe(right);
+    await expectShellAtOrigin(page);
+
+    // Deliberate keyboard navigation must still reveal the new focus target.
+    await page.keyboard.press("ArrowDown");
+    await expect(card).not.toBeFocused();
+    expect(await board.evaluate(n => n.scrollLeft)).toBeLessThan(right);
+
+    // Losing the story is a focus transfer, not restoration of the same node.
+    await card.focus();
+    await board.evaluate(n => { n.scrollLeft = n.scrollWidth; });
+    const removed = await request.delete(`/api/repos/${slug}/story/${id}`, {
+      headers, data: { force: true },
+    });
+    expect(removed.ok(), await removed.text()).toBe(true);
+    await expect(card).toHaveCount(0);
+    await expect(board.locator('.card[tabindex="0"]')).toBeFocused();
+    expect(await board.evaluate(n => n.scrollLeft)).toBeLessThan(right);
+    await expectShellAtOrigin(page);
+  });
+}
+
+// The List uses the same restoration policy. Its vertical scroller catches
+// accidental fixes that preserve only the board's horizontal offset.
+test("a live list reorder preserves the vertical reading position", async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 240 });
+  await seedToken(page);
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const { id, slug } = await createCard(page, request, "SH-729 list reorder", "todo");
+  await createCard(page, request, "SH-729 list neighbor", "todo");
+  await page.locator('#view-toggle button[data-view="list"]').click();
+  await page.locator('th[data-col="priority"]').click();
+  const row = page.locator(`#list-body tr[data-id="${id}"]`);
+  const list = page.locator("#list-view");
+  await row.focus();
+  await list.evaluate(n => { n.scrollTop = n.scrollHeight; });
+  const bottom = await list.evaluate(n => n.scrollTop);
+  expect(bottom).toBeGreaterThan(0);
+  const changed = await request.post(`/api/repos/${slug}/story/${id}/priority`, {
+    headers, data: { priority: "critical" },
+  });
+  expect(changed.ok(), await changed.text()).toBe(true);
+  await expect(page.locator("#list-body tr").first()).toHaveAttribute("data-id", id!);
+  await expect(row).toBeFocused();
+  expect(await list.evaluate(n => n.scrollHeight - n.clientHeight)).toBeGreaterThan(0);
+  expect(await list.evaluate(n => n.scrollTop)).toBe(bottom);
+  await expectShellAtOrigin(page);
+});

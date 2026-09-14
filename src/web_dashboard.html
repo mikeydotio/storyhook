@@ -8602,7 +8602,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * unfocusing steps blur same as a removal would. (Those two functions
    * already skip the call when a card/row's position didn't actually
    * change, so this is a safety net for the reorders that are real, not a
-   * cover for ones that shouldn't have happened.) */
+   * cover for ones that shouldn't have happened.) Restoring the same story
+   * must not scroll away from the reader's current position. A replacement
+   * story still receives normal focus scrolling so its new stop is visible. */
   function syncRoving(container, selector, focusedId) {
     var nodes = Array.prototype.slice.call(container.querySelectorAll(selector));
     if (!nodes.length) { rovingId = null; return; }
@@ -8615,7 +8617,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var focusedNode = survivorIds[focusedId] ? nodes.filter(function(n) { return n.dataset.id === focusedId; })[0] : null;
     if (document.activeElement !== focusedNode) {
       var target = nodes.filter(function(n) { return n.dataset.id === targetId; })[0];
-      if (target) target.focus();
+      if (target) target.focus({ preventScroll: target === focusedNode });
     }
   }
 
