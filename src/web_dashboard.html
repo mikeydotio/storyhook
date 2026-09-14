@@ -1943,7 +1943,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
 <div class="backdrop" id="dispatch-modal-backdrop" data-overlay="dispatch-modal" hidden></div>
 <div class="modal" id="dispatch-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="dispatch-modal-header">
-  <div class="modal-header" id="dispatch-modal-header">Dispatch story</div>
+  <div class="modal-header" id="dispatch-modal-header" tabindex="-1">Dispatch story</div>
   <div class="modal-body">
     <div class="field-grid">
       <div class="field"><label for="dispatch-client">Client</label>
@@ -3098,7 +3098,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var current = document.activeElement;
     var first = candidates[0];
     var last = candidates[candidates.length - 1];
-    if (e.shiftKey && current === first) {
+    // Static initial focus (such as a dialog heading) may precede every
+    // tab stop. Reverse Tab must wrap there too, while preserving notice
+    // controls that genuinely precede it in the document's eligible order.
+    var beforeFirst = current && activeSurface.contains(current) &&
+      (first.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_PRECEDING);
+    if (e.shiftKey && (current === first || beforeFirst)) {
       e.preventDefault();
       last.focus();
     } else if (!e.shiftKey && current === last) {
@@ -6136,7 +6141,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       }
     });
     showBackdrop("dispatch-modal-backdrop");
-    activateOverlay("dispatch-modal", "dispatch-agent");
+    // Safari can present a native select's picker when it receives initial
+    // focus. Start at the heading so Provider requires explicit navigation.
+    activateOverlay("dispatch-modal", "dispatch-modal-header");
     // Preserve the invoker explicitly so Cancel/Escape does not return focus
     // to <body>. Context-menu actions remove their menu node before invoking
     // us, and WebKit pointer clicks do not necessarily focus footer buttons.
