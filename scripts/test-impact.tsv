@@ -149,6 +149,14 @@ store_isolation	:(glob)crates/storyhook-test-support/src/**/*.rs
 store_isolation	:(glob)scripts/**/*.sh
 store_isolation	:(glob)tests/**/*.rs
 store_schema_fixture	:(glob)**/*
+story_reset	src/service/query.rs
+story_reset	src/service/resources/mod.rs
+story_reset	src/service/story_reset.rs
+story_reset	src/service/story_reset/cleanup.rs
+story_reset	src/service/story_reset/identity.rs
+story_reset	src/store/schema/0043_story_resets.sql
+story_reset	src/store/sqlite/story_reset.rs
+story_reset	src/store/story_reset.rs
 tap_target_comparison	:(glob)**/*
 test_environment	:(glob)**/*
 timing_assertions	:(glob)**/*
@@ -166,12 +174,3 @@ verifier_lifecycle	:(glob)scripts/**
 verify_window	:(glob)**/*
 version_identity	:(glob)**/*
 web_test	:(glob)**/*
-
-story_reset	src/service/story_reset.rs
-story_reset	src/service/story_reset/cleanup.rs
-story_reset	src/store/story_reset.rs
-story_reset	src/store/schema/0043_story_resets.sql
-story_reset	src/store/sqlite/story_reset.rs
-story_reset	src/service/resources/mod.rs
-story_reset	src/service/query.rs
-story_reset	src/service/story_reset/identity.rs
