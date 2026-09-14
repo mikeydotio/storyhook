@@ -627,18 +627,9 @@ const TAILNET_SETTLE_DEADLINE: Duration = Duration::from_secs(5);
 /// The CLI advertises the host the *daemon* bound, never one this process
 /// probed for. Direction A of SH-110, mechanized.
 ///
-/// **Never skips.** On a machine with no tailnet the expected host is simply
-/// `127.0.0.1`, and the assertion still means something: all three commands
-/// must agree with the portfile.
-///
-/// The `tailscale` shim is what makes it a regression test rather than a
-/// restatement. The daemon starts with the real environment, so on a
-/// tailnet-equipped machine it binds and publishes its MagicDNS name — and then
-/// the three client commands run with a `tailscale` that *fails*, which is what
-/// a probe overrunning its three-second deadline under load looks like from the
-/// client's side. Before the fix those clients probed, got nothing, and printed
-/// `127.0.0.1` for a daemon reachable at its FQDN. Now they read what it
-/// published and the shim cannot affect them.
+/// Lifecycle commands report verified loopback, while address sharing uses the
+/// daemon's published bind. A failing client-side tailscale probe must affect
+/// neither result (SH-110, SH-722). This test also runs without a tailnet.
 ///
 /// Reading the portfile while a daemon runs is deliberate and safe: unlike the
 /// store, it is written once, not held open, and `TestEnv::daemon` exists for
@@ -665,7 +656,7 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
         std::thread::sleep(Duration::from_millis(50));
     };
     wait_for_server(info.port);
-    let expected = format!("http://{}:{}", info.advertised_host(), info.port);
+    let advertised = format!("http://{}:{}", info.advertised_host(), info.port);
 
     // A `tailscale` that fails, ahead of everything else: a client that still
     // probes gets nothing and falls back to loopback.
@@ -685,7 +676,12 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
     entries.extend(std::env::split_paths(&env.path_with_binary()));
     let path = std::env::join_paths(entries).expect("joining PATH");
 
-    for args in [["web", "status"], ["web", "address"]] {
+    for args in [["web", "start"], ["web", "status"], ["web", "address"]] {
+        let expected = if args[1] == "address" {
+            advertised.clone()
+        } else {
+            info.local_url()
+        };
         let printed = env
             .story(dir.path())
             .env("PATH", &path)
@@ -693,11 +689,15 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
             .args(args)
             .output()
             .unwrap_or_else(|e| panic!("running `story {}`: {e}", args.join(" ")));
+        assert!(
+            printed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&printed.stderr)
+        );
         let stdout = String::from_utf8_lossy(&printed.stdout).into_owned();
         assert!(
             stdout.contains(&expected),
-            "`story {}` must advertise {expected} — the address the daemon published — \
-             not a host derived from its own probe (SH-110); got: {stdout}",
+            "`story {}` must report {expected} for its purpose (SH-110, SH-722); got: {stdout}",
             args.join(" ")
         );
     }

@@ -1869,21 +1869,19 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
     match action {
         DaemonAction::Start { port } => {
             let info = crate::daemon::commands::start(&env, port)?;
-            crate::daemon::commands::note_tailnet_pending(&info);
             Ok(Response::Message(format!(
                 "storyhook daemon {} running at {} (PID {})",
                 info.version,
-                info.dashboard_url(),
+                info.local_url(),
                 info.pid
             )))
         }
         DaemonAction::Restart => {
             let restarted = crate::daemon::commands::restart(&env)?;
-            crate::daemon::commands::note_tailnet_pending(&restarted.running);
             Ok(Response::Message(format!(
                 "storyhook daemon {} restarted at {} (PID {} -> {})",
                 restarted.running.version,
-                restarted.running.dashboard_url(),
+                restarted.running.local_url(),
                 restarted.stopped.pid,
                 restarted.running.pid
             )))
