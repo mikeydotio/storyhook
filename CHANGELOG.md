@@ -3070,3 +3070,53 @@ _[manual]_
 - All 14 MCP tool descriptions expanded from 1-line to 2-4 sentences with usage guidance and cross-references (09d9f21)
 
 _[manual]_
+
+## [v0.5.0] - 2026-03-24
+
+### Changed
+- Expanded Claude Code instructions with planning, priorities, relationships, and execution workflow (1883a7a).
+- `story init` now writes the full instructions to `.storyhook/CLAUDE.md`; `story scaffold claude-md` outputs a short pointer for the project-root file (d64eae4).
+
+_[manual]_
+
+## [v0.4.0] - 2026-03-24
+
+### Added
+- Interactive installer prompts for MCP configuration and Git hooks; `uninstall.sh` removes integrations and the binary while preserving project data (cacc1ca).
+- `story hooks install|uninstall` manages commit-linking, merge-closure, and commit-message hooks without overwriting existing user hooks (cacc1ca).
+- `story mcp-config --install|--uninstall <provider>` and `--uninstall-all` manage provider registration while preserving other MCP entries (cacc1ca).
+
+_[manual]_
+
+## [v0.3.1] - 2026-03-24
+
+### Added
+- Interactive `story mcp-config` provider selection for Claude Code, Cursor, Codex CLI, and Antigravity, with configuration merging and refusal to modify unparseable files (072a34d).
+- Non-interactive configuration snippets remain available when piped or invoked with `--json` (072a34d).
+
+_[manual]_
+
+## [v0.3.0] - 2026-03-24
+
+### Added
+- `story mcp-config` and `story scaffold agents-md|claude-md|cursor-rules` for AI tool integration (3759d5b, 46837dc).
+- Stale-story filtering, HTML reports, Markdown decomposition with dry-run/stdin support, and `story sync-git` for linking commits to stories (3759d5b).
+
+### Fixed
+- Unknown commands now produce usage errors instead of being treated as story IDs (46837dc).
+- Initialization and scaffold output explain that `.storyhook/` project data belongs in version control (5ca2939).
+
+_[manual]_
+
+## [v0.2.0] - 2026-03-23
+
+### Added
+- Core story CLI workflow, awaiting status, and derived ancestry (aee7bac, 521d5e5).
+- Priorities, next-story selection, labels, search, list filters, bulk import, project export/import, and reopening archived stories (590245b).
+- AI context and handoff generation, dependency graph analysis, and a stdio MCP server (590245b).
+- Platform-aware installer, release workflow for cross-platform binaries, and MIT license (e844f0d).
+
+### Changed
+- Renamed the crate to `storyhook` while keeping the executable named `story` (e844f0d).
+
+_[manual]_
