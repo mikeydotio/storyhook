@@ -9927,3 +9927,62 @@ fn create_modal_alone_keeps_its_footer_sticky() {
     assert!(rule.contains("position: sticky"));
     assert!(rule.contains("bottom: 0"));
 }
+
+#[test]
+fn web_authored_text_is_stored_without_ste_checks() {
+    let fixture = served();
+    let base = format!(
+        "http://127.0.0.1:{}/api/repos/{}/story",
+        fixture.port, fixture.repo_id
+    );
+    let title = "Don't utilize it";
+    let description = "The file was removed. This deliberately lengthy description contains more than twenty words in one sentence and must remain unchanged when it passes through the web API.";
+    let response = post_json(
+        &fixture,
+        &base,
+        &serde_json::json!({"title":title,"description":description}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(response.status(), 201);
+    let json: serde_json::Value =
+        serde_json::from_str(&response.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "title"), title);
+    assert_eq!(story_field(&json, "description"), description);
+    assert!(!json.to_string().contains("possible-passive"));
+    let response = patch_json(
+        &fixture,
+        &format!("{base}/SH-1"),
+        r#"{"title":"Commence work","description":"Don't stop. The file was removed."}"#,
+    )
+    .unwrap();
+    assert_eq!(response.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&response.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "title"), "Commence work");
+    assert_eq!(
+        story_field(&json, "description"),
+        "Don't stop. The file was removed."
+    );
+    for (route, body) in [
+        ("comment", serde_json::json!({"text":description})),
+        (
+            "move",
+            serde_json::json!({"state":"in-progress","comment":title}),
+        ),
+    ] {
+        let response =
+            post_json(&fixture, &format!("{base}/SH-1/{route}"), &body.to_string()).unwrap();
+        assert_eq!(response.status(), 200);
+        let json: serde_json::Value =
+            serde_json::from_str(&response.into_body().read_to_string().unwrap()).unwrap();
+        assert!(!json.to_string().contains("possible-passive"));
+    }
+    let row = fixture
+        .store
+        .read(|tx| tx.story(fixture.project, StoryNo::parse_id("SH", "SH-1").unwrap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.snapshot.state, "in-progress");
+    assert_eq!(row.snapshot.comments[0].text, description);
+    assert_eq!(row.snapshot.comments[1].text, title);
+}

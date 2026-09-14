@@ -521,13 +521,12 @@ pub(crate) fn append_and_fold(
     events: &[StoryEvent],
     provenance: &Provenance,
 ) -> Result<StorySnapshot, AppError> {
-    crate::text_lint::validate_events(&story.to_id(prefix), events)?;
     append_restored_and_fold(
         tx, project, story, prefix, states, expected, events, provenance,
     )
 }
 
-/// Appends historical compensation without applying new authoring policy.
+/// Appends historical compensation through the same transactional write path.
 /// Undo restores old text, but its new transitions still obey blocker admission.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_restored_and_fold(

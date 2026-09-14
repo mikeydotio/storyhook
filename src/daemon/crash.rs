@@ -1356,10 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn captured_crash_evidence_does_not_fail_authoring_checks() {
-        use std::num::NonZeroUsize;
-        use ste_lint::{Format, Options, Severity};
-
+    fn captured_crash_evidence_is_preserved() {
         for message in [
             "Don't utilize `this`.",
             "`Don't` utilize ``this``.",
@@ -1369,19 +1366,7 @@ mod tests {
             let record = panicked_record(message, "2.1.1");
             let body = describe_crash(&record);
             assert!(body.contains(&crate::text_lint::quote_evidence(message)));
-            for text in [title_for(&record), body] {
-                let findings = ste_lint::lint(
-                    &text,
-                    Options {
-                        format: Format::Markdown,
-                        sentence_limit: NonZeroUsize::new(20).unwrap(),
-                    },
-                );
-                assert!(
-                    findings.iter().all(|f| f.severity != Severity::Error),
-                    "{text}: {findings:?}"
-                );
-            }
+            assert!(title_for(&record).starts_with("Daemon panic:"));
         }
     }
 

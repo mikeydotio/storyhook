@@ -1994,7 +1994,7 @@ reason without moving state at all, use `story block <id> "<text>"`.
 
 When --if-state and/or --reason are used, they must come immediately
 after <state>, in either order; everything past them is treated as
-free-text comment. New comments must pass the checks in `story help ste`.
+free-text comment. Use ASD-STE100 writing guidance from `story help ste`.
 
 A story in `verifying` is owned by the central verifier. Moving it to
 `done` by hand overrides that verification and requires the comment:
@@ -2153,8 +2153,8 @@ Related:
 Add a timestamped comment to a story. Comments are append-only and
 form part of the audit trail.
 
-New comments must pass the STE checks. Run `story help ste` for the rules.
-On failure, repair the text and submit the command again.
+Use ASD-STE100 for comments. Run `story help ste` for writing guidance.
+StoryHook stores text without STE lint validation.
 
 When to use:
   To record progress notes, decisions, blockers, or context that
