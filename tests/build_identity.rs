@@ -22,6 +22,9 @@ use std::sync::OnceLock;
 use storyhook_test_support::{TestEnv, scratch_dir};
 use tempfile::TempDir;
 
+#[path = "build_identity/index.rs"]
+mod index;
+
 /// The checkout under test — the tracked scripts and `build.rs` live here.
 fn checkout() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))

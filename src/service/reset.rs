@@ -1,12 +1,59 @@
-//! One recoverable reset operation shared by CLI and dashboard.
+//! Recoverable native reset preserves branches and renews force authorization.
 
 use super::workspace_lock::WorkspaceLock;
 use super::{Ctx, append_and_fold, project_prefix, resolve_open_story};
 use crate::domain::{StoryCleanupLease, StoryEvent, StorySnapshot, is_epic};
 use crate::error::AppError;
-use crate::store::{ExpectedSeq, ReadOps, Store, StoryNo, WriteOps};
+use crate::store::{
+    EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo, WriteOps,
+};
 use serde::{Deserialize, Serialize};
 mod resources;
+#[cfg(test)]
+mod tests;
+
+fn preflight_authority_unchanged(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    number: StoryNo,
+    expected: EventSeq,
+    current: EventSeq,
+) -> Result<bool, StoreError> {
+    if current == expected {
+        return Ok(true);
+    }
+    if current < expected {
+        return Ok(false);
+    }
+    // Delivery diagnostics and commit observations do not alter cleanup authority.
+    // State, awaiting, lease, and unknown events must still invalidate preflight.
+    let events = tx.events_for(project, number)?;
+    let mut suffix = events
+        .iter()
+        .filter(|event| event.seq > expected)
+        .peekable();
+    Ok(suffix.peek().is_some()
+        && suffix.all(|event| {
+            matches!(
+                event.known(),
+                Some(StoryEvent::StoryCommentAdded { .. } | StoryEvent::StoryCommitLinked { .. })
+            )
+        }))
+}
+
+fn preflight_project_unchanged(
+    tx: &impl ReadOps,
+    expected: &crate::store::ProjectRecord,
+    checkout: &std::path::Path,
+) -> Result<bool, StoreError> {
+    let Some(current) = tx.project(expected.id)? else {
+        return Ok(false);
+    };
+    Ok(current.uuid == expected.uuid
+        && current.slug == expected.slug
+        && current.prefix == expected.prefix
+        && tx.checkout_path(expected.id)?.as_deref() == Some(checkout))
+}
 
 /// Caller-owned terminal facts; the daemon must never substitute its own terminal.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,7 +146,13 @@ pub fn reset_story<S: Store>(
         caller,
         &lock,
     )?;
-    ctx.store().write(|tx| {
+    ctx.write_stories(|tx| {
+        if !preflight_project_unchanged(tx, &project, &checkout)? {
+            return Err(AppError::Validation(
+                "project identity or checkout changed during reset preflight; retry".into(),
+            )
+            .into());
+        }
         let prefix = project_prefix(tx, ctx.project())?;
         let (_, row) = resolve_open_story(tx, ctx.project(), &prefix, id)?;
         let stored = tx.story_resets(ctx.project())?.remove(&number);
@@ -109,7 +162,7 @@ pub fn reset_story<S: Store>(
                 return Err(AppError::Validation("reset ownership changed; retry".into()).into());
             }
         } else {
-            if row.head_seq != head {
+            if !preflight_authority_unchanged(tx, ctx.project(), number, head, row.head_seq)? {
                 return Err(AppError::Validation(
                     "story changed during reset preflight; retry".into(),
                 )
@@ -132,7 +185,13 @@ pub fn reset_story<S: Store>(
                 ctx.provenance(),
             )?;
         }
-        tx.put_story_reset(
+        super::block_delivery::supersede_pending(
+            tx,
+            ctx.project(),
+            number,
+            "native reset owns workspace replacement",
+        )?;
+        tx.put_legacy_story_reset(
             ctx.project(),
             number,
             Some(&serde_json::to_string(&reservation)?),
@@ -154,7 +213,7 @@ pub fn reset_story<S: Store>(
         );
         ctx.store()
             .write(|tx| {
-                tx.put_story_reset(
+                tx.put_legacy_story_reset(
                     ctx.project(),
                     number,
                     Some(&serde_json::to_string(&reservation)?),
@@ -188,7 +247,7 @@ fn finish(
     number: StoryNo,
     reservation: &ResetReservation,
 ) -> Result<StorySnapshot, AppError> {
-    Ok(ctx.store().write(|tx| {
+    Ok(ctx.write_stories(|tx| {
         let prefix = project_prefix(tx, ctx.project())?;
         let (_, row) = resolve_open_story(tx, ctx.project(), &prefix, id)?;
         let stored = tx.story_resets(ctx.project())?.remove(&number)
@@ -212,7 +271,8 @@ fn finish(
         let project = tx.project(ctx.project())?
             .ok_or_else(|| AppError::NotFound("project disappeared".into()))?;
         super::engine::release_reset_lanes(tx, &project.slug, id, &ctx.now())?;
-        tx.put_story_reset(ctx.project(), number, None)?;
+        super::block_delivery::supersede_pending(tx, ctx.project(), number, "native reset completed; prior session authority retired")?;
+        tx.put_legacy_story_reset(ctx.project(), number, None)?;
         Ok(append_and_fold(
             tx, ctx.project(), number, &prefix, &states,
             ExpectedSeq::Exact(row.head_seq), &events, ctx.provenance(),

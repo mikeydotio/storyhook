@@ -22,6 +22,77 @@ struct Entry<'a> {
     raw: String,
 }
 
+/// Keep all continuation operations and both receiving providers testable.
+#[test]
+fn continuation_usage_covers_every_operation_and_provider() {
+    let body = get_help_topic("continuation").expect("continuation help topic");
+    let mut actual = Vec::new();
+    for entry in usage_entries("continuation", body) {
+        let invocation = entry.raw.strip_prefix("story ").expect("command prefix");
+        let DocumentedInvocation::Argvs(argvs) =
+            expand_documented_invocation(invocation).expect("valid continuation usage grammar")
+        else {
+            panic!("continuation commands must be checked");
+        };
+        for argv in argvs {
+            parse_documented_argv(&argv).expect("continuation usage must parse");
+            actual.push(argv.join(" "));
+        }
+    }
+    let request = "a2cb702b-12e8-46c4-831b-c78bf57e944b";
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let mut expected = vec![
+        "continuation capabilities --json".to_string(),
+        "continuation request SH-1 --stdin --json".to_string(),
+        "continuation status SH-1 --json".to_string(),
+        format!("continuation receipt SH-1 {request} --stdin --json"),
+        format!("continuation retry SH-1 {request} --json"),
+    ];
+    for provider in ["codex", "claude"] {
+        expected.push(format!(
+            "continuation ack SH-1 {request} --reviewed-seq 1 --head {head} --provider {provider} --session-id receiving-root-session --json"
+        ));
+    }
+    actual.sort();
+    expected.sort();
+    assert_eq!(
+        actual, expected,
+        "every continuation command must remain documented"
+    );
+}
+
+/// A parsing-only corpus could pass after deleting the offending command.
+/// Keep every verifier control, including both acknowledgement intents, visible.
+#[test]
+fn verifier_usage_covers_every_control() {
+    let body = get_help_topic("verifier").expect("verifier help topic");
+    let mut actual = Vec::new();
+    for entry in usage_entries("verifier", body) {
+        let invocation = entry.raw.strip_prefix("story ").expect("command prefix");
+        match expand_documented_invocation(invocation).expect("valid verifier usage grammar") {
+            DocumentedInvocation::Argvs(argvs) => actual.extend(argvs),
+            DocumentedInvocation::ParsedElsewhere => panic!("verifier controls must be checked"),
+        }
+    }
+    actual.sort();
+    let mut expected: Vec<Vec<String>> = [
+        "verifier status",
+        "verifier start",
+        "verifier stop",
+        "verifier drain",
+        "verifier ack 2:28821",
+        "verifier ack 2:28821 --leave-stopped",
+    ]
+    .into_iter()
+    .map(|command| command.split_whitespace().map(str::to_owned).collect())
+    .collect();
+    expected.sort();
+    assert_eq!(
+        actual, expected,
+        "every verifier control must remain documented"
+    );
+}
+
 fn usage_entries<'a>(topic: &'a str, body: &str) -> Vec<Entry<'a>> {
     let mut entries: Vec<Entry<'a>> = Vec::new();
 

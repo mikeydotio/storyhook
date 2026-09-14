@@ -11,6 +11,7 @@ import time
 
 sys.dont_write_bytecode = True
 from process_identity import process_identity
+from workspace_ownership import inherited_fds
 
 
 class CleanupError(Exception):
@@ -19,7 +20,7 @@ class CleanupError(Exception):
 
 def run(*args):
     """Run a bounded probe and preserve its diagnostic on failure."""
-    result = subprocess.run(args, capture_output=True, text=True, timeout=5, check=False)
+    result = subprocess.run(args, capture_output=True, text=True, timeout=5, check=False, pass_fds=inherited_fds())
     if result.returncode:
         raise CleanupError(f"{' '.join(args)}: {result.stderr.strip() or result.returncode}")
     return result.stdout.strip()

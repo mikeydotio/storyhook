@@ -261,7 +261,11 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   const proofPath = join(worktreePath, "resume-proof.txt");
   writeFileSync(proofPath, "preserve the abandoned agent's work\n");
   await dispatchStory(page);
-  const resumedToast = page.locator("#toast-stack .toast.success");
+  // The earlier success can still be visible. Wait for this dispatch's
+  // in-flight state to end before interpreting a notice as its result.
+  await expect(dispatchButton).toBeDisabled();
+  await expect(dispatchButton).toBeEnabled({ timeout: DISPATCH_COMPLETION_TIMEOUT });
+  const resumedToast = page.locator("#toast-stack .toast.success").first();
   await expect(resumedToast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
   await expect(resumedToast).toHaveText(`${ALPHA_STORY_ID} dispatched`);
   expect(readFileSync(proofPath, "utf8")).toBe(

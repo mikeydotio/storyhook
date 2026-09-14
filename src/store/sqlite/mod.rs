@@ -30,8 +30,13 @@
 //! `:memory:` has no write-ahead log, no reopen, and no crash, which are the
 //! three things every guarantee in this module is about.
 
+mod block_delivery;
+mod continuation;
+mod engine_reset;
 mod landing;
+mod ownership;
 pub(crate) mod read;
+mod story_reset;
 pub(crate) mod write;
 
 use std::collections::BTreeMap;
@@ -54,7 +59,7 @@ use crate::store::types::{
     MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
     PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow, VerificationIncident,
 };
-use crate::store::{ReadOps, Store, WriteOps, WriteWithSnapshot};
+use crate::store::{EngineReset, ReadOps, Store, StoryReset, WriteOps, WriteWithSnapshot};
 
 /// Puts a database into write-ahead logging mode, and reports the mode it ended
 /// up in.
@@ -594,6 +599,7 @@ pub struct SqliteWriteTx<'a> {
     conn: PooledConn<'a>,
     open: bool,
     activity: Vec<(String, String)>,
+    ownership: ownership::Ownership,
 }
 
 impl<'a> SqliteWriteTx<'a> {
@@ -609,14 +615,18 @@ impl<'a> SqliteWriteTx<'a> {
         // itself at the end of the transaction.
         conn.execute_batch("BEGIN IMMEDIATE; PRAGMA defer_foreign_keys = ON;")
             .map_err(|e| StoreError::from_sqlite(e, "beginning a write"))?;
-        Ok(Self {
+        let mut transaction = Self {
             conn,
             open: true,
             activity: Vec::new(),
-        })
+            ownership: ownership::Ownership::default(),
+        };
+        transaction.ownership = ownership::Ownership::begin(&transaction.conn)?;
+        Ok(transaction)
     }
 
     fn commit(mut self) -> Result<(), StoreError> {
+        self.ownership.validate(&self.conn)?;
         crate::store::landing::validate_pending(&self)?;
         fire(FaultPoint::BeforeCommit)?;
         // `open` stays true until the COMMIT has succeeded, and that ordering
@@ -812,6 +822,20 @@ macro_rules! impl_read_ops {
             fn landing_intents(&self) -> Result<Vec<crate::store::LandingIntent>, StoreError> {
                 landing::read(&self.conn)
             }
+            fn continuations(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::Continuation>, StoreError> {
+                continuation::list(&self.conn, project)
+            }
+
+            fn block_deliveries(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::BlockDelivery>, StoreError> {
+                block_delivery::list(&self.conn, project)
+            }
+
             fn project(&self, project: ProjectId) -> Result<Option<ProjectRecord>, StoreError> {
                 read::project(&self.conn, project)
             }
@@ -858,12 +882,35 @@ macro_rules! impl_read_ops {
                 read::story_resets(&self.conn, project)
             }
 
+            fn verification_recovery(
+                &self,
+                project: ProjectId,
+            ) -> Result<crate::store::VerificationRecovery, StoreError> {
+                read::verification_recovery(&self.conn, project)
+            }
+
             fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError> {
                 read::verification_enabled(&self.conn, project)
             }
 
             fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError> {
                 read::verification_incidents(&self.conn)
+            }
+
+            fn story_reset(
+                &self,
+                project: ProjectId,
+                story: StoryNo,
+            ) -> Result<Option<StoryReset>, StoreError> {
+                story_reset::read(&self.conn, project, story)
+            }
+
+            fn engine_reset(
+                &self,
+                project: ProjectId,
+                story: StoryNo,
+            ) -> Result<Option<EngineReset>, StoreError> {
+                engine_reset::read(&self.conn, project, story)
             }
 
             fn engine_lanes(&self, run_id: &str) -> Result<Vec<EngineLaneRecord>, StoreError> {
@@ -1045,8 +1092,61 @@ impl WriteOps for SqliteWriteTx<'_> {
         &mut self,
         intent: &crate::store::LandingIntent,
     ) -> Result<bool, StoreError> {
-        landing::remove(&self.conn, intent)
+        let removed = landing::remove(&self.conn, intent)?;
+        if removed {
+            self.ownership
+                .release("landing", intent.project, intent.story, &intent.id);
+        }
+        Ok(removed)
     }
+    fn insert_continuation(
+        &mut self,
+        record: &crate::store::Continuation,
+    ) -> Result<(), StoreError> {
+        continuation::insert(&self.conn, record)
+    }
+    fn update_continuation(
+        &mut self,
+        record: &crate::store::Continuation,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        continuation::update(&self.conn, record, expected)
+    }
+    fn enqueue_block_delivery(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        action: crate::store::BlockAction,
+    ) -> Result<(), StoreError> {
+        block_delivery::enqueue(&self.conn, project, story, action)
+    }
+    fn update_block_delivery(
+        &mut self,
+        delivery: &crate::store::BlockDelivery,
+        expected: crate::store::DeliveryStatus,
+    ) -> Result<bool, StoreError> {
+        use crate::store::DeliveryStatus;
+        let updated = block_delivery::update(&self.conn, delivery, expected)?;
+        if updated
+            && expected == DeliveryStatus::Attempting
+            && matches!(
+                delivery.status,
+                DeliveryStatus::Delivered
+                    | DeliveryStatus::Unreached
+                    | DeliveryStatus::Uncertain
+                    | DeliveryStatus::Superseded
+            )
+        {
+            self.ownership.release(
+                "block delivery",
+                delivery.project,
+                delivery.story,
+                &delivery.id.to_string(),
+            );
+        }
+        Ok(updated)
+    }
+
     fn create_project(&mut self, project: &NewProject) -> Result<ProjectId, StoreError> {
         write::create_project(&self.conn, project)
     }
@@ -1059,7 +1159,63 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::update_engine_run(&self.conn, run)
     }
 
+    fn put_story_reset(&mut self, reset: &StoryReset) -> Result<(), StoreError> {
+        story_reset::put(&self.conn, reset)?;
+        if reset.completed {
+            self.ownership
+                .release("card reset", reset.project, reset.story, &reset.token);
+        }
+        Ok(())
+    }
+
+    fn put_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError> {
+        engine_reset::put(&self.conn, reset)
+    }
+
+    fn remove_engine_reset(&mut self, reset: &EngineReset) -> Result<(), StoreError> {
+        engine_reset::remove(&self.conn, reset)?;
+        self.ownership
+            .release("engine reset", reset.project, reset.story, &reset.token);
+        Ok(())
+    }
+
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError> {
+        if let Some(run) = self.engine_run(&lane.run_id)?
+            && let Some(project) = self.project_by_slug(&run.project_slug)?
+            && let Some(current) = self
+                .engine_lanes(&lane.run_id)?
+                .into_iter()
+                .find(|current| current.lane_index == lane.lane_index)
+            && let Some(id) = &current.story_id
+            && let Ok(no) = StoryNo::parse_id(&project.prefix, id)
+            && self
+                .story_reset(project.id, no)?
+                .is_some_and(|reset| !reset.completed)
+            && !(current.state == crate::store::EngineLaneState::Dispatching
+                && (lane.story_id == current.story_id
+                    || lane.state == crate::store::EngineLaneState::Idle))
+        {
+            return Err(StoreError::Invariant(format!(
+                "reset owns engine lane for {id}"
+            )));
+        }
+        if let Some(id) = &lane.story_id
+            && let Some(run) = self.engine_run(&lane.run_id)?
+            && let Some(project) = self.project_by_slug(&run.project_slug)?
+            && let Ok(no) = StoryNo::parse_id(&project.prefix, id)
+            && self
+                .story_reset(project.id, no)?
+                .is_some_and(|reset| !reset.completed)
+            && !self.engine_lanes(&lane.run_id)?.iter().any(|current| {
+                current.lane_index == lane.lane_index
+                    && current.state == crate::store::EngineLaneState::Dispatching
+                    && current.story_id == lane.story_id
+            })
+        {
+            return Err(StoreError::Invariant(format!(
+                "reset prevents engine adoption of {id}"
+            )));
+        }
         write::put_engine_lane(&self.conn, lane)
     }
 
@@ -1074,13 +1230,38 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::put_verification_incident(&self.conn, incident)
     }
 
-    fn put_story_reset(
+    fn put_legacy_story_reset(
         &mut self,
         project: ProjectId,
         story: StoryNo,
         reservation: Option<&str>,
     ) -> Result<(), StoreError> {
-        write::put_story_reset(&self.conn, project, story, reservation)
+        let previous = if reservation.is_none() {
+            self.story_resets(project)?.remove(&story)
+        } else {
+            None
+        };
+        write::put_legacy_story_reset(&self.conn, project, story, reservation)?;
+        if let Some(previous) = previous {
+            let record: serde_json::Value = serde_json::from_str(&previous)?;
+            let token = record
+                .get("operation")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    StoreError::Corrupt("native reset has no operation identity".into())
+                })?;
+            self.ownership
+                .release("native reset", project, story, token);
+        }
+        Ok(())
+    }
+
+    fn put_verification_recovery(
+        &mut self,
+        project: ProjectId,
+        recovery: &crate::store::VerificationRecovery,
+    ) -> Result<(), StoreError> {
+        write::put_verification_recovery(&self.conn, project, recovery)
     }
 
     fn put_verification_enabled(
@@ -1121,6 +1302,9 @@ impl WriteOps for SqliteWriteTx<'_> {
         project: ProjectId,
         path: Option<&Path>,
     ) -> Result<(), StoreError> {
+        if self.checkout_path(project)?.as_deref() != path {
+            story_reset::refuse_project(&self.conn, project)?;
+        }
         write::set_checkout_path(&self.conn, project, path)
     }
 
@@ -1137,10 +1321,17 @@ impl WriteOps for SqliteWriteTx<'_> {
     }
 
     fn set_prefix(&mut self, project: ProjectId, new_prefix: &str) -> Result<(), StoreError> {
+        if self
+            .project(project)?
+            .is_some_and(|current| current.prefix != new_prefix)
+        {
+            story_reset::refuse_project(&self.conn, project)?;
+        }
         write::set_prefix(&self.conn, project, new_prefix)
     }
 
     fn delete_project(&mut self, project: ProjectId) -> Result<DeletedProject, StoreError> {
+        story_reset::refuse_project(&self.conn, project)?;
         write::delete_project(&self.conn, project)
     }
 
@@ -1149,6 +1340,8 @@ impl WriteOps for SqliteWriteTx<'_> {
         project: ProjectId,
         story: StoryNo,
     ) -> Result<PurgedStory, StoreError> {
+        crate::service::story_reset::refuse_reserved(self, project, story)?;
+
         write::purge_story(&self.conn, project, story)
     }
 

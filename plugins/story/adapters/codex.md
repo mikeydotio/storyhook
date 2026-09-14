@@ -29,7 +29,8 @@ marker here.
 - `ok:true`: show `display` verbatim. Surface `warning` and a fenced `pane_tail` when present.
 
 The helper owns the compare-and-swap claim, fresh base, `.codex/worktrees/<id>` worktree,
-tmux window, `codex --no-alt-screen` launch, readiness, Shift+Tab transition into Plan mode,
+tmux window, `codex --no-alt-screen` launch (update chooser and TUI animations off for the
+managed process), readiness, Shift+Tab transition into Plan mode,
 bracketed paste, and Tab submission. Do not repeat those side effects.
 
 With `--auto`, the helper adds `--approve-for-me` and
@@ -80,13 +81,31 @@ The classifier capability contract is currently verified only for Codex 0.154.0;
 other runtimes emit a diagnostic and retain the native menu path. See
 [the design and probe contract](../../../docs/spec/codex-auto-plan-continuation.md).
 
+SH-687 adds an explicit handoff for built-in autonomous Default-mode sessions:
+
+```json
+{"type":"storyhook.implementation-plan","version":1,"story_id":"SH-123","plan":"Complete implementation plan text"}
+```
+
+The entire assistant message must be this object, with exactly these fields and
+the assigned story ID. Valid requests bypass Luna. Malformed, embedded, quoted,
+unknown-version and mismatched-story requests do not fall back to classification.
+The approved content is the decoded `plan` text; posting it verbatim remains the
+first implementation step. The same receipt limits structured and prose paths
+together. Native Plan mode continues to use `proposed_plan`; JSON there redirects
+to native review without authorizing implementation. A typed transactional
+`story session-eligibility <id> --json` query supplies tracker facts before and
+after recognition. Schema validation records readiness, not proof of plan
+completeness or extra operational permission. Attended and custom prompts are
+unchanged; ordinary prose keeps its bounded classifier fallback.
+
 Codex has no stable machine-readable skill inventory. In `--auto`, council discovery
 therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit opt-in.
 
 ## Capture and doctor
 
 - `capture <id>`: run `bash "<story-helper>" capture <id>` and show `display`. The stable
-  launcher runs the helper as Codex, so no `STORY_AGENT` prefix is needed — and neither the
+  launcher uses provider-independent resource discovery, so no `STORY_AGENT` prefix is needed — and neither the
   installed-artifact guard nor Codex's own command rule admits one.
 - `doctor`: run `bash "<story-helper>" doctor` and show `display`. It reports
   the selected provider and independently confirms readiness, Plan mode, bracketed paste,
@@ -124,3 +143,20 @@ Codex's arm was measured live rather than assumed (SH-459, CLI 0.149.0): a match
 the model as the blocking reason. On both hosts a PreToolUse hook fails OPEN at its timeout, so
 a lane whose denial times out asks anyway and stalls — caught by the engine's stall ceiling and
 quarantined, never silent.
+
+Deterministic resource operations discover the actual worktree and recorded tmux socket. Do not set `STORY_AGENT` to locate Claude-created or custom worktrees. `dispatch --resume --agent=codex` changes the launch provider while preserving the resolved worktree.
+
+### Unsupported approval output
+
+`PreToolUse hook returned unsupported permissionDecision:allow` means a matching
+hook emitted an approval shape Codex does not support. Identify the producer
+across user, project, and plugin hook registrations before changing Storyhook.
+For an unchanged tool call, a hook with no objection must return no decision;
+optional feedback uses `additionalContext`. Preserve explicit denials and normal
+Codex permission handling. Do not add artificial `updatedInput` to silence the
+error: that field requests a tool-input rewrite.
+
+SH-707 reproduced this independently in Greenlight and a personal readonly hook,
+while installed and checkout Storyhook controls passed. See the
+[RCA and repair status](../../../docs/rca/sh-707-unsupported-hook-allow.md) and
+[Codex hook contract](https://developers.openai.com/codex/hooks).

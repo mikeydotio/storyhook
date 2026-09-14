@@ -1,0 +1,171 @@
+[
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "marketplace",
+      "add",
+      "/private/tmp/sh707-development-final-rehearsal/agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"marketplaceName\": \"agentics\",\n  \"installedRoot\": \"/private/tmp/sh707-development-final-rehearsal/agentics\",\n  \"alreadyAdded\": false\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "greenlight@agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"greenlight@agentics\",\n  \"name\": \"greenlight\",\n  \"marketplaceName\": \"agentics\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-development-final-rehearsal/codex-home/plugins/cache/agentics/greenlight/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "council@agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"council@agentics\",\n  \"name\": \"council\",\n  \"marketplaceName\": \"agentics\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-development-final-rehearsal/codex-home/plugins/cache/agentics/council/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "freshen@agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"freshen@agentics\",\n  \"name\": \"freshen\",\n  \"marketplaceName\": \"agentics\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-development-final-rehearsal/codex-home/plugins/cache/agentics/freshen/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "agents@agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"agents@agentics\",\n  \"name\": \"agents\",\n  \"marketplaceName\": \"agentics\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-development-final-rehearsal/codex-home/plugins/cache/agentics/agents/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "rca@agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"rca@agentics\",\n  \"name\": \"rca\",\n  \"marketplaceName\": \"agentics\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-development-final-rehearsal/codex-home/plugins/cache/agentics/rca/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "semver@agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"semver@agentics\",\n  \"name\": \"semver\",\n  \"marketplaceName\": \"agentics\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-development-final-rehearsal/codex-home/plugins/cache/agentics/semver/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "reconcile-pr@agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"reconcile-pr@agentics\",\n  \"name\": \"reconcile-pr\",\n  \"marketplaceName\": \"agentics\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-development-final-rehearsal/codex-home/plugins/cache/agentics/reconcile-pr/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "deployit@agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"deployit@agentics\",\n  \"name\": \"deployit\",\n  \"marketplaceName\": \"agentics\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-development-final-rehearsal/codex-home/plugins/cache/agentics/deployit/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "hook-guard@agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"hook-guard@agentics\",\n  \"name\": \"hook-guard\",\n  \"marketplaceName\": \"agentics\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-development-final-rehearsal/codex-home/plugins/cache/agentics/hook-guard/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "greenlight@personal",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"greenlight@personal\",\n  \"name\": \"greenlight\",\n  \"marketplaceName\": \"personal\",\n  \"version\": \"3.9.1+codex.20260913021137\",\n  \"installedPath\": \"/private/tmp/sh707-development-final-rehearsal/codex-home/plugins/cache/personal/greenlight/3.9.1+codex.20260913021137\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "remove",
+      "greenlight@agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"greenlight@agentics\",\n  \"name\": \"greenlight\",\n  \"marketplaceName\": \"agentics\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "add",
+      "greenlight@agentics",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"greenlight@agentics\",\n  \"name\": \"greenlight\",\n  \"marketplaceName\": \"agentics\",\n  \"version\": \"3.9.1\",\n  \"installedPath\": \"/private/tmp/sh707-development-final-rehearsal/codex-home/plugins/cache/agentics/greenlight/3.9.1\",\n  \"authPolicy\": \"ON_INSTALL\"\n}\n",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "codex",
+      "plugin",
+      "remove",
+      "greenlight@personal",
+      "--json"
+    ],
+    "exit_status": 0,
+    "stdout": "{\n  \"pluginId\": \"greenlight@personal\",\n  \"name\": \"greenlight\",\n  \"marketplaceName\": \"personal\"\n}\n",
+    "stderr": ""
+  }
+]

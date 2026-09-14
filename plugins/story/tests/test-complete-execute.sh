@@ -81,7 +81,7 @@ out=$(cd "$repo" \
 assert_eq "$(jqf "$out" .ok)" "true" "window: ok"
 assert_eq "$(jqf "$out" '.removed.window')" "true" "window: reports the window as closed"
 assert_contains "$(jqf "$out" .display)" "closed its tmux window" "window: display names it"
-grep -q -- '-t @1' "$FAKE_TMUX_STATE/kill_window_args.log" \
+grep -q -- '-t @7' "$FAKE_TMUX_STATE/kill_window_args.log" \
   || fail_test "window: kill-window did not target the resolved window"
 assert_eq "$(cat "$FAKE_TMUX_STATE/kill_window_probe.log")" "exists" \
   "window: the worktree still existed at the moment the window was killed"

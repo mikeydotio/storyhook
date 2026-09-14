@@ -235,7 +235,7 @@ fn a_custom_closed_state_lifts_the_exclusion_too() {
         &["state", "add", "wontfix", "--super", "CLOSED"],
     );
     run(dir.path(), &["new", "Open story"]);
-    run(dir.path(), &["new", "Won't fix this one"]);
+    run(dir.path(), &["new", "Will not fix this one"]);
     run(dir.path(), &["move", "SH-2", "wontfix"]);
 
     assert_eq!(list_ids(dir.path(), &[]), ["SH-1"]);

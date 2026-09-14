@@ -21,7 +21,7 @@ import {
  * click that opens its drawer. These coarse-pointer tests cover the two live
  * list-specific residues:
  *
- * - an unchanged row retains its cells and focused actions button; and
+ * - changed metadata preserves unchanged cells and the focused actions button; and
  * - while SH-401 has landed new state but deferred its paint, that old button
  *   builds the actions menu from the current story rather than its render-time
  *   closure.
@@ -108,18 +108,48 @@ test("an unrelated data update preserves an unchanged row action button and its 
   await row.locator(".mobile-story-details-btn").click();
   await expect(row.locator(".mobile-story-details")).toBeVisible();
 
+  const desktopActions = page.locator(`#list-body tr[data-id="${id}"] .row-actions-btn`);
+  await desktopActions.evaluate((node) => {
+    (node as HTMLElement & { __sh425Original?: boolean }).__sh425Original = true;
+  });
+  const beforeUpdated = await row.locator(".mobile-story-details time").getAttribute("datetime");
+  expect(beforeUpdated).not.toBeNull();
+  // The daemon stores whole seconds. Cross that boundary so the real PATCH
+  // must change Updated even when this test runs within its creation second.
+  await expect.poll(() => Date.now()).toBeGreaterThan(Date.parse(beforeUpdated!) + 1000);
+
   await actions.evaluate((node) => {
+    (node as HTMLElement & { __sh425Original?: boolean }).__sh425Original = true;
+  });
+  const titleControl = row.locator(".mobile-story-title");
+  await titleControl.focus();
+  await expect(titleControl).toHaveAttribute("tabindex", "0");
+  await titleControl.evaluate((node) => {
     (node as HTMLElement & { __sh425Original?: boolean }).__sh425Original = true;
   });
   await actions.focus();
   await expect(actions).toBeFocused();
 
-  // Description is deliberately absent from list-row output. The reply is a
-  // real state change and a real render request, but a no-op for this row.
+  // Description leaves the action unchanged, while Updated must refresh its
+  // exact datetime/title. That separate cell must not discard the focused button.
   const held = await holdStoryPatch(page, request, id, {
     description: "SH-425 changed only the non-rendered description",
   });
   await held.deliver();
+  await expect(row.locator(".mobile-story-details time")).not.toHaveAttribute("datetime", beforeUpdated!);
+  expect(
+    await desktopActions.evaluate(
+      (node) => !!(node as HTMLElement & { __sh425Original?: boolean }).__sh425Original,
+    ),
+    "the desktop date cell must not replace its unchanged actions cell",
+  ).toBe(true);
+  expect(
+    await titleControl.evaluate(
+      (node) => !!(node as HTMLElement & { __sh425Original?: boolean }).__sh425Original,
+    ),
+    "runtime roving tabindex must not replace the unchanged title control",
+  ).toBe(true);
+  await expect(titleControl).toHaveAttribute("tabindex", "0");
 
   expect(
     await actions.evaluate(

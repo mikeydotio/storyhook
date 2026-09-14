@@ -33,7 +33,7 @@ const PROJECTION_MODEL: &str = "projection-only-model";
 fn projection_stub() -> String {
     format!(
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=4
+DISPATCH_PROTOCOL=5
 set -u
 if [ "$1" = "capabilities" ]; then
   agent="${{2#--agent=}}"

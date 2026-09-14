@@ -1420,7 +1420,15 @@ fn a_verified_story_that_closes_frees_its_lane() {
     let held = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
     assert_eq!(held.verifying, [0], "the handoff is held first");
 
-    // Central verification lands the PR and closes the story.
+    // Central verification lands the PR and closes the story: its GREEN
+    // verdict is what lets a `verifying` story complete (SH-692) — a bare
+    // hand move is an override and is refused without a reason.
+    StoryService::new(&fixture.ctx())
+        .comment(
+            &story,
+            "CENTRAL VERIFICATION GREEN — merge tree `abc123` passed `make test` and pull request https://github.com/acme/widgets/pull/1 landed.",
+        )
+        .unwrap();
     StoryService::new(&fixture.ctx())
         .set_state(&story, "done", None, None, None)
         .unwrap();

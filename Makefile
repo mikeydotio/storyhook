@@ -155,9 +155,9 @@ STORYHOOK_MAKE_NO_EXEC := $(strip \
 # which is what makes running this target the thing that installs the gate
 # rather than a ritual someone has to remember. The postlude WRITES THE RECEIPT
 # naming the tree that just went green, and it is the LAST recipe line on
-# purpose: make aborts the recipe at the first failing line, so "no receipt
-# unless every leg passed" is true by construction rather than by exit-code
-# plumbing. Anything appended after it starts certifying failed runs.
+# purpose: the private body aggregates leg failures, then make refuses this
+# following line unless both the body and orphan cleanup passed. Anything
+# appended after it starts certifying failed runs.
 #
 # The gate it feeds replaced a Claude Code PreToolUse hook that was SIGTERMed at
 # its own 900-second ceiling, after which the push proceeded ungated and
@@ -200,15 +200,19 @@ test: check-no-orphan-servers
 _test-full-body: E2E=1
 _test-full-body: _test-body
 
+_test-body _test-changed-body: SHELL := /bin/bash
+
 _test-body:
 	@bash scripts/release-status.sh || true
-	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
-	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
-	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core
-	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
-	bash scripts/leg.sh --reuse build -- cargo build
-	bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
-	$(if $(E2E),bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true)
+	@. scripts/gate-legs.sh; gate_init; \
+	gate_run fmt bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check; \
+	gate_run clippy bash scripts/leg.sh --reuse clippy -- python3 scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
+	gate_run rust-suite bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core; \
+	gate_run rust-contracts bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts; \
+	gate_run build bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build; \
+	gate_run plugin bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh; \
+	$(if $(E2E),gate_run e2e bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true); \
+	gate_finish
 
 # The selective tier (SH-429). Identical to `test` except the rust-suite leg
 # runs `scripts/run-changed.sh` (which asks `scripts/select-tests.sh` what is
@@ -230,19 +234,21 @@ test-changed: check-no-orphan-servers
 	@bash scripts/with-orphan-postlude.sh $(if $(STORYHOOK_MAKE_NO_EXEC),--make-no-exec) -- $(MAKE) --no-print-directory _test-changed-body
 	@state_file="$$(git rev-parse --git-dir)/storyhook-changed-tier-args"; \
 	 tier_args="$$(cat "$$state_file" 2>/dev/null)"; \
-	 [ -n "$$tier_args" ] || tier_args=gate; \
+	 [ -n "$$tier_args" ] || { echo "test-changed: missing selection tier; nothing certified" >&2; exit 1; }; \
 	 rm -f "$$state_file"; \
 	 bash scripts/gate-receipt.sh postlude $$tier_args
 
 _test-changed-body:
 	@bash scripts/release-status.sh || true
-	bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check
-	bash scripts/leg.sh --reuse clippy -- cargo clippy --workspace --all-targets -- -D warnings
-	@bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-changed.sh
-	@bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts
-	bash scripts/leg.sh --reuse build -- cargo build
-	bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh
-	@bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true
+	@. scripts/gate-legs.sh; gate_init; \
+	gate_run fmt bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check; \
+	gate_run clippy bash scripts/leg.sh --reuse clippy -- python3 scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
+	gate_run rust-suite bash scripts/leg.sh rust-suite -- bash scripts/run-changed.sh; \
+	gate_run rust-contracts bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts; \
+	gate_run build bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build; \
+	gate_run plugin bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh; \
+	bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true; \
+	gate_finish
 
 # Installs the e2e/ Node toolchain and the browsers e2e/playwright.config.ts
 # names (chromium, webkit -- SH-335). Not part of either gate target itself --

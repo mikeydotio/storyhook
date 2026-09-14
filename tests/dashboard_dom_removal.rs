@@ -3,7 +3,7 @@
 //! The press gate's `MutationObserver` catches every removal mechanism on the
 //! surfaces a browser test exercises (SH-401). This is its static mirror:
 //! complete over this file, but only for the removal idioms named here. A new
-//! direct `.remove()`, `removeChild(...)`, `replaceChildren(...)`, or
+//! direct `.remove()`, `removeChild(...)`, `replaceChild(...)`, `replaceChildren(...)`, or
 //! `innerHTML = ...` therefore fails at its source line instead of depending
 //! on a browser scenario to happen to exercise it.
 //!
@@ -18,6 +18,7 @@ use std::path::PathBuf;
 enum RemovalIdiom {
     Remove,
     RemoveChild,
+    ReplaceChild,
     ReplaceChildren,
     InnerHtmlAssignment,
 }
@@ -118,6 +119,7 @@ fn hit(source: &str, offset: usize, idiom: RemovalIdiom) -> Hit {
 fn scan(source: &str) -> Vec<Hit> {
     let remove = Regex::new(r"\.\s*remove\s*\(\s*\)").expect("valid remove regex");
     let remove_child = Regex::new(r"\bremoveChild\s*\(").expect("valid removeChild regex");
+    let replace_child = Regex::new(r"\breplaceChild\s*\(").expect("valid replaceChild regex");
     let replace_children =
         Regex::new(r"\breplaceChildren\s*\(").expect("valid replaceChildren regex");
     let inner_html = Regex::new(r"\binnerHTML\s*=").expect("valid innerHTML regex");
@@ -128,6 +130,9 @@ fn scan(source: &str) -> Vec<Hit> {
     }
     for found in remove_child.find_iter(source) {
         hits.push(hit(source, found.start(), RemovalIdiom::RemoveChild));
+    }
+    for found in replace_child.find_iter(source) {
+        hits.push(hit(source, found.start(), RemovalIdiom::ReplaceChild));
     }
     for found in replace_children.find_iter(source) {
         hits.push(hit(source, found.start(), RemovalIdiom::ReplaceChildren));
@@ -217,6 +222,7 @@ fn the_scan_rejects_each_low_level_removal_idiom() {
     let before = [
         "candidate .\n remove ( );",
         "parent . removeChild\n (candidate);",
+        "parent . replaceChild\n (candidate, previous);",
         "parent . replaceChildren\n (candidate);",
         "candidate . innerHTML\n = rendered;",
     ]
@@ -227,6 +233,7 @@ fn the_scan_rejects_each_low_level_removal_idiom() {
         [
             RemovalIdiom::Remove,
             RemovalIdiom::RemoveChild,
+            RemovalIdiom::ReplaceChild,
             RemovalIdiom::ReplaceChildren,
             RemovalIdiom::InnerHtmlAssignment,
         ]
@@ -237,11 +244,23 @@ fn the_scan_rejects_each_low_level_removal_idiom() {
 fn the_scan_accepts_door_calls_and_ignores_prose() {
     let after = "clear(parent);\ndetach(candidate);\n\
                  // candidate.remove();\n\
-                 /* parent.removeChild(candidate); */\n\
+                 /* parent.removeChild(candidate); parent.replaceChild(next, previous); */\n\
                  candidate.innerHTML === rendered;";
 
     assert!(
         scan(&strip_comments(after)).is_empty(),
         "door calls, comments, and an innerHTML comparison are not removal bypasses"
+    );
+}
+
+#[test]
+fn the_scan_rejects_replace_child_with_whitespace_and_comments() {
+    let code = strip_comments(
+        "parent . replaceChild\n (next, previous);\nparent /* gap */ . replaceChild(next, previous);",
+    );
+    assert_eq!(
+        idioms(&scan(&code)),
+        [RemovalIdiom::ReplaceChild, RemovalIdiom::ReplaceChild],
+        "replacing a child removes its previous node and must use detach",
     );
 }

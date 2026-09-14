@@ -1,5 +1,6 @@
 ---
 source: tests/golden_cli.rs
+assertion_line: 487
 ---
 [
   {
@@ -43,7 +44,7 @@ source: tests/golden_cli.rs
           }
         },
         {
-          "head_global_seq": 85,
+          "head_global_seq": 86,
           "progress": {
             "children_done": 0,
             "children_total": 1

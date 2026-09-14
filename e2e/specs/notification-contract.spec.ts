@@ -867,7 +867,7 @@ test("the preference does not change a durable notice, which never had a clock",
   await openClocked(page);
   await keepNotices(page);
 
-  const title = "SH-322 — a refusal is unaffected";
+  const title = "SH-322 — refusal keeps its notice";
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, false, "refused");
 

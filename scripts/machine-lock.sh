@@ -4,7 +4,8 @@
 # two names that protect a project -- by project (SH-456, SH-648).
 #
 #   machine-lock.sh [--plan] [--max-wait <seconds>]
-#                   [--max-idle <seconds>] <name> -- <command...>
+#                   [--max-idle <seconds>] [--termination-grace <seconds>]
+#                   <name> -- <command...>
 #   machine-lock.sh --held <name>
 #
 # Runs <command...> with <name> held, and exits with the command's own status.
@@ -117,7 +118,7 @@ else
     gate_progress_emit_activity() { :; }
 fi
 
-readonly USAGE="usage: machine-lock.sh [--plan] [--max-wait <seconds>] [--max-idle <seconds>] <name> -- <command...>
+readonly USAGE="usage: machine-lock.sh [--plan] [--max-wait <seconds>] [--max-idle <seconds>] [--termination-grace <seconds>] <name> -- <command...>
        machine-lock.sh --held <name>"
 
 die() {
@@ -184,6 +185,7 @@ plan=0
 held_query=0
 max_wait=""
 max_idle=""
+termination_grace=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
     (--plan)
@@ -216,6 +218,17 @@ while [ "$#" -gt 0 ]; do
         max_idle="$1"
         shift
         ;;
+    (--termination-grace)
+        shift
+        [ "$#" -gt 0 ] || die "--termination-grace needs a positive whole number of seconds -- $USAGE"
+        case "$1" in
+        (*[!0-9]* | '' | 0) die "--termination-grace takes a positive whole number of seconds -- $USAGE" ;;
+        esac
+        [ "${#1}" -le 8 ] && [ "$1" -gt 0 ] \
+            || die "--termination-grace must be 1..99999999 seconds -- $USAGE"
+        termination_grace="$((10#$1))"
+        shift
+        ;;
     (--)
         die "no lock name before '--' -- $USAGE"
         ;;
@@ -243,8 +256,8 @@ if [ "$held_query" = 1 ]; then
     # SH-357: a query takes exactly one word. Anything after the name would
     # land nowhere.
     [ "$#" -eq 0 ] || die "--held takes a lock name and nothing else, not '$1' -- $USAGE"
-    [ "$plan" = 0 ] && [ -z "$max_wait" ] && [ -z "$max_idle" ] \
-        || die "--held cannot be combined with --plan, --max-wait or --max-idle -- $USAGE"
+    [ "$plan" = 0 ] && [ -z "$max_wait" ] && [ -z "$max_idle" ] && [ -z "$termination_grace" ] \
+        || die "--held cannot be combined with --plan, --max-wait, --max-idle or --termination-grace -- $USAGE"
 else
     # SH-357: an argument that lands nowhere is refused, not dropped. The `--` is
     # required even though the name is a single token, so that a command whose
@@ -401,7 +414,20 @@ while :; do
     recorded="$(cat "$lock/started" 2>/dev/null || true)"
     meta="$(cat "$lock/meta" 2>/dev/null || true)"
 
-    if [ -z "$holder" ]; then
+    if [ -d "$lock/interrupt" ]; then
+        # Native interruption can kill the wrapper before its cleanup trap.
+        # Only the captured-tree controller may acknowledge child quiescence.
+        controller="$(cat "$lock/interrupt/owner" 2>/dev/null || true)"
+        controller_started="$(cat "$lock/interrupt/started" 2>/dev/null || true)"
+        if [ -n "$controller" ] && [ -n "$controller_started" ] && \
+            { ! kill -0 "$controller" 2>/dev/null || [ "$(process_started "$controller")" != "$controller_started" ]; }; then
+            die "interruption cleanup incomplete for '$name' at $lock: controller $controller is gone; ownership retained until captured children are proven stopped"
+        fi
+        if [ "$announced" = 0 ]; then
+            note "waiting for interruption cleanup of '$name' at $lock (controller ${controller:-starting})"
+            announced=1
+        fi
+    elif [ -z "$holder" ]; then
         # Nameless: a holder mid-write, or one killed inside that window.
         nameless=$((nameless + 1))
         if [ "$nameless" -gt "$IDENTITY_GRACE_POLLS" ]; then
@@ -458,7 +484,7 @@ done
 # ago can be overtaken by a new holder, and deleting that holder's directory
 # would hand the lock to two processes at once.
 release() {
-    if [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$$" ]; then
+    if [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$$" ] && [ ! -d "$lock/interrupt" ]; then
         rm -rf "$lock" 2>/dev/null || true
     fi
 }
@@ -475,7 +501,7 @@ terminate_group() {
     group_alive || return 0
     note "$reason: sending SIGTERM to process group $child"
     kill -TERM -- "-$child" 2>/dev/null || true
-    remaining="$TERMINATION_GRACE_SECS"
+    remaining="${termination_grace:-$TERMINATION_GRACE_SECS}"
     while [ "$remaining" -gt 0 ] && group_alive; do
         sleep "$LOCK_POLL_SECS"
         remaining=$((remaining - LOCK_POLL_SECS))
@@ -511,6 +537,7 @@ on_signal() {
     kill -s "$1" $$
 }
 
+printf '1\n' > "$lock/interrupt-protocol" || die "could not record interruption protocol in $lock"
 printf '%s\n' "$(process_started $$)" > "$lock/started" \
     || {
         emit_lock_activity failed
@@ -579,6 +606,10 @@ watchdog=""
 if [ -n "$max_idle" ]; then
     stalled="$lock/stalled"
     (
+        # A default TERM exits this shell while its foreground timer/probe
+        # retains inherited workspace locks. Bash defers this trap until that
+        # child exits; the parent's wait then observes the complete watchdog.
+        trap 'exit 0' TERM INT HUP
         last_size="$(wc -c < "$journal" 2>/dev/null | tr -d ' ')" || {
             note "lost access to the progress journal at $journal before the watchdog could observe it"
             printf 'journal unreadable\n' > "$stalled"

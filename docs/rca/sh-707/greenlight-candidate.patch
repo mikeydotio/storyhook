@@ -1,0 +1,215 @@
+diff --git a/plugins/greenlight/hooks/greenlight.sh b/plugins/greenlight/hooks/greenlight.sh
+index caf4a7f..125f324 100755
+--- a/plugins/greenlight/hooks/greenlight.sh
++++ b/plugins/greenlight/hooks/greenlight.sh
+@@ -21,6 +21,8 @@
+
+ INPUT="$(cat)"
+ TOOL_NAME="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)" || exit 0
++# Codex identifies its payloads with turn_id and does not accept bare approvals.
++IS_CODEX="$(printf '%s' "$INPUT" | jq -r 'has("turn_id")' 2>/dev/null)" || exit 0
+
+ # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ #  CONFIGURATION
+@@ -110,10 +112,15 @@ log_decision() {
+ }
+
+ allow() {
+-  local reason="$1"
++  local reason="$1" context="${2:-}"
+   log_decision "ALLOW" "${TOOL_NAME}: ${reason}"
+-  jq -n --arg reason "$reason" \
+-    '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":$reason}}'
++  if [[ "$IS_CODEX" == "true" && -z "$context" ]]; then
++    exit 0
++  fi
++  jq -n --arg reason "$reason" --arg context "$context" --argjson codex "$IS_CODEX" \
++    '{"hookSpecificOutput": ({"hookEventName":"PreToolUse"}
++      + (if $codex then {} else {"permissionDecision":"allow","permissionDecisionReason":$reason} end)
++      + (if $context == "" then {} else {"additionalContext":$context} end))}'
+   exit 0
+ }
+
+@@ -1552,10 +1559,7 @@ PROMPT_END
+   else
+     # AI says safe — allow, but still surface rationale if configured
+     if [[ "$CFG_AI_SHOW_RATIONALE" == "true" ]]; then
+-      log_decision "ALLOW" "AI confirmed safe: ${rationale}"
+-      jq -n --arg rationale "[greenlight] AI analysis: ${rationale}" \
+-        '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"AI confirmed safe","additionalContext":$rationale}}'
+-      exit 0
++      allow "AI confirmed safe" "[greenlight] AI analysis: ${rationale}"
+     else
+       allow "AI confirmed safe"
+     fi
+--- /dev/null
++++ b/plugins/greenlight/tests/greenlight-codex.bats
+@@ -0,0 +1,168 @@
++#!/usr/bin/env bats
++# Real entrypoint contract tests. Only the external Anthropic HTTP response is
++# stubbed; command payloads remain data and are never executed.
++
++GL_HOOK="$BATS_TEST_DIRNAME/../hooks/greenlight.sh"
++GL_PLUGIN_ROOT="$BATS_TEST_DIRNAME/.."
++
++setup() {
++  GL_TEST_ROOT="$(mktemp -d /tmp/sh707-greenlight.XXXXXX)"
++  mkdir -p "$GL_TEST_ROOT/.config/greenlight" "$GL_TEST_ROOT/bin"
++  GL_CONFIG="$GL_TEST_ROOT/.config/greenlight/config.yaml"
++  printf 'ai_enabled: false\nai_show_rationale: false\nlog_file: %s/decisions.log\n' \
++    "$GL_TEST_ROOT" > "$GL_CONFIG"
++  # A sentinel credential and isolated environment guarantee no real request.
++  cat > "$GL_TEST_ROOT/bin/curl" <<'EOF'
++#!/usr/bin/env bash
++printf '%s\n' "$@" > "$GL_CURL_LOG"
++if [[ "$*" != *'x-api-key: sh707-test-sentinel'* ]]; then exit 90; fi
++cat "$GL_RESPONSE_FILE"
++EOF
++  chmod +x "$GL_TEST_ROOT/bin/curl"
++}
++
++teardown() {
++  rm -rf "$GL_TEST_ROOT"
++}
++
++payload() {
++  jq -cn --arg provider "$1" --arg tool "$2" --arg command "$3" \
++    --arg cwd "$GL_TEST_ROOT" \
++    '{hook_event_name:"PreToolUse",tool_name:$tool,tool_input:{command:$command},
++      permission_mode:"default",cwd:$cwd}
++     + (if $provider == "codex" then {turn_id:"test-turn"} else {} end)'
++}
++
++run_payload() {
++  run env -i HOME="$GL_TEST_ROOT" PATH="$GL_TEST_ROOT/bin:$PATH" \
++    CLAUDE_PLUGIN_ROOT="$GL_PLUGIN_ROOT" GREENLIGHT_PLAN_EXPLORER="${2:-0}" \
++    ANTHROPIC_API_KEY=sh707-test-sentinel \
++    GL_CURL_LOG="$GL_TEST_ROOT/curl.log" GL_RESPONSE_FILE="$GL_TEST_ROOT/response.json" \
++    bash "$GL_HOOK" <<< "$1"
++}
++
++assert_neutral() {
++  [ "$status" -eq 0 ]
++  [ -z "$output" ] || jq -e '
++    (.hookSpecificOutput // {}) |
++    (has("permissionDecision") | not) and (has("permissionDecisionReason") | not)
++  ' <<< "$output"
++}
++
++assert_decision() {
++  [ "$status" -eq 0 ]
++  jq -e --arg expected "$1" '
++    .hookSpecificOutput.permissionDecision == $expected and
++    (.hookSpecificOutput.permissionDecisionReason | length > 0)
++  ' <<< "$output"
++}
++
++assert_context() {
++  jq -e --arg text "$1" '.hookSpecificOutput.additionalContext | contains($text)' <<< "$output"
++}
++
++run_safe_ai() {
++  printf 'ai_enabled: true\nai_show_rationale: %s\nlog_file: %s/decisions.log\n' \
++    "$2" "$GL_TEST_ROOT" > "$GL_CONFIG"
++  jq -cn '{content:[{type:"text",text:({answer:false,rationale:"Fixture confirms read-only behavior."}|tojson)}]}' \
++    > "$GL_TEST_ROOT/response.json"
++  run_payload "$(payload "$1" Bash 'unknown-readonly-tool --inspect')"
++  [ -s "$GL_TEST_ROOT/curl.log" ]
++  # Neutral output alone could hide a failed AI parse; prove false reached the
++  # production AI decision branch instead of falling through as an API failure.
++  grep -F 'AI_RESULT] answer=false rationale=Fixture confirms read-only behavior.' \
++    "$GL_TEST_ROOT/decisions.log"
++}
++
++@test "Codex deterministic Bash approval emits no permission decision or orphan reason" {
++  run_payload "$(payload codex Bash pwd)"
++  assert_neutral
++  [ ! -e "$GL_TEST_ROOT/curl.log" ]
++}
++
++@test "Claude deterministic Bash approval retains allow and reason" {
++  run_payload "$(payload claude Bash pwd)"
++  assert_decision allow
++  [ ! -e "$GL_TEST_ROOT/curl.log" ]
++}
++
++@test "Codex readonly tool approval is neutral" {
++  run_payload "$(payload codex Read '')"
++  assert_neutral
++}
++
++@test "Claude readonly tool approval retains allow" {
++  run_payload "$(payload claude Read '')"
++  assert_decision allow
++}
++
++@test "Codex AI safe approval without rationale is neutral after parsing boolean false" {
++  run_safe_ai codex false
++  assert_neutral
++}
++
++@test "Codex AI safe approval with rationale emits context only" {
++  run_safe_ai codex true
++  assert_neutral
++  assert_context 'Fixture confirms read-only behavior.'
++}
++
++@test "Claude AI safe approval without rationale retains allow" {
++  run_safe_ai claude false
++  assert_decision allow
++  jq -e '.hookSpecificOutput | has("additionalContext") | not' <<< "$output"
++}
++
++@test "Claude AI safe approval with rationale retains allow and context" {
++  run_safe_ai claude true
++  assert_decision allow
++  assert_context 'Fixture confirms read-only behavior.'
++}
++
++@test "Codex plan explorer destructive command remains denied" {
++  run_payload "$(payload codex Bash 'rm -rf fixture-directory')" 1
++  assert_decision deny
++}
++
++@test "Claude plan explorer destructive command remains denied" {
++  run_payload "$(payload claude Bash 'rm -rf fixture-directory')" 1
++  assert_decision deny
++}
++
++@test "Codex destructive warning remains context only" {
++  run_payload "$(payload codex Bash 'rm -rf fixture-directory')"
++  assert_neutral
++  assert_context 'file deletion'
++}
++
++@test "Claude destructive warning remains context only" {
++  run_payload "$(payload claude Bash 'rm -rf fixture-directory')"
++  assert_neutral
++  assert_context 'file deletion'
++}
++
++@test "Malformed JSON remains inert" {
++  run_payload '{'
++  [ "$status" -eq 0 ]
++  [ -z "$output" ]
++}
++
++@test "Codex unrelated tool remains inert" {
++  run_payload "$(payload codex SomeFutureTool '')"
++  [ "$status" -eq 0 ]
++  [ -z "$output" ]
++}
++
++@test "Claude unrelated tool remains inert" {
++  run_payload "$(payload claude SomeFutureTool '')"
++  [ "$status" -eq 0 ]
++  [ -z "$output" ]
++}
++
++@test "Codex manifest invocation resolves its PLUGIN_ROOT-only environment" {
++  local invocation
++  invocation="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$GL_PLUGIN_ROOT/hooks/hooks.json")"
++  run env -i HOME="$GL_TEST_ROOT" PATH="$GL_TEST_ROOT/bin:$PATH" \
++    PLUGIN_ROOT="$GL_PLUGIN_ROOT" bash -c "$invocation" <<< "$(payload codex Bash pwd)"
++  assert_neutral
++}

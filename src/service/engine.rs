@@ -5,6 +5,10 @@
 //! keeps the store-pool deadlock rule in the caller while giving reconcile
 //! tests a seam that never needs a worktree, tmux server, or agent process.
 
+/// Read-only inspection and transactional adoption of manual dispatches.
+pub mod adoption;
+pub mod reset;
+
 use std::ffi::OsString;
 #[cfg(test)]
 use std::fs::File;
@@ -553,7 +557,21 @@ impl DispatchOutcome {
 pub trait Dispatcher: Send + Sync {
     fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError>;
     fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError>;
+    /// Deletes resources owned by a durable reset while inheriting the supplied workspace exclusion into destructive children.
+    fn reset(
+        &self,
+        _request: crate::store::EngineReset,
+        _workspace: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<DispatchOutcome, AppError> {
+        Err(AppError::Storage(
+            "this dispatcher does not support leased reset".into(),
+        ))
+    }
     fn probe_window(&self, window: &str) -> WindowProbe;
+    /// Probes a lane using its durable identity when the dispatcher supports it.
+    fn probe_lane(&self, _lane: &EngineLaneRecord, target: &str) -> WindowProbe {
+        self.probe_window(target)
+    }
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
     /// The live agent windows on the tmux server this dispatcher fills
     /// lanes on — every dispatched session, engine-filled or manual.
@@ -636,42 +654,12 @@ impl ShellDispatcher {
     }
 }
 
-impl Dispatcher for ShellDispatcher {
-    fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
-        let options = DispatchOptions {
-            model: request.model,
-            effort: request.effort,
-            fast: request.speed == Some(EngineSpeed::Fast),
-            resume: false,
-        };
-        let outcome = run_shell_dispatch(
-            &self.story_sh_path,
-            &request.project,
-            &request.story,
-            Some(request.agent),
-            true,
-            true,
-            &options,
-            &self.env,
-        )?;
-        if outcome.state == DispatchOutcomeState::Ok {
-            cleanup_lease_from_payload(&outcome.payload, &request.project, &request.story)?;
-        }
-        Ok(outcome)
-    }
-
-    fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
-        run_shell_unclaim(
-            &self.story_sh_path,
-            &request.project,
-            &request.story,
-            &request.cleanup_lease,
-            &self.env,
-        )
-    }
-
-    fn probe_window(&self, window: &str) -> WindowProbe {
+impl ShellDispatcher {
+    fn probe_window_at(&self, window: &str, socket: Option<&Path>) -> WindowProbe {
         let mut command = self.tmux();
+        if let Some(socket) = socket {
+            command.arg("-S").arg(socket);
+        }
         command.args(["display-message", "-p", "-t", window, WINDOW_PROBE_FORMAT]);
         let captured = match run_captured(command, TMUX_TIMEOUT) {
             Ok(captured) => captured,
@@ -767,6 +755,65 @@ impl Dispatcher for ShellDispatcher {
             last_output_at: activity.parse::<i64>().ok(),
         }
     }
+}
+
+impl Dispatcher for ShellDispatcher {
+    fn reset(
+        &self,
+        request: crate::store::EngineReset,
+        workspace: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<DispatchOutcome, AppError> {
+        reset::run_shell_reset(&self.story_sh_path, &request, &self.env, workspace)
+    }
+
+    fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
+        let options = DispatchOptions {
+            model: request.model,
+            effort: request.effort,
+            fast: request.speed == Some(EngineSpeed::Fast),
+            resume: false,
+        };
+        let outcome = run_shell_dispatch(
+            &self.story_sh_path,
+            &request.project,
+            &request.story,
+            Some(request.agent),
+            true,
+            true,
+            &options,
+            &self.env,
+        )?;
+        if outcome.state == DispatchOutcomeState::Ok {
+            cleanup_lease_from_payload(&outcome.payload, &request.project, &request.story)?;
+        }
+        Ok(outcome)
+    }
+
+    fn unclaim(&self, request: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
+        run_shell_unclaim(
+            &self.story_sh_path,
+            &request.project,
+            &request.story,
+            &request.cleanup_lease,
+            &self.env,
+        )
+    }
+
+    fn probe_window(&self, window: &str) -> WindowProbe {
+        self.probe_window_at(window, None)
+    }
+
+    fn probe_lane(&self, lane: &EngineLaneRecord, window: &str) -> WindowProbe {
+        if lane.adopted_identity.is_some() {
+            return adoption::probe(lane);
+        }
+        self.probe_window_at(
+            window,
+            lane.cleanup_lease
+                .as_ref()
+                .map(|lease| lease.tmux.socket_path.as_path()),
+        )
+    }
 
     fn kill_window(&self, window: &str) -> Result<(), AppError> {
         let mut command = self.tmux();
@@ -827,6 +874,19 @@ pub struct ConfigureRequest {
     /// Explicit reasoning effort, or the provider default when absent.
     pub effort: Option<String>,
     /// Explicit speed selection, or the provider default when absent.
+    pub speed: Option<EngineSpeed>,
+}
+
+/// Fields supplied by the CLI; omitted settings retain their current values.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ConfigurePatch {
+    /// Desired capacity, when supplied.
+    pub lanes: Option<u32>,
+    /// Model for future dispatches, when supplied.
+    pub model: Option<String>,
+    /// Reasoning effort for future dispatches, when supplied.
+    pub effort: Option<String>,
+    /// Speed for future dispatches, when supplied.
     pub speed: Option<EngineSpeed>,
 }
 
@@ -947,7 +1007,34 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         run_id: &RunId,
         request: ConfigureRequest,
     ) -> Result<RunView, AppError> {
-        validate_configuration(request.lanes, &request.model, &request.effort)?;
+        self.configure_with(run_id, |_| request)
+    }
+
+    /// Atomically changes only supplied settings, preserving concurrent updates.
+    pub fn configure_patch(
+        &self,
+        run_id: &RunId,
+        patch: ConfigurePatch,
+    ) -> Result<RunView, AppError> {
+        if patch == ConfigurePatch::default() {
+            return Err(AppError::Validation(
+                "engine configure requires at least one setting".into(),
+            ));
+        }
+        self.configure_with(run_id, |run| ConfigureRequest {
+            lanes: patch.lanes.unwrap_or(run.lanes),
+            agent: run.agent,
+            model: patch.model.or_else(|| run.model.clone()),
+            effort: patch.effort.or_else(|| run.effort.clone()),
+            speed: patch.speed.or(run.speed),
+        })
+    }
+
+    fn configure_with(
+        &self,
+        run_id: &RunId,
+        request: impl FnOnce(&EngineRunRecord) -> ConfigureRequest,
+    ) -> Result<RunView, AppError> {
         let project = self.ctx.project();
         let updated_at = self.ctx.now();
         self.ctx.store().write(|tx| {
@@ -959,6 +1046,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 &[EngineRunState::Running, EngineRunState::Paused],
             )?;
 
+            let request = request(&run);
+            validate_configuration(request.lanes, &request.model, &request.effort)
+                .map_err(StoreError::from)?;
             let lanes = tx.engine_lanes(run_id)?;
             for lane in lanes.iter().filter(|lane| {
                 lane.lane_index >= request.lanes && lane.state == EngineLaneState::Idle
@@ -997,7 +1087,18 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             };
             runs.into_iter()
                 .map(|run| {
-                    let lanes = tx.engine_lanes(&run.id)?;
+                    let mut lanes = tx.engine_lanes(&run.id)?;
+                    let continuations = tx.continuations(project)?;
+                    for lane in &mut lanes {
+                        if let Some(request) = continuations.iter().rev().find(|r| {
+                            lane.story_id.as_deref() == Some(&r.story_id) && r.status.outstanding()
+                        }) {
+                            lane.probe_detail = Some(format!(
+                                "continuation {} {:?}: {}",
+                                request.id, request.status, request.detail
+                            ));
+                        }
+                    }
                     let skipped_no_auto =
                         if run.state.is_live() && scope_is_available(tx, project, &run.scope)? {
                             needs_human_stories(tx, project, &now, &run.scope)?
@@ -1140,6 +1241,17 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 
         if self.halt_if_scope_unavailable(run_id)? {
             let view = self.one_view(run_id)?;
+            report.run_state = view.run.state;
+            report.stop_reason = view.run.stop_reason;
+            return Ok(report);
+        }
+
+        if self.ctx.store().read(|tx| reset::stopping(tx, run_id))? {
+            let view = if pass == ReconcilePass::Steady {
+                self.reset_now(run_id)?
+            } else {
+                self.one_view(run_id)?
+            };
             report.run_state = view.run.state;
             report.stop_reason = view.run.stop_reason;
             return Ok(report);
@@ -1301,6 +1413,13 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     .story_id
                     .clone()
                     .expect("a non-idle lane holds a story");
+                if let Ok(no) = crate::store::StoryNo::parse_id(&prefix, &story)
+                    && tx
+                        .story_reset(project, no)?
+                        .is_some_and(|reset| !reset.completed)
+                {
+                    continue;
+                }
                 let row = optional_lane_story(tx, project, &prefix, &story)?;
                 facts.push((lane, row));
             }
@@ -1325,7 +1444,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         detail: "the lane records neither a pane id nor a window name to probe"
                             .to_string(),
                     },
-                    |target| self.dispatcher.probe_window(&target),
+                    |target| self.dispatcher.probe_lane(&lane, &target),
                 );
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
             // Read only when it can change the verdict: a Gone window on an
@@ -1350,6 +1469,16 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 } => seconds_between_unix(*at, &now),
                 _ => None,
             };
+            let adoption_blocked = if lane.adopted_identity.is_some() {
+                self.ctx.store().read(|tx| {
+                    let all = adoption::snapshots(tx, project)?;
+                    Ok(row
+                        .as_ref()
+                        .is_some_and(|row| crate::domain::is_blocked(&row.snapshot, &all)))
+                })?
+            } else {
+                false
+            };
             let observation = LaneObservation {
                 story_closed: row
                     .as_ref()
@@ -1357,9 +1486,10 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 story_verifying: row
                     .as_ref()
                     .is_some_and(|row| row.state == VERIFYING_STATE_SLUG),
-                agent_blocked: row.as_ref().is_some_and(|row| {
-                    row.awaiting.is_some() || row.state == DISPLAY_PROMOTION_STATE
-                }),
+                agent_blocked: adoption_blocked
+                    || row.as_ref().is_some_and(|row| {
+                        row.awaiting.is_some() || row.state == DISPLAY_PROMOTION_STATE
+                    }),
                 window,
                 head_global_seq,
                 last_progress_seq: lane.last_progress_seq.map(GlobalSeq::get),
@@ -1371,8 +1501,29 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 awaiting_reason: row.as_ref().and_then(|row| row.awaiting.clone()),
                 returned_for_repair,
             };
-            let classification = if row.is_none() {
+            let continuation_owned = if let Some(row) = &row {
+                self.ctx.store().read(|tx| {
+                    let pending = tx
+                        .continuations(project)?
+                        .iter()
+                        .any(|r| r.story_no == row.story_no && r.status.outstanding());
+                    Ok(pending
+                        && super::query::QueryService::new(tx, project, &now)
+                            .session_eligibility(&row.snapshot.id)?
+                            .eligible)
+                })?
+            } else {
+                false
+            };
+            let classification = if continuation_owned {
+                LaneClassification::Progressing
+            } else if row.is_none() {
                 LaneClassification::HardStop(HardStopKind::StoryMissing)
+            } else if lane.adopted_identity.is_some()
+                && !observation.agent_blocked
+                && row.as_ref().is_some_and(|row| row.state != "in-progress")
+            {
+                LaneClassification::Completed
             } else {
                 classify(&observation, STALL_CEILING_SECS, pass)
             };
@@ -1419,8 +1570,8 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         updated.last_observed_at = observed_at.clone();
         // What tmux last said, when it did not say "alive" (SH-626). Written
         // every pass so status reads the current truth; JOURNALED only on
-        // the edge, because a live run is reconciled roughly once a second
-        // and a line per pass is the SH-263 self-noise shape.
+        // the edge, because a burst of project changes can wake several
+        // passes and a line per pass is the SH-263 self-noise shape.
         updated.probe_detail = probe.detail().map(str::to_string);
         if updated.probe_detail != lane.probe_detail {
             self.journal_probe_edge(lane, probe);
@@ -1460,7 +1611,14 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     ) -> Result<bool, AppError> {
         let observed_at = self.ctx.now();
         let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
-        idle.outcome = Some(COMPLETED.to_string());
+        idle.outcome = Some(
+            if lane.adopted_identity.is_some() {
+                "adopted-released"
+            } else {
+                COMPLETED
+            }
+            .to_string(),
+        );
         idle.outcome_detail = lane.story_id.clone();
         Ok(self.ctx.store().write(|tx| {
             if !observation_is_current(tx, self.ctx.project(), lane, head_global_seq)? {
@@ -1556,7 +1714,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         quarantined.outcome = Some(kind.as_str().to_string());
         quarantined.outcome_detail = lane.story_id.clone();
         quarantined.probe_detail = window_detail.map(str::to_string);
-        let applied = self.ctx.store().write(|tx| {
+        let applied = self.ctx.write_stories(|tx| {
             let project = self.ctx.project();
             if !observation_is_current(tx, project, lane, head_global_seq)? {
                 return Ok(false);
@@ -1998,97 +2156,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     }
 
     fn stop_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
-        let project = self.ctx.project();
-        let transition_at = self.ctx.now();
-        let slug = self.ctx.store().write(|tx| {
-            let slug = project_slug(tx, project)?;
-            let mut run = run_for_project(tx, &slug, run_id)?;
-            require_state(
-                &run,
-                "stop --now",
-                &[
-                    EngineRunState::Running,
-                    EngineRunState::Paused,
-                    EngineRunState::Draining,
-                    EngineRunState::Halted,
-                ],
-            )?;
-            run.state = EngineRunState::Draining;
-            if run.stop_reason.as_deref() != Some(OPERATOR_STOPPED_NOW) {
-                run.stop_reason = Some(OPERATOR_STOPPED_NOW.to_string());
-                run.acknowledged_at = None;
-            }
-            run.updated_at = transition_at.clone();
-            tx.update_engine_run(&run)?;
-            Ok(slug)
-        })?;
-
-        let dispatch_deadline = Instant::now() + DISPATCH_TIMEOUT;
-        loop {
-            let lanes = self.stop_lanes_after_dispatch(run_id, dispatch_deadline)?;
-            for lane in lanes
-                .into_iter()
-                .filter(|lane| lane.state != EngineLaneState::Idle)
-            {
-                if lane.state == EngineLaneState::Quarantined {
-                    self.clear_quarantined_lane(&lane)?;
-                    continue;
-                }
-                let story = lane.story_id.clone().expect("filtered occupied lane");
-                let cleanup_lease = lane.cleanup_lease.clone().ok_or_else(|| {
-                    AppError::Storage(format!(
-                        "engine run `{run_id}` cannot immediately stop lane {} story `{story}`: no cleanup lease was recorded for this legacy lane",
-                        lane.lane_index
-                    ))
-                })?;
-                let outcome = self
-                    .dispatcher
-                    .unclaim(UnclaimRequest {
-                        project: slug.clone(),
-                        story: story.clone(),
-                        cleanup_lease,
-                    })
-                    .map_err(|error| {
-                        error.with_context(&format!(
-                            "engine run `{run_id}` could not immediately stop lane {} story `{story}`",
-                            lane.lane_index
-                        ))
-                    })?;
-                if outcome.state == DispatchOutcomeState::Refused {
-                    return Err(AppError::Validation(format!(
-                        "engine run `{run_id}` could not immediately stop lane {} story `{story}`: {}",
-                        lane.lane_index,
-                        helper_diagnosis(&outcome.payload)
-                    )));
-                }
-                self.release_lane(&lane, &outcome.payload)?;
-            }
-
-            let all_idle = self.ctx.store().read(|tx| {
-                Ok(tx
-                    .engine_lanes(run_id)?
-                    .iter()
-                    .all(|lane| lane.state == EngineLaneState::Idle))
-            })?;
-            if all_idle {
-                break;
-            }
-        }
-
-        let finished_at = self.ctx.now();
-        self.ctx.store().write(|tx| {
-            let mut run = run_for_project(tx, &slug, run_id)?;
-            let lanes = tx.engine_lanes(run_id)?;
-            if lanes.iter().any(|lane| lane.state != EngineLaneState::Idle) {
-                return Err(StoreError::from(AppError::Validation(format!(
-                    "engine run `{run_id}` still has occupied lanes after immediate stop"
-                ))));
-            }
-            run.state = EngineRunState::Finished;
-            run.updated_at = finished_at;
-            tx.update_engine_run(&run)
-        })?;
-        self.one_view(run_id)
+        self.reset_now(run_id)
     }
 
     fn stop_lanes_after_dispatch(
@@ -2115,33 +2183,31 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         }
     }
 
-    fn release_lane(
-        &self,
-        lane: &EngineLaneRecord,
-        payload: &serde_json::Value,
-    ) -> Result<(), AppError> {
-        let observed_at = self.ctx.now();
-        let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
-        idle.outcome = Some(OPERATOR_STOPPED_NOW.to_string());
-        idle.outcome_detail = Some(payload.to_string());
-        self.ctx
-            .store()
-            .write(|tx| put_or_retire_idle_lane(tx, &idle))?;
-        Ok(())
-    }
-
     fn clear_quarantined_lane(&self, lane: &EngineLaneRecord) -> Result<(), AppError> {
         let observed_at = self.ctx.now();
         let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
         idle.outcome = lane.outcome.clone();
         idle.outcome_detail = lane.outcome_detail.clone();
-        self.ctx
-            .store()
-            .write(|tx| put_or_retire_idle_lane(tx, &idle))?;
+        self.ctx.store().write(|tx| {
+            if reset::stopping(tx, &lane.run_id)? {
+                return Ok(());
+            }
+            if !tx
+                .engine_lanes(&lane.run_id)?
+                .iter()
+                .any(|current| current == lane)
+            {
+                return Ok(());
+            }
+            put_or_retire_idle_lane(tx, &idle)
+        })?;
         Ok(())
     }
 
     fn clear_quarantined_lanes(&self, run_id: &RunId) -> Result<(), AppError> {
+        if self.ctx.store().read(|tx| reset::stopping(tx, run_id))? {
+            return Ok(());
+        }
         let lanes = self.ctx.store().read(|tx| tx.engine_lanes(run_id))?;
         for lane in lanes
             .iter()
@@ -2282,8 +2348,9 @@ fn pty_output_after(probe: &WindowProbe, recorded_at: Option<&str>) -> Option<St
 /// The progress pair is cleared along with the story: an idle lane holds no
 /// story to have progressed, and carrying the previous occupant's seq forward
 /// would let the next story inherit a stall clock it never started (SH-465).
-fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
+pub(super) fn idle_lane(run_id: &str, lane_index: u32, at: &str) -> EngineLaneRecord {
     EngineLaneRecord {
+        adopted_identity: None,
         run_id: run_id.to_string(),
         lane_index,
         state: EngineLaneState::Idle,
@@ -2418,6 +2485,9 @@ fn observation_is_current(
     lane: &EngineLaneRecord,
     head_global_seq: Option<i64>,
 ) -> Result<bool, StoreError> {
+    if reset::stopping(tx, &lane.run_id)? {
+        return Ok(false);
+    }
     if !tx
         .engine_lanes(&lane.run_id)?
         .iter()
@@ -2444,7 +2514,7 @@ fn occupied_run_lane_count(lanes: &[EngineLaneRecord]) -> usize {
         .count()
 }
 
-fn put_or_retire_idle_lane(
+pub(super) fn put_or_retire_idle_lane(
     tx: &mut impl WriteOps,
     lane: &EngineLaneRecord,
 ) -> Result<(), StoreError> {
@@ -2686,6 +2756,9 @@ pub(crate) fn run_shell_dispatch_cancellable(
         CaptureError::Track(detail) => {
             AppError::Storage(format!("could not track the dispatch process: {detail}"))
         }
+        CaptureError::Unsettled(detail) => {
+            AppError::Storage(format!("dispatch cleanup did not quiesce: {detail}"))
+        }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "dispatch did not finish within {}s and was terminated",
             DISPATCH_TIMEOUT.as_secs()
@@ -2739,6 +2812,9 @@ fn run_shell_unclaim(
         }
         CaptureError::Track(detail) => {
             AppError::Storage(format!("could not track the unclaim helper: {detail}"))
+        }
+        CaptureError::Unsettled(detail) => {
+            AppError::Storage(format!("unclaim cleanup did not quiesce: {detail}"))
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "unclaim did not finish within {}s and was terminated",
@@ -2839,6 +2915,9 @@ pub(crate) fn run_shell_capabilities(
         )),
         CaptureError::Track(detail) => {
             AppError::Storage(format!("could not track the capabilities helper: {detail}"))
+        }
+        CaptureError::Unsettled(detail) => {
+            AppError::Storage(format!("capabilities cleanup did not quiesce: {detail}"))
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
             "capabilities did not finish within {}s and was terminated",
@@ -3093,6 +3172,28 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// Retires the exact lanes whose story reset just completed.
+pub(crate) fn release_reset_lanes(
+    tx: &mut impl WriteOps,
+    slug: &str,
+    id: &str,
+    now: &str,
+) -> Result<(), StoreError> {
+    for run in tx.live_engine_runs()? {
+        if run.project_slug != slug {
+            continue;
+        }
+        for lane in tx.engine_lanes(&run.id)? {
+            if lane.story_id.as_deref() == Some(id) {
+                let mut idle = idle_lane(&lane.run_id, lane.lane_index, now);
+                idle.outcome = Some("story-reset".into());
+                put_or_retire_idle_lane(tx, &idle)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3281,6 +3382,63 @@ mod tests {
         assert!(matches!(
             run_captured(command, Duration::from_millis(20)),
             Err(CaptureError::Timeout(_))
+        ));
+    }
+
+    #[test]
+    fn shell_adopted_lane_never_falls_back_when_its_lease_is_missing() {
+        let root = storyhook_test_support::scratch_dir();
+        let endpoint = root.path().join("tmux-live-agent");
+        executable(
+            &endpoint,
+            &format!(
+                "printf '{}\\tcodex\\t0\\t1789066115\\n'",
+                std::process::id()
+            ),
+        );
+        let observer = dispatcher_with_tmux(root.path(), &endpoint);
+        let mut lane = idle_lane("run", 0, "2026-09-12T00:00:00Z");
+        assert!(matches!(
+            observer.probe_lane(&lane, "@1"),
+            WindowProbe::Alive { .. }
+        ));
+        lane.adopted_identity = Some(crate::store::AdoptedIdentity {
+            provider: EngineAgent::Codex,
+            pane_pid: std::process::id().try_into().unwrap(),
+            window_id: "@1".into(),
+        });
+        assert!(matches!(
+            observer.probe_lane(&lane, "@1"),
+            WindowProbe::Unanswered { detail } if detail == "adopted lane lost cleanup lease"
+        ));
+    }
+
+    #[test]
+    fn shell_lane_probe_uses_the_creation_time_socket() {
+        let root = storyhook_test_support::scratch_dir();
+        let endpoint = root.path().join("tmux-socket-check");
+        executable(
+            &endpoint,
+            &format!(
+                "[ \"$1\" = -S ] && [ \"$2\" = /tmp/creation-time.sock ] || exit 42\nprintf '{}\\tcodex\\t0\\t1789066115\\n'",
+                std::process::id()
+            ),
+        );
+        let mut lane = idle_lane("run", 0, "2026-09-12T00:00:00Z");
+        lane.cleanup_lease = Some(crate::domain::StoryCleanupLease {
+            version: crate::domain::CLEANUP_LEASE_VERSION,
+            project_slug: "fixture".into(),
+            story_id: "SH-1".into(),
+            repository_path: "/repo".into(),
+            worktree_path: "/repo/SH-1".into(),
+            branch: "worktree-SH-1".into(),
+            tmux: crate::domain::TmuxCleanupTarget {
+                socket_path: "/tmp/creation-time.sock".into(),
+            },
+        });
+        assert!(matches!(
+            dispatcher_with_tmux(root.path(), &endpoint).probe_lane(&lane, "@1"),
+            WindowProbe::Alive { .. }
         ));
     }
 
@@ -3499,26 +3657,4 @@ mod tests {
                 .contains("tmux refused to kill window `@exact`")
         );
     }
-}
-
-/// Retires the exact lanes whose story reset just completed.
-pub(crate) fn release_reset_lanes(
-    tx: &mut impl WriteOps,
-    slug: &str,
-    id: &str,
-    now: &str,
-) -> Result<(), StoreError> {
-    for run in tx.live_engine_runs()? {
-        if run.project_slug != slug {
-            continue;
-        }
-        for lane in tx.engine_lanes(&run.id)? {
-            if lane.story_id.as_deref() == Some(id) {
-                let mut idle = idle_lane(&lane.run_id, lane.lane_index, now);
-                idle.outcome = Some("story-reset".into());
-                put_or_retire_idle_lane(tx, &idle)?;
-            }
-        }
-    }
-    Ok(())
 }

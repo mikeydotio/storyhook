@@ -232,6 +232,15 @@ fn open_blocker_holds_a_visible_submission_without_admitting_landing() {
         queue.next().unwrap().unwrap().verifying_generation,
         candidate.verifying_generation
     );
+    assert!(
+        matches!(
+            queue
+                .begin_landing(&f.ctx(), &candidate, &certification())
+                .unwrap(),
+            LandingAdmission::Superseded
+        ),
+        "a blocked then unblocked generation needs fresh certification"
+    );
 }
 
 #[test]
@@ -282,7 +291,13 @@ fn reset_and_landing_reservations_exclude_each_other_in_both_orders() {
                 .write(|tx| tx.remove_landing_intent(&intent))
                 .unwrap();
             f.store()
-                .write(|tx| tx.put_story_reset(f.project(), intent.story, Some("{}")))
+                .write(|tx| {
+                    tx.put_legacy_story_reset(
+                        f.project(),
+                        intent.story,
+                        Some(r#"{"operation":"native-owner"}"#),
+                    )
+                })
                 .unwrap();
             let error = f
                 .store()
@@ -300,7 +315,13 @@ fn reset_and_landing_reservations_exclude_each_other_in_both_orders() {
         } else {
             let error = f
                 .store()
-                .write(|tx| tx.put_story_reset(f.project(), intent.story, Some("{}")))
+                .write(|tx| {
+                    tx.put_legacy_story_reset(
+                        f.project(),
+                        intent.story,
+                        Some(r#"{"operation":"native-owner"}"#),
+                    )
+                })
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("landing"), "{error}");
@@ -610,7 +631,7 @@ fn blocker_added_inside_verification_prevents_the_merge_actuator() {
     };
     assert_eq!(
         tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
-        TickResult::RetryLater
+        TickResult::Returned
     );
     assert!(actuator.landed.lock().unwrap().is_empty());
     let q = VerificationQueue::new(f.store());
@@ -812,4 +833,33 @@ fn a_replaced_pr_in_the_same_generation_is_reverified_before_landing() {
         })
         .unwrap();
     assert!(events.iter().any(|event| matches!(event.known(), Some(storyhook::domain::StoryEvent::StoryPrMerged { url, .. }) if url.ends_with("/pull/3"))));
+}
+
+#[test]
+fn awaiting_cannot_hide_an_unresolved_landing_from_recovery() {
+    use storyhook::store::WriteOps;
+    let f = ServiceFixture::new();
+    let id = submitted(&f);
+    let intent = admit(&f);
+    assert!(
+        StoryService::new(&f.ctx())
+            .set_awaiting(&id, "Wait for approval")
+            .is_err()
+    );
+    let result = f.store().write(|tx| {
+        let row = tx.story(f.project(), intent.story)?.unwrap();
+        let mut snapshot = row.snapshot;
+        snapshot.awaiting = Some("Imported hold".into());
+        tx.put_story(f.project(), &snapshot, row.head_seq)
+    });
+    assert!(
+        result.is_err(),
+        "raw imports cannot hide pending merge authority"
+    );
+    let current = VerificationQueue::new(f.store())
+        .ordered_for(f.project())
+        .unwrap();
+    assert_eq!(current.len(), 1);
+    assert!(current[0].landing_pending);
+    assert_eq!(f.store().read(|tx| tx.landing_intents()).unwrap(), [intent]);
 }

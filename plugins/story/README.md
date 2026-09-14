@@ -283,10 +283,11 @@ Worth knowing before changing anything here:
   through the certified path.
 - **Dispatch is provider-selected, not inferred from terminal prose.** Adapters pass
   `--agent=claude|codex`; an explicit dispatch flag overrides the active host and an
-  omitted flag retains that adapter's host default. The helper also accepts
+  omitted flag retains that adapter's host default for new dispatches. The helper also accepts
   `STORY_AGENT=claude|codex` for direct callers; `STORY_AGENT=claude-code` is a warned
   compatibility alias. Claude remains the default for callers that choose neither. Codex
-  uses `codex --no-alt-screen`, `.codex/worktrees/`, screen readiness, a confirmed
+  uses `codex --no-alt-screen` (update chooser and TUI animations switched off for the
+  managed process), `.codex/worktrees/`, screen readiness, a confirmed
   Shift+Tab transition into Plan mode, and Tab submission. Failure before submission keeps
   the existing rollback invariants intact. `doctor` reports and probes the selected
   provider rather than treating a Codex screen as Claude.
@@ -301,6 +302,12 @@ Worth knowing before changing anything here:
   charter tells the child that an *easy* decision (one clear best answer)
   gets researched and decided on its own, full stop — `--auto` was never
   meant to route every open question through a mechanism at all.
+  Every decision comment includes **Context**, **Question**, **Decision**, and
+  **Rationale**, with relevant alternatives and trade-offs. This applies to
+  researched decisions, council outcomes, and fallback decisions. Record it
+  immediately, before resuming work, with enough detail to understand it after
+  the session and local deliberation files are gone. `story help comment`
+  provides the format and an example.
 
 ## Environment
 
@@ -335,3 +342,21 @@ repo with a local bare origin under `/tmp` — deliberately not `$TMPDIR`, which
 Spotlight indexes and which stalls file-intensive runs on macOS. Only `tmux` is
 faked. `make test` builds the binary first and puts it on `PATH` for this suite,
 so it always exercises the freshly built CLI rather than whatever is installed.
+
+### Existing resources
+
+`story resources <id> --json` reports the shared native inventory. Reset,
+unclaim, completion, reap, capture and resume use verified Git/lease identity,
+including `.claude/worktrees`, `.codex/worktrees` and registered custom paths.
+The caller does not set `STORY_AGENT` to find existing work. Unknown caller
+provider values do not change deterministic operations.
+
+Recorded sockets win over the caller's terminal. Capture works outside tmux;
+notify derives its terminal protocol from the target's provider tag. Duplicate
+windows/worktrees and contradictory metadata refuse selection. `--force` can
+allow existing dirty/unpushed/locked reset cases but cannot establish ownership.
+
+Resume preserves the actual worktree even when `--agent` changes provider.
+Without that flag, target metadata or the legacy resource path supplies the
+provider; a custom path without provider evidence requires an explicit launch
+choice. See [the resource contract](../../docs/spec/provider-independent-resources.md).

@@ -315,7 +315,17 @@ while IFS= read -r f; do
     case "$f" in
     (src/*.rs) ;;
     (crates/*/src/*.rs) ;;
-    (tests/*.rs) ;;
+    (tests/*.rs)
+        # Nested modules can be shared or imported with #[path]. Only an
+        # explicit impact row can prove their owners without guessing.
+        test_source="${f#tests/}"
+        if [[ "$test_source" == */* ]] || [ ! -f "$f" ]; then
+            if ! printf '%s' "$impact_covered" | grep -Fqx "$f"; then
+                outside="$outside$f
+"
+            fi
+        fi
+        ;;
     (*)
         if ! printf '%s' "$impact_covered" | grep -Fqx "$f"; then
             outside="$outside$f
@@ -360,8 +370,15 @@ selected="$(
             # can misparse a bare `*)` arm there -- measured directly, see
             # tests/selective_gate.rs's own regression pin for this shape.
             case "$f" in
+            (tests/*/*.rs)
+                # Declared impact owners were added above. Coverage may add
+                # other consumers, but a module path is never a Cargo target.
+                awk -F'\t' -v f="$f" '$2 == f { print $1 }' "$map"
+                ;;
             (tests/*.rs)
-                printf '%s\n' "${f#tests/}" | sed 's/\.rs$//'
+                if [ -f "$f" ]; then
+                    printf '%s\n' "${f#tests/}" | sed 's/\.rs$//'
+                fi
                 ;;
             (*)
                 # awk with -F TAB, rather than grep -F: the map's second

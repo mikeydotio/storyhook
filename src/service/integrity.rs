@@ -327,7 +327,7 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         // `prefix` rides out of the write because the advice assembled after it
         // has to render a `StoryNo` the way the report does (SH-269), and this
         // is where the project already answered for it.
-        let (touched, blocked, prefix) = self.ctx.store().write(|tx| {
+        let (touched, blocked, prefix) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             // What the repair above could *not* put right, which is what the
             // pass below may not believe (SH-286). Read from the report the

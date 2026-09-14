@@ -87,6 +87,13 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // Controller probes join ChildGuard and use a bounded control socket,
+    // without reading a child stdout/stderr pipe to EOF.
+    (
+        "src/service/story_reset/executor_tests.rs",
+        "\"sh\"",
+        Kind::Waited,
+    ),
     // The lock regression waits for its pipe-gated child to exit.
     (
         "src/service/workspace_lock/tests.rs",
@@ -100,9 +107,29 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // production file-backed capture and whole-group deadline cleanup.
     ("src/process/activity_tests.rs", "test_binary", Kind::Reads),
     ("src/process/activity_tests.rs", "\"sh\"", Kind::Waited),
+    // SH-702's Bash cancellation probe retains output in regular files;
+    // cancellation terminates/reaps its group before captured bytes are read.
+    ("src/process/activity_tests.rs", "\"bash\"", Kind::Waited),
+    // Isolated unit probes use ChildGuard's bounded concurrent pipe drains;
+    // recording tools never create persistent terminal readers.
+    (
+        "src/daemon/activity/tests.rs",
+        "std::env::current_exe(",
+        Kind::Reads,
+    ),
     // The journal view helper has file-backed capture and a bounded process
     // group. Its tmux pane reads logs independently and holds no output pipe.
     ("src/daemon/activity/window.rs", "\"bash\"", Kind::Waited),
+    // `block_delivery::process_one` — the agent helper (`story.sh notify`),
+    // asked to interrupt or resume a dispatched agent (SH-690). `Waited`: it
+    // runs through the shared `run_captured_with_termination`, so stdout and
+    // stderr are unlinked temporary files rather than pipes, the child has its
+    // own process group, and the 45 s budget terminates and then kills that
+    // whole group before a byte is read. A descendant — a tmux client, or the
+    // agent's own turn — has no EOF rendezvous with the worker and no
+    // unbounded lifetime to inherit. Landed unclassified because SH-690's gate
+    // was terminated before this contract ran (SH-692); classified in SH-693.
+    ("src/daemon/block_delivery.rs", "\"bash\"", Kind::Waited),
     ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
@@ -130,10 +157,33 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // A descendant therefore has no EOF rendezvous with the caller and no
     // unbounded process lifetime to inherit.
     ("src/service/engine.rs", "\"bash\"", Kind::Waited),
+    // Explicit reset uses the same bounded file-backed capture and child environment.
+    ("src/service/engine/reset.rs", "\"bash\"", Kind::Waited),
+    // The shared installed-artifact guard also uses bounded file-backed capture.
+    (
+        "src/service/story_reset/cleanup.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
+    // Card reset uses bounded file-backed capture for the exact tmux window.
+    (
+        "src/service/story_reset/cleanup.rs",
+        "\"tmux\"",
+        Kind::Waited,
+    ),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
+    ("src/service/engine/adoption.rs", "\"tmux\"", Kind::Waited),
     // Cleanup's tmux probe uses shared file-backed, process-group-bounded
     // capture, so neither a server nor a descendant can retain an output pipe.
-    ("src/service/cleanup.rs", "\"tmux\"", Kind::Waited),
+    ("src/service/resources/tmux.rs", "\"tmux\"", Kind::Waited),
+    // Continuation stages JSON stdin and captures stdout/stderr in regular
+    // files, so descendants cannot hold an output-pipe EOF. The shared runner
+    // waits at most 45 s (125 s for resume) and kills its group on timeout.
+    (
+        "src/service/continuation/runtime.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
     // The lane census (SH-655): `tmux list-windows` through the same
     // file-backed, group-bounded `run_captured` the engine's probe uses, on
     // the caller's own PATH and environment so a client verb asks the server
