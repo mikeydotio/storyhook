@@ -1823,8 +1823,9 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history, run new and impacted tests, commit, then move {} back to verifying; the verifier pushes.\n\n{detail}",
-                        candidate.story_id
+                        "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history, run new and impacted tests, commit, then move {} back to verifying; {}.\n\n{detail}",
+                        candidate.story_id,
+                        push_promise(&candidate, false)
                     ),
                     &active.cancellation,
                 )?;
@@ -1868,8 +1869,9 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION INVALID SUBMISSION — {detail}. Repair the submission from the story's worktree, then move {} back to verifying; the verifier pushes and links the pull request.",
-                        candidate.story_id
+                        "CENTRAL VERIFICATION INVALID SUBMISSION — {detail}. Repair the submission from the story's worktree, then move {} back to verifying; {}.",
+                        candidate.story_id,
+                        push_promise(&candidate, true)
                     ),
                     &active.cancellation,
                 )?;
@@ -1889,8 +1891,9 @@ where
                     actuator,
                     &candidate,
                     &format!(
-                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Fix the branch in its worktree, run new and impacted tests, commit, then move {} back to verifying; the verifier pushes.\n\n{detail}",
-                        candidate.story_id
+                        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Fix the branch in its worktree, run new and impacted tests, commit, then move {} back to verifying; {}.\n\n{detail}",
+                        candidate.story_id,
+                        push_promise(&candidate, false)
                     ),
                     &active.cancellation,
                 )?;
@@ -1924,6 +1927,39 @@ const UNLEASED_SUBMISSION: &str = "verification could not submit this story: it 
 `verifying` from outside its dispatched worktree, so no cleanup lease names a branch to push \
 and no pull request is linked. From inside the story's worktree, commit the work and run \
 `story move <id> verifying` again; the verifier pushes the branch and opens the pull request.";
+
+/// The trailing clause of a post-verify repair return (SH-653), naming what
+/// actually happens to a "commit, then move back to verifying" fix.
+///
+/// A leased generation can carry that fix to the remote — the verifier
+/// already knows its branch — so the original promise holds. An unleased one
+/// cannot: nothing pushes it, whether this generation was submitted from
+/// outside its worktree or reached `verifying` already carrying a pull
+/// request an operator or an earlier generation linked directly (SH-647's
+/// own supported shape, still exempt from [`UNLEASED_SUBMISSION`]'s
+/// up-front refusal — that lease-free submission is not what changed here).
+/// What SH-653 found live is narrower: a story that already has a
+/// worktree-dispatched lifecycle losing its lease on a resubmission and being
+/// told "the verifier pushes" regardless — a promise that generation's own
+/// tick cannot keep, and a livelock once the published head does not merge.
+/// Naming that honestly here does not change whether verification runs, only
+/// what an unleased candidate is told about the return it just received.
+fn push_promise(candidate: &VerificationCandidate, and_links_pull_request: bool) -> &'static str {
+    match (candidate.cleanup_lease.is_some(), and_links_pull_request) {
+        (true, false) => "the verifier pushes",
+        (true, true) => "the verifier pushes and links the pull request",
+        (false, false) => {
+            "this generation has no cleanup lease, so nothing will push it — \
+commit from inside the story's dispatched worktree and move it to verifying again there so \
+the verifier can push"
+        }
+        (false, true) => {
+            "this generation has no cleanup lease, so nothing will push or link \
+it — commit from inside the story's dispatched worktree and move it to verifying again there \
+so the verifier can push and link the pull request"
+        }
+    }
+}
 
 /// Whether this tick owes the candidate a submission (SH-647): it is leased
 /// — so a branch is known — and its linked pull request is either absent or
