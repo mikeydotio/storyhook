@@ -23,7 +23,12 @@ impl ReleaseFixture {
         ] {
             fs::create_dir_all(directory).unwrap();
         }
-        for file in ["branch-policy.sh", "release.sh", "release-targets.sh"] {
+        for file in [
+            "branch-policy.sh",
+            "release.sh",
+            "release-targets.sh",
+            "build-number.py",
+        ] {
             fs::copy(
                 Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("scripts")
@@ -33,6 +38,8 @@ impl ReleaseFixture {
             .unwrap();
         }
         fs::write(repo.join("VERSION"), "v9.9.9\n").unwrap();
+        fs::write(repo.join("BUILD"), "0\n").unwrap();
+        fs::write(repo.join(".gitignore"), "/.build-number.lock\n/.BUILD-*\n").unwrap();
         for file in [
             "bin/claude",
             "bin/codex",
@@ -239,9 +246,46 @@ fn successful_public_gate_certifies_the_tree_actually_pushed() {
     );
     let tree = fixture.git(&["rev-parse", "refs/remotes/origin/release/v9.9.10^{tree}"]);
     assert_eq!(
+        fixture.git(&["show", "refs/remotes/origin/release/v9.9.10:BUILD"]),
+        "1"
+    );
+    assert_eq!(
         fixture.calls(),
         format!("bump\ngate:v9.9.10:{tree}\npr:create\n")
     );
+}
+
+#[test]
+fn public_release_preserves_local_build_advancement() {
+    let fixture = ReleaseFixture::new();
+    fs::write(fixture.repo.join("BUILD"), "272\n").unwrap();
+    let output = fixture.run(false, true, false, false);
+    assert_exit(&output, 1);
+    assert_eq!(
+        fixture.git(&["show", "refs/remotes/origin/release/v9.9.10:BUILD"]),
+        "273"
+    );
+    assert_eq!(fixture.git(&["status", "--porcelain"]), "");
+}
+
+#[test]
+fn release_refuses_unrelated_changes_and_counter_rollback() {
+    let fixture = ReleaseFixture::new();
+    fs::write(fixture.repo.join("BUILD"), "272\n").unwrap();
+    fs::write(fixture.repo.join("unrelated"), "keep\n").unwrap();
+    assert_exit(&fixture.run(false, true, false, false), 1);
+    assert!(fixture.calls().is_empty());
+    assert_eq!(
+        fs::read_to_string(fixture.repo.join("BUILD")).unwrap(),
+        "272\n"
+    );
+    fs::remove_file(fixture.repo.join("unrelated")).unwrap();
+    fixture.git(&["add", "BUILD"]);
+    fixture.git(&["commit", "-qm", "advance build"]);
+    fs::write(fixture.repo.join("BUILD"), "271\n").unwrap();
+    let output = fixture.run(false, true, false, false);
+    assert_exit(&output, 1);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("BUILD decreased"));
 }
 
 #[test]

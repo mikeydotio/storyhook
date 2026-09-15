@@ -280,6 +280,7 @@ where
         token,
         hello: Hello {
             version: env!("CARGO_PKG_VERSION").to_string(),
+            build_number: Some(crate::version::build_number()),
             protocol: crate::daemon::lifecycle::PROTOCOL,
             pid: std::process::id(),
             started_at: env.now(),

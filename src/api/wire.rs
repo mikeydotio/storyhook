@@ -118,6 +118,9 @@ pub struct WireRequest {
     pub protocol: u32,
     /// The `storyhook` version the client was built from.
     pub client_version: String,
+    /// The client build number, absent for older binaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_build_number: Option<u64>,
     /// A caller-generated id, echoed back, so a log on either side can be
     /// matched to one on the other.
     pub request_id: String,
@@ -173,6 +176,7 @@ impl WireRequest {
         Self {
             protocol: crate::daemon::lifecycle::PROTOCOL,
             client_version: env!("CARGO_PKG_VERSION").to_string(),
+            client_build_number: Some(crate::version::build_number()),
             request_id: uuid::Uuid::new_v4().simple().to_string(),
             project: None,
             cwd: cwd.into(),
@@ -238,6 +242,9 @@ pub struct WireResponse {
     pub protocol: u32,
     /// The `storyhook` version the daemon was built from.
     pub server_version: String,
+    /// The server build number, absent for older binaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_build_number: Option<u64>,
     /// The request this answers.
     pub request_id: String,
     /// Conditions the daemon met while answering, for the client to print
@@ -292,6 +299,7 @@ impl WireResponse {
         Self {
             protocol: crate::daemon::lifecycle::PROTOCOL,
             server_version: env!("CARGO_PKG_VERSION").to_string(),
+            server_build_number: Some(crate::version::build_number()),
             notices,
             request_id,
             outcome: match result {

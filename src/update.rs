@@ -67,12 +67,12 @@ pub enum Outcome {
 /// * `force` — download and (re)install the latest release even when the
 ///   installed version is already current or newer (reinstall / downgrade).
 pub fn run(check: bool, force: bool) -> Result<Outcome, AppError> {
-    let current = env!("CARGO_PKG_VERSION");
+    let current = crate::version::display();
     let agent = build_agent();
 
     let tag = fetch_latest_tag(&agent)?;
     let latest = tag.trim_start_matches('v').to_string();
-    let decision = decide(parse_semver(current), parse_semver(&latest));
+    let decision = decide(parse_semver(crate::version::SEMVER), parse_semver(&latest));
 
     // `--check` never mutates and never errors on an odd tag — it just reports.
     if check {
