@@ -79,7 +79,9 @@ export default defineConfig({
   // The second reporter is the SH-524 gate progress journal's Playwright
   // side (./gate-progress-reporter.ts) — inert by construction whenever
   // $STORYHOOK_GATE_PROGRESS is unset, so an ordinary run is unaffected.
-  reporter: [["list"], ["./gate-progress-reporter.ts"]],
+  // The initial probe cannot detect a browser lost later in the run. Stop
+  // that project after a launch failure while preserving its failed result.
+  reporter: [["list"], ["./gate-progress-reporter.ts"], ["./browser-launch-reporter.ts"]],
   // Half Playwright's own 30s default, and measured rather than inherited
   // (SH-222). Three full runs of the suite, the machine loaded by spinners
   // to the range the reported failures were seen in:
