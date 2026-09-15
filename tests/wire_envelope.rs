@@ -456,16 +456,30 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             Response::Cleanup(Box::new(CleanupReport {
                 project: "fixture".to_string(),
                 dry_run: false,
-                candidates: 3,
-                reclaimed_bytes: 4096,
-                removed: vec![CleanupRemoval {
-                    story_id: "SH-7".to_string(),
-                    worktree: "/repo/SH-7".into(),
-                    branch: "worktree-SH-7".to_string(),
-                    removed_worktree: true,
-                    removed_local_branch: true,
-                    reclaimed_bytes: 4096,
-                }],
+                candidates: 4,
+                reclaimed_bytes: 8192,
+                removed: vec![
+                    CleanupRemoval {
+                        story_id: "SH-7".to_string(),
+                        worktree: "/repo/SH-7".into(),
+                        branch: "worktree-SH-7".to_string(),
+                        removed_worktree: true,
+                        removed_local_branch: true,
+                        removed_tmux_window: false,
+                        retained_local_branch: false,
+                        reclaimed_bytes: 4096,
+                    },
+                    CleanupRemoval {
+                        story_id: "SH-10".to_string(),
+                        worktree: "/repo/SH-10".into(),
+                        branch: "worktree-SH-10".to_string(),
+                        removed_worktree: true,
+                        removed_local_branch: false,
+                        removed_tmux_window: true,
+                        retained_local_branch: true,
+                        reclaimed_bytes: 4096,
+                    },
+                ],
                 skipped: vec![CleanupSkip {
                     story_id: "SH-8".to_string(),
                     reason: "dirty-worktree".to_string(),
@@ -866,6 +880,45 @@ fn a_second_wire_hop_is_a_fixed_point() {
         let once = serde_json::to_string(&hop(&response)).expect("serializing");
         let twice = serde_json::to_string(&hop(&hop(&response))).expect("serializing");
         assert_eq!(once, twice, "`{label}` was not stable across two wire hops");
+    }
+}
+
+/// Older daemons omit dropped-cleanup fields; absence must not claim a window
+/// removal or deliberate branch retention when a newer client decodes them.
+#[test]
+fn legacy_cleanup_results_decode_without_dropped_cleanup_claims() {
+    let response: Response = serde_json::from_value(serde_json::json!({
+        "cleanup": {
+            "project": "fixture",
+            "dry_run": false,
+            "candidates": 1,
+            "reclaimed_bytes": 4096,
+            "removed": [{
+                "story_id": "SH-7",
+                "worktree": "/repo/SH-7",
+                "branch": "worktree-SH-7",
+                "removed_worktree": true,
+                "removed_local_branch": true,
+                "reclaimed_bytes": 4096
+            }],
+            "skipped": [],
+            "failed": []
+        }
+    }))
+    .expect("legacy cleanup results remain readable");
+    let Response::Cleanup(report) = &response else {
+        panic!("expected a cleanup response");
+    };
+    let removal = &report.removed[0];
+    assert!(removal.removed_worktree);
+    assert!(removal.removed_local_branch);
+    assert!(!removal.removed_tmux_window);
+    assert!(!removal.retained_local_branch);
+    for (json, quiet) in RENDER_MODES {
+        assert_eq!(
+            render_response(&response, json, quiet),
+            render_response(&hop(&response), json, quiet),
+        );
     }
 }
 

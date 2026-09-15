@@ -185,3 +185,5 @@ verifier_lifecycle	:(glob)scripts/**
 verify_window	:(glob)**/*
 version_identity	:(glob)**/*
 web_test	:(glob)**/*
+wire_envelope	src/output.rs
+wire_envelope	src/service/cleanup.rs
