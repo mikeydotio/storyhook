@@ -532,6 +532,10 @@ fn initialize_negotiates_before_any_tool_call() {
         json!({ "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": { "name": "test", "version": "0" } }),
     );
     assert_eq!(reply["result"]["serverInfo"]["name"], "storyhook");
+    assert_eq!(
+        reply["result"]["serverInfo"]["version"],
+        storyhook::version::display()
+    );
     assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
 }
 

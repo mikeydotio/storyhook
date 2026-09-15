@@ -147,10 +147,10 @@ install_locally() {
   # doctrine forbids elsewhere. Say what was not done instead.
   if [ "$dry_run" = 1 ]; then
     installed_version=""
-    note "nothing installed (dry run); the running binary is still $(story --version 2>/dev/null | awk '{print $2}')"
+    note "nothing installed (dry run); the running binary is still $(story --version 2>/dev/null)"
   else
-    installed_version="$( { command -v story >/dev/null && story --version; } 2>/dev/null | awk '{print $2}')"
-    info "installed    story ${installed_version:-unknown}"
+    installed_version="$( { command -v story >/dev/null && story --version; } 2>/dev/null)"
+    info "installed    ${installed_version:-unknown}"
   fi
 
   if [ "$skip_plugin" = 0 ]; then
@@ -321,9 +321,17 @@ info "version      $current_version"
 info "branch       $(git rev-parse --abbrev-ref HEAD)"
 info "mode         $([ "$local_only" = 1 ] && echo 'local-only (nothing published)' || echo 'PUBLIC release')"
 
-if [ -n "$(git status --porcelain)" ]; then
+build_number="$(python3 scripts/build-number.py --check)"
+# Only a valid, nondecreasing counter may accompany an otherwise clean tree.
+committed_build="$(git show HEAD:BUILD)"
+python3 - "$committed_build" "$build_number" <<'BUILD_CHECK'
+import sys
+if int(sys.argv[2]) < int(sys.argv[1]):
+    raise SystemExit("BUILD decreased from the committed counter; refusing release")
+BUILD_CHECK
+if [ -n "$(git status --porcelain -- . ':!BUILD')" ]; then
   git status --short | sed 's/^/    /'
-  die "working tree is dirty. Commit or stash first — a release must describe a tree that exists."
+  die "working tree is dirty. Commit first — a release must describe a tree that exists."
 fi
 
 # The two manifests carry the plugin's version string twice, and nothing in the
@@ -615,6 +623,10 @@ step "Bumping the version on a release branch"
 # Never on main directly: the org's `protect-main` ruleset forbids it, and the
 # bump has to arrive through a PR like everything else.
 run git switch -c "$release_branch"
+if [ "$dry_run" = 0 ]; then
+  build_number="$(python3 scripts/build-number.py --reserve)"
+fi
+run git add -- BUILD
 # --skip-tag is load-bearing, not tidiness. `semver-cli bump` tags by default,
 # and it would tag THIS branch's commit -- but the tag has to name the merge
 # commit that actually lands on `main`, or `install.sh` resolves a release
@@ -648,7 +660,7 @@ fi
 
 # `semver bump` commits its own change; only commit if it left anything.
 if [ "$dry_run" = 0 ] && [ -n "$(git status --porcelain)" ]; then
-  run git add VERSION CHANGELOG.md
+  run git add VERSION CHANGELOG.md BUILD
   run git commit -m "chore: release $next_version"
 fi
 
@@ -732,10 +744,10 @@ run git pull --ff-only
 artifact_dir="$repo_root/target/release-assets/$next_version"
 step "Building and verifying all release assets locally"
 if [ "$dry_run" = 1 ]; then
-  run scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir"
+  run scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir" --build-number "$build_number"
   run scripts/render-release-body.sh --version "$next_version" --repo "$REPO"
 else
-  scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir"
+  scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir" --build-number "$build_number"
   scripts/render-release-body.sh --version "$next_version" --repo "$REPO" \
     > "$artifact_dir/release-body.md"
   [ -s "$artifact_dir/release-body.md" ] || die "the rendered release body is empty"

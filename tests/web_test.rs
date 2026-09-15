@@ -853,7 +853,7 @@ fn web_serve_root_html_embeds_the_running_package_version() {
         .unwrap();
     let body = resp.into_body().read_to_string().unwrap();
 
-    let expected = format!("Storyhook v{}", env!("CARGO_PKG_VERSION"));
+    let expected = format!("Storyhook v{}", storyhook::version::display());
     assert!(
         body.contains(&format!("<div id=\"footer-version\">{expected}</div>")),
         "served footer must contain the running package version `{expected}`"

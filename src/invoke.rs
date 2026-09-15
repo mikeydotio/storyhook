@@ -1856,7 +1856,7 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
             let info = crate::daemon::commands::start(&env, port)?;
             Ok(Response::Message(format!(
                 "storyhook daemon {} running at {} (PID {})",
-                info.version,
+                info.display_version(),
                 info.local_url(),
                 info.pid
             )))
@@ -1865,7 +1865,7 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
             let restarted = crate::daemon::commands::restart(&env)?;
             Ok(Response::Message(format!(
                 "storyhook daemon {} restarted at {} (PID {} -> {})",
-                restarted.running.version,
+                restarted.running.display_version(),
                 restarted.running.local_url(),
                 restarted.stopped.pid,
                 restarted.running.pid
@@ -2019,7 +2019,13 @@ fn crashes_ledger_message(ledger: &[crate::daemon::crash::CrashRecord]) -> Strin
         let daemon = entry
             .daemon
             .as_ref()
-            .map(|d| format!(", daemon {} pid {}", d.version, d.pid))
+            .map(|d| {
+                format!(
+                    ", daemon {} pid {}",
+                    crate::version::format(&d.version, d.build_number),
+                    d.pid
+                )
+            })
             .unwrap_or_default();
         let filed = match &entry.filed {
             FiledOutcome::Pending => "pending — not yet reviewed".to_string(),
