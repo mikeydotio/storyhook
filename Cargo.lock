@@ -2311,7 +2311,7 @@ dependencies = [
 
 [[package]]
 name = "storyhook"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "apple-native-keyring-store",
  "assert_cmd",

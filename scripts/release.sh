@@ -167,11 +167,17 @@ install_locally() {
       # has been bitten by inferring a running process from rendered output
       # (SH-226).
       sleep 1
-      story daemon status || die "the daemon did not come back up"
-      running="$(story daemon status 2>/dev/null | head -1 | awk '{print $3}')"
+      daemon_status="$(story daemon status)" || die "the daemon did not come back up"
+      printf '%s\n' "$daemon_status"
+      # CLI output also carries its command name and optional tree stamp.
+      # Compare the shared version/build identity, not those display wrappers.
+      installed_identity="$(printf '%s\n' "$installed_version" | sed -nE 's/^story ([^ ]+( \([0-9]+\))?)( \(build .*\))?$/\1/p')"
+      running="$(printf '%s\n' "$daemon_status" | sed -nE '1s/^storyhook daemon (.+) running at .*/\1/p')"
+      [ -n "$installed_identity" ] || die "could not read the installed version from: $installed_version"
+      [ -n "$running" ] || die "could not read the running version from: $daemon_status"
       info "daemon reports version ${running:-unknown}"
-      if [ -n "$installed_version" ] && [ -n "$running" ] && [ "$running" != "$installed_version" ]; then
-        warn "daemon reports $running but the installed binary is $installed_version — version skew"
+      if [ "$running" != "$installed_identity" ]; then
+        die "daemon reports $running but the installed binary is $installed_version — version skew"
       fi
     fi
   fi

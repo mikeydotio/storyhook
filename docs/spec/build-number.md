@@ -5,6 +5,11 @@ within a checkout's history. It starts at zero and contains a canonical unsigned
 64-bit decimal integer followed by a newline. Numbered builds reserve the next
 number before compilation; failure consumes the reservation.
 
+The 3.0.1 release starts production numbering at 100. `BUILD` participates in
+the cache fingerprints for Clippy and every test or build leg that consumes the
+compiled identity. Changing only the number must invalidate those results;
+source-formatting results remain reusable (SH-733).
+
 `make release-build`, `make install`, and standalone release asset assembly
 allocate numbers. One install allocates once. All platform artifacts in one
 release assembly share a number. Debug builds, tests, checks, and dry runs only

@@ -327,3 +327,59 @@ fn a_failed_bump_never_reaches_the_gate_or_external_effects() {
         fixture.assert_no_push();
     }
 }
+
+#[test]
+fn installed_daemon_comparison_uses_version_and_optional_build_number() {
+    for (installed, running, mismatch) in [
+        ("9.9.9", "9.9.9", false),
+        ("9.9.9 (100)", "9.9.9 (100)", false),
+        ("9.9.9 (100) (build abc123)", "9.9.9 (100)", false),
+        (
+            "9.9.9-beta.4 (100) (build custom-stamp)",
+            "9.9.9-beta.4 (100)",
+            false,
+        ),
+        ("9.9.9 (100) (build abc123)", "9.9.9 (99)", true),
+        ("9.9.9 (100)", "9.9.9", true),
+        ("9.9.9", "9.9.8", true),
+    ] {
+        let fixture = ReleaseFixture::new();
+        executable(
+            &fixture.repo.join("bin/story"),
+            r#"#!/bin/bash
+set -eu
+case "$1 ${2:-}" in
+  '--version ') printf 'story %s\n' "$RELEASE_TEST_INSTALLED" ;;
+  'daemon status') printf 'storyhook daemon %s running at http://127.0.0.1:12345 (PID 123)\n' "$RELEASE_TEST_RUNNING" ;;
+  'daemon stop'|'daemon start') exit 0 ;;
+  *) exit 90 ;;
+esac
+"#,
+        );
+        fixture.git(&["add", "bin/story"]);
+        fixture.git(&["commit", "-qm", "fixture daemon identity"]);
+        let output = fixture
+            .command("bash")
+            .args([
+                "scripts/release.sh",
+                "--yes",
+                "--skip-plugin",
+                "--local-only",
+            ])
+            .env("RELEASE_TEST_INSTALLED", installed)
+            .env("RELEASE_TEST_RUNNING", running)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.success(),
+            !mismatch,
+            "{installed} / {running}: {output:?}"
+        );
+        assert_eq!(
+            stderr.contains("version skew"),
+            mismatch,
+            "{installed} / {running}: {output:?}"
+        );
+    }
+}

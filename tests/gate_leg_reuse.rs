@@ -463,6 +463,47 @@ fn a_dashboard_edit_reruns_only_contract_build_and_browser_batteries() {
 }
 
 #[test]
+fn a_build_number_change_invalidates_every_compiled_identity_verdict() {
+    let repo = Repo::new();
+    repo.write("BUILD", "100\n");
+    repo.git(&["add", "BUILD"]);
+    let labels = [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+        "e2e",
+    ];
+    for label in labels {
+        assert!(repo.run_leg(label, true).status.success());
+    }
+    repo.write("BUILD", "101\n");
+    for label in labels {
+        let result = repo.run_leg(label, true);
+        assert!(result.status.success(), "{result:?}");
+        assert_eq!(
+            repo.executions(label),
+            if label == "fmt" { 1 } else { 2 },
+            "{label} must observe a changed compiled build identity"
+        );
+    }
+}
+
+#[test]
+fn browser_reporter_regression_changes_invalidate_browser_evidence() {
+    let repo = Repo::new();
+    let path = "scripts/test-browser-launch-reporter.py";
+    repo.write(path, "# original reporter regression\n");
+    repo.git(&["add", path]);
+    assert!(repo.run_leg("e2e", true).status.success());
+    repo.write(path, "# changed reporter regression\n");
+    assert!(repo.run_leg("e2e", true).status.success());
+    assert_eq!(repo.executions("e2e"), 2);
+}
+
+#[test]
 fn a_contract_test_edit_does_not_invalidate_the_core_rust_battery() {
     let repo = Repo::new();
     let labels = [
