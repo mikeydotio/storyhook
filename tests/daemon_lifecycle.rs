@@ -13,6 +13,8 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+use predicates::prelude::PredicateBooleanExt;
+
 use storyhook::daemon::crash::{self, CrashClassification};
 use storyhook::daemon::lifecycle::{self, DaemonInfo, FORCE_DEADLINE, FORCE_GRACE, OwnedProcesses};
 use storyhook_test_support::{
@@ -217,6 +219,7 @@ fn starting_publishes_a_portfile_the_daemon_actually_answers_on() {
 
     assert!(info.port > 0, "the portfile must name the bound port");
     assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(info.build_number, Some(storyhook::version::build_number()));
     assert!(is_the_binary_under_test(&info));
     assert_eq!(hello_status(&info, &info.token), 200);
 }
@@ -1540,6 +1543,7 @@ fn a_portfile_without_a_daemon_does_not_stop_one_starting() {
         pid: 999_999,
         port: 1,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        build_number: None,
         protocol: lifecycle::PROTOCOL,
         exe: std::env::current_exe().unwrap(),
         exe_mtime: 0,
@@ -1557,6 +1561,14 @@ fn a_portfile_without_a_daemon_does_not_stop_one_starting() {
     )
     .unwrap();
 
+    for args in [["daemon", "status"], ["web", "status"]] {
+        env.story(dir.path())
+            .args(args)
+            .assert()
+            .success()
+            .stdout(predicates::str::contains("not running"));
+    }
+    assert_eq!(env.daemon().unwrap(), orphan);
     env.story(dir.path())
         .args(["daemon", "start"])
         .assert()
@@ -1756,6 +1768,7 @@ fn wedge_the_daemon(env: &TestEnv) -> std::fs::File {
         pid: std::process::id(),
         port: dead_port,
         version: "0.0.0-not-this-build".to_string(),
+        build_number: None,
         protocol: 1,
         exe: std::path::PathBuf::from("/nowhere/story"),
         exe_mtime: 0,
@@ -2013,4 +2026,173 @@ fn the_daemon_log_is_not_world_or_group_readable() {
         "the daemon log must be 0600, not {:o}",
         mode & 0o777
     );
+}
+
+/// SH-722: cached names are not evidence of this client's network environment.
+#[test]
+fn lifecycle_messages_report_the_verified_local_endpoint() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+    let (_no_tailscale, path) = path_without_tailscale(&env);
+    env.story(dir.path())
+        .env("PATH", &path)
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let original = env.daemon().expect("the local daemon");
+    let mut cached = serde_json::to_value(&original).unwrap();
+    cached["tailnet"] = serde_json::json!({
+        "ip": "100.101.102.103", "magic_dns": "foreign.tail00000.ts.net"
+    });
+    let portfile = env.environment().daemon_file();
+    std::fs::write(&portfile, serde_json::to_vec(&cached).unwrap()).unwrap();
+    for args in [
+        ["daemon", "status"],
+        ["daemon", "start"],
+        ["web", "status"],
+        ["web", "start"],
+    ] {
+        env.story(dir.path())
+            .env("PATH", &path)
+            .args(args)
+            .assert()
+            .success()
+            .stdout(predicates::str::contains(format!(
+                "http://127.0.0.1:{}",
+                original.port
+            )))
+            .stdout(predicates::str::contains("foreign.tail00000.ts.net").not())
+            .stderr(predicates::str::contains("resolving the tailnet").not());
+    }
+    assert_eq!(env.daemon().unwrap().pid, original.pid);
+    env.story(dir.path())
+        .env("PATH", &path)
+        .args(["daemon", "restart"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(format!(
+            "restarted at http://127.0.0.1:{}",
+            original.port
+        )))
+        .stderr(predicates::str::contains("resolving the tailnet").not());
+}
+
+/// SH-722: a held lock cannot authenticate a portfile's service or identity.
+#[test]
+fn lifecycle_status_rejects_unverified_metadata_without_changing_the_daemon() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+    let (_no_tailscale, path) = path_without_tailscale(&env);
+    env.story(dir.path())
+        .env("PATH", &path)
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let original = env.daemon().unwrap();
+    let portfile = env.environment().daemon_file();
+    for field in [
+        "pid",
+        "version",
+        "token",
+        "store_path",
+        "malformed",
+        "missing",
+    ] {
+        let mut corrupted = serde_json::to_value(&original).unwrap();
+        match field {
+            "pid" => corrupted[field] = serde_json::json!(original.pid + 1),
+            "version" => corrupted[field] = serde_json::json!("0.0.0"),
+            "token" => corrupted[field] = serde_json::json!("invalid-token"),
+            "store_path" => corrupted[field] = serde_json::json!(dir.path().join("other.db")),
+            _ => {}
+        }
+        if field == "missing" {
+            std::fs::remove_file(&portfile).unwrap();
+        } else {
+            let bytes = if field == "malformed" {
+                b"not-json".to_vec()
+            } else {
+                serde_json::to_vec(&corrupted).unwrap()
+            };
+            std::fs::write(&portfile, bytes).unwrap();
+        }
+        let before = std::fs::read(&portfile).ok();
+        for args in [["daemon", "status"], ["web", "status"]] {
+            let output = env
+                .story(dir.path())
+                .env("PATH", &path)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "{args:?} trusted {field}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert!(String::from_utf8_lossy(&output.stderr).contains("local daemon"));
+        }
+        assert_eq!(std::fs::read(&portfile).ok(), before);
+        lifecycle::hello(&original).expect("observation must leave the original daemon serving");
+        std::fs::write(&portfile, serde_json::to_vec(&original).unwrap()).unwrap();
+    }
+}
+
+/// A matching cached build must not let explicit start skip authentication.
+#[test]
+fn explicit_start_rejects_an_unauthenticated_incumbent_without_replacing_it() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+    let (_no_tailscale, path) = path_without_tailscale(&env);
+    env.story(dir.path())
+        .env("PATH", &path)
+        .args(["daemon", "start"])
+        .assert()
+        .success();
+    let original = env.daemon().unwrap();
+    let mut cached = original.clone();
+    cached.token = "invalid-token".into();
+    let portfile = env.environment().daemon_file();
+    std::fs::write(&portfile, serde_json::to_vec(&cached).unwrap()).unwrap();
+    for args in [["daemon", "start"], ["web", "start"]] {
+        env.story(dir.path())
+            .env("PATH", &path)
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("local daemon"));
+    }
+    assert_eq!(env.daemon().unwrap(), cached);
+    lifecycle::hello(&original).expect("start must not replace the unverified incumbent");
+    std::fs::write(&portfile, serde_json::to_vec(&original).unwrap()).unwrap();
+}
+
+/// A filesystem error is neither an absent daemon nor an authenticated one.
+#[test]
+fn lifecycle_commands_report_pidfile_inspection_errors() {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let environment = env.environment();
+    std::fs::create_dir_all(environment.daemon_pidfile()).unwrap();
+    for args in [
+        ["daemon", "status"],
+        ["web", "status"],
+        ["daemon", "start"],
+        ["daemon", "restart"],
+    ] {
+        env.story(dir.path())
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains(
+                environment.daemon_pidfile().display().to_string(),
+            ));
+    }
+    assert!(
+        lifecycle::is_live(&environment),
+        "uncertainty must remain protective"
+    );
+    assert!(env.daemon().is_none());
 }

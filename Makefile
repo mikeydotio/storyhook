@@ -373,9 +373,9 @@ lint clippy:
 check:
 	cargo check --workspace --all-targets
 
-# Optimized release build.
+# Optimized build for use; every invocation reserves a BUILD number.
 release-build:
-	cargo build --release
+	python3 scripts/build-number.py -- cargo build --release
 
 # A disposable storyhook: this checkout's binary, a throwaway store, a daemon
 # that dies with the shell it drops you into.
@@ -422,7 +422,8 @@ scratch-clean:
 # Reports the WHOLE `--version` line, not just the bare semver -- SH-406
 # stamps every build with a build id derived from its tracked git content
 # (build.rs), so two installs of the same VERSION distinguish themselves here
-# whenever their tracked content differs.
+# whenever their tracked content differs. SH-732 also includes the BUILD
+# counter, which advances even when the tracked source is unchanged.
 #
 # Then reinstalls the plugin for every provider that has it registered
 # (SH-667). The plugin travels inside the binary and is projected per version,
@@ -439,8 +440,16 @@ scratch-clean:
 # `scripts/release.sh` runs it under `set -e` between `daemon stop` and `daemon
 # start`. A plugin refresh that failed the install would leave that machine
 # with no daemon at all. The failure is named, with its retry, never swallowed.
-install: release-build
+install:
+	# A literal make keeps make -n from executing this allocation wrapper.
+	python3 scripts/build-number.py -- make _install-build
+	"$(INSTALL_DIR)/story" plugin reinstall || echo "warning: the provider plugins were not reinstalled (exit $$?); run \`story plugin reinstall\`" >&2
+
+# Invoked under the build-number lock, including replacement of the destination.
+.PHONY: _install-build
+_install-build:
+	@python3 scripts/build-number.py --check-lock >/dev/null
+	cargo build --release
 	@mkdir -p "$(INSTALL_DIR)"
 	install -m 755 target/release/story "$(INSTALL_DIR)/story"
 	@echo "Installed $$("$(INSTALL_DIR)/story" --version) to $(INSTALL_DIR)/story"
-	"$(INSTALL_DIR)/story" plugin reinstall || echo "warning: the provider plugins were not reinstalled (exit $$?); run \`story plugin reinstall\`" >&2

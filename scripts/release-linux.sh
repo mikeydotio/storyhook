@@ -92,6 +92,7 @@ guest_build() {
   local source_archive="$4"
   local output="$5"
   local build_id="$6"
+  local build_number="$7"
   local toolchain linker linker_env_target work_dir binary
   local targets=(aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu)
 
@@ -104,6 +105,7 @@ guest_build() {
   command -v "$linker" >/dev/null 2>&1 || die "Linux linker $linker is unavailable for $target"
   work_dir="$(mktemp -d /tmp/storyhook-release-build.XXXXXX)"
   tar -xzf "$source_archive" -C "$work_dir"
+  printf '%s\n' "$build_number" > "$work_dir/BUILD"
 
   info "building $target in Lima (glibc 2.31, linker $linker)"
   # Lima can start in a host mount without a manifest. Build the extracted
@@ -133,8 +135,8 @@ if [ "${1:-}" = "--guest-check" ]; then
   exit 0
 fi
 if [ "${1:-}" = "--guest-build" ]; then
-  [ "$#" -eq 7 ] || die "guest build needs host target, cache, target, source, output, and build id"
-  guest_build "$2" "$3" "$4" "$5" "$6" "$7"
+  [ "$#" -eq 8 ] || die "guest build needs host target, cache, target, source, output, build id, and build number"
+  guest_build "$2" "$3" "$4" "$5" "$6" "$7" "$8"
   exit 0
 fi
 
@@ -142,23 +144,26 @@ check_only=0
 target=""
 output=""
 build_id=""
+build_number=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) check_only=1; shift ;;
     --target) target="${2:-}"; shift 2 ;;
     --output) output="${2:-}"; shift 2 ;;
     --build-id) build_id="${2:-}"; shift 2 ;;
+    --build-number) build_number="${2:-}"; shift 2 ;;
     *) die "unknown argument \`$1\`" ;;
   esac
 done
 
-if [ "$check_only" = 1 ] && { [ -n "$target" ] || [ -n "$output" ] || [ -n "$build_id" ]; }; then
+if [ "$check_only" = 1 ] && { [ -n "$target" ] || [ -n "$output" ] || [ -n "$build_id" ] || [ -n "$build_number" ]; }; then
   die "--check is standalone"
 fi
 if [ "$check_only" = 0 ]; then
   [ -n "$target" ] || die "--target is required"
   [ -n "$output" ] || die "--output is required"
   [ -n "$build_id" ] || die "--build-id is required"
+  [[ "$build_number" =~ ^(0|[1-9][0-9]*)$ ]] || die "--build-number must be an unsigned decimal integer"
 fi
 
 for tool in limactl file tar shasum; do
@@ -201,7 +206,7 @@ git -C "$(git rev-parse --show-toplevel)" archive --format=tar.gz --output="$sou
 limactl copy --backend=scp "$source_archive" "$instance:$transfer_root/source.tar.gz"
 guest_output="$transfer_root/story"
 limactl shell --tty=false "$instance" bash "$guest_runner" --guest-build \
-  "$host_target" "$guest_cache_root" "$target" "$transfer_root/source.tar.gz" "$guest_output" "$build_id"
+  "$host_target" "$guest_cache_root" "$target" "$transfer_root/source.tar.gz" "$guest_output" "$build_id" "$build_number"
 mkdir -p "$(dirname "$output")"
 limactl copy --backend=scp "$instance:$guest_output" "$output"
 chmod +x "$output"

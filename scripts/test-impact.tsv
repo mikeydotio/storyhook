@@ -12,11 +12,19 @@ block_interrupt	plugins/story/bin/story.sh
 block_interrupt	scripts/gate-progress.sh
 block_interrupt	scripts/machine-lock.sh
 block_interrupt	tests/support/block_interrupt.py
+block_interrupt	tests/support/interrupt_capture.py
 block_notice_paths	:(glob)**/*
 branch_policy	:(glob)**/*
 browser_gate	:(glob)**/*
 build_identity	:(glob)**/*
 build_identity	tests/build_identity/index.rs
+build_number	:(glob)scripts/*build-number*
+build_number	BUILD
+build_number	Makefile
+build_number	build.rs
+build_number	src/api/wire.rs
+build_number	src/daemon/lifecycle.rs
+build_number	src/version.rs
 build_slots	.cargo/config.toml
 build_slots	scripts/machine-lock.sh
 build_slots	scripts/rustc-slot.py
@@ -55,6 +63,10 @@ default_branch_contract	scripts/origin-default-branch.sh
 dispatch_ready_budget	:(glob)**/*
 dispatch_route_stubs	:(glob)**/*
 dispatch_tmux_context	:(glob)**/*
+dropped_cleanup	:(glob)plugins/story/lib/*
+dropped_cleanup	:(glob)src/service/cleanup/**
+dropped_cleanup	:(glob)tests/dropped_cleanup/**
+dropped_cleanup	src/service/cleanup.rs
 e2e_browser_coverage	:(glob)**/*
 e2e_daemon_check	scripts/e2e-daemon-check.sh
 e2e_display_awake	scripts/e2e-selection.sh
@@ -145,6 +157,9 @@ selective_gate	:(glob)**/*
 selective_gate	tests/support/selective_receipt.py
 semver_hook_test	:(glob)**/*
 service_git	:(glob)**/*
+service_session	plugins/story/references/story-new.md
+service_session	plugins/story/skills/story/SKILL.md
+service_session	src/help/ste.txt
 session_start_hook	:(glob)**/*
 shell_negated_status	:(glob)**/*
 spawn_inventory	:(glob)**/*
@@ -181,3 +196,5 @@ verifier_lifecycle	:(glob)scripts/**
 verify_window	:(glob)**/*
 version_identity	:(glob)**/*
 web_test	:(glob)**/*
+wire_envelope	src/output.rs
+wire_envelope	src/service/cleanup.rs

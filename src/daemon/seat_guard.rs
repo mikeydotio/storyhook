@@ -131,6 +131,8 @@ pub struct Incumbent {
     pub pid: u32,
     /// The version it published.
     pub version: String,
+    /// The published build number, absent in legacy identities.
+    pub build_number: Option<u64>,
     /// The executable it published.
     pub exe: PathBuf,
 }
@@ -154,6 +156,7 @@ impl From<&DaemonInfo> for Incumbent {
         Self {
             pid: info.pid,
             version: info.version.clone(),
+            build_number: info.build_number,
             exe: info.exe.clone(),
         }
     }
@@ -231,7 +234,7 @@ impl std::fmt::Display for Refusal {
                  still serving.\n\n{ways_out}",
                 store = store_path.display(),
                 pid = incumbent.pid,
-                version = incumbent.version,
+                version = crate::version::format(&incumbent.version, incumbent.build_number),
                 exe = incumbent.exe.display(),
                 running = running.display(),
                 build_dir = build_dir.display(),
@@ -366,6 +369,7 @@ mod tests {
         Incumbent {
             pid: 4242,
             version: "2.4.3".to_string(),
+            build_number: None,
             exe: PathBuf::from("/home/dev/.local/bin/story"),
         }
     }

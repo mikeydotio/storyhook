@@ -118,6 +118,7 @@ fn a_subscriber_seeded_with_a_dead_daemon_never_spawns_one() {
         pid: std::process::id(),
         port,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        build_number: None,
         protocol: 1,
         exe: std::env::current_exe().expect("this test binary"),
         exe_mtime: 0,

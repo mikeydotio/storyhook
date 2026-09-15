@@ -647,15 +647,16 @@ than by timing how long a sentence takes to read.
 **`TOAST_ERROR_LIFETIME_MS` is deleted rather than raised.** SH-196 doubled it to 9s so a
 remedy could be read. The honest version of that fix is no deadline: every error notice is
 durable now, on every call site, with a dismiss button sharing one CSS rule with the
-history row's. `TOAST_LIFETIME_MS` is 3000ms, and the 1s fade is `--toast-fade`, a token
-the script *reads* (`readMsToken`) rather than restating — two hand-kept copies would let a
-node be removed mid-fade the first time one moved.
+history row's. Since SH-720, `TOAST_LIFETIME_MS` is the **total 3000ms lifetime**, including
+the 1s fade. The script derives a 2000ms hold by subtracting `TOAST_FADE_MS` from that
+total. It reads the fade from the CSS token `--toast-fade` (`readMsToken`), keeping CSS
+and removal timing together. Success, information, and warning notices share this clock.
+Reduced motion suppresses animation but retains the same removal deadline.
 
-**The surviving timer holds its clock on pointer hover, on focus within the notice, and —
-the perverse case a bare `setTimeout` gets wrong — while `document.hidden`**, since a
-notice exists precisely because nobody may be watching and a background tab is the one
-state where "three seconds of being visible" definitively did not happen. Pausing
-preserves what is left rather than restarting it.
+**The hold pauses on pointer hover, while `document.hidden`, and while the window lacks
+focus.** Pausing preserves the remaining hold rather than restarting it. The one-second
+fade runs uninterrupted once it starts. Errors and notices created with “Keep notices”
+enabled remain until manually dismissed.
 
 *Correction (SH-322, retrofitted here — the source doc comment and the e2e test comment
 were corrected at the time, this paragraph was missed): this section originally claimed
@@ -663,8 +664,8 @@ the pause behavior above satisfies **SC 2.2.1 (Timing Adjustable)**. It does not
 found two independent reasons why. First, SC 2.2.1's mechanisms are Turn off, Adjust and
 Extend — pause is SC 2.2.2's word, not this criterion's, so satisfying it was never the
 right target regardless of whether the mechanism worked. Second, the mechanism didn't work
-in any case: the focus branch above could never fire, because a self-clearing notice (the
-only kind this timer ever runs on) carries no focusable content by construction — durable
+in any case: the former focus-within branch could never fire, because a self-clearing
+notice (the only kind this timer ever runs on) carries no focusable content — durable
 notices get the dismiss button, self-clearing ones don't, and the two are exact
 complements. SH-322's actual SC 2.2.1 conformance route is `storyhook.keepNotices`, a
 default-off Turn-off preference reachable from Settings before a notice is ever raised;

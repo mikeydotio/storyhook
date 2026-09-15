@@ -63,6 +63,8 @@ pub mod continuation;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
 pub mod conformance;
+mod dropped_cleanup;
+pub use dropped_cleanup::{DroppedCleanup, DroppedCleanupPhase};
 mod story_reset;
 pub use story_reset::{ResetLane, ResetPathIdentity, StoryReset};
 mod engine_reset;
@@ -331,6 +333,13 @@ pub trait ReadOps {
     /// surfaces that report across projects (the progress publisher).
     fn verification_incidents(&self) -> Result<Vec<VerificationIncident>, StoreError>;
 
+    /// Latest dropped-workspace cleanup, including released retry evidence.
+    fn dropped_cleanup(
+        &self,
+        project: ProjectId,
+        story: StoryNo,
+    ) -> Result<Option<DroppedCleanup>, StoreError>;
+
     /// Latest card reset operation for this story, including completed receipts.
     fn story_reset(
         &self,
@@ -595,6 +604,9 @@ pub trait WriteOps: ReadOps {
     /// A missing id is an error rather than an implicit insert, keeping run
     /// creation on the constraint-arbitrated path above.
     fn update_engine_run(&mut self, run: &EngineRunRecord) -> Result<(), StoreError>;
+
+    /// Reserves dropped cleanup or records its exact progress and release.
+    fn put_dropped_cleanup(&mut self, cleanup: &DroppedCleanup) -> Result<(), StoreError>;
 
     /// Creates or updates the current card reset operation.
     fn put_story_reset(&mut self, reset: &StoryReset) -> Result<(), StoreError>;

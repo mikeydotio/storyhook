@@ -109,7 +109,7 @@ impl McpServer {
             "capabilities": { "tools": {} },
             "serverInfo": {
                 "name": "storyhook",
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": crate::version::display(),
             },
         })
     }

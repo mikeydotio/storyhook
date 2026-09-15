@@ -1615,6 +1615,12 @@ fn render_human(response: &Response) -> String {
                     item.worktree.display(),
                     item.branch
                 ));
+                if item.retained_local_branch {
+                    body.push_str("    local branch retained for recovery\n");
+                }
+                if item.removed_tmux_window {
+                    body.push_str(&format!("    {action} exact tmux window\n"));
+                }
             }
             for item in &report.skipped {
                 body.push_str(&format!(
@@ -2673,6 +2679,8 @@ mod cleanup_render_tests {
                 branch: "worktree-SH-7".into(),
                 removed_worktree: true,
                 removed_local_branch: true,
+                removed_tmux_window: false,
+                retained_local_branch: false,
                 reclaimed_bytes: 4096,
             }],
             skipped: vec![CleanupSkip {

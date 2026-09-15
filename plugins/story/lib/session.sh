@@ -191,9 +191,11 @@ resolve_wname() {
 # own verb. Git's own stderr is captured here and never reaches stdout, so a
 # caller may take `$(default_branch 2>&1)` as the name on success and as the
 # diagnostic on failure.
+# An optional Git runner lets submission use its noninteractive credential
+# boundary without changing the transport policy of dispatch or cleanup.
 default_branch() {
-  local out name
-  if ! out=$(git ls-remote --symref origin HEAD 2>&1); then
+  local out name runner="${1:-git}"
+  if ! out=$("$runner" ls-remote --symref origin HEAD 2>&1); then
     printf 'default_branch: origin did not answer: %s\n' "$out" >&2
     return 1
   fi

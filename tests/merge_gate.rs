@@ -1776,6 +1776,9 @@ fn run(cwd: &Path, program: &str, args: &[&str]) -> Output {
         .args(args)
         .current_dir(cwd)
         .envs(storyhook_test_support::daemon_containment())
+        // The outer verifier certifies this suite; each nested fixture owns
+        // its own phase. Public certification cases select it explicitly.
+        .env_remove("STORYHOOK_CERTIFY_ONLY")
         // A hook or script under test must not inherit git's own targeting
         // variables from the test runner's environment — the same scrub
         // `tests/push_gate.rs` applies.

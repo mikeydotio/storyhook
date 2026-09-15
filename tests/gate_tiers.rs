@@ -503,7 +503,18 @@ fn release_sh_installs_both_provider_plugins_owned_by_the_installed_binary() {
 /// the retry rather than staying silent.
 #[test]
 fn install_reinstalls_registered_plugins_through_the_installed_binary_ungated() {
-    let lines = dry_run("install");
+    let outer = dry_run("install");
+    assert!(
+        outer
+            .iter()
+            .any(|line| line.contains("build-number.py -- make _install-build"))
+    );
+    let mut lines = dry_run("_install-build");
+    lines.extend(
+        outer
+            .into_iter()
+            .filter(|line| line.contains("plugin reinstall")),
+    );
     let installed = lines
         .iter()
         .position(|l| l.starts_with("install -m 755 target/release/story "))

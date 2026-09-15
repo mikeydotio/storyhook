@@ -32,6 +32,7 @@
 
 mod block_delivery;
 mod continuation;
+mod dropped_cleanup;
 mod engine_reset;
 mod landing;
 mod ownership;
@@ -59,7 +60,9 @@ use crate::store::types::{
     MigrationReport, NewProject, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
     PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow, VerificationIncident,
 };
-use crate::store::{EngineReset, ReadOps, Store, StoryReset, WriteOps, WriteWithSnapshot};
+use crate::store::{
+    DroppedCleanup, EngineReset, ReadOps, Store, StoryReset, WriteOps, WriteWithSnapshot,
+};
 
 /// Puts a database into write-ahead logging mode, and reports the mode it ended
 /// up in.
@@ -897,6 +900,14 @@ macro_rules! impl_read_ops {
                 read::verification_incidents(&self.conn)
             }
 
+            fn dropped_cleanup(
+                &self,
+                project: ProjectId,
+                story: StoryNo,
+            ) -> Result<Option<DroppedCleanup>, StoreError> {
+                dropped_cleanup::read(&self.conn, project, story)
+            }
+
             fn story_reset(
                 &self,
                 project: ProjectId,
@@ -1159,6 +1170,19 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::update_engine_run(&self.conn, run)
     }
 
+    fn put_dropped_cleanup(&mut self, cleanup: &DroppedCleanup) -> Result<(), StoreError> {
+        dropped_cleanup::put(&self.conn, cleanup)?;
+        if cleanup.released {
+            self.ownership.release(
+                "dropped cleanup",
+                cleanup.project,
+                cleanup.story,
+                &cleanup.token,
+            );
+        }
+        Ok(())
+    }
+
     fn put_story_reset(&mut self, reset: &StoryReset) -> Result<(), StoreError> {
         story_reset::put(&self.conn, reset)?;
         if reset.completed {
@@ -1180,6 +1204,24 @@ impl WriteOps for SqliteWriteTx<'_> {
     }
 
     fn put_engine_lane(&mut self, lane: &EngineLaneRecord) -> Result<(), StoreError> {
+        if let Some(run) = self.engine_run(&lane.run_id)?
+            && let Some(project) = self.project_by_slug(&run.project_slug)?
+        {
+            let previous = self
+                .engine_lanes(&lane.run_id)?
+                .into_iter()
+                .find(|row| row.lane_index == lane.lane_index);
+            for id in lane
+                .story_id
+                .iter()
+                .chain(previous.as_ref().and_then(|row| row.story_id.as_ref()))
+            {
+                if let Ok(story) = StoryNo::parse_id(&project.prefix, id) {
+                    dropped_cleanup::refuse(&self.conn, project.id, story)?;
+                }
+            }
+        }
+
         if let Some(run) = self.engine_run(&lane.run_id)?
             && let Some(project) = self.project_by_slug(&run.project_slug)?
             && let Some(current) = self

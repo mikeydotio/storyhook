@@ -584,6 +584,9 @@ pub struct DaemonInfo {
     pub port: u16,
     /// The `storyhook` version it was built from.
     pub version: String,
+    /// The published build number, absent in legacy identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_number: Option<u64>,
     /// The RPC protocol it speaks.
     pub protocol: u32,
     /// The executable it is running.
@@ -641,6 +644,11 @@ pub struct DaemonInfo {
 }
 
 impl DaemonInfo {
+    /// The published version annotated only with this daemon's build number.
+    pub fn display_version(&self) -> String {
+        crate::version::format(&self.version, self.build_number)
+    }
+
     /// Whether this daemon holds `store`.
     ///
     /// The last line of defence rather than the first: a client only ever
@@ -660,12 +668,22 @@ impl DaemonInfo {
         let Ok((exe, mtime)) = current_binary() else {
             return false;
         };
-        self.version == env!("CARGO_PKG_VERSION") && self.exe == exe && self.exe_mtime == mtime
+        self.version == env!("CARGO_PKG_VERSION")
+            && self
+                .build_number
+                .is_none_or(|number| number == crate::version::build_number())
+            && self.exe == exe
+            && self.exe_mtime == mtime
     }
 
     /// The loopback address this daemon answers on.
     pub fn addr(&self) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], self.port))
+    }
+
+    /// The local lifecycle endpoint, independent of cached tailnet metadata.
+    pub fn local_url(&self) -> String {
+        format!("http://{}", self.addr())
     }
 
     /// Every address this daemon reported binding.
@@ -781,17 +799,85 @@ fn open_pidfile(env: &Environment) -> Result<File, AppError> {
 /// is not proof that it is free, and a false negative could start a second
 /// daemon or misclassify an orderly exit as a crash.
 pub fn is_live(env: &Environment) -> bool {
-    let Ok(file) = open_pidfile(env) else {
-        return true;
-    };
-    match file.try_lock_exclusive() {
-        // Nobody held it, so nobody is running. Release what we just took.
-        Ok(()) => {
-            let _ = FileExt::unlock(&file);
-            false
+    inspect_lock(env).unwrap_or(true)
+}
+
+/// Inspects lifetime-lock ownership without treating an inspection error as evidence.
+///
+/// Only lock contention establishes a holder. Other failures preserve the path
+/// and cause, so explicit lifecycle commands cannot report uncertain state as live.
+pub fn inspect_lock(env: &Environment) -> Result<bool, AppError> {
+    let inspect = || -> Result<bool, AppError> {
+        let file = open_pidfile(env)?;
+        let held = lock_is_held(file.try_lock_exclusive())?;
+        if !held {
+            FileExt::unlock(&file)?;
         }
-        Err(_) => true,
+        Ok(held)
+    };
+    inspect().map_err(|error| {
+        AppError::Storage(format!(
+            "cannot inspect the local daemon pidfile {}: {error}",
+            env.daemon_pidfile().display()
+        ))
+    })
+}
+
+/// Keeps the operating system's contention error distinct from inspection failures.
+fn lock_is_held(result: std::io::Result<()>) -> std::io::Result<bool> {
+    match result {
+        Ok(()) => Ok(false),
+        Err(error) if error.raw_os_error() == fs4::lock_contended_error().raw_os_error() => {
+            Ok(true)
+        }
+        Err(error) => Err(error),
     }
+}
+
+/// Observes an authenticated local daemon, or confirmed absence of a lock holder.
+///
+/// This never starts, replaces, or stops a daemon. A held lock with missing or
+/// invalid metadata is an error, as is a service that cannot prove its identity.
+pub fn observe_local(env: &Environment) -> Result<Option<DaemonInfo>, AppError> {
+    if !inspect_lock(env)? {
+        return Ok(None);
+    }
+    let info = (|| -> Result<DaemonInfo, AppError> {
+        let bytes = std::fs::read(env.daemon_file())?;
+        Ok(serde_json::from_slice(&bytes)?)
+    })().map_err(|error| AppError::Storage(format!(
+        "cannot verify the local daemon: a process holds the pidfile but there is no readable portfile: {error}\n{}",
+        describe_paths(env)
+    )))?;
+    verify_local_info(env, &info)?;
+    Ok(Some(info))
+}
+
+/// Verifies the exact identity a lifecycle operation is about to report.
+fn verify_local_info(env: &Environment, info: &DaemonInfo) -> Result<(), AppError> {
+    let verify = || -> Result<(), AppError> {
+        if !inspect_lock(env)? {
+            return Err(AppError::Storage(
+                "the lifetime lock is no longer held".into(),
+            ));
+        }
+        if !info.serves(env.store_path()) {
+            return Err(AppError::Storage(format!(
+                "the portfile names store {}, but this command selected {}",
+                info.store_path.display(),
+                env.store_path().display()
+            )));
+        }
+        hello(info)
+    };
+    verify().map_err(|error| {
+        error.with_context(&format!(
+            "cannot verify the local daemon at {} (PID {}):\n{}",
+            info.local_url(),
+            info.pid,
+            describe_paths(env)
+        ))
+    })
 }
 
 /// The lock a daemon holds for its whole life.
@@ -852,6 +938,7 @@ pub fn info_for(
         pid: std::process::id(),
         port: bound.port(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        build_number: Some(crate::version::build_number()),
         protocol: PROTOCOL,
         exe,
         exe_mtime,
@@ -940,7 +1027,7 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
     write_info(env, &info)?;
     eprintln!(
         "storyhook daemon {} on http://127.0.0.1:{} (pid {}) holding {}",
-        info.version,
+        info.display_version(),
         info.port,
         info.pid,
         info.store_path.display()
@@ -998,7 +1085,10 @@ pub fn ensure(env: &Environment) -> Result<DaemonInfo, AppError> {
 /// must wait for and adopt the successor, while an ordinary command admitted
 /// before shutdown may still use [`ensure`]'s lock-free fast path.
 pub fn start(env: &Environment) -> Result<DaemonInfo, AppError> {
-    spawn_locked(env)
+    inspect_lock(env)?;
+    let info = spawn_locked(env)?;
+    verify_local_info(env, &info)?;
+    Ok(info)
 }
 
 /// The predecessor and successor observed by one completed restart.
@@ -1023,7 +1113,7 @@ pub struct RestartedDaemon {
 /// is touched (`super::seat_guard`, SH-634): the successor would be that
 /// build, which is the incident this guard exists for.
 pub fn restart(env: &Environment) -> Result<RestartedDaemon, AppError> {
-    if !is_live(env) {
+    if !inspect_lock(env)? {
         return Err(AppError::Usage(
             "the storyhook daemon is not running — start one with `story daemon start`."
                 .to_string(),
@@ -1103,7 +1193,9 @@ pub fn restart(env: &Environment) -> Result<RestartedDaemon, AppError> {
         Err(failure) => publish_attempt_failure(env, failure),
     }
     let _ = FileExt::unlock(&lock);
-    outcome
+    let restarted = outcome?;
+    verify_local_info(env, &restarted.running)?;
+    Ok(restarted)
 }
 
 /// The daemon in this store's directory, if it is one this client may use.
@@ -2147,11 +2239,18 @@ pub fn hello(info: &DaemonInfo) -> Result<(), AppError> {
         .into_body()
         .read_json()
         .map_err(|e| AppError::Storage(format!("the daemon's identity was unreadable: {e}")))?;
-    if body.version != info.version || body.pid != info.pid {
+    if body.version != info.version
+        || body.pid != info.pid
+        || matches!((body.build_number, info.build_number), (Some(a), Some(b)) if a != b)
+    {
         return Err(AppError::Storage(format!(
             "the service on port {} is not this daemon (it reports storyhook {} pid {}, \
              the portfile says {} pid {})",
-            info.port, body.version, body.pid, info.version, info.pid
+            info.port,
+            crate::version::format(&body.version, body.build_number),
+            body.pid,
+            info.display_version(),
+            info.pid
         )));
     }
     Ok(())
@@ -2199,6 +2298,9 @@ struct ArmedHandoff {
 pub struct Hello {
     /// The storyhook version the daemon was built from.
     pub version: String,
+    /// The published build number, absent in legacy identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_number: Option<u64>,
     /// The protocol it speaks.
     pub protocol: u32,
     /// Its process id.
@@ -3140,6 +3242,27 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         assert!(!is_live(&env));
+        assert!(!inspect_lock(&env).unwrap());
+        assert_eq!(observe_local(&env).unwrap(), None);
+    }
+
+    #[test]
+    fn only_lock_contention_establishes_a_holder() {
+        assert!(!lock_is_held(Ok(())).unwrap());
+        assert!(lock_is_held(Err(fs4::lock_contended_error())).unwrap());
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::InvalidInput,
+            std::io::ErrorKind::Other,
+        ] {
+            assert_eq!(
+                lock_is_held(Err(std::io::Error::from(kind)))
+                    .unwrap_err()
+                    .kind(),
+                kind
+            );
+        }
     }
 
     #[test]
@@ -3154,6 +3277,13 @@ mod tests {
             is_live(&env),
             "inability to inspect the lock is unknown, not proof that no daemon holds it"
         );
+        assert!(
+            inspect_lock(&env)
+                .unwrap_err()
+                .to_string()
+                .contains(&env.daemon_pidfile().display().to_string())
+        );
+        assert!(observe_local(&env).is_err());
     }
 
     /// Liveness is the held lock, so it must answer true exactly while a daemon
@@ -3164,8 +3294,10 @@ mod tests {
         let env = Environment::at(dir.path());
         let held = claim_pidfile(&env).expect("claiming the pidfile");
         assert!(is_live(&env));
+        assert!(inspect_lock(&env).unwrap());
         drop(held);
         assert!(!is_live(&env));
+        assert!(!inspect_lock(&env).unwrap());
     }
 
     #[test]
@@ -3219,6 +3351,7 @@ mod tests {
             pid: 1,
             port: 1,
             version: "0.0.0-not-this-one".to_string(),
+            build_number: None,
             protocol: PROTOCOL,
             exe: PathBuf::from("/nowhere/story"),
             exe_mtime: 0,
@@ -3241,6 +3374,7 @@ mod tests {
             pid: 1,
             port: 1,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            build_number: Some(crate::version::build_number()),
             protocol: PROTOCOL,
             exe,
             exe_mtime: mtime + 1,

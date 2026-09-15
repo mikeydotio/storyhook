@@ -292,6 +292,7 @@ mod tests {
             pid: std::process::id(),
             port,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            build_number: Some(crate::version::build_number()),
             protocol: 1,
             exe: std::env::current_exe().expect("this test binary"),
             exe_mtime: 0,

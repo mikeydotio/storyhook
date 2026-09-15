@@ -244,6 +244,13 @@ fn dashboard_data_exposes_running_queued_and_superseding_statuses_and_omits_othe
     };
 
     let running = &story(&running_id)["verification"];
+    // SH-731: ownership is independent of candidate priority order. The
+    // dashboard promotes the owner, then follows these ordered identities.
+    assert_eq!(json["verifier"]["active"]["story_id"], running_id);
+    assert_eq!(
+        json["verifier"]["verifying"],
+        serde_json::json!([queued_id, running_id])
+    );
     assert_eq!(running["status"], "running");
     assert!(running["elapsed_seconds"].as_u64().unwrap() <= 1);
     assert_eq!(running["current_step"]["label"], "waiting for gate lock");

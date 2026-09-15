@@ -70,12 +70,12 @@ def freeze(owned, roots):
         if not new:
             return
         for pid in new:
-            identity = (*table[pid], proc.process_identity(pid)["start"])
             try:
+                identity = (*table[pid], proc.process_identity(pid)["start"])
                 os.kill(pid, signal.SIGSTOP)
                 owned[pid] = identity
             except ProcessLookupError:
-                pass
+                pass  # Exit can win either the identity probe or the signal race.
     raise proc.CleanupError("owned gate process tree did not stabilize")
 
 

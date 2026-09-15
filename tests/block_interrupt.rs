@@ -4,6 +4,21 @@ use std::process::Command;
 use storyhook_test_support::{TestEnv, git};
 
 #[test]
+fn interruption_capture_distinguishes_exit_from_probe_failure() {
+    let output = Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/interrupt_capture.py"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("running native capture boundary regressions");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn native_interrupt_quiesces_gate_and_preserves_session() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let env = TestEnv::isolated();

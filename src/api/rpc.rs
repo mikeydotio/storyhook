@@ -358,12 +358,16 @@ fn compatible(request: &WireRequest) -> Result<(), AppError> {
             request.protocol
         )));
     }
-    if request.client_version != env!("CARGO_PKG_VERSION") {
+    if request.client_version != env!("CARGO_PKG_VERSION")
+        || request
+            .client_build_number
+            .is_some_and(|number| number != crate::version::build_number())
+    {
         return Err(AppError::Usage(format!(
             "this storyhook daemon is version {}; the client is {}. \
              Run `story daemon stop` and try again.",
-            env!("CARGO_PKG_VERSION"),
-            request.client_version
+            crate::version::display(),
+            crate::version::format(&request.client_version, request.client_build_number)
         )));
     }
     Ok(())
@@ -414,6 +418,7 @@ mod tests {
     fn hello() -> Hello {
         Hello {
             version: "0.0.0".to_string(),
+            build_number: None,
             protocol: PROTOCOL,
             pid: 42,
             started_at: "2026-01-01T00:00:00Z".to_string(),
@@ -632,6 +637,22 @@ mod tests {
             ..crate::api::wire::WireRequest::new(crate::cli::Invocation::Version, "/tmp")
         };
         assert!(compatible(&request).is_err());
+    }
+
+    #[test]
+    fn a_known_build_mismatch_is_refused_but_legacy_clients_remain_compatible() {
+        let mut request = WireRequest::new(crate::cli::Invocation::Version, "/tmp");
+        request.client_build_number = Some(crate::version::build_number().wrapping_add(1));
+        let error = compatible(&request)
+            .expect_err("known different build")
+            .to_string();
+        assert!(error.contains(crate::version::display()));
+        assert!(error.contains(&crate::version::format(
+            &request.client_version,
+            request.client_build_number
+        )));
+        request.client_build_number = None;
+        assert!(compatible(&request).is_ok());
     }
 
     #[test]

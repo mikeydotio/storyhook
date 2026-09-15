@@ -813,6 +813,14 @@ fn append(
     source: LinkSource,
     provenance: &Provenance,
 ) -> Result<EventSeq, StoreError> {
+    if events.iter().any(|event| {
+        !matches!(
+            event.kind.as_str(),
+            "StoryCommentAdded" | "StoryCommentRetracted"
+        )
+    }) {
+        super::dropped_cleanup::refuse(conn, project, story)?;
+    }
     if read::story_resets(conn, project)?.contains_key(&story)
         && events.iter().any(|event| {
             !matches!(

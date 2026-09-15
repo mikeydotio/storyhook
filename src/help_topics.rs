@@ -83,7 +83,11 @@ Related: story show, story claim, story load-context
         m.insert(
             "daemon",
             "\
-Manage the per-store daemon and inspect its operational journal.
+Manage the local per-store daemon and inspect its operational journal.
+
+Start, restart, and status verify the daemon on loopback before reporting success.
+Their URL is local to this machine. Use `story web address` to copy the advertised
+dashboard address for sharing; local status does not confirm remote reachability.
 
   story daemon start [--port PORT]
   story daemon stop [--force]
@@ -434,17 +438,27 @@ reset, unclaim, completion, cleanup and capture do not need STORY_AGENT.
             "cleanup",
             r#"story cleanup [--dry-run]
 
-Retry the centralized verifier's reap of a finished story's workspace. The
-verifier reaps a story's tmux window, worktree and local branch itself once
-its PR lands; cleanup is that reap's retry path and never an independent
-reaper. A candidate is eligible only when its versioned cleanup lease
+Clean dropped-story workspaces and retry the verifier's completed-work reap.
+
+Dropped stories do not need a verification generation or merged commits.
+Cleanup closes the exact owned tmux window, stops its captured process tree,
+and removes a clean, unlocked leased worktree without force. Local and remote
+branches remain for recovery. This path does not fetch. Dirty work, missing
+process identity, duplicate panes, ambiguous leases, and protected resources
+are preserved. Interrupted cleanup retains durable ownership until a retry
+can prove safety; reopen and reset wait for that ownership to be released.
+Use this command again to reconcile an interrupted attempt.
+
+For completed work, the verifier reaps a story's tmux window, worktree and local branch itself once
+its PR lands; cleanup is that reap's retry path. A completed-work candidate
+is eligible only when its versioned cleanup lease
 matches the current project, its story is CLOSED and carries the verifier's
 CENTRAL VERIFICATION CLEANUP COMPLETE or CLEANUP REQUIRED comment on its
 latest verification, its exact tmux window is absent, the worktree is clean
 and unlocked, and every worktree and local-branch tip is contained by a
 freshly fetched origin default branch.
 
-Cleanup removes the exact leased worktree, its contained build artifacts,
+For completed work, cleanup removes the leased worktree, its build artifacts,
 and the exact local branch. It never removes the main checkout, shared build
 artifacts outside an eligible worktree, or a remote branch: the verifier's
 merge step deletes the remote branch, and cleanup neither reads nor writes
@@ -456,8 +470,9 @@ and preserved.
 --dry-run applies every read-only preflight and reports reclaimed bytes, but
 does not remove resources, and lists every candidate it declined with the
 reason (story-open, not-verifier-released, unknown-story, dirty-worktree,
-unmerged-work, ...). JSON output includes removed and skipped arrays with
-the same stable reason strings.
+unmerged-work, ...). JSON output includes removed, skipped, and failed arrays.
+Removal entries include removed_tmux_window and retained_local_branch.
+Dropping a story does not synchronously remove its resources.
 
 The daemon runs the same service daily by default. Configure it per project:
 
@@ -1994,7 +2009,7 @@ reason without moving state at all, use `story block <id> "<text>"`.
 
 When --if-state and/or --reason are used, they must come immediately
 after <state>, in either order; everything past them is treated as
-free-text comment. New comments must pass the checks in `story help ste`.
+free-text comment. Use ASD-STE100 writing guidance from `story help ste`.
 
 A story in `verifying` is owned by the central verifier. Moving it to
 `done` by hand overrides that verification and requires the comment:
@@ -2153,8 +2168,8 @@ Related:
 Add a timestamped comment to a story. Comments are append-only and
 form part of the audit trail.
 
-New comments must pass the STE checks. Run `story help ste` for the rules.
-On failure, repair the text and submit the command again.
+Use ASD-STE100 for comments. Run `story help ste` for writing guidance.
+StoryHook stores text without STE lint validation.
 
 When to use:
   To record progress notes, decisions, blockers, or context that
@@ -2830,6 +2845,10 @@ Retire a story that will not be done. The story moves to the `dropped`
 state — CLOSED superstate, so it stops counting as open, ready, or a
 blocker — and the reason is recorded as a comment on it.
 
+The next scheduled cleanup can remove its owned window and clean worktree.
+Run story cleanup --dry-run to inspect eligibility or story cleanup to retry.
+Local branches and dirty work are preserved for recovery.
+
 A closed story keeps everything: its description, its comments, its
 labels and every relationship it has. That is the whole point. It is
 the record of a decision not to do something, which is worth as much
@@ -3249,7 +3268,7 @@ Flags:
 Examples:
   story update            # Update to the latest release if newer
   story update --check    # Just report whether an update is available
-  story --version         # Print the currently installed version
+  story --version         # Print the installed version and build number
 
 Notes:
   - Installs into the directory of the current binary; if that directory is

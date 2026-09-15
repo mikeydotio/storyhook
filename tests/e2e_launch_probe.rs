@@ -205,3 +205,16 @@ fn the_launch_probe_derives_the_engine_and_invents_no_deadline() {
         );
     }
 }
+
+#[test]
+fn browser_loss_after_the_probe_has_a_reporter_and_executed_regression() {
+    let config = read("e2e/playwright.config.ts");
+    assert!(config.contains("[\"./browser-launch-reporter.ts\"]"));
+    let spec = read("e2e/specs/browser-launch-reporter.spec.ts");
+    assert!(spec.contains("test-browser-launch-reporter.py"));
+    assert!(
+        repo_root()
+            .join("scripts/test-browser-launch-reporter.py")
+            .is_file()
+    );
+}

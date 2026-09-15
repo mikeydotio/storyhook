@@ -877,7 +877,7 @@ async function freezeClock(page: Page): Promise<void> {
  * {@link holdFetch}: a boundary the *test* decides, in place of a wall-clock
  * wait it can only hope to out-race. `latch`'s own comment gives the reasoning
  * those helpers were built on, and it applies identically to timers — a spec
- * that sleeps `SUCCESS_VISIBLE_MS + FADE_MS + 1500` is out-racing the machine,
+ * that sleeps through a notice's lifetime plus a margin is out-racing the machine,
  * and loses that race on a machine running three or four worktree sessions
  * (SH-318). Inside a frozen window the arithmetic is not merely robust to load,
  * it is independent of it: fake time advances only on `runFor`, so there is no

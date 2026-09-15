@@ -312,16 +312,45 @@ fn exact_limit_and_chunked_uploads_round_trip_but_one_byte_over_does_not() {
 }
 
 #[test]
-fn malformed_chunked_uploads_and_ordinary_json_limits_are_preserved() {
+fn malformed_complete_chunks_are_rejected_without_waiting_for_eof() {
     let f = Fixture::new();
-    for wire in [b"z\r\n".as_slice(), b"a\r\nabc", b"1\r\nxWRONG\r\n"] {
+    for wire in [b"z\r\n".as_slice(), b"1\r\nxWRONG\r\n"] {
         let mut headers = f.headers();
         headers.push(("Transfer-Encoding", "chunked".into()));
         let mut stream = connect(f.server.port(), "POST", &f.path(), &headers);
         stream.write_all(wire).unwrap();
-        stream.shutdown(Shutdown::Write).unwrap();
+        // These bytes prove invalid framing without EOF. The server may
+        // already have closed by the time shutdown would reach the socket.
         assert_eq!(answer(stream).status, 400);
     }
+    assert!(
+        AttachmentService::new(&f.ctx())
+            .list("SH-1")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn truncated_chunk_is_rejected_after_client_eof() {
+    let f = Fixture::new();
+    let mut headers = f.headers();
+    headers.push(("Transfer-Encoding", "chunked".into()));
+    let mut stream = connect(f.server.port(), "POST", &f.path(), &headers);
+    stream.write_all(b"a\r\nabc").unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+    assert_eq!(answer(stream).status, 400);
+    assert!(
+        AttachmentService::new(&f.ctx())
+            .list("SH-1")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn ordinary_json_limits_are_preserved() {
+    let f = Fixture::new();
     let path = format!("/api/repos/{}/story/SH-1/comment", f.repo);
     for bytes in [
         vec![b'x'; storyhook::api::http::MAX_BODY_BYTES as usize + 1],

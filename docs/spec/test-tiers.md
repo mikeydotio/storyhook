@@ -732,6 +732,18 @@ config names, rather than the selected project's, would have refused Chromium's
 `tests/e2e_launch_probe.rs` pins the council's two settings and the probe's wiring,
 in SH-360's sense: a call site exists, never that it reaches the right pixel.
 
+**Mid-run browser loss (SH-733).** During the 3.0.1 release gate, WebKit passed
+the initial probe but stopped responding after WindowServer restarted. Subsequent
+workers each waited through the full launch timeout. The browser launch reporter
+now interrupts the current Playwright project on a browser launch error. It uses
+the runner's normal SIGINT cleanup, retains the failed result and traces, and
+leaves remaining tests unrun. Ordinary assertion failures still enumerate normally;
+neither retries nor a global failure limit changes. Other projects retain their
+own launch probes. The regression runs the actual Playwright CLI with a missing
+browser executable and verifies interruption, normal failure continuation, and
+successful completion. Restore a graphical login before rerunning WebKit when
+the console session reports that login has not completed.
+
 ### As built, fourth reading: an empty selection is an answer, a failed listing is not (SH-625)
 
 Found while verifying SH-622/SH-623 on the release branch: `scripts/run-e2e.sh`

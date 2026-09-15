@@ -99,20 +99,6 @@ fn cases() -> Vec<Case> {
             },
         },
         Case {
-            variant: "TextLint",
-            exit_code: 2,
-            message: "STE text checks failed",
-            provoke: |env, json| {
-                let project = env.project().seed_story("A story").build();
-                run(
-                    project.path(),
-                    env,
-                    &["comment", "SH-1", "Do not utilize it."],
-                    json,
-                )
-            },
-        },
-        Case {
             variant: "NotFound",
             exit_code: 3,
             message: "not found",
@@ -447,16 +433,7 @@ fn every_error_variant_holds_its_contract() {
             case.message
         );
 
-        let expected_keys: Vec<&str> = if case.variant == "TextLint" {
-            vec![
-                "error",
-                "exit_code",
-                "findings",
-                "kind",
-                "result",
-                "story_id",
-            ]
-        } else if case.variant == "StateConflict" {
+        let expected_keys: Vec<&str> = if case.variant == "StateConflict" {
             // A lost compare-and-swap is a *result*, not a failure: `story.sh`
             // reads `actual` to report who won the claim.
             assert_eq!(
@@ -574,7 +551,7 @@ fn every_variant_holds_its_exit_code_independent_of_a_live_invocation() {
     }
 }
 
-/// Every variant is exercised by [`cases`].
+/// Every live variant is exercised by [`cases`]; legacy variants retain direct tests.
 ///
 /// The guard that matters is [`variant_name`]: its `match` is exhaustive, so an
 /// further `AppError` variant stops this file compiling until someone decides
@@ -604,6 +581,11 @@ fn the_table_covers_every_variant() {
 
     for error in &all {
         let name = variant_name(error);
+        // SH-727 stopped producing TextLint in live commands; its wire contract remains.
+        if name == "TextLint" {
+            assert!(!covered.contains(&name));
+            continue;
+        }
         if !cfg!(feature = "github-pr") && FEATURE_GATED.contains(&name) {
             continue;
         }
@@ -616,18 +598,25 @@ fn the_table_covers_every_variant() {
 }
 
 fn text_lint_error() -> AppError {
-    let fixture = storyhook_test_support::ServiceFixture::new();
-    let ctx = fixture.ctx();
-    let service = storyhook::service::StoryService::new(&ctx);
-    let story = service
-        .create(&storyhook::service::NewStoryInput {
-            title: "Test text checks".into(),
-            ..Default::default()
-        })
-        .unwrap();
-    service
-        .comment(&story.id, "Do not utilize it.")
-        .unwrap_err()
+    // This legacy wire variant remains decodable after live writes stop linting.
+    let findings = ste_lint::lint(
+        "Do not utilize it.",
+        ste_lint::Options {
+            format: ste_lint::Format::Markdown,
+            sentence_limit: std::num::NonZeroUsize::new(20).unwrap(),
+        },
+    )
+    .into_iter()
+    .map(|diagnostic| storyhook::text_lint::TextFinding {
+        field: "comment".into(),
+        diagnostic,
+    })
+    .collect();
+    AppError::TextLint(storyhook::text_lint::TextLintReport {
+        context: None,
+        story: "SH-1".into(),
+        findings,
+    })
 }
 
 /// Exhaustive over `AppError` **on purpose**: adding a variant breaks this
@@ -667,4 +656,45 @@ fn finish(mut cmd: assert_cmd::Command, args: &[&str], json: bool) -> std::proce
     }
     cmd.output()
         .unwrap_or_else(|e| panic!("running `story {}`: {e}", args.join(" ")))
+}
+
+#[test]
+fn legacy_text_lint_keeps_structured_context_and_http_contract() {
+    let error = text_lint_error().with_context("writing a comment");
+    let wire = storyhook::error::WireError::from(&error);
+    let decoded: storyhook::error::WireError =
+        serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
+    let received = AppError::from(decoded);
+    assert_eq!(received.to_string(), error.to_string());
+    assert_eq!(storyhook::api::http::status_for(&received), 422);
+    let json: serde_json::Value =
+        serde_json::from_str(&storyhook::output::render_error(&received, true)).unwrap();
+    let keys: Vec<&str> = json
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            "error",
+            "exit_code",
+            "findings",
+            "kind",
+            "result",
+            "story_id"
+        ]
+    );
+    assert_eq!(json["kind"], "text_lint");
+    assert_eq!(json["story_id"], "SH-1");
+    assert_eq!(json["findings"][0]["field"], "comment");
+    assert_eq!(json["findings"][0]["rule"], "vocabulary");
+    assert_eq!(json["findings"][0]["span"]["start"], 7);
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("writing a comment")
+    );
 }

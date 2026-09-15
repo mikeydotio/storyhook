@@ -9,9 +9,9 @@
 //! type `story web start`, and breaking them to make a point would be a poor
 //! trade.
 //!
-//! **Their output is unchanged.** Every one of them prints the bytes it always
-//! printed, and says on *stderr* where it moved to — so a script reading stdout
-//! keeps working and a human reading a terminal learns something.
+//! Lifecycle messages name the verified loopback endpoint. Address sharing
+//! still uses the daemon's advertised tailnet address. Aliases retain their
+//! message structure and announce their replacements on stderr.
 //!
 //! The catalog commands (`register`/`deregister`/`list`) are *not* here. They
 //! had a second implementation over `~/.storyhook/registry.toml` for as long as
@@ -53,10 +53,9 @@ pub fn handle_start(port: Option<u16>) -> Result<String, AppError> {
     deprecation("web start", "daemon start");
     let env = environment()?;
     let info = commands::start(&env, port)?;
-    commands::note_tailnet_pending(&info);
     Ok(format!(
         "Web UI started at {} (PID {})",
-        info.dashboard_url(),
+        info.local_url(),
         info.pid
     ))
 }
@@ -77,12 +76,8 @@ pub fn handle_stop() -> Result<String, AppError> {
 pub fn handle_status() -> Result<String, AppError> {
     deprecation("web status", "daemon status");
     let env = environment()?;
-    Ok(match running_daemon(&env) {
-        Some(info) => format!(
-            "Web UI running at {} (PID {})",
-            info.dashboard_url(),
-            info.pid,
-        ),
+    Ok(match lifecycle::observe_local(&env)? {
+        Some(info) => format!("Web UI running at {} (PID {})", info.local_url(), info.pid,),
         None => "Web UI is not running".to_string(),
     })
 }

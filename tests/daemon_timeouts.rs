@@ -102,6 +102,7 @@ impl SilentPeer {
             pid: std::process::id(),
             port: self.port,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            build_number: None,
             protocol: 1,
             exe: std::env::current_exe().expect("this test binary"),
             exe_mtime: 0,
@@ -150,6 +151,68 @@ fn hello_gives_up_on_a_peer_that_accepts_and_never_answers() {
         message.contains("hello") || message.contains("daemon"),
         "the failure must say what it was asking: {message}"
     );
+}
+
+/// SH-722: status and cached startup must wait for local health, within its bound.
+#[test]
+fn explicit_lifecycle_observation_rejects_a_silent_peer() {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let environment = env.environment();
+    let _held = lifecycle::claim_pidfile(&environment).expect("holding the lifetime lock");
+    let peer = SilentPeer::bind();
+    let mut info = peer.as_daemon();
+    info.store_path = environment.store_path().to_path_buf();
+    info.exe = storyhook_test_support::story_binary().to_path_buf();
+    info.exe_mtime = std::fs::metadata(&info.exe)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let bytes = serde_json::to_vec(&info).unwrap();
+    std::fs::write(environment.daemon_file(), &bytes).unwrap();
+    for args in [
+        ["daemon", "status"],
+        ["web", "status"],
+        ["daemon", "start"],
+        ["web", "start"],
+    ] {
+        env.story(dir.path())
+            .args(args)
+            .timeout(PATIENCE)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("local daemon"))
+            .stderr(predicates::str::contains("hello"));
+        assert_eq!(std::fs::read(environment.daemon_file()).unwrap(), bytes);
+    }
+}
+
+/// A foreign cached endpoint with a held lock cannot establish local liveness.
+#[test]
+fn status_rejects_a_port_with_no_listener() {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let environment = env.environment();
+    let _held = lifecycle::claim_pidfile(&environment).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut info = SilentPeer::bind().as_daemon();
+    info.port = listener.local_addr().unwrap().port();
+    info.store_path = environment.store_path().to_path_buf();
+    drop(listener);
+    std::fs::write(
+        environment.daemon_file(),
+        serde_json::to_vec(&info).unwrap(),
+    )
+    .unwrap();
+    env.story(dir.path())
+        .args(["daemon", "status"])
+        .timeout(PATIENCE)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("local daemon"));
 }
 
 #[test]
@@ -226,6 +289,7 @@ fn a_refused_connection_still_fails_immediately() {
         pid: std::process::id(),
         port,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        build_number: None,
         protocol: 1,
         exe: std::env::current_exe().expect("this test binary"),
         exe_mtime: 0,

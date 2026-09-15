@@ -54,32 +54,6 @@ pub fn restart(env: &Environment) -> Result<lifecycle::RestartedDaemon, AppError
     lifecycle::restart(env)
 }
 
-/// Notes, on stderr, that `info`'s tailnet bind is not known yet.
-///
-/// SH-186 moved the tailnet probe off the daemon's startup path onto a
-/// background thread (`serve::tailnet_reprobe`), so a caller of [`start`]
-/// that just spawned a fresh daemon gets back a `DaemonInfo` whose `tailnet`
-/// is `None` regardless of whether this machine has one — the probe has not
-/// had a chance to answer yet. `info.dashboard_url()` is still correct in
-/// that instant (loopback is always true), but printing only that would let
-/// a stale answer read as a confirmed one on a tailnet-connected machine.
-/// `story daemon status`/`story daemon address`, run any time after, read
-/// the same portfile fresh and report the tailnet host once
-/// `tailnet_reprobe` lands it — this note exists only to say why the URL
-/// just printed might not be the final one, not to make the caller wait.
-///
-/// Silent when `info.tailnet` is already known: a daemon that was already
-/// running, and had already resolved its tailnet before this call, has
-/// nothing pending to note.
-pub fn note_tailnet_pending(info: &DaemonInfo) {
-    if info.tailnet.is_none() {
-        eprintln!(
-            "note: resolving the tailnet address in the background; `story daemon status` \
-             will show it once bound."
-        );
-    }
-}
-
 /// Stops the running daemon.
 ///
 /// `force` selects [`lifecycle::StopMode::Force`]: a short grace period,
@@ -115,7 +89,18 @@ pub fn stop(env: &Environment, force: bool) -> Result<String, AppError> {
 /// every state, including the ones [`agent::warning`] stays quiet about: a
 /// reader who came to look is owed the whole answer.
 pub fn status(env: &Environment) -> Result<String, AppError> {
-    if !lifecycle::is_live(env) {
+    let info = lifecycle::observe_local(env).map_err(|error| {
+        AppError::Storage(with_reclaimable(
+            env,
+            format!(
+                "{error}\n{}\n{}\n{}",
+                crate::daemon::backup::describe(env),
+                crate::daemon::backup::describe_maintenance(env),
+                agent::report(env)
+            ),
+        ))
+    })?;
+    let Some(info) = info else {
         return Ok(with_reclaimable(
             env,
             format!(
@@ -126,62 +111,48 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
                 agent::report(env)
             ),
         ));
-    }
-    match lifecycle::read_info(env) {
-        Some(info) => {
-            let staleness = if info.is_this_binary() {
-                String::new()
-            } else if super::seat_guard::would_refuse(env, &info) {
-                // The promise below would be a lie from an uninstalled build:
-                // the seat guard refuses it the replacement (SH-634), and the
-                // person reading this is about to type that next command.
-                format!(
-                    "\n  serving storyhook {}, which is not the build you are running — \
+    };
+    let staleness = if info.is_this_binary() {
+        String::new()
+    } else if super::seat_guard::would_refuse(env, &info) {
+        // The promise below would be a lie from an uninstalled build:
+        // the seat guard refuses it the replacement (SH-634), and the
+        // person reading this is about to type that next command.
+        format!(
+            "\n  serving storyhook {}, which is not the build you are running — \
                      and the next command from this binary will be refused rather than \
                      restart it: this binary is still where cargo built it. {}",
-                    info.version,
-                    super::seat_guard::remedies()
-                )
-            } else {
-                // Worth saying out loud rather than leaving to be discovered:
-                // the next command will restart it, and a user watching the pid
-                // change deserves to know why.
-                format!(
-                    "\n  serving storyhook {}, which is not the build you are running — \
+            info.display_version(),
+            super::seat_guard::remedies()
+        )
+    } else {
+        // Worth saying out loud rather than leaving to be discovered:
+        // the next command will restart it, and a user watching the pid
+        // change deserves to know why.
+        format!(
+            "\n  serving storyhook {}, which is not the build you are running — \
                      the next command will restart it",
-                    info.version
-                )
-            };
-            Ok(with_reclaimable(
-                env,
-                format!(
-                    "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}\n{}\n{}",
-                    info.version,
-                    info.dashboard_url(),
-                    info.pid,
-                    staleness,
-                    lifecycle::describe_paths(env),
-                    crate::daemon::backup::describe(env),
-                    crate::daemon::backup::describe_maintenance(env),
-                    agent::report(env)
-                ),
-            ))
-        }
-        // The lock is held by something that published nothing. Say so plainly
-        // rather than reporting "not running", which would be false.
-        None => Ok(with_reclaimable(
-            env,
-            format!(
-                "a storyhook daemon holds the pidfile but published no portfile\n\n{}\n{}",
-                lifecycle::describe_paths(env),
-                agent::report(env)
-            ),
-        )),
-    }
+            info.display_version()
+        )
+    };
+    Ok(with_reclaimable(
+        env,
+        format!(
+            "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}\n{}\n{}",
+            info.display_version(),
+            info.local_url(),
+            info.pid,
+            staleness,
+            lifecycle::describe_paths(env),
+            crate::daemon::backup::describe(env),
+            crate::daemon::backup::describe_maintenance(env),
+            agent::report(env)
+        ),
+    ))
 }
 
 /// `status`'s body plus the one line naming reclaimable runtime directories,
-/// when there are any (SH-638). One function for all three branches, for the
+/// when there are any (SH-638). One function for every branch, for the
 /// reason [`agent::report`] is: a machine-wide fact reported at one branch
 /// and silently dropped at another is SH-418's shape.
 fn with_reclaimable(env: &Environment, body: String) -> String {

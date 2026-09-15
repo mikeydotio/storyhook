@@ -22,10 +22,15 @@ check_only=0
 dry_run=0
 version=""
 output_dir=""
+reserved_number=""
+locked_build=0
+original_args=("$@")
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) check_only=1; shift ;;
+    --build-number) reserved_number="${2:-}"; shift 2 ;;
+    --locked-build) locked_build=1; shift ;;
     --version) version="${2:-}"; [ -n "$version" ] || die "--version needs a value"; shift 2 ;;
     --output-dir) output_dir="${2:-}"; [ -n "$output_dir" ] || die "--output-dir needs a path"; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
@@ -33,7 +38,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ "$check_only" = 1 ] && { [ -n "$version" ] || [ -n "$output_dir" ] || [ "$dry_run" = 1 ]; }; then
+if [ "$locked_build" = 1 ]; then
+  python3 "$repo_root/scripts/build-number.py" --check-lock >/dev/null \
+    || die "internal assembly requires the inherited build-number lock"
+fi
+
+if [ "$check_only" = 1 ] && { [ -n "$version" ] || [ -n "$output_dir" ] || [ "$dry_run" = 1 ] || [ -n "$reserved_number" ] || [ "$locked_build" = 1 ]; }; then
   die "--check is a standalone preflight"
 fi
 if [ "$check_only" = 0 ]; then
@@ -90,6 +100,27 @@ rm -rf "$probe_dir"
 
 [ "$check_only" = 1 ] && exit 0
 
+# Allocation owns every target until its archive is collected. Checks and dry
+# runs must never reserve or clean output files.
+if [ "$dry_run" = 0 ] && [ "$locked_build" = 0 ]; then
+  number_args=(python3 "$repo_root/scripts/build-number.py")
+  [ -z "$reserved_number" ] || number_args+=(--number "$reserved_number")
+  exec "${number_args[@]}" -- \
+    bash "$repo_root/scripts/build-release-assets.sh" "${original_args[@]}" --locked-build
+fi
+build_number="$(python3 "$repo_root/scripts/build-number.py" --check)"
+if [ "$dry_run" = 1 ]; then
+  info "[dry-run] reserve one build number and assemble all targets"
+  for index in "${!RELEASE_TARGETS[@]}"; do
+    target="${RELEASE_TARGETS[$index]}"
+    builder="${RELEASE_BUILDERS[$index]}"
+    artifact="${RELEASE_ARTIFACTS[$index]}"
+    info "[dry-run] $builder cargo build --locked --release --target $target"
+    info "[dry-run] package and verify $output_dir/$artifact"
+  done
+  exit 0
+fi
+
 mkdir -p "$output_dir"
 checksum_file="$output_dir/SHA256SUMS"
 rm -f "$checksum_file"
@@ -108,18 +139,9 @@ for index in "${!RELEASE_TARGETS[@]}"; do
   archive="$output_dir/$artifact"
 
   info "building $target with $builder"
-  if [ "$dry_run" = 1 ]; then
-    if [ "$builder" = "lima" ]; then
-      info "[dry-run] Lima cargo build --locked --release --target $target (CARGO_PROFILE_RELEASE_STRIP=symbols)"
-    else
-      info "[dry-run] private cargo build --locked --release --target $target"
-    fi
-    info "[dry-run] package and verify $archive"
-    continue
-  fi
 
   if [ "$builder" = "lima" ]; then
-    "$linux_runner" --target "$target" --output "$binary" --build-id "$build_id"
+    "$linux_runner" --target "$target" --output "$binary" --build-id "$build_id" --build-number "$build_number"
   else
     env \
       "PATH=$toolchain/bin:$PATH" \
