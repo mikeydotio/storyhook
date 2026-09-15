@@ -24,7 +24,7 @@ test("Settings renders the running Storyhook version in its About section", asyn
   await expect(about.locator("dt")).toHaveText("Version");
 
   const version = about.locator("dd#settings-version");
-  await expect(version).toHaveText(/^Storyhook v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/);
+  await expect(version).toHaveText(/^Storyhook v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)? \(\d+\)$/);
   await expect(version).toHaveCSS("font-family", /monospace/);
   await expect(version).toHaveText(await page.locator("#footer-version").innerText());
 });
@@ -38,7 +38,7 @@ for (const width of [1280, 390]) {
 
     const version = page.locator("#footer-version");
     const updated = page.locator("#footer-updated");
-    await expect(version).toHaveText(/^Storyhook v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/);
+    await expect(version).toHaveText(/^Storyhook v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)? \(\d+\)$/);
     const identity = await version.innerText();
 
     const checkFooter = async () => {

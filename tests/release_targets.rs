@@ -297,6 +297,7 @@ echo "strip=${CARGO_PROFILE_RELEASE_STRIP:-} x86_linker=${CARGO_TARGET_X86_64_UN
 # Observe source identity before the guest removes its extracted tree.
 if [ "$(basename "$0")" = cargo ] && [ -n "${RELEASE_EXPECT_SOURCE:-}" ]; then
   echo "arm_linker=${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER:-}" >> "$RELEASE_TEST_LOG"
+  echo "build_number=$(cat BUILD)" >> "$RELEASE_TEST_LOG"
   echo "cwd=$(pwd -P)" >> "$RELEASE_TEST_LOG"
   echo "source_root=$(cd "$(dirname "$CARGO_TARGET_DIR")" && pwd -P)" >> "$RELEASE_TEST_LOG"
   for source_file in Cargo.toml source-marker; do
@@ -390,11 +391,64 @@ exec /usr/bin/tar "$@"
 "#,
     );
 
+    let source = fixture.path().join("assembly-source");
+    std::fs::create_dir_all(source.join("scripts")).unwrap();
+    for name in [
+        "build-release-assets.sh",
+        "build-number.py",
+        "release-targets.sh",
+        "release-toolchain.sh",
+        "release-toolchain.lock",
+        "tracked-tree.sh",
+    ] {
+        std::fs::copy(
+            repo_root().join("scripts").join(name),
+            source.join("scripts").join(name),
+        )
+        .unwrap();
+    }
+    std::fs::write(source.join("BUILD"), "0\n").unwrap();
+    std::fs::write(
+        source.join(".gitignore"),
+        "/.build-number.lock\n/.BUILD-*\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
     (fixture, bin, target, toolchain, linux_runner)
 }
 
 fn run_asset_builder(extra_env: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Output) {
+    run_asset_builder_args(extra_env, &[])
+}
+
+fn run_asset_builder_args(
+    extra_env: &[(&str, &str)],
+    args: &[&str],
+) -> (tempfile::TempDir, PathBuf, Output) {
     let (fixture, bin, target, toolchain, linux_runner) = release_tool_shims();
+    let source = fixture.path().join("assembly-source");
     let output_dir = fixture.path().join("assets");
     let log = fixture.path().join("commands.log");
     let path = format!(
@@ -404,10 +458,11 @@ fn run_asset_builder(extra_env: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf,
     );
     let mut command = Command::new("/bin/bash");
     command
-        .current_dir(repo_root())
-        .arg(repo_root().join("scripts/build-release-assets.sh"))
+        .current_dir(&source)
+        .arg(source.join("scripts/build-release-assets.sh"))
         .args(["--version", "v9.9.9", "--output-dir"])
         .arg(&output_dir)
+        .args(args)
         .env("PATH", path)
         .env("CARGO_TARGET_DIR", target)
         .env("RELEASE_TEST_LOG", log)
@@ -421,6 +476,33 @@ fn run_asset_builder(extra_env: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf,
 }
 
 #[test]
+fn assembly_dry_run_leaves_counter_and_outputs_untouched() {
+    let (fixture, output, result) = run_asset_builder_args(&[], &["--dry-run"]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("assembly-source/BUILD")).unwrap(),
+        "0\n"
+    );
+    assert!(!output.exists());
+}
+
+#[test]
+fn stale_release_reservation_cannot_build_or_change_the_counter() {
+    let (fixture, output, result) = run_asset_builder_args(&[], &["--build-number", "9"]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("refusing stale build"));
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("assembly-source/BUILD")).unwrap(),
+        "0\n"
+    );
+    assert!(!output.exists());
+}
+
+#[test]
 fn local_builder_creates_and_checksums_all_four_archives() {
     let (fixture, output_dir, result) = run_asset_builder(&[]);
     assert!(
@@ -430,6 +512,15 @@ fn local_builder_creates_and_checksums_all_four_archives() {
     );
 
     let log = std::fs::read_to_string(fixture.path().join("commands.log")).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("assembly-source/BUILD")).unwrap(),
+        "1\n"
+    );
+    assert_eq!(
+        log.matches("--build-number 1").count(),
+        2,
+        "both Linux targets receive the same reservation"
+    );
     for target in release_targets() {
         if target.contains("linux") {
             assert!(log.contains(&format!("lima --target {target}")));
@@ -472,8 +563,12 @@ fn failed_target_removes_stale_assets_and_writes_no_complete_manifest() {
     std::fs::write(output_dir.join("SHA256SUMS"), "stale").unwrap();
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let result = Command::new("/bin/bash")
-        .current_dir(repo_root())
-        .arg(repo_root().join("scripts/build-release-assets.sh"))
+        .current_dir(fixture.path().join("assembly-source"))
+        .arg(
+            fixture
+                .path()
+                .join("assembly-source/scripts/build-release-assets.sh"),
+        )
         .args(["--version", "v9.9.9", "--output-dir"])
         .arg(&output_dir)
         .env("PATH", path)
@@ -505,8 +600,12 @@ fn check_proves_all_four_target_capabilities_without_creating_archives() {
     let log = fixture.path().join("commands.log");
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let result = Command::new("/bin/bash")
-        .current_dir(repo_root())
-        .arg(repo_root().join("scripts/build-release-assets.sh"))
+        .current_dir(fixture.path().join("assembly-source"))
+        .arg(
+            fixture
+                .path()
+                .join("assembly-source/scripts/build-release-assets.sh"),
+        )
         .arg("--check")
         .env("PATH", path)
         .env("CARGO_TARGET_DIR", target)
@@ -619,6 +718,7 @@ fn assert_linux_guest_build(target: &str) {
             archive.to_str().unwrap(),
             output.to_str().unwrap(),
             "0123456789ab",
+            "272",
         ])
         .env("PATH", path)
         .env("RELEASE_TEST_LOG", &log)
@@ -632,6 +732,11 @@ fn assert_linux_guest_build(target: &str) {
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(output.is_file(), "guest build did not export its binary");
+    assert!(
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("build_number=272")
+    );
     assert_ne!(output.metadata().unwrap().permissions().mode() & 0o111, 0);
 
     let calls = std::fs::read_to_string(log).unwrap();
@@ -879,8 +984,12 @@ fn builder_refuses_before_work_when_lima_capability_is_missing() {
     );
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let result = Command::new("/bin/bash")
-        .current_dir(repo_root())
-        .arg(repo_root().join("scripts/build-release-assets.sh"))
+        .current_dir(fixture.path().join("assembly-source"))
+        .arg(
+            fixture
+                .path()
+                .join("assembly-source/scripts/build-release-assets.sh"),
+        )
         .arg("--check")
         .env("PATH", path)
         .env("CARGO_TARGET_DIR", target)
@@ -918,6 +1027,12 @@ fn publish_fixture() -> (tempfile::TempDir, PathBuf) {
     )
     .unwrap();
     std::fs::write(root.join("VERSION"), "v9.9.9\n").unwrap();
+    std::fs::write(root.join("BUILD"), "0\n").unwrap();
+    std::fs::copy(
+        repo_root().join("scripts/build-number.py"),
+        root.join("scripts/build-number.py"),
+    )
+    .unwrap();
     write_executable(&root.join("bin/claude"), "#!/bin/bash\nexit 0\n");
     write_executable(
         &root.join("bin/gh"),

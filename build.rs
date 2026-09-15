@@ -1,8 +1,12 @@
 //! Stamps every build and embeds the provider plugin marketplace.
 //!
+//! SH-732: BUILD supplies the numeric build-for-use identity. Entry-point
+//! wrappers reserve it; this script only reads it so checks and test builds
+//! cannot allocate numbers. The content stamp below remains supplemental.
+//!
 //! SH-406: `make install` puts `target/release/story` on `PATH` under
 //! whatever `VERSION` already says, so two builds with different
-//! capabilities can report the identical `story --version` string. The
+//! capabilities previously reported the identical `story --version` string. The
 //! incident this closes (SH-404): the binary that broke the store and the
 //! binary that fixed it both reported `story 2.1.1` — one understood schema
 //! 16, the other 17 — and nothing distinguished them until the daemon
@@ -23,9 +27,8 @@
 //! object id of the tracked content the binary was built from — the same
 //! identity primitive `scripts/gate-receipt.sh` uses to key gate receipts
 //! (SH-306) and `scripts/merge-preflight.sh` uses for merge certification
-//! (SH-396). Two builds share a version string if and only if their tracked
-//! content is byte-identical, which is what the story's title actually
-//! promises and a version bump structurally cannot.
+//! (SH-396). The content stamp identifies tracked bytes. The BUILD counter
+//! additionally distinguishes repeated build-for-use invocations.
 //!
 //! # Embedded plugin marketplace
 //!
@@ -113,6 +116,10 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    let build_number = read_build_number().unwrap_or_else(|error| {
+        panic!("could not read StoryHook BUILD number: {error}");
+    });
+    println!("cargo::rustc-env=STORYHOOK_BUILD_NUMBER={build_number}");
     if let Err(error) = write_embedded_marketplace() {
         panic!("could not embed the StoryHook plugin marketplace: {error}");
     }
@@ -134,6 +141,37 @@ fn main() {
     // directive anywhere in this file — see the module doc's "Why no
     // rerun-if-*" section. Emitting one here would narrow cargo's default
     // rerun trigger rather than add to it.
+}
+
+/// Reads the assigned number without allocating one during Cargo rebuilds.
+fn read_build_number() -> io::Result<u64> {
+    let path = manifest_dir()?.join("BUILD");
+    if !fs::symlink_metadata(&path)?.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} must be a regular file", path.display()),
+        ));
+    }
+    let raw = fs::read_to_string(&path)?;
+    let digits = raw.strip_suffix('\n').unwrap_or("");
+    if digits.is_empty()
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} must contain one canonical unsigned integer and newline",
+                path.display()
+            ),
+        ));
+    }
+    digits.parse().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: {error}", path.display()),
+        )
+    })
 }
 
 /// Generates the marketplace table consumed by `src/plugin.rs`.

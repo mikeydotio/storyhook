@@ -122,7 +122,7 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
             "\n  serving storyhook {}, which is not the build you are running — \
                      and the next command from this binary will be refused rather than \
                      restart it: this binary is still where cargo built it. {}",
-            info.version,
+            info.display_version(),
             super::seat_guard::remedies()
         )
     } else {
@@ -132,14 +132,14 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
         format!(
             "\n  serving storyhook {}, which is not the build you are running — \
                      the next command will restart it",
-            info.version
+            info.display_version()
         )
     };
     Ok(with_reclaimable(
         env,
         format!(
             "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}\n{}\n{}",
-            info.version,
+            info.display_version(),
             info.local_url(),
             info.pid,
             staleness,
