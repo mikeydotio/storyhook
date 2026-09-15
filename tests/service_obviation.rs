@@ -61,6 +61,7 @@ fn all_active_and_verifying_candidates_are_returned_with_full_evidence_and_no_wr
             .unwrap();
     }
     create(&f, "not started");
+    f.github_checkout("https://github.com/acme/widgets");
     PrLinkService::new(&f.ctx())
         .link("SH-2", "https://github.com/acme/widgets/pull/1", true)
         .unwrap();

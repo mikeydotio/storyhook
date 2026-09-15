@@ -170,6 +170,45 @@ impl ServiceFixture {
         self.link_origin_for(self.project, url);
     }
 
+    /// Creates a real registered checkout with this project's current origin.
+    pub fn github_checkout(&self, origin: &str) -> std::path::PathBuf {
+        self.github_checkout_for(self.project, origin)
+    }
+
+    /// Creates or updates one project's real checkout without changing others.
+    pub fn github_checkout_for(&self, project: ProjectId, origin: &str) -> std::path::PathBuf {
+        let record = self.store.read(|tx| tx.project(project)).unwrap().unwrap();
+        let root = self.cwd.path().join(format!("github-{}", record.uuid));
+        self.github_checkout_at(project, &root, origin);
+        root
+    }
+
+    /// Registers a real GitHub checkout at a test-selected path.
+    pub fn github_checkout_at(&self, project: ProjectId, root: &Path, origin: &str) {
+        let record = self.store.read(|tx| tx.project(project)).unwrap().unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "remote.origin.url", origin],
+        ] {
+            let output = storyhook::env::git_env::command(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let pointer = storyhook::service::project::ProjectPointer::new(record.uuid, record.prefix);
+        storyhook::service::project::write_pointer(&root, &pointer).unwrap();
+        self.store
+            .write(|tx| tx.set_checkout_path(project, Some(&root)))
+            .unwrap();
+        self.link_origin_for(project, origin);
+    }
+
     /// [`Self::link_origin`] for a project added by [`Self::add_project`].
     pub fn link_origin_for(&self, project: ProjectId, url: &str) {
         let remote = RemoteUrl::normalize(url).expect("a well-formed remote url");

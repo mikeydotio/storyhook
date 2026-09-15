@@ -6,36 +6,14 @@
 //! background poll is gated (see `invoke::dispatch`). [`super::pr_link`]
 //! documents why `link`/`unlink` are not gated the same way.
 //!
-//! # The second mandatory cross-repo check
-//!
-//! [`super::pr_link::PrLinkService::link`] refuses a `close_on_merge: true`
-//! link whose repository matches none of the project's registered remotes
-//! *at link time*. [`run_check`] re-reads those registrations **fresh, on
-//! every call** — never from what was true when the link was made — and
-//! silently skips (never acts on) any link whose `(host, owner, repo)` no longer
-//! matches any of them. A project can register or unregister a GitHub remote
-//! after a link exists; this is what keeps a stale link from being acted on
-//! against the wrong repository once that happens.
-//!
-//! # One client per repository, not one for the whole run (SH-408)
-//!
-//! A project may have more than one registered GitHub remote — see
-//! [`super::pr_link`]'s module doc for why that is ordinary rather than an
-//! edge case, and why this file does not resolve down to a single
-//! repository the way it once read a single `(owner, repo)` off the deleted
-//! sync engine's config. [`run_check`] instead groups matching links by
-//! their own API base and repository and builds one [`GithubApi`] per group, so a
-//! multi-repository project is checked correctly and so that one
-//! repository's API failure — an expired token, a rate limit, a repository
-//! made private — cannot silently abort checking every other repository's
-//! links in the same invocation. A failure is recorded per link and, if any
-//! occurred, turns the whole call into an error (never a "successful"
-//! message hiding a partial failure — the same doctrine SH-159 already
-//! established for the sync engine this file survived).
+//! Every operation resolves the registered checkout again. Historical remote
+//! registrations cannot authorize a linked PR. A mismatch is skipped, and
+//! origin is checked again before a GitHub observation can change story state.
+//! Failures remain isolated per link and are reported by the whole call.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use crate::domain::github_remote::{GithubApiBase, GithubRepo};
+use crate::domain::github_remote::GithubRepo;
 use crate::domain::pr_url::{PullRequestRef, parse_pr_url};
 use crate::domain::{
     COMPLETION_STATE_SLUG, StoryEvent, SuperState, VERIFYING_STATE_SLUG, completion_state,
@@ -47,7 +25,7 @@ use crate::output::Response;
 use crate::store::{ExpectedSeq, PrLink, ReadOps, Store, StoreError, StoryNo};
 
 use super::github::RealGithubApiFactory;
-use super::pr_link::{PrLinkService, configured_github_api_override, configured_github_repos};
+use super::pr_link::PrLinkService;
 use super::story::state_transition_events;
 use super::verification::VERIFICATION_UNCERTIFIED_MERGE_PREFIX;
 use super::{Ctx, append_and_fold, project_prefix, resolve_story};
@@ -59,20 +37,15 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
     ///
     /// # Errors
     ///
-    /// [`AppError::GithubAuth`] if no GitHub token was supplied — this is the
-    /// one PR-link operation that spends one. [`AppError::Validation`] if the
-    /// project has no registered GitHub remote at all. [`AppError::GithubApi`]
-    /// if [`crate::github::api::GithubApi::get_pull_request`] failed for one
-    /// or more links — see the module doc's "One client per repository"
-    /// section for why that never aborts the rest of the run, only the exit
-    /// code.
+    /// Reports unavailable origins, gh authentication failures, and API errors.
+    /// One failed observation does not prevent checking the remaining links.
     pub fn check(&self, id: Option<&str>) -> Result<Response, AppError> {
         run_check(self.ctx(), &RealGithubApiFactory, id)
     }
 }
 
 /// [`PrLinkService::check`]'s engine, taking the [`GithubApiFactory`] as a
-/// parameter — the same seam `crate::github::run_sync_with` uses, so a test
+/// parameter, so a test
 /// can substitute `storyhook_test_support::FakeGithubApiFactory` without a
 /// network. `PrLinkService::check` is the production wrapper, fixed to
 /// [`RealGithubApiFactory`].
@@ -81,24 +54,10 @@ pub fn run_check<S: Store>(
     factory: &dyn GithubApiFactory,
     id: Option<&str>,
 ) -> Result<Response, AppError> {
-    let token = crate::github::require_github_token(ctx.github_token())?;
     let project = ctx.project();
-
-    // Read fresh, every call — see the module doc's check. A link linked
-    // against a remote registration that has since changed is not evidence
-    // about today's.
-    let configured = configured_github_repos(ctx)?;
-    if configured.is_empty() {
-        return Err(AppError::Validation(
-            "this project has no GitHub repository, so there is nothing to check a linked \
-             pull request against. `story pr-check` asks GitHub whether a linked pull request \
-             merged, and the repositories it may ask about are the project's registered \
-             origins. Register one with `story project link origin <url>`; `story project \
-             show` lists what this project already holds."
-                .to_string(),
-        ));
-    }
-    let api_override = configured_github_api_override(ctx)?;
+    let repository = super::github_repository::repository(ctx)?;
+    let configured = [repository.identity().clone()];
+    super::github_repository::poll_enabled(ctx)?;
 
     let prefix = ctx.store().read(|tx| project_prefix(tx, project))?;
     let candidates: Vec<(StoryNo, PrLink)> = match id {
@@ -146,20 +105,6 @@ pub fn run_check<S: Store>(
         })
         .collect();
 
-    let matching_hosts: BTreeSet<&str> = matching
-        .iter()
-        .map(|(_, _, repo, _)| repo.host.as_str())
-        .collect();
-    if api_override.is_some() && matching_hosts.len() > 1 {
-        return Err(AppError::Validation(format!(
-            "[github].api_url cannot route matching pull requests across multiple GitHub hosts \
-             ({}); remove the override to use each host's derived API endpoint",
-            matching_hosts.into_iter().collect::<Vec<_>>().join(", ")
-        )));
-    }
-
-    // One client per distinct repository among the matching links, built
-    // lazily — see the module doc's "One client per repository" section.
     let mut clients: BTreeMap<(String, String, String), Box<dyn GithubApi>> = BTreeMap::new();
 
     let mut merged: Vec<String> = Vec::new();
@@ -172,32 +117,29 @@ pub fn run_check<S: Store>(
     // into an error — see the trailing check, and the module doc's SH-159
     // cross-reference.
     let mut errored: Vec<(String, String)> = Vec::new();
+    let mut authentication_errors = 0;
 
     for (story_no, link, configured_repo, reference) in matching {
-        let api_base = api_override
-            .clone()
-            .unwrap_or_else(|| GithubApiBase::for_host(&configured_repo.host));
         let client = clients
             .entry((
-                api_base.as_str().to_string(),
+                configured_repo.host.clone(),
                 reference.owner.clone(),
                 reference.repo.clone(),
             ))
-            .or_insert_with(|| {
-                factory.build(
-                    token.expose().to_string(),
-                    api_base,
-                    reference.owner.clone(),
-                    reference.repo.clone(),
-                )
-            });
+            .or_insert_with(|| factory.build(repository.clone()));
         let status = match client.get_pull_request(reference.number) {
             Ok(status) => status,
             Err(err) => {
+                if matches!(err, AppError::GithubAuth(_)) {
+                    authentication_errors += 1;
+                }
                 errored.push((link.url.clone(), err.to_string()));
                 continue;
             }
         };
+        if super::github_repository::repository(ctx)?.identity() != repository.identity() {
+            return Err(AppError::Validation("project origin changed while checking pull requests; no further lifecycle updates were applied".into()));
+        }
         let now = ctx.now();
 
         if status.merged {
@@ -341,5 +283,9 @@ pub fn run_check<S: Store>(
     for (url, detail) in &errored {
         message.push_str(&format!("\n  {url}: {detail}"));
     }
-    Err(AppError::GithubApi(message))
+    Err(if authentication_errors == errored.len() {
+        AppError::GithubAuth(message)
+    } else {
+        AppError::GithubApi(message)
+    })
 }

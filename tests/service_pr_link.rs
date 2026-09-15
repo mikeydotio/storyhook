@@ -29,14 +29,44 @@ fn create(fixture: &ServiceFixture, title: &str) -> String {
 /// `configured_github_repos` (`PrLinkService`'s cross-repo guard) reads
 /// since SH-408.
 fn configure_remote(fixture: &ServiceFixture, owner: &str, repo: &str) {
-    fixture.link_origin(&format!("https://github.com/{owner}/{repo}"));
+    fixture.github_checkout(&format!("https://github.com/{owner}/{repo}"));
 }
 
 fn configure_remote_on(fixture: &ServiceFixture, host: &str, owner: &str, repo: &str) {
-    fixture.link_origin(&format!("https://{host}/{owner}/{repo}"));
+    fixture.github_checkout(&format!("https://{host}/{owner}/{repo}"));
 }
 
 const URL: &str = "https://github.com/acme/widgets/pull/7";
+
+#[test]
+fn historical_registration_does_not_authorize_a_close_on_merge_link() {
+    let fixture = ServiceFixture::new();
+    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("git@github.example.com:acme/current.git");
+    let id = create(&fixture, "Origin moved");
+    assert!(
+        PrLinkService::new(&fixture.ctx())
+            .link(&id, URL, true)
+            .is_err()
+    );
+}
+
+#[test]
+fn registered_checkout_with_foreign_project_pointer_is_refused() {
+    let fixture = ServiceFixture::new();
+    let root = fixture.github_checkout("https://github.com/acme/widgets");
+    std::fs::write(
+        root.join(".storyhook.toml"),
+        "schema = 1\nuuid = 'foreign'\nprefix = 'XX'\n",
+    )
+    .unwrap();
+    let id = create(&fixture, "Foreign pointer");
+    assert!(
+        PrLinkService::new(&fixture.ctx())
+            .link(&id, URL, true)
+            .is_err()
+    );
+}
 
 #[test]
 fn link_happy_path_records_the_link() {
@@ -93,16 +123,15 @@ fn link_rejects_the_same_repo_name_on_a_different_host() {
 }
 
 #[test]
-fn link_defaults_close_on_merge_uninvolved_when_no_remote_is_configured() {
-    // No `configure_remote` call: nothing to validate a `close_on_merge: true`
-    // link against, so it is accepted as given rather than refused.
+fn link_refuses_close_on_merge_without_a_registered_checkout() {
+    // An absent authority cannot authorize a future automatic transition.
     let fixture = ServiceFixture::new();
     let id = create(&fixture, "No configured remote");
     let ctx = fixture.ctx();
 
     PrLinkService::new(&ctx)
         .link(&id, URL, true)
-        .expect("linking with no configured remote must not be refused");
+        .expect_err("close-on-merge needs a current checkout origin");
 }
 
 #[test]
@@ -152,7 +181,7 @@ fn link_allows_a_cross_repo_url_when_close_on_merge_is_false() {
 /// for ambiguity — see `storyhook::service::pr_link`'s module doc and the
 /// council verdict it cites.
 #[test]
-fn link_accepts_a_close_on_merge_url_matching_any_of_several_registered_repos() {
+fn link_accepts_the_current_origin_despite_historical_registrations() {
     let fixture = ServiceFixture::new();
     configure_remote(&fixture, "acme", "widgets");
     configure_remote(&fixture, "acme", "widgets-upstream");
@@ -168,7 +197,7 @@ fn link_accepts_a_close_on_merge_url_matching_any_of_several_registered_repos() 
 /// all of them — not just one — so the message tells the caller what would
 /// have been accepted.
 #[test]
-fn link_rejects_a_cross_repo_url_and_names_every_registered_repo() {
+fn link_rejects_a_cross_repo_url_and_names_the_current_origin() {
     let fixture = ServiceFixture::new();
     configure_remote(&fixture, "acme", "widgets");
     configure_remote(&fixture, "acme", "widgets-upstream");
@@ -215,6 +244,7 @@ fn re_linking_the_same_pr_upserts_close_on_merge() {
 #[test]
 fn unlink_removes_the_row() {
     let fixture = ServiceFixture::new();
+    configure_remote(&fixture, "acme", "widgets");
     let id = create(&fixture, "Unlink me");
     let ctx = fixture.ctx();
     let service = PrLinkService::new(&ctx);
@@ -239,6 +269,7 @@ fn unlink_removes_the_row() {
 #[test]
 fn link_and_unlink_work_without_the_github_pr_feature() {
     let fixture = ServiceFixture::new();
+    configure_remote(&fixture, "acme", "widgets");
     let id = create(&fixture, "No github-pr feature needed");
     let ctx = fixture.ctx();
     let service = PrLinkService::new(&ctx);
@@ -258,4 +289,34 @@ fn link_and_unlink_work_without_the_github_pr_feature() {
     );
 
     service.unlink(&id, URL).expect("unlinking");
+}
+
+/// A project pointer identifies the lane but cannot override checkout authority.
+#[test]
+fn a_project_lane_with_a_different_origin_cannot_authorize_links() {
+    let fixture = ServiceFixture::new();
+    let authority = fixture.github_checkout("https://github.com/acme/widgets.git");
+    let pointer = std::fs::read(authority.join(".storyhook.toml")).unwrap();
+    std::fs::write(fixture.cwd().join(".storyhook.toml"), pointer).unwrap();
+    for args in [
+        vec!["init", "--quiet"],
+        vec![
+            "config",
+            "remote.origin.url",
+            "https://github.example.com/acme/widgets.git",
+        ],
+    ] {
+        assert!(
+            storyhook::env::git_env::command(fixture.cwd())
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let id = create(&fixture, "Conflicting lane origin");
+    let error = PrLinkService::new(&fixture.ctx())
+        .link(&id, URL, true)
+        .unwrap_err();
+    assert!(error.to_string().contains("different origin"), "{error}");
 }

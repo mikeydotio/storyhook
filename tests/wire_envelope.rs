@@ -21,10 +21,10 @@ use std::path::PathBuf;
 
 use storyhook::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, ContinuationAction,
-    CrashesAction, DaemonAction, EngineAction, EpicAction, GithubAuthAction, GraphMode,
-    HistoryAction, HooksAction, Invocation, MemberInput, NewProjectRequest, NewProjectSpec,
-    PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction,
-    TokenAction, TypeAction, UnclaimComment, VerifierAction, WebAction,
+    CrashesAction, DaemonAction, EngineAction, EpicAction, GraphMode, HistoryAction, HooksAction,
+    Invocation, MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction,
+    ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction,
+    UnclaimComment, VerifierAction, WebAction,
 };
 use storyhook::daemon::gc::{Candidate, KeepReason, Kept, RuntimeGcPlan};
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
@@ -1788,15 +1788,6 @@ fn invocation_corpus() -> Vec<Invocation> {
             id: Some("SH-1".to_string()),
         },
         Invocation::PrCheck { id: None },
-        Invocation::GithubAuth {
-            action: GithubAuthAction::Login,
-        },
-        Invocation::GithubAuth {
-            action: GithubAuthAction::Status,
-        },
-        Invocation::GithubAuth {
-            action: GithubAuthAction::Logout,
-        },
         Invocation::HelpTopic {
             topic: "states".to_string(),
         },
@@ -2162,7 +2153,6 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::LinkPr { .. } => "LinkPr",
         Invocation::UnlinkPr { .. } => "UnlinkPr",
         Invocation::PrCheck { .. } => "PrCheck",
-        Invocation::GithubAuth { .. } => "GithubAuth",
         Invocation::HelpTopic { .. } => "HelpTopic",
         Invocation::HelpCompact => "HelpCompact",
         Invocation::HelpAll => "HelpAll",
@@ -2192,7 +2182,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        75,
+        74,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

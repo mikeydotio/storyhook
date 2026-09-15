@@ -49,7 +49,7 @@ fn assert_order(fixture: &ServiceFixture, expected: &[&str]) {
 #[test]
 fn equal_priority_follows_submission_order_when_creation_order_disagrees() {
     let mut fixture = ServiceFixture::new();
-    fixture.link_origin(ORIGIN);
+    fixture.github_checkout(ORIGIN);
     let older = create(&fixture, "created first", Priority::Medium, PR_ONE);
     fixture.set_clock(Clock::Fixed("2026-01-01T00:01:00Z".into()));
     let newer = create(&fixture, "submitted first", Priority::Medium, PR_TWO);
@@ -68,7 +68,7 @@ fn equal_priority_follows_submission_order_when_creation_order_disagrees() {
 #[test]
 fn resubmission_moves_an_older_story_behind_its_waiting_peer() {
     let mut fixture = ServiceFixture::new();
-    fixture.link_origin(ORIGIN);
+    fixture.github_checkout(ORIGIN);
     let older = create(&fixture, "first attempt", Priority::Medium, PR_ONE);
     move_at(&mut fixture, &older, "verifying", "2026-01-01T00:01:00Z");
     fixture.set_clock(Clock::Fixed("2026-01-01T00:02:00Z".into()));
@@ -91,7 +91,7 @@ fn resubmission_moves_an_older_story_behind_its_waiting_peer() {
 #[test]
 fn priority_precedes_queue_age() {
     let mut fixture = ServiceFixture::new();
-    fixture.link_origin(ORIGIN);
+    fixture.github_checkout(ORIGIN);
     let low = create(&fixture, "waiting low", Priority::Low, PR_ONE);
     move_at(&mut fixture, &low, "verifying", "2026-01-01T00:01:00Z");
     fixture.set_clock(Clock::Fixed("2026-01-01T00:02:00Z".into()));
@@ -103,7 +103,7 @@ fn priority_precedes_queue_age() {
 #[test]
 fn equal_submission_times_use_identity_even_when_creation_times_disagree() {
     let mut fixture = ServiceFixture::new();
-    fixture.link_origin(ORIGIN);
+    fixture.github_checkout(ORIGIN);
     let first = create(&fixture, "first identity", Priority::Medium, PR_ONE);
     fixture.set_clock(Clock::Fixed("2025-12-31T23:59:00Z".into()));
     let second = create(&fixture, "older timestamp", Priority::Medium, PR_TWO);
@@ -115,7 +115,7 @@ fn equal_submission_times_use_identity_even_when_creation_times_disagree() {
 #[test]
 fn cleanup_keeps_creation_order_when_identity_and_submission_order_disagree() {
     let mut fixture = ServiceFixture::new();
-    fixture.link_origin(ORIGIN);
+    fixture.github_checkout(ORIGIN);
     let first = create(&fixture, "first identity", Priority::Medium, PR_ONE);
     fixture.set_clock(Clock::Fixed("2025-12-31T23:59:00Z".into()));
     let older = create(&fixture, "older timestamp", Priority::Medium, PR_TWO);

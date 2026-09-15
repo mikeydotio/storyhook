@@ -375,7 +375,7 @@ impl VerificationActuator for RetryObserver<'_> {
 #[test]
 fn authenticated_retry_projects_running_without_erasing_its_failure_history() {
     let f = ServiceFixture::new();
-    f.link_origin("https://github.com/acme/widgets");
+    f.github_checkout("https://github.com/acme/widgets");
     for number in 1..=2 {
         let id = StoryService::new(&f.ctx())
             .create(&NewStoryInput {

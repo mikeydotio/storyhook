@@ -196,11 +196,34 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  recycled pid makes a daemon follow an unrelated process",
     },
     Parameter {
-        name: "STORYHOOK_GITHUB_TOKEN",
+        name: "GH_TOKEN",
         disposition: Disposition::Clear,
         scope: Scope::Anywhere,
-        reason: "a real credential, which a fixture could spend against the \
-                 real GitHub API; there is no harmless value, so it is removed",
+        reason: "fixtures must not use developer gh credentials or configuration",
+    },
+    Parameter {
+        name: "GITHUB_TOKEN",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "fixtures must not use developer gh credentials or configuration",
+    },
+    Parameter {
+        name: "GH_ENTERPRISE_TOKEN",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "fixtures must not use developer gh credentials or configuration",
+    },
+    Parameter {
+        name: "GITHUB_ENTERPRISE_TOKEN",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "fixtures must not use developer gh credentials or configuration",
+    },
+    Parameter {
+        name: "GH_CONFIG_DIR",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "fixtures must not use developer gh credentials or configuration",
     },
     Parameter {
         name: "STORYHOOK_ACTIVITY_LOG_DIR",
@@ -467,7 +490,7 @@ sees nothing wrong.
   export STORYHOOK_DAEMON_ADDR=127.0.0.1:0
   export STORYHOOK_PARENT_PID=$$
   export STORYHOOK_PARENT_START_TIME=
-  unset STORYHOOK_GITHUB_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
+  unset GH_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
   unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
   unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION STORYHOOK_ALLOW_UNINSTALLED_DAEMON
   mkdir -p "$STORYHOOK_DATA_DIR" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
@@ -563,8 +586,8 @@ mod tests {
     fn a_credential_is_removed_and_never_redirected() {
         let parameter = TEST_ENVIRONMENT
             .iter()
-            .find(|p| p.name == "STORYHOOK_GITHUB_TOKEN")
-            .expect("STORYHOOK_GITHUB_TOKEN is a parameter");
+            .find(|p| p.name == "GH_TOKEN")
+            .expect("GH_TOKEN is a parameter");
         assert_eq!(parameter.disposition, Disposition::Clear);
     }
 

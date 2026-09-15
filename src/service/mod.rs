@@ -45,6 +45,7 @@ pub mod git;
 pub mod git_links;
 #[cfg(feature = "github-pr")]
 pub mod github;
+pub(crate) mod github_repository;
 pub mod grouping;
 pub mod history;
 pub mod integrity;
@@ -162,7 +163,6 @@ pub struct Ctx<'a, S: Store> {
     cwd: PathBuf,
     env: Environment,
     stdin: Option<String>,
-    github_token: Option<crate::domain::secret::GithubToken>,
     provenance: Provenance,
     verification_activity: Option<&'a crate::daemon::verification::VerificationActivity>,
 }
@@ -190,7 +190,6 @@ impl<'a, S: Store> Ctx<'a, S> {
             cwd: cwd.into(),
             env,
             stdin: None,
-            github_token: None,
             provenance: Provenance::unrecorded(),
             verification_activity: None,
         }
@@ -224,26 +223,9 @@ impl<'a, S: Store> Ctx<'a, S> {
         self
     }
 
-    /// Supplies the caller's GitHub credential.
-    ///
-    /// Here for the same reason [`with_stdin`](Self::with_stdin) is: the
-    /// credential belongs to whoever ran the command, and the daemon's own
-    /// environment belongs to whoever started the daemon (SH-153). An
-    /// in-process caller that leaves this unset has supplied none, and a
-    /// command that needs one refuses rather than looking elsewhere.
-    #[must_use]
-    pub fn with_github_token(
-        mut self,
-        github_token: Option<crate::domain::secret::GithubToken>,
-    ) -> Self {
-        self.github_token = github_token;
-        self
-    }
-
     /// Supplies who is performing this invocation's writes (SH-246).
     ///
-    /// Here for the same reason [`with_stdin`](Self::with_stdin) and
-    /// [`with_github_token`](Self::with_github_token) are: half of it — the
+    /// Here for the same reason [`with_stdin`](Self::with_stdin) is: half of it — the
     /// declared actor — is a fact about the caller that the daemon's own
     /// environment cannot supply. An in-process caller that leaves this unset
     /// writes [`Provenance::unrecorded`], which is honest rather than merely
@@ -331,12 +313,6 @@ impl<'a, S: Store> Ctx<'a, S> {
     #[must_use]
     pub fn stdin(&self) -> Option<&str> {
         self.stdin.as_deref()
-    }
-
-    /// The caller's GitHub credential, if this invocation carried one.
-    #[must_use]
-    pub fn github_token(&self) -> Option<&crate::domain::secret::GithubToken> {
-        self.github_token.as_ref()
     }
 
     /// The current time, from this context's [`Clock`].

@@ -23,7 +23,7 @@ struct Owners {
 }
 
 fn setup(f: &ServiceFixture) -> Owners {
-    f.link_origin("https://github.com/acme/widgets");
+    f.github_checkout("https://github.com/acme/widgets");
     let ctx = f.ctx();
     let story = StoryService::new(&ctx)
         .create(&NewStoryInput {

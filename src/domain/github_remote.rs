@@ -21,10 +21,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::domain::remote::RemoteUrl;
-use crate::error::AppError;
-
-const GITHUB_HOST: &str = "github.com";
-const GHE_CLOUD_SUFFIX: &str = ".ghe.com";
 
 /// A GitHub repository, identified by host, owner, and name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -35,68 +31,6 @@ pub struct GithubRepo {
     pub owner: String,
     /// The repository name.
     pub repo: String,
-}
-
-/// A validated GitHub REST API base URL.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GithubApiBase(String);
-
-impl GithubApiBase {
-    /// Derives the documented REST endpoint for the GitHub web `host`.
-    ///
-    /// GitHub.com uses its dedicated API hostname, GHE.com inserts `api.`
-    /// before the tenant hostname, and GitHub Enterprise Server serves REST
-    /// below `/api/v3` on the appliance host.
-    #[must_use]
-    pub fn for_host(host: &str) -> Self {
-        let value = if host.eq_ignore_ascii_case(GITHUB_HOST) {
-            "https://api.github.com".to_string()
-        } else if host.ends_with(GHE_CLOUD_SUFFIX) && !host.contains(':') {
-            format!("https://api.{host}")
-        } else {
-            format!("https://{host}/api/v3")
-        };
-        Self(value)
-    }
-
-    /// Validates and normalizes a project-authored `[github].api_url`.
-    ///
-    /// HTTP is accepted only through this explicit override because GitHub
-    /// Enterprise Server documents both schemes and an internal appliance may
-    /// terminate TLS elsewhere. Credentials, queries, and fragments are
-    /// refused so a committed endpoint cannot smuggle request metadata.
-    pub fn override_from(raw: &str) -> Result<Self, AppError> {
-        let invalid = |reason: &str| {
-            AppError::Validation(format!(
-                "invalid [github].api_url `{}`: {reason}",
-                raw.trim()
-            ))
-        };
-        let trimmed = raw.trim();
-        if trimmed.contains('#') {
-            return Err(invalid("fragments are not allowed"));
-        }
-        let uri: ureq::http::Uri = trimmed
-            .parse()
-            .map_err(|_| invalid("expected an absolute http or https URL"))?;
-        if !matches!(uri.scheme_str(), Some("http" | "https")) {
-            return Err(invalid("expected an absolute http or https URL"));
-        }
-        let authority = uri.authority().ok_or_else(|| invalid("expected a host"))?;
-        if authority.as_str().contains('@') {
-            return Err(invalid("credentials are not allowed"));
-        }
-        if uri.query().is_some() {
-            return Err(invalid("query strings are not allowed"));
-        }
-        Ok(Self(trimmed.trim_end_matches('/').to_string()))
-    }
-
-    /// The normalized base URL.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 /// Parse a GitHub-compatible remote URL into host/owner/repo, or refuse it.
@@ -299,44 +233,5 @@ mod tests {
         // project. It must not be read as a host named `local`.
         assert!(parse_github_url("/srv/git/widgets.git").is_none());
         assert!(parse_github_url("file:///srv/git/widgets.git").is_none());
-    }
-
-    #[test]
-    fn api_base_uses_each_github_products_documented_shape() {
-        assert_eq!(
-            GithubApiBase::for_host("github.com").as_str(),
-            "https://api.github.com"
-        );
-        assert_eq!(
-            GithubApiBase::for_host("octocorp.ghe.com").as_str(),
-            "https://api.octocorp.ghe.com"
-        );
-        assert_eq!(
-            GithubApiBase::for_host("github.example.com").as_str(),
-            "https://github.example.com/api/v3"
-        );
-        assert_eq!(
-            GithubApiBase::for_host("github.example.com:8443").as_str(),
-            "https://github.example.com:8443/api/v3"
-        );
-    }
-
-    #[test]
-    fn api_base_override_is_absolute_http_without_credentials_or_query() {
-        assert_eq!(
-            GithubApiBase::override_from("http://github.internal.test/custom/api/")
-                .unwrap()
-                .as_str(),
-            "http://github.internal.test/custom/api"
-        );
-        for invalid in [
-            "github.internal.test/api/v3",
-            "ftp://github.internal.test/api/v3",
-            "https://user@github.internal.test/api/v3",
-            "https://github.internal.test/api/v3?token=secret",
-            "https://github.internal.test/api/v3#fragment",
-        ] {
-            assert!(GithubApiBase::override_from(invalid).is_err(), "{invalid}");
-        }
     }
 }
