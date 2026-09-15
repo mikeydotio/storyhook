@@ -219,6 +219,7 @@ fn starting_publishes_a_portfile_the_daemon_actually_answers_on() {
 
     assert!(info.port > 0, "the portfile must name the bound port");
     assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(info.build_number, Some(storyhook::version::build_number()));
     assert!(is_the_binary_under_test(&info));
     assert_eq!(hello_status(&info, &info.token), 200);
 }
@@ -1542,6 +1543,7 @@ fn a_portfile_without_a_daemon_does_not_stop_one_starting() {
         pid: 999_999,
         port: 1,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        build_number: None,
         protocol: lifecycle::PROTOCOL,
         exe: std::env::current_exe().unwrap(),
         exe_mtime: 0,
@@ -1766,6 +1768,7 @@ fn wedge_the_daemon(env: &TestEnv) -> std::fs::File {
         pid: std::process::id(),
         port: dead_port,
         version: "0.0.0-not-this-build".to_string(),
+        build_number: None,
         protocol: 1,
         exe: std::path::PathBuf::from("/nowhere/story"),
         exe_mtime: 0,

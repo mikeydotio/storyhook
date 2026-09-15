@@ -18,6 +18,13 @@ branch_policy	:(glob)**/*
 browser_gate	:(glob)**/*
 build_identity	:(glob)**/*
 build_identity	tests/build_identity/index.rs
+build_number	:(glob)scripts/*build-number*
+build_number	BUILD
+build_number	Makefile
+build_number	build.rs
+build_number	src/api/wire.rs
+build_number	src/daemon/lifecycle.rs
+build_number	src/version.rs
 build_slots	.cargo/config.toml
 build_slots	scripts/machine-lock.sh
 build_slots	scripts/rustc-slot.py

@@ -3268,7 +3268,7 @@ Flags:
 Examples:
   story update            # Update to the latest release if newer
   story update --check    # Just report whether an update is available
-  story --version         # Print the currently installed version
+  story --version         # Print the installed version and build number
 
 Notes:
   - Installs into the directory of the current binary; if that directory is

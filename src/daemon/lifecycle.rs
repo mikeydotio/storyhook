@@ -584,6 +584,9 @@ pub struct DaemonInfo {
     pub port: u16,
     /// The `storyhook` version it was built from.
     pub version: String,
+    /// The published build number, absent in legacy identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_number: Option<u64>,
     /// The RPC protocol it speaks.
     pub protocol: u32,
     /// The executable it is running.
@@ -641,6 +644,11 @@ pub struct DaemonInfo {
 }
 
 impl DaemonInfo {
+    /// The published version annotated only with this daemon's build number.
+    pub fn display_version(&self) -> String {
+        crate::version::format(&self.version, self.build_number)
+    }
+
     /// Whether this daemon holds `store`.
     ///
     /// The last line of defence rather than the first: a client only ever
@@ -660,7 +668,12 @@ impl DaemonInfo {
         let Ok((exe, mtime)) = current_binary() else {
             return false;
         };
-        self.version == env!("CARGO_PKG_VERSION") && self.exe == exe && self.exe_mtime == mtime
+        self.version == env!("CARGO_PKG_VERSION")
+            && self
+                .build_number
+                .is_none_or(|number| number == crate::version::build_number())
+            && self.exe == exe
+            && self.exe_mtime == mtime
     }
 
     /// The loopback address this daemon answers on.
@@ -925,6 +938,7 @@ pub fn info_for(
         pid: std::process::id(),
         port: bound.port(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        build_number: Some(crate::version::build_number()),
         protocol: PROTOCOL,
         exe,
         exe_mtime,
@@ -1013,7 +1027,7 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
     write_info(env, &info)?;
     eprintln!(
         "storyhook daemon {} on http://127.0.0.1:{} (pid {}) holding {}",
-        info.version,
+        info.display_version(),
         info.port,
         info.pid,
         info.store_path.display()
@@ -2225,11 +2239,18 @@ pub fn hello(info: &DaemonInfo) -> Result<(), AppError> {
         .into_body()
         .read_json()
         .map_err(|e| AppError::Storage(format!("the daemon's identity was unreadable: {e}")))?;
-    if body.version != info.version || body.pid != info.pid {
+    if body.version != info.version
+        || body.pid != info.pid
+        || matches!((body.build_number, info.build_number), (Some(a), Some(b)) if a != b)
+    {
         return Err(AppError::Storage(format!(
             "the service on port {} is not this daemon (it reports storyhook {} pid {}, \
              the portfile says {} pid {})",
-            info.port, body.version, body.pid, info.version, info.pid
+            info.port,
+            crate::version::format(&body.version, body.build_number),
+            body.pid,
+            info.display_version(),
+            info.pid
         )));
     }
     Ok(())
@@ -2277,6 +2298,9 @@ struct ArmedHandoff {
 pub struct Hello {
     /// The storyhook version the daemon was built from.
     pub version: String,
+    /// The published build number, absent in legacy identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_number: Option<u64>,
     /// The protocol it speaks.
     pub protocol: u32,
     /// Its process id.
@@ -3327,6 +3351,7 @@ mod tests {
             pid: 1,
             port: 1,
             version: "0.0.0-not-this-one".to_string(),
+            build_number: None,
             protocol: PROTOCOL,
             exe: PathBuf::from("/nowhere/story"),
             exe_mtime: 0,
@@ -3349,6 +3374,7 @@ mod tests {
             pid: 1,
             port: 1,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            build_number: Some(crate::version::build_number()),
             protocol: PROTOCOL,
             exe,
             exe_mtime: mtime + 1,

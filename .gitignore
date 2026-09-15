@@ -47,3 +47,7 @@
 
 # Session notes remain local; stories hold durable work context.
 /HANDOFF.md
+
+# Build allocation lock and interrupted atomic-write residue.
+/.build-number.lock
+/.BUILD-*

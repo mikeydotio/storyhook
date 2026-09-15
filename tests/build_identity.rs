@@ -372,7 +372,9 @@ impl ManifestFixture {
     /// No `.git` at all — a release tarball or a packaged `cargo install`
     /// source. The expected, silent case.
     fn bare() -> Self {
-        Self { dir: scratch_dir() }
+        let fixture = Self { dir: scratch_dir() };
+        std::fs::write(fixture.path().join("BUILD"), "0\n").unwrap();
+        fixture
     }
 
     fn path(&self) -> &Path {
@@ -869,7 +871,7 @@ fn version_output() -> String {
 #[test]
 fn version_output_matches_the_documented_shape() {
     let line = version_output();
-    let bare = format!("story {}", env!("CARGO_PKG_VERSION"));
+    let bare = format!("story {}", storyhook::version::display());
     assert!(
         line == bare || line.starts_with(&format!("{bare} (build ")),
         "expected `{bare}` or `{bare} (build <12 hex chars>)`, got {line:?}"
@@ -910,5 +912,86 @@ fn this_checkouts_own_binary_carries_a_build_id() {
     assert!(
         line.contains(" (build "),
         "this checkout has a .git — story --version must carry a build id: {line:?}"
+    );
+}
+
+#[test]
+fn the_cli_embeds_the_build_counter() {
+    let counter = std::fs::read_to_string(checkout().join("BUILD")).unwrap();
+    assert!(version_output().contains(&format!(" ({})", counter.trim())));
+}
+
+#[test]
+fn build_script_embeds_counter_without_incrementing_it() {
+    let fixture = ManifestFixture::bare();
+    std::fs::write(fixture.path().join("BUILD"), "272\n").unwrap();
+    for _ in 0..2 {
+        let result = Command::new(compiled_build_rs())
+            .env("CARGO_MANIFEST_DIR", fixture.path())
+            .env_remove("OUT_DIR")
+            .output()
+            .unwrap();
+        assert_ok(&result, "embedding counter");
+        assert!(stdout(&result).contains("cargo::rustc-env=STORYHOOK_BUILD_NUMBER=272"));
+        assert_eq!(
+            std::fs::read_to_string(fixture.path().join("BUILD")).unwrap(),
+            "272\n"
+        );
+    }
+}
+
+#[test]
+fn build_script_refuses_invalid_counter() {
+    let fixture = ManifestFixture::bare();
+    for invalid in ["", "-1\n", "01\n", "1", "1\n2\n", "18446744073709551616\n"] {
+        std::fs::write(fixture.path().join("BUILD"), invalid).unwrap();
+        let result = Command::new(compiled_build_rs())
+            .env("CARGO_MANIFEST_DIR", fixture.path())
+            .env_remove("OUT_DIR")
+            .output()
+            .unwrap();
+        assert!(!result.status.success(), "accepted {invalid:?}");
+        assert!(String::from_utf8_lossy(&result.stderr).contains("BUILD"));
+    }
+}
+
+#[test]
+fn unchanged_source_rebuilds_with_a_new_reserved_number() {
+    let fixture = ManifestFixture::bare();
+    fixture.with_marketplace_and_out_dir(&fixture.path().join("setup-output"));
+    std::fs::copy(checkout().join("build.rs"), fixture.path().join("build.rs")).unwrap();
+    std::fs::write(
+        fixture.path().join("Cargo.toml"),
+        "[package]\nname='number-probe'\nversion='0.0.0'\nedition='2024'\n",
+    )
+    .unwrap();
+    std::fs::create_dir(fixture.path().join("src")).unwrap();
+    std::fs::write(
+        fixture.path().join("src/main.rs"),
+        "fn main() { println!(\"{}\", env!(\"STORYHOOK_BUILD_NUMBER\")); }\n",
+    )
+    .unwrap();
+    for expected in ["1", "2"] {
+        let output = Command::new("python3")
+            .arg(checkout().join("scripts/build-number.py"))
+            .arg("--root")
+            .arg(fixture.path())
+            .args(["--", "cargo", "build", "--offline"])
+            .env_remove("CARGO_TARGET_DIR")
+            .output()
+            .unwrap();
+        assert_ok(&output, "numbered cargo build");
+        let binary = fixture.path().join("target/debug/number-probe");
+        let result = Command::new(binary).output().unwrap();
+        assert_ok(&result, "numbered executable");
+        assert_eq!(stdout(&result), expected);
+    }
+    assert_ok(
+        &run(fixture.path(), "cargo", &["build", "--offline"]),
+        "ordinary cargo build",
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("BUILD")).unwrap(),
+        "2\n"
     );
 }

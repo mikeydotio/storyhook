@@ -169,6 +169,7 @@ source "$STORY_PLUGIN_ROOT/lib/codex-bootstrap.sh"
 source "$STORY_PLUGIN_ROOT/lib/resources.sh"
 source "$STORY_PLUGIN_ROOT/lib/workspace.sh"
 source "$STORY_PLUGIN_ROOT/lib/submission-git.sh"
+source "$STORY_PLUGIN_ROOT/lib/daemon-status.sh"
 AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
@@ -1430,15 +1431,11 @@ cmd_dispatch_epic() {
   command -v curl >/dev/null 2>&1 \
     || fail "starting the Full Auto engine requires \`curl\`, but it is not available on PATH."
 
-  local daemon_status daemon_url daemon_port token payload response http_status body detail run_id
+  local daemon_status daemon_port token payload response http_status body detail run_id
   daemon_status=$(story_cli daemon status 2>/dev/null) \
     || fail "could not ask the storyhook daemon where it is listening."
-  daemon_url=$(printf '%s\n' "$daemon_status" | awk 'NR == 1 && $1 == "storyhook" && $2 == "daemon" && $4 == "running" && $5 == "at" { print $6 }')
-  daemon_url="${daemon_url%/}"
-  daemon_port="${daemon_url##*:}"
-  case "$daemon_port" in
-    ''|*[!0-9]*) fail "storyhook daemon status did not report a usable HTTP port: ${daemon_status%%$'\n'*}" ;;
-  esac
+  daemon_port=$(printf '%s\n' "$daemon_status" | story_daemon_http_port) \
+    || fail "storyhook daemon status did not report a usable HTTP port: ${daemon_status%%$'\n'*}"
 
   token=$(story_cli daemon token 2>/dev/null) \
     || fail "could not read the storyhook daemon token needed to start the Full Auto engine."
