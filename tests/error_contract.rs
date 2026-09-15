@@ -284,20 +284,48 @@ fn cases() -> Vec<Case> {
     cases.push(Case {
         variant: "GithubAuth",
         exit_code: 6,
-        message: "STORYHOOK_GITHUB_TOKEN environment variable is not set",
-        provoke: |env, json| {
-            let project = env.project().build();
-            // `pr_check::run_check` reads the credential before it reads
-            // anything else — no registered origin, no linked pull
-            // request, needs to exist first. Reached before any socket
-            // is opened, so this is offline.
-            //
-            // No `env_remove` here: `TestEnv` clears
-            // `STORYHOOK_GITHUB_TOKEN` from every fixture command it builds
-            // (`CLEARED_VARS`). This row used to carry its own removal,
-            // which was one test compensating locally for a harness-wide
-            // gap — on a developer machine with a real token exported,
-            // every *other* fixture inherited it (SH-153).
+        message: "Check authentication with gh auth status --hostname github.pie.apple.com",
+        provoke: |_, json| {
+            use std::os::unix::fs::PermissionsExt;
+            let env = TestEnv::isolated();
+            let tools = scratch_dir();
+            std::fs::write(
+                tools.path().join("gh"),
+                "#!/bin/sh\necho 'authentication required' >&2\nexit 4\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(
+                tools.path().join("gh"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            env.story(tools.path())
+                .env(
+                    "PATH",
+                    format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", tools.path().display()),
+                )
+                .args(["daemon", "start"])
+                .assert()
+                .success();
+            let project = env.project().git().build();
+            storyhook_test_support::git(
+                &env,
+                project.path(),
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://github.pie.apple.com/acme/widgets.git",
+                ],
+            );
+            project.run(&["new", "Check a pull request"]).success();
+            project
+                .run(&[
+                    "link-pr",
+                    "SH-1",
+                    "https://github.pie.apple.com/acme/widgets/pull/1",
+                ])
+                .success();
             finish(env.story(project.path()), &["pr-check"], json)
         },
     });

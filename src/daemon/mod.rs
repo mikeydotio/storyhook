@@ -21,8 +21,8 @@
 //!   that no longer exists, and keeps everything it cannot prove throwaway
 //!   (SH-638).
 //! * [`github_poll`] — the unattended background poll for merged pull
-//!   requests (SH-212), spending the credential `story github-auth login`
-//!   stored in the OS keychain. `github-pr`-gated: absent entirely from a
+//!   requests through gh for projects with `[github].poll = true`.
+//!   `github-pr`-gated: absent entirely from a
 //!   build without it.
 //! * [`install_guard`] — what `story daemon install` refuses to give a
 //!   permanent seat on this machine (SH-411).

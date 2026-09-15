@@ -174,7 +174,7 @@ fn pending_landing_recovery_respects_project_and_stop_permission() {
 }
 
 fn submitted(f: &ServiceFixture) -> String {
-    f.link_origin("https://github.com/acme/widgets");
+    f.github_checkout("https://github.com/acme/widgets");
     let ctx = f.ctx();
     let id = StoryService::new(&ctx)
         .create(&NewStoryInput {

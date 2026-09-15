@@ -1243,38 +1243,28 @@ Related:
         m.insert("sync-git", m["commit-sync"]);
 
         m.insert(
-            "github-auth",
-            r#"story github-auth login|status|logout
+            "github",
+            r#"story github resolve|exec|git --checkout PATH [-- arguments]
 
-Manage the durable GitHub credential the daemon's background poll uses
-to check linked pull requests unattended (SH-212). Separate from the
-STORYHOOK_GITHUB_TOKEN environment variable `story pr-check` reads per
-invocation: this one is stored once, in your OS keychain (macOS
-Keychain, or the Secret Service on Linux), and spent by the daemon on
-a five-minute timer with nobody typing a command.
+Resolve the current origin of an explicit checkout. Run gh and Git commands
+against that repository with an explicit host and noninteractive authentication.
+These helpers run locally and do not open the StoryHook store.
 
-login    Prompts for a GitHub Personal Access Token (always
-         interactive — there is no non-interactive form) and stores it.
-status   Reports whether a credential is stored, without printing it.
-logout   Deletes the stored credential. The daemon stops using it on
-         its next poll tick; no restart needed.
+Use gh auth login --hostname HOST to configure gh yourself. StoryHook never
+prompts for a token or starts a login. Manual story pr-check uses gh.
+To enable background PR checks, add this to the registered checkout pointer:
 
-When to use:
-  Once, to let close-on-merge links (`story link-pr`) resolve on their
-  own instead of requiring a human or a scheduler to run
-  `story pr-check`. Everyone else can keep running `story pr-check` by
-  hand or from cron/CI, which needs no stored credential at all.
+  [github]
+  poll = true
 
-Examples:
-  story github-auth login     # prompts for a token, stores it
-  story github-auth status    # "a GitHub credential is stored..."
-  story github-auth logout    # removes it
+Polling defaults to false. Credentials do not enable it. Set poll = false
+to stop background checks; the next poll reads the setting without a restart.
 
-Requires the github-pr feature, like `story pr-check` itself.
-
-Related:
-  story pr-check      — Check linked pull requests by hand
-  story link-pr        — Link a pull request to a story
+Migration: remove [github].api_url and use the intended HTTPS origin.
+The github-auth command and STORYHOOK_GITHUB_TOKEN are retired. Old
+storyhook-github keychain entries are unused and left untouched. Remove them
+with the OS credential manager if desired, and revoke the old PAT at its host.
+Do not remove gh credentials.
 "#,
         );
 

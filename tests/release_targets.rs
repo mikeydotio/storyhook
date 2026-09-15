@@ -31,92 +31,22 @@ fn read(relative: &str) -> String {
 // The manifest: what the Linux target resolves to
 // ---------------------------------------------------------------------------
 
-/// Every dependency declared under a `cfg(...)` that names Linux and whose
-/// crate name mentions `secret-service`, paired with the feature list it
-/// selects.
-///
-/// Found by scanning rather than by naming one key, so that swapping the
-/// backing crate — or reformatting the `cfg` expression — keeps the invariant
-/// under test instead of quietly retiring it.
-fn linux_secret_service_dependencies() -> Vec<(String, Vec<String>)> {
-    let manifest: toml::Value = read("Cargo.toml")
-        .parse()
-        .expect("Cargo.toml must be valid TOML");
-
-    let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) else {
-        panic!("Cargo.toml must declare per-target dependency tables");
-    };
-
-    let mut found = Vec::new();
-    for (cfg, table) in targets {
-        if !cfg.contains("linux") {
-            continue;
-        }
-        let Some(dependencies) = table.get("dependencies").and_then(toml::Value::as_table) else {
-            continue;
-        };
-        for (name, spec) in dependencies {
-            if !name.contains("secret-service") {
-                continue;
+/// GitHub authentication belongs to gh on every supported platform.
+#[test]
+fn standalone_github_keychain_dependencies_are_retired() {
+    let manifest: toml::Value = read("Cargo.toml").parse().unwrap();
+    fn check(value: &toml::Value) {
+        if let Some(table) = value.as_table() {
+            for (key, value) in table {
+                assert!(
+                    !key.contains("keyring") && !key.contains("secret-service"),
+                    "obsolete credential dependency: {key}"
+                );
+                check(value);
             }
-            let features = spec
-                .get("features")
-                .and_then(toml::Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(|value| value.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            found.push((name.clone(), features));
         }
     }
-    found
-}
-
-/// `secret-service` 5.x compiles only if its consumer picks a runtime: with no
-/// `rt-*` feature selected it is a bare `compile_error!` in `session.rs`, which
-/// is what took every Linux release build down. The feature has to be named
-/// here because nothing downstream of us will pick one by default.
-#[test]
-fn the_linux_keyring_dependency_picks_a_secret_service_runtime() {
-    let dependencies = linux_secret_service_dependencies();
-    assert!(
-        !dependencies.is_empty(),
-        "no Linux secret-service dependency found in Cargo.toml — if the \
-         backing crate was replaced, this test needs to learn the new name; \
-         if it was removed, so should this test be"
-    );
-
-    for (name, features) in dependencies {
-        assert!(
-            features.iter().any(|feature| feature.starts_with("rt-")),
-            "`{name}` selects no `rt-*` feature, so `secret-service` picks no \
-             runtime and refuses to compile: every Linux release artifact \
-             fails to build. Enable one of its forwarding features (see \
-             SH-259)."
-        );
-    }
-}
-
-/// The runtime has to be a pure-Rust one. `crypto-openssl` would put
-/// `openssl-sys` on the Linux path, and one Linux artifact is cross-compiled
-/// in Lima — cross-compiling a system OpenSSL is a second, worse version of
-/// the problem this test exists to prevent. The same reasoning already chose
-/// `zbus` over the `libdbus`-backed alternative.
-#[test]
-fn the_linux_secret_service_runtime_needs_no_system_library() {
-    for (name, features) in linux_secret_service_dependencies() {
-        for feature in features.iter().filter(|f| f.starts_with("rt-")) {
-            assert!(
-                feature.ends_with("-crypto-rust"),
-                "`{name}` selects `{feature}`, which links a system crypto \
-                 library; the cross-compiled Linux artifact cannot count on \
-                 one. Pick the `-crypto-rust` variant."
-            );
-        }
-    }
+    check(&manifest);
 }
 
 // ---------------------------------------------------------------------------

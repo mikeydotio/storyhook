@@ -122,7 +122,7 @@ fn late_manual_stop_keeps_the_completed_verdict_and_halt() {
     use storyhook::daemon::verification::{CompletedVerification, VerificationCleanupFailure};
     for passed in [false, true] {
         let fixture = ServiceFixture::new();
-        fixture.link_origin("https://github.com/acme/widgets");
+        fixture.github_checkout("https://github.com/acme/widgets");
         let id = submitted(&fixture, "completed before stop", Priority::High, PR_ONE);
         let activity = VerificationActivity::default();
         let verdict = if passed {

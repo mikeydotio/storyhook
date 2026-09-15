@@ -235,7 +235,6 @@ fn invoke<S: Store>(
                     .no_hooks(request.no_hooks)
                     .stdin(request.stdin.clone())
                     .project(request.project.clone())
-                    .github_token(request.github_token.clone())
                     .actor(request.actor.clone()),
             )
     }))
@@ -397,9 +396,6 @@ pub(crate) fn token_ok(headers: &[Header], expected: &str) -> bool {
 
 /// Byte equality that takes the same time whatever the inputs are.
 ///
-/// `pub(crate)` for one other caller — `GithubToken`'s `PartialEq`
-/// (`domain::secret`), which compares a credential and should not grow a second
-/// copy of this loop to do it.
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;

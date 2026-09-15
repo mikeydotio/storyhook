@@ -119,7 +119,7 @@ impl VerificationActuator for BlockingActuator {
 #[test]
 fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    let checkout = fixture.github_checkout("https://github.com/acme/widgets");
     let low = submitted(&fixture, "already under test", Priority::Low, LOW_PR);
     let low_generation = VerificationQueue::new(fixture.store())
         .next()
@@ -224,13 +224,16 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
         observed.served_deadline_secs,
         VERIFICATION_IDLE_TIMEOUT.as_secs()
     );
-    assert_eq!(observed.cwd, std::path::PathBuf::from("/checkouts/fixture"));
+    assert_eq!(
+        observed.cwd,
+        std::path::PathBuf::from(checkout.to_str().unwrap())
+    );
 }
 
 #[test]
 fn resubmission_transfers_the_single_in_flight_reservation_between_generations() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let story_id = submitted(&fixture, "resubmitted under test", Priority::High, LOW_PR);
     let original = VerificationQueue::new(fixture.store())
         .next()
@@ -314,7 +317,7 @@ fn resubmission_transfers_the_single_in_flight_reservation_between_generations()
 #[test]
 fn reconciliation_wait_ignores_other_work_and_wakes_for_its_reserved_story() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let held = submitted(&fixture, "reserved", Priority::Low, LOW_PR);
     let reserved = VerificationQueue::new(fixture.store())
         .next()
@@ -367,7 +370,7 @@ fn reconciliation_wait_ignores_other_work_and_wakes_for_its_reserved_story() {
 #[test]
 fn reconciliation_wait_stops_without_a_resubmission() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let held = submitted(&fixture, "reserved", Priority::High, LOW_PR);
     let reserved = VerificationQueue::new(fixture.store())
         .next()

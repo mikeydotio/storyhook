@@ -377,7 +377,7 @@ impl VerificationActuator for Gate {
 }
 
 fn linked_candidate(fixture: &ServiceFixture) -> VerificationCandidate {
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let candidate = candidate(fixture, fixture.project());
     PrLinkService::new(&fixture.ctx())
         .link(
@@ -704,7 +704,7 @@ fn acknowledgement_wakes_worker_and_names_the_attempt_without_another_event() {
     use storyhook::service::verification_control::VerificationAcknowledgement;
     let fixture = ServiceFixture::new();
     let failure = halted(&fixture);
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     PrLinkService::new(&fixture.ctx())
         .link("SH-1", "https://github.com/acme/widgets/pull/1", true)
         .unwrap();

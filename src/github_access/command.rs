@@ -157,7 +157,7 @@ impl Repository {
             }
             _ => {
                 return Err(refuse(
-                    "only repository API, PR, issue, release and repo view commands are supported",
+                    "only repository API, PR, release and repo view commands are supported",
                 ));
             }
         }

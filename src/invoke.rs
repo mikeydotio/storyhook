@@ -89,25 +89,11 @@ pub struct InvokeRequest {
     /// [`ProjectSelector`](crate::api::wire::ProjectSelector).
     #[serde(default)]
     pub project: Option<crate::api::wire::ProjectSelector>,
-    /// The caller's GitHub credential, when the command spends one.
-    ///
-    /// Read by the client from its own environment and carried here for the
-    /// same reason [`stdin`](Self::stdin) is: the daemon's environment belongs
-    /// to whichever process happened to start it, not to whoever typed the
-    /// command. Before SH-153 the daemon read `$STORYHOOK_GITHUB_TOKEN`
-    /// directly, so a caller who exported one was told it was unset while a
-    /// caller who had not exported one silently spent the daemon's.
-    ///
-    /// `None` means "this caller supplied none", and it is never a licence to
-    /// look elsewhere: the refusal is raised where the work runs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub github_token: Option<crate::domain::secret::GithubToken>,
     /// Who the caller says it is (SH-246, SH-527).
     ///
     /// A CLI client reads this from its own `$STORYHOOK_ACTOR`; an interactive
     /// client can declare its surface directly. It is carried here for the
-    /// same reason [`stdin`](Self::stdin) and
-    /// [`github_token`](Self::github_token) are: the daemon's environment
+    /// same reason [`stdin`](Self::stdin) is: the daemon's environment
     /// belongs to whichever process happened to start it and cannot supply a
     /// caller-specific fact.
     ///
@@ -131,19 +117,8 @@ impl InvokeRequest {
             no_hooks: false,
             stdin: None,
             project: None,
-            github_token: None,
             actor: None,
         }
-    }
-
-    /// Supplies the caller's GitHub credential.
-    #[must_use]
-    pub fn github_token(
-        mut self,
-        github_token: Option<crate::domain::secret::GithubToken>,
-    ) -> Self {
-        self.github_token = github_token;
-        self
     }
 
     /// Supplies who the caller says it is (SH-246).
@@ -1038,7 +1013,6 @@ fn dispatch_inner<S: Store>(
         | Invocation::HelpTopic { .. }
         | Invocation::HelpCompact
         | Invocation::HelpAll
-        | Invocation::GithubAuth { .. }
         | Invocation::Version => dispatch_unscoped_with_stdin(
             ctx.store(),
             ctx.env(),
@@ -2547,11 +2521,6 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
             | Invocation::HelpCompact
             | Invocation::HelpAll
             | Invocation::Version
-            // The OS keychain, not project data — see `GithubAuthAction`'s
-            // own doc. `main.rs` intercepts it even earlier than this, in its
-            // own dedicated block, because `Login`'s prompt needs a terminal
-            // this predicate has no way to ask about.
-            | Invocation::GithubAuth { .. }
     )
 }
 
@@ -2630,18 +2599,6 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
             action: StoreAction::New { .. },
         } => Err(AppError::Storage(
             "`story store new` is handled before the store is opened".to_string(),
-        )),
-        // `main.rs` answers every `GithubAuth` action in its own dedicated
-        // block, before this function or even `Environment::from_process`
-        // runs — `Login`'s masked prompt needs a terminal, and neither this
-        // function nor its caller has one. Reaching here means some other
-        // caller (a hand-built request, a future REST route) went round that
-        // block; the honest answer is that this command has no meaning
-        // outside the CLI client that owns the terminal.
-        Invocation::GithubAuth { .. } => Err(AppError::Usage(
-            "`story github-auth` only runs in the CLI client, before a store is opened; it \
-             cannot be dispatched to a daemon or over the wire"
-                .to_string(),
         )),
         other => Err(AppError::Storage(format!(
             "internal: `{}` needs a store and must not be dispatched without one",
@@ -2933,108 +2890,6 @@ pub fn reads_stdin(invocation: &Invocation) -> bool {
     }
 }
 
-/// Whether running `invocation` would spend the caller's GitHub credential.
-///
-/// The client asks before it sends, exactly as it does for
-/// [`reads_stdin`] — and for the same reason, since the daemon has no
-/// legitimate credential of its own to fall back on.
-///
-/// # Why this one is exhaustive where `reads_stdin` is not
-///
-/// A wildcard here would mean that a *later* verb needing a token silently gets
-/// `None` and fails with an auth error nobody can explain — which is SH-153
-/// again, arriving by the same route. Listing every variant makes adding one a
-/// compile error at this function, where the question "does this spend a
-/// credential?" gets asked once and answered deliberately. The cost is a long
-/// match; `invocation_name` below pays the same cost for a weaker reason.
-#[must_use]
-pub fn needs_github_token(invocation: &Invocation) -> bool {
-    match invocation {
-        Invocation::PrCheck { .. } => true,
-        // `LinkPr`/`UnlinkPr` never call GitHub — a PR URL is parsed, not
-        // fetched — so they spend no credential, unlike `PrCheck` above.
-        Invocation::LinkPr { .. } | Invocation::UnlinkPr { .. } => false,
-        // Everything else, listed rather than defaulted. See above.
-        Invocation::Help
-        | Invocation::Project { .. }
-        | Invocation::New { .. }
-        | Invocation::MemberAdd { .. }
-        | Invocation::State { .. }
-        | Invocation::List { .. }
-        | Invocation::Search { .. }
-        | Invocation::Next { .. }
-        | Invocation::Claim { .. }
-        | Invocation::Unclaim { .. }
-        | Invocation::Reset { .. }
-        | Invocation::SupersedeBlockDeliveries { .. }
-        | Invocation::Engine { .. }
-        | Invocation::Verifier { .. }
-        | Invocation::Cleanup { .. }
-        | Invocation::Resources { .. }
-        | Invocation::Summary
-        | Invocation::Report { .. }
-        | Invocation::Doctor { .. }
-        | Invocation::DoctorInstall
-        | Invocation::LaneBudget
-        | Invocation::DoctorAbandoned { .. }
-        | Invocation::DoctorCrashes { .. }
-        | Invocation::Show { .. }
-        | Invocation::Log { .. }
-        | Invocation::Comment { .. }
-        | Invocation::Assign { .. }
-        | Invocation::SetState { .. }
-        | Invocation::SetAwaiting { .. }
-        | Invocation::ClearAwaiting { .. }
-        | Invocation::SetPriority { .. }
-        | Invocation::SetLabels { .. }
-        | Invocation::Reopen { .. }
-        | Invocation::Hide { .. }
-        | Invocation::Unhide { .. }
-        | Invocation::HideState { .. }
-        | Invocation::Delete { .. }
-        | Invocation::BulkUpdate { .. }
-        | Invocation::Import { .. }
-        | Invocation::Decompose { .. }
-        | Invocation::Export
-        | Invocation::ImportProject { .. }
-        | Invocation::Migrate { .. }
-        | Invocation::Continuation { .. }
-        | Invocation::SessionEligibility { .. }
-        | Invocation::Context { .. }
-        | Invocation::Handoff { .. }
-        | Invocation::Phase { .. }
-        | Invocation::Type { .. }
-        | Invocation::Epic { .. }
-        | Invocation::Graph { .. }
-        | Invocation::SetFields { .. }
-        | Invocation::Relate { .. }
-        | Invocation::Hooks { .. }
-        | Invocation::Scaffold { .. }
-        | Invocation::CommitSync { .. }
-        | Invocation::HelpTopic { .. }
-        | Invocation::HelpCompact
-        | Invocation::HelpAll
-        | Invocation::Plugin { .. }
-        | Invocation::Web { .. }
-        | Invocation::Daemon { .. }
-        | Invocation::Token { .. }
-        | Invocation::Store { .. }
-        | Invocation::SessionStart
-        | Invocation::Update { .. }
-        | Invocation::Version
-        | Invocation::ProjectSnapshot
-        | Invocation::History { .. }
-        | Invocation::Attachment { .. }
-        | Invocation::Publish { .. } => false,
-        // `Login` does spend a credential, but never through this envelope —
-        // it is handled entirely client-side in `main.rs`, which prompts for
-        // the PAT itself and writes it straight to the keychain. `false` here
-        // is "this invocation never rides `InvokeRequest::github_token`", not
-        // "this command needs no credential at all".
-        Invocation::GithubAuth { .. } => false,
-    }
-}
-
 /// The spec text `story decompose` was pointed at.
 ///
 /// One helper for both dispatchers, because a dry run is answered without a
@@ -3223,7 +3078,6 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::LinkPr { .. } => "link-pr",
         Invocation::UnlinkPr { .. } => "unlink-pr",
         Invocation::PrCheck { .. } => "pr-check",
-        Invocation::GithubAuth { .. } => "github-auth",
         Invocation::HelpTopic { .. } => "help-topic",
         Invocation::HelpCompact => "help-compact",
         Invocation::HelpAll => "help-all",
@@ -3873,7 +3727,6 @@ impl Invoker for HttpInvoker {
             .hook_depth(self.hook_depth)
             .stdin(request.stdin)
             .project(request.project)
-            .github_token(request.github_token)
             .actor(request.actor);
 
         // Always `None` in production: `bound` exists only as a test seam
@@ -4274,8 +4127,7 @@ fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppE
 /// stops a future top-level verb that creates a project from also falling
 /// through it silently, with the same green build and green suite. Naming
 /// every variant here, rather than defaulting, is the same fix D8 made,
-/// applied to the layer it left alone; [`needs_github_token`] already does
-/// this for the same enum, for the same reason (SH-153), and this mirrors it.
+/// applied to the layer it left alone.
 fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBuf> {
     match invocation {
         Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
@@ -4381,7 +4233,6 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Version
         | Invocation::ProjectSnapshot
         | Invocation::History { .. }
-        | Invocation::GithubAuth { .. }
         | Invocation::Attachment { .. } => None,
     }
 }
@@ -4540,7 +4391,6 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             .no_hooks(request.no_hooks)
             .hook_depth(self.hook_depth)
             .with_stdin(request.stdin)
-            .with_github_token(request.github_token)
             .with_provenance(provenance)
             .with_verification_activity(self.verification_activity);
         dispatch(&ctx, request.invocation)
@@ -4953,31 +4803,10 @@ fn legacy_link_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppErro
     Ok(lines)
 }
 
-/// What `story doctor` says about a project holding a `close_on_merge` pull
-/// request link that no registered GitHub origin can validate (D1 of SH-408).
-///
-/// `PrLinkService::link`'s `refuse_cross_repo` guard compares a
-/// `close_on_merge` link's repository against
-/// [`configured_github_repos`](crate::service::pr_link::configured_github_repos)
-/// — the project's *registered* origins — and, finding none registered,
-/// treats "nothing configured" as accept rather than refuse. That is the
-/// right default for a project that never had a GitHub remote, but SH-408's
-/// own behaviour-change audit named the project it is silent for: one that
-/// had `github-sync` configured before this story and so was never walked
-/// through `story project link origin` — its `close_on_merge` links used to
-/// be protected by the retired sync engine's own comparison, and after this
-/// story that protection is gone with no signal that it went.
-///
-/// Advisory rather than an integrity failure, and never repaired by
-/// `--fix`: the fix is `story project link origin <url>`, an operator
-/// decision this command cannot make on anyone's behalf.
+/// Reports existing automatic links that current checkout authority cannot verify.
 fn pr_link_needs_a_registered_origin_advice<S: Store>(
     ctx: &Ctx<'_, S>,
 ) -> Result<Vec<String>, AppError> {
-    let configured = crate::service::pr_link::configured_github_repos(ctx)?;
-    if !configured.is_empty() {
-        return Ok(Vec::new());
-    }
     let links = ctx.store().read(|tx| tx.open_pr_links(ctx.project()))?;
     let closing: Vec<_> = links
         .into_iter()
@@ -4986,33 +4815,37 @@ fn pr_link_needs_a_registered_origin_advice<S: Store>(
     if closing.is_empty() {
         return Ok(Vec::new());
     }
+    let authority = crate::service::pr_link::configured_github_repos(ctx);
     let prefix = ctx
         .store()
         .read(|tx| tx.project(ctx.project()))?
-        .map(|project| project.prefix)
+        .map(|p| p.prefix)
         .unwrap_or_default();
-    let mut lines: Vec<String> = closing
-        .iter()
-        .map(|(story_no, link)| {
-            format!(
-                "`{}` has a close_on_merge link to `{}/{}#{}` that no registered origin can be \
-                 checked against",
-                story_no.to_id(&prefix),
-                link.owner,
-                link.repo,
-                link.number,
-            )
-        })
-        .collect();
-    lines.push(format!(
-        "{} close_on_merge pull request link{} with no registered GitHub origin to check {} \
-         repository against — a merge on the wrong repository could close the wrong story with \
-         nothing to catch it. Register this project's origin with `story project link origin \
-         <url>` to restore the check.",
-        closing.len(),
-        if closing.len() == 1 { "" } else { "s" },
-        if closing.len() == 1 { "its" } else { "their" },
-    ));
+    let mut lines = Vec::new();
+    for (story, link) in closing {
+        let problem = match &authority {
+            Err(error) => Some(error.to_string()),
+            Ok(repositories) => match crate::domain::pr_url::parse_pr_url(&link.url) {
+                Ok(reference)
+                    if repositories.iter().any(|r| {
+                        r.host.eq_ignore_ascii_case(&reference.host)
+                            && r.owner.eq_ignore_ascii_case(&reference.owner)
+                            && r.repo.eq_ignore_ascii_case(&reference.repo)
+                    }) =>
+                {
+                    None
+                }
+                Ok(_) => Some("link differs from current origin".into()),
+                Err(error) => Some(error.to_string()),
+            },
+        };
+        if let Some(problem) = problem {
+            lines.push(format!("`{}` has a close_on_merge link to `{}/{}#{}` that current origin cannot authorize: {problem}", story.to_id(&prefix),link.owner,link.repo,link.number));
+        }
+    }
+    if !lines.is_empty() {
+        lines.push(format!("{} close_on_merge pull request links need review. Restore the registered checkout and its origin, or unlink the obsolete PR. StoryHook refuses automatic changes until authority matches.", lines.len()));
+    }
     Ok(lines)
 }
 
@@ -5409,37 +5242,6 @@ mod creates_a_project_tests {
             assert!(
                 !creates_a_project(&invocation),
                 "{invocation:?} must not be gated by the burst check"
-            );
-        }
-    }
-
-    /// **Only `pr-check` spends a credential**, and the check that says so is
-    /// exhaustive over `Invocation` rather than defaulted.
-    ///
-    /// The positive half is the point of SH-153. The negative half is worth a
-    /// test of its own: `story list` is the overwhelming majority of traffic,
-    /// and an envelope that carries a secret it has no use for is a secret in a
-    /// place nobody thought about.
-    #[test]
-    fn only_pr_check_carries_a_credential() {
-        assert!(needs_github_token(&Invocation::PrCheck { id: None }));
-        for invocation in [
-            Invocation::Summary,
-            Invocation::Version,
-            Invocation::Export,
-            Invocation::SessionStart,
-            Invocation::Show {
-                id: "SH-1".to_string(),
-            },
-            Invocation::CommitSync { since: None },
-            Invocation::Update {
-                check: true,
-                force: false,
-            },
-        ] {
-            assert!(
-                !needs_github_token(&invocation),
-                "{invocation:?} has no GitHub credential to spend"
             );
         }
     }
