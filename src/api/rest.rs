@@ -122,7 +122,7 @@ fn dashboard_html() -> String {
         1,
         "the dashboard must contain exactly one version placeholder"
     );
-    DASHBOARD_HTML.replacen(DASHBOARD_VERSION_PLACEHOLDER, env!("CARGO_PKG_VERSION"), 1)
+    DASHBOARD_HTML.replacen(DASHBOARD_VERSION_PLACEHOLDER, crate::version::display(), 1)
 }
 
 /// All priority levels, in the order the frontend should offer them.

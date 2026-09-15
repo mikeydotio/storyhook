@@ -627,18 +627,9 @@ const TAILNET_SETTLE_DEADLINE: Duration = Duration::from_secs(5);
 /// The CLI advertises the host the *daemon* bound, never one this process
 /// probed for. Direction A of SH-110, mechanized.
 ///
-/// **Never skips.** On a machine with no tailnet the expected host is simply
-/// `127.0.0.1`, and the assertion still means something: all three commands
-/// must agree with the portfile.
-///
-/// The `tailscale` shim is what makes it a regression test rather than a
-/// restatement. The daemon starts with the real environment, so on a
-/// tailnet-equipped machine it binds and publishes its MagicDNS name — and then
-/// the three client commands run with a `tailscale` that *fails*, which is what
-/// a probe overrunning its three-second deadline under load looks like from the
-/// client's side. Before the fix those clients probed, got nothing, and printed
-/// `127.0.0.1` for a daemon reachable at its FQDN. Now they read what it
-/// published and the shim cannot affect them.
+/// Lifecycle commands report verified loopback, while address sharing uses the
+/// daemon's published bind. A failing client-side tailscale probe must affect
+/// neither result (SH-110, SH-722). This test also runs without a tailnet.
 ///
 /// Reading the portfile while a daemon runs is deliberate and safe: unlike the
 /// store, it is written once, not held open, and `TestEnv::daemon` exists for
@@ -665,7 +656,7 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
         std::thread::sleep(Duration::from_millis(50));
     };
     wait_for_server(info.port);
-    let expected = format!("http://{}:{}", info.advertised_host(), info.port);
+    let advertised = format!("http://{}:{}", info.advertised_host(), info.port);
 
     // A `tailscale` that fails, ahead of everything else: a client that still
     // probes gets nothing and falls back to loopback.
@@ -685,7 +676,12 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
     entries.extend(std::env::split_paths(&env.path_with_binary()));
     let path = std::env::join_paths(entries).expect("joining PATH");
 
-    for args in [["web", "status"], ["web", "address"]] {
+    for args in [["web", "start"], ["web", "status"], ["web", "address"]] {
+        let expected = if args[1] == "address" {
+            advertised.clone()
+        } else {
+            info.local_url()
+        };
         let printed = env
             .story(dir.path())
             .env("PATH", &path)
@@ -693,11 +689,15 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
             .args(args)
             .output()
             .unwrap_or_else(|e| panic!("running `story {}`: {e}", args.join(" ")));
+        assert!(
+            printed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&printed.stderr)
+        );
         let stdout = String::from_utf8_lossy(&printed.stdout).into_owned();
         assert!(
             stdout.contains(&expected),
-            "`story {}` must advertise {expected} — the address the daemon published — \
-             not a host derived from its own probe (SH-110); got: {stdout}",
+            "`story {}` must report {expected} for its purpose (SH-110, SH-722); got: {stdout}",
             args.join(" ")
         );
     }
@@ -839,7 +839,7 @@ fn web_serve_and_query_root() {
     assert!(body.contains("Storyhook"));
 }
 
-/// The dashboard's About section reports the version of the binary serving
+/// The dashboard's footer reports the version of the binary serving
 /// it. Keeping this assertion at the HTTP boundary proves the embedded shell
 /// was rendered, not merely that its source file contains a placeholder.
 #[test]
@@ -853,10 +853,10 @@ fn web_serve_root_html_embeds_the_running_package_version() {
         .unwrap();
     let body = resp.into_body().read_to_string().unwrap();
 
-    let expected = format!("Storyhook v{}", env!("CARGO_PKG_VERSION"));
+    let expected = format!("Storyhook v{}", storyhook::version::display());
     assert!(
-        body.contains(&expected),
-        "served dashboard must contain the running package version `{expected}`"
+        body.contains(&format!("<div id=\"footer-version\">{expected}</div>")),
+        "served footer must contain the running package version `{expected}`"
     );
     assert!(
         !body.contains("__STORYHOOK_VERSION__"),
@@ -9926,4 +9926,63 @@ fn create_modal_alone_keeps_its_footer_sticky() {
 
     assert!(rule.contains("position: sticky"));
     assert!(rule.contains("bottom: 0"));
+}
+
+#[test]
+fn web_authored_text_is_stored_without_ste_checks() {
+    let fixture = served();
+    let base = format!(
+        "http://127.0.0.1:{}/api/repos/{}/story",
+        fixture.port, fixture.repo_id
+    );
+    let title = "Don't utilize it";
+    let description = "The file was removed. This deliberately lengthy description contains more than twenty words in one sentence and must remain unchanged when it passes through the web API.";
+    let response = post_json(
+        &fixture,
+        &base,
+        &serde_json::json!({"title":title,"description":description}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(response.status(), 201);
+    let json: serde_json::Value =
+        serde_json::from_str(&response.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "title"), title);
+    assert_eq!(story_field(&json, "description"), description);
+    assert!(!json.to_string().contains("possible-passive"));
+    let response = patch_json(
+        &fixture,
+        &format!("{base}/SH-1"),
+        r#"{"title":"Commence work","description":"Don't stop. The file was removed."}"#,
+    )
+    .unwrap();
+    assert_eq!(response.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&response.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "title"), "Commence work");
+    assert_eq!(
+        story_field(&json, "description"),
+        "Don't stop. The file was removed."
+    );
+    for (route, body) in [
+        ("comment", serde_json::json!({"text":description})),
+        (
+            "move",
+            serde_json::json!({"state":"in-progress","comment":title}),
+        ),
+    ] {
+        let response =
+            post_json(&fixture, &format!("{base}/SH-1/{route}"), &body.to_string()).unwrap();
+        assert_eq!(response.status(), 200);
+        let json: serde_json::Value =
+            serde_json::from_str(&response.into_body().read_to_string().unwrap()).unwrap();
+        assert!(!json.to_string().contains("possible-passive"));
+    }
+    let row = fixture
+        .store
+        .read(|tx| tx.story(fixture.project, StoryNo::parse_id("SH", "SH-1").unwrap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.snapshot.state, "in-progress");
+    assert_eq!(row.snapshot.comments[0].text, description);
+    assert_eq!(row.snapshot.comments[1].text, title);
 }

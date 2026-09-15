@@ -456,16 +456,30 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             Response::Cleanup(Box::new(CleanupReport {
                 project: "fixture".to_string(),
                 dry_run: false,
-                candidates: 3,
-                reclaimed_bytes: 4096,
-                removed: vec![CleanupRemoval {
-                    story_id: "SH-7".to_string(),
-                    worktree: "/repo/SH-7".into(),
-                    branch: "worktree-SH-7".to_string(),
-                    removed_worktree: true,
-                    removed_local_branch: true,
-                    reclaimed_bytes: 4096,
-                }],
+                candidates: 4,
+                reclaimed_bytes: 8192,
+                removed: vec![
+                    CleanupRemoval {
+                        story_id: "SH-7".to_string(),
+                        worktree: "/repo/SH-7".into(),
+                        branch: "worktree-SH-7".to_string(),
+                        removed_worktree: true,
+                        removed_local_branch: true,
+                        removed_tmux_window: false,
+                        retained_local_branch: false,
+                        reclaimed_bytes: 4096,
+                    },
+                    CleanupRemoval {
+                        story_id: "SH-10".to_string(),
+                        worktree: "/repo/SH-10".into(),
+                        branch: "worktree-SH-10".to_string(),
+                        removed_worktree: true,
+                        removed_local_branch: false,
+                        removed_tmux_window: true,
+                        retained_local_branch: true,
+                        reclaimed_bytes: 4096,
+                    },
+                ],
                 skipped: vec![CleanupSkip {
                     story_id: "SH-8".to_string(),
                     reason: "dirty-worktree".to_string(),
@@ -869,6 +883,45 @@ fn a_second_wire_hop_is_a_fixed_point() {
     }
 }
 
+/// Older daemons omit dropped-cleanup fields; absence must not claim a window
+/// removal or deliberate branch retention when a newer client decodes them.
+#[test]
+fn legacy_cleanup_results_decode_without_dropped_cleanup_claims() {
+    let response: Response = serde_json::from_value(serde_json::json!({
+        "cleanup": {
+            "project": "fixture",
+            "dry_run": false,
+            "candidates": 1,
+            "reclaimed_bytes": 4096,
+            "removed": [{
+                "story_id": "SH-7",
+                "worktree": "/repo/SH-7",
+                "branch": "worktree-SH-7",
+                "removed_worktree": true,
+                "removed_local_branch": true,
+                "reclaimed_bytes": 4096
+            }],
+            "skipped": [],
+            "failed": []
+        }
+    }))
+    .expect("legacy cleanup results remain readable");
+    let Response::Cleanup(report) = &response else {
+        panic!("expected a cleanup response");
+    };
+    let removal = &report.removed[0];
+    assert!(removal.removed_worktree);
+    assert!(removal.removed_local_branch);
+    assert!(!removal.removed_tmux_window);
+    assert!(!removal.retained_local_branch);
+    for (json, quiet) in RENDER_MODES {
+        assert_eq!(
+            render_response(&response, json, quiet),
+            render_response(&hop(&response), json, quiet),
+        );
+    }
+}
+
 /// A delete plan's fields stay directly under `plan`, alongside the `confirm`
 /// discriminant rather than nested beneath it.
 ///
@@ -1149,18 +1202,25 @@ fn error_corpus() -> Vec<AppError> {
 }
 
 fn text_lint_error() -> AppError {
-    let fixture = storyhook_test_support::ServiceFixture::new();
-    let ctx = fixture.ctx();
-    let service = storyhook::service::StoryService::new(&ctx);
-    let story = service
-        .create(&storyhook::service::NewStoryInput {
-            title: "Test text checks".into(),
-            ..Default::default()
-        })
-        .unwrap();
-    service
-        .comment(&story.id, "Do not utilize it.")
-        .unwrap_err()
+    // This legacy wire variant remains decodable after live writes stop linting.
+    let findings = ste_lint::lint(
+        "Do not utilize it.",
+        ste_lint::Options {
+            format: ste_lint::Format::Markdown,
+            sentence_limit: std::num::NonZeroUsize::new(20).unwrap(),
+        },
+    )
+    .into_iter()
+    .map(|diagnostic| storyhook::text_lint::TextFinding {
+        field: "comment".into(),
+        diagnostic,
+    })
+    .collect();
+    AppError::TextLint(storyhook::text_lint::TextLintReport {
+        context: None,
+        story: "SH-1".into(),
+        findings,
+    })
 }
 
 /// An exhaustive `match`, so a further `AppError` variant stops this file

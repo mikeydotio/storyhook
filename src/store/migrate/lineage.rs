@@ -92,7 +92,7 @@ fn classify(conn: &Connection) -> Result<bool, StoreError> {
         && recorded
             .get(37)
             .is_some_and(|(_, name, _)| name == "landing_intents");
-    for (index, (number, name, _)) in recorded.iter().take(44).enumerate() {
+    for (index, (number, name, _)) in recorded.iter().take(MIGRATIONS.len()).enumerate() {
         let expected = if main && index == 37 {
             "landing_intents"
         } else if main && index == 38 {
@@ -106,6 +106,7 @@ fn classify(conn: &Connection) -> Result<bool, StoreError> {
             )));
         }
     }
+    expect_table(conn, "dropped_cleanups", CARD, version >= 45)?;
     expect_table(conn, "landing_intents", LANDING, main || version >= 44)?;
     expect_table(conn, "story_reset_reservations", NATIVE, version >= 44)?;
     if main && version == 39 {
@@ -279,6 +280,7 @@ pub(super) fn upgrade(
 
 fn validate_definition(conn: &Connection, table: &str) -> Result<(), StoreError> {
     let source = match table {
+        "dropped_cleanups" => include_str!("../schema/0045_dropped_cleanup.sql"),
         "landing_intents" => include_str!("../schema/0038_landing_intents.sql"),
         "story_reset_reservations" => include_str!("../schema/0044_launch_compatibility.sql"),
         "story_resets" => {

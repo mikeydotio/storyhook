@@ -115,42 +115,26 @@ fn text_of(result: &Value) -> &str {
 }
 
 #[test]
-fn comment_lint_failures_reach_mcp_with_repair_guidance() {
+fn comments_reach_mcp_verbatim_without_lint_advice() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
     let project = env
         .project()
         .prefix("SH")
-        .seed_story("Test text checks")
+        .seed_story("Test text guidance")
         .build();
     let mut mcp = McpSession::spawn(&env, project.path());
-    let failed = mcp.call(
-        "story_comment",
-        json!({
-            "project": project.slug(), "id": "SH-1", "text": "Don't utilize it."
-        }),
-    );
-    assert_eq!(failed["isError"], true);
-    let error: Value = serde_json::from_str(text_of(&failed)).unwrap();
-    assert_eq!(error["kind"], "text_lint");
-    assert_eq!(error["findings"][0]["field"], "comment");
-    assert!(
-        error["findings"][0]["help"]
-            .as_str()
-            .unwrap()
-            .contains("full")
-    );
-    assert!(comments_of(&mut mcp, &project.slug(), "SH-1").is_empty());
-    let repaired = mcp.call(
-        "story_comment",
-        json!({
-            "project": project.slug(), "id": "SH-1", "text": "Do not use it."
-        }),
-    );
-    assert_eq!(repaired["isError"], false);
+    for text in ["Don't utilize it.", "The file was removed."] {
+        let result = mcp.call(
+            "story_comment",
+            json!({"project": project.slug(), "id": "SH-1", "text": text}),
+        );
+        assert_eq!(result["isError"], false, "{result}");
+        assert!(!text_of(&result).contains("possible-passive"));
+    }
     assert_eq!(
         comments_of(&mut mcp, &project.slug(), "SH-1"),
-        vec!["Do not use it."]
+        vec!["Don't utilize it.", "The file was removed."]
     );
 }
 
@@ -548,6 +532,10 @@ fn initialize_negotiates_before_any_tool_call() {
         json!({ "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": { "name": "test", "version": "0" } }),
     );
     assert_eq!(reply["result"]["serverInfo"]["name"], "storyhook");
+    assert_eq!(
+        reply["result"]["serverInfo"]["version"],
+        storyhook::version::display()
+    );
     assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
 }
 

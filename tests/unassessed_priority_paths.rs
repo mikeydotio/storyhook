@@ -50,7 +50,7 @@ fn story_created_sites(files: &[(String, String)], allowed: &[(&str, &str)]) -> 
 
 /// Store code is separately exempt because conformance and migration fixtures
 /// must construct legacy histories deliberately.
-const ALLOWED: [(&str, &str); 8] = [
+const ALLOWED: [(&str, &str); 7] = [
     (
         "src/domain.rs",
         "the enum, fold and domain fixtures; not a production creation door",
@@ -58,10 +58,6 @@ const ALLOWED: [(&str, &str); 8] = [
     (
         "src/domain/transition.rs",
         "transition admission reads historical creation state to recover the last non-blocked pipeline position; it constructs no events",
-    ),
-    (
-        "src/text_lint.rs",
-        "STE validation reads the title of a proposed creation event; it creates diagnostics and never creates or persists story events",
     ),
     (
         "src/service/story.rs",

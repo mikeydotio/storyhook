@@ -3,6 +3,64 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v3.0.1] - 2026-09-14
+
+### Added
+- track build numbers for installation and releases (3cf1d0d60)
+- show daemon version below footer timestamp (86c9e065c)
+
+### Fixed
+- parse daemon endpoints with numbered versions (7c16ee0bf)
+- sort verifying stories by verifier execution order (602649c6e)
+- tolerate child exit during identity capture (26249503b)
+- tolerate child exit during identity capture (21b2b4c86)
+- tolerate child exit during identity capture (2b4a82262)
+- inherit workspace ownership for remediation (8f1cd22c3)
+- preserve reading position when restoring story focus (ef4ea6a29)
+- prevent toolbar overflow from stranding board scrolling (9d0da05bf)
+- clean dropped story workspaces safely (6c5d8c52f)
+- remove runtime STE linting and retain writing guidance (25b7f1eee)
+- use GitHub CLI credentials for submission (aad408c4c)
+- verify local lifecycle status before reporting success (5af1bcbdc)
+- include fade in three-second notice lifetime (64faadde8)
+
+### Changed
+- Merge pull request #829 from mikeydotio/worktree-SH-732 (6aac39895)
+- Merge pull request #827 from mikeydotio/worktree-SH-724 (0f2b8d4e4)
+- integrate current dev for SH-724 verification repair (b84f32483)
+- Merge pull request #828 from mikeydotio/worktree-SH-728 (94372a762)
+- Merge pull request #826 from mikeydotio/worktree-SH-731 (c4984f104)
+- Merge pull request #824 from mikeydotio/worktree-SH-727 (dd9e23477)
+- Merge pull request #825 from mikeydotio/worktree-SH-729 (f62e9c0d5)
+- Merge pull request #822 from mikeydotio/worktree-SH-722 (3692a9b18)
+- Merge pull request #823 from mikeydotio/worktree-SH-730 (07eea6920)
+- Merge pull request #821 from mikeydotio/worktree-SH-720 (0152c583d)
+- integrate current base for SH-727 verification repair (f97e8b28a)
+- format the startup endpoint assertion (36b499ea6)
+- Merge remote-tracking branch 'origin/dev' into worktree-SH-722 (b699d877d)
+- integrate current base for SH-720 verification repair (0fbc4c5cf)
+- Merge pull request #820 from mikeydotio/worktree-SH-725 (aa427b7fd)
+- Merge pull request #819 from mikeydotio/release/3.0.0-dev-sync (b12071872)
+- Merge pull request #818 from mikeydotio/release/3.0.0-certified (f9556e9c7)
+
+### Testing
+- cover wire results and classify helper processes (cfbf467bb)
+- isolate nested recovery phase selection (159d87fdb)
+- restore submission wrapper isolation (e98a0e844)
+- isolate nested recovery phase selection (a1fbb399a)
+- restore submission wrapper isolation (298815da2)
+- isolate nested recovery phase selection (57c856f0a)
+- restore submission wrapper isolation (a0c45e4cc)
+- classify workspace ownership probe processes (038a897c6)
+- isolate ownership contracts from sibling forks (8388e5d55)
+- isolate nested recovery phase selection (dd63c8b44)
+- restore submission wrapper isolation (429b4a108)
+- isolate nested recovery phase selection (e252fbc95)
+- restore submission wrapper isolation (2eaa12c56)
+- align held-probe startup with verified loopback (9035aa173)
+
+_[manual]_
+
 ## [v3.0.0] - 2026-09-14
 
 ### Added

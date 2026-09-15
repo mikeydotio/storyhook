@@ -124,7 +124,7 @@ pub enum AppError {
     Usage(String),
     #[error("{0}")]
     Validation(String),
-    /// New story text failed the published authoring checks.
+    /// Legacy authoring failure retained for wire and library compatibility.
     #[error("{0}")]
     TextLint(crate::text_lint::TextLintReport),
     #[error("{0}")]
@@ -278,7 +278,7 @@ pub enum WireError {
     Validation {
         detail: String,
     },
-    /// Structured authoring findings survive the daemon hop.
+    /// Legacy authoring findings retained for daemon wire compatibility.
     TextLint {
         /// The rejected story and its field diagnostics.
         detail: crate::text_lint::TextLintReport,

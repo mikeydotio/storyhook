@@ -16,6 +16,8 @@ use crate::error::AppError;
 use crate::process::{Captured, run_captured};
 use crate::store::{ReadOps, Store, StoryQuery};
 
+mod dropped;
+
 use super::Ctx;
 use super::verification::{ReapMarker, VerificationGeneration, latest_generation};
 
@@ -35,6 +37,12 @@ pub struct CleanupRemoval {
     /// There is no remote counterpart: the verifier's merge step deletes the
     /// remote branch and cleanup never reads or writes it (SH-653).
     pub removed_local_branch: bool,
+    /// Whether the exact dropped-story window was removed, or would be removed.
+    #[serde(default)]
+    pub removed_tmux_window: bool,
+    /// Whether the local branch was deliberately retained for recovery.
+    #[serde(default)]
+    pub retained_local_branch: bool,
     /// Bytes measured beneath the worktree before removal.
     pub reclaimed_bytes: u64,
 }
@@ -121,7 +129,52 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                 .read(|tx| tx.events_for(project.id, row.story_no))?;
             let generation = latest_generation(&events);
             let expected = row.story_no.to_id(&project.prefix);
-            if let Some(lease) = generation.as_ref().and_then(|found| found.lease.clone()) {
+            if row.state == "dropped" {
+                if let Some(lease) = events.iter().rev().find_map(|e| match e.known() {
+                    Some(crate::domain::StoryEvent::StoryCleanupLeaseRecorded {
+                        lease, ..
+                    }) => Some(lease.as_ref().clone()),
+                    _ => None,
+                }) {
+                    if lease.story_id != expected {
+                        conflicts.insert(expected.clone());
+                        leases.remove(&expected);
+                        skipped.push(CleanupSkip {
+                            story_id: expected.clone(),
+                            reason: "invalid-lease".into(),
+                            detail: format!(
+                                "story history carries a cleanup lease for {}",
+                                lease.story_id
+                            ),
+                        });
+                    } else {
+                        insert_lease(
+                            &project.slug,
+                            lease,
+                            &mut leases,
+                            &mut conflicts,
+                            &mut skipped,
+                        );
+                    }
+                }
+                if let Some(record) = self
+                    .ctx
+                    .store()
+                    .read(|tx| tx.dropped_cleanup(project.id, row.story_no))?
+                    && (!record.released || Some(record.generation) == dropped::generation(&events))
+                {
+                    insert_lease(
+                        &project.slug,
+                        record.lease,
+                        &mut leases,
+                        &mut conflicts,
+                        &mut skipped,
+                    );
+                }
+            }
+            if row.state != "dropped"
+                && let Some(lease) = generation.as_ref().and_then(|found| found.lease.clone())
+            {
                 if lease.story_id != expected {
                     skipped.push(CleanupSkip {
                         story_id: expected.clone(),
@@ -150,6 +203,33 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                 },
             );
         }
+        for run in self.ctx.store().read(|tx| tx.engine_runs(&project.slug))? {
+            for lane in self.ctx.store().read(|tx| tx.engine_lanes(&run.id))? {
+                if let Some(lease) = lane.cleanup_lease
+                    && stories
+                        .get(&lease.story_id)
+                        .is_some_and(|facts| facts.state == "dropped")
+                {
+                    if lane.story_id.as_deref() != Some(lease.story_id.as_str()) {
+                        conflicts.insert(lease.story_id.clone());
+                        leases.remove(&lease.story_id);
+                        skipped.push(CleanupSkip {
+                            story_id: lease.story_id,
+                            reason: "invalid-lease".into(),
+                            detail: "engine lane story differs from its cleanup lease".into(),
+                        });
+                        continue;
+                    }
+                    insert_lease(
+                        &project.slug,
+                        lease,
+                        &mut leases,
+                        &mut conflicts,
+                        &mut skipped,
+                    );
+                }
+            }
+        }
         discover_worktree_markers(
             &repository,
             &project.slug,
@@ -162,6 +242,24 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
         let mut removed = Vec::new();
         let mut failed = Vec::new();
         for lease in leases.into_values() {
+            if stories
+                .get(&lease.story_id)
+                .is_some_and(|facts| facts.state == "dropped")
+            {
+                match dropped::run(self.ctx, &repository, &lease, dry_run) {
+                    Ok(Some(removal)) => removed.push(removal),
+                    Ok(None) => {}
+                    Err(issue) if is_operational_failure(&issue.reason) => {
+                        failed.push(CleanupFailure {
+                            story_id: issue.story_id,
+                            reason: issue.reason,
+                            detail: issue.detail,
+                        })
+                    }
+                    Err(issue) => skipped.push(issue),
+                }
+                continue;
+            }
             // The verifier's release is read from the store before any git
             // or network work on the candidate: a refused story costs no
             // fetch, and a story the verifier has not finished with is never
@@ -319,7 +417,8 @@ fn nothing_left(repository: &Path, lease: &StoryCleanupLease) -> bool {
 fn is_operational_failure(reason: &str) -> bool {
     matches!(
         reason,
-        "fetch-failed"
+        "dropped-cleanup-failed"
+            | "fetch-failed"
             | "remove-worktree-failed"
             | "delete-local-branch-failed"
             | "postcondition-unverifiable"
@@ -542,6 +641,8 @@ fn clean_candidate(
             branch: lease.branch.clone(),
             removed_worktree,
             removed_local_branch,
+            removed_tmux_window: false,
+            retained_local_branch: false,
             reclaimed_bytes,
         });
     }
@@ -576,6 +677,8 @@ fn clean_candidate(
         branch: lease.branch.clone(),
         removed_worktree,
         removed_local_branch,
+        removed_tmux_window: false,
+        retained_local_branch: false,
         reclaimed_bytes,
     })
 }

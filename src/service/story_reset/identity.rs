@@ -23,7 +23,7 @@ fn observe(path: PathBuf, removable: bool) -> Result<ResetPathIdentity, AppError
 }
 
 /// Captures the repository and each existing worktree object before cleanup.
-pub(super) fn capture(report: &ResourceReport) -> Result<Vec<ResetPathIdentity>, AppError> {
+pub(crate) fn capture(report: &ResourceReport) -> Result<Vec<ResetPathIdentity>, AppError> {
     let Some(repository) = &report.repository else {
         return Ok(Vec::new());
     };
@@ -45,7 +45,7 @@ pub(super) fn capture(report: &ResourceReport) -> Result<Vec<ResetPathIdentity>,
 }
 
 /// Refuses replacements; expected removal does not invalidate a retry.
-pub(super) fn validate(paths: &[ResetPathIdentity]) -> Result<(), AppError> {
+pub(crate) fn validate(paths: &[ResetPathIdentity]) -> Result<(), AppError> {
     for expected in paths {
         match std::fs::symlink_metadata(&expected.path) {
             Ok(metadata)

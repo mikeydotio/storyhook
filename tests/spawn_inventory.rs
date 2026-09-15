@@ -139,6 +139,18 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // Descendants therefore hold no output pipe and cannot outlive the
     // daemon's progress-supervision boundary.
     ("src/daemon/verification.rs", "\"bash\"", Kind::Waited),
+    // Workspace probes use production file-backed capture and bounded group
+    // cleanup. Their lock checks do not read a child pipe to EOF (SH-730).
+    (
+        "src/daemon/verification/workspace_tests.rs",
+        "\"bash\"",
+        Kind::Waited,
+    ),
+    (
+        "src/daemon/verification/workspace_tests.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
     // `env::git_env::command` — the one place in `src/` that constructs a
     // `git`. Classified with the reads it replaced: every caller uses
     // `.output()`, which reads the child's stdout to EOF. Callers that can
@@ -176,6 +188,19 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // Cleanup's tmux probe uses shared file-backed, process-group-bounded
     // capture, so neither a server nor a descendant can retain an output pipe.
     ("src/service/resources/tmux.rs", "\"tmux\"", Kind::Waited),
+    // Dropped cleanup captures identities, checks installed artifacts, and
+    // stops its exact pane through bounded, file-backed capture. Helpers have
+    // their own process groups; no descendant can hold an output-pipe EOF.
+    (
+        "src/service/cleanup/dropped/process.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
+    (
+        "src/service/cleanup/dropped/safety.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
     // Continuation stages JSON stdin and captures stdout/stderr in regular
     // files, so descendants cannot hold an output-pipe EOF. The shared runner
     // waits at most 45 s (125 s for resume) and kills its group on timeout.

@@ -131,6 +131,24 @@ against any other base is refused by name (`wrong-base-pull-request`). The helpe
 generation-guarded write (`record_generation_submitted`), then proceeds into
 verification in the same tick.
 
+Submission uses one command-local GitHub authentication boundary (SH-725) for
+default discovery, base fetch, remote-head reads, and push. It resets the
+HTTPS `github.com` credential-helper chain and selects `gh auth git-credential`,
+which uses the same credentials as PR operations. Both `git@github.com:` and
+`ssh://git@github.com/` remotes use HTTPS. Other hosts retain their configured
+helpers; no persistent Git configuration changes. Git terminal and askpass
+prompts and gh prompts are disabled at this boundary. Tokens stay in the helper
+protocol, outside argv and remote URLs.
+
+Submission requires a successful base fetch (`base-fetch-failed` on failure).
+It checks remote-read status before parsing output (`remote-read-failed`, with
+the before/after-push stage). A failed read is not an absent remote branch.
+These are infrastructure failures, never a successful receipt or permission
+to continue into PR creation. Cleanup retains its separate best-effort refresh.
+Local regression fixtures prove credential routing, not credential availability
+in the installed daemon. An existing halted verifier incident still requires
+its normal recovery after the installed runtime and credentials are ready.
+
 Submission runs on **every** leased generation, linked PR or not: after a RED
 or conflict return the agent only commits, so the verifier's push is the one
 thing that carries the fix to the remote; push and adopt are idempotent, and an
@@ -386,6 +404,14 @@ deleted at merge time. Every refusal is a skip with a reason, which is what
 `--dry-run` prints.
 
 ### The locks, and the one invariant every verification depends on
+
+The verifier also holds a per-story workspace lock throughout its attempt.
+Bounded control commands (notification, submission, reap, and landing recovery)
+inherit that open descriptor and `STORY_WORKSPACE_LOCK_FD` together. The runner
+clears stale markers and retains ownership through execution and termination.
+The shell validates the descriptor against the exact workspace lock before
+reusing it. It must not reopen the file and contend with its own verifier
+(SH-730). Unrelated workspace operations remain excluded until all owners exit.
 
 `scripts/machine-lock.sh <name> -- <command>` is a pid-and-start-time-checked
 advisory lock rooted under `$HOME/.local/state/storyhook/locks` (deliberately
