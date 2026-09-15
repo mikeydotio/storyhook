@@ -337,11 +337,14 @@ fn web_start_returns_fast_under_a_wedged_tailscale_and_never_overclaims() {
 
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
-        stderr.contains("resolving") && stderr.to_lowercase().contains("tailnet"),
-        "the printed loopback URL can lag reality once the probe is off the \
-         critical path, so the CLI must say so rather than let a stale URL \
-         read as a confirmed answer; got stderr: {stderr}"
+        stderr.contains("story daemon start") && !stderr.contains("resolving"),
+        "the alias must name its replacement without presenting verified loopback \
+         as a pending tailnet answer (SH-722); got stderr: {stderr}"
     );
+    let info = env
+        .daemon()
+        .expect("the daemon published its local endpoint");
+    storyhook::daemon::lifecycle::hello(&info).expect("the reported local daemon must answer");
 
     env.story(dir.path())
         .args(["web", "stop"])

@@ -261,8 +261,11 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 
 /* ---- Topbar ---- */
 .dashboard-header { flex-shrink: 0; min-width: 0; }
+/* Toolbar groups must reflow before their minimum widths enlarge the page.
+   Hidden body overflow still permits focus to scroll that enlarged page,
+   leaving the board's left edge unreachable through its own scrollbar. */
 .topbar {
-  display: flex; align-items: center; gap: 1rem;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 1rem;
   padding: 0.75rem 1.25rem;
   background: var(--bg-raised);
   border-bottom: 1px solid var(--border);
@@ -1814,7 +1817,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   <p class="empty" id="empty-msg" hidden>No stories match the current filters.</p>
 
-  <div class="footer" id="footer">Updated just now</div>
+  <div class="footer" id="footer">
+    <div id="footer-updated">Updated just now</div>
+    <div id="footer-version">Storyhook v__STORYHOOK_VERSION__</div>
+  </div>
   </div>
 
   <aside class="drawer" id="drawer" tabindex="-1" aria-label="Story details" aria-hidden="true" inert>
@@ -2190,8 +2196,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // periodic resync in case a `/api/events` push is ever missed.
   var SAFETY_POLL_INTERVAL_MS = 25000;
   var FOOTER_TICK_MS = 1000;
-  // How long a self-clearing notice is held before its fade begins (SH-304).
-  // Only a success/info notice ever gets one: an error has no timer at all
+  // Total lifetime of a self-clearing notice, including its fade (SH-720).
+  // Only a success/info/warn notice gets one: an error has no timer at all
   // now, rather than the doubled 9s one SH-196 gave it, because "long enough
   // to read a remedy" is a guess about a reader and "until you dismiss it"
   // is not.
@@ -4443,7 +4449,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     ]);
   }
 
-  /** Removes `node` after holding it `TOAST_LIFETIME_MS`, then fading it.
+  /** Removes `node` within `TOAST_LIFETIME_MS`, including its fade.
    *
    * The clock is not a bare `setTimeout`, because three states stop it:
    *
@@ -4460,8 +4466,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    *     the event catches a transition after the clock starts, and the state
    *     check catches a notice created after the transition already happened.
    *
-   * Pausing preserves what is left rather than restarting it, so a reader
-   * who hovers twice does not get a fresh three seconds each time.
+   * Pausing preserves the remaining hold rather than restarting it. The
+   * fade uses the final part of the lifetime and runs uninterrupted once begun.
    *
    * **All three are courtesies, and none is this dashboard's WCAG conformance
    * story** — a distinction this comment got wrong until SH-322, in a way
@@ -4494,7 +4500,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * SH-322 has
    * the full reasoning; `e2e/specs/notification-contract.spec.ts` fences it. */
   function scheduleAutoDismiss(node) {
-    var remaining = TOAST_LIFETIME_MS;
+    var remaining = TOAST_LIFETIME_MS - TOAST_FADE_MS;
     var startedAt = 0;
     var timer = null;
     var leaving = false;
@@ -7325,8 +7331,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   ];
 
   /** The one sort key an OPEN column additionally offers (SH-407): the
-   * order `story next` would hand this queue out in
-   * (`state.data.next_ids`). Not offered on a CLOSED column -- nothing in
+   * assignment order (`state.data.next_ids`), or verifier ownership and
+   * candidate order for Verifying. Not offered on a CLOSED column -- nothing in
    * it is still waiting to be picked up, so there is no queue position to
    * show. */
   var NEXT_SORT_OPTIONS = [
@@ -8599,7 +8605,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * unfocusing steps blur same as a removal would. (Those two functions
    * already skip the call when a card/row's position didn't actually
    * change, so this is a safety net for the reorders that are real, not a
-   * cover for ones that shouldn't have happened.) */
+   * cover for ones that shouldn't have happened.) Restoring the same story
+   * must not scroll away from the reader's current position. A replacement
+   * story still receives normal focus scrolling so its new stop is visible. */
   function syncRoving(container, selector, focusedId) {
     var nodes = Array.prototype.slice.call(container.querySelectorAll(selector));
     if (!nodes.length) { rovingId = null; return; }
@@ -8612,7 +8620,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var focusedNode = survivorIds[focusedId] ? nodes.filter(function(n) { return n.dataset.id === focusedId; })[0] : null;
     if (document.activeElement !== focusedNode) {
       var target = nodes.filter(function(n) { return n.dataset.id === targetId; })[0];
-      if (target) target.focus();
+      if (target) target.focus({ preventScroll: target === focusedNode });
     }
   }
 
@@ -8798,14 +8806,25 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return idx === -1 ? Infinity : idx;
   }
 
+  /** Verifier ownership precedes candidate order, even when a higher-priority
+   * arrival puts the owner later in the queue (SH-731). Keep scheduling policy
+   * on the server: held/stalled/landing candidates retain its relative order.
+   * Missing snapshot entries have no rank; the comparator breaks their ties. */
+  function verificationRank(id) {
+    var verifier = state.data && state.data.verifier;
+    if (verifier && verifier.active && verifier.active.story_id === id) return -1;
+    var ids = (verifier && verifier.verifying) || [];
+    var idx = ids.indexOf(id);
+    return idx === -1 ? Infinity : idx;
+  }
+
   /** Board card comparator (SH-305, replacing SH-128's single board-wide
    * version): builds a comparator for `slug`'s own `columnSortFor()` entry.
-   * Five keys — "priority" and "next" (each a *different axis* from time,
-   * so their own ordering never reverses with `dir`; `domain::ready_order`'s
-   * fixed ascending convention, SH-128/SH-407), "added" (`created_at`) and
-   * "modified" (`updated_at`, a *same-axis* pair that reverses with `dir`),
-   * and "completed" (`story.closed_at`, same-axis, SH-407) — each producing
-   * its own primary comparison, then a tiebreak chain.
+   * Five keys — "priority", "next", "added" (`created_at`), "modified"
+   * (`updated_at`), and "completed" (`story.closed_at`, SH-407) — each
+   * producing its own primary comparison, then a tiebreak chain.
+   * Verifying's Next sort reverses the whole order; assignment Next keeps
+   * unranked cards last in both directions.
    *
    * `created_at`/`updated_at`/`closed_at` are RFC3339 UTC strings of fixed,
    * `Z`-suffixed width (`StorySnapshot`'s own writer), so a plain
@@ -8842,6 +8861,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         return byPriority !== 0 ? byPriority : byNumber;
       }
       if (sort.key === "next") {
+        if (slug === "verifying") {
+          var vaRank = verificationRank(sa.id), vbRank = verificationRank(sb.id);
+          // Explicit comparisons keep two absent ranks out of Infinity -
+          // Infinity (NaN). Reverse ties too: Next down is the exact inverse.
+          var byVerification = vaRank < vbRank ? -1 : vaRank > vbRank ? 1 : byNumber;
+          return byVerification * dir;
+        }
         var ra = nextRank(sa.id), rb = nextRank(sb.id);
         // An unranked card (Infinity) sorts after every ranked one
         // regardless of `dir` -- naively multiplying `(ra - rb)` by a
@@ -13107,8 +13133,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** Read-only build identity for support and upgrade conversations. The
-   * server replaces the lone placeholder from its own CARGO_PKG_VERSION, so
-   * this screen does not need an API request or a second version source. */
+   * server fills the footer from its own CARGO_PKG_VERSION. Reuse that text
+   * here to keep one version source without another API request. */
   function buildAbout() {
     return el("section", {
       class: "settings-about",
@@ -13120,7 +13146,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       }, ["About"]),
       el("dl", { class: "settings-about-list" }, [
         el("dt", {}, ["Version"]),
-        el("dd", { id: "settings-version" }, ["Storyhook v__STORYHOOK_VERSION__"])
+        el("dd", { id: "settings-version" }, [$("footer-version").textContent])
       ])
     ]);
   }
@@ -15627,7 +15653,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var at = activePollState().at;
     if (!at) return;
     var ago = Math.round((Date.now() - at) / 1000);
-    $("footer").textContent = ago < 2 ? "Updated just now" : "Updated " + ago + "s ago";
+    $("footer-updated").textContent = ago < 2 ? "Updated just now" : "Updated " + ago + "s ago";
     updateConnection();
   }
 

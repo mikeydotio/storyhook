@@ -96,7 +96,87 @@ printf 'work\n' >"$worktree/work.txt"
 git -C "$worktree" add work.txt
 git -C "$worktree" -c user.name=t -c user.email=t@e commit -q -m "feat: the work"
 head=$(git -C "$worktree" rev-parse HEAD)
-out=$(submit); status=$?
+
+# SH-725: fail each external transport boundary independently. Git still
+# performs every successful transfer against the real bare repository.
+mkdir "$FAKE_GH_STATE/git-bin"
+SH725_REAL_GIT="$(type -P git)"
+export SH725_REAL_GIT
+cat >"$FAKE_GH_STATE/git-bin/git" <<'GIT_ENDPOINT'
+#!/usr/bin/env bash
+set -uo pipefail
+args=("$@")
+config=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -C) shift 2 ;;
+    -c) config+=("-c" "$2"); shift 2 ;;
+    *) break ;;
+  esac
+done
+stage=""
+case "${1:-}" in
+  fetch) stage=fetch ;;
+  push) stage=push ;;
+  ls-remote)
+    if [ "${2:-}" = --symref ]; then
+      stage=default
+    else
+      count=0
+      [ ! -f "$FAKE_GH_STATE/remote-reads" ] || read -r count <"$FAKE_GH_STATE/remote-reads"
+      count=$((count + 1))
+      printf '%s\n' "$count" >"$FAKE_GH_STATE/remote-reads"
+      if [ "$count" = 1 ]; then stage=before; else stage=after; fi
+    fi ;;
+esac
+if [ -n "$stage" ]; then
+  printf '%s\n' "$stage" >>"$FAKE_GH_STATE/transports"
+  if [ "${SH725_EXPECT_AUTH:-}" = 1 ]; then
+    helpers=$("$SH725_REAL_GIT" ${config[@]+"${config[@]}"} config --get-all credential.https://github.com.helper)
+    if [ "$helpers" != $'\n!gh auth git-credential' ] ||
+       [ "${GIT_TERMINAL_PROMPT:-}" != 0 ] || [ "${GH_PROMPT_DISABLED:-}" != 1 ]; then
+      printf 'submission transport %s missed its credential boundary\n' "$stage" >&2
+      exit 90
+    fi
+  fi
+  if [ "$stage" = "${SH725_FAIL:-}" ]; then
+    # Even plausible stdout must not turn a failing read into evidence.
+    printf '%s\trefs/heads/%s\n' "$SH725_HEAD" "$SH725_BRANCH"
+    printf 'fixture transport failed at %s\n' "$stage" >&2
+    exit 91
+  fi
+  if [ "${SH725_EXPECT_AUTH:-}" = 1 ] && { [ "$stage" = before ] || [ "$stage" = after ]; }; then
+    printf 'fixture transport informational diagnostic\n' >&2
+  fi
+fi
+exec "$SH725_REAL_GIT" "${args[@]}"
+GIT_ENDPOINT
+chmod +x "$FAKE_GH_STATE/git-bin/git"
+export SH725_HEAD="$head" SH725_BRANCH="$branch"
+
+for pair in default:default-branch-unknown fetch:base-fetch-failed before:remote-read-failed push:push-failed after:remote-read-failed; do
+  stage=${pair%%:*}
+  reason=${pair#*:}
+  printf '0\n' >"$FAKE_GH_STATE/remote-reads"
+  : >"$FAKE_GH_STATE/transports"
+  out=$(submit PATH="$FAKE_GH_STATE/git-bin:$VERIFYING_PATH" SH725_FAIL="$stage"); status=$?
+  assert_eq "$status" "1" "$stage failure refuses submission"
+  assert_eq "$(jqf "$out" .class)" "infrastructure" "$stage failure belongs to infrastructure"
+  assert_eq "$(jqf "$out" .reason)" "$reason" "$stage failure retains its cause"
+  assert_contains "$(jqf "$out" .display)" "fixture transport failed at $stage" "$stage diagnostic survives"
+  assert_eq "$(create_count)" "0" "$stage failure opens no PR"
+  if [ "$stage" != after ]; then
+    [ -z "$(remote_tip)" ] || fail_test "$stage failure must not advance the remote"
+  fi
+done
+# The post-push read failure left a real remote commit. Remove only that
+# fixture ref so the ordinary first-submission test still exercises a push.
+git --git-dir="$origin" update-ref -d "refs/heads/$branch"
+printf '0\n' >"$FAKE_GH_STATE/remote-reads"
+: >"$FAKE_GH_STATE/transports"
+out=$(submit PATH="$FAKE_GH_STATE/git-bin:$VERIFYING_PATH" SH725_EXPECT_AUTH=1); status=$?
+assert_eq "$(cat "$FAKE_GH_STATE/transports")" $'default\nfetch\nbefore\npush\nafter' \
+  "every network operation uses the credential boundary"
 assert_eq "$status" "0" "submit succeeds: $out"
 assert_eq "$(jqf "$out" .ok)" "true" "the receipt is ok"
 assert_eq "$(jqf "$out" .receipt_version)" "1" "the receipt carries the lease version"

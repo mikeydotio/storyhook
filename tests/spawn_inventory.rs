@@ -139,6 +139,18 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // Descendants therefore hold no output pipe and cannot outlive the
     // daemon's progress-supervision boundary.
     ("src/daemon/verification.rs", "\"bash\"", Kind::Waited),
+    // Workspace probes use production file-backed capture and bounded group
+    // cleanup. Their lock checks do not read a child pipe to EOF (SH-730).
+    (
+        "src/daemon/verification/workspace_tests.rs",
+        "\"bash\"",
+        Kind::Waited,
+    ),
+    (
+        "src/daemon/verification/workspace_tests.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
     // `env::git_env::command` — the one place in `src/` that constructs a
     // `git`. Classified with the reads it replaced: every caller uses
     // `.output()`, which reads the child's stdout to EOF. Callers that can

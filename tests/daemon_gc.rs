@@ -476,6 +476,17 @@ fn daemon_status_names_reclaimable_directories_only_when_there_are_any() {
         .success()
         .stdout(predicate::str::contains("1 runtime director"))
         .stdout(predicate::str::contains("story daemon gc"));
+
+    // An unverified daemon still owes the operator the surrounding diagnostics.
+    let _held = storyhook::daemon::lifecycle::claim_pidfile(&env.environment()).unwrap();
+    env.story(env.home())
+        .args(["daemon", "status"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("local daemon"))
+        .stderr(predicate::str::contains("login agent"))
+        .stderr(predicate::str::contains("1 runtime director"))
+        .stderr(predicate::str::contains("story daemon gc"));
 }
 
 /// The planted shape is the real one: a daemon started for a temp store,
