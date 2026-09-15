@@ -152,10 +152,16 @@ const DISPATCH_MAY_SEE_PREFIXES: [&str; 2] = ["STORY_", "STORYHOOK_"];
 
 /// The names through which `gh` and an HTTPS `git push` find the operator's
 /// GitHub credentials, stated once so every spawn that is permitted to reach
-/// GitHub admits exactly the same three (SH-136: a second hand-copied list is a
+/// GitHub admits exactly the same names (SH-136: a second hand-copied list is a
 /// list that drifts). `GH_CONFIG_DIR` relocates `gh`'s own config and token
-/// store; `GH_TOKEN`/`GITHUB_TOKEN` are the token itself.
-const GITHUB_CREDENTIAL_MAY_SEE: [&str; 3] = ["GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"];
+/// store; the remaining names are gh's public and Enterprise token variables.
+pub(crate) const GITHUB_CREDENTIAL_MAY_SEE: [&str; 5] = [
+    "GH_CONFIG_DIR",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+];
 
 /// Configuration the centralized verifier needs in addition to the common
 /// executable/user environment and the GitHub credentials. The tokens stop at

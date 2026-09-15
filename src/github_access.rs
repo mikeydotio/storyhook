@@ -3,10 +3,15 @@
 use crate::domain::github_remote::GithubRepo;
 use crate::env::git_env;
 use crate::error::AppError;
-use crate::process::run_captured;
+use crate::process::run_captured_private;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+mod command;
+mod local;
+mod transport;
+pub use local::run_local;
 
 /// A checkout and its current, validated GitHub origin.
 #[derive(Debug, Clone, Serialize)]
@@ -71,7 +76,7 @@ impl Repository {
 fn git_read(checkout: &Path, arguments: &[&str]) -> Result<String, AppError> {
     let mut command = git_env::command(checkout);
     command.args(arguments);
-    let output = run_captured(command, Duration::from_secs(30)).map_err(|error| {
+    let output = run_captured_private(command, Duration::from_secs(30)).map_err(|error| {
         AppError::Validation(format!(
             "reading GitHub origin in {}: {}",
             checkout.display(),

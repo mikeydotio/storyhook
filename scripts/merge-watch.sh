@@ -254,6 +254,8 @@ if [ "${1:-}" = "--speculative-run" ]; then
             -u STORYHOOK_PROJECT \
             -u GH_TOKEN \
             -u GITHUB_TOKEN \
+            -u GH_ENTERPRISE_TOKEN \
+            -u GITHUB_ENTERPRISE_TOKEN \
             GIT_ALTERNATE_OBJECT_DIRECTORIES="$candidate_alternates" \
             STORYHOOK_GATE_RECEIPT="$script_dir/tree-receipt.sh" \
             python3 "$script_dir/verifier-owner.py" gate "$common_dir" "$poller_wt" -- "$@"

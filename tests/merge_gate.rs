@@ -1300,6 +1300,8 @@ impl MergeRepo {
             .env("STORYHOOK_PROJECT", "live-project")
             .env("GH_TOKEN", "github-secret")
             .env("GITHUB_TOKEN", "github-fallback-secret")
+            .env("GH_ENTERPRISE_TOKEN", "enterprise-secret")
+            .env("GITHUB_ENTERPRISE_TOKEN", "enterprise-fallback-secret")
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
@@ -2001,7 +2003,7 @@ fn speculative_run_uses_the_exact_tree_and_restores_after_success_or_failure() {
         &[
             "bash",
             "-c",
-            "test -z \"${STORYHOOK_STORE_PATH+x}\" && test -z \"${STORYHOOK_PROJECT+x}\" && test -z \"${GH_TOKEN+x}\" && test -z \"${GITHUB_TOKEN+x}\"",
+            "test -z \"${STORYHOOK_STORE_PATH+x}\" && test -z \"${STORYHOOK_PROJECT+x}\" && test -z \"${GH_TOKEN+x}\" && test -z \"${GITHUB_TOKEN+x}\" && test -z \"${GH_ENTERPRISE_TOKEN+x}\" && test -z \"${GITHUB_ENTERPRISE_TOKEN+x}\"",
         ],
     );
     assert_ok(
