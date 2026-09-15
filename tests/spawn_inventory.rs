@@ -188,6 +188,19 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // Cleanup's tmux probe uses shared file-backed, process-group-bounded
     // capture, so neither a server nor a descendant can retain an output pipe.
     ("src/service/resources/tmux.rs", "\"tmux\"", Kind::Waited),
+    // Dropped cleanup captures identities, checks installed artifacts, and
+    // stops its exact pane through bounded, file-backed capture. Helpers have
+    // their own process groups; no descendant can hold an output-pipe EOF.
+    (
+        "src/service/cleanup/dropped/process.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
+    (
+        "src/service/cleanup/dropped/safety.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
     // Continuation stages JSON stdin and captures stdout/stderr in regular
     // files, so descendants cannot hold an output-pipe EOF. The shared runner
     // waits at most 45 s (125 s for resume) and kills its group on timeout.

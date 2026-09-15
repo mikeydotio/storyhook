@@ -56,6 +56,10 @@ default_branch_contract	scripts/origin-default-branch.sh
 dispatch_ready_budget	:(glob)**/*
 dispatch_route_stubs	:(glob)**/*
 dispatch_tmux_context	:(glob)**/*
+dropped_cleanup	:(glob)plugins/story/lib/*
+dropped_cleanup	:(glob)src/service/cleanup/**
+dropped_cleanup	:(glob)tests/dropped_cleanup/**
+dropped_cleanup	src/service/cleanup.rs
 e2e_browser_coverage	:(glob)**/*
 e2e_daemon_check	scripts/e2e-daemon-check.sh
 e2e_display_awake	scripts/e2e-selection.sh
@@ -185,3 +189,5 @@ verifier_lifecycle	:(glob)scripts/**
 verify_window	:(glob)**/*
 version_identity	:(glob)**/*
 web_test	:(glob)**/*
+wire_envelope	src/output.rs
+wire_envelope	src/service/cleanup.rs
