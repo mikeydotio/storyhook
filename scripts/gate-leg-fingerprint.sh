@@ -79,7 +79,7 @@ is_gate_contract() {
 # without adding another arm here.
 is_production_rust() {
     case "$1" in
-    (Cargo.toml | Cargo.lock | build.rs | scripts/tracked-tree.sh | VERSION | clippy.toml | .cargo/*) return 0 ;;
+    (Cargo.toml | Cargo.lock | build.rs | scripts/tracked-tree.sh | VERSION | BUILD | clippy.toml | .cargo/*) return 0 ;;
     (*Cargo.toml | src/* | crates/*) return 0 ;;
     (*) return 1 ;;
     esac
@@ -98,7 +98,7 @@ is_non_dashboard_production_rust() {
 
 is_rust_lint_input() {
     case "$1" in
-    (Cargo.toml | Cargo.lock | build.rs | clippy.toml | .cargo/*) return 0 ;;
+    (Cargo.toml | Cargo.lock | build.rs | BUILD | clippy.toml | .cargo/*) return 0 ;;
     (*Cargo.toml | *.rs) return 0 ;;
     (*) return 1 ;;
     esac
@@ -152,7 +152,7 @@ is_input() {
     (e2e)
         is_production_rust "$path" && return 0
         case "$path" in
-        (e2e/* | plugins/story/* | scripts/run-e2e.sh | .storyhook.toml) return 0 ;;
+        (e2e/* | plugins/story/* | scripts/run-e2e.sh | scripts/test-browser-launch-reporter.py | .storyhook.toml) return 0 ;;
         esac
         ;;
     esac
