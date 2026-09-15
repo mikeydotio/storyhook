@@ -104,6 +104,27 @@ pub(crate) fn run_captured(command: Command, timeout: Duration) -> Result<Captur
     run_captured_with_termination(command, timeout, TerminationPolicy::Kill)
 }
 
+/// Captures potentially sensitive output without mirroring it to activity logs.
+pub(crate) fn run_captured_private(
+    command: Command,
+    timeout: Duration,
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        None,
+        CaptureWait {
+            private_output: true,
+            ..CaptureWait::default()
+        },
+        None,
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
 /// Runs a command with file-backed capture and caller-selected termination.
 pub(crate) fn run_captured_with_termination(
     command: Command,
@@ -240,6 +261,7 @@ pub(crate) fn run_captured_with_input(
 struct CaptureWait {
     poll: Option<Duration>,
     quiescent: bool,
+    private_output: bool,
 }
 
 fn run_captured_until<G>(
@@ -279,12 +301,11 @@ fn run_captured_until<G>(
     let pid = child.id();
     let context = format!("child={pid}");
     crate::daemon::activity::emit("INFO", &source, "event", &context, "process started");
-    let observer = crate::daemon::activity::OutputWatch::capture(
-        &source,
-        &context,
-        &stdout_file,
-        &stderr_file,
-    );
+    let observer = if wait.private_output {
+        None
+    } else {
+        crate::daemon::activity::OutputWatch::capture(&source, &context, &stdout_file, &stderr_file)
+    };
     // macOS removes an exiting child from process lookup before publishing
     // its wait status (SH-698). Either exit observation permits the ordinary
     // bounded wait/capture path; a live unregistered child still fails closed.

@@ -124,10 +124,24 @@ fn both_deadline_modes_record_output_and_timeouts() {
         })
     ));
 
+    let mut private = Command::new("sh");
+    private.args([
+        "-c",
+        "printf opaque-private-answer; printf opaque-private-error >&2",
+    ]);
+    let captured =
+        run_captured_private(private, idle).unwrap_or_else(|error| panic!("{}", error.detail()));
+    assert_eq!(captured.stdout, b"opaque-private-answer");
+    assert_eq!(captured.stderr, b"opaque-private-error");
+
     let journal = std::fs::read_dir(env.daemon_state_dir().join("activity"))
         .unwrap()
         .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
         .collect::<String>();
+    assert!(
+        !journal.contains("opaque-private"),
+        "private output reached the activity journal"
+    );
     let records: Vec<serde_json::Value> = journal
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())

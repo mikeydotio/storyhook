@@ -157,6 +157,20 @@ fn main() {
 
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
 
+    // Helpers are deliberately local: gh's own flags and payloads must not
+    // enter StoryHook's global flag parser or the daemon request envelope.
+    if raw_args.first().is_some_and(|argument| argument == "github") {
+        match storyhook::github_access::run_local(&raw_args[1..]) {
+            Ok(bytes) => {
+                if let Err(error) = std::io::Write::write_all(&mut std::io::stdout(), &bytes) {
+                    fail(&storyhook::error::AppError::GithubApi(error.to_string()), false);
+                }
+            }
+            Err(error) => fail(&error, false),
+        }
+        return;
+    }
+
     // Global flags come off first, before anything looks at a verb, because
     // `--store-path` decides which store *every* branch below resolves —
     // including `tui`, which never reaches the parser.

@@ -83,5 +83,28 @@ All work remains under SH-734. Submission, full-suite verification, PR creation,
 | Release/install/update | update.rs, install.sh, release.sh, render-release-body.sh, release observers and tag helpers |
 | Distribution | build.rs embedded verifier bundle, plugin packaging, help_topics, README, plugin references and skills |
 
-- In progress: shared resolver and regression tests.
-- Pending: gh runner/helpers, caller migration, auth removal, update/install, documentation audit and focused validation.
+- Complete: shared raw-origin resolver; local `resolve`, `exec`, and `git`
+  helpers; explicit gh destinations; private bounded capture; Enterprise token
+  allowlists and gate scrubbing. The transport helper supports fetch, push, and
+  ls-remote against an explicit origin operand. It refuses matching pushInsteadOf
+  rules instead of reconstructing Git's push rewrite precedence.
+- In progress: migrate existing callers to these boundaries.
+- Pending: registered-project identity and mirror validation; PR client/check/link
+  migration; polling opt-in; PAT/CLI/wire removal; submission/verifier/release
+  routing; clone support; update/install source metadata; documentation and
+  architectural audit; directly impacted test validation.
+
+### Local helper contract
+
+`story github resolve --checkout PATH` emits the canonical checkout and validated
+`identity` object (`host`, `owner`, `repo`) as JSON. `exec` and `git` take the same
+checkout option followed by `--` and operation arguments. These calls never open
+the daemon store. Callers must supply the authoritative checkout; the project
+service and verifier integration must establish that authority before forwarding.
+
+`exec` currently supports repository REST endpoints, PR/release commands, and
+`repo view`. API endpoints go immediately after `api`; routing/header overrides
+are refused. Repository commands receive fully qualified destinations. Metadata
+answers reaching 64 KiB are refused rather than silently truncated; release asset
+downloads must write to files. Process deadlines are 120 seconds for network
+operations and 30 seconds for local Git reads. Neither boundary retries writes.
