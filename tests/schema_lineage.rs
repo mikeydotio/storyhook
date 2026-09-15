@@ -47,6 +47,7 @@ fn every_supported_lineage_converges_and_reopens_idempotently() {
         (false, 41),
         (false, 42),
         (false, 43),
+        (false, 44),
     ] {
         let dir = scratch_dir();
         let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
@@ -59,7 +60,7 @@ fn every_supported_lineage_converges_and_reopens_idempotently() {
         let before = history_if_present(store.path(), version);
         let report = store.migrate().unwrap();
         assert_eq!(report.from_version, version as u32);
-        assert_eq!(report.to_version, 44);
+        assert_eq!(report.to_version, migrate::current_schema_version());
         assert_eq!(report.backup.is_some(), version > 0);
         let conn = Connection::open(store.path()).unwrap();
         for table in [
@@ -70,6 +71,7 @@ fn every_supported_lineage_converges_and_reopens_idempotently() {
             "continuations",
             "engine_resets",
             "story_resets",
+            "dropped_cleanups",
         ] {
             assert!(
                 conn.prepare(&format!("SELECT * FROM {table}")).is_ok(),
@@ -173,7 +175,10 @@ fn concurrent_main_upgraders_share_one_atomic_bridge() {
         }
     });
     let conn = Connection::open(store.path()).unwrap();
-    assert_eq!(migrate::schema_version(&conn).unwrap(), 44);
+    assert_eq!(
+        migrate::schema_version(&conn).unwrap(),
+        migrate::current_schema_version()
+    );
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM schema_lineage WHERE source='main'",
@@ -492,7 +497,10 @@ fn concurrent_released_upgrader_switching_lineage_is_reclassified_under_write_lo
         result.unwrap();
     });
 
-    assert_eq!(migrate::schema_version(&released).unwrap(), 44);
+    assert_eq!(
+        migrate::schema_version(&released).unwrap(),
+        migrate::current_schema_version()
+    );
     assert_eq!(
         history(&released)
             .iter()

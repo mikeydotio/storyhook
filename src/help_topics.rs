@@ -438,17 +438,27 @@ reset, unclaim, completion, cleanup and capture do not need STORY_AGENT.
             "cleanup",
             r#"story cleanup [--dry-run]
 
-Retry the centralized verifier's reap of a finished story's workspace. The
-verifier reaps a story's tmux window, worktree and local branch itself once
-its PR lands; cleanup is that reap's retry path and never an independent
-reaper. A candidate is eligible only when its versioned cleanup lease
+Clean dropped-story workspaces and retry the verifier's completed-work reap.
+
+Dropped stories do not need a verification generation or merged commits.
+Cleanup closes the exact owned tmux window, stops its captured process tree,
+and removes a clean, unlocked leased worktree without force. Local and remote
+branches remain for recovery. This path does not fetch. Dirty work, missing
+process identity, duplicate panes, ambiguous leases, and protected resources
+are preserved. Interrupted cleanup retains durable ownership until a retry
+can prove safety; reopen and reset wait for that ownership to be released.
+Use this command again to reconcile an interrupted attempt.
+
+For completed work, the verifier reaps a story's tmux window, worktree and local branch itself once
+its PR lands; cleanup is that reap's retry path. A completed-work candidate
+is eligible only when its versioned cleanup lease
 matches the current project, its story is CLOSED and carries the verifier's
 CENTRAL VERIFICATION CLEANUP COMPLETE or CLEANUP REQUIRED comment on its
 latest verification, its exact tmux window is absent, the worktree is clean
 and unlocked, and every worktree and local-branch tip is contained by a
 freshly fetched origin default branch.
 
-Cleanup removes the exact leased worktree, its contained build artifacts,
+For completed work, cleanup removes the leased worktree, its build artifacts,
 and the exact local branch. It never removes the main checkout, shared build
 artifacts outside an eligible worktree, or a remote branch: the verifier's
 merge step deletes the remote branch, and cleanup neither reads nor writes
@@ -460,8 +470,9 @@ and preserved.
 --dry-run applies every read-only preflight and reports reclaimed bytes, but
 does not remove resources, and lists every candidate it declined with the
 reason (story-open, not-verifier-released, unknown-story, dirty-worktree,
-unmerged-work, ...). JSON output includes removed and skipped arrays with
-the same stable reason strings.
+unmerged-work, ...). JSON output includes removed, skipped, and failed arrays.
+Removal entries include removed_tmux_window and retained_local_branch.
+Dropping a story does not synchronously remove its resources.
 
 The daemon runs the same service daily by default. Configure it per project:
 
@@ -2833,6 +2844,10 @@ Related:
 Retire a story that will not be done. The story moves to the `dropped`
 state — CLOSED superstate, so it stops counting as open, ready, or a
 blocker — and the reason is recorded as a comment on it.
+
+The next scheduled cleanup can remove its owned window and clean worktree.
+Run story cleanup --dry-run to inspect eligibility or story cleanup to retry.
+Local branches and dirty work are preserved for recovery.
 
 A closed story keeps everything: its description, its comments, its
 labels and every relationship it has. That is the whole point. It is
