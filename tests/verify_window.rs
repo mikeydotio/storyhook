@@ -107,6 +107,86 @@ fn run_window(tmux_dir: &Path, args: &[&str]) -> Output {
         .expect("running scripts/verify-window.sh")
 }
 
+#[test]
+fn reader_spawn_failures_preserve_the_tmux_diagnostic() {
+    let fixture = Fixture::new(true);
+    let calls = fixture.root.path().join("failed-respawns");
+    std::fs::write(
+        fixture.tmux_dir().join("tmux"),
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = respawn-pane ]; then\n  echo attempt >> {}\n  echo 'respawn pane failed: fork failed: fixture cause' >&2\n  exit 1\nfi\nexit 0\n",
+            shell_quote(calls.to_str().unwrap())
+        ),
+    )
+    .unwrap();
+    for args in [vec!["banner", "phase"], vec!["tail", "/fixture/log"]] {
+        let out = run_window(&fixture.tmux_dir(), &args);
+        assert!(!out.status.success(), "{args:?}: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("fork failed: fixture cause"),
+            "{args:?} lost the tmux spawn diagnostic: {out:?}"
+        );
+        assert!(out.stdout.is_empty(), "{args:?}: {out:?}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(calls).unwrap().lines().count(),
+        2,
+        "an unrelated error must get only one attempt per call"
+    );
+}
+
+#[test]
+fn pty_allocation_recovery_is_bounded_and_cannot_kill_an_intervening_reader() {
+    for (failures, replacement, expected_calls, success) in [
+        (1, false, 2, true),
+        (4, false, 4, false),
+        (1, true, 2, false),
+    ] {
+        let fixture = Fixture::new(true);
+        let count = fixture.root.path().join("attempts");
+        let calls = fixture.root.path().join("respawns");
+        std::fs::write(
+            fixture.tmux_dir().join("tmux"),
+            format!(
+                "#!/bin/sh\n\
+                 [ \"$1\" = respawn-pane ] || exit 0\n\
+                 printf '%s\\n' \"$*\" >> {calls}\n\
+                 n=$(cat {count} 2>/dev/null || printf 0); n=$((n + 1))\n\
+                 printf '%s' \"$n\" > {count}\n\
+                 if [ \"$n\" -le {failures} ]; then\n\
+                   echo 'respawn pane failed: fork failed: Device not configured' >&2; exit 1\n\
+                 fi\n\
+                 if [ {replacement} = true ]; then\n\
+                   case \" $* \" in *' -k '*) exit 0 ;; esac\n\
+                   echo 'respawn pane failed: pane still active' >&2; exit 1\n\
+                 fi\necho 'fixture spawn diagnostic' >&2\nexit 0\n",
+                count = shell_quote(count.to_str().unwrap()),
+                calls = shell_quote(calls.to_str().unwrap()),
+            ),
+        )
+        .unwrap();
+        let out = run_window(&fixture.tmux_dir(), &["banner", "phase"]);
+        assert_eq!(out.status.success(), success, "{out:?}");
+        assert!(
+            out.stdout.is_empty(),
+            "spawn diagnostics reached stdout: {out:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(count).unwrap(),
+            expected_calls.to_string(),
+            "{out:?}"
+        );
+        let calls = std::fs::read_to_string(calls).unwrap();
+        let mut attempts = calls.lines();
+        assert!(attempts.next().unwrap().contains(" -k "), "{calls}");
+        assert!(attempts.all(|line| !line.contains(" -k ")), "{calls}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("Device not configured"),
+            "{out:?}"
+        );
+    }
+}
+
 struct Fixture {
     root: tempfile::TempDir,
 }

@@ -164,7 +164,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 # charter's `<reap>` placeholder (SH-208) expands to: the exact script an
 # unattended session must call back into to reclaim its own worktree.
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd)"
+STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd -P)"
 source "$STORY_PLUGIN_ROOT/lib/codex-bootstrap.sh"
 source "$STORY_PLUGIN_ROOT/lib/resources.sh"
 source "$STORY_PLUGIN_ROOT/lib/workspace.sh"
@@ -959,7 +959,7 @@ enter_checkout() {
 # quietly reinstate the wrong-guard stranding SH-481 was filed for.
 # dispatch_ready_note — one clause naming WHY the readiness check gave up, from
 # the globals it sets (wait_ready_sentinel's reasons since SH-231; wait_ready's
-# own "timeout" default survives for cmd_doctor's still-unported call). A
+# own "timeout" default covers terminal-readiness probes). A
 # timeout and "a shell is sitting in that pane" are different situations with
 # different remedies, and the operator needs to be told which.
 PLAN_MODE_REASON="not-required"
@@ -1083,7 +1083,7 @@ dispatch_ready_note() {
         printf 'Codex runs SessionStart only after the first prompt. Its initialization prompt was submitted, but no dispatch sentinel appeared; check the enabled Storyhook hook package and hook errors. No story charter was delivered'
         return
       fi
-      printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel. Possible causes: the plugin'\''s hooks are not installed in that worktree; %s has not started yet; the sentinel write failed silently on the daemon side (check daemon.log for a "could not publish its dispatch sentinel" warning, SH-544); or the daemon was too slow or busy to answer the hook'\''s own request within its budget (run `story doctor install` to check daemon health)' "$AGENT_LABEL"
+      printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel. Check that the Storyhook plugin is enabled for %s, then inspect SessionStart stderr and daemon.log for hook, configuration, or sentinel-write failures. Run `story load-context` to diagnose project access' "$AGENT_LABEL"
       ;;
     hook-identity-missing)
       printf 'its SessionStart hook published a legacy or malformed sentinel without protocol-2 plugin identity. Update or repair the enabled Storyhook plugin, then run `story doctor install`'
@@ -2500,8 +2500,7 @@ cmd_dispatch() {
   #
   # `remain-on-exit on`, `automatic-rename off` and `allow-rename off` are
   # chained onto the SAME tmux invocation via `\;` rather than set
-  # afterward in separate `tmux` calls (as this used to do, and as
-  # cmd_doctor's own scratch window below still does): each separate `tmux`
+  # afterward in separate `tmux` calls (as this used to do): each separate `tmux`
   # call is a fresh process launch, and with the shell command now
   # executing AT window-creation time rather than after a later typed step,
   # that gap is a real window for a title escape to land in before the pin
@@ -2633,7 +2632,7 @@ cmd_dispatch() {
   elif [ "$AGENT" = "codex" ]; then
     wait_ready "$pane" "$launch_cmd" && provider_ready=true
   else
-    wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" && provider_ready=true
+    wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" "$STORY_PLUGIN_ROOT" && provider_ready=true
   fi
   if [ "$provider_ready" != true ]; then
     local ready_tail
@@ -3666,7 +3665,7 @@ _project_integrity() {
   esac
 }
 
-cmd_doctor() {
+cmd_doctor() (
   [ "$#" -eq 0 ] || fail "usage: story.sh doctor"
 
   require_story
@@ -3687,14 +3686,15 @@ cmd_doctor() {
         ok: true, dry_run: true, agent: $agent, agent_label: $agent_label, window_name: $wname,
         commands: [
           "story doctor --json",
-          ("tmux new-window -d -n " + $wname + " -P -F #{pane_id}"),
-          ("tmux send-keys -t <pane> -l " + $launch),
-          "tmux send-keys -t <pane> Enter",
+          "create a private Git checkout with the current project pointer",
+          ("tmux new-window -d -c <private-checkout> -n " + $wname + " -e STORYHOOK_DISPATCH=1 -P -F #{pane_id} " + $launch),
+          "verify fresh SessionStart sentinel and original provider process",
+          (if $agent == "codex" then "run the task-free Codex initialization and verify its stopped turn" else empty end),
           (if $agent == "codex" then ("tmux send-keys -t <pane> " + $plan_key + " # if Plan footer is absent") else empty end),
           "printf %s <multi-line probe> | tmux load-buffer -b story-doctor -",
           "tmux paste-buffer -p -d -b story-doctor -t <pane>",
           "tmux capture-pane -p -t <pane>",
-          "tmux kill-window -t <window>"
+          "verify ownership, remove the probe pane and private checkout"
         ],
         display: ("[story] DRY RUN doctor: would run `story doctor` for project integrity, then spin up "
                   + $agent_label + " with `" + $launch + "` in window " + $wname + ", check readiness and Plan mode, paste a multi-line probe "
@@ -3708,23 +3708,89 @@ cmd_doctor() {
   _project_integrity
   local integrity_summary="$_INTEGRITY_SUMMARY"
 
-  local pane window
-  if ! pane=$(tmux new-window -d -n "$DOCTOR_WINDOW_NAME" -P -F '#{pane_id}' 2>/dev/null) || [ -z "$pane" ]; then
-    fail "failed to open a scratch tmux window for the readiness self-test."
+  local probe_dir pane="" pane_pid="" launch_identity="" launch_start="" cleanup_ok=true cleanup_note="" cleaned=false pointer_root
+  probe_dir=$(mktemp -d /tmp/story-doctor.XXXXXX) || fail "cannot create doctor scratch checkout"
+  # Dynamic scope is confined to this subshell. An early refusal still runs
+  # cleanup, and an uncertain/replaced owner keeps its files for diagnosis.
+  doctor_owns_pane() {
+    local current identity
+    current=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null) || return 1
+    [ -n "$pane_pid" ] && [ "$current" = "$pane_pid" ] || return 1
+    identity=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" capture "$pane_pid") || return 1
+    [ -n "$launch_start" ] && [ "$(printf '%s' "$identity" | jq -r '.identity.start')" = "$launch_start" ]
+  }
+  doctor_cleanup() {
+    local stopped detail
+    [ "$cleaned" = false ] || return 0
+    cleaned=true
+    if [ -n "$pane" ]; then
+      if ! stopped=$(python3 "$STORY_PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pane_pid" "$launch_start" 2>&1); then
+        detail=$(printf '%s' "$stopped" | jq -r '.error' 2>/dev/null) || detail="$stopped"
+        cleanup_ok=false
+        cleanup_note="Probe cleanup could not confirm ownership or termination: $detail; retained $probe_dir and pane $pane."
+        printf '%s\n' "$cleanup_note" >&2
+        return 0
+      fi
+    fi
+    if ! rm -rf -- "$probe_dir"; then
+      cleanup_ok=false
+      cleanup_note="Could not remove doctor scratch checkout $probe_dir."
+      printf '%s\n' "$cleanup_note" >&2
+    fi
+  }
+  trap doctor_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  pointer_root=$(pwd -P)
+  while [ ! -e "$pointer_root/.storyhook.toml" ] && [ ! -L "$pointer_root/.storyhook.toml" ]; do
+    [ "$pointer_root" != / ] && [ ! -e "$pointer_root/.git" ] \
+      || fail "doctor needs a readable .storyhook.toml in this checkout to test SessionStart"
+    pointer_root=$(dirname "$pointer_root")
+  done
+  cp "$pointer_root/.storyhook.toml" "$probe_dir/.storyhook.toml" || fail "cannot copy the project pointer for doctor"
+  if [ -e "$pointer_root/.storyhook/plugin-config.toml" ] || [ -L "$pointer_root/.storyhook/plugin-config.toml" ]; then
+    mkdir -p "$probe_dir/.storyhook" \
+      && cp "$pointer_root/.storyhook/plugin-config.toml" "$probe_dir/.storyhook/" \
+      || fail "cannot copy plugin configuration for doctor"
   fi
-  window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
-
-  paste_text "$pane" "$DOCTOR_LAUNCH_TPL" || true
-  tmux send-keys -t "$pane" Enter 2>/dev/null || true
+  git -C "$probe_dir" init -q -b main || fail "cannot initialize doctor scratch checkout"
+  local CODEX_BOOTSTRAP_FILE="" CODEX_BOOTSTRAP_TOKEN="" CODEX_BOOTSTRAP_PHASE=not-started
+  if [ "$AGENT" = codex ]; then
+    codex_bootstrap_prepare "$probe_dir" || fail "cannot prepare doctor Codex initialization"
+  fi
+  pane=$(python3 "$STORY_PLUGIN_ROOT/lib/tmux-launch.py" new-window -d -c "$probe_dir" \
+    -n "$DOCTOR_WINDOW_NAME" -e STORYHOOK_DISPATCH=1 -e STORYHOOK_AUTO= -e STORYHOOK_FULL_AUTO= \
+    -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" -P -F '#{pane_id}' "$DOCTOR_LAUNCH_TPL" \
+    \; set-window-option -t "$DOCTOR_WINDOW_NAME" remain-on-exit on \
+    \; set-window-option -t "$DOCTOR_WINDOW_NAME" automatic-rename off \
+    \; set-window-option -t "$DOCTOR_WINDOW_NAME" allow-rename off) || true
+  [ -n "$pane" ] || fail "failed to open a scratch tmux window for the readiness self-test"
+  pane_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null) || pane_pid=""
+  launch_identity=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" capture "$pane_pid") \
+    || fail "cannot capture doctor launch process: $launch_identity; scratch checkout: $probe_dir"
+  launch_start=$(printf '%s' "$launch_identity" | jq -er '.identity.start') || fail "doctor launch has no process start token"
 
   # This probe launches DOCTOR_LAUNCH_TPL, which need not be LAUNCH_TPL — so the
   # binary pane_runs recognises by identity has to follow it, or doctor would
   # self-test the dispatch launcher's install while running a different one.
   READY_LAUNCH_BIN="$doctor_bin"
 
-  local readiness_confirmed=false plan_mode_confirmed=false tier="none" tail_evidence
+  local readiness_confirmed=false terminal_ready=false sentinel_confirmed=false context_status=unknown
+  local plan_mode_confirmed=false tier="none" tail_evidence ready_reason
   if wait_ready "$pane" "$DOCTOR_LAUNCH_TPL"; then
-    readiness_confirmed=true
+    terminal_ready=true
+  fi
+  if [ "$AGENT" = codex ]; then
+    codex_bootstrap_ready "$pane" "$pane_pid" "$probe_dir" "$DOCTOR_LAUNCH_TPL" && readiness_confirmed=true
+  else
+    wait_ready_sentinel "$pane" "$pane_pid" "$probe_dir" "$STORY_PLUGIN_ROOT" && readiness_confirmed=true
+  fi
+  ready_reason="$WAIT_READY_REASON"
+  if [ "$WAIT_READY_TIER" = sentinel ]; then
+    sentinel_confirmed=true
+    context_status=$(jq -r '.context_status // "unknown"' "$probe_dir/.claude/dispatch-sentinel.json") || context_status=unknown
+  fi
+  if [ "$readiness_confirmed" = true ] && doctor_owns_pane; then
     if ensure_provider_plan_mode "$pane"; then
       plan_mode_confirmed=true
     fi
@@ -3746,7 +3812,7 @@ cmd_doctor() {
   # the `❯` row; had it split at a newline, the first would have submitted and
   # only the last would remain. Diagnostic only — never presses Enter.
   local probe_ran=false probe_first_held=false probe_seen=0 probe_total=3
-  if [ "$readiness_confirmed" = true ] && [ "$plan_mode_confirmed" = true ]; then
+  if [ "$readiness_confirmed" = true ] && [ "$plan_mode_confirmed" = true ] && doctor_owns_pane; then
     local probe capture box_row marker
     probe=$(printf 'story-probe-alpha\nstory-probe-bravo\nstory-probe-charlie')
     if paste_prompt "$pane" "$probe" "story-doctor"; then
@@ -3760,22 +3826,16 @@ cmd_doctor() {
     fi
   fi
 
-  # Tear down the scratch window (best-effort — never flips ok). The probe text
-  # is discarded unsubmitted along with it.
-  if [ -n "$window" ]; then
-    tmux kill-window -t "$window" 2>/dev/null || true
-  else
-    tmux kill-window -t "$pane" 2>/dev/null || true
-  fi
+  doctor_cleanup
 
   local display
   if [ "$readiness_confirmed" = true ]; then
     display="[story] doctor: $AGENT_LABEL readiness OK via the '$tier' tier."
     if [ "$occupant_rule" != "pattern" ]; then
-      display="$display Occupant name \`$occupant\` does NOT match STORY_READY_PROCESS_PATTERN (\`$READY_PROCESS_PATTERN\`); it was recognised as the launch binary itself ($occupant_rule), which resolves to \`$launch_resolved\`. Dispatch works — but a name-only gate would refuse this build, so leave STORY_READY_PROCESS_PATTERN alone rather than pinning it to \`$occupant\`, which changes on every update."
+      display="$display Occupant name \`$occupant\` does NOT match STORY_READY_PROCESS_PATTERN (\`$READY_PROCESS_PATTERN\`); it was recognised as the launch binary itself ($occupant_rule), which resolves to \`$launch_resolved\`. The process identity check passed; leave STORY_READY_PROCESS_PATTERN alone rather than pinning it to \`$occupant\`, which changes on every update."
     fi
   else
-    display="[story] doctor: $AGENT_LABEL readiness NOT confirmed within the poll budget — the readiness marker may have drifted. See pane_tail."
+    display="[story] doctor: $AGENT_LABEL dispatch readiness NOT confirmed ($ready_reason). $(dispatch_ready_note). See pane_tail."
     if [ -n "$occupant" ]; then
       display="$display The pane's occupant was \`$occupant\` and the launch binary resolves to \`${launch_resolved:-<unresolved>}\`."
     fi
@@ -3792,10 +3852,17 @@ cmd_doctor() {
       display="$display Multi-line paste probe: SUSPECT (first-line-held=$probe_first_held, $probe_seen/$probe_total lines seen) — bracketed paste may not be landing."
     fi
   fi
-  display="$display $integrity_summary"
+  display="$display Context: $context_status. $integrity_summary${cleanup_note:+ $cleanup_note}"
+  if [ "$context_status" != loaded ]; then
+    display="$display Run story load-context and inspect SessionStart stderr for the context-loading failure."
+  fi
 
   jq -n \
     --argjson ready "$readiness_confirmed" --arg tier "$tier" \
+    --argjson terminal "$terminal_ready" --argjson sentinel "$sentinel_confirmed" \
+    --arg context "$context_status" --arg reason "$ready_reason" \
+    --argjson cleanup "$cleanup_ok" --arg cleanup_note "$cleanup_note" \
+    --arg probe_dir "$probe_dir" --arg bootstrap "$CODEX_BOOTSTRAP_PHASE" \
     --argjson plan "$plan_mode_confirmed" --arg agent "$AGENT" --arg agent_label "$AGENT_LABEL" \
     --arg tail "$tail_evidence" --arg display "$display" \
     --argjson probe_ran "$probe_ran" --argjson probe_first "$probe_first_held" \
@@ -3805,10 +3872,16 @@ cmd_doctor() {
     --arg launch_bin "$doctor_bin" --arg launch_resolved "$launch_resolved" \
     --arg pattern "$READY_PROCESS_PATTERN" '
     {
-      ok: true,
+      ok: ($ready and $terminal and $plan and $integrity_ok and $cleanup and ($context == "loaded") and $probe_ran and $probe_first and ($probe_seen == $probe_total)),
       agent: $agent,
       agent_label: $agent_label,
       readiness_confirmed: $ready,
+      terminal_readiness_confirmed: $terminal,
+      sentinel_confirmed: $sentinel,
+      context_status: $context,
+      wait_ready_reason: $reason,
+      bootstrap_phase: $bootstrap,
+      cleanup: {ok:$cleanup, detail:$cleanup_note},
       plan_mode_confirmed: $plan,
       matched_tier: $tier,
       occupant: {
@@ -3823,8 +3896,9 @@ cmd_doctor() {
     }
     + (if $probe_ran then {multiline_probe: {first_line_held: $probe_first, lines_seen: $probe_seen, lines_total: $probe_total}} else {} end)
     + (if $tail == "" then {} else {pane_tail: $tail} end)
+    + (if $cleanup then {} else {preserved_path:$probe_dir} end)
     + {display: $display}'
-}
+)
 
 # ---- subcommand: complete ---------------------------------------------------
 # FORKED from mikeydotio/agentics' plugins/storywork/bin/story.sh

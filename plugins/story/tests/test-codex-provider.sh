@@ -127,7 +127,7 @@ assert_eq "$(cd "$repo_plan" && story show "$id_plan" --json | jq -r '.story.sto
 
 # Doctor reports and tests the selected provider contract.
 fresh_tmux
-out=$(run_codex "$repo_plan" doctor)
+out=$(FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" run_codex "$repo_plan" doctor)
 assert_eq "$(jqf "$out" .ok)" "true" "doctor: ok"
 assert_eq "$(jqf "$out" .agent)" "codex" "doctor: selected provider"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "doctor: readiness"

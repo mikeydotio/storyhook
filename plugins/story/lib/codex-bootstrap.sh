@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/plugin-identity.sh"
 # Codex defers SessionStart until its first turn. A task-free turn invokes the
 # hook, which stops it before model work; its transcript proves completion.
 # Bootstrap metadata belongs to the worktree's private Git directory, never
@@ -25,7 +26,7 @@ codex_bootstrap_active() {
 codex_bootstrap_hook_response() {
   local payload="$1" normal="$2" request="${STORYHOOK_CODEX_BOOTSTRAP:-}"
   if ! codex_bootstrap_active; then
-    case "$normal" in "{"*) printf '%s' "$normal" ;; *) printf '{}' ;; esac
+    if printf '%s' "$normal" | jq -se 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1; then printf '%s' "$normal"; else printf '{}'; fi
     return
   fi
   local attempt cwd session transcript turn receipt temp reason
@@ -39,9 +40,10 @@ codex_bootstrap_hook_response() {
       select(any(.[]; .type == "session_meta" and .payload.id == $session)) |
       [.[] | select(.type == "event_msg" and .payload.type == "task_started")][-1].payload |
       select(.collaboration_mode_kind == "plan") | .turn_id | select(type == "string" and length > 0)' "$transcript") \
-    && jq -e --arg root "$HOOK_PLUGIN_ROOT" --arg session "$session" \
-      '.protocol_version == 2 and .plugin_root == $root and .session_id == $session' \
+    && jq -e --arg session "$session" \
+      '.protocol_version == 2 and .session_id == $session' \
       "$cwd/.claude/dispatch-sentinel.json" >/dev/null \
+    && plugin_receipt_matches "$cwd/.claude/dispatch-sentinel.json" "$HOOK_PLUGIN_ROOT" \
     && receipt=$(jq -cn --arg attempt "$attempt" --arg root "$HOOK_PLUGIN_ROOT" \
       --arg session "$session" --arg transcript "$transcript" --arg turn "$turn" \
       '{version:1,phase:"stopped",attempt:$attempt,plugin_root:$root,session_id:$session,transcript:$transcript,turn_id:$turn}') \
@@ -72,9 +74,10 @@ codex_bootstrap_pane_owned() {
 # A newer turn, assistant output, or tools invalidate the bootstrap proof.
 codex_bootstrap_completed() {
   local receipt="$1" root="$2" attempt="$3" transcript session turn
-  jq -e --arg root "$root" --arg attempt "$attempt" \
-    '.version == 1 and .phase == "stopped" and .plugin_root == $root and .attempt == $attempt' \
+  jq -e --arg attempt "$attempt" \
+    '.version == 1 and .phase == "stopped" and .attempt == $attempt' \
     "$receipt" >/dev/null 2>&1 || return 1
+  plugin_receipt_matches "$receipt" "$root" || return 1
   transcript=$(jq -er '.transcript | select(type == "string" and startswith("/"))' "$receipt") || return 1
   session=$(jq -er '.session_id | select(type == "string" and length > 0)' "$receipt") || return 1
   turn=$(jq -er '.turn_id | select(type == "string" and length > 0)' "$receipt") || return 1

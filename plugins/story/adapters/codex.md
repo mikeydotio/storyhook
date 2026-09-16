@@ -108,8 +108,10 @@ therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit 
   launcher uses provider-independent resource discovery, so no `STORY_AGENT` prefix is needed — and neither the
   installed-artifact guard nor Codex's own command rule admits one.
 - `doctor`: run `bash "<story-helper>" doctor` and show `display`. It reports
-  the selected provider and independently confirms readiness, Plan mode, bracketed paste,
-  and Storyhook project integrity.
+  the selected provider and checks fresh hook evidence, context loading, Plan mode,
+  bracketed paste, and project integrity in a private checkout. Codex receives only
+  the task-free initialization turn; doctor requires its stopped-turn completion.
+  Report any retained probe path after failed cleanup.
 
 ## Release (`unclaim <id>`, `reset <id>`)
 
