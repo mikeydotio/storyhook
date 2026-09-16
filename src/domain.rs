@@ -45,18 +45,10 @@ pub mod remote;
 /// it by name.
 pub mod prefix;
 
-/// Credentials the request envelope carries, and the rule that stops them
-/// printing themselves.
-///
-/// Here rather than under `github` because `src/github` is gated on the
-/// `github-pr` feature while the envelope carries the field in every build —
-/// see this module's own doc comment.
-pub mod secret;
-
 /// Parses a GitHub pull request URL — the one piece of `story link-pr`
 /// GitHub knowledge that must work with the `github-pr` feature off.
 ///
-/// Here rather than under `github` for the same reason [`secret`] is: `src/
+/// Here rather than under `github` because `src/
 /// github` is gated and `PrLinkService::link`/`unlink` are not, by design
 /// (SH-49, whose council verdict that story carries).
 pub mod pr_url;

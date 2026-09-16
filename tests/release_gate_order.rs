@@ -25,6 +25,7 @@ impl ReleaseFixture {
         }
         for file in [
             "branch-policy.sh",
+            "github-access.sh",
             "release.sh",
             "release-targets.sh",
             "build-number.py",
@@ -88,9 +89,11 @@ esac
             &repo.join("bin/gh"),
             r#"#!/bin/bash
 set -eu
+[ "$GH_HOST" = github.example.com ] || exit 92
+[ "$GH_REPO" = github.example.com/acme/storyhook ] || exit 93
 case "$1 ${2:-}" in
-  'auth status'|'api --paginate') exit 0 ;;
-  'pr create') echo pr:create >> "$RELEASE_TEST_LOG"; exit 91 ;;
+  'api repos/acme/storyhook/releases?per_page=100') exit 0 ;;
+  'pr create') echo pr:create >> "$GH_CONFIG_DIR/calls"; exit 91 ;;
   *) exit 90 ;;
 esac
 "#,
@@ -118,6 +121,23 @@ esac
         fixture.git(&["init", "-q", "--bare", "../origin"]);
         fixture.git(&["remote", "add", "origin", "../origin"]);
         fixture.git(&["push", "-q", "-u", "origin", "dev"]);
+        storyhook_test_support::install_git_endpoint(
+            &fixture.repo.join("bin"),
+            &[(
+                "https://github.example.com/acme/storyhook.git",
+                &fixture.scratch.path().join("origin"),
+            )],
+        );
+        fixture.git(&["add", "bin/git"]);
+        fixture.git(&["commit", "-qm", "fixture endpoint"]);
+        fixture.git(&["push", "-q", "origin", "dev"]);
+        fixture.git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.example.com:acme/storyhook.git",
+        ]);
+
         fixture
     }
 
@@ -140,6 +160,8 @@ esac
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("SEMVER_CLI", self.repo.join("bin/semver"))
+            .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+            .env("GH_CONFIG_DIR", self.scratch.path())
             .env("RELEASE_TEST_LOG", self.scratch.path().join("calls"));
         command
     }
@@ -192,8 +214,14 @@ esac
 
     fn assert_no_push(&self) {
         assert!(
-            self.git(&["ls-remote", "--heads", "origin", "release/*"])
-                .is_empty()
+            self.git(&[
+                "-C",
+                "../origin",
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/release/"
+            ])
+            .is_empty()
         );
     }
 }
@@ -244,9 +272,19 @@ fn successful_public_gate_certifies_the_tree_actually_pushed() {
         "translated GitHub failure must retain its release-stage context: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let tree = fixture.git(&["rev-parse", "refs/remotes/origin/release/v9.9.10^{tree}"]);
+    let tree = fixture.git(&[
+        "-C",
+        "../origin",
+        "rev-parse",
+        "refs/heads/release/v9.9.10^{tree}",
+    ]);
     assert_eq!(
-        fixture.git(&["show", "refs/remotes/origin/release/v9.9.10:BUILD"]),
+        fixture.git(&[
+            "-C",
+            "../origin",
+            "show",
+            "refs/heads/release/v9.9.10:BUILD"
+        ]),
         "1"
     );
     assert_eq!(
@@ -262,7 +300,12 @@ fn public_release_preserves_local_build_advancement() {
     let output = fixture.run(false, true, false, false);
     assert_exit(&output, 1);
     assert_eq!(
-        fixture.git(&["show", "refs/remotes/origin/release/v9.9.10:BUILD"]),
+        fixture.git(&[
+            "-C",
+            "../origin",
+            "show",
+            "refs/heads/release/v9.9.10:BUILD"
+        ]),
         "273"
     );
     assert_eq!(fixture.git(&["status", "--porcelain"]), "");
@@ -382,4 +425,51 @@ esac
             "{installed} / {running}: {output:?}"
         );
     }
+}
+
+#[test]
+fn publish_uses_enterprise_authority_for_api_write_readback_and_web_link() {
+    let fixture = ReleaseFixture::new();
+    executable(
+        &fixture.repo.join("bin/gh"),
+        r#"#!/bin/bash
+set -eu
+[ "$GH_HOST" = github.example.com ] || exit 92
+[ "$GH_REPO" = github.example.com/acme/storyhook ] || exit 93
+case "$1" in
+  api) [[ " $* " = *' --hostname github.example.com '* ]] || exit 94 ;;
+  release) [[ " $* " = *' --repo github.example.com/acme/storyhook '* ]] || exit 95 ;;
+  *) exit 96 ;;
+esac
+case "$1 $2" in
+  'api repos/acme/storyhook/releases?per_page=100') printf '7\ttrue\n' ;;
+  'api repos/acme/storyhook/releases/7/assets?per_page=100')
+    source scripts/release-targets.sh
+    for artifact in "${RELEASE_ARTIFACTS[@]}"; do printf '%s\tsha256:%064d\n' "$artifact" 0; done ;;
+  'release edit') printf '%s\n' "$*" > "$GH_CONFIG_DIR/published" ;;
+  'release view') echo v9.9.9 ;;
+  *) exit 97 ;;
+esac
+"#,
+    );
+    fixture.git(&["add", "bin/gh"]);
+    fixture.git(&["commit", "-qm", "explicit publication endpoint fixture"]);
+    let output = fixture
+        .command("bash")
+        .args(["scripts/release.sh", "--publish", "--yes"])
+        .env("GH_HOST", "wrong.example")
+        .env("GH_REPO", "wrong.example/other/repo")
+        .output()
+        .unwrap();
+    assert_exit(&output, 0);
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("https://github.example.com/acme/storyhook/releases/tag/v9.9.9")
+    );
+    let write = fs::read_to_string(fixture.scratch.path().join("published")).unwrap();
+    assert!(
+        write.contains(
+            "release edit v9.9.9 --draft=false --repo github.example.com/acme/storyhook"
+        )
+    );
 }

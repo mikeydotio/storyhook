@@ -208,6 +208,10 @@ fn substitute(token: &str) -> Result<String, String> {
 
 /// Commands intentionally answered before the ordinary invocation parser.
 pub const PARSED_ELSEWHERE: &[(&str, &str)] = &[
+    (
+        "github",
+        "src/main.rs dispatches the local protocol; tests/github_access.rs exercises its parser",
+    ),
     ("tui", "src/main.rs dispatches it ahead of parse_invocation"),
     ("mcp", "src/main.rs dispatches it ahead of parse_invocation"),
 ];

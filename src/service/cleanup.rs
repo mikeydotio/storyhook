@@ -579,7 +579,9 @@ fn clean_candidate(
     }
 
     ensure_window_absent(lease).map_err(|detail| refuse("tmux-window-open", detail))?;
-    let default_branch = origin_default_branch(repository)
+    let observation = crate::github_access::OriginObservation::resolve(repository)
+        .map_err(|error| refuse("default-branch-unverifiable", error.to_string()))?;
+    let default_branch = observed_default_branch(&observation)
         .map_err(|detail| refuse("default-branch-unverifiable", detail))?;
     let default_branch = default_branch.as_str();
     if matches!(lease.branch.as_str(), "main" | "master") || lease.branch == default_branch {
@@ -588,11 +590,14 @@ fn clean_candidate(
     super::resources::validate_lease(lease)
         .map_err(|error| refuse("worktree-mismatch", error.to_string()))?;
     let default_spec = format!("+refs/heads/{default_branch}:refs/remotes/origin/{default_branch}");
-    let fetch = git(repository, &["fetch", "--quiet", "origin", &default_spec])
-        .map_err(|error| refuse("fetch-failed", error))?;
-    if !fetch.status.success() {
-        return Err(refuse("fetch-failed", stderr(&fetch)));
-    }
+    observation
+        .git(&[
+            "fetch".into(),
+            "--quiet".into(),
+            "origin".into(),
+            default_spec,
+        ])
+        .map_err(|error| refuse("fetch-failed", error.to_string()))?;
 
     // Only what cleanup itself would delete has to be reachable: the worktree
     // and the local branch. The remote branch is neither read nor written —
@@ -722,9 +727,23 @@ fn git_text(cwd: &Path, args: &[&str]) -> Result<String, String> {
 /// The plugin's `default_branch` and the verifier bundle's
 /// `origin-default-branch.sh` are this derivation's shell copies.
 pub(crate) fn origin_default_branch(repository: &Path) -> Result<String, String> {
-    let advertised = git_text(repository, &["ls-remote", "--symref", "origin", "HEAD"])
-        .map_err(|detail| format!("origin did not answer: {detail}"))?;
-    advertised
+    let observation = crate::github_access::OriginObservation::resolve(repository)
+        .map_err(|error| format!("origin did not answer: {error}"))?;
+    observed_default_branch(&observation)
+}
+
+fn observed_default_branch(
+    observation: &crate::github_access::OriginObservation,
+) -> Result<String, String> {
+    let advertised = observation
+        .git(&[
+            "ls-remote".into(),
+            "--symref".into(),
+            "origin".into(),
+            "HEAD".into(),
+        ])
+        .map_err(|error| format!("origin did not answer: {error}"))?;
+    String::from_utf8_lossy(&advertised)
         .lines()
         .filter_map(|line| line.split_once('\t'))
         .find(|(target, name)| *name == "HEAD" && target.starts_with("ref: "))

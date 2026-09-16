@@ -67,6 +67,7 @@ done
 script_dir="$(cd "$(dirname "$0")" && pwd)" || die "cannot resolve this script's directory"
 # shellcheck source=scripts/branch-policy.sh
 source "$script_dir/branch-policy.sh"
+source "$script_dir/github-access.sh"
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git worktree"
 cd "$root" || die "cannot enter $root"
@@ -77,7 +78,7 @@ common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)" \
 if [ -z "$ref" ]; then
     ref="origin/$STORYHOOK_INTEGRATION_BRANCH"
     note "fetching $ref"
-    git fetch -q origin "$STORYHOOK_INTEGRATION_BRANCH" || die "could not fetch $ref"
+    origin_git fetch -q origin "+refs/heads/$STORYHOOK_INTEGRATION_BRANCH:refs/remotes/origin/$STORYHOOK_INTEGRATION_BRANCH" || die "could not fetch $ref"
 fi
 
 status_out="$(bash "$script_dir/coverage-status.sh" "$ref" 2>/dev/null)"
@@ -148,7 +149,7 @@ if [ "$existing_tier" != "gate" ] && [ "$existing_tier" != "full" ]; then
 $worktree first (the ordinary case: main's merges are already certified by \
 scripts/merge-watch.sh; this only fires on a fresh machine or a merge landed \
 from elsewhere)"
-    if ! (cd "$worktree" && make test); then
+    if ! (cd "$worktree" && github_without_credentials make test); then
         finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf '%s %s tip=%s tree=%s stage=gate exit=1\n' \
             "$started" "$finished" "$tip" "$tip_tree" >>"$reports/$day.log"
@@ -159,7 +160,7 @@ captured. Logged to $reports/$day.log"
 fi
 
 note "running '${run_cmd[*]}' against ${tip:0:9} (tree $tip_tree) in $worktree"
-(cd "$worktree" && "${run_cmd[@]}")
+(cd "$worktree" && github_without_credentials "${run_cmd[@]}")
 run_status=$?
 finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 

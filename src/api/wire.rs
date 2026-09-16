@@ -145,15 +145,6 @@ pub struct WireRequest {
     /// terminal. So the client reads it and it travels here.
     #[serde(default)]
     pub stdin: Option<String>,
-    /// The client's GitHub credential, when the command spends one.
-    ///
-    /// Carried for the same reason [`stdin`](Self::stdin) is, and it is the
-    /// only field here that is a secret: see
-    /// [`GithubToken`](crate::domain::secret::GithubToken) for why it prints as
-    /// `<redacted>` and what that protects. Absent from the serialized envelope
-    /// entirely when there is none, rather than present and null.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub github_token: Option<crate::domain::secret::GithubToken>,
     /// Who the client says it is (SH-246, SH-527).
     ///
     /// A CLI client reads this from its own `$STORYHOOK_ACTOR`; an interactive
@@ -183,7 +174,6 @@ impl WireRequest {
             no_hooks: false,
             hook_depth: 0,
             stdin: None,
-            github_token: None,
             actor: None,
             invocation,
         }
@@ -193,16 +183,6 @@ impl WireRequest {
     #[must_use]
     pub fn stdin(mut self, stdin: Option<String>) -> Self {
         self.stdin = stdin;
-        self
-    }
-
-    /// Supplies the client's GitHub credential.
-    #[must_use]
-    pub fn github_token(
-        mut self,
-        github_token: Option<crate::domain::secret::GithubToken>,
-    ) -> Self {
-        self.github_token = github_token;
         self
     }
 
@@ -324,7 +304,6 @@ impl WireResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::secret::GithubToken;
 
     fn round_trip(result: Result<Response, AppError>) -> Result<Response, AppError> {
         let sent = WireResponse::new("req-1".to_string(), result);
@@ -400,26 +379,6 @@ mod tests {
         assert_eq!(received, request);
     }
 
-    /// A credential the client read has to arrive intact, or `pr-check` is
-    /// back to reading the daemon's environment (SH-153, originally about
-    /// the now-retired sync engine but load-bearing for every caller of this
-    /// field since).
-    #[test]
-    fn a_request_carries_its_token_across_the_hop() {
-        let token =
-            crate::domain::secret::GithubToken::new("ghp_across_the_hop").expect("a usable token");
-        let request =
-            WireRequest::new(Invocation::Summary, "/tmp/repo").github_token(Some(token.clone()));
-        let json = serde_json::to_string(&request).expect("encoding");
-        let received: WireRequest = serde_json::from_str(&json).expect("decoding");
-        assert_eq!(received, request);
-        assert_eq!(
-            received.github_token.as_ref().map(GithubToken::expose),
-            Some("ghp_across_the_hop"),
-            "the value has to survive, not merely the field"
-        );
-    }
-
     /// **A request that carries no credential has no credential field at all**,
     /// rather than one spelled `null`.
     ///
@@ -436,22 +395,6 @@ mod tests {
                 .expect("an object")
                 .contains_key("github_token"),
             "an absent credential must not appear on the wire at all: {json}"
-        );
-    }
-
-    /// And an envelope holding one must not print it. This is the assertion
-    /// that would fail if `GithubToken`'s hand-written `Debug` were ever
-    /// replaced by a derive — the containers derive theirs, so they print
-    /// whatever their fields print.
-    #[test]
-    fn a_request_holding_a_token_does_not_print_it() {
-        let request = WireRequest::new(Invocation::Summary, "/tmp").github_token(Some(
-            crate::domain::secret::GithubToken::new("ghp_must_not_appear").expect("usable"),
-        ));
-        let printed = format!("{request:?}");
-        assert!(
-            !printed.contains("ghp_must_not_appear"),
-            "a whole request is Debug-printed by wire tests on failure: {printed}"
         );
     }
 

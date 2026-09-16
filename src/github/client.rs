@@ -1,155 +1,67 @@
-use std::time::Duration;
-
-use ureq::Agent;
-
-use crate::domain::github_remote::GithubApiBase;
-use crate::error::AppError;
-
+//! Pull-request observations through the shared gh boundary.
 use super::types::PullRequestStatus;
+use crate::domain::pr_url::parse_pr_url;
+use crate::error::AppError;
+use crate::github_access::Repository;
+use serde::Deserialize;
 
-/// GitHub REST API client wrapping ureq.
+/// A gh client bound to one validated checkout origin.
 pub struct GithubClient {
-    agent: Agent,
-    token: String,
-    api_base: GithubApiBase,
-    owner: String,
-    repo: String,
+    repository: Repository,
+}
+
+#[derive(Deserialize)]
+struct Observation {
+    number: u64,
+    html_url: String,
+    state: String,
+    merged: bool,
 }
 
 impl GithubClient {
-    /// Create a client for the given API endpoint and repository.
-    pub fn new(token: String, api_base: GithubApiBase, owner: String, repo: String) -> Self {
-        let config = Agent::config_builder()
-            .https_only(api_base.as_str().starts_with("https://"))
-            .timeout_global(Some(Duration::from_secs(30)))
-            .http_status_as_error(false)
-            .build();
-
-        let agent: Agent = config.into();
-
-        Self {
-            agent,
-            token,
-            api_base,
-            owner,
-            repo,
-        }
+    /// Creates a client without reading or storing a credential.
+    pub fn new(repository: Repository) -> Self {
+        Self { repository }
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
-    /// Build a GET request with common headers.
-    fn get(&self, path: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
-        let url = self.request_url(path);
-        self.agent
-            .get(&url)
-            .header("Authorization", &format!("Bearer {}", self.token))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "storyhook")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-    }
-
-    /// Joins one absolute API path to this client's validated base URL.
-    fn request_url(&self, path: &str) -> String {
-        format!("{}{path}", self.api_base.as_str())
-    }
-
-    /// Check rate limit headers and warn when remaining calls are low.
-    fn check_rate_limit(
-        &self,
-        response: &ureq::http::Response<ureq::Body>,
-    ) -> Result<(), AppError> {
-        const LOW_RATE_LIMIT_THRESHOLD: u64 = 50;
-        if let Some(remaining) = response.headers().get("x-ratelimit-remaining")
-            && let Ok(s) = remaining.to_str()
-            && let Ok(n) = s.parse::<u64>()
-        {
-            if n == 0 {
-                return Err(AppError::GithubApi(
-                    "rate limit exceeded — wait for reset".into(),
-                ));
-            }
-            if n < LOW_RATE_LIMIT_THRESHOLD {
-                eprintln!("warning: GitHub API rate limit low — {n} requests remaining");
-            }
-        }
-        Ok(())
-    }
-
-    /// Map a non-2xx response to an AppError.
-    fn handle_error_status(
-        &self,
-        status: u16,
-        response: &mut ureq::http::Response<ureq::Body>,
-    ) -> AppError {
-        // Check for rate-limit exhaustion on 403
-        if status == 403
-            && let Some(remaining) = response.headers().get("x-ratelimit-remaining")
-            && remaining.to_str().unwrap_or("") == "0"
-        {
-            return AppError::GithubApi("rate limit exceeded — wait for reset".into());
-        }
-
-        let body_text = response.body_mut().read_to_string().unwrap_or_default();
-
-        match status {
-            401 => AppError::GithubAuth(format!("authentication failed (HTTP 401): {body_text}")),
-            404 => AppError::NotFound(format!("GitHub resource not found (HTTP 404): {body_text}")),
-            429 => AppError::GithubApi(format!("rate limited (HTTP 429): {body_text}")),
-            _ => AppError::GithubApi(format!("HTTP {status}: {body_text}")),
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Public API
-    // -----------------------------------------------------------------------
-
-    /// Get a single pull request's merge/close status by number (SH-49).
-    ///
-    /// `GET /repos/{owner}/{repo}/pulls/{number}` — the same shape as an
-    /// issue lookup, since GitHub's REST API treats a pull request as an
-    /// issue with a `pulls` endpoint of its own.
+    /// Reads a PR and refuses redirects or metadata for a different identity.
     pub fn get_pull_request(&self, number: u64) -> Result<PullRequestStatus, AppError> {
-        let path = format!("/repos/{}/{}/pulls/{number}", self.owner, self.repo);
-        let mut response = self
-            .get(&path)
-            .call()
-            .map_err(|e| AppError::GithubApi(e.to_string()))?;
-
-        let status = response.status().as_u16();
-        if !response.status().is_success() {
-            return Err(self.handle_error_status(status, &mut response));
+        let identity = self.repository.identity();
+        let endpoint = format!("repos/{}/{}/pulls/{number}", identity.owner, identity.repo);
+        let bytes = self.repository.gh(&[
+            "api".into(),
+            endpoint,
+            "--jq".into(),
+            "{number,html_url,state,merged}".into(),
+        ])?;
+        let observation: Observation = serde_json::from_slice(&bytes).map_err(|error| {
+            AppError::GithubApi(format!(
+                "invalid PR response for {} #{number}: {error}",
+                self.repository.qualified()
+            ))
+        })?;
+        let reference = parse_pr_url(&observation.html_url)?;
+        if reference.number != number
+            || observation.number != number
+            || !reference.host.eq_ignore_ascii_case(&identity.host)
+            || !reference.owner.eq_ignore_ascii_case(&identity.owner)
+            || !reference.repo.eq_ignore_ascii_case(&identity.repo)
+        {
+            return Err(AppError::GithubApi(format!(
+                "PR response identity differs from current origin {} #{number}; update origin and relink before retrying",
+                self.repository.qualified()
+            )));
         }
-        self.check_rate_limit(&response)?;
-
-        let pr: PullRequestStatus = response
-            .body_mut()
-            .read_json()
-            .map_err(|e| AppError::GithubApi(format!("failed to parse pull request: {e}")))?;
-
-        Ok(pr)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::domain::github_remote::GithubApiBase;
-
-    #[test]
-    fn request_url_uses_the_supplied_api_base() {
-        let client = GithubClient::new(
-            "token".into(),
-            GithubApiBase::override_from("https://github.example.com/api/v3/").unwrap(),
-            "acme".into(),
-            "widgets".into(),
-        );
-
-        assert_eq!(
-            client.request_url("/repos/acme/widgets/pulls/7"),
-            "https://github.example.com/api/v3/repos/acme/widgets/pulls/7"
-        );
+        if !matches!(observation.state.as_str(), "open" | "closed")
+            || (observation.merged && observation.state != "closed")
+        {
+            return Err(AppError::GithubApi(
+                "invalid PR state in gh response".into(),
+            ));
+        }
+        Ok(PullRequestStatus {
+            state: observation.state,
+            merged: observation.merged,
+        })
     }
 }

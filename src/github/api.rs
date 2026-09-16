@@ -20,8 +20,8 @@
 
 use super::client::GithubClient;
 use super::types::PullRequestStatus;
-use crate::domain::github_remote::GithubApiBase;
 use crate::error::AppError;
+use crate::github_access::Repository;
 
 /// The one GitHub REST call `story pr-check` makes (SH-49).
 pub trait GithubApi {
@@ -40,12 +40,6 @@ impl GithubApi for GithubClient {
 /// See the module doc for why this indirection exists rather than passing a
 /// ready-built client.
 pub trait GithubApiFactory {
-    /// A client for `owner/repo` at `api_base`, authenticated with `token`.
-    fn build(
-        &self,
-        token: String,
-        api_base: GithubApiBase,
-        owner: String,
-        repo: String,
-    ) -> Box<dyn GithubApi>;
+    /// A client bound to the project's validated current checkout origin.
+    fn build(&self, repository: Repository) -> Box<dyn GithubApi>;
 }

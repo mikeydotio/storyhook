@@ -343,6 +343,7 @@ fn the_project_less_verbs_all_answer_outside_a_project() {
             Invocation::Update {
                 check: true,
                 force: false,
+                source: None,
             },
         ),
         (
@@ -853,8 +854,8 @@ fn no_storyhook_path_literal_survives_in_the_github_module() {
     let mut files = Vec::new();
     sources(&root, &mut files);
     assert!(
-        files.len() >= 5,
-        "expected the trimmed module (mod, api, client, types, credential_store), got {}",
+        files.len() >= 4,
+        "expected the trimmed module (mod, api, client, types), got {}",
         files.len()
     );
 

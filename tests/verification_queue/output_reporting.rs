@@ -23,7 +23,7 @@ struct OutputFixture {
 impl OutputFixture {
     fn new() -> Self {
         let fixture = ServiceFixture::new();
-        fixture.link_origin("https://github.com/acme/widgets");
+        fixture.github_checkout("https://github.com/acme/widgets");
         submitted(&fixture, "foreign gate output", Priority::High, PR_ONE);
         let candidate = VerificationQueue::new(fixture.store())
             .next()

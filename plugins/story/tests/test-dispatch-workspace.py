@@ -4,6 +4,9 @@ import fcntl
 import os
 from pathlib import Path
 import select
+import time
+import json
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -14,6 +17,42 @@ HELPER = Path(__file__).resolve().parents[1] / "lib/tmux-launch.py"
 
 class DispatchWorkspaceTests(unittest.TestCase):
     """Only the caller owns a workspace after the terminal client returns."""
+
+    def test_credentials_are_empty_in_new_and_existing_server_panes(self):
+        """The real tmux environment merge cannot restore server credentials."""
+        names = ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN",
+                 "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+        for existing in (False, True):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory(dir="/tmp") as d:
+                root = Path(d)
+                socket = root / "tmux.sock"
+                env = dict(os.environ, **{name: "secret-fixture" for name in names})
+                base = ["tmux", "-S", str(socket), "-f", "/dev/null"]
+                try:
+                    if existing:
+                        subprocess.run(base + ["new-session", "-d", "-s", "fixture", "sleep 120"],
+                                       env=env, check=True)
+                    for command in (("new-window", "respawn-pane") if existing else ("new-session",)):
+                        output = root / (command + ".json")
+                        program = "import os,json;json.dump(dict(os.environ),open(" + repr(str(output)) + ",'w'))"
+                        launch = "python3 -c " + shlex.quote(program) + "; sleep 120"
+                        args = (["-k", "-t", "fixture:"] if command == "respawn-pane" else
+                                ["-d", "-t", "fixture:"] if command == "new-window" else
+                                ["-d", "-s", "fixture"])
+                        subprocess.run(["python3", str(HELPER), *base[1:], command, *args, launch],
+                                       env=env, check=True)
+                        deadline = time.monotonic() + 10
+                        while not output.exists() and time.monotonic() < deadline:
+                            time.sleep(0.02)
+                        observed = json.loads(output.read_text())
+                        for name in names:
+                            self.assertFalse(observed.get(name), (existing, command, name))
+                    if not existing:
+                        global_env = subprocess.check_output(base + ["show-environment", "-g"], text=True)
+                        self.assertNotIn("secret-fixture", global_env)
+                finally:
+                    if socket.exists():
+                        subprocess.run(base + ["kill-server"], check=True, capture_output=True)
 
     def test_fresh_server_cannot_retain_direct_or_inherited_workspace_ownership(self):
         """Closing terminal descriptors preserves admission through handoff only."""

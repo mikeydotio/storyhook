@@ -1,70 +1,13 @@
-//! `story link-pr` / `story unlink-pr` — linking GitHub pull requests to
-//! stories (SH-49).
-//!
-//! # Why linking needs no GitHub access, and lives outside `github-pr`
-//!
-//! [`PrLinkService::link`] and [`PrLinkService::unlink`] never talk to
-//! GitHub — a PR URL is parsed, not fetched — so they work in every build,
-//! `github-pr` feature or not, and never spend a caller's token. That is a
-//! deliberate design decision, not an accident of what happened to be easy:
-//! see SH-49's council verdict, "Linking/unlinking is
-//! feature-independent of github-sync — a pure event-sourced fact requiring
-//! no network access" (the feature it names is `github-pr` since SH-408
-//! renamed it). This module and [`crate::domain::pr_url`], which it depends
-//! on, are consequently both ungated.
-//!
-//! `story pr-check` — the one operation that does talk to GitHub, to learn
-//! whether a linked pull request merged — lives in the sibling,
-//! feature-gated `super::pr_check` instead, as a second `impl` block on
-//! [`PrLinkService`] itself.
-//!
-//! # The mandatory cross-repo check
-//!
-//! A story's `close_on_merge` link is a promise that merging *someone else's*
-//! pull request will close *this* story. That promise is only safe to keep
-//! automatically when the pull request belongs to the repository this project
-//! is actually configured to sync with — otherwise a story closes itself
-//! because an unrelated repository merged an unrelated PR that happened to be
-//! linked in by URL.
-//!
-//! [`PrLinkService::link`] refuses to record a `close_on_merge: true` link
-//! whose `(host, owner, repo)` matches none of the project's *registered* GitHub
-//! remotes, at link time — see [`configured_github_repos`]. `super::pr_check`
-//! documents its own, second check of the same kind, taken fresh at check
-//! time because the registered remotes can change between the two.
-//!
-//! # Why this is a membership test, not a resolve-to-one lookup (SH-408)
-//!
-//! A project may register more than one GitHub remote — a repository that
-//! moved, a second canonical remote (`src/store/schema/0006_project_remotes.
-//! sql`'s own header calls this an ordinary configuration, not a
-//! hypothetical one). Neither caller here ever needs to pick "the" one
-//! repository: [`parse_pr_url`] always yields a full, already-known
-//! `(host, owner, repo, number)` before this guard runs, and a [`crate::store::
-//! PrLink`] row stores its own `owner`/`repo` from link time. The question
-//! both callers ask is "is this PR's repository one I registered?", which
-//! has exactly one correct answer regardless of how many remotes are
-//! registered — never an ambiguous one to refuse. A council convened on this
-//! exact question (SH-408, 3-0) rejected resolving to a single value and
-//! refusing on 2+ registered remotes: the daemon's background poll discards
-//! [`super::pr_check::run_check`]'s result with no channel back to a human,
-//! so a refusal there would silently and permanently disable close-on-merge
-//! for any project with two legitimate remotes.
-//!
-//! Neither check applies to a `close_on_merge: false` link — that is
-//! deliberately a cross-repository bookmark, and nothing about it can close
-//! anything.
+//! PR links are local facts; automatic close-on-merge authority comes only
+//! from the registered project's current checkout origin (SH-734).
+//! Informational links may name other repositories. Linking requires no gh
+//! installation or network, and remains available without github-pr.
 
-#[cfg(feature = "github-pr")]
-use serde::Deserialize;
-
-#[cfg(feature = "github-pr")]
-use crate::domain::github_remote::GithubApiBase;
-use crate::domain::github_remote::{GithubRepo, parse_github_url};
+use crate::domain::github_remote::GithubRepo;
 use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{StoryEvent, StorySnapshot};
 use crate::error::AppError;
-use crate::store::{ExpectedSeq, ProjectRemoteRecord, ReadOps, Store};
+use crate::store::{ExpectedSeq, ReadOps, Store};
 
 use super::{Ctx, append_and_fold, project_prefix, resolve_open_story};
 
@@ -102,10 +45,8 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
     /// `commit-sync`'s own link stopped refusing a closed story once its
     /// observation-only argument was made explicit; nothing about that
     /// argument reaches this write). Refuses a `close_on_merge: true` link
-    /// whose repository matches none of the project's registered GitHub
-    /// remotes — see the module doc — unless the project has none
-    /// registered, in which case there is nothing to validate against and
-    /// the link is accepted as given.
+    /// whose repository differs from the registered checkout's current origin.
+    /// An unavailable checkout cannot authorize an automatic state change.
     ///
     /// Re-linking a PR this story already links **upserts**: the new
     /// `close_on_merge` value replaces the old one, which is how a caller
@@ -172,10 +113,7 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
         })?)
     }
 
-    /// Refuses `(host, owner, repo)` unless it matches at least one of this
-    /// project's registered GitHub remotes — or the project has none
-    /// registered, in which case there is nothing to compare against and
-    /// this is a no-op.
+    /// Refuses any identity other than the registered checkout's current origin.
     ///
     /// Deliberately no override flag: the winning council proposal (Proposal
     /// B on SH-49) is a hard block, and a
@@ -183,18 +121,15 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
     /// `close_on_merge: false` instead of asking this check to stand aside.
     fn refuse_cross_repo(&self, host: &str, owner: &str, repo: &str) -> Result<(), AppError> {
         let configured = configured_github_repos(self.ctx)?;
-        if configured.is_empty()
-            || configured.iter().any(|c| {
-                c.host.eq_ignore_ascii_case(host)
-                    && c.owner.eq_ignore_ascii_case(owner)
-                    && c.repo.eq_ignore_ascii_case(repo)
-            })
-        {
+        if configured.iter().any(|c| {
+            c.host.eq_ignore_ascii_case(host)
+                && c.owner.eq_ignore_ascii_case(owner)
+                && c.repo.eq_ignore_ascii_case(repo)
+        }) {
             return Ok(());
         }
         Err(AppError::Validation(format!(
-            "pull request `{host}/{owner}/{repo}` does not match any GitHub repository this project \
-             has registered ({}) — a `close_on_merge` link could close this story on another \
+            "pull request `{host}/{owner}/{repo}` does not match this project's current checkout origin ({}) — a `close_on_merge` link could close this story on another \
              repository's merge. Pass --no-close-on-merge (or `close_on_merge: false` over the \
              API) if you mean to bookmark a pull request in another repository.",
             configured
@@ -206,113 +141,13 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
     }
 }
 
-/// Every GitHub repository this project has a registered git origin for.
-///
-/// Empty when the project has no network origin with an `owner/repo` path —
-/// the same "nothing configured" state
-/// [`refuse_cross_repo`](PrLinkService::refuse_cross_repo) already treats as
-/// *accept*, and the state [`super::pr_check::run_check`] refuses under
-/// (nothing to scope a GitHub API client to).
-///
-/// A **set**, never resolved down to one value, and never refused for
-/// holding more than one member — see the module doc's "Why this is a
-/// membership test" section for the council verdict (SH-408) this codifies.
-///
-/// Reads [`ReadOps::project_remotes`] — the store's registered origins —
-/// never `git remote get-url` in a checkout: `crate::daemon::github_poll`'s
-/// background poll has no checkout to read one from, and SH-112 made git an
-/// optional convenience layer for a fact the store already holds
-/// authoritatively. A project that has never run `story project link
-/// origin` is consequently invisible here even with a perfectly good
-/// `origin` in its working tree — registering it is what makes a project
-/// reachable at all (SH-116), and this reads the same registration.
+/// The project's current origin, validated against its registered checkout identity.
 pub(crate) fn configured_github_repos<S: Store>(
     ctx: &Ctx<'_, S>,
 ) -> Result<Vec<GithubRepo>, AppError> {
-    let project = ctx.project();
-    let remotes = ctx.store().read(|tx| tx.project_remotes(project))?;
-    Ok(github_repos_from_remotes(&remotes))
-}
-
-/// Parses, sorts, and deduplicates the GitHub repositories in stored remotes.
-pub(crate) fn github_repos_from_remotes(remotes: &[ProjectRemoteRecord]) -> Vec<GithubRepo> {
-    let mut repos: Vec<GithubRepo> = remotes
-        .iter()
-        .filter_map(|remote| parse_github_url(&remote.raw))
-        .collect();
-    repos.sort();
-    repos.dedup();
-    repos
-}
-
-#[cfg(feature = "github-pr")]
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GithubConfig {
-    api_url: String,
-}
-
-/// The project-authored API override, if the authoritative checkout declares one.
-///
-/// A matching pointer at the invocation cwd is authoritative even when it has
-/// no `[github]` table. The store-registered checkout is a fallback only for a
-/// caller with no matching local pointer, notably the unattended daemon poll.
-#[cfg(feature = "github-pr")]
-pub(crate) fn configured_github_api_override<S: Store>(
-    ctx: &Ctx<'_, S>,
-) -> Result<Option<GithubApiBase>, AppError> {
-    let project = ctx.store().read(|tx| {
-        tx.project(ctx.project())?
-            .ok_or_else(|| crate::store::StoreError::NotFound("project not found".to_string()))
-    })?;
-
-    for root in super::project::ancestors(ctx.cwd()) {
-        let path = super::project::pointer_path(&root);
-        if !path.is_file() {
-            continue;
-        }
-        let Some(pointer) = super::project::read_pointer(&root)? else {
-            continue;
-        };
-        if pointer.uuid == project.uuid {
-            return parse_github_override(&path, pointer.github);
-        }
-        break;
-    }
-
-    let Some(checkout) = ctx.store().read(|tx| tx.checkout_path(ctx.project()))? else {
-        return Ok(None);
-    };
-    let path = super::project::pointer_path(&checkout);
-    let Some(pointer) = super::project::read_pointer(&checkout)? else {
-        return Ok(None);
-    };
-    if pointer.uuid != project.uuid {
-        return Err(AppError::Validation(format!(
-            "{} names project uuid `{}`, but `{}` is registered as the checkout for project \
-             uuid `{}`; refusing to apply [github] configuration across project identities",
-            path.display(),
-            pointer.uuid,
-            checkout.display(),
-            project.uuid,
-        )));
-    }
-    parse_github_override(&path, pointer.github)
-}
-
-#[cfg(feature = "github-pr")]
-fn parse_github_override(
-    path: &std::path::Path,
-    table: Option<toml::Value>,
-) -> Result<Option<GithubApiBase>, AppError> {
-    let Some(table) = table else {
-        return Ok(None);
-    };
-    let config: GithubConfig = table.try_into().map_err(|error| {
-        AppError::Validation(format!(
-            "the [github] table in {} failed to parse: {error}",
-            path.display()
-        ))
-    })?;
-    GithubApiBase::override_from(&config.api_url).map(Some)
+    Ok(vec![
+        super::github_repository::repository(ctx)?
+            .identity()
+            .clone(),
+    ])
 }

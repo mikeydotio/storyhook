@@ -15,6 +15,7 @@ pub mod event_hooks;
 pub mod fault_injection_guard;
 #[cfg(feature = "github-pr")]
 pub mod github;
+pub mod github_access;
 pub mod help_topics;
 pub mod hooks;
 pub mod install_status;
@@ -36,5 +37,6 @@ pub mod text_lint;
 pub mod token;
 pub mod tui;
 pub mod update;
+mod update_source;
 pub mod version;
 pub mod web;

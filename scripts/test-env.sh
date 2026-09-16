@@ -90,7 +90,11 @@ STORYHOOK_STORE_PATH any root home/.local/share/storyhook/store.db
 STORYHOOK_DAEMON_ADDR any literal 127.0.0.1:0
 STORYHOOK_PARENT_PID any ownpid -
 STORYHOOK_PARENT_START_TIME any ownstart -
-STORYHOOK_GITHUB_TOKEN any clear -
+GH_TOKEN any clear -
+GITHUB_TOKEN any clear -
+GH_ENTERPRISE_TOKEN any clear -
+GITHUB_ENTERPRISE_TOKEN any clear -
+GH_CONFIG_DIR any clear -
 STORYHOOK_ACTIVITY_LOG_DIR any clear -
 STORYHOOK_ACTIVITY_CONTEXT any clear -
 STORYHOOK_PROJECT any clear -

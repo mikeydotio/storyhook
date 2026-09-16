@@ -69,6 +69,8 @@ cd "$root" || die "cannot enter $root"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
     || die "could not resolve the directory holding land-pr.sh"
 script="$script_dir/land-pr.sh"
+# shellcheck source=github-access.sh
+. "$script_dir/github-access.sh" || exit 1
 
 # Asked of the lock itself rather than read from `STORYHOOK_MACHINE_LOCKS`:
 # the key carries this repository's project component (SH-648), and only
@@ -128,17 +130,14 @@ validate_refresh() {
 
 # Reads the tip of refs/heads/<branch> on origin — the push itself, not a
 # projection of it — without writing a remote-tracking ref into this
-# checkout. Fully qualified on purpose: `--exit-code` matches by suffix, so a
+# checkout. Fully qualified on purpose: ls-remote matches by suffix, so a
 # bare name could be answered by a tag spelled the same way.
 branch_tip_on_origin() {
     tip_number="$1"
     tip_branch="$2"
-    listing="$(git ls-remote --exit-code origin "refs/heads/$tip_branch" 2>/dev/null)"
-    case "$?" in
-    (0) ;;
-    (2) die "PR #$tip_number's head branch refs/heads/$tip_branch does not exist on origin" ;;
-    (*) die "could not read refs/heads/$tip_branch on origin for PR #$tip_number" ;;
-    esac
+    listing="$(github_git ls-remote --heads origin "refs/heads/$tip_branch" 2>&1)" \
+        || die "could not read refs/heads/$tip_branch on origin for PR #$tip_number: $listing"
+    [ -n "$listing" ] || die "PR #$tip_number's head branch refs/heads/$tip_branch does not exist on origin"
     tip="$(printf '%s\n' "$listing" | awk 'NR == 1 { print $1 }')"
     [ -n "$tip" ] || die "origin listed refs/heads/$tip_branch for PR #$tip_number without an oid"
     printf '%s\n' "$tip"
@@ -246,11 +245,11 @@ if [ "${1:-}" = "--merge" ]; then
     fi
 
     note "merging PR #$number at head $head_sha"
-    gh pr merge "$number" --merge --match-head-commit "$head_sha" \
+    github_exec pr merge "$number" --merge --match-head-commit "$head_sha" \
         || die "gh did not merge PR #$number"
 
-    merged="$(gh pr view "$number" --json state,mergedAt,mergeCommit 2>/dev/null)" \
-        || die "could not verify PR #$number after gh returned success"
+    merged="$(github_exec pr view "$number" --json state,mergedAt,mergeCommit 2>&1)" \
+        || die "could not verify PR #$number after gh returned success: $merged"
     state="$(printf '%s\n' "$merged" | jq -er '.state')" \
         || die "PR #$number verification returned no state"
     merged_at="$(printf '%s\n' "$merged" | jq -er '.mergedAt // empty')" \
@@ -260,7 +259,7 @@ if [ "${1:-}" = "--merge" ]; then
     [ "$state" = "MERGED" ] \
         || die "PR #$number is '$state' after gh returned success, not MERGED"
 
-    git fetch -q origin "+refs/heads/$base_ref:$base_remote_ref" \
+    github_git fetch -q origin "+refs/heads/$base_ref:$base_remote_ref" \
         || die "could not refresh origin/$base_ref after merging PR #$number"
     git cat-file -e "$merge_oid^{commit}" 2>/dev/null \
         || die "GitHub reports merge commit $merge_oid, but the refreshed base does not contain its object"
@@ -273,11 +272,15 @@ if [ "${1:-}" = "--merge" ]; then
 
     note "verified PR #$number merged at $merged_at as $merge_oid with certified tree $actual_tree"
 
-    if git ls-remote --exit-code --heads origin "refs/heads/$head_ref" >/dev/null 2>&1; then
-        git push -q origin --delete "refs/heads/$head_ref" \
+    remaining="$(github_git ls-remote --heads origin "refs/heads/$head_ref" 2>&1)" \
+        || die "PR #$number merged and verified, but reading remote branch $head_ref failed: $remaining"
+    if [ -n "$remaining" ]; then
+        github_git push -q origin ":refs/heads/$head_ref" \
             || die "PR #$number merged and verified, but deleting remote branch $head_ref failed"
     fi
-    if git ls-remote --exit-code --heads origin "refs/heads/$head_ref" >/dev/null 2>&1; then
+    remaining="$(github_git ls-remote --heads origin "refs/heads/$head_ref" 2>&1)" \
+        || die "PR #$number merged and verified, but checking remote deletion failed: $remaining"
+    if [ -n "$remaining" ]; then
         die "PR #$number merged and verified, but remote branch $head_ref still exists"
     fi
 
@@ -300,11 +303,11 @@ if [ "${1:-}" = "--locked" ]; then
     [ "$#" -eq 1 ] || die "$USAGE"
     pr="$1"
 
-    command -v gh >/dev/null 2>&1 || die "the gh CLI is required and was not found"
+    github_begin || die "cannot establish GitHub origin: ${GITHUB_ACCESS_ERROR:-origin unavailable}"
     command -v jq >/dev/null 2>&1 || die "jq is required and was not found"
 
-    initial="$(gh pr view "$pr" --json number,baseRefName,headRefName 2>/dev/null)" \
-        || die "could not read PR '$pr' — is gh authenticated, and does the PR exist?"
+    initial="$(github_exec pr view "$pr" --json number,baseRefName,headRefName 2>&1)" \
+        || die "could not read PR '$pr' — is gh authenticated, and does the PR exist? $initial"
     number="$(printf '%s\n' "$initial" | jq -er '.number')" \
         || die "PR '$pr' returned no number"
     base_ref="$(printf '%s\n' "$initial" | jq -er '.baseRefName')" \
@@ -318,13 +321,13 @@ if [ "${1:-}" = "--locked" ]; then
     base_remote_ref="refs/remotes/origin/$base_ref"
     head_remote_ref="refs/remotes/origin/pr/$number"
     note "refreshing origin/$base_ref and PR #$number under the merge lock"
-    git fetch -q origin \
+    github_git fetch -q origin \
         "+refs/heads/$base_ref:$base_remote_ref" \
         "+refs/pull/$number/head:$head_remote_ref" \
         || die "could not fetch the base and head refs for PR #$number"
 
-    current="$(gh pr view "$number" --json state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid 2>/dev/null)" \
-        || die "could not refresh metadata for PR #$number"
+    current="$(github_exec pr view "$number" --json state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid 2>&1)" \
+        || die "could not refresh metadata for PR #$number: $current"
 
     fetched_base="$(git rev-parse "$base_remote_ref" 2>/dev/null)" \
         || die "could not resolve fetched base ref $base_remote_ref"

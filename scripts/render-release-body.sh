@@ -24,11 +24,11 @@
 # from the feeds that already carried it.
 #
 # Usage:
-#   render-release-body.sh --version vX.Y.Z --repo owner/name [--since vA.B.C]
+#   render-release-body.sh --version vX.Y.Z --repo HOST/OWNER/REPO [--since vA.B.C]
 #                          [--changelog PATH]
 #
 #   --version    the version being released; must have a changelog section
-#   --repo       owner/name, used to anchor links at the released tag
+#   --repo       HOST/OWNER/REPO, used to anchor links at the released tag
 #   --since      the newest PUBLISHED release; omit for a first release
 #   --changelog  defaults to this repository's own CHANGELOG.md
 set -euo pipefail
@@ -57,6 +57,9 @@ done
 
 [ -n "$version" ] || die "--version is required: it decides which changelog section becomes the body"
 [ -n "$repo" ] || die "--repo is required: it decides where the changelog links point"
+# This pure renderer receives an explicit source; it never infers a host.
+[[ "$repo" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]+)?/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+    || die "--repo must be HOST/OWNER/REPO"
 [ -r "$changelog" ] || die "CHANGELOG is unreadable at ${changelog}"
 
 # Every released-version heading in the file, newest first. `Unreleased` is a
@@ -193,7 +196,7 @@ if [ ${#skipped[@]} -gt 0 ]; then
     for candidate in "${skipped[@]}"; do
         heading="$(heading_of "$candidate")"
         anchor="$(anchor_of "$heading")"
-        add_line "> - [${heading}](https://github.com/${repo}/blob/${version}/CHANGELOG.md#${anchor})"
+        add_line "> - [${heading}](https://${repo}/blob/${version}/CHANGELOG.md#${anchor})"
     done
 fi
 

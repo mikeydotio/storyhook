@@ -32,6 +32,14 @@ impl<S: Store> VerificationQueue<'_, S> {
                 "landing context belongs to another project".into(),
             ));
         }
+        let current = self.current_for(candidate)?;
+        if current.as_ref().is_none_or(|current| {
+            current.pull_request != candidate.pull_request
+                || current.pull_request.is_err()
+                || current.checkout != candidate.checkout
+        }) {
+            return Ok(LandingAdmission::Superseded);
+        }
         Ok(self.store.write(|tx| {
             if let Some(intent) = tx
                 .landing_intents()?

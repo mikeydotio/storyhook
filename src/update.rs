@@ -1,11 +1,4 @@
-//! Self-update: download and install the latest `story` release in place.
-//!
-//! Mirrors the download/extract flow of `install.sh` (same GitHub release assets
-//! and URLs), but replaces the *currently running* binary rather than a fixed
-//! install directory. Unconditional (SH-408): it used `ureq`, which rode the
-//! sync engine's cargo feature purely by accident of history, and `ureq` has
-//! been an unconditional dependency of this crate since the daemon transport
-//! landed — this module uses nothing else that feature gates.
+//! Self-update through explicit gh release authority and atomic binary replacement.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -13,21 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
-use ureq::Agent;
+use crate::github_access::ReleaseSource;
+use crate::update_source;
 
 use crate::error::AppError;
-
-/// GitHub `owner/repo` releases are published under (matches `install.sh`).
-const REPO: &str = "mikeydotio/storyhook";
-/// GitHub REST endpoint for the most recent published release.
-const API_LATEST: &str = "https://api.github.com/repos/mikeydotio/storyhook/releases/latest";
-
-/// Minimal shape of the GitHub "latest release" response.
-#[derive(Deserialize)]
-struct LatestRelease {
-    tag_name: String,
-}
 
 /// Outcome of comparing the installed version against the latest release.
 #[derive(Debug, PartialEq, Eq)]
@@ -66,11 +48,19 @@ pub enum Outcome {
 /// * `check` — report availability only; never download or replace anything.
 /// * `force` — download and (re)install the latest release even when the
 ///   installed version is already current or newer (reinstall / downgrade).
-pub fn run(check: bool, force: bool) -> Result<Outcome, AppError> {
+/// * `explicit_source` — distribution identity overriding installation metadata.
+pub fn run(check: bool, force: bool, explicit_source: Option<&str>) -> Result<Outcome, AppError> {
     let current = crate::version::display();
-    let agent = build_agent();
-
-    let tag = fetch_latest_tag(&agent)?;
+    let exe = fs::canonicalize(std::env::current_exe()?)?;
+    // A check is read-only. Publication takes a nonblocking lock before any
+    // source read, so another installer cannot change this identity mid-update.
+    let _lock = if check {
+        None
+    } else {
+        Some(update_source::lock(&exe)?)
+    };
+    let source = update_source::resolve(&exe, explicit_source)?;
+    let tag = source.latest_tag()?;
     let latest = tag.trim_start_matches('v').to_string();
     let decision = decide(parse_semver(crate::version::SEMVER), parse_semver(&latest));
 
@@ -101,65 +91,14 @@ pub fn run(check: bool, force: bool) -> Result<Outcome, AppError> {
         )));
     }
 
-    install_release(&agent, &tag, &latest, current)
-}
-
-/// Build an HTTP agent for update downloads.
-///
-/// Unlike the API client (`github/client.rs`), this omits a global timeout: a
-/// release tarball is several MB and a 30s cap would truncate the download on a
-/// slow link. Status codes are inspected manually rather than raised as errors.
-fn build_agent() -> Agent {
-    let config = Agent::config_builder()
-        .https_only(true)
-        .http_status_as_error(false)
-        .build();
-    config.into()
-}
-
-/// Query GitHub for the latest release tag (e.g. `"v0.14.0"`).
-///
-/// Unauthenticated, on purpose: this endpoint is public release metadata, not
-/// anything a credential should be spent on. It used to attach
-/// `STORYHOOK_GITHUB_TOKEN` to raise the anonymous rate limit, but that ran
-/// inside the daemon and spent whichever client's token the daemon happened to
-/// have inherited — a credential leak this update check has no business
-/// causing (SH-153). Deleted outright rather than re-plumbed through the
-/// envelope: `story update` has no need of a GitHub identity at all.
-fn fetch_latest_tag(agent: &Agent) -> Result<String, AppError> {
-    let req = agent
-        .get(API_LATEST)
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "storyhook")
-        .header("X-GitHub-Api-Version", "2022-11-28");
-
-    let mut resp = req
-        .call()
-        .map_err(|e| AppError::GithubApi(format!("failed to query latest release: {e}")))?;
-    let status = resp.status().as_u16();
-    if status != 200 {
-        return Err(AppError::GithubApi(format!(
-            "failed to query latest release: HTTP {status}"
-        )));
-    }
-
-    let release: LatestRelease = resp
-        .body_mut()
-        .read_json()
-        .map_err(|e| AppError::GithubApi(format!("failed to parse latest release: {e}")))?;
-    let tag = release.tag_name.trim().to_string();
-    if tag.is_empty() {
-        return Err(AppError::GithubApi(
-            "latest release has an empty tag_name".to_string(),
-        ));
-    }
-    Ok(tag)
+    install_release(&source, &exe, &tag, &latest, current)
 }
 
 /// Download and swap in the release identified by `tag`, then reinstall the
 /// registered provider plugins from what was swapped in.
 fn install_release(
-    agent: &Agent,
+    source: &ReleaseSource,
+    exe: &Path,
     tag: &str,
     latest: &str,
     current: &str,
@@ -167,19 +106,12 @@ fn install_release(
     let target = target_for(std::env::consts::ARCH, std::env::consts::OS).ok_or_else(|| {
         AppError::Storage(format!(
             "unsupported platform {}-{}: no prebuilt story release. \
-             Install manually from https://github.com/{REPO}/releases",
+             Build from the explicitly selected source or use a supported platform",
             std::env::consts::ARCH,
             std::env::consts::OS
         ))
     })?;
     let artifact = artifact_name(target);
-    let url = download_url(tag, &artifact);
-
-    // Resolve the real binary path (follow symlinks) so we replace the actual
-    // file, not a `~/.local/bin/story` symlink pointing at it.
-    let exe = std::env::current_exe()
-        .map_err(|e| AppError::Storage(format!("cannot locate current executable: {e}")))?;
-    let exe = fs::canonicalize(&exe).unwrap_or(exe);
     let dir = exe
         .parent()
         .ok_or_else(|| AppError::Storage("executable has no parent directory".to_string()))?;
@@ -190,20 +122,25 @@ fn install_release(
     let work = TempDir::create_in(dir)?;
 
     let tarball = work.path().join(&artifact);
-    download_to(agent, &url, &tarball)?;
+    source.download(tag, &artifact, &tarball)?;
 
     let staged = extract_story(&tarball, work.path())?;
     make_executable(&staged)?;
     smoke_test(&staged)?;
 
-    replace_exe(&staged, &exe)?;
+    let metadata = work.path().join("source.json");
+    update_source::stage(&staged, source, &metadata)?;
+    replace_exe(&staged, exe)?;
+    fs::rename(&metadata, update_source::sidecar(exe)).map_err(|e| AppError::Storage(format!(
+        "binary replaced but source metadata publication failed: {e}; recover with story update --source {} --force", source.qualified()
+    )))?;
 
     let swapped = format!("story updated to v{latest} (was v{current})");
     // The plan is read HERE, by the binary that is going away: provider
     // configurations are the providers' formats, not this release's. The
     // installing is delegated to `exe` — see `reinstall_plugins_via`.
     let plan = crate::plugin::reinstall::plan();
-    match reinstall_plugins_via(&exe, &plan) {
+    match reinstall_plugins_via(exe, &plan) {
         Ok(report) => Ok(Outcome::Replaced {
             message: format!("{swapped}\n\n{}", report.message),
             warnings: report.warnings,
@@ -279,11 +216,6 @@ fn artifact_name(target: &str) -> String {
     format!("story-{target}.tar.gz")
 }
 
-/// Full download URL for a release asset (same pattern as `install.sh`).
-fn download_url(tag: &str, artifact: &str) -> String {
-    format!("https://github.com/{REPO}/releases/download/{tag}/{artifact}")
-}
-
 /// Parse a version string like `"v1.2.3"`, `"1.2.3"`, or `"1.2.3-rc1+build"`
 /// into `(major, minor, patch)`. A leading `v` is stripped and any
 /// pre-release/build suffix is ignored. Returns `None` unless exactly three
@@ -340,33 +272,6 @@ fn up_to_date_message(decision: &Decision, current: &str, latest: &str) -> Strin
         ),
         _ => format!("story is already up to date (v{current}). Use --force to reinstall."),
     }
-}
-
-/// Stream a URL to a file using the uncapped body reader.
-///
-/// `read_to_vec`/`read_to_string` cap at 10 MB and would truncate a multi-MB
-/// binary; `as_reader` is unlimited. ureq follows GitHub's 302 to
-/// `objects.githubusercontent.com` automatically and strips auth headers across
-/// the host boundary by default.
-fn download_to(agent: &Agent, url: &str, dest: &Path) -> Result<(), AppError> {
-    let mut resp = agent
-        .get(url)
-        .header("User-Agent", "storyhook")
-        .call()
-        .map_err(|e| AppError::GithubApi(format!("download failed: {e}")))?;
-    let status = resp.status().as_u16();
-    if status != 200 {
-        return Err(AppError::GithubApi(format!(
-            "download failed: HTTP {status} for {url}"
-        )));
-    }
-
-    let mut file = fs::File::create(dest)
-        .map_err(|e| AppError::Storage(format!("failed to create {}: {e}", dest.display())))?;
-    let mut reader = resp.body_mut().as_reader();
-    std::io::copy(&mut reader, &mut file)
-        .map_err(|e| AppError::GithubApi(format!("failed to download release asset: {e}")))?;
-    Ok(())
 }
 
 /// Extract the `story` binary from `tarball` into `into` using the system `tar`
@@ -450,8 +355,7 @@ fn replace_exe(staged: &Path, exe: &Path) -> Result<(), AppError> {
 fn not_writable(dir: &Path) -> AppError {
     AppError::Storage(format!(
         "cannot write to {}: permission denied. \
-         Re-run with elevated privileges (e.g. `sudo story update`) or reinstall via the installer: \
-         curl -fsSL https://raw.githubusercontent.com/{REPO}/main/install.sh | sh",
+         Use an account with write access or reinstall into a writable directory with an explicit --source",
         dir.display()
     ))
 }
@@ -666,14 +570,10 @@ mod tests {
     }
 
     #[test]
-    fn artifact_and_url_formatting() {
+    fn artifact_formatting() {
         assert_eq!(
             artifact_name("aarch64-apple-darwin"),
             "story-aarch64-apple-darwin.tar.gz"
-        );
-        assert_eq!(
-            download_url("v0.14.0", "story-aarch64-apple-darwin.tar.gz"),
-            "https://github.com/mikeydotio/storyhook/releases/download/v0.14.0/story-aarch64-apple-darwin.tar.gz"
         );
     }
 

@@ -477,3 +477,15 @@ finish() {
     exit 1
   fi
 }
+
+# Give GitHub integration fixtures a valid origin while retaining real Git data.
+# GITHUB_FIXTURE_ORIGIN remains available for direct server-side assertions.
+github_fixture() {
+  local repo="$1" url="$2" bin
+  GITHUB_FIXTURE_ORIGIN=$(git -C "$repo" remote get-url origin) || return 1
+  bin="$repo/.git/github-endpoint"
+  python3 "$TESTS_DIR/../../../scripts/test-git-endpoint.py" "$bin" \
+    "$(jq -n --arg url "$url" --arg path "$GITHUB_FIXTURE_ORIGIN" '{($url):$path}')" || return 1
+  git -C "$repo" remote set-url origin "$url" || return 1
+  export PATH="$bin:$PATH"
+}

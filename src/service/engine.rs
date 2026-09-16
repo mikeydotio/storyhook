@@ -23,7 +23,7 @@ use crate::domain::{
     StoryCleanupLease, SuperState, VERIFYING_STATE_SLUG, is_epic, validate_dispatch_option_token,
 };
 use crate::env::Environment;
-use crate::env::spawn_env::apply_dispatch_allowlist;
+use crate::env::spawn_env::{apply_dispatch_allowlist, apply_orchestration_allowlist};
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
 use crate::lane_budget::WindowCensus;
@@ -2705,7 +2705,7 @@ pub(crate) fn run_shell_dispatch_cancellable(
     if options.fast {
         command.arg("--speed=fast");
     }
-    apply_dispatch_allowlist(&mut command);
+    apply_orchestration_allowlist(&mut command);
     if let Some(workspace) = workspace {
         workspace.dispatch_command(&mut command);
     }

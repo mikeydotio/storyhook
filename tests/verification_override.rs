@@ -115,7 +115,7 @@ fn mark_merged(fixture: &ServiceFixture, id: &str) {
 #[test]
 fn completing_a_verifying_story_without_a_reason_is_refused_naming_the_override() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "under the gate");
 
     let error = StoryService::new(&fixture.ctx())
@@ -142,7 +142,7 @@ fn completing_a_verifying_story_without_a_reason_is_refused_naming_the_override(
 #[test]
 fn a_blank_reason_is_no_reason() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "under the gate");
 
     let error = StoryService::new(&fixture.ctx())
@@ -155,7 +155,7 @@ fn a_blank_reason_is_no_reason() {
 #[test]
 fn completing_a_verifying_story_with_a_reason_records_the_override() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "under the gate");
 
     StoryService::new(&fixture.ctx())
@@ -194,7 +194,7 @@ fn completing_a_verifying_story_with_a_reason_records_the_override() {
 #[test]
 fn story_set_state_done_on_a_verifying_story_hits_the_same_backstop() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "under the gate");
 
     let error = StoryService::new(&fixture.ctx())
@@ -216,7 +216,7 @@ fn story_set_state_done_on_a_verifying_story_hits_the_same_backstop() {
 #[test]
 fn withdrawing_or_dropping_a_verifying_story_needs_no_reason() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let returned = submitted(&fixture, "handed back");
     let dropped = submitted(&fixture, "abandoned");
 
@@ -256,7 +256,7 @@ fn a_story_the_verifier_does_not_own_completes_without_a_reason_as_before() {
 #[test]
 fn a_green_from_an_earlier_generation_does_not_certify_the_current_one() {
     let mut fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "verified once, resubmitted since");
     StoryService::new(&fixture.ctx())
         .comment(
@@ -311,7 +311,7 @@ fn a_green_from_an_earlier_generation_does_not_certify_the_current_one() {
 #[test]
 fn a_story_the_verifier_certified_completes_without_a_reason() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "green, closed by hand");
     StoryService::new(&fixture.ctx())
         .comment(
@@ -334,7 +334,7 @@ fn a_story_the_verifier_certified_completes_without_a_reason() {
 #[test]
 fn an_overridden_story_whose_pull_request_merged_is_reap_eligible() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "merged by hand");
     StoryService::new(&fixture.ctx())
         .set_state(&id, "done", Some("merged by hand"), Some("verifying"), None)
@@ -359,7 +359,7 @@ fn an_overridden_story_whose_pull_request_merged_is_reap_eligible() {
 #[test]
 fn a_second_overridden_generation_is_not_hidden_by_earlier_cleanup() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "override, reap, reopen, override");
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);

@@ -87,6 +87,8 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // GitHub calls use private file-backed capture and process-group deadlines.
+    ("src/github_access/command.rs", "\"gh\"", Kind::Waited),
     // Controller probes join ChildGuard and use a bounded control socket,
     // without reading a child stdout/stderr pipe to EOF.
     (

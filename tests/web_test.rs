@@ -91,6 +91,21 @@ impl Served {
             .unwrap_or_else(|e| panic!("`story {}` failed in the fixture: {e}", args.join(" ")));
     }
 
+    /// Adds real origin authority without replacing the initialized project pointer.
+    fn github_checkout(&self) {
+        storyhook_test_support::git(&self.env, self.dir(), &["init", "--quiet"]);
+        storyhook_test_support::git(
+            &self.env,
+            self.dir(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/widgets.git",
+            ],
+        );
+    }
+
     /// The project's report data, read straight from the store.
     ///
     /// Replaces `app::build_report_data`, which took a repository path because
@@ -3799,9 +3814,16 @@ fn web_serve_api_data_carries_only_open_pr_links_per_story() {
     use storyhook::store::{ExpectedSeq, WriteOps};
 
     let fixture = served();
+    fixture.github_checkout();
     fixture.seed(&["new", "Linked pull requests"]);
     fixture.seed(&["new", "No pull requests"]);
-    fixture.seed(&["link-pr", "SH-1", "https://github.com/zeta/widgets/pull/3"]);
+    // A foreign repository link is informational and must never authorize closure.
+    fixture.seed(&[
+        "link-pr",
+        "SH-1",
+        "https://github.com/zeta/widgets/pull/3",
+        "--no-close-on-merge",
+    ]);
     fixture.seed(&["link-pr", "SH-1", "https://github.com/acme/widgets/pull/9"]);
     fixture.seed(&["link-pr", "SH-1", "https://github.com/acme/widgets/pull/7"]);
     fixture
@@ -6057,6 +6079,7 @@ fn web_relate_and_unrelate_stories() {
 #[test]
 fn web_link_pr_and_unlink_pr() {
     let fixture = served();
+    fixture.github_checkout();
     fixture.seed(&["new", "Linked to a PR"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
@@ -6081,6 +6104,7 @@ fn web_link_pr_and_unlink_pr() {
 #[test]
 fn web_link_pr_defaults_close_on_merge_to_true_when_absent() {
     let fixture = served();
+    fixture.github_checkout();
     fixture.seed(&["new", "Default close_on_merge"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
@@ -6146,6 +6170,7 @@ fn web_link_pr_without_guard_header_is_403() {
 #[test]
 fn web_unlink_pr_without_guard_header_is_403() {
     let fixture = served();
+    fixture.github_checkout();
     fixture.seed(&["new", "Guarded unlink"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());

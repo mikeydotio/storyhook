@@ -312,9 +312,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::SessionStart
         | Invocation::Update { .. }
         | Invocation::Version
-        | Invocation::ProjectSnapshot
-        // Store-wide, not story-scoped — see the type's own doc.
-        | Invocation::GithubAuth { .. } => Vec::new(),
+        | Invocation::ProjectSnapshot => Vec::new(),
     }
 }
 

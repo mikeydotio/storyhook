@@ -101,6 +101,7 @@ done
 script_dir="$(cd "$(dirname "$0")" && pwd)" || die "cannot resolve this script's directory"
 # shellcheck source=scripts/branch-policy.sh
 source "$script_dir/branch-policy.sh"
+source "$script_dir/github-access.sh"
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git worktree"
 cd "$root" || die "cannot enter $root"
@@ -114,7 +115,7 @@ common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)" \
 if [ -z "$ref" ]; then
     ref="origin/$STORYHOOK_INTEGRATION_BRANCH"
     note "fetching $ref"
-    git fetch -q origin "$STORYHOOK_INTEGRATION_BRANCH" || die "could not fetch $ref"
+    origin_git fetch -q origin "+refs/heads/$STORYHOOK_INTEGRATION_BRANCH:refs/remotes/origin/$STORYHOOK_INTEGRATION_BRANCH" || die "could not fetch $ref"
 fi
 
 status_out="$(bash "$script_dir/browser-status.sh" "$ref" 2>/dev/null)"
@@ -177,7 +178,7 @@ git -C "$worktree" checkout -q --detach "$tip" \
     || die "could not check $tip out in $worktree"
 
 if [ ! -d "$worktree/e2e/node_modules" ] \
-    || ! (cd "$worktree/e2e" && npx --no-install playwright --version >/dev/null 2>&1); then
+    || ! (cd "$worktree/e2e" && github_without_credentials npx --no-install playwright --version >/dev/null 2>&1); then
     note "$worktree has no e2e toolchain, so the browser tier cannot run there."
     note "  Provision it once:  (cd $worktree && make e2e-install)"
     note "  Refusing rather than installing it: that is a network fetch writing"
@@ -192,7 +193,7 @@ day="$(date -u +%Y-%m-%d)"
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 note "running '${run_cmd[*]}' against ${tip:0:9} (tree $tip_tree) in $worktree"
-(cd "$worktree" && "${run_cmd[@]}")
+(cd "$worktree" && github_without_credentials "${run_cmd[@]}")
 run_status=$?
 finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
