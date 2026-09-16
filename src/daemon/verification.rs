@@ -26,7 +26,6 @@ pub use control::VerificationControlState;
 use super::bus::{Change, ChangeBus};
 use super::lifecycle::{CurrentRequest, InFlight};
 use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
-use crate::domain::github_remote::parse_github_url;
 use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{
     CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt, SubmissionReceipt,
@@ -1490,10 +1489,15 @@ fn checkout_repository_problem(
     checkout: &std::path::Path,
     pull_request: &PrLink,
 ) -> Option<String> {
-    let origin = crate::service::project::origin_of(checkout);
-    let checkout_repo = origin
-        .as_ref()
-        .and_then(|origin| parse_github_url(origin.raw()));
+    let repository = match crate::github_access::Repository::resolve(checkout) {
+        Ok(repository) => repository,
+        Err(error) => {
+            return Some(format!(
+                "cannot validate registered checkout origin: {error}"
+            ));
+        }
+    };
+    let checkout_repo = Some(repository.identity().clone());
     let linked_repo = parse_pr_url(&pull_request.url).ok();
     match (checkout_repo, linked_repo) {
         (Some(checkout_repo), Some(linked_repo))

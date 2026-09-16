@@ -4734,7 +4734,7 @@ fn a_submission_on_an_unregistered_repository_halts_instead_of_linking() {
         .expect("a halting incident is recorded");
     assert!(incident.halted);
     assert!(
-        incident.detail.contains("not registered"),
+        incident.detail.contains("outside current checkout origin"),
         "{}",
         incident.detail
     );
@@ -6541,4 +6541,49 @@ fn a_dependency_hold_preserves_the_retrying_incident_and_its_failure_budget() {
         tick_with(fixture.store(), fixture.env(), &failure, fixture.project()).unwrap(),
         TickResult::Halted
     );
+}
+
+#[test]
+fn current_origin_overrules_historical_registration_in_the_verifier_queue() {
+    let fixture = ServiceFixture::new();
+    let checkout = fixture.github_checkout("https://github.com/acme/widgets.git");
+    let id = submitted(&fixture, "Changed origin", Priority::High, PR_ONE);
+    let output = storyhook::env::git_env::command(&checkout)
+        .args([
+            "config",
+            "remote.origin.url",
+            "https://github.example.com/acme/widgets.git",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(candidate.story_id, id);
+    assert!(
+        candidate.pull_request.is_err(),
+        "historical remote must not authorize verification"
+    );
+}
+
+#[test]
+fn foreign_project_pointer_keeps_the_verifier_candidate_visible_but_unauthorized() {
+    let fixture = ServiceFixture::new();
+    let checkout = fixture.github_checkout("https://github.com/acme/widgets.git");
+    submitted(&fixture, "Foreign checkout pointer", Priority::High, PR_ONE);
+    std::fs::write(
+        checkout.join(".storyhook.toml"),
+        "schema = 1\nuuid = \"foreign-project\"\nprefix = \"SH\"\n",
+    )
+    .unwrap();
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        candidate.pull_request,
+        Err(VerificationProblem::InvalidCheckout(_))
+    ));
 }
