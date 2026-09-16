@@ -186,12 +186,12 @@ impl ServiceFixture {
     /// Registers a real GitHub checkout at a test-selected path.
     pub fn github_checkout_at(&self, project: ProjectId, root: &Path, origin: &str) {
         let record = self.store.read(|tx| tx.project(project)).unwrap().unwrap();
-        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root).unwrap();
         for args in [
             vec!["init", "--quiet"],
             vec!["config", "remote.origin.url", origin],
         ] {
-            let output = storyhook::env::git_env::command(&root)
+            let output = storyhook::env::git_env::command(root)
                 .args(args)
                 .output()
                 .unwrap();
@@ -202,9 +202,9 @@ impl ServiceFixture {
             );
         }
         let pointer = storyhook::service::project::ProjectPointer::new(record.uuid, record.prefix);
-        storyhook::service::project::write_pointer(&root, &pointer).unwrap();
+        storyhook::service::project::write_pointer(root, &pointer).unwrap();
         self.store
-            .write(|tx| tx.set_checkout_path(project, Some(&root)))
+            .write(|tx| tx.set_checkout_path(project, Some(root)))
             .unwrap();
         self.link_origin_for(project, origin);
     }

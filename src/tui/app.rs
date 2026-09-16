@@ -1552,6 +1552,25 @@ mod tests {
             use crate::store::Store as _;
             let data = storyhook_test_support::scratch_dir();
             let repo = storyhook_test_support::scratch_dir();
+            for args in [
+                vec!["init", "--quiet"],
+                vec![
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://github.com/mikeydotio/storyhook.git",
+                ],
+            ] {
+                let out = crate::env::git_env::command(repo.path())
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    out.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
             let env = crate::env::Environment::at(data.path());
             let store = crate::store::SqliteStore::open(env.store_path()).unwrap();
             store.migrate().unwrap();
