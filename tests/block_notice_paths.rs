@@ -94,7 +94,6 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::LinkPr { .. }
         | Invocation::UnlinkPr { .. }
         | Invocation::PrCheck { .. }
-        | Invocation::GithubAuth { .. }
         | Invocation::HelpTopic { .. }
         | Invocation::HelpCompact
         | Invocation::HelpAll

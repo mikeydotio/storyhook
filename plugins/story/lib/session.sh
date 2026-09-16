@@ -101,6 +101,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/plugin-identity.sh"
 # here would just shadow whatever the caller set, which is exactly the
 # hidden coupling this extraction is trying to keep visible rather than bury.
 
+# shellcheck source=github-access.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/github-access.sh"
+
 # ---- JSON emitters ----------------------------------------------------------
 # fail <message> — emit {ok:false, display} and exit non-zero. The skill halts
 # and shows `display`.
@@ -173,7 +176,7 @@ resolve_wname() {
 # ---- git-safety helpers ------------------------------------------------------
 # default_branch — the NAME of origin's default branch (no "origin/"), asked
 # of origin itself: `git ls-remote --symref origin HEAD` advertises the
-# remote's own HEAD — one read-only round trip, no `gh`, any git host. On
+# remote's own HEAD — one read-only round trip through the shared origin observation boundary. On
 # success prints the name and nothing else.
 #
 # Never the local refs/remotes/origin/HEAD cache alone, and never a literal
@@ -193,9 +196,9 @@ resolve_wname() {
 # caller may take `$(default_branch 2>&1)` as the name on success and as the
 # diagnostic on failure.
 # An optional Git runner lets submission use its noninteractive credential
-# boundary without changing the transport policy of dispatch or cleanup.
+# boundary; generic observations use HTTPS/gh or explicitly file-only transport.
 default_branch() {
-  local out name runner="${1:-git}"
+  local out name runner="${1:-origin_git}"
   if ! out=$("$runner" ls-remote --symref origin HEAD 2>&1); then
     printf 'default_branch: origin did not answer: %s\n' "$out" >&2
     return 1
@@ -203,7 +206,7 @@ default_branch() {
   name=$(printf '%s\n' "$out" \
     | awk -F'\t' '$2 == "HEAD" && index($1, "ref: refs/heads/") == 1 { print substr($1, 17); exit }')
   if [ -z "$name" ]; then
-    printf 'default_branch: origin advertises no symbolic HEAD (its default branch is unborn or detached); set one on the remote, e.g. `gh repo edit --default-branch <name>`\n' >&2
+    printf 'default_branch: origin advertises no symbolic HEAD (its default branch is unborn or detached); configure a symbolic HEAD on origin and retry\n' >&2
     return 1
   fi
   printf '%s' "$name"
@@ -249,19 +252,23 @@ is_protected_branch() {
 local_branch_exists() { git show-ref --verify --quiet "refs/heads/$1"; }
 
 # remote_branch_exists <branch>
-remote_branch_exists() { [ -n "$(git ls-remote --heads origin "$1" 2>/dev/null)" ]; }
+remote_branch_exists() {
+  local refs
+  refs=$(origin_git ls-remote --heads origin "$1") || return 1
+  [ -n "$refs" ]
+}
 
-# freshen_base_ref <base> — BEST-EFFORT, quiet network refresh of the base
+# freshen_base_ref <base> — network refresh; caller owns failure policy/output.
+# Refreshes the base
 # branch's remote-tracking ref (refs/remotes/origin/<base>) so branch_is_merged
 # compares against an up-to-date origin/<base>. Explicit refspec (with a
 # leading + to match the default clone behaviour) guarantees the
 # remote-tracking ref updates regardless of the remote's configured fetch
-# refspecs. Offline / no-remote / any failure is swallowed — branch_is_merged
-# then falls back to whatever refs already exist. NEVER mutates local
+# refspecs. Returns diagnostics and failure to the structured caller. NEVER mutates local
 # branches, the index, or the worktree.
 freshen_base_ref() {
   local base="$1"
-  git fetch --quiet origin "+refs/heads/$base:refs/remotes/origin/$base" >/dev/null 2>&1 || true
+  origin_git fetch --quiet origin "+refs/heads/$base:refs/remotes/origin/$base"
 }
 
 # branch_is_merged <branch> <base> — true iff <branch>'s tip is an ancestor of a

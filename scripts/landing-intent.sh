@@ -2,6 +2,8 @@
 # The daemon commits durable authority before invoking this phase (SH-656).
 set -uo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+# shellcheck source=github-access.sh
+. "$script_dir/github-access.sh" || exit 1
 [ "$#" -eq 5 ] || exit 1
 mode="$1" pr="$2" expected_head="$3" expected_tree="$4" marker="$5"
 verdict() {
@@ -9,6 +11,7 @@ verdict() {
     exit 0
 }
 case "$mode" in attempt|recover) ;; *) exit 1 ;; esac
+github_begin || verdict uncertain "cannot establish GitHub origin: ${GITHUB_ACCESS_ERROR:-origin unavailable}"
 # A recovery never retries a mutation. OPEN does not prove an earlier request
 # cannot finish, even when a new daemon cannot find the old local marker.
 not_attempted=""
@@ -23,7 +26,7 @@ if [ "$mode" = attempt ]; then
         not_attempted="$output"
     fi
 fi
-metadata="$(gh pr view "$pr" --json state,headRefOid,baseRefName,mergeCommit 2>&1)" \
+metadata="$(github_exec pr view "$pr" --json state,headRefOid,baseRefName,mergeCommit 2>&1)" \
     || verdict uncertain "cannot observe admitted pull request: $metadata"
 state="$(printf '%s\n' "$metadata" | jq -er '.state')" || verdict uncertain "missing PR state"
 if [ "$state" != MERGED ]; then
@@ -37,7 +40,7 @@ merge_oid="$(printf '%s\n' "$metadata" | jq -er '.mergeCommit.oid')" || verdict 
 git check-ref-format "refs/heads/$base" >/dev/null || verdict uncertain "invalid merge base ref"
 # Fetch to a private ref so another verifier's fetch cannot change this check.
 recovery_ref="refs/storyhook/landing/$expected_head"
-git fetch -q origin "+refs/heads/$base:$recovery_ref" 2>&1 \
+github_git fetch -q origin "+refs/heads/$base:$recovery_ref" 2>&1 \
     || verdict uncertain "cannot fetch merged base"
 git merge-base --is-ancestor "$merge_oid" "$recovery_ref" \
     || verdict uncertain "reported merge is not on the fetched base"

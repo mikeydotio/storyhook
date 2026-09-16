@@ -28,6 +28,14 @@ one of:
 - already up to date, or
 - the local build is newer than the latest release (a dev build).
 
+If source metadata is missing or does not match the installed binary, obtain an
+explicit trusted `HOST/OWNER/REPO` from the user or existing installation
+instructions. Do not use the current project origin or a public-host fallback.
+Repeat the check with `story update --check --source HOST/OWNER/REPO`, then
+carry the same source into the authorized update. Add `--force` when the user
+wants to establish metadata by reinstalling the same version. `--check` never
+persists source selection. gh must be available and authenticated for that host.
+
 Also run `story --version` to show the currently installed version.
 
 - **If already up to date** (and the user did not explicitly ask to reinstall),

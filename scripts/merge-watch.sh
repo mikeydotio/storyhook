@@ -252,8 +252,14 @@ if [ "${1:-}" = "--speculative-run" ]; then
             -u STORYHOOK_GATE_RESULT_FILE \
             -u STORYHOOK_STORE_PATH \
             -u STORYHOOK_PROJECT \
+            -u STORY_BIN \
+            -u STORYHOOK_GITHUB_AUTHORITY \
+            -u STORYHOOK_GITHUB_EXPECTED \
+            -u GH_CONFIG_DIR \
             -u GH_TOKEN \
             -u GITHUB_TOKEN \
+            -u GH_ENTERPRISE_TOKEN \
+            -u GITHUB_ENTERPRISE_TOKEN \
             GIT_ALTERNATE_OBJECT_DIRECTORIES="$candidate_alternates" \
             STORYHOOK_GATE_RECEIPT="$script_dir/tree-receipt.sh" \
             python3 "$script_dir/verifier-owner.py" gate "$common_dir" "$poller_wt" -- "$@"

@@ -26,7 +26,6 @@ pub use control::VerificationControlState;
 use super::bus::{Change, ChangeBus};
 use super::lifecycle::{CurrentRequest, InFlight};
 use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
-use crate::domain::github_remote::parse_github_url;
 use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{
     CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt, SubmissionReceipt,
@@ -34,7 +33,8 @@ use crate::domain::{
 };
 use crate::env::Environment;
 use crate::env::spawn_env::{
-    apply_dispatch_allowlist, apply_submission_allowlist, apply_verification_allowlist,
+    apply_dispatch_allowlist, apply_orchestration_allowlist, apply_submission_allowlist,
+    apply_verification_allowlist,
 };
 use crate::error::AppError;
 use crate::process::{
@@ -743,6 +743,8 @@ impl ShellVerificationActuator {
                 .arg(&intent.certification.tree)
                 .arg(marker)
                 .current_dir(&intent.checkout)
+                .env("STORY_BIN", self.story_binary())
+                .env("STORYHOOK_GITHUB_AUTHORITY", &intent.checkout)
                 .envs(self.env.child_vars())
                 .env(
                     "STORYHOOK_VERIFIER_MIRROR",
@@ -949,7 +951,7 @@ impl ShellVerificationActuator {
             AppError::Storage(format!("could not encode cleanup lease: {error}"))
         })?;
         let mut command = Command::new("bash");
-        apply_dispatch_allowlist(&mut command);
+        apply_orchestration_allowlist(&mut command);
         command
             .arg(self.helper_path()?)
             .arg("--project")
@@ -1058,6 +1060,7 @@ impl ShellVerificationActuator {
             .arg("submit")
             .arg(&candidate.story_id)
             .current_dir(&lease.repository_path)
+            .env("STORYHOOK_GITHUB_AUTHORITY", &candidate.checkout)
             .env_remove("STORY_AGENT")
             .env("STORY_BIN", self.story_binary())
             .envs(self.env.child_vars())
@@ -1258,6 +1261,8 @@ impl VerificationActuator for ShellVerificationActuator {
             .arg("--")
             .args(gate.argv())
             .current_dir(&candidate.checkout)
+            .env("STORY_BIN", self.story_binary())
+            .env("STORYHOOK_GITHUB_AUTHORITY", &candidate.checkout)
             // The resolved fixture policy overrides any ambient value the
             // allowlist retained; the verifier needs no other store settings.
             .env(
@@ -1490,10 +1495,15 @@ fn checkout_repository_problem(
     checkout: &std::path::Path,
     pull_request: &PrLink,
 ) -> Option<String> {
-    let origin = crate::service::project::origin_of(checkout);
-    let checkout_repo = origin
-        .as_ref()
-        .and_then(|origin| parse_github_url(origin.raw()));
+    let repository = match crate::github_access::Repository::resolve(checkout) {
+        Ok(repository) => repository,
+        Err(error) => {
+            return Some(format!(
+                "cannot validate registered checkout origin: {error}"
+            ));
+        }
+    };
+    let checkout_repo = Some(repository.identity().clone());
     let linked_repo = parse_pr_url(&pull_request.url).ok();
     match (checkout_repo, linked_repo) {
         (Some(checkout_repo), Some(linked_repo))

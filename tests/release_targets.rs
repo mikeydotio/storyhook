@@ -31,92 +31,22 @@ fn read(relative: &str) -> String {
 // The manifest: what the Linux target resolves to
 // ---------------------------------------------------------------------------
 
-/// Every dependency declared under a `cfg(...)` that names Linux and whose
-/// crate name mentions `secret-service`, paired with the feature list it
-/// selects.
-///
-/// Found by scanning rather than by naming one key, so that swapping the
-/// backing crate — or reformatting the `cfg` expression — keeps the invariant
-/// under test instead of quietly retiring it.
-fn linux_secret_service_dependencies() -> Vec<(String, Vec<String>)> {
-    let manifest: toml::Value = read("Cargo.toml")
-        .parse()
-        .expect("Cargo.toml must be valid TOML");
-
-    let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) else {
-        panic!("Cargo.toml must declare per-target dependency tables");
-    };
-
-    let mut found = Vec::new();
-    for (cfg, table) in targets {
-        if !cfg.contains("linux") {
-            continue;
-        }
-        let Some(dependencies) = table.get("dependencies").and_then(toml::Value::as_table) else {
-            continue;
-        };
-        for (name, spec) in dependencies {
-            if !name.contains("secret-service") {
-                continue;
+/// GitHub authentication belongs to gh on every supported platform.
+#[test]
+fn standalone_github_keychain_dependencies_are_retired() {
+    let manifest: toml::Value = read("Cargo.toml").parse().unwrap();
+    fn check(value: &toml::Value) {
+        if let Some(table) = value.as_table() {
+            for (key, value) in table {
+                assert!(
+                    !key.contains("keyring") && !key.contains("secret-service"),
+                    "obsolete credential dependency: {key}"
+                );
+                check(value);
             }
-            let features = spec
-                .get("features")
-                .and_then(toml::Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(|value| value.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            found.push((name.clone(), features));
         }
     }
-    found
-}
-
-/// `secret-service` 5.x compiles only if its consumer picks a runtime: with no
-/// `rt-*` feature selected it is a bare `compile_error!` in `session.rs`, which
-/// is what took every Linux release build down. The feature has to be named
-/// here because nothing downstream of us will pick one by default.
-#[test]
-fn the_linux_keyring_dependency_picks_a_secret_service_runtime() {
-    let dependencies = linux_secret_service_dependencies();
-    assert!(
-        !dependencies.is_empty(),
-        "no Linux secret-service dependency found in Cargo.toml — if the \
-         backing crate was replaced, this test needs to learn the new name; \
-         if it was removed, so should this test be"
-    );
-
-    for (name, features) in dependencies {
-        assert!(
-            features.iter().any(|feature| feature.starts_with("rt-")),
-            "`{name}` selects no `rt-*` feature, so `secret-service` picks no \
-             runtime and refuses to compile: every Linux release artifact \
-             fails to build. Enable one of its forwarding features (see \
-             SH-259)."
-        );
-    }
-}
-
-/// The runtime has to be a pure-Rust one. `crypto-openssl` would put
-/// `openssl-sys` on the Linux path, and one Linux artifact is cross-compiled
-/// in Lima — cross-compiling a system OpenSSL is a second, worse version of
-/// the problem this test exists to prevent. The same reasoning already chose
-/// `zbus` over the `libdbus`-backed alternative.
-#[test]
-fn the_linux_secret_service_runtime_needs_no_system_library() {
-    for (name, features) in linux_secret_service_dependencies() {
-        for feature in features.iter().filter(|f| f.starts_with("rt-")) {
-            assert!(
-                feature.ends_with("-crypto-rust"),
-                "`{name}` selects `{feature}`, which links a system crypto \
-                 library; the cross-compiled Linux artifact cannot count on \
-                 one. Pick the `-crypto-rust` variant."
-            );
-        }
-    }
+    check(&manifest);
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +81,7 @@ fn release_sh_assembles_locally_and_never_delegates_to_actions() {
     let source = read("scripts/release.sh");
     assert!(source.contains("scripts/build-release-assets.sh --check"));
     assert!(source.contains("scripts/build-release-assets.sh"));
-    assert!(source.contains("gh release create"));
+    assert!(source.contains("github_exec release create"));
     for required in [
         "--verify-tag",
         "--draft",
@@ -1026,6 +956,11 @@ fn publish_fixture() -> (tempfile::TempDir, PathBuf) {
         root.join("scripts/release-targets.sh"),
     )
     .unwrap();
+    std::fs::copy(
+        repo_root().join("scripts/github-access.sh"),
+        root.join("scripts/github-access.sh"),
+    )
+    .unwrap();
     std::fs::write(root.join("VERSION"), "v9.9.9\n").unwrap();
     std::fs::write(root.join("BUILD"), "0\n").unwrap();
     std::fs::copy(
@@ -1038,7 +973,10 @@ fn publish_fixture() -> (tempfile::TempDir, PathBuf) {
         &root.join("bin/gh"),
         r#"#!/bin/bash
 set -eu
-if [ "$1 $2" = "auth status" ]; then exit 0; fi
+[ "$GH_HOST" = github.pie.apple.com ] || exit 92
+[ "$GH_REPO" = github.pie.apple.com/acme/storyhook ] || exit 93
+RELEASE_SCENARIO=$(cat "$GH_CONFIG_DIR/scenario")
+RELEASE_TEST_LOG="$GH_CONFIG_DIR/publish.log"
 if [ "$1" = api ]; then
   endpoint=""
   for argument in "$@"; do
@@ -1068,6 +1006,13 @@ exit 2
 
     for args in [
         ["init", "-q", "-b", "dev"].as_slice(),
+        [
+            "remote",
+            "add",
+            "origin",
+            "git@github.pie.apple.com:acme/storyhook.git",
+        ]
+        .as_slice(),
         ["config", "user.email", "release@test"].as_slice(),
         ["config", "user.name", "release-test"].as_slice(),
         ["add", "-A"].as_slice(),
@@ -1080,12 +1025,15 @@ exit 2
             .unwrap();
         assert!(status.success());
     }
-    let log = root.join("publish.log");
+    std::fs::create_dir(root.join(".git/gh-fixture")).unwrap();
+    std::fs::write(root.join(".git/gh-fixture/scenario"), "ok").unwrap();
+    let log = root.join(".git/gh-fixture/publish.log");
     (fixture, log)
 }
 
 fn publish_with_scenario(scenario: &str) -> (Output, String) {
     let (fixture, log) = publish_fixture();
+    std::fs::write(fixture.path().join(".git/gh-fixture/scenario"), scenario).unwrap();
     let path = format!(
         "{}:{}",
         fixture.path().join("bin").display(),
@@ -1096,8 +1044,10 @@ fn publish_with_scenario(scenario: &str) -> (Output, String) {
         .arg(fixture.path().join("scripts/release.sh"))
         .args(["--publish", "v9.9.9", "--yes"])
         .env("PATH", path)
-        .env("RELEASE_SCENARIO", scenario)
-        .env("RELEASE_TEST_LOG", &log)
+        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("GH_CONFIG_DIR", fixture.path().join(".git/gh-fixture"))
+        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("GH_CONFIG_DIR", fixture.path().join(".git/gh-fixture"))
         .output()
         .unwrap();
     let calls = std::fs::read_to_string(log).unwrap_or_default();
@@ -1125,7 +1075,8 @@ fn publish_refuses_a_non_version_before_calling_github() {
         .arg(fixture.path().join("scripts/release.sh"))
         .args(["--publish", "v9.9.9\") | .[]", "--yes"])
         .env("PATH", path)
-        .env("RELEASE_TEST_LOG", &log)
+        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("GH_CONFIG_DIR", fixture.path().join(".git/gh-fixture"))
         .output()
         .unwrap();
     assert!(!result.status.success());

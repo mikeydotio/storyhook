@@ -192,6 +192,8 @@ impl<T> GenerationWrite<T> {
 pub enum VerificationProblem {
     /// The project has no registered checkout in which to run its gate.
     MissingCheckout,
+    /// Current checkout identity or origin could not be validated.
+    InvalidCheckout(String),
     /// No open, close-on-merge PR is linked to the story.
     MissingPullRequest,
     /// More than one open, close-on-merge PR makes the submission ambiguous.
@@ -210,6 +212,7 @@ impl VerificationProblem {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
+            Self::InvalidCheckout(detail) => format!("verification cannot authorize the current checkout: {detail}"),
             Self::MissingCheckout => "Verification cannot run because this project has no registered checkout. Run `story project link checkout <path>` from an operator session.".to_string(),
             Self::MissingPullRequest => "verification needs exactly one open close-on-merge pull request linked with `story link-pr`; none is linked".to_string(),
             Self::MultiplePullRequests(urls) => format!(
@@ -326,7 +329,9 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     /// sorted by priority, verification entry, then project/story identity.
     /// Queue positions count only runnable candidates from this snapshot.
     pub fn ordered(&self) -> Result<Vec<VerificationCandidate>, AppError> {
-        Ok(self.store.read(|tx| ordered_candidates(tx))?)
+        let mut candidates = self.store.read(|tx| ordered_candidates(tx))?;
+        self.validate_origins(&mut candidates);
+        Ok(candidates)
     }
 
     /// Returns one project's submitted stories in the exact order its worker
@@ -334,7 +339,9 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     /// computed from this list, never re-derived from a second query that
     /// could race the one the worker itself used.
     pub fn ordered_for(&self, project: ProjectId) -> Result<Vec<VerificationCandidate>, AppError> {
-        Ok(self.store.read(|tx| ordered_candidates_for(tx, project))?)
+        let mut candidates = self.store.read(|tx| ordered_candidates_for(tx, project))?;
+        self.validate_origins(&mut candidates);
+        Ok(candidates)
     }
 
     /// Returns this story's current submitted generation, if it still has one.
@@ -342,11 +349,58 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         &self,
         candidate: &VerificationCandidate,
     ) -> Result<Option<VerificationCandidate>, AppError> {
-        Ok(self.store.read(|tx| {
-            Ok(ordered_candidates_for(tx, candidate.project)?
-                .into_iter()
-                .find(|current| current.story_id == candidate.story_id))
-        })?)
+        Ok(self
+            .ordered_for(candidate.project)?
+            .into_iter()
+            .find(|current| current.story_id == candidate.story_id))
+    }
+
+    // Resolve after the transaction closes: subprocess deadlines must not hold
+    // the store lock. Each call has a fresh project-scoped authority snapshot.
+    fn validate_origins(&self, candidates: &mut [VerificationCandidate]) {
+        let mut origins = std::collections::BTreeMap::new();
+        for candidate in candidates {
+            let awaiting_submission = candidate.cleanup_lease.is_some()
+                && matches!(
+                    candidate.pull_request,
+                    Err(VerificationProblem::MissingPullRequest)
+                );
+            if candidate.pull_request.is_err() && !awaiting_submission {
+                continue;
+            }
+            let authority = origins.entry(candidate.project).or_insert_with(|| {
+                let ctx = Ctx::new(
+                    self.store,
+                    candidate.project,
+                    &candidate.checkout,
+                    crate::env::Environment::at(&candidate.checkout),
+                );
+                super::github_repository::repository(&ctx).map_err(|e| e.to_string())
+            });
+            match authority {
+                Err(detail) => {
+                    candidate.pull_request =
+                        Err(VerificationProblem::InvalidCheckout(detail.clone()))
+                }
+                Ok(repository) => {
+                    let Ok(link) = &candidate.pull_request else {
+                        continue;
+                    };
+                    let identity = repository.identity();
+                    if !parse_pr_url(&link.url).is_ok_and(|r| {
+                        identity.host.eq_ignore_ascii_case(&r.host)
+                            && identity.owner.eq_ignore_ascii_case(&r.owner)
+                            && identity.repo.eq_ignore_ascii_case(&r.repo)
+                    }) {
+                        candidate.pull_request =
+                            Err(VerificationProblem::UnregisteredPullRequest {
+                                url: link.url.clone(),
+                                registered: vec![repository.qualified()],
+                            });
+                    }
+                }
+            }
+        }
     }
 
     /// Records completed execution and optional cleanup incident in one transaction.
@@ -419,9 +473,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     /// store now folds it, so the caller proceeds on a store fact rather than
     /// on a `PrLink` it assembled by hand.
     ///
-    /// The cross-repository rule is `PrLinkService::link`'s: a project with
-    /// registered GitHub origins accepts only a pull request on one of them;
-    /// a project with none registered has nothing to check against. Re-linking
+    /// The current registered checkout origin must authorize the PR. Re-linking
     /// a URL the story already links upserts, which is what makes recording
     /// the adopted pull request on every generation idempotent.
     pub(crate) fn record_generation_submitted(
@@ -430,7 +482,32 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         candidate: &VerificationCandidate,
         pull_request: &SubmittedPullRequest,
     ) -> Result<GenerationWrite<PrLink>, AppError> {
+        if ctx.project() != candidate.project {
+            return Err(AppError::Validation(
+                "submission context belongs to another project".into(),
+            ));
+        }
+        let current = ctx.store().read(|tx| {
+            let prefix = project_prefix(tx, candidate.project)?;
+            let (_, row) = resolve_story(tx, candidate.project, &prefix, &candidate.story_id)?;
+            submission_is_current(tx, &row, candidate)
+        })?;
+        if !current {
+            return Ok(GenerationWrite::Superseded);
+        }
         let reference = parse_pr_url(&pull_request.url)?;
+        let repository = super::github_repository::repository(ctx)?;
+        let identity = repository.identity();
+        if !identity.host.eq_ignore_ascii_case(&reference.host)
+            || !identity.owner.eq_ignore_ascii_case(&reference.owner)
+            || !identity.repo.eq_ignore_ascii_case(&reference.repo)
+        {
+            return Err(AppError::Validation(format!(
+                "the verifier opened pull request {} outside current checkout origin {}; refusing to link it",
+                pull_request.url,
+                repository.qualified()
+            )));
+        }
         let branch = candidate
             .cleanup_lease
             .as_ref()
@@ -450,26 +527,6 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             // must not erase the observed PR from this unchanged submission.
             if !submission_is_current(&*tx, &row, candidate)? {
                 return Ok(GenerationWrite::Superseded);
-            }
-            let registered =
-                super::pr_link::github_repos_from_remotes(&tx.project_remotes(project)?);
-            if !registered.is_empty()
-                && !registered.iter().any(|repo| {
-                    repo.host.eq_ignore_ascii_case(&reference.host)
-                        && repo.owner.eq_ignore_ascii_case(&reference.owner)
-                        && repo.repo.eq_ignore_ascii_case(&reference.repo)
-                })
-            {
-                return Err(AppError::Validation(format!(
-                    "the verifier opened pull request `{}` on a repository this project has not registered ({}); refusing to link it",
-                    pull_request.url,
-                    registered
-                        .iter()
-                        .map(|repo| format!("{}/{}/{}", repo.host, repo.owner, repo.repo))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-                .into());
             }
             let body = format!(
                 "{VERIFICATION_SUBMITTED_PREFIX} `{branch}` is on origin at {}; {} pull request {}.",
@@ -1148,8 +1205,6 @@ pub(crate) fn ordered_candidates_for(
         let intents = tx.landing_intents()?;
         let index = super::query::story_map(tx, project.id)?;
         let checkout = tx.checkout_path(project.id)?;
-        let registered =
-            super::pr_link::github_repos_from_remotes(&tx.project_remotes(project.id)?);
         let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
         let resets = tx.story_resets(project.id)?;
         for row in rows {
@@ -1169,24 +1224,7 @@ pub(crate) fn ordered_candidates_for(
                 .collect::<Vec<_>>();
             let pull_request = match (&checkout, links.as_slice()) {
                 (None, _) => Err(VerificationProblem::MissingCheckout),
-                (Some(_), [link])
-                    if parse_pr_url(&link.url).is_ok_and(|reference| {
-                        registered.iter().any(|repo| {
-                            repo.host.eq_ignore_ascii_case(&reference.host)
-                                && repo.owner.eq_ignore_ascii_case(&reference.owner)
-                                && repo.repo.eq_ignore_ascii_case(&reference.repo)
-                        })
-                    }) =>
-                {
-                    Ok(link.clone())
-                }
-                (Some(_), [link]) => Err(VerificationProblem::UnregisteredPullRequest {
-                    url: link.url.clone(),
-                    registered: registered
-                        .iter()
-                        .map(|repo| format!("{}/{}/{}", repo.host, repo.owner, repo.repo))
-                        .collect(),
-                }),
+                (Some(_), [link]) => Ok(link.clone()),
                 (Some(_), []) => Err(VerificationProblem::MissingPullRequest),
                 (Some(_), many) => Err(VerificationProblem::MultiplePullRequests(
                     many.iter().map(|link| link.url.clone()).collect(),
@@ -1597,7 +1635,11 @@ mod tests {
             let pull_request = receipt.pull_request.unwrap();
 
             let fixture = storyhook_test_support::ServiceFixture::new();
-            fixture.link_origin("https://github.com/acme/widgets");
+            fixture.github_checkout_at(
+                fixture.project(),
+                fixture.cwd(),
+                "https://github.pie.apple.com/acme/widgets",
+            );
             let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
             store
                 .write(|tx| {

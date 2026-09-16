@@ -69,7 +69,7 @@ fn submitted(fixture: &ServiceFixture, title: &str, priority: Priority, url: &st
 #[test]
 fn the_queue_selects_the_highest_priority_verifying_story() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let low = submitted(&fixture, "older low", Priority::Low, PR_ONE);
     let high = submitted(&fixture, "newer high", Priority::High, PR_TWO);
 
@@ -86,7 +86,7 @@ fn the_queue_selects_the_highest_priority_verifying_story() {
 #[test]
 fn equal_priority_and_time_use_story_identity_as_a_stable_tie_break() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let first = submitted(&fixture, "first", Priority::Medium, PR_ONE);
     submitted(&fixture, "second", Priority::Medium, PR_TWO);
 
@@ -103,7 +103,7 @@ fn equal_priority_and_time_use_story_identity_as_a_stable_tie_break() {
 #[test]
 fn ordered_lists_every_submitted_candidate_in_the_order_next_would_drain_them() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let low = submitted(&fixture, "older low", Priority::Low, PR_ONE);
     let high = submitted(&fixture, "newer high", Priority::High, PR_TWO);
 
@@ -120,7 +120,7 @@ fn ordered_lists_every_submitted_candidate_in_the_order_next_would_drain_them() 
 #[test]
 fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let low = submitted(&fixture, "already running", Priority::Low, PR_ONE);
     let low_candidate = VerificationQueue::new(fixture.store())
         .next()
@@ -184,7 +184,7 @@ fn a_higher_priority_arrival_does_not_steal_active_verification_ownership() {
 #[test]
 fn dashboard_data_exposes_running_queued_and_superseding_statuses_and_omits_other_states() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let running_id = submitted(&fixture, "active low", Priority::Low, PR_ONE);
     let running_candidate = VerificationQueue::new(fixture.store())
         .next()
@@ -344,7 +344,7 @@ fn dashboard_data_exposes_running_queued_and_superseding_statuses_and_omits_othe
 #[test]
 fn a_resubmitted_generation_reports_the_superseded_attempt_that_still_owns_the_worker() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "resubmitted", Priority::High, PR_ONE);
     let old_candidate = VerificationQueue::new(fixture.store())
         .next()
@@ -421,7 +421,7 @@ fn a_resubmitted_generation_reports_the_superseded_attempt_that_still_owns_the_w
 #[test]
 fn an_active_resubmission_does_not_reuse_an_older_journal_generation() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     submitted(&fixture, "fresh attempt", Priority::High, PR_ONE);
     let candidate = VerificationQueue::new(fixture.store())
         .next()
@@ -622,7 +622,7 @@ fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
 
     for (outcome, expected) in cases {
         let fixture = ServiceFixture::new();
-        fixture.link_origin("https://github.com/acme/widgets");
+        fixture.github_checkout("https://github.com/acme/widgets");
         let id = submitted(&fixture, "owned while running", Priority::High, PR_ONE);
         let activity = VerificationActivity::new();
         std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
@@ -672,7 +672,7 @@ fn every_single_attempt_outcome_releases_ownership_after_the_blocking_call() {
 #[test]
 fn ownership_is_cleared_during_unwind() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     submitted(&fixture, "panicking attempt", Priority::High, PR_ONE);
     let activity = VerificationActivity::new();
     std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
@@ -710,7 +710,7 @@ fn ownership_is_cleared_when_outcome_recording_returns_an_error() {
     use storyhook::store::fault::{FaultAction, FaultPoint, arm};
 
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     submitted(&fixture, "failing outcome write", Priority::High, PR_ONE);
     let activity = VerificationActivity::new();
     std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
@@ -751,7 +751,7 @@ fn ownership_is_cleared_when_outcome_recording_returns_an_error() {
 #[test]
 fn verifying_since_reads_the_state_change_event_not_a_later_comments_updated_at() {
     let mut fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "queued", Priority::High, PR_ONE);
     fixture.set_clock(Clock::Fixed("2026-01-01T00:10:00Z".into()));
     StoryService::new(&fixture.ctx())
@@ -842,7 +842,7 @@ fn a_project_without_a_checkout_remains_visible_as_configuration_work() {
 #[test]
 fn a_submission_with_two_open_close_on_merge_prs_names_both() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "two PRs", Priority::High, PR_ONE);
     PrLinkService::new(&fixture.ctx())
         .link(&id, PR_TWO, true)
@@ -865,14 +865,14 @@ fn a_submission_with_two_open_close_on_merge_prs_names_both() {
 fn a_link_is_revalidated_after_the_registered_repository_changes() {
     let fixture = ServiceFixture::new();
     let original = "https://github.com/acme/widgets";
-    fixture.link_origin(original);
+    fixture.github_checkout(original);
     let id = submitted(&fixture, "stale remote", Priority::High, PR_ONE);
     let original = RemoteUrl::normalize(original).unwrap();
     fixture
         .store()
         .write(|tx| tx.unlink_remote(fixture.project(), &original).map(|_| ()))
         .unwrap();
-    fixture.link_origin("https://github.com/acme/replacement");
+    fixture.github_checkout("https://github.com/acme/replacement");
 
     let selected = VerificationQueue::new(fixture.store())
         .next()
@@ -892,14 +892,14 @@ fn a_link_is_revalidated_after_the_registered_repository_changes() {
 fn a_link_is_revalidated_after_the_registered_host_changes() {
     let fixture = ServiceFixture::new();
     let original = "https://github.com/acme/widgets";
-    fixture.link_origin(original);
+    fixture.github_checkout(original);
     let id = submitted(&fixture, "stale host", Priority::High, PR_ONE);
     let original = RemoteUrl::normalize(original).unwrap();
     fixture
         .store()
         .write(|tx| tx.unlink_remote(fixture.project(), &original).map(|_| ()))
         .unwrap();
-    fixture.link_origin("https://github.example.com/acme/widgets");
+    fixture.github_checkout("https://github.example.com/acme/widgets");
 
     let selected = VerificationQueue::new(fixture.store())
         .next()
@@ -937,7 +937,7 @@ fn recording_the_verified_merge_closes_the_story_and_the_pr_projection() {
             .map(str::to_string),
         )
         .unwrap();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "verified", Priority::High, PR_ONE);
     let ctx = fixture.ctx();
     // The verdict precedes the close, as the verifier's own transaction
@@ -1112,7 +1112,7 @@ impl VerificationActuator for FakeActuator {
 #[test]
 fn a_generationless_legacy_submission_remains_actionable_until_a_new_transition_exists() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let ctx = fixture.ctx();
     let id = StoryService::new(&ctx)
         .create(&NewStoryInput {
@@ -1172,7 +1172,7 @@ fn a_generationless_legacy_submission_remains_actionable_until_a_new_transition_
 #[test]
 fn a_superseded_attempt_records_its_withdrawal_naming_the_replacement_generation() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(
         &fixture,
         "resubmitted while running",
@@ -1274,7 +1274,7 @@ fn a_superseded_attempt_records_its_withdrawal_naming_the_replacement_generation
 #[test]
 fn a_story_that_leaves_verifying_mid_attempt_records_its_withdrawal() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(
         &fixture,
         "moved out from under the gate",
@@ -1343,7 +1343,7 @@ fn a_story_that_leaves_verifying_mid_attempt_records_its_withdrawal() {
 #[test]
 fn a_manual_stop_during_an_attempt_rewrites_progress_as_interrupted() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "stopped mid-attempt", Priority::High, PR_ONE);
     let activity = VerificationActivity::new();
     std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
@@ -1656,7 +1656,7 @@ fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
 
     for stale in stale_outcomes {
         let fixture = ServiceFixture::new();
-        fixture.link_origin("https://github.com/acme/widgets");
+        fixture.github_checkout("https://github.com/acme/widgets");
         let id = submitted(
             &fixture,
             "resubmitted while running",
@@ -1866,7 +1866,7 @@ fn ui_done_and_reopen_make_every_delayed_outcome_authorityless() {
 
     for (reopen, outcome, expected_state) in cases {
         let fixture = ServiceFixture::new();
-        fixture.link_origin("https://github.com/acme/widgets");
+        fixture.github_checkout("https://github.com/acme/widgets");
         let id = submitted(&fixture, "UI raced verifier", Priority::High, PR_ONE);
         let activity = VerificationActivity::new();
         std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
@@ -1918,7 +1918,7 @@ fn ui_done_and_reopen_make_every_delayed_outcome_authorityless() {
 #[test]
 fn a_conflict_without_a_resubmission_waiter_returns_the_story_to_its_agent() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "conflicted", Priority::High, PR_ONE);
     let root = scratch_dir();
     let env = Environment::at(root.path());
@@ -1956,7 +1956,7 @@ fn a_conflict_without_a_resubmission_waiter_returns_the_story_to_its_agent() {
 #[test]
 fn a_conflict_on_an_unleased_candidate_never_promises_a_push_it_cannot_make() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "unleased conflicted", Priority::High, PR_ONE);
     assert_eq!(
         VerificationQueue::new(fixture.store())
@@ -2066,7 +2066,7 @@ impl VerificationActuator for SequencedActuator {
 #[test]
 fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let held = submitted(&fixture, "already under test", Priority::Low, PR_ONE);
     let first_generation = VerificationQueue::new(fixture.store())
         .next()
@@ -2180,7 +2180,7 @@ fn story_row(fixture: &ServiceFixture, id: &str) -> storyhook::store::StoryRow {
 #[test]
 fn a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "dead pane reconciliation", Priority::High, PR_ONE);
     let activity = VerificationActivity::new();
     std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
@@ -2268,7 +2268,7 @@ fn a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue(
 #[test]
 fn a_refused_resume_redispatch_parks_the_story_and_releases_the_reservation() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(
         &fixture,
         "unreachable reconciliation",
@@ -2318,7 +2318,7 @@ fn a_refused_resume_redispatch_parks_the_story_and_releases_the_reservation() {
 #[test]
 fn a_notify_failure_that_is_not_absence_parks_without_redispatching() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "paste refused", Priority::High, PR_ONE);
     let activity = VerificationActivity::new();
     std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
@@ -2365,7 +2365,7 @@ fn a_notify_failure_that_is_not_absence_parks_without_redispatching() {
 #[test]
 fn a_paste_that_fails_after_a_successful_redispatch_is_recorded_not_parked() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "late paste", Priority::High, PR_ONE);
     let activity = VerificationActivity::new();
     std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
@@ -2417,7 +2417,7 @@ fn a_paste_that_fails_after_a_successful_redispatch_is_recorded_not_parked() {
 #[test]
 fn an_origin_mismatch_returns_the_story_for_a_safe_resubmission() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "wrong checkout", Priority::High, PR_ONE);
     let root = scratch_dir();
     let actuator = FakeActuator::new(VerificationOutcome::InvalidSubmission {
@@ -2670,7 +2670,7 @@ fn cleanup_candidate(
 #[test]
 fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_change() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "generations", Priority::High, PR_ONE);
     let first_root = scratch_dir();
     let first = cleanup_candidate(&fixture, first_root.path())
@@ -2744,7 +2744,7 @@ fn latest_generation_shadows_old_leases_and_restart_cleanup_survives_checkout_ch
 fn a_stale_cleanup_complete_from_an_earlier_generation_does_not_hide_a_failed_reap() {
     // Generation one: landed, reaped, marked COMPLETE.
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "reopened after reap", Priority::High, PR_ONE);
     let ctx = fixture.ctx();
     let green = format!(
@@ -2901,6 +2901,7 @@ fn verifying_transition_validates_and_atomically_records_a_private_git_marker() 
 #[test]
 fn verifying_without_a_private_git_marker_remains_an_unleased_legacy_submission() {
     let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "legacy submission", Priority::High, PR_ONE);
 
     assert_eq!(
@@ -3644,7 +3645,7 @@ fn the_resume_plan_carries_a_live_engine_lanes_identity_and_nothing_elses() {
     use storyhook_test_support::FakeDispatcher;
 
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let held = submitted(&fixture, "held by a lane", Priority::High, PR_ONE);
     let attended = submitted(&fixture, "attended", Priority::Medium, PR_TWO);
     let ctx = fixture.ctx();
@@ -3724,7 +3725,7 @@ fn the_resume_plan_carries_a_live_engine_lanes_identity_and_nothing_elses() {
 #[test]
 fn a_red_story_returned_to_a_dead_pane_is_redispatched_and_reenters_the_queue() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "no pane", Priority::High, PR_ONE);
     let root = scratch_dir();
     let env = Environment::at(root.path());
@@ -3777,7 +3778,7 @@ fn a_red_story_returned_to_a_dead_pane_is_redispatched_and_reenters_the_queue() 
 #[test]
 fn an_unreachable_agent_is_marked_awaiting_when_the_refusal_is_not_absence() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "no pane", Priority::High, PR_ONE);
     let root = scratch_dir();
     let actuator = FakeActuator::new(VerificationOutcome::TestsFailed {
@@ -3808,7 +3809,7 @@ fn an_unreachable_agent_is_marked_awaiting_when_the_refusal_is_not_absence() {
 #[test]
 fn identical_retryable_failures_update_one_comment_and_halt_at_the_derived_ceiling() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "temporary outage", Priority::High, PR_ONE);
     let root = scratch_dir();
     let actuator = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
@@ -3854,7 +3855,7 @@ fn identical_retryable_failures_update_one_comment_and_halt_at_the_derived_ceili
 #[test]
 fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "broken verifier", Priority::High, PR_ONE);
     let actuator = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
         detail: "not inside a git worktree".into(),
@@ -3986,7 +3987,7 @@ fn a_permanent_infrastructure_failure_halts_on_the_first_attempt() {
 #[test]
 fn acknowledging_an_incident_shares_one_exact_id_contract_across_both_doors() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let head = submitted(&fixture, "broken verifier", Priority::High, PR_ONE);
     let ctx = fixture.ctx();
 
@@ -4061,7 +4062,11 @@ fn acknowledging_an_incident_shares_one_exact_id_contract_across_both_doors() {
 #[test]
 fn a_halt_fires_one_post_commit_verification_hook() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout_at(
+        fixture.project(),
+        fixture.cwd(),
+        "https://github.com/acme/widgets",
+    );
     fixture
         .store()
         .write(|tx| tx.set_checkout_path(fixture.project(), Some(fixture.cwd())))
@@ -4107,7 +4112,7 @@ fn a_halt_fires_one_post_commit_verification_hook() {
 #[test]
 fn a_recovered_attempt_clears_its_retrying_incident() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "recovered verifier", Priority::High, PR_ONE);
     let candidate = VerificationQueue::new(fixture.store())
         .next()
@@ -4151,7 +4156,11 @@ fn a_recovered_attempt_clears_its_retrying_incident() {
 #[test]
 fn a_stale_generation_incident_is_cleared_before_current_work_runs() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout_at(
+        fixture.project(),
+        fixture.cwd(),
+        "https://github.com/acme/widgets",
+    );
     fixture
         .store()
         .write(|tx| tx.set_checkout_path(fixture.project(), Some(fixture.cwd())))
@@ -4307,7 +4316,7 @@ fn a_blocker_added_during_submission_holds_the_generation_before_testing() {
         }
     }
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let root = scratch_dir();
     let (id, _) = leased_submission(&fixture, root.path(), "blocked during submit", None);
     let blocker = StoryService::new(&fixture.ctx())
@@ -4358,7 +4367,7 @@ fn submitting_actuator(
 #[test]
 fn a_leased_story_without_a_pull_request_is_submitted_then_verified_in_one_tick() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let root = scratch_dir();
     let (id, lease) = leased_submission(&fixture, root.path(), "submit me", None);
     let actuator = submitting_actuator(
@@ -4427,7 +4436,7 @@ fn a_leased_story_without_a_pull_request_is_submitted_then_verified_in_one_tick(
 #[test]
 fn a_leased_resubmission_with_a_linked_pull_request_is_pushed_again_before_verifying() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let root = scratch_dir();
     let (id, _) = leased_submission(&fixture, root.path(), "fixed", Some(PR_ONE));
     let actuator = submitting_actuator(
@@ -4476,7 +4485,7 @@ fn a_leased_resubmission_with_a_linked_pull_request_is_pushed_again_before_verif
 #[test]
 fn an_unleased_story_without_a_pull_request_is_returned_without_a_submission_attempt() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let ctx = fixture.ctx();
     let id = StoryService::new(&ctx)
         .create(&NewStoryInput {
@@ -4528,7 +4537,7 @@ fn an_unleased_story_without_a_pull_request_is_returned_without_a_submission_att
 #[test]
 fn a_refused_submission_returns_the_story_with_the_helpers_diagnosis() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let root = scratch_dir();
     let (id, _) = leased_submission(&fixture, root.path(), "dirty", None);
     let actuator = submitting_actuator(
@@ -4581,7 +4590,7 @@ fn a_refused_submission_returns_the_story_with_the_helpers_diagnosis() {
 #[test]
 fn an_infrastructure_failure_during_submission_keeps_the_story_queued_and_retries() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let root = scratch_dir();
     let env = Environment::at(root.path());
     let (id, _) = leased_submission(&fixture, root.path(), "flaky github", None);
@@ -4650,7 +4659,7 @@ fn an_infrastructure_failure_during_submission_keeps_the_story_queued_and_retrie
 #[test]
 fn an_adopted_pull_request_that_is_not_the_linked_one_returns_the_story() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let root = scratch_dir();
     let (id, _) = leased_submission(&fixture, root.path(), "two PRs", Some(PR_ONE));
     let actuator = submitting_actuator(
@@ -4689,7 +4698,7 @@ fn an_adopted_pull_request_that_is_not_the_linked_one_returns_the_story() {
 #[test]
 fn a_submission_on_an_unregistered_repository_halts_instead_of_linking() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let root = scratch_dir();
     let (id, _) = leased_submission(&fixture, root.path(), "elsewhere", None);
     let actuator = submitting_actuator(
@@ -4725,7 +4734,7 @@ fn a_submission_on_an_unregistered_repository_halts_instead_of_linking() {
         .expect("a halting incident is recorded");
     assert!(incident.halted);
     assert!(
-        incident.detail.contains("not registered"),
+        incident.detail.contains("outside current checkout origin"),
         "{}",
         incident.detail
     );
@@ -4806,7 +4815,7 @@ impl VerificationActuator for MovingActuator<'_> {
 #[test]
 fn a_submission_recorded_after_the_generation_moved_is_superseded() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let root = scratch_dir();
     let (id, _) = leased_submission(&fixture, root.path(), "taken back", None);
     let actuator = MovingActuator {
@@ -4845,7 +4854,7 @@ fn a_submission_recorded_after_the_generation_moved_is_superseded() {
 #[test]
 fn a_green_attempt_closes_then_reaps_the_story() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "green", Priority::High, PR_ONE);
     let root = scratch_dir();
     let env = Environment::at(root.path());
@@ -4907,7 +4916,7 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
             .map(str::to_string),
         )
         .unwrap();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "green under a straddle", Priority::High, PR_ONE);
     let root = scratch_dir();
     let env = Environment::at(root.path());
@@ -4958,7 +4967,7 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
 #[test]
 fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "landed before crash", Priority::High, PR_ONE);
     let ctx = fixture.ctx();
     StoryService::new(&ctx)
@@ -5041,7 +5050,7 @@ fn attempt_journal(candidate: &VerificationCandidate, body: &str) -> String {
 #[test]
 fn the_running_candidate_gets_a_live_checklist_from_its_own_journal() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "running", Priority::High, PR_ONE);
 
     let candidate = VerificationQueue::new(fixture.store())
@@ -5085,7 +5094,7 @@ fn the_running_candidate_gets_a_live_checklist_from_its_own_journal() {
 #[test]
 fn a_queued_candidate_shows_its_position_and_what_is_ahead_of_it() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let high = submitted(&fixture, "running", Priority::High, PR_ONE);
     let low = submitted(&fixture, "queued", Priority::Low, PR_TWO);
     let candidate = VerificationQueue::new(fixture.store())
@@ -5122,7 +5131,7 @@ fn a_queued_candidate_shows_its_position_and_what_is_ahead_of_it() {
 #[test]
 fn a_durable_incident_marks_the_head_and_keeps_every_stalled_timestamp_fixed() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let head = submitted(&fixture, "broken head", Priority::High, PR_ONE);
     let tail = submitted(&fixture, "waiting tail", Priority::Low, PR_TWO);
     let candidate = VerificationQueue::new(fixture.store())
@@ -5196,7 +5205,7 @@ fn a_durable_incident_marks_the_head_and_keeps_every_stalled_timestamp_fixed() {
 #[test]
 fn republishing_rewrites_the_one_comment_rather_than_appending_a_new_one() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "running", Priority::High, PR_ONE);
     let candidate = VerificationQueue::new(fixture.store())
         .next()
@@ -5245,7 +5254,7 @@ fn republishing_rewrites_the_one_comment_rather_than_appending_a_new_one() {
 #[test]
 fn an_unchanged_journal_writes_nothing_on_the_next_publish() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "running", Priority::High, PR_ONE);
     let candidate = VerificationQueue::new(fixture.store())
         .next()
@@ -5288,7 +5297,7 @@ fn an_unchanged_journal_writes_nothing_on_the_next_publish() {
 #[test]
 fn a_story_that_leaves_verifying_stops_receiving_progress_updates() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "green", Priority::High, PR_ONE);
     let candidate = VerificationQueue::new(fixture.store())
         .next()
@@ -5561,7 +5570,7 @@ fn green_and_red_comments_name_the_gate_the_verdict_carries() {
         ),
     ] {
         let fixture = ServiceFixture::new();
-        fixture.link_origin("https://github.com/acme/widgets");
+        fixture.github_checkout("https://github.com/acme/widgets");
         let id = submitted(&fixture, "named gate", Priority::High, PR_ONE);
         let root = scratch_dir();
         let env = Environment::at(root.path());
@@ -5591,7 +5600,7 @@ fn green_and_red_comments_name_the_gate_the_verdict_carries() {
 #[test]
 fn a_dependency_hold_does_not_clear_an_existing_infrastructure_halt() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "infrastructure victim", Priority::High, PR_ONE);
     let failure = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
         detail: "permanent environment failure".into(),
@@ -5656,7 +5665,7 @@ fn submitted_in(
 /// a PR on a different repository, as a second registered checkout would.
 fn second_project(fixture: &ServiceFixture) -> storyhook::store::ProjectId {
     let project = fixture.add_project("gadgets", "GD");
-    fixture.link_origin_for(project, "https://github.com/acme/gadgets");
+    fixture.github_checkout_for(project, "https://github.com/acme/gadgets");
     project
 }
 
@@ -5748,7 +5757,7 @@ impl VerificationActuator for ProjectGateActuator {
 #[test]
 fn two_projects_verify_concurrently() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let widgets = fixture.project();
     let gadgets = second_project(&fixture);
     let widgets_story = submitted(&fixture, "held", Priority::High, PR_ONE);
@@ -5844,7 +5853,7 @@ fn two_projects_verify_concurrently() {
 #[test]
 fn two_held_verifications_are_both_visible_as_owned() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let widgets = fixture.project();
     let gadgets = second_project(&fixture);
     submitted(&fixture, "held one", Priority::High, PR_ONE);
@@ -5927,7 +5936,7 @@ fn two_held_verifications_are_both_visible_as_owned() {
 #[test]
 fn a_halt_in_one_project_leaves_the_other_draining() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let widgets = fixture.project();
     let gadgets = second_project(&fixture);
     let widgets_story = submitted(&fixture, "broken verifier", Priority::High, PR_ONE);
@@ -6051,7 +6060,7 @@ fn a_halt_in_one_project_leaves_the_other_draining() {
 #[test]
 fn a_conflict_hold_in_one_project_does_not_hold_the_other() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let widgets = fixture.project();
     let gadgets = second_project(&fixture);
     let widgets_story = submitted(&fixture, "conflicted", Priority::High, PR_ONE);
@@ -6129,7 +6138,7 @@ fn a_conflict_hold_in_one_project_does_not_hold_the_other() {
 #[test]
 fn a_queued_candidate_position_counts_only_its_own_project() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let gadgets = second_project(&fixture);
     let widgets_first = submitted(&fixture, "widgets first", Priority::High, PR_ONE);
     let widgets_second = submitted(&fixture, "widgets second", Priority::Low, PR_TWO);
@@ -6188,7 +6197,7 @@ fn the_supervisor_runs_one_worker_per_project_and_follows_the_catalog() {
     use storyhook::daemon::verification::poll_verification_with;
 
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let widgets = fixture.project();
     let gadgets = second_project(&fixture);
     submitted(&fixture, "widgets work", Priority::High, PR_ONE);
@@ -6267,7 +6276,7 @@ fn the_supervisor_runs_one_worker_per_project_and_follows_the_catalog() {
 
         // A project registered while the daemon runs.
         let sprockets = fixture.add_project("sprockets", "SP");
-        fixture.link_origin_for(sprockets, "https://github.com/acme/sprockets");
+        fixture.github_checkout_for(sprockets, "https://github.com/acme/sprockets");
         submitted_in(
             &fixture,
             sprockets,
@@ -6316,7 +6325,11 @@ fn completed_verdict_and_cleanup_halt_are_recorded_together() {
     use storyhook::daemon::verification::{CompletedVerification, VerificationCleanupFailure};
     for kind in ["red", "passed", "certified"] {
         let fixture = ServiceFixture::new();
-        fixture.link_origin("https://github.com/acme/widgets");
+        fixture.github_checkout_at(
+            fixture.project(),
+            fixture.cwd(),
+            "https://github.com/acme/widgets",
+        );
         fixture
             .store()
             .write(|tx| tx.set_checkout_path(fixture.project(), Some(fixture.cwd())))
@@ -6459,7 +6472,7 @@ fn completed_verdict_and_cleanup_halt_are_recorded_together() {
 #[test]
 fn a_dependency_hold_preserves_the_retrying_incident_and_its_failure_budget() {
     let fixture = ServiceFixture::new();
-    fixture.link_origin("https://github.com/acme/widgets");
+    fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "Infrastructure recovery", Priority::High, PR_ONE);
     let next = submitted(&fixture, "Next queued work", Priority::Low, PR_TWO);
     let failure = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
@@ -6528,4 +6541,82 @@ fn a_dependency_hold_preserves_the_retrying_incident_and_its_failure_budget() {
         tick_with(fixture.store(), fixture.env(), &failure, fixture.project()).unwrap(),
         TickResult::Halted
     );
+}
+
+#[test]
+fn current_origin_overrules_historical_registration_in_the_verifier_queue() {
+    let fixture = ServiceFixture::new();
+    let checkout = fixture.github_checkout("https://github.com/acme/widgets.git");
+    let id = submitted(&fixture, "Changed origin", Priority::High, PR_ONE);
+    let output = storyhook::env::git_env::command(&checkout)
+        .args([
+            "config",
+            "remote.origin.url",
+            "https://github.pie.apple.com/acme/widgets.git",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(candidate.story_id, id);
+    assert!(
+        candidate.pull_request.is_err(),
+        "historical remote must not authorize verification"
+    );
+}
+
+#[test]
+fn foreign_project_pointer_keeps_the_verifier_candidate_visible_but_unauthorized() {
+    let fixture = ServiceFixture::new();
+    let checkout = fixture.github_checkout("https://github.com/acme/widgets.git");
+    submitted(&fixture, "Foreign checkout pointer", Priority::High, PR_ONE);
+    std::fs::write(
+        checkout.join(".storyhook.toml"),
+        "schema = 1\nuuid = \"foreign-project\"\nprefix = \"SH\"\n",
+    )
+    .unwrap();
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        candidate.pull_request,
+        Err(VerificationProblem::InvalidCheckout(_))
+    ));
+}
+
+#[test]
+fn an_unlinked_lease_cannot_submit_from_a_foreign_project_checkout() {
+    let fixture = ServiceFixture::new();
+    let checkout = fixture.github_checkout("https://github.pie.apple.com/acme/widgets.git");
+    let root = scratch_dir();
+    let (_, _) = leased_submission(&fixture, root.path(), "unlinked foreign checkout", None);
+    std::fs::write(
+        checkout.join(".storyhook.toml"),
+        "schema = 1\nuuid = \"foreign-project\"\nprefix = \"SH\"\n",
+    )
+    .unwrap();
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        candidate.pull_request,
+        Err(VerificationProblem::InvalidCheckout(_))
+    ));
+    let actuator = submitting_actuator(
+        VerificationOutcome::InvalidSubmission {
+            detail: "must not verify".into(),
+        },
+        Some(Ok(submitted_pr(
+            "https://github.pie.apple.com/acme/widgets/pull/1",
+            1,
+            false,
+        ))),
+    );
+    tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap();
+    assert!(actuator.submitted.lock().unwrap().is_empty());
 }

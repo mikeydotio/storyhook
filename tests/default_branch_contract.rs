@@ -51,6 +51,19 @@ impl Fixture {
         git(&repo, &["remote", "add", "origin", &path_arg(&origin)]);
         git(&repo, &["push", "-q", "-u", "origin", "main"]);
         git(&repo, &["remote", "set-head", "origin", "main"]);
+        storyhook_test_support::install_git_endpoint(
+            &repo.join(".git/github-endpoint"),
+            &[("https://github.pie.apple.com/acme/widgets.git", &origin)],
+        );
+        git(
+            &repo,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.pie.apple.com/acme/widgets.git",
+            ],
+        );
         Self {
             _dir: dir,
             repo,
@@ -123,6 +136,16 @@ fn run(cwd: &Path, program: &str, args: &[&str]) -> Output {
     Command::new(program)
         .args(args)
         .current_dir(cwd)
+        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("HOME", cwd)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                cwd.join(".git/github-endpoint").display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")

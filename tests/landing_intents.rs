@@ -174,7 +174,7 @@ fn pending_landing_recovery_respects_project_and_stop_permission() {
 }
 
 fn submitted(f: &ServiceFixture) -> String {
-    f.link_origin("https://github.com/acme/widgets");
+    f.github_checkout("https://github.com/acme/widgets");
     let ctx = f.ctx();
     let id = StoryService::new(&ctx)
         .create(&NewStoryInput {
@@ -862,4 +862,35 @@ fn awaiting_cannot_hide_an_unresolved_landing_from_recovery() {
     assert_eq!(current.len(), 1);
     assert!(current[0].landing_pending);
     assert_eq!(f.store().read(|tx| tx.landing_intents()).unwrap(), [intent]);
+}
+
+#[test]
+fn changed_origin_cannot_admit_a_previously_certified_submission() {
+    let f = ServiceFixture::new();
+    submitted(&f);
+    let queue = VerificationQueue::new(f.store());
+    let candidate = queue.next().unwrap().unwrap();
+    assert!(
+        storyhook::env::git_env::command(&candidate.checkout)
+            .args([
+                "config",
+                "remote.origin.url",
+                "https://github.pie.apple.com/acme/widgets.git"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(
+        queue
+            .begin_landing(&f.ctx(), &candidate, &certification())
+            .unwrap(),
+        LandingAdmission::Superseded
+    );
+    assert!(
+        f.store()
+            .read(|tx| tx.landing_intents())
+            .unwrap()
+            .is_empty()
+    );
 }
