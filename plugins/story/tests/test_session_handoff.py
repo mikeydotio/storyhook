@@ -138,6 +138,39 @@ class HandoffProviderTests(unittest.TestCase):
         self.assertIn('systemMessage', handoff.handle_stop(
             self.payload, {'STORYHOOK_AUTO': 'SH-1'}, 'claude', self.process))
 
+    def test_acknowledged_duplicate_is_inert_but_cannot_grant_feedback(self):
+        answer = json.loads(self.process.return_value)
+        answer['continuation'].update(status='acknowledged', phase='complete')
+        for feedback in (False, True):
+            self.process.return_value = json.dumps(answer | {'native_feedback': feedback})
+            result = handoff.handle_stop(self.payload, {'STORYHOOK_AUTO': 'SH-1'},
+                                         'claude', self.process)
+            if feedback:
+                self.assertIn('systemMessage', result)
+            else:
+                self.assertEqual(result, {})
+
+    def test_active_stop_context_is_forwarded_to_atomic_supervisor(self):
+        result = handoff.handle_stop(self.payload | {'stop_hook_active': True},
+                                     {'STORYHOOK_AUTO': 'SH-1'}, 'claude', self.process)
+        self.assertEqual(result.get('decision'), 'block', result)
+        self.process.assert_called_once()
+
+    def test_false_receipt_cannot_hide_refusal_or_invalid_record(self):
+        answer = json.loads(self.process.return_value)
+        for record in (None, {}, answer['continuation'] | {'status': 'needs-attention',
+                       'detail': 'three consecutive handoffs without progress'},
+                       answer['continuation'] | {'story_id': 'SH-2'},
+                       answer['continuation'] | {'phase': 'observe'}):
+            with self.subTest(record=record):
+                self.process.return_value = json.dumps(answer | {
+                    'native_feedback': False, 'continuation': record})
+                result = handoff.handle_stop(self.payload, {'STORYHOOK_AUTO': 'SH-1'},
+                                             'claude', self.process)
+                self.assertIn('systemMessage', result)
+                self.assertIn('story continuation status SH-1 --json', result['systemMessage'])
+                self.assertNotIn('decision', result)
+
     def test_obviation_has_no_native_continuation_or_plan_approval(self):
         value = request() | {'kind': 'obviation-review', 'evidence': {
             'context': 'Existing delivery may cover this work.',
@@ -177,7 +210,6 @@ class HandoffProviderTests(unittest.TestCase):
 
     def test_attended_subagent_and_other_provider_remain_inert(self):
         for env, patch in (({}, {}), ({'STORYHOOK_AUTO': 'SH-1'}, {'agent_id': 'child'}),
-                           ({'STORYHOOK_AUTO': 'SH-1'}, {'stop_hook_active': True}),
                            ({'STORYHOOK_AUTO': 'SH-1'}, {'hook_event_name': 'SubagentStop'}),
                            ({'STORYHOOK_AUTO': 'SH-1'}, {'turn_id': 'codex-turn'})):
             with self.subTest(patch=patch, env=env):

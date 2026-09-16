@@ -13,7 +13,7 @@ impl ContinuationRuntime for Runtime {
         assert_eq!(operation, "capture");
         Ok(json!({"ok":true,"capture":{
             "lease":{"version":1,"project_slug":"fixture","story_id":input["handoff"]["story_id"],"repository_path":"/tmp/repo","worktree_path":"/tmp/repo/lane","branch":"work","tmux":{"socket_path":"/tmp/tmux"}},
-            "head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fingerprint":"dirty-1","provider":"codex","session_id":"session-1","turn_id":input["origin"]["turn_id"],"mode":"default","socket":"/tmp/tmux","pane":"%1","pid":123,"started":"start","model":"gpt","effort":"high","speed":"standard","autonomy":true
+            "head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","fingerprint":"dirty-1","provider":"codex","session_id":"session-1","turn_id":input["origin"]["turn_id"],"message_id":input["origin"].get("message_id").cloned().unwrap_or(json!("message-1")),"mode":"default","socket":"/tmp/tmux","pane":"%1","pid":123,"started":"start","model":"gpt","effort":"high","speed":"standard","autonomy":true
         }}))
     }
 }
@@ -422,20 +422,22 @@ fn concurrent_identical_requests_share_one_durable_generation() {
         let first = scope.spawn(|| {
             let ctx = f.ctx();
             ContinuationService::new(&ctx, &Runtime)
-                .request(&id, input(&id))
+                .request_with_receipt(&id, input(&id))
                 .unwrap()
-                .id
         });
         let second = scope.spawn(|| {
             let ctx = f.ctx();
             ContinuationService::new(&ctx, &Runtime)
-                .request(&id, input(&id))
+                .request_with_receipt(&id, input(&id))
                 .unwrap()
-                .id
         });
         (first.join().unwrap(), second.join().unwrap())
     });
-    assert_eq!(ids.0, ids.1);
+    assert_eq!(ids.0.0.id, ids.1.0.id);
+    assert_ne!(
+        ids.0.1, ids.1.1,
+        "exactly one transaction owns native feedback"
+    );
     assert_eq!(requests(&f).len(), 1);
 }
 #[test]
@@ -934,4 +936,165 @@ fn handoff_preserves_literal_evidence_without_treating_it_as_new_prose() {
         assert_eq!(record.handoff["evidence"]["context"], evidence);
         assert_eq!(requests(&f)[0].handoff, record.handoff);
     }
+}
+
+#[test]
+fn distinct_messages_in_one_turn_have_separate_atomic_receipts() {
+    let (f, id) = setup();
+    let ctx = f.ctx();
+    let runtime = Observer::new("busy");
+    let service = ContinuationService::new(&ctx, &runtime);
+    let mut request = input(&id);
+    let (first, feedback) = service.request_with_receipt(&id, request.clone()).unwrap();
+    assert!(feedback);
+    request["origin"]["message_id"] = json!("message-2");
+    request["handoff"]["evidence"]["context"] = json!("second handoff after work");
+    assert!(
+        service
+            .request(&id, request.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("unresolved")
+    );
+    service
+        .ack(
+            &id,
+            &first.id,
+            sequence(&service, &id),
+            HEAD,
+            "codex",
+            "session-1",
+        )
+        .unwrap();
+    let (second, feedback) = service.request_with_receipt(&id, request.clone()).unwrap();
+    assert!(feedback);
+    assert_ne!(first.id, second.id);
+    let (duplicate, feedback) = service.request_with_receipt(&id, request.clone()).unwrap();
+    assert!(!feedback);
+    assert_eq!(duplicate.id, second.id);
+    request["handoff"]["evidence"]["context"] = json!("conflicting message contents");
+    assert!(
+        service
+            .request(&id, request)
+            .unwrap_err()
+            .to_string()
+            .contains("conflicting")
+    );
+    assert_eq!(requests(&f).len(), 2);
+}
+
+#[test]
+fn repeated_messages_in_one_turn_exhaust_the_same_no_progress_budget() {
+    use storyhook::store::ContinuationStatus;
+    let (f, id) = setup();
+    let ctx = f.ctx();
+    let runtime = Observer::new("busy");
+    let service = ContinuationService::new(&ctx, &runtime);
+    for message in 1..=3 {
+        let mut request = input(&id);
+        request["origin"]["message_id"] = json!(format!("message-{message}"));
+        let (record, feedback) = service.request_with_receipt(&id, request).unwrap();
+        if message < 3 {
+            assert!(feedback);
+            service
+                .ack(
+                    &id,
+                    &record.id,
+                    sequence(&service, &id),
+                    HEAD,
+                    "codex",
+                    "session-1",
+                )
+                .unwrap();
+        } else {
+            assert!(!feedback);
+            assert_eq!(record.status, ContinuationStatus::NeedsAttention);
+            assert!(record.detail.contains("three consecutive"));
+        }
+    }
+}
+
+#[test]
+fn repeated_same_turn_progress_preserves_scope_commits_and_corrections() {
+    let (f, id) = setup();
+    fixture_git(&f, &["init", "-b", "work"]);
+    fixture_git(&f, &["commit", "--allow-empty", "-m", "initial"]);
+    let ctx = f.ctx();
+    let runtime = GitRuntime(&f);
+    let service = ContinuationService::new(&ctx, &runtime);
+    let mut previous = String::new();
+    for message in 1..=4 {
+        fixture_git(&f, &["commit", "--allow-empty", "-m", "progress"]);
+        std::fs::write(f.cwd().join("correction.txt"), "keep queued correction").unwrap();
+        let head = fixture_git(&f, &["rev-parse", "HEAD"]);
+        let mut request = input(&id);
+        request["origin"]["message_id"] = json!(format!("message-{message}"));
+        request["handoff"]["evidence"]["approved_scope"] = json!("all assigned work remains");
+        let (record, feedback) = service.request_with_receipt(&id, request).unwrap();
+        assert!(feedback);
+        assert_ne!(record.id, previous);
+        assert_eq!(
+            record.handoff["evidence"]["approved_scope"],
+            "all assigned work remains"
+        );
+        service
+            .ack(
+                &id,
+                &record.id,
+                sequence(&service, &id),
+                &head,
+                "codex",
+                "session-1",
+            )
+            .unwrap();
+        assert_eq!(fixture_git(&f, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            std::fs::read_to_string(f.cwd().join("correction.txt")).unwrap(),
+            "keep queued correction"
+        );
+        previous = record.id;
+    }
+    assert_eq!(requests(&f).len(), 4);
+}
+
+#[test]
+fn legacy_turn_receipts_cannot_acquire_a_second_message_receipt() {
+    use storyhook::store::{Store, WriteOps};
+    let (f, id) = setup();
+    let ctx = f.ctx();
+    let runtime = Observer::new("busy");
+    let service = ContinuationService::new(&ctx, &runtime);
+    let mut old = service.request(&id, input(&id)).unwrap();
+    old.generation.as_object_mut().unwrap().remove("message_id");
+    let revision = old.revision;
+    old.revision += 1;
+    f.store()
+        .write(|tx| tx.update_continuation(&old, revision))
+        .unwrap();
+    service
+        .ack(
+            &id,
+            &old.id,
+            sequence(&service, &id),
+            HEAD,
+            "codex",
+            "session-1",
+        )
+        .unwrap();
+    let mut duplicate = input(&id);
+    duplicate["origin"]["message_id"] = json!("new-message");
+    let (record, feedback) = service
+        .request_with_receipt(&id, duplicate.clone())
+        .unwrap();
+    assert_eq!(old.id, record.id);
+    assert!(!feedback);
+    duplicate["handoff"]["evidence"]["context"] = json!("different message");
+    assert!(
+        service
+            .request(&id, duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains("conflicting")
+    );
+    assert_eq!(requests(&f).len(), 1);
 }

@@ -90,8 +90,8 @@ class ContextHandoffRegression(unittest.TestCase):
                     self.assertEqual(stop.handle(payload | {
                         'stop_hook_active': True,
                         'last_assistant_message': json.dumps(handoff),
-                    }, {'STORYHOOK_AUTO': 'SH-1'}), {})
-                    self.assertEqual(len(calls), calls_before)
+                    }, {'STORYHOOK_AUTO': 'SH-1'}).get('decision'), 'block')
+                    self.assertEqual(len(calls), calls_before + 1)
                     self.assertEqual(stop.handle(payload | {
                         'stop_hook_active': True,
                         'last_assistant_message': json.dumps(handoff | {
@@ -99,7 +99,7 @@ class ContextHandoffRegression(unittest.TestCase):
                                 'context': 'Receiving review found a candidate.',
                                 'candidates': ['SH-2'], 'original_state': 'in-progress'}}),
                     }, {'STORYHOOK_AUTO': 'SH-1'}), {})
-                    self.assertEqual(len(calls), calls_before + 1)
+                    self.assertEqual(len(calls), calls_before + 2)
 
                 self.assertTrue(
                     any('continuation' in argv and 'request' in argv for argv, _ in calls),

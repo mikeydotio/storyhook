@@ -438,6 +438,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0045_dropped_cleanup.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 46,
+        name: "continuation_messages",
+        sql: include_str!("schema/0046_continuation_messages.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 mod lineage;
