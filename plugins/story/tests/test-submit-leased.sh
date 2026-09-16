@@ -15,6 +15,8 @@ _TMP_REPOS+=("$FAKE_GH_STATE")
 FAKES_PATH="$TESTS_DIR/fakes:$PATH"
 
 repo=$(mk_story_repo SUB)
+github_fixture "$repo" "https://github.com/acme/widgets.git"
+FAKES_PATH="$repo/.git/github-endpoint:$FAKES_PATH"
 slug=$(slug_for "$repo")
 id=$(new_story "$repo" "Submit from the lease")
 name=$(mk_dispatched "$repo" "$id")
@@ -22,7 +24,7 @@ worktree="$repo/.claude/worktrees/$name"
 branch="worktree-$name"
 repository_path=$(cd "$repo" && pwd -P)
 worktree_path=$(cd "$worktree" && pwd -P)
-origin=$(git -C "$repo" remote get-url origin)
+origin="$GITHUB_FIXTURE_ORIGIN"
 socket="$FAKE_TMUX_STATE/tmux.sock"
 
 lease=$(jq -n --arg project "$slug" --arg story "$id" \
@@ -105,6 +107,7 @@ export SH725_REAL_GIT
 cat >"$FAKE_GH_STATE/git-bin/git" <<'GIT_ENDPOINT'
 #!/usr/bin/env bash
 set -uo pipefail
+source "$(dirname "$0")/../fixture-env"
 args=("$@")
 config=()
 while [ "$#" -gt 0 ]; do
@@ -119,6 +122,7 @@ case "${1:-}" in
   fetch) stage=fetch ;;
   push) stage=push ;;
   ls-remote)
+    if [ "${2:-}" = --get-url ]; then exec "$SH725_REAL_GIT" "${args[@]}"; fi
     if [ "${2:-}" = --symref ]; then
       stage=default
     else
@@ -315,14 +319,14 @@ assert_contains "$(jqf "$out" .display)" "no symbolic HEAD" "…saying what orig
 assert_eq "$(create_count)" "$before" "an unknown default opens nothing"
 git --git-dir="$origin" symbolic-ref HEAD refs/heads/dev
 
-# --- SH-691: an unreachable origin is refused by name, before any push -----------------
+# --- SH-734: an invalid origin is refused by name, before any push -----------------
 git -C "$repo" remote set-url origin /nonexistent/storyhook-origin.git
 out=$(submit); status=$?
 assert_eq "$status" "1" "an unreachable origin refuses the submission"
 assert_eq "$(jqf "$out" .reason)" "default-branch-unknown" "…by name"
 assert_eq "$(jqf "$out" .class)" "infrastructure" "…as infrastructure"
-assert_contains "$(jqf "$out" .display)" "did not answer" "…carrying git's own words"
-git -C "$repo" remote set-url origin "$origin"
+assert_contains "$(jqf "$out" .display)" "invalid GitHub origin" "…carrying the origin diagnostic"
+git -C "$repo" remote set-url origin https://github.com/acme/widgets.git
 [ "$(remote_tip)" != "$unpushed" ] || fail_test "an unreachable origin cannot have been pushed to"
 assert_eq "$(create_count)" "$before" "nothing was opened while origin was unreachable"
 

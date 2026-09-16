@@ -4703,6 +4703,8 @@ cmd_submit_leased() {
   registered_worktree_branch "$worktree" >/dev/null 2>&1 \
     || submit_refuse repair "cleanup-lease-worktree-missing" "story.sh submit: leased worktree \`$worktree\` is not a registered worktree; nothing to push."
   local default
+  export STORYHOOK_GITHUB_AUTHORITY="${STORYHOOK_GITHUB_AUTHORITY:-$LEASED_REPO}"
+  github_begin || submit_refuse infrastructure "default-branch-unknown" "story.sh submit: cannot establish GitHub origin: ${GITHUB_ACCESS_ERROR:-origin unavailable}"
   default=$(default_branch submission_git 2>&1) \
     || submit_refuse infrastructure "default-branch-unknown" "story.sh submit: origin's default branch could not be established, so there is no base to open $canonical_id's pull request against: $(printf '%s' "$default" | tr '\n' ' ')"
   ! is_protected_branch "$branch" "$default" \
@@ -4763,7 +4765,7 @@ cmd_submit_leased() {
   # `multiple-pull-requests` already is.
   local fields=number,url,baseRefName,headRefOid,isCrossRepository
   local listed open wrong_base count pr adopted title body url view_out
-  listed=$(cd "$worktree" && gh pr list --head "$branch" --state open \
+  listed=$(cd "$worktree" && github_exec pr list --head "$branch" --state open \
     --json "$fields" --limit 20 2>&1) \
     || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh could not list pull requests for \`$branch\`: $listed"
   open=$(printf '%s' "$listed" | jq -c '[.[] | select(.isCrossRepository == false)]' 2>/dev/null) \
@@ -4782,11 +4784,11 @@ cmd_submit_leased() {
       body="Story $canonical_id — $(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.title // ""')
 
 Submitted by the storyhook verifier from branch \`$branch\`. Verification, merge and cleanup are the verifier's; see \`story show $canonical_id\`."
-      url=$(cd "$worktree" && gh pr create --base "$default" --head "$branch" --title "$title" --body "$body" 2>&1) \
+      url=$(cd "$worktree" && github_exec pr create --base "$default" --head "$branch" --title "$title" --body "$body" 2>&1) \
         || submit_refuse infrastructure "pull-request-uncreated" "story.sh submit: gh pr create failed for \`$branch\`; if the pull request was created, the next attempt adopts it. gh said: $url"
       url=$(printf '%s\n' "$url" | grep -E '^https?://' | tail -n 1)
       [ -n "$url" ] || submit_refuse infrastructure "pull-request-uncreated" "story.sh submit: gh pr create printed no URL."
-      view_out=$(cd "$worktree" && gh pr view "$url" --json "$fields" 2>&1) \
+      view_out=$(cd "$worktree" && github_exec pr view "$url" --json "$fields" 2>&1) \
         || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh could not read back \`$url\`: $view_out"
       pr=$(printf '%s' "$view_out" | jq -c . 2>/dev/null) \
         || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh pr view returned something other than JSON: $view_out"
