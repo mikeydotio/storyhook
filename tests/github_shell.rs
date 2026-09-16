@@ -156,7 +156,12 @@ fn verifier_keeps_host_authentication_diagnostics() {
 
 #[test]
 fn verifier_network_calls_cannot_bypass_the_origin_boundary() {
-    for name in ["verify-pr.sh", "land-pr.sh", "landing-intent.sh"] {
+    for name in [
+        "verify-pr.sh",
+        "land-pr.sh",
+        "landing-intent.sh",
+        "origin-default-branch.sh",
+    ] {
         let source = fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("scripts")
