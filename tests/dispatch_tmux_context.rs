@@ -81,6 +81,33 @@ fn web_dispatch_uses_default_server_despite_daemons_unrelated_tmux_context() {
         &["display-message", "-p", "#{socket_path},#{pid},0"],
     );
     let inherited_pane = tmux(&unrelated_socket, &["display-message", "-p", "#{pane_id}"]);
+    for socket in [&default_socket, &unrelated_socket] {
+        for name in [
+            "STORY_BIN",
+            "STORYHOOK_GITHUB_AUTHORITY",
+            "STORYHOOK_GITHUB_EXPECTED",
+        ] {
+            tmux(
+                socket,
+                &["set-environment", "-g", name, "stale-server-value"],
+            );
+        }
+    }
+    let capture = scratch.path().join("capture.py");
+    let receipt = scratch.path().join("pane.json");
+    std::fs::write(
+        &capture,
+        r#"import json, os, pathlib, sys
+target = pathlib.Path(sys.argv[1])
+temporary = target.with_suffix('.tmp')
+temporary.write_text(json.dumps({name: os.environ.get(name) for name in
+    ('STORY_BIN', 'STORYHOOK_GITHUB_AUTHORITY', 'STORYHOOK_GITHUB_EXPECTED',
+     'GH_ENTERPRISE_TOKEN', 'GH_CONFIG_DIR')}))
+temporary.replace(target)
+"#,
+    )
+    .expect("write actual pane environment observer");
+    let launcher = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/lib/tmux-launch.py");
     let helper = scratch.path().join("probe.sh");
     // Set the fixture namespace inside the helper because TMUX_TMPDIR is not
     // part of the production allowlist. Every implicit tmux target stays isolated.
@@ -94,9 +121,20 @@ export TMUX_TMPDIR='{}'
 auth=false
 if [ "${{GH_ENTERPRISE_TOKEN:-}}" = fixture-enterprise ] && [ "${{GH_CONFIG_DIR:-}}" = /fixture/gh ]; then auth=true; fi
 socket=$(tmux display-message -p '#{{socket_path}}')
-printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$auth"
+rm -f '{receipt}'
+pane=$(python3 '{launcher}' new-window -d -t fixture: -P -F '#{{pane_id}}' "python3 '{capture}' '{receipt}'; sleep 120")
+trap 'tmux kill-pane -t "$pane"' EXIT
+for ((i=0; i<200; i++)); do
+  [ ! -f '{receipt}' ] || break
+  sleep 0.025
+done
+[ -f '{receipt}' ] || {{ echo 'pane environment receipt missing' >&2; exit 1; }}
+printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s,"binary":"%s","pane":%s}}\n' "$socket" "$*" "$auth" "$STORY_BIN" "$(cat '{receipt}')"
 "#,
-            tmux_root.display()
+            tmux_root.display(),
+            receipt = receipt.display(),
+            launcher = launcher.display(),
+            capture = capture.display(),
         ),
     )
     .expect("write the boundary probe");
@@ -104,6 +142,12 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$au
     let mut interactive = Command::new("bash");
     interactive
         .arg(&helper)
+        .env("STORY_BIN", env.raw_story(scratch.path()).get_program())
+        .env("STORYHOOK_GITHUB_AUTHORITY", "/interactive/authority")
+        .env(
+            "STORYHOOK_GITHUB_EXPECTED",
+            "github.example/interactive/repo",
+        )
         .env("TMUX", inherited_tmux.trim())
         .env("TMUX_PANE", inherited_pane.trim());
     let output = ChildGuard::spawn_with_output(&mut interactive)
@@ -123,6 +167,7 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$au
         unrelated_socket.to_string_lossy().as_ref(),
         "direct helper invocation must retain the interactive caller's server"
     );
+    assert_pane_routing(&direct);
 
     let mut serve = env.raw_story(scratch.path());
     serve
@@ -132,6 +177,8 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$au
         .env("STORYHOOK_DISPATCH_SCRIPT", &helper)
         .env("GH_ENTERPRISE_TOKEN", "fixture-enterprise")
         .env("GH_CONFIG_DIR", "/fixture/gh")
+        .env("STORYHOOK_GITHUB_AUTHORITY", "/daemon/authority")
+        .env("STORYHOOK_GITHUB_EXPECTED", "github.example/daemon/repo")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut daemon =
@@ -208,6 +255,7 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$au
             record["payload"]["auth"], true,
             "dispatch must retain gh authentication"
         );
+        assert_pane_routing(&record["payload"]);
         let argv = record["payload"]["argv"].as_str().expect("probe argv");
         assert!(
             argv.contains(&format!("--agent={agent}")),
@@ -218,6 +266,24 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$au
             auto,
             "auto option must reach helper: {argv}"
         );
+    }
+}
+
+/// Check the observed pane, after the real manual or HTTP dispatch boundary.
+fn assert_pane_routing(payload: &serde_json::Value) {
+    assert!(
+        payload["binary"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert_eq!(payload["pane"]["STORY_BIN"], payload["binary"], "{payload}");
+    for name in [
+        "STORYHOOK_GITHUB_AUTHORITY",
+        "STORYHOOK_GITHUB_EXPECTED",
+        "GH_ENTERPRISE_TOKEN",
+        "GH_CONFIG_DIR",
+    ] {
+        assert_eq!(payload["pane"][name], "", "{name}: {payload}");
     }
 }
 
