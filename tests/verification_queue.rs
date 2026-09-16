@@ -6587,3 +6587,36 @@ fn foreign_project_pointer_keeps_the_verifier_candidate_visible_but_unauthorized
         Err(VerificationProblem::InvalidCheckout(_))
     ));
 }
+
+#[test]
+fn an_unlinked_lease_cannot_submit_from_a_foreign_project_checkout() {
+    let fixture = ServiceFixture::new();
+    let checkout = fixture.github_checkout("https://github.pie.apple.com/acme/widgets.git");
+    let root = scratch_dir();
+    let (_, _) = leased_submission(&fixture, root.path(), "unlinked foreign checkout", None);
+    std::fs::write(
+        checkout.join(".storyhook.toml"),
+        "schema = 1\nuuid = \"foreign-project\"\nprefix = \"SH\"\n",
+    )
+    .unwrap();
+    let candidate = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        candidate.pull_request,
+        Err(VerificationProblem::InvalidCheckout(_))
+    ));
+    let actuator = submitting_actuator(
+        VerificationOutcome::InvalidSubmission {
+            detail: "must not verify".into(),
+        },
+        Some(Ok(submitted_pr(
+            "https://github.pie.apple.com/acme/widgets/pull/1",
+            1,
+            false,
+        ))),
+    );
+    tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap();
+    assert!(actuator.submitted.lock().unwrap().is_empty());
+}
