@@ -418,7 +418,7 @@ fn recording_transport(root: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(bin.join("git"), "#!/bin/sh\ncase \" $* \" in *' --get-url '*) exec /usr/bin/git \"$@\";; *' fetch '*|*' push '*|*' ls-remote '*) printf '%s\\n' \"$@\";; *) exec /usr/bin/git \"$@\";; esac\n").unwrap();
+    std::fs::write(bin.join("git"), "#!/bin/sh\ncase \" $* \" in *' --get-url '*) exec /usr/bin/git \"$@\";; *' fetch '*|*' push '*|*' ls-remote '*|*' clone '*) printf '%s\\n' \"$@\";; *) exec /usr/bin/git \"$@\";; esac\n").unwrap();
     std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
@@ -530,4 +530,92 @@ fn https_push_rewrite_cannot_redirect_a_converted_ssh_origin() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("pushInsteadOf"));
     assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn clone_uses_the_authoritative_https_origin_and_an_explicit_destination() {
+    let root = checkout("git@github.pie.apple.com:acme/widgets.git");
+    recording_transport(root.path());
+    let destination = root.path().join("mirror with spaces");
+    let output = helper(
+        root.path(),
+        &[
+            "git",
+            "--checkout",
+            root.path().to_str().unwrap(),
+            "--",
+            "clone",
+            "--mirror",
+            "origin",
+            destination.to_str().unwrap(),
+        ],
+        Some(RECORD_GH),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains(&format!(
+            "clone\n--mirror\nhttps://github.pie.apple.com/acme/widgets.git\n{}\n",
+            destination.display()
+        )),
+        "{text}"
+    );
+    for destination in ["relative", "--upload-pack=evil", "https://foreign/repo"] {
+        let output = helper(
+            root.path(),
+            &[
+                "git",
+                "--checkout",
+                root.path().to_str().unwrap(),
+                "--",
+                "clone",
+                "origin",
+                destination,
+            ],
+            Some(RECORD_GH),
+        );
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn helper_checks_explicit_source_authority_on_every_call() {
+    let authority = checkout("https://github.pie.apple.com/acme/widgets.git");
+    let lane = checkout("git@github.pie.apple.com:acme/widgets.git");
+    let args = [
+        "exec",
+        "--checkout",
+        lane.path().to_str().unwrap(),
+        "--authority",
+        authority.path().to_str().unwrap(),
+        "--",
+        "pr",
+        "view",
+        "7",
+        "--json",
+        "state",
+    ];
+    let good = helper(lane.path(), &args, Some(RECORD_GH));
+    assert!(
+        good.status.success(),
+        "{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+    git(
+        authority.path(),
+        &[
+            "config",
+            "remote.origin.url",
+            "https://github.com/other/repo.git",
+        ],
+    );
+    let refused = helper(lane.path(), &args, Some(RECORD_GH));
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("authority"));
 }

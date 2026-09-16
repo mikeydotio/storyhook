@@ -7,7 +7,7 @@ use crate::process::run_captured_private;
 use std::time::Duration;
 
 impl Repository {
-    /// Runs fetch, push or ls-remote for origin with gh's credential helper.
+    /// Runs clone, fetch, push or ls-remote for origin with gh's credential helper.
     pub fn git(&self, arguments: &[String]) -> Result<Vec<u8>, AppError> {
         let refuse = |detail: &str| {
             AppError::Validation(format!(
@@ -19,8 +19,8 @@ impl Repository {
             return Err(refuse("origin changed; resolve again before retrying"));
         }
         let operation = arguments.first().map(String::as_str).unwrap_or_default();
-        if !matches!(operation, "fetch" | "push" | "ls-remote") {
-            return Err(refuse("expected fetch, push or ls-remote"));
+        if !matches!(operation, "clone" | "fetch" | "push" | "ls-remote") {
+            return Err(refuse("expected clone, fetch, push or ls-remote"));
         }
         let remote = arguments
             .iter()
@@ -38,14 +38,31 @@ impl Repository {
             "--no-tags",
             "--no-recurse-submodules",
         ];
+        let allowed_flags = if operation == "clone" {
+            &["--quiet", "-q", "--mirror", "--bare", "--no-checkout"][..]
+        } else {
+            FLAGS
+        };
         if arguments[1..remote]
             .iter()
-            .any(|arg| !FLAGS.contains(&arg.as_str()))
-            || arguments[remote + 1..].iter().any(|arg| {
-                arg.starts_with('-') || arg.contains("://") || arg.chars().any(char::is_whitespace)
-            })
+            .any(|arg| !allowed_flags.contains(&arg.as_str()))
         {
-            return Err(refuse("unsupported transport option or refspec"));
+            return Err(refuse("unsupported transport option"));
+        }
+        let operands = &arguments[remote + 1..];
+        if operation == "clone" {
+            if operands.len() != 1
+                || !std::path::Path::new(&operands[0]).is_absolute()
+                || operands[0].chars().any(char::is_control)
+            {
+                return Err(refuse(
+                    "clone requires exactly one absolute destination path",
+                ));
+            }
+        } else if operands.iter().any(|arg| {
+            arg.starts_with('-') || arg.contains("://") || arg.chars().any(char::is_whitespace)
+        }) {
+            return Err(refuse("unsupported transport refspec"));
         }
         // Check both configured push URLs and actual rewrite results before
         // replacing the remote operand. A mismatch must not silently disappear.

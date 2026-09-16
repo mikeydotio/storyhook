@@ -475,7 +475,7 @@ story attachment list <id>
 story attachment remove <id> <n>
 story attachment save <id> <n> <path>
 story pr-check [<id>]
-story github resolve|exec|git --checkout PATH [-- arguments]
+story github resolve|exec|git --checkout PATH [--authority PATH] [-- arguments]
 story plugin install <target>
 story plugin uninstall <target>
 story plugin reinstall
