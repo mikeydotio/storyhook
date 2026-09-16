@@ -41,23 +41,27 @@ It keeps every project's stories in one local SQLite store as an append-only eve
 
 ### Quick install (Linux / macOS)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh
-```
-
-This detects your platform and architecture, downloads the latest release binary, and installs it to `~/.local/bin/story`.
-
-To install to a different location:
+Install `gh` and Python 3. Authenticate `gh` for the release host you intend to
+use. Obtain `install.sh` from that trusted repository, then name the source
+explicitly (replace `HOST/OWNER/REPO` with its full identity):
 
 ```bash
-STORYHOOK_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh
+sh ./install.sh --source HOST/OWNER/REPO
 ```
 
-To install a specific version:
+This detects your platform, downloads through `gh`, smoke-tests the binary, and
+atomically installs it to `~/.local/bin/story`. It records the source beside the
+binary, bound to its SHA-256 digest. The current project's origin and ambient
+`GH_HOST` or `GH_REPO` do not select the installation source.
 
 ```bash
-STORYHOOK_VERSION=v0.2.0 curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh
+STORYHOOK_INSTALL_DIR=/usr/local/bin sh ./install.sh --source HOST/OWNER/REPO
+STORYHOOK_VERSION=v0.2.0 sh ./install.sh --source HOST/OWNER/REPO
 ```
+
+For an older installation without matching source metadata, recover with
+`story update --source HOST/OWNER/REPO --force`. A source change is saved only
+after installation; `--check` does not change metadata.
 
 ### Install with Cargo
 
@@ -346,7 +350,7 @@ listed here, it parses.
 story --help
 story --version
 story help [<topic>] [--all] [--compact]
-story update [--check] [--force]
+story update [--check] [--force] [--source HOST/OWNER/REPO]
 
 story project new --prefix <PREFIX> [--name <NAME>] [--attach <PATH> | --no-attach] [--no-agents-md]
 story project show
@@ -818,13 +822,14 @@ Behavior:
 - Migrating from the old per-repository layout: `story migrate`. It never writes
   to the `.storyhook/` directory it reads — that directory is your rollback.
 
-GitHub pull-request links use the host of a registered origin. Storyhook routes
-`github.com` to `https://api.github.com`, `<tenant>.ghe.com` to
-`https://api.<tenant>.ghe.com`, and other GitHub Enterprise hosts to their
-`/api/v3` endpoint. Set `[github].api_url` when an installation uses a custom
-REST base or proxy. The override must be an absolute HTTP(S) URL without
-credentials, a query, or a fragment, and one override cannot serve links on
-multiple GitHub hosts.
+GitHub pull-request operations resolve the current origin in the project's
+registered checkout and use gh with an explicit host and repository. Linked
+checkouts and verifier mirrors must agree with that authority. Historical
+remote registrations and ambient gh defaults cannot redirect a request.
+`[github].api_url` is obsolete and must be removed; gh owns API endpoint
+selection. Background polling is off by default; enable it per project with
+`[github] poll = true`. Missing or expired host authentication is reported with
+host-specific gh guidance. StoryHook never starts an interactive login.
 
 `[verify].gate` names the command the verifier runs on a story's speculative
 merge tree before landing its pull request; `make test` when absent. It is a

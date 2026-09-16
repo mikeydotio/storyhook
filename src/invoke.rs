@@ -2037,14 +2037,12 @@ fn plugin_reinstall_response(report: crate::plugin::reinstall::Report) -> Respon
 
 /// `story update` — self-update, which touches no project data at all.
 ///
-/// Unconditional (SH-408): `src/update.rs` rides `ureq`, which has been an
-/// unconditional dependency since the daemon transport landed, and uses only
-/// `AppError::GithubApi` — nothing behind the `github-pr` feature. It was
-/// gated on that feature purely by accident of history.
-fn update(check: bool, force: bool) -> Result<Response, AppError> {
+/// Runs locally through the explicit installation source, independent of project
+/// data and the optional PR-monitoring feature.
+fn update(check: bool, force: bool, source: Option<String>) -> Result<Response, AppError> {
     use std::io::IsTerminal;
 
-    let outcome = crate::update::run(check, force)?;
+    let outcome = crate::update::run(check, force, source.as_deref())?;
     let is_terminal = std::io::stderr().is_terminal();
     let health = if is_terminal && matches!(&outcome, crate::update::Outcome::Replaced { .. }) {
         // `main` has already published a global `--store-path` into the
@@ -2556,7 +2554,11 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
         // binary. A `story update` that demanded a project would be unusable
         // exactly when it is most wanted: from a shell that is not standing in
         // a repository, or on a build whose store it is about to fix.
-        Invocation::Update { check, force } => update(check, force),
+        Invocation::Update {
+            check,
+            force,
+            source,
+        } => update(check, force, source),
         // The whole `web` family. The daemon commands are process management
         // and name no project at all. A `story web status` that failed in a
         // directory storyhook had never heard of would be a regression in the

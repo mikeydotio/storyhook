@@ -134,3 +134,23 @@ The retry rechecks source authority and explicit PR URLs. Unchanged-origin
 failures, pinned flows, API calls tied to existing links, ref updates, downloads,
 and writes are not automatically retried. A failed retry retains the first error
 as context and ends the operation.
+
+### Installation source protocol
+
+The updater uses `ReleaseSource`, separate from checkout authority. It accepts
+`--source HOST/OWNER/REPO`, or reads `<resolved-executable>.source.json` with
+`version: 1`, canonical `source`, and the installed executable's `sha256`.
+Missing, invalid, or mismatched metadata requires explicit recovery; `--check`
+does not write it. `gh release view --json tagName` selects the tag and
+`gh release download` writes the named asset to staging. No direct HTTP client
+or API-host assumption remains in the updater.
+
+Bootstrap requires Python 3 and gh because no story binary is available yet.
+Its embedded release-only adapter applies explicit routing, bounded private
+capture, token redaction, closed stdin, and process-group deadlines. It accepts
+pinned old releases and does not need a command introduced by this migration.
+Both installers hold `<resolved-executable>.install.lock` with exclusive flock,
+stage beside the executable, smoke-test before replacement, then atomically
+publish the binary and matching metadata. An interrupted metadata publication
+reports explicit recovery; a digest mismatch cannot authorize a later update.
+Provider plugin reinstall remains after replacement.

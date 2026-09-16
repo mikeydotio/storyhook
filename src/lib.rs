@@ -37,5 +37,6 @@ pub mod text_lint;
 pub mod token;
 pub mod tui;
 pub mod update;
+mod update_source;
 pub mod version;
 pub mod web;

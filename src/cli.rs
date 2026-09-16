@@ -289,7 +289,7 @@ Usage:
   story doctor install                             (what is installed here, and what is pending)
   story doctor abandoned [clear (--all | <request-id>)]
   story doctor crashes [clear (--all | <crash-id>)]
-  story update [--check] [--force]                 (self-update the story binary)
+  story update [--check] [--force] [--source HOST/OWNER/REPO]                 (self-update the story binary)
   story hooks install|uninstall|list|test <event_type>
   story commit-sync [--since <duration>]
   story link-pr <id> <url> [--no-close-on-merge]    (link a GitHub pull request to a story)
@@ -903,6 +903,8 @@ pub enum Invocation {
     Update {
         check: bool,
         force: bool,
+        #[serde(default)]
+        source: Option<String>,
     },
     Version,
     /// Everything a long-lived client needs to render a project, in one
@@ -2071,7 +2073,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "update",
         subcommand: None,
-        flags: &[bare("check"), bare("force")],
+        flags: &[bare("check"), bare("force"), value("source")],
     },
     VerbFlags {
         verb: "handoff",
@@ -4523,9 +4525,10 @@ fn parse_doctor_crashes(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_update(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story update [--check] [--force]";
+    let usage = "usage: story update [--check] [--force] [--source HOST/OWNER/REPO]";
     let mut check = false;
     let mut force = false;
+    let mut source = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -4537,6 +4540,14 @@ fn parse_update(args: &[String]) -> Result<Invocation, AppError> {
                 force = true;
                 index += 1;
             }
+            "--source" if source.is_none() => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.into()))?;
+                crate::github_access::ReleaseSource::parse(value)?;
+                source = Some(value.clone());
+                index += 2;
+            }
             _ => {
                 return Err(AppError::Usage(usage.to_string()));
             }
@@ -4547,7 +4558,11 @@ fn parse_update(args: &[String]) -> Result<Invocation, AppError> {
             "{usage} (--check and --force are mutually exclusive)"
         )));
     }
-    Ok(Invocation::Update { check, force })
+    Ok(Invocation::Update {
+        check,
+        force,
+        source,
+    })
 }
 
 fn parse_hooks(args: &[String]) -> Result<Invocation, AppError> {

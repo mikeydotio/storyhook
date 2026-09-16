@@ -1844,6 +1844,7 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Update {
             check: true,
             force: true,
+            source: None,
         },
         Invocation::Version,
         Invocation::ProjectSnapshot,
