@@ -71,9 +71,8 @@ const ALLOWED: &[(&str, &str)] = &[
         "adopt_checkout fills a gap, forget_checkout is doctor --fix's half, delete_plan lists it",
     ),
     (
-        "src/service/pr_link.rs",
-        "GitHub API override lookup chooses the already-selected project's registered checkout \
-         only to locate that project's configuration",
+        "src/service/github_repository.rs",
+        "the already-selected project uses its registered checkout for GitHub configuration and origin authority; pointer UUIDs validate association",
     ),
     (
         "src/service/git_links.rs",

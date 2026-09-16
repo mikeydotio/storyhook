@@ -73,6 +73,7 @@ fn production_pr_observation_validates_identity_and_response_shape() {
                 .unwrap();
             let output = Command::new(std::env::current_exe().unwrap())
                 .env_clear()
+                .envs(storyhook_test_support::daemon_containment())
                 .env("HOME", root.path())
                 .env("TMPDIR", "/tmp")
                 .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))

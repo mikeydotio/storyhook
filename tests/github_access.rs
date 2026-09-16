@@ -204,6 +204,7 @@ fn helper(root: &Path, arguments: &[&str], fake: Option<&str>) -> std::process::
     }
     Command::new(env!("CARGO_BIN_EXE_story"))
         .env_clear()
+        .envs(storyhook_test_support::daemon_containment())
         .env("HOME", root)
         .env("TMPDIR", "/tmp")
         .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
