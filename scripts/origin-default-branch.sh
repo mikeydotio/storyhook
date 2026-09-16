@@ -5,7 +5,8 @@
 #   origin-default-branch.sh
 #
 # `git ls-remote --symref origin HEAD` advertises the remote's own HEAD — one
-# read-only round trip, no `gh`, any git host. On success the name (no
+# read-only round trip through the origin-bound HTTPS credential helper.
+# On success the name (no
 # `origin/`) is printed and nothing else; on failure nothing is printed, the
 # reason goes to stderr, and the exit status is 1.
 #
@@ -30,15 +31,18 @@
 #   1   origin did not answer, or advertises no symbolic HEAD
 
 set -uo pipefail
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+# shellcheck source=github-access.sh
+. "$script_dir/github-access.sh" || exit 1
 
-if ! out="$(git ls-remote --symref origin HEAD 2>&1)"; then
+if ! out="$(github_git ls-remote --symref origin HEAD 2>&1)"; then
     printf 'origin-default-branch: origin did not answer: %s\n' "$out" >&2
     exit 1
 fi
 name="$(printf '%s\n' "$out" \
     | awk -F'\t' '$2 == "HEAD" && index($1, "ref: refs/heads/") == 1 { print substr($1, 17); exit }')"
 if [ -z "$name" ]; then
-    printf 'origin-default-branch: origin advertises no symbolic HEAD (its default branch is unborn or detached); set one on the remote, e.g. `gh repo edit --default-branch <name>`\n' >&2
+    printf 'origin-default-branch: origin advertises no symbolic HEAD (its default branch is unborn or detached); configure a symbolic HEAD on origin and retry\n' >&2
     exit 1
 fi
 printf '%s\n' "$name"
