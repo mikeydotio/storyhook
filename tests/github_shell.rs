@@ -230,41 +230,141 @@ fn plugin_and_verifier_ship_the_same_thin_adapter() {
     );
 }
 
+const ORCHESTRATION_SELECTORS: [&str; 8] = [
+    "GH_CONFIG_DIR",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "STORY_BIN",
+    "STORYHOOK_GITHUB_AUTHORITY",
+    "STORYHOOK_GITHUB_EXPECTED",
+];
+
 #[test]
-fn test_children_cannot_inherit_gh_authentication_selectors() {
+fn test_children_cannot_inherit_orchestration_selectors() {
+    let root = scratch_dir();
     let adapter = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/github-access.sh");
-    let out = Command::new("bash")
-        .args([
-            "-c",
-            "source \"$1\"; github_without_credentials /usr/bin/env",
-            "fixture",
-        ])
-        .arg(adapter)
-        .env("GH_CONFIG_DIR", "/private/credential-fixture")
-        .env("GH_TOKEN", "public-fixture")
-        .env("GITHUB_TOKEN", "fallback-fixture")
-        .env("GH_ENTERPRISE_TOKEN", "enterprise-fixture")
-        .env("GITHUB_ENTERPRISE_TOKEN", "enterprise-fallback-fixture")
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let environment = String::from_utf8(out.stdout).unwrap();
-    for name in [
-        "GH_CONFIG_DIR",
-        "GH_TOKEN",
-        "GITHUB_TOKEN",
-        "GH_ENTERPRISE_TOKEN",
-        "GITHUB_ENTERPRISE_TOKEN",
-    ] {
+    for status in [0, 23] {
+        let child = root.path().join("child");
+        let parent = root.path().join("parent");
+        let out = Command::new("bash")
+            .args([
+                "-c",
+                r#"source "$1"
+github_without_credentials bash -c '/usr/bin/env > "$1"; exit "$2"' child "$2" "$4"
+status=$?
+/usr/bin/env > "$3"
+exit "$status""#,
+                "fixture",
+            ])
+            .arg(&adapter)
+            .arg(&child)
+            .arg(&parent)
+            .arg(status.to_string())
+            .envs(ORCHESTRATION_SELECTORS.map(|name| (name, format!("parent-{name}"))))
+            .env("CHILD_UNRELATED", "preserved")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(status));
+        let child = fs::read_to_string(child).unwrap();
+        let parent = fs::read_to_string(parent).unwrap();
         assert!(
-            !environment
+            child
                 .lines()
-                .any(|line| line.starts_with(&format!("{name}=")))
+                .any(|line| line == "CHILD_UNRELATED=preserved")
         );
+        for name in ORCHESTRATION_SELECTORS {
+            assert!(
+                !child
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{name}="))),
+                "child inherited {name}"
+            );
+            assert!(
+                parent
+                    .lines()
+                    .any(|line| line == format!("{name}=parent-{name}")),
+                "parent lost {name}"
+            );
+        }
+    }
+    let out = Command::new("bash")
+        .args(["-c", r#"source "$1"; github_without_credentials env STORY_BIN=child-owned bash -c 'printf %s "$STORY_BIN"'"#, "fixture"])
+        .arg(adapter).env("STORY_BIN", "parent-owned").output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(out.stdout, b"child-owned");
+}
+
+#[test]
+fn sanitized_submission_receipts_match_remote_heads_for_all_parent_selectors() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let binary = Path::new(env!("CARGO_BIN_EXE_story"));
+    let scratch = scratch_dir();
+    let authority = scratch.path().join("authority");
+    fs::create_dir(&authority).unwrap();
+    git(&authority, &["init", "-q"]);
+    git(
+        &authority,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/parent/orchestration.git",
+        ],
+    );
+    let selectors = [
+        ("STORY_BIN", binary.to_str().unwrap()),
+        ("STORYHOOK_GITHUB_AUTHORITY", authority.to_str().unwrap()),
+        (
+            "STORYHOOK_GITHUB_EXPECTED",
+            "github.com/parent/orchestration",
+        ),
+    ];
+    for mask in 0..8 {
+        // The fixture requires caller-owned receipt files inside /tmp.
+        let receipts = tempfile::NamedTempFile::new_in("/tmp").unwrap();
+        let mut command = Command::new("bash");
+        command
+            .args([
+                "-c",
+                r#"source "$1"; github_without_credentials bash "$2""#,
+                "fixture",
+            ])
+            .arg(root.join("scripts/github-access.sh"))
+            .arg(root.join("plugins/story/tests/test-submit-head-reporting.sh"))
+            .env(
+                "CARGO_TARGET_DIR",
+                binary.parent().unwrap().parent().unwrap(),
+            )
+            .env("SH713_RECEIPTS_PATH", receipts.path());
+        for (index, (name, value)) in selectors.iter().enumerate() {
+            command.env_remove(name);
+            if mask & (1 << index) != 0 {
+                command.env(name, value);
+            }
+        }
+        let out = command.output().unwrap();
+        assert!(
+            out.status.success(),
+            "mask={mask}: {}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let records = fs::read_to_string(receipts.path()).unwrap();
+        let records: Vec<serde_json::Value> = records
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 6, "mask={mask}");
+        for record in records {
+            assert_eq!(record["receipt"]["ok"], true, "mask={mask}: {record}");
+            assert_eq!(
+                record["receipt"]["pull_request"]["head_oid"], record["expected_head"],
+                "mask={mask}: {record}"
+            );
+            assert_eq!(record["expected_head"].as_str().unwrap().len(), 40);
+        }
     }
 }
 

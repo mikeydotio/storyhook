@@ -44,8 +44,9 @@ origin_git() {
     "${STORY_BIN:-story}" github observe --checkout "$checkout" -- "$@"
 }
 
-# Repository build/test children do not own network orchestration credentials.
+# Repository build/test children do not own parent orchestration credentials or routing.
 github_without_credentials() {
     env -u GH_CONFIG_DIR -u GH_TOKEN -u GITHUB_TOKEN \
-        -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN "$@"
+        -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \
+        -u STORY_BIN -u STORYHOOK_GITHUB_AUTHORITY -u STORYHOOK_GITHUB_EXPECTED "$@"
 }

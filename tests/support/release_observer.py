@@ -76,15 +76,26 @@ class ObserverTests(unittest.TestCase):
             self.assertEqual(self.run_watch(), 0)
         self.assertEqual(self.record()["commit"], self.first)
 
-    def test_preflight_does_not_receive_gh_credentials(self):
-        """Fetch orchestration authentication must stop before checkout code."""
+    def test_preflight_does_not_receive_orchestration_selectors(self):
+        """Child isolation preserves the parent's selectors on success and failure."""
         names = ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN",
-                 "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+                 "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "STORY_BIN",
+                 "STORYHOOK_GITHUB_AUTHORITY", "STORYHOOK_GITHUB_EXPECTED")
         checks = "\n".join('test -z "${' + name + '+x}" || exit 93' for name in names)
-        self.write("scripts/build-release-assets.sh", "#!/bin/bash\n" + checks + "\n")
-        self.commit()
-        with mock.patch.dict(os.environ, {name: "fixture-secret" for name in names}):
-            self.assertEqual(self.run_watch(), 0)
+        parent = {name: "parent-" + name for name in names}
+        parent["STORY_BIN"] = os.environ["STORY_BIN"]
+        parent["CHILD_UNRELATED"] = "preserved"
+        for code in (0, 23):
+            with self.subTest(code=code):
+                self.write("scripts/build-release-assets.sh", "#!/bin/bash\n" + checks +
+                           '\ntest "$CHILD_UNRELATED" = preserved || exit 94\n' +
+                           f"exit {code}\n")
+                self.commit()
+                with mock.patch.dict(os.environ, parent):
+                    self.assertEqual(self.run_watch(), int(code != 0))
+                    self.assertEqual(self.record()["preflight"], code)
+                    for name, value in parent.items():
+                        self.assertEqual(os.environ[name], value)
 
     def test_source_rewrite_is_rejected_before_private_fetch(self):
         """Copying the raw URL must not discard source authority policy."""
