@@ -65,7 +65,7 @@ impl Repository {
             return Err(refuse("unsupported transport refspec"));
         }
         // Check both configured push URLs and actual rewrite results before
-        // replacing the remote operand. A mismatch must not silently disappear.
+        // pinning transport. A mismatch must not silently disappear.
         for flags in [
             vec!["remote", "get-url", "--all", "origin"],
             vec!["remote", "get-url", "--push", "--all", "origin"],
@@ -126,8 +126,55 @@ impl Repository {
             }
         }
         let mut args = arguments.to_vec();
-        args[remote] = destination;
         let mut command = git_env::command(&self.checkout);
+        if operation == "push" {
+            // Hooks need origin to identify outgoing history. Exact, temporary
+            // mappings also work on Git 2.25, which cannot clear URL lists with
+            // empty values. Validate the mapped fetch and push destinations;
+            // an existing competing rewrite must never win silently.
+            let configured = git_read(
+                &self.checkout,
+                &[
+                    "config",
+                    "--null",
+                    "--get-regexp",
+                    "^remote\\.origin\\.(url|pushurl)$",
+                ],
+            )?;
+            if configured.len() >= 64 * 1024 {
+                return Err(refuse("origin configuration exceeds the capture limit"));
+            }
+            let mut pin = Vec::new();
+            for entry in configured.split('\0').filter(|entry| !entry.is_empty()) {
+                let (_, url) = entry
+                    .split_once('\n')
+                    .ok_or_else(|| refuse("invalid origin URL record"))?;
+                if parse_origin(url)
+                    .map(|identity| identity != self.identity)
+                    .unwrap_or(true)
+                {
+                    return Err(refuse("configured raw URL differs from origin"));
+                }
+                pin.push("-c".to_string());
+                pin.push(format!("url.{destination}.insteadOf={url}"));
+            }
+            for flags in [
+                vec!["remote", "get-url", "--all", "origin"],
+                vec!["remote", "get-url", "--push", "--all", "origin"],
+            ] {
+                let mut query: Vec<_> = pin.iter().map(String::as_str).collect();
+                query.extend(flags);
+                let effective = git_read(&self.checkout, &query)?;
+                if effective.lines().collect::<Vec<_>>() != [destination.as_str()] {
+                    return Err(refuse(
+                        "cannot pin origin to HTTPS; remove competing URL rewrites",
+                    ));
+                }
+            }
+            command.args(pin);
+        } else {
+            args[remote] = destination;
+        }
         for name in spawn_env::GITHUB_CREDENTIAL_MAY_SEE {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);

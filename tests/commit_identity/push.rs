@@ -282,3 +282,123 @@ fn unavailable_advertised_baseline_is_not_silently_ignored() {
     assert_eq!(out.status.code(), Some(2), "{}", text(&out));
     assert!(text(&out).contains("advertised identity baseline"));
 }
+
+#[test]
+fn authenticated_push_preserves_origin_history_and_checks_new_identities() {
+    let repo = Repo::new();
+    repo.git(&[
+        "-c",
+        "user.email=historical@example.test",
+        "commit",
+        "--no-verify",
+        "--allow-empty",
+        "-qm",
+        "published history",
+    ]);
+    repo.git(&["push", "--no-verify", "origin", "HEAD:refs/heads/seed"]);
+    ok(&repo.commit());
+    repo.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        "git@github.pie.apple.com:acme/widgets.git",
+    ]);
+    repo.git(&[
+        "config",
+        "remote.origin.pushurl",
+        "ssh://git@github.pie.apple.com/acme/widgets.git",
+    ]);
+    let bin = repo.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let endpoint = serde_json::to_string(repo.path().join("remote").to_str().unwrap()).unwrap();
+    // Mock only the HTTPS endpoint. Real Git, hooks, history and ref updates run.
+    fs::write(
+        bin.join("git"),
+        format!(
+            r#"#!/usr/bin/env python3
+import os, sys
+args = sys.argv[1:]
+if 'push' in args:
+    endpoint = {endpoint}
+    url = 'https://github.pie.apple.com/acme/widgets.git'
+    args = [endpoint if arg == url else
+            arg.replace('url.' + url + '.insteadOf=', 'url.' + endpoint + '.insteadOf=', 1)
+            if arg.startswith('url.' + url + '.insteadOf=')
+            else arg for arg in args]
+os.execv('/usr/bin/git', ['git'] + args)
+"#
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("git"), fs::Permissions::from_mode(0o755)).unwrap();
+    let push = |branch: &str| {
+        repo.command(storyhook_test_support::story_binary().to_str().unwrap())
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .args([
+                "github",
+                "git",
+                "--checkout",
+                repo.path().to_str().unwrap(),
+                "--",
+                "push",
+                "origin",
+                branch,
+            ])
+            .output()
+            .unwrap()
+    };
+    ok(&push("HEAD:refs/heads/release"));
+    assert_eq!(
+        String::from_utf8(repo.git(&["config", "--get", "remote.origin.url"]).stdout)
+            .unwrap()
+            .trim(),
+        "git@github.pie.apple.com:acme/widgets.git",
+    );
+    assert_eq!(
+        String::from_utf8(
+            repo.git(&["config", "--get", "remote.origin.pushurl"])
+                .stdout
+        )
+        .unwrap()
+        .trim(),
+        "ssh://git@github.pie.apple.com/acme/widgets.git",
+    );
+    assert_eq!(
+        repo.git(&["rev-parse", "HEAD"]).stdout,
+        repo.git(&["--git-dir=remote", "rev-parse", "refs/heads/release"])
+            .stdout,
+    );
+    repo.git(&[
+        "-c",
+        "user.email=new-invalid@example.test",
+        "commit",
+        "--no-verify",
+        "--allow-empty",
+        "-qm",
+        "unapproved new identity",
+    ]);
+    let rejected = push("HEAD:refs/heads/rejected");
+    assert!(!rejected.status.success(), "{}", text(&rejected));
+    assert!(
+        text(&rejected).contains("new-invalid@example.test"),
+        "{}",
+        text(&rejected)
+    );
+    assert!(
+        !repo
+            .command("git")
+            .args([
+                "--git-dir=remote",
+                "rev-parse",
+                "--verify",
+                "refs/heads/rejected"
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
