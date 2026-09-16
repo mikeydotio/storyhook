@@ -10,6 +10,8 @@
 set -uo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+# shellcheck source=github-access.sh
+. "$script_dir/github-access.sh" || exit 1
 if [ "${1:-}" = --landing ]; then
     shift
     exec bash "$script_dir/landing-intent.sh" "$@"
@@ -457,7 +459,7 @@ classify_land() {
         invalid_json "PR #$landed_pr targets a branch it must not land on: $land_output"
         ;;
     (*)
-        refreshed_metadata="$(gh pr view "$landed_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,mergeCommit 2>/dev/null)"
+        refreshed_metadata="$(github_exec pr view "$landed_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,mergeCommit 2>&1)"
         refresh_status=$?
         reconcile_land_refusal "$refresh_status" "$refreshed_metadata" \
             "$landed_pr" "$landed_base" "$landed_head" "$landed_tree" "$land_output"
@@ -557,25 +559,19 @@ refresh_submission_refs() {
     base_ref="refs/remotes/origin/$refresh_base"
     head_ref="refs/remotes/origin/pr/$refresh_pr"
 
-    git fetch -q origin \
+    github_git fetch -q origin \
         "+refs/heads/$refresh_base:$base_ref" \
         "+refs/pull/$refresh_pr/head:$head_ref" \
         || retry_json "could not refresh origin/$refresh_base and PR #$refresh_pr"
     head="$(git rev-parse "$head_ref" 2>/dev/null)" \
         || die_json "could not resolve fetched PR #$refresh_pr"
 
-    # Always the fully qualified name: `--exit-code` matches by suffix, so a
-    # bare branch name could be answered by a tag spelled the same way.
-    branch_listing="$(git ls-remote --exit-code origin "refs/heads/$refresh_branch" 2>/dev/null)"
-    case "$?" in
-    (0) ;;
-    (2)
-        invalid_json "PR #$refresh_pr's head branch refs/heads/$refresh_branch does not exist on origin; push it"
-        ;;
-    (*)
-        retry_json "could not read refs/heads/$refresh_branch on origin for PR #$refresh_pr"
-        ;;
-    esac
+    # A fully qualified ref cannot be confused with a same-named tag.
+    # Empty successful output means absent; a failed read must stay a failure.
+    branch_listing="$(github_git ls-remote --heads origin "refs/heads/$refresh_branch" 2>&1)" \
+        || retry_json "could not read refs/heads/$refresh_branch on origin for PR #$refresh_pr: $branch_listing"
+    [ -n "$branch_listing" ] \
+        || invalid_json "PR #$refresh_pr's head branch refs/heads/$refresh_branch does not exist on origin; push it"
     branch_tip="$(printf '%s\n' "$branch_listing" | awk 'NR == 1 { print $1 }')"
     [ -n "$branch_tip" ] \
         || die_json "origin listed refs/heads/$refresh_branch for PR #$refresh_pr without an oid"
@@ -612,8 +608,8 @@ confirm_judged_head() {
     judged_head="$3"
     judged_verdict="$4"
     judged_extra="${5:-}"
-    current_metadata="$(gh pr view "$judged_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,mergeCommit 2>/dev/null)" \
-        || retry_json "could not re-read PR #$judged_pr from GitHub before posting its $judged_verdict verdict; the verdict was not posted and the next attempt re-verifies.${judged_extra:+ $judged_extra}"
+    current_metadata="$(github_exec pr view "$judged_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,mergeCommit 2>&1)" \
+        || retry_json "could not re-read PR #$judged_pr from GitHub before posting its $judged_verdict verdict: $current_metadata; the verdict was not posted and the next attempt re-verifies.${judged_extra:+ $judged_extra}"
     validate_metadata "$current_metadata"
     [ "$pr" = "$judged_pr" ] \
         || invalid_json "PR #$judged_pr was re-read as PR #$pr before its $judged_verdict verdict"
@@ -636,7 +632,7 @@ reconcile_land_refusal() {
     land_detail="$7"
 
     [ "$refresh_status" -eq 0 ] \
-        || retry_json "could not refresh PR #$expected_pr after landing refusal: $land_detail"
+        || retry_json "could not refresh PR #$expected_pr after landing refusal: $refreshed_metadata; $land_detail"
     validate_metadata "$refreshed_metadata"
     [ "$pr" = "$expected_pr" ] \
         || invalid_json "landing refresh returned PR #$pr for submitted PR #$expected_pr"
@@ -654,12 +650,12 @@ reconcile_land_refusal() {
     if [ "$state" = MERGED ]; then
         merge_oid="$(printf '%s' "$refreshed_metadata" | jq -er '.mergeCommit.oid // empty')" \
             || die_json "merged PR #$pr returned no merge commit after landing refusal"
-        git fetch -q origin "+refs/heads/$base:$base_ref" \
+        github_git fetch -q origin "+refs/heads/$base:$base_ref" \
             || retry_json "could not refresh origin/$base for merged PR #$pr after landing refusal"
         recover_merged "$base_ref" "$merge_oid" "$pr" "after landing refusal"
     fi
 
-    git fetch -q origin \
+    github_git fetch -q origin \
         "+refs/heads/$base:$base_ref" \
         "+refs/pull/$pr/head:$head_ref" \
         || retry_json "could not refresh origin/$base and PR #$pr after landing refusal"
@@ -775,14 +771,14 @@ submitted_pr="$1"
 shift 2
 gate_command=("$@")
 gate_display="$*"
-command -v gh >/dev/null 2>&1 || die_json "the gh CLI is required"
+github_begin || die_json "cannot establish GitHub origin: ${GITHUB_ACCESS_ERROR:-origin unavailable}"
 
 verification_phase="pull request metadata"
 verifier_window_banner "verifying $submitted_pr — checking pull request metadata"
 gate_progress_emit_item "pull request metadata" running
 _pr_meta_start=$(date +%s)
-metadata="$(gh pr view "$submitted_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,mergeCommit 2>/dev/null)" \
-    || retry_json "could not read submitted pull request $submitted_pr from GitHub"
+metadata="$(github_exec pr view "$submitted_pr" --json number,state,isDraft,isCrossRepository,baseRefName,headRefName,headRefOid,mergeCommit 2>&1)" \
+    || retry_json "could not read submitted pull request $submitted_pr from GitHub: $metadata"
 validate_metadata "$metadata"
 gate_progress_emit_item "pull request metadata" passed "seconds=$(( $(date +%s) - _pr_meta_start ))"
 
@@ -794,7 +790,7 @@ ensure_verifier_worktree "$fallback"
 if [ "$state" = MERGED ]; then
     merge_oid="$(printf '%s' "$metadata" | jq -er '.mergeCommit.oid // empty')" \
         || die_json "merged PR #$pr returned no merge commit"
-    git fetch -q origin "+refs/heads/$base:$base_ref" \
+    github_git fetch -q origin "+refs/heads/$base:$base_ref" \
         || retry_json "could not refresh origin/$base for merged PR #$pr"
     recover_merged "$base_ref" "$merge_oid" "$pr" "after verifier restart"
 fi

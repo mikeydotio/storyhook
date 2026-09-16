@@ -121,3 +121,9 @@ must pass the registered source explicitly.
 requires an absolute destination. The shared transport boundary converts the
 source to HTTPS and supplies the host-scoped gh credential helper. Native Git
 retains responsibility for refusing an existing nonempty destination.
+
+Multi-step callers can pass `--expected HOST/OWNER/REPO`, using the canonical
+identity from `resolve`. Each call still reads actual origin and refuses a
+changed identity. The verifier pins this identity before its first observation
+and preserves it through landing; it never reinterprets a certified PR number
+in a new repository. Start a fresh operation after an intentional origin change.

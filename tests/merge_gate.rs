@@ -1302,6 +1302,9 @@ impl MergeRepo {
             .env("GITHUB_TOKEN", "github-fallback-secret")
             .env("GH_ENTERPRISE_TOKEN", "enterprise-secret")
             .env("GITHUB_ENTERPRISE_TOKEN", "enterprise-fallback-secret")
+            .env("STORY_BIN", "/verifier/only/story")
+            .env("STORYHOOK_GITHUB_AUTHORITY", "/verifier/only/checkout")
+            .env("STORYHOOK_GITHUB_EXPECTED", "github.example/acme/widgets")
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
@@ -1562,9 +1565,13 @@ impl MergeRepo {
                 "remote",
                 "add",
                 "origin",
-                &self.path().display().to_string(),
+                "https://github.com/acme/widgets.git",
             ]),
-            "adding the local origin",
+            "adding the fixture origin",
+        );
+        storyhook_test_support::install_git_endpoint(
+            &self.path().join("bin"),
+            &[("https://github.com/acme/widgets.git", self.path())],
         );
     }
 
@@ -1591,7 +1598,7 @@ impl MergeRepo {
             &script,
             r##"#!/usr/bin/env bash
 set -uo pipefail
-state="${FAKE_GH_STATE:?fake gh: FAKE_GH_STATE names the state directory}"
+state="$(cd "$(dirname "$0")/../fake-gh-state" && pwd)"
 calls=$(( $(cat "$state/calls" 2>/dev/null || echo 0) + 1 ))
 printf '%s\n' "$calls" > "$state/calls"
 printf '%s\n' "$*" >> "$state/argv"
@@ -1701,7 +1708,7 @@ jq -e --arg fields "$5" '
         command
             .current_dir(self.path())
             .env("PATH", path)
-            .env("FAKE_GH_STATE", self.path().join("fake-gh-state"))
+            .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
             .env(
                 "STORYHOOK_CERTIFY_ONLY",
                 if certify_only { "1" } else { "0" },
@@ -1777,6 +1784,15 @@ fn run(cwd: &Path, program: &str, args: &[&str]) -> Output {
     Command::new(program)
         .args(args)
         .current_dir(cwd)
+        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                cwd.join("bin").display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
         .envs(storyhook_test_support::daemon_containment())
         // The outer verifier certifies this suite; each nested fixture owns
         // its own phase. Public certification cases select it explicitly.
@@ -2003,7 +2019,7 @@ fn speculative_run_uses_the_exact_tree_and_restores_after_success_or_failure() {
         &[
             "bash",
             "-c",
-            "test -z \"${STORYHOOK_STORE_PATH+x}\" && test -z \"${STORYHOOK_PROJECT+x}\" && test -z \"${GH_TOKEN+x}\" && test -z \"${GITHUB_TOKEN+x}\" && test -z \"${GH_ENTERPRISE_TOKEN+x}\" && test -z \"${GITHUB_ENTERPRISE_TOKEN+x}\"",
+            "test -z \"${STORYHOOK_STORE_PATH+x}\" && test -z \"${STORYHOOK_PROJECT+x}\" && test -z \"${GH_TOKEN+x}\" && test -z \"${GITHUB_TOKEN+x}\" && test -z \"${GH_ENTERPRISE_TOKEN+x}\" && test -z \"${GITHUB_ENTERPRISE_TOKEN+x}\" && test -z \"${STORY_BIN+x}\" && test -z \"${STORYHOOK_GITHUB_AUTHORITY+x}\" && test -z \"${STORYHOOK_GITHUB_EXPECTED+x}\"",
         ],
     );
     assert_ok(
@@ -4034,7 +4050,7 @@ impl MergeRepo {
             .arg(self.path().join("landing.attempted"))
             .current_dir(self.path())
             .env("PATH", path)
-            .env("FAKE_GH_STATE", self.path().join("fake-gh-state"))
+            .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
             .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
             .envs(storyhook_test_support::daemon_containment())

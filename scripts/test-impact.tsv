@@ -108,6 +108,9 @@ golden_cli	:(glob)src/**/*.rs
 handoff_endpoint	:(glob)**/*
 handoff_notes	:(glob)**/*
 harness_path_entries	:(glob)**/*
+github_shell	:(glob)scripts/*.sh
+github_shell	:(glob)src/github_access/**
+github_shell	src/daemon/verification.rs
 help_topic_references	:(glob)**/*
 hook_budgets	:(glob)**/*
 hooks	:(glob)**/*

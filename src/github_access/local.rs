@@ -8,27 +8,45 @@ use std::path::Path;
 pub fn run_local(arguments: &[String]) -> Result<Vec<u8>, AppError> {
     let usage = || {
         AppError::Usage(
-            "usage: story github resolve|exec|git --checkout PATH [--authority PATH] [-- ARGUMENTS]".into(),
+            "usage: story github resolve|exec|git --checkout PATH [--authority PATH] [--expected HOST/OWNER/REPO] [-- ARGUMENTS]".into(),
         )
     };
     if arguments.len() < 3 || arguments[1] != "--checkout" {
         return Err(usage());
     }
     let repository = Repository::resolve(Path::new(&arguments[2]))?;
-    let remaining = if arguments.get(3).is_some_and(|arg| arg == "--authority") {
-        let path = arguments.get(4).ok_or_else(usage)?;
-        let authority = Repository::resolve(Path::new(path))?;
-        if authority.identity() != repository.identity() {
-            return Err(AppError::Validation(format!(
-                "checkout {} differs from source authority {}; refusing GitHub operation",
-                repository.qualified(),
-                authority.qualified()
-            )));
+    let mut remaining = &arguments[3..];
+    let mut seen_authority = false;
+    let mut seen_expected = false;
+    while let Some(option) = remaining.first() {
+        match option.as_str() {
+            "--authority" if !seen_authority => {
+                let path = remaining.get(1).ok_or_else(usage)?;
+                let authority = Repository::resolve(Path::new(path))?;
+                if authority.identity() != repository.identity() {
+                    return Err(AppError::Validation(format!(
+                        "checkout {} differs from source authority {}; refusing GitHub operation",
+                        repository.qualified(),
+                        authority.qualified()
+                    )));
+                }
+                seen_authority = true;
+            }
+            "--expected" if !seen_expected => {
+                let expected = remaining.get(1).ok_or_else(usage)?;
+                if expected != &repository.qualified() {
+                    return Err(AppError::Validation(format!(
+                        "GitHub origin changed from {expected} to {}; refusing to continue the operation",
+                        repository.qualified()
+                    )));
+                }
+                seen_expected = true;
+            }
+            "--" => break,
+            _ => return Err(usage()),
         }
-        &arguments[5..]
-    } else {
-        &arguments[3..]
-    };
+        remaining = &remaining[2..];
+    }
     match arguments[0].as_str() {
         "resolve" if remaining.is_empty() => serde_json::to_vec(&repository).map_err(|error| {
             AppError::GithubApi(format!("encoding resolved GitHub origin: {error}"))

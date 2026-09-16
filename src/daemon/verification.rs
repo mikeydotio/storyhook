@@ -742,6 +742,8 @@ impl ShellVerificationActuator {
                 .arg(&intent.certification.tree)
                 .arg(marker)
                 .current_dir(&intent.checkout)
+                .env("STORY_BIN", self.story_binary())
+                .env("STORYHOOK_GITHUB_AUTHORITY", &intent.checkout)
                 .envs(self.env.child_vars())
                 .env(
                     "STORYHOOK_VERIFIER_MIRROR",
@@ -1257,6 +1259,8 @@ impl VerificationActuator for ShellVerificationActuator {
             .arg("--")
             .args(gate.argv())
             .current_dir(&candidate.checkout)
+            .env("STORY_BIN", self.story_binary())
+            .env("STORYHOOK_GITHUB_AUTHORITY", &candidate.checkout)
             // The resolved fixture policy overrides any ambient value the
             // allowlist retained; the verifier needs no other store settings.
             .env(
