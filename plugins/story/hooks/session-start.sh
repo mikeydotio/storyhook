@@ -15,12 +15,12 @@ fi
 # necessarily the script that actually executed. Add it to the payload before
 # the CLI publishes the sentinel; malformed provider JSON stays malformed and
 # therefore fails a later autonomous identity check closed.
-HOOK_PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HOOK_PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 if [ -n "$stdin_json" ]; then story_payload=$(printf '%s' "$stdin_json" | jq -c --arg root "$HOOK_PLUGIN_ROOT" '. + {storyhook_plugin_root: $root}' 2>/dev/null) || story_payload="$stdin_json"; else story_payload=$(jq -cn --arg root "$HOOK_PLUGIN_ROOT" '{storyhook_plugin_root: $root}' 2>/dev/null) || story_payload=""; fi
 
 # Extract cwd from stdin JSON and cd to it.
 if [[ -n "$stdin_json" ]]; then
-  cwd=$(printf '%s' "$stdin_json" | sed -n 's/.*"cwd" *: *"\([^"]*\)".*/\1/p')
+  cwd=$(printf '%s' "$stdin_json" | jq -er '.cwd | select(type == "string")' 2>/dev/null) || cwd=""
   if [[ -n "$cwd" && -d "$cwd" ]]; then
     cd "$cwd"
   fi
@@ -28,8 +28,8 @@ fi
 
 # Delegate to story session-start; emit only a JSON envelope, never leaked text.
 #
-# The CLI writes usage/error output to stdout (not stderr), so a stale `story`
-# binary that predates the `session-start` subcommand would otherwise dump
+# An old CLI can write usage/error output to stdout, so a stale `story`
+# binary that predates the `session-start` subcommand could otherwise dump
 # "error: unknown command `session-start`. Run `story --help` for usage." into
 # the session. Capture stdout and pass it through only when it is JSON (starts
 # with `{`); a non-zero exit blanks it and anything else collapses to `{}`.
@@ -67,7 +67,7 @@ fi
 # more field. Piping an empty string when nothing arrived is a no-op — an
 # immediately-closed stdin reads as "".
 if command -v story &>/dev/null; then
-  if [ -n "${STORYHOOK_DISPATCH:-}" ]; then out=$(printf '%s' "$story_payload" | story --deadline 20 session-start 2>/dev/null) || out=""; else out=$(printf '%s' "$story_payload" | story --deadline 3 session-start 2>/dev/null) || out=""; fi
+  if [ -n "${STORYHOOK_DISPATCH:-}" ]; then out=$(printf '%s' "$story_payload" | story --deadline 20 session-start) || out=""; else out=$(printf '%s' "$story_payload" | story --deadline 3 session-start) || out=""; fi
   source "$HOOK_PLUGIN_ROOT/lib/codex-bootstrap.sh"; codex_bootstrap_hook_response "$stdin_json" "$out"
 else
   printf '{}'

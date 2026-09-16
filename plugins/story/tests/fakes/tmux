@@ -436,7 +436,7 @@ case "${1:-}" in
         -n) nw_name="${nw_args[$((_i + 1))]:-}" ;;
         -t) nw_session="${nw_args[$((_i + 1))]:-}"; nw_session="${nw_session%:}" ;;
         STORYHOOK_AUTO=?*|STORYHOOK_FULL_AUTO=?*) nw_codex_autonomous=true ;;
-        STORYHOOK_CODEX_BOOTSTRAP=*) nw_bootstrap="${_a#*=}" ;;
+        STORYHOOK_CODEX_BOOTSTRAP=*) nw_bootstrap="${_a#*=}"; [ -z "$nw_bootstrap" ] || nw_codex_autonomous=true ;;
       esac
       _i=$((_i + 1))
     done
@@ -564,16 +564,26 @@ case "${1:-}" in
         if [ "$launch_bin" = codex ]; then
           printf '%s' "$sentinel_json" > "$STATE/pending_sentinel"
           printf '%s' "$nw_cwd/.claude/dispatch-sentinel.json" > "$STATE/pending_sentinel_path"
-        elif [ -n "${FAKE_TMUX_SENTINEL_DELAY_SECS:-}" ]; then
-          ( sleep "$FAKE_TMUX_SENTINEL_DELAY_SECS"
-            mkdir -p "$nw_cwd/.claude" 2>/dev/null && printf '%s\n' \
-              "$sentinel_json" \
-              > "$nw_cwd/.claude/dispatch-sentinel.json" 2>/dev/null || true
-          ) </dev/null >/dev/null 2>&1 &
         else
-          mkdir -p "$nw_cwd/.claude" 2>/dev/null && printf '%s\n' \
-            "$sentinel_json" \
-            > "$nw_cwd/.claude/dispatch-sentinel.json" 2>/dev/null || true
+          # Mock the provider event and timing, never Storyhook publication.
+          publish_claude_hook() {
+            local hook_root payload
+            hook_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+            payload=$(jq -cn --arg cwd "$nw_cwd" \
+              '{cwd:$cwd,session_id:"fake-claude-session",hook_event_name:"SessionStart",source:"startup"}')
+            printf '%s' "$payload" | STORYHOOK_DISPATCH=1 STORYHOOK_CODEX_BOOTSTRAP= \
+              bash "$hook_root/hooks/session-start.sh" > "$STATE/claude-hook-output.json" 2> "$STATE/claude-hook-stderr"
+            if [ -n "${FAKE_TMUX_CLAUDE_SENTINEL_ROOT:-}" ]; then
+              jq --arg root "$FAKE_TMUX_CLAUDE_SENTINEL_ROOT" '.plugin_root=$root' \
+                "$nw_cwd/.claude/dispatch-sentinel.json" > "$STATE/foreign-sentinel"
+              cp "$STATE/foreign-sentinel" "$nw_cwd/.claude/dispatch-sentinel.json"
+            fi
+          }
+          if [ -n "${FAKE_TMUX_SENTINEL_DELAY_SECS:-}" ]; then
+            (sleep "$FAKE_TMUX_SENTINEL_DELAY_SECS"; publish_claude_hook) </dev/null >/dev/null 2>&1 &
+          else
+            publish_claude_hook
+          fi
         fi
       fi
       # Record each chained set-window-option segment for its own sake, so a

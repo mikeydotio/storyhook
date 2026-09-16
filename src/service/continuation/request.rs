@@ -38,6 +38,14 @@ impl<S: Store> ContinuationService<'_, S> {
             })?
             .clone();
         validate_capture(id, &input["provider"], &capture)?;
+        if capture["message_id"]
+            .as_str()
+            .is_none_or(|id| id.is_empty())
+        {
+            return Err(AppError::Validation(
+                "runtime capture requires native message_id".into(),
+            ));
+        }
         self.ctx.write_stories(|tx| {
             let project_id=self.ctx.project();
             let prefix=project_prefix(tx,project_id)?;
@@ -69,7 +77,7 @@ impl<S: Store> ContinuationService<'_, S> {
                 story_no:number,
                 story_id:id.into(),
                 handoff:input["handoff"].clone(),
-                generation:json!({"provider":capture["provider"],"session_id":capture["session_id"],"turn_id":capture["turn_id"]}),
+                generation:json!({"provider":capture["provider"],"session_id":capture["session_id"],"turn_id":capture["turn_id"],"message_id":capture["message_id"]}),
                 capture:capture.clone(),
                 status:ContinuationStatus::AwaitingAck,
                 phase:ContinuationPhase::NativeContinuation,
