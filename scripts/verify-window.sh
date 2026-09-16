@@ -75,29 +75,41 @@ verifier_window_ensure() {
     verifier_window_tmux set-window-option -t "$target" allow-rename off >/dev/null 2>&1 || return 1
 }
 
-# A failed macOS PTY allocation happens before the reader is forked. Recover
-# only that error, with a bounded delay. After the first failure, omit -k:
-# tmux must refuse rather than kill a reader another caller has since started.
+# Allocate before retiring the old reader. tmux 3.7c leaves a failed respawn's
+# parser freed; retrying that pane can crash the whole server. A failed split
+# instead destroys only its new pane and leaves the old reader intact.
+# This synchronous command group captures the old ID and retires it only after
+# allocation succeeds. Retries use that ID, never a replacement reader's name.
 verifier_window_respawn() {
-    local target="$1" error pause
+    local target="$1" original="$1" output error pane line pause succeeded
     shift
     verifier_window_enabled || return 1
-    set -- respawn-pane -k -c "$HOME" -t "$target" "$@"
     for pause in 0 0.05 0.1 0.2; do
         [ "$pause" = 0 ] || sleep "$pause"
-        if error="$(verifier_window_tmux "$@" 2>&1)"; then
-            [ -z "$error" ] || printf '%s\n' "$error" >&2
-            return 0
-        fi
-        printf 'verifier view %s: %s\n' "$target" "$error" >&2
+        succeeded=0
+        output="$(verifier_window_tmux display-message -p -t "$target" '#{pane_id}' \
+            ';' split-window -d -c "$HOME" -t "$target" "$@" \
+            ';' kill-pane -t "$target" 2>&1)" && succeeded=1
+        pane=""
+        error=""
+        # tmux buffers stdout separately from stderr; the ID can follow the error.
+        while IFS= read -r line; do
+            case "$line" in
+                %*[!0-9]*|%|[!%]*|'')
+                    [ -z "$error" ] || error+=$'\n'
+                    error+="$line"
+                    ;;
+                *) pane="$line" ;;
+            esac
+        done <<< "$output"
+        [ -z "$error" ] || printf 'verifier view %s: %s\n' "$original" "$error" >&2
+        [ "$succeeded" = 0 ] || return 0
+        [ -n "$pane" ] || return 1
+        target="$pane"
         case "$error" in
-            'respawn pane failed: fork failed: Device not configured') ;;
+            'create pane failed: fork failed: Device not configured') ;;
             *) return 1 ;;
         esac
-        if [ "$pause" = 0 ]; then
-            shift 2
-            set -- respawn-pane "$@"
-        fi
     done
     return 1
 }
