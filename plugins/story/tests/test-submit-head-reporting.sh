@@ -19,6 +19,7 @@ mkdir "$FAKE_GH_STATE/bin"
 cat >"$FAKE_GH_STATE/bin/gh" <<'WRAPPER'
 #!/usr/bin/env bash
 set -uo pipefail
+source "$GH_CONFIG_DIR/fixture-env"
 reply=$("$SH713_BASE_GH" "$@") || exit $?
 if [ "${1:-} ${2:-}" = "pr view" ] && [ -n "${SH713_STALE_VIEW_HEAD:-}" ]; then
   printf '%s' "$reply" | jq -c --arg oid "$SH713_STALE_VIEW_HEAD" '.headRefOid = $oid'
@@ -29,6 +30,7 @@ WRAPPER
 chmod +x "$FAKE_GH_STATE/bin/gh"
 
 repo=$(mk_story_repo HEAD)
+github_fixture "$repo" "https://github.example.com/acme/widgets.git"
 slug=$(slug_for "$repo")
 id=$(new_story "$repo" "Report the submitted commit")
 name=$(mk_dispatched "$repo" "$id")

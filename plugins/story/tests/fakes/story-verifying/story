@@ -17,6 +17,18 @@ set -euo pipefail
 
 real="${STORY_REAL_BIN:?STORY_REAL_BIN must point at the real story binary}"
 
+# Endpoint data survives the production subprocess environment rebuild through
+# the fixture's explicit gh configuration directory, never a production allowlist.
+if [ -n "${FAKE_GH_STATE:-}" ]; then
+  export GH_CONFIG_DIR="$FAKE_GH_STATE"
+  fixture_env=$(mktemp "$GH_CONFIG_DIR/fixture-env.XXXXXX")
+  for key in FAKE_GH_STATE FAKE_GH_REPO FAKE_GH_FAIL FAKE_GH_FAIL_AFTER_CREATE SH713_BASE_GH SH713_STALE_VIEW_HEAD SH725_REAL_GIT SH725_EXPECT_AUTH SH725_FAIL SH725_HEAD SH725_BRANCH; do
+    printf 'export %s=%q\n' "$key" "${!key-}" >>"$fixture_env"
+  done
+  mv "$fixture_env" "$GH_CONFIG_DIR/fixture-env"
+fi
+
+
 is_show_json_for() {
   local want="$1"; shift
   while [ "$#" -gt 0 ]; do

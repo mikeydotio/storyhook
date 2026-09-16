@@ -214,3 +214,12 @@ fn endpoint_fixture_refuses_live_urls_without_rewriting_resolution_reads() {
             .contains("fixture refuses unmapped network destination")
     );
 }
+
+#[test]
+fn plugin_and_verifier_ship_the_same_thin_adapter() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert_eq!(
+        fs::read(root.join("plugins/story/lib/github-access.sh")).unwrap(),
+        fs::read(root.join("scripts/github-access.sh")).unwrap(),
+    );
+}

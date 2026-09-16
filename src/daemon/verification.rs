@@ -1059,6 +1059,7 @@ impl ShellVerificationActuator {
             .arg("submit")
             .arg(&candidate.story_id)
             .current_dir(&lease.repository_path)
+            .env("STORYHOOK_GITHUB_AUTHORITY", &candidate.checkout)
             .env_remove("STORY_AGENT")
             .env("STORY_BIN", self.story_binary())
             .envs(self.env.child_vars())

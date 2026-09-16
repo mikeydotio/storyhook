@@ -1631,7 +1631,7 @@ mod tests {
             fixture.github_checkout_at(
                 fixture.project(),
                 fixture.cwd(),
-                "https://github.com/acme/widgets",
+                "https://github.example.com/acme/widgets",
             );
             let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
             store
