@@ -3,11 +3,11 @@
 //! Informational links may name other repositories. Linking requires no gh
 //! installation or network, and remains available without github-pr.
 
-use crate::domain::github_remote::{GithubRepo, parse_github_url};
+use crate::domain::github_remote::GithubRepo;
 use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{StoryEvent, StorySnapshot};
 use crate::error::AppError;
-use crate::store::{ExpectedSeq, ProjectRemoteRecord, ReadOps, Store};
+use crate::store::{ExpectedSeq, ReadOps, Store};
 
 use super::{Ctx, append_and_fold, project_prefix, resolve_open_story};
 
@@ -113,10 +113,7 @@ impl<'ctx, S: Store> PrLinkService<'ctx, S> {
         })?)
     }
 
-    /// Refuses `(host, owner, repo)` unless it matches at least one of this
-    /// project's registered GitHub remotes — or the project has none
-    /// registered, in which case there is nothing to compare against and
-    /// this is a no-op.
+    /// Refuses any identity other than the registered checkout's current origin.
     ///
     /// Deliberately no override flag: the winning council proposal (Proposal
     /// B on SH-49) is a hard block, and a
@@ -153,15 +150,4 @@ pub(crate) fn configured_github_repos<S: Store>(
             .identity()
             .clone(),
     ])
-}
-
-/// Parses, sorts, and deduplicates the GitHub repositories in stored remotes.
-pub(crate) fn github_repos_from_remotes(remotes: &[ProjectRemoteRecord]) -> Vec<GithubRepo> {
-    let mut repos: Vec<GithubRepo> = remotes
-        .iter()
-        .filter_map(|remote| parse_github_url(&remote.raw))
-        .collect();
-    repos.sort();
-    repos.dedup();
-    repos
 }
