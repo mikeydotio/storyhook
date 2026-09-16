@@ -33,7 +33,8 @@ use crate::domain::{
 };
 use crate::env::Environment;
 use crate::env::spawn_env::{
-    apply_dispatch_allowlist, apply_submission_allowlist, apply_verification_allowlist,
+    apply_dispatch_allowlist, apply_orchestration_allowlist, apply_submission_allowlist,
+    apply_verification_allowlist,
 };
 use crate::error::AppError;
 use crate::process::{
@@ -950,7 +951,7 @@ impl ShellVerificationActuator {
             AppError::Storage(format!("could not encode cleanup lease: {error}"))
         })?;
         let mut command = Command::new("bash");
-        apply_dispatch_allowlist(&mut command);
+        apply_orchestration_allowlist(&mut command);
         command
             .arg(self.helper_path()?)
             .arg("--project")

@@ -62,52 +62,14 @@
 //! The helper runs no repository tests, so the `merge-watch.sh` scrub that
 //! strips the tokens before a gate runs has no analogue here.
 //!
-//! # Two names deliberately left off, and why
+//! # Network orchestration stops at the provider boundary
 //!
-//! Decided by SH-193's council (unanimous, three seats) after
-//! its first-round proposals were rejected on this exact point: both had
-//! copied [`super::git_env`]'s `GIT_MAY_SEE` verbatim, which omits
-//! `SSH_AUTH_SOCK` — safely, for `git_env`, only because *its* call sites
-//! (`src/service/git.rs`'s `rev-parse`/`log`) are local-only and need no
-//! remote auth at all. `story.sh` is not local-only: it runs
-//! `git fetch --quiet origin` (`plugins/story/bin/story.sh`) and
-//! `git ls-remote --heads origin` (`plugins/story/lib/session.sh`)
-//! directly, against a real remote.
-//!
-//! Both call sites were read before this list was written. Both are already
-//! best-effort: `git fetch`'s exit code is captured and a failure falls back
-//! to a cached `origin/<default>` ref rather than blocking dispatch (the
-//! `base_fresh`/`base_note` handling in `story.sh`), and `freshen_base_ref`'s
-//! own doc comment already states its contract as "any fetch failure is
-//! swallowed." So a dispatch whose remote needs `SSH_AUTH_SOCK` to fetch does
-//! not fail — it silently bases the new worktree on a **stale** cached ref
-//! instead of a fresh one. That is a real, user-visible behavior change from
-//! today, and it is accepted rather than fixed by forwarding the socket,
-//! because an SSH agent socket is not a tuning knob — it is a live credential
-//! handle, functionally equivalent to the exported secrets this story exists
-//! to stop leaking, and putting it back on the allowlist for convenience would
-//! undercut the fix. **Known limitation, not an oversight**: if this proves to
-//! break real SSH-remote dispatch workflows, the redesign trigger is a report
-//! of exactly that, and the fix is a fresher-base warning surfaced to the
-//! dispatch caller, not a wider allowlist.
-//!
-//! The second omission is any `claude`-auth variable (`ANTHROPIC_API_KEY` and
-//! siblings). `story.sh`'s `LAUNCH_TPL` starts the real coding-agent session
-//! this dispatch exists to create, inside a **new** tmux session whose
-//! environment is captured from this allowlist at creation time — so a
-//! `claude` install authenticated only via such a variable, never via
-//! `claude login`'s persisted `~/.claude` credentials, would fail to
-//! authenticate on first dispatch. `HOME` is on the allowlist, which is what
-//! makes persisted login work unaffected; an env-var-only auth is not. This is
-//! deliberately not accommodated for the same reason `SSH_AUTH_SOCK` is not: a
-//! model-provider API key is exactly the shape of secret named in SH-193's own
-//! filing (`OPENAI_API_KEY`, alongside it), and forwarding it back in in a
-//! module written to stop that would be the fix rejecting its own premise. A
-//! **pre-existing** tmux session for a project is entirely unaffected — tmux
-//! captured its environment before this fix ever ran — so this narrows, but
-//! does not close, the coding agent's real ambient exposure; that gap is
-//! logged here rather than implied away. Known limitation; the redesign
-//! trigger is the same as above, a report of real breakage.
+//! Dispatch observes origin through the HTTPS/gh transport, so its helper
+//! needs the same authentication as submission. Only that helper receives
+//! [`apply_orchestration_allowlist`]; tmux control and plugin management stay
+//! narrow. The helper's terminal launcher scrubs credentials from the client
+//! and overrides credentials retained by an existing server before pane
+//! startup. SSH agent and model-provider keys remain excluded.
 
 use std::process::Command;
 
@@ -223,6 +185,12 @@ fn apply_allowlist(command: &mut Command, permits: impl Fn(&str) -> bool) {
 /// targets the default tmux server, or an explicit cleanup-lease socket.
 pub fn apply_dispatch_allowlist(command: &mut Command) {
     apply_allowlist(command, dispatch_permits);
+}
+
+/// Gives trusted dispatch orchestration its configuration and gh credentials.
+/// The terminal launcher must remove credentials before starting provider panes.
+pub fn apply_orchestration_allowlist(command: &mut Command) {
+    apply_allowlist(command, submission_permits);
 }
 
 /// Clears `command`'s environment and restores exactly what a provider
