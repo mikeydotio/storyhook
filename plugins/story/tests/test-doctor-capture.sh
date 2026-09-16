@@ -66,7 +66,7 @@ assert_contains "$(jqf "$out" '.commands|join(" ")')" "paste-buffer -p" \
 out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" doctor 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "doctor: ok"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "doctor: readiness confirmed via the fake TUI"
-assert_eq "$(jqf "$out" .matched_tier)" "marker" "doctor: reports which tier matched"
+assert_eq "$(jqf "$out" .matched_tier)" "sentinel" "doctor: reports the production readiness tier"
 assert_eq "$(jqf "$out" .project_integrity.ok)" "true" "doctor: healthy project integrity"
 assert_contains "$(jqf "$out" .display)" "project integrity: OK" "doctor: display carries both halves"
 assert_eq "$(jqf "$out" .occupant.match_rule)" "pattern" "doctor: a plainly-named claude matches by NAME"
@@ -120,7 +120,7 @@ assert_eq "$rc" "5" "fixture sanity: a finding makes \`story doctor\` exit 5"
 
 out=$(cd "$repo" && PATH="$TESTS_DIR/fakes/story-integrity:$PATH" \
        TMUX=fake TMUX_PANE=%0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" doctor 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "doctor: a finding does NOT flip ok:false"
+assert_eq "$(jqf "$out" .ok)" "false" "doctor: an integrity finding prevents all-green"
 assert_eq "$(jqf "$out" .project_integrity.ok)" "false" "doctor: integrity reported as not-ok"
 assert_contains "$(jqf "$out" .project_integrity.summary)" "TST-9999" "doctor: summary names the finding"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" \

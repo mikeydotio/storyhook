@@ -59,7 +59,9 @@ environment assignment.
 ## Doctor (`doctor`)
 
 Run `bash "<story-helper>" doctor` and show `display`. This checks
-project integrity plus the Claude launch, readiness, and prompt-submission contract.
+project integrity plus Claude launch, a fresh SessionStart sentinel, context loading,
+Plan mode, and unsubmitted paste delivery in a private scratch checkout. A terminal
+marker alone cannot certify dispatch. Report any retained probe path after failed cleanup.
 
 ## Release (`unclaim <id>`, `reset <id>`)
 

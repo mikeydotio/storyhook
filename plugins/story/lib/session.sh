@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+source "$(dirname "${BASH_SOURCE[0]}")/plugin-identity.sh"
 # session.sh — shared tmux/worktree/pane-readiness mechanics.
 #
 # FORKED from mikeydotio/agentics' plugins/issue/lib/session.sh (as of
@@ -628,11 +629,8 @@ wait_ready() {
 # `cmd_dispatch`'s launch, which — since SH-230 — execs straight into the
 # launch binary rather than typing it, so <captured-pid> is that binary's own
 # pid, captured via `#{pane_pid}` right after `tmux new-window` returned).
-# `cmd_doctor`'s own scratch-window self-test is NOT ported to this: it types
-# into an interactive pane a human is watching, with no fresh dispatch
-# worktree to scope a sentinel to, so `wait_ready` (above) stays exactly
-# right for it — see this function's own commit message for why porting it
-# anyway would be scope, not safety.
+# Doctor uses this same gate in its own fresh scratch checkout. Terminal
+# readiness remains a separate diagnostic and cannot replace hook evidence.
 #
 # EVERY SUCCESS REQUIRES ALL THREE, checked in this order:
 #
@@ -655,7 +653,7 @@ wait_ready() {
 #      READY_PROCESS_PATTERN. A sentinel with the right pid dead or a live pid
 #      that is not actually running the launch binary are both refused. When
 #      [expected-plugin-root] is non-empty, its protocol-2 `plugin_root` must
-#      exactly match too; this binds autonomous Codex to the helper's hooks.
+#      resolve to the same existing directory; this binds the provider to the helper's hooks.
 #
 # Existence alone is NEVER sufficient (council verdict on SH-231): a sentinel
 # is not a secret, and nothing stops a second,
@@ -727,7 +725,7 @@ wait_ready_sentinel() {
           WAIT_READY_REASON="hook-identity-missing"
           return 1
         fi
-        if [ "$actual_plugin_root" != "$expected_plugin_root" ]; then
+        if ! plugin_roots_match "$actual_plugin_root" "$expected_plugin_root"; then
           WAIT_READY_REASON="hook-identity-mismatch"
           return 1
         fi
