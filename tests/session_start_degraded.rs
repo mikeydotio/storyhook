@@ -85,6 +85,9 @@ fn fallback_does_not_invent_project_or_session_authority() {
     for case in [
         "no-pointer",
         "bad-pointer",
+        "bad-schema",
+        "bad-uuid",
+        "bad-prefix",
         "disabled",
         "disabled-parent",
         "bad-plugin",
@@ -117,6 +120,19 @@ fn fallback_does_not_invent_project_or_session_authority() {
                 ),
             )
             .unwrap();
+        }
+        for (name, old, new) in [
+            ("bad-schema", "schema = 1", "schema = 99"),
+            (
+                "bad-uuid",
+                "55c4f44d-885e-4288-b9be-bc0418da0711",
+                "invalid",
+            ),
+            ("bad-prefix", "prefix = 'SH'", "prefix = 'has spaces'"),
+        ] {
+            if case == name {
+                std::fs::write(&pointer, POINTER.replace(old, new)).unwrap();
+            }
         }
         if case == "bad-legacy" {
             std::fs::create_dir(root.join(".storyhook")).unwrap();
@@ -226,4 +242,20 @@ fn direct_fallback_rejects_missing_or_nonexistent_package_identity() {
         );
         assert!(!dir.path().join(".claude/dispatch-sentinel.json").exists());
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn broken_nearer_pointer_cannot_borrow_a_parent_project() {
+    let env = TestEnv::isolated();
+    let root = scratch_dir();
+    std::fs::write(root.path().join(".storyhook.toml"), POINTER).unwrap();
+    let cwd = root.path().join("child");
+    std::fs::create_dir(&cwd).unwrap();
+    std::os::unix::fs::symlink("absent", cwd.join(".storyhook.toml")).unwrap();
+    fail_before_rpc(&env);
+    let output = run(&env, &cwd, &payload(&cwd));
+    assert!(output.status.success());
+    assert!(!cwd.join(".claude/dispatch-sentinel.json").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("fallback sentinel refused"));
 }

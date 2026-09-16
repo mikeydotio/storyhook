@@ -283,12 +283,19 @@ fn canonical_directory_path(path: &std::path::Path) -> Option<std::path::PathBuf
 
 fn local_plugin_enabled(cwd: &std::path::Path) -> Result<bool, AppError> {
     for root in super::project::ancestors(cwd) {
-        let Some(pointer) = super::project::read_pointer(&root)? else {
-            continue;
-        };
+        let path = root.join(".storyhook.toml");
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        }
+        // A broken or unreadable nearer pointer cannot borrow a parent's identity.
+        let pointer = super::project::read_pointer(&root)?.ok_or_else(|| {
+            AppError::Validation(format!("unreadable project pointer {}", path.display()))
+        })?;
         if pointer.schema != 1
             || uuid::Uuid::parse_str(&pointer.uuid).is_err()
-            || pointer.prefix.trim().is_empty()
+            || crate::domain::prefix::validate(&pointer.prefix).is_err()
         {
             return Err(AppError::Validation(format!(
                 "invalid project identity in {}",
