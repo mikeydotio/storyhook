@@ -294,7 +294,7 @@ mod tests {
     }
 
     /// The submission helper is `story.sh` with GitHub credentials: it must
-    /// see exactly what dispatch sees plus the three credential names, and the
+    /// see exactly what dispatch sees plus the five credential names, and the
     /// credential list must be the one the verification list shares rather
     /// than a second spelling of it.
     #[test]
@@ -313,7 +313,7 @@ mod tests {
         assert!(!submission_permits("SSH_AUTH_SOCK"));
         assert!(
             !dispatch_permits("GH_TOKEN"),
-            "dispatch must not carry GitHub credentials; only the submission helper does"
+            "control must not carry GitHub credentials; orchestration and submission may"
         );
     }
 
@@ -356,17 +356,33 @@ mod tests {
     /// completeness (the allowlist IS the child's whole environment) is the
     /// probe test above.
     #[test]
-    fn every_test_environment_parameter_survives_the_dispatch_allowlist() {
+    fn every_test_environment_parameter_survives_the_orchestration_allowlist() {
         let dropped: Vec<&str> = crate::env::test_environment::TEST_ENVIRONMENT
             .iter()
             .map(|parameter| parameter.name)
-            .filter(|name| !dispatch_permits(name))
+            .filter(|name| !submission_permits(name))
             .collect();
         assert!(
             dropped.is_empty(),
-            "the dispatch allowlist drops {dropped:?}; a `story` run inside the child \
+            "the orchestration allowlist drops {dropped:?}; a `story` run inside the child \
              resolves those from the developer's real environment rather than its parent's"
         );
+    }
+
+    #[test]
+    fn orchestration_preserves_credentials_and_control_excludes_them() {
+        assert_allowlist_is_the_childs_whole_environment(
+            apply_orchestration_allowlist,
+            submission_permits,
+        );
+        for parameter in crate::env::test_environment::TEST_ENVIRONMENT {
+            assert_eq!(
+                dispatch_permits(parameter.name),
+                !GITHUB_CREDENTIAL_MAY_SEE.contains(&parameter.name),
+                "control isolation for {}",
+                parameter.name
+            );
+        }
     }
 
     /// The submission helper runs `story` too (SH-647), so the same derived
