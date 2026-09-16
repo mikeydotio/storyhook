@@ -69,6 +69,70 @@ class NativeBoundaryTests(unittest.TestCase):
                 runtime.MAX_BYTES = previous
 
 
+class MessageIdentityTests(unittest.TestCase):
+    """Message identity is native evidence, independent of handoff prose or caller IDs."""
+
+    def setUp(self):
+        self.capture = {'provider': 'codex', 'session_id': 's1', 'turn_id': 't1',
+                        'mode': 'default', 'lease': {'worktree_path': '/tmp'}}
+        self.handoff = {'type': 'storyhook.session-handoff', 'version': 1,
+                        'story_id': 'CT-1', 'kind': 'context', 'evidence': {
+                            'context': 'continue', 'outstanding_work': 'assigned work'}}
+        self.origin = {'last_assistant_message': json.dumps(self.handoff)}
+        self.rows = [
+            {'type': 'session_meta', 'payload': {'id': 's1', 'cwd': '/tmp', 'source': 'cli'}},
+            {'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': 't1'}},
+            {'type': 'turn_context', 'payload': {'turn_id': 't1', 'cwd': '/tmp',
+                                                'collaboration_mode': {'mode': 'default'}}},
+            {'type': 'response_item', 'payload': {'type': 'message', 'id': 'msg1',
+                'role': 'assistant', 'content': [{'type': 'output_text',
+                                                'text': self.origin['last_assistant_message']}]}}]
+
+    def test_same_turn_distinct_messages_and_duplicate_observation(self):
+        for message_id in ('msg1', 'msg2', 'msg2'):
+            self.rows[-1]['payload']['id'] = message_id
+            self.assertEqual(runtime.handoff_message_id(self.capture, self.origin,
+                                                        self.handoff, self.rows), message_id)
+
+    def test_stale_turn_message_mode_or_foreign_origin_is_refused(self):
+        for key, value in (('turn_id', 'old'), ('session_id', 'foreign'), ('mode', 'plan')):
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                runtime.handoff_message_id(self.capture | {key: value}, self.origin,
+                                           self.handoff, self.rows)
+        for patch in ({'id': ''}, {'role': 'user'}, {'content': []},
+                      {'content': [{'type': 'output_text', 'text': 'different'}]}):
+            with self.subTest(patch=patch), self.assertRaises(RuntimeError):
+                runtime.handoff_message_id(self.capture, self.origin, self.handoff,
+                    self.rows[:-1] + [self.rows[-1] | {'payload': self.rows[-1]['payload'] | patch}])
+        with self.assertRaises(RuntimeError):
+            runtime.handoff_message_id(self.capture, self.origin, self.handoff,
+                self.rows + [{'type': 'event_msg', 'payload': {
+                    'type': 'task_started', 'turn_id': 'new-turn'}}])
+        with self.assertRaises(RuntimeError):
+            runtime.handoff_message_id(self.capture, self.origin,
+                                      self.handoff | {'story_id': 'foreign'}, self.rows)
+
+    def test_native_envelope_types_and_duplicate_keys_are_not_equivalent(self):
+        for text in (json.dumps(self.handoff | {'version': True}),
+                     json.dumps(self.handoff | {'version': 1.0}),
+                     json.dumps(self.handoff).replace('"version": 1', '"version": 2, "version": 1')):
+            self.rows[-1]['payload']['content'][0]['text'] = text
+            with self.subTest(text=text), self.assertRaises(RuntimeError):
+                runtime.handoff_message_id(self.capture, {'last_assistant_message': text},
+                                           self.handoff, self.rows)
+
+    def test_claude_uuid_requires_current_root_and_exact_content(self):
+        capture = self.capture | {'provider': 'claude', 'turn_id': 'uuid1'}
+        row = {'type': 'assistant', 'sessionId': 's1', 'isSidechain': False,
+               'cwd': '/tmp', 'uuid': 'uuid1', 'message': {'role': 'assistant',
+               'content': [{'type': 'text', 'text': self.origin['last_assistant_message']}]}}
+        self.assertEqual(runtime.handoff_message_id(capture, self.origin, self.handoff, [row]), 'uuid1')
+        for patch in ({'uuid': 'old'}, {'sessionId': 'foreign'}, {'isSidechain': True},
+                      {'cwd': '/elsewhere'}, {'type': 'user'}):
+            with self.subTest(patch=patch), self.assertRaises(RuntimeError):
+                runtime.handoff_message_id(capture, self.origin, self.handoff, [row | patch])
+
+
 @unittest.skipUnless(shutil.which('tmux'), 'tmux is required for owned process fixtures')
 class OwnedRuntimeTests(unittest.TestCase):
     """Exercise real Git, tmux, filesystem and process observations on private resources."""
@@ -109,6 +173,10 @@ class OwnedRuntimeTests(unittest.TestCase):
         events = [
             {'type': 'session_meta', 'payload': {'id': 'native-s1', 'cwd': str(self.cwd), 'source': 'cli'}},
             {'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': 'native-t1'}},
+            {'type': 'turn_context', 'payload': {'turn_id': 'native-t1', 'cwd': str(self.cwd),
+                'collaboration_mode': {'mode': 'default'}}},
+            {'type': 'response_item', 'payload': {'type': 'message', 'id': 'msg1',
+                'role': 'assistant', 'content': [{'type': 'output_text', 'text': json.dumps({'story_id': 'CT-1'})}]}},
             {'type': 'event_msg', 'payload': {'type': 'task_complete', 'turn_id': 'native-t1'}},
         ]
         self.rollout.write_text(''.join(json.dumps(row) + '\n' for row in events))
@@ -126,7 +194,8 @@ class OwnedRuntimeTests(unittest.TestCase):
                          'effort': 'high', 'speed': 'standard', 'autonomy_mode': 'auto'}
         runtime.register(self.settings)
         self.request = {'provider': 'codex', 'handoff': {'story_id': 'CT-1'},
-                        'origin': {'cwd': str(self.cwd), 'tmux': self.socket + ',1,0',
+                        'origin': {'last_assistant_message': json.dumps({'story_id': 'CT-1'}),
+                                   'cwd': str(self.cwd), 'tmux': self.socket + ',1,0',
                                    'tmux_pane': self.pane, 'session_id': 'native-s1',
                                    'turn_id': 'native-t1', 'collaboration_mode': 'default',
                                    'transcript_path': str(self.rollout)}}
@@ -160,6 +229,31 @@ class OwnedRuntimeTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), b'keep\x00dirty\n')
         self.request['origin']['session_id'] = 'foreign'
         with self.assertRaisesRegex(RuntimeError, 'differs from dispatcher'):
+            runtime.capture_request(self.request)
+
+    def test_second_message_capture_preserves_commit_and_dirty_corrections(self):
+        """A real changed worktree and distinct message remain one owned session."""
+        tracked = self.cwd / 'implementation.txt'
+        tracked.write_text('implemented assigned work')
+        self.run_command('git', '-C', str(self.cwd), 'add', 'implementation.txt')
+        self.run_command('git', '-C', str(self.cwd), '-c', 'user.name=Fixture',
+                         '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'progress')
+        correction = self.cwd / 'correction.txt'
+        correction.write_bytes(b'preserve pending correction\x00')
+        with self.rollout.open('a') as out:
+            out.write(json.dumps({'type': 'response_item', 'payload': {
+                'type': 'message', 'id': 'msg2', 'role': 'assistant', 'content': [
+                    {'type': 'output_text', 'text': self.request['origin']['last_assistant_message']}]}}) + '\n')
+        second = runtime.capture_request(self.request)['capture']
+        self.assertEqual(second['message_id'], 'msg2')
+        self.assertEqual(second['turn_id'], self.capture['turn_id'])
+        self.assertNotEqual(second['head'], self.capture['head'])
+        self.assertEqual(correction.read_bytes(), b'preserve pending correction\x00')
+        self.assertEqual(tracked.read_text(), 'implemented assigned work')
+        alternate = self.root / 'foreign.jsonl'
+        alternate.write_text(self.rollout.read_text())
+        self.request['origin']['transcript_path'] = str(alternate)
+        with self.assertRaisesRegex(RuntimeError, 'transcript differs'):
             runtime.capture_request(self.request)
 
     def test_live_provider_and_replacement_are_never_resumed(self):

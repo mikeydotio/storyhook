@@ -71,7 +71,8 @@ pub struct Continuation {
     pub story_id: String,
     /// Original strict handoff envelope.
     pub handoff: Value,
-    /// Immutable originating provider, session and turn for idempotency.
+    /// Immutable originating provider, session, turn and native message for idempotency.
+    /// Legacy records omit the message and retain conservative turn-level matching.
     pub generation: Value,
     /// Runtime-validated lease, provider, process, session and Git evidence.
     pub capture: Value,

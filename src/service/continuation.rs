@@ -311,6 +311,8 @@ fn same_generation(a: &Value, b: &Value) -> bool {
     ["provider", "session_id", "turn_id"]
         .iter()
         .all(|k| a[*k] == b[*k])
+        // Legacy generations cannot prove which message owned their receipt.
+        && (a.get("message_id").is_none() || a["message_id"] == b["message_id"])
 }
 pub(crate) fn require_eligible(
     tx: &impl ReadOps,

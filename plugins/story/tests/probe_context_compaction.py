@@ -2,6 +2,7 @@
 
 Run: python3 plugins/story/tests/probe_context_compaction.py
 Native Stop: python3 plugins/story/tests/probe_context_compaction.py --native-stop
+Repeated: add --repeated to exercise two handoffs in one native turn
 No operator sessions, StoryHook store, credentials, or trust bypass are used.
 """
 
@@ -18,7 +19,7 @@ import threading
 import time
 
 
-def run_probe(native_stop=False):
+def run_probe(native_stop=False, repeated=False):
     """Measure compaction and provider hook identities in an owned app server."""
     executable = shutil.which('codex')
     if not executable:
@@ -33,8 +34,17 @@ def run_probe(native_stop=False):
         current_mode = {'mode': 'default'}
         fake_story = root / 'fake_story.py'
         fake_story.write_text('import json,sys\n'
-                              + 'assert sys.argv[1:]==["continuation","ack","SH-1","request-1"]\n'
+                              + 'assert sys.argv[1:3]==["continuation","ack"] and sys.argv[3]=="SH-1" and sys.argv[4] in ("request-1","request-2")\n'
                               + 'print(json.dumps({"result":"ok","status":"acknowledged"}))\n')
+        progress_script = root / 'progress.py'
+        if repeated:
+            subprocess.run(['git', 'init', '-q', str(root)], check=True, capture_output=True)
+            subprocess.run(['git', '-C', str(root), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '--allow-empty', '-qm', 'existing work'], check=True, capture_output=True)
+            initial_head = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'])
+            progress_script.write_text('from pathlib import Path\nimport subprocess\n'
+                + f'subprocess.run([{sys.executable!r},{str(fake_story)!r},"continuation","ack","SH-1","request-1"],check=True)\n'
+                + 'Path("assigned-work.txt").write_text("implemented assigned work")\n'
+                + 'Path("dirty-correction.txt").write_text("preserve this correction")\n')
         hook = root / 'record_hook.py'
         hook.write_text('import json,sys\n'
                         + 'payload=json.load(sys.stdin)\n'
@@ -45,14 +55,19 @@ def run_probe(native_stop=False):
             hooks = Path(__file__).resolve().parents[1] / 'hooks'
             hook.write_text('import json,sys,os\nfrom pathlib import Path\n'
                             + f'sys.path.insert(0,{str(hooks)!r})\n'
-                            + 'import codex_stop,codex_classifier\n'
+                            + f'sys.path.insert(0,{str(hooks.parent / "lib")!r})\n'
+                            + 'import codex_stop,codex_classifier\nfrom continuation_identity import handoff_message_id\n'
                             + 'payload=json.load(sys.stdin)\n'
                             + f'with open({str(hook_events)!r},"a") as out: out.write(json.dumps(payload)+"\\n")\n'
                             + 'transcript=Path(payload["transcript_path"]).read_text()\n'
                             + f'with open({str(hook_states)!r},"a") as out: out.write(json.dumps({{"event":payload["hook_event_name"],"message":payload.get("last_assistant_message"),"correction_in_transcript":"SH711_OPERATOR_CORRECTION" in transcript}})+"\\n")\n'
                             + 'def external(argv,**kwargs):\n'
                             + f' with open({str(process_events)!r},"a") as out: out.write(json.dumps({{"argv":argv,"text":kwargs.get("text")}})+"\\n")\n'
-                            + ' if "continuation" in argv: return json.dumps({"result":"ok","native_feedback":True,"continuation":{"id":"request-1","story_id":"SH-1","status":"awaiting-ack","phase":"native-continuation"}})\n'
+                            + ' if "continuation" in argv:\n'
+                            + '  document=json.loads(kwargs["text"]); origin=document["origin"]\n'
+                            + '  capture={"provider":"codex","session_id":origin["session_id"],"turn_id":origin["turn_id"],"mode":origin["collaboration_mode"],"lease":{"worktree_path":origin["cwd"]}}\n'
+                            + '  handoff_message_id(capture,origin,document["handoff"],[json.loads(line) for line in transcript.splitlines()])\n'
+                            + '  return json.dumps({"result":"ok","native_feedback":True,"continuation":{"id":"request-2" if "Second probe handoff" in kwargs.get("text","") else "request-1","story_id":"SH-1","status":"awaiting-ack","phase":"native-continuation"}})\n'
                             + ' if "session-eligibility" in argv: return json.dumps({"result":"ok","session_eligibility":{"schema_version":1,"story_id":"SH-1","eligible":True,"reason":"eligible"}})\n'
                             + ' if argv[:2]==["codex","--version"]: return codex_classifier.SUPPORTED_VERSION\n'
                             + ' if argv[:2]==["codex","exec"]: return json.dumps({"type":"item.completed","item":{"type":"agent_message","text":json.dumps({"decision":"other","evidence":""})}})+"\\n"+json.dumps({"type":"turn.completed"})\n'
@@ -84,7 +99,7 @@ def run_probe(native_stop=False):
                     text = 'SH711_RECEIVING_SESSION_ACKNOWLEDGED'
                 elif user_texts and user_texts[-1] == 'SH711_OPERATOR_CORRECTION':
                     text = 'SH711_CORRECTION_ACKNOWLEDGED'
-                message = {'id': 'msg_probe', 'type': 'message', 'role': 'assistant',
+                message = {'id': 'msg_probe_' + str(len(wire_requests)), 'type': 'message', 'role': 'assistant',
                            'content': [{'type': 'output_text', 'text': text}]}
                 if native_stop:
                     if user_texts[-1:] == ['Emit the context handoff.']:
@@ -95,8 +110,21 @@ def run_probe(native_stop=False):
                     ack_outputs = [item for item in request.get('input', [])
                                    if item.get('type') == 'function_call_output'
                                    and item.get('call_id') == 'call_ack']
+                    if ack_outputs:
+                        assert 'acknowledged' in json.dumps(ack_outputs) and 'Process exited with code 0' in json.dumps(ack_outputs), ack_outputs
                     if user_texts[-1:] == ['SH711_OPERATOR_CORRECTION']:
                         message['content'][0]['text'] = 'SH711_CORRECTION_ACKNOWLEDGED'
+                    elif repeated and ack_outputs and not any(item.get('call_id') == 'call_ack2' for item in request.get('input', [])):
+                        if any('request-2 for SH-1' in value for value in user_texts):
+                            message = {'type': 'function_call', 'id': 'fc_ack2', 'call_id': 'call_ack2',
+                                       'name': 'exec_command', 'arguments': json.dumps({
+                                           'cmd': sys.executable + ' ' + str(fake_story)
+                                                  + ' continuation ack SH-1 request-2',
+                                           'max_output_tokens': 200})}
+                        else:
+                            second = json.loads(text)
+                            second['evidence']['context'] = 'Second probe handoff after acknowledgement and tool execution.'
+                            message['content'][0]['text'] = json.dumps(second)
                     elif ack_outputs:
                         assert 'acknowledged' in json.dumps(ack_outputs), ack_outputs
                         message['content'][0]['text'] = 'SH711_NATIVE_RECEIVING_SESSION_ACKNOWLEDGED'
@@ -105,8 +133,7 @@ def run_probe(native_stop=False):
                     elif has_native_feedback:
                         message = {'type': 'function_call', 'id': 'fc_ack', 'call_id': 'call_ack',
                                    'name': 'exec_command', 'arguments': json.dumps({
-                                       'cmd': sys.executable + ' ' + str(fake_story)
-                                              + ' continuation ack SH-1 request-1',
+                                       'cmd': sys.executable + ' ' + (str(progress_script) if repeated else str(fake_story) + ' continuation ack SH-1 request-1'),
                                        'max_output_tokens': 200})}
                 if self.path.endswith('/compact'):
                     data = json.dumps({'id': 'cmp_probe', 'object': 'response.compaction',
@@ -224,7 +251,8 @@ def run_probe(native_stop=False):
                     current_mode['mode'] = mode
                     base = 10 + index * 20
                     send('thread/start', {'cwd': str(root), 'model': 'gpt-5.6-luna',
-                                          'sandbox': 'read-only', 'approvalPolicy': 'never'}, base)
+                                          'sandbox': 'workspace-write' if repeated and mode == 'default' else 'read-only',
+                                          'approvalPolicy': 'never'}, base)
                     started = until(lambda item: item.get('id') == base)
                     thread_id = started['result']['thread']['id']
                     send('turn/start', {'threadId': thread_id,
@@ -250,7 +278,7 @@ def run_probe(native_stop=False):
                             if item.get('method') == 'item/completed'
                             and item.get('params', {}).get('threadId') == thread_id
                             and item['params'].get('item', {}).get('type') == 'commandExecution']
-                        assert len(acknowledged_commands) == (0 if mode == 'plan' else 1), acknowledged_commands
+                        assert len(acknowledged_commands) == (0 if mode == 'plan' else (2 if repeated else 1)), acknowledged_commands
                         if mode == 'default':
                             command_result = acknowledged_commands[0]['params']['item']
                             assert command_result['exitCode'] == 0, command_result
@@ -275,7 +303,11 @@ def run_probe(native_stop=False):
                                     if json.loads(line)['type'] == 'turn_context']
                         assert contexts, transcript.read_text()
                         assert all(context['collaboration_mode']['mode'] == mode for context in contexts), contexts
-                        assert all(context['sandbox_policy']['type'] == 'read-only' for context in contexts), contexts
+                        assert all(context['sandbox_policy']['type'] == ('workspace-write' if repeated and mode == 'default' else 'read-only') for context in contexts), contexts
+                        if repeated and mode == 'default':
+                            assert (root / 'assigned-work.txt').read_text() == 'implemented assigned work'
+                            assert (root / 'dirty-correction.txt').read_text() == 'preserve this correction'
+                            assert subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD']) == initial_head
                         print(json.dumps({'mode': mode, 'native_receiving_turn': received,
                                           'remaining_queue': remaining['result'],
                                           'queued_correction_completed': correction}))
@@ -335,7 +367,7 @@ def run_probe(native_stop=False):
                 if native_stop:
                     calls = [json.loads(line) for line in process_events.read_text().splitlines()]
                     requests = [call for call in calls if 'continuation' in call['argv']]
-                    assert len(requests) == 2, requests
+                    assert len(requests) == (3 if repeated else 2), requests
                     assert len({json.loads(call['text'])['origin']['session_id'] for call in requests}) == 2, requests
                     assert not any(path.read_text() for path in provider_home.rglob('*.storyhook-plan-approval')), calls
                     assert not compactions, compactions
@@ -343,7 +375,7 @@ def run_probe(native_stop=False):
                     initial_stops = [state for state in observations
                                      if state['event'] == 'Stop'
                                      and 'storyhook.session-handoff' in (state['message'] or '')]
-                    assert len(initial_stops) == 2, initial_stops
+                    assert len(initial_stops) == (3 if repeated else 2), initial_stops
                     assert all(not state['correction_in_transcript'] for state in initial_stops), initial_stops
                     print(json.dumps({'native_story_requests': requests, 'hook_state_observations': observations}))
                     return
@@ -371,10 +403,14 @@ def run_probe(native_stop=False):
                 errors.seek(0)
                 print(errors.read().decode(), file=sys.stderr)
                 print(json.dumps({'provider_events': messages}), file=sys.stderr)
+                if hook_events.exists():
+                    print('CAPTURED_HOOK_EVENTS\n' + hook_events.read_text(), file=sys.stderr)
+                if hook_states.exists():
+                    print('CAPTURED_HOOK_STATES\n' + hook_states.read_text(), file=sys.stderr)
                 server.shutdown()
                 server.server_close()
                 server_thread.join(timeout=2)
 
 
 if __name__ == '__main__':
-    run_probe(native_stop='--native-stop' in sys.argv)
+    run_probe(native_stop='--native-stop' in sys.argv, repeated='--repeated' in sys.argv)
