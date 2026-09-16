@@ -55,6 +55,7 @@ impl LandRepo {
             .expect("fixture: creating scripts directory");
         for name in [
             "land-pr.sh",
+            "github-access.sh",
             "machine-lock.sh",
             "merge-preflight.sh",
             "gate-receipt.sh",

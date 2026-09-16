@@ -619,3 +619,28 @@ fn helper_checks_explicit_source_authority_on_every_call() {
     assert!(refused.stdout.is_empty());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("authority"));
 }
+
+#[test]
+fn a_multistep_operation_refuses_to_reinterpret_identity_after_origin_changes() {
+    let root = checkout("https://github.example.com/acme/widgets.git");
+    let args = [
+        "resolve",
+        "--checkout",
+        root.path().to_str().unwrap(),
+        "--expected",
+        "github.example.com/acme/widgets",
+    ]
+    .map(String::from);
+    storyhook::github_access::run_local(&args).expect("initial identity agrees");
+    git(
+        root.path(),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/other/widgets.git",
+        ],
+    );
+    let error = storyhook::github_access::run_local(&args).unwrap_err();
+    assert!(error.to_string().contains("origin changed"), "{error}");
+}

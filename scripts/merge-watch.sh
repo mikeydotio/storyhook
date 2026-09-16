@@ -252,6 +252,9 @@ if [ "${1:-}" = "--speculative-run" ]; then
             -u STORYHOOK_GATE_RESULT_FILE \
             -u STORYHOOK_STORE_PATH \
             -u STORYHOOK_PROJECT \
+            -u STORY_BIN \
+            -u STORYHOOK_GITHUB_AUTHORITY \
+            -u STORYHOOK_GITHUB_EXPECTED \
             -u GH_TOKEN \
             -u GITHUB_TOKEN \
             -u GH_ENTERPRISE_TOKEN \

@@ -1244,11 +1244,13 @@ Related:
 
         m.insert(
             "github",
-            r#"story github resolve|exec|git --checkout PATH [--authority PATH] [-- arguments]
+            r#"story github resolve|exec|git --checkout PATH [--authority PATH] [--expected HOST/OWNER/REPO] [-- arguments]
 
 Resolve the current origin of an explicit checkout. Run gh and Git commands
 against that repository with an explicit host and noninteractive authentication.
 These helpers run locally and do not open the StoryHook store.
+Use --expected with the canonical resolved identity to pin a multi-step operation.
+A changed origin is refused; start a fresh operation after an intentional move.
 
 Use gh auth login --hostname HOST to configure gh yourself. StoryHook never
 prompts for a token or starts a login. Manual story pr-check uses gh.
