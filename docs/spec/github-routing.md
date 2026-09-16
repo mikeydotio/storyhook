@@ -127,3 +127,10 @@ identity from `resolve`. Each call still reads actual origin and refuses a
 changed identity. The verifier pins this identity before its first observation
 and preserves it through landing; it never reinterprets a certified PR number
 in a new repository. Start a fresh operation after an intentional origin change.
+
+Unpinned helper discovery reads (`ls-remote`, or JSON `pr list/view`, `repo view`,
+and `release list/view`) may refresh once after failure if current origin differs.
+The retry rechecks source authority and explicit PR URLs. Unchanged-origin
+failures, pinned flows, API calls tied to existing links, ref updates, downloads,
+and writes are not automatically retried. A failed retry retains the first error
+as context and ends the operation.

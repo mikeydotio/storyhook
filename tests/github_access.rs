@@ -644,3 +644,115 @@ fn a_multistep_operation_refuses_to_reinterpret_identity_after_origin_changes() 
     let error = storyhook::github_access::run_local(&args).unwrap_err();
     assert!(error.to_string().contains("origin changed"), "{error}");
 }
+
+const CHANGE_ORIGIN_ON_FAILURE: &str = r#"
+printf '%s\n' "$GH_REPO" >> attempts
+if [ ! -f moved ]; then
+    touch moved
+    git remote set-url origin https://github.pie.apple.com/new/widgets.git
+    echo stale-origin >&2
+    exit 1
+fi
+printf '%s\n' "$GH_REPO"
+"#;
+
+#[test]
+fn failed_unpinned_metadata_read_refreshes_changed_origin_once() {
+    let root = checkout("https://github.com/old/widgets.git");
+    let output = helper(
+        root.path(),
+        &[
+            "exec",
+            "--checkout",
+            root.path().to_str().unwrap(),
+            "--",
+            "pr",
+            "list",
+            "--json",
+            "number",
+        ],
+        Some(CHANGE_ORIGIN_ON_FAILURE),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "github.pie.apple.com/new/widgets"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("attempts"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn changed_origin_never_retries_mutations_or_pinned_reads() {
+    for pinned in [false, true] {
+        let root = checkout("https://github.com/old/widgets.git");
+        let mut args = vec!["exec", "--checkout", root.path().to_str().unwrap()];
+        if pinned {
+            args.extend(["--expected", "github.com/old/widgets"]);
+        }
+        if pinned {
+            args.extend(["--", "pr", "list", "--json", "number"]);
+        } else {
+            args.extend([
+                "--", "pr", "create", "--title", "fixture", "--body", "fixture",
+            ]);
+        }
+        let output = helper(root.path(), &args, Some(CHANGE_ORIGIN_ON_FAILURE));
+        assert!(!output.status.success());
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("attempts"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn read_refresh_is_bounded_and_rechecks_supplied_identity_constraints() {
+    for case in ["unchanged", "twice", "source", "url"] {
+        let root = checkout("https://github.com/old/widgets.git");
+        let authority = checkout("https://github.com/old/widgets.git");
+        let mut args = vec!["exec", "--checkout", root.path().to_str().unwrap()];
+        if case == "source" {
+            args.extend(["--authority", authority.path().to_str().unwrap()]);
+        }
+        if case == "url" {
+            args.extend([
+                "--",
+                "pr",
+                "view",
+                "https://github.com/old/widgets/pull/1",
+                "--json",
+                "number",
+            ]);
+        } else {
+            args.extend(["--", "pr", "list", "--json", "number"]);
+        }
+        let script = match case {
+            "unchanged" => "echo attempt >> attempts; exit 1",
+            "twice" => {
+                "echo attempt >> attempts; n=$(wc -l < attempts | tr -d ' '); if [ \"$n\" -lt 3 ]; then git remote set-url origin https://github.pie.apple.com/new$n/widgets.git; fi; exit 1"
+            }
+            _ => CHANGE_ORIGIN_ON_FAILURE,
+        };
+        let output = helper(root.path(), &args, Some(script));
+        assert!(!output.status.success(), "{case}");
+        let attempts = std::fs::read_to_string(root.path().join("attempts")).unwrap();
+        assert_eq!(
+            attempts.lines().count(),
+            if case == "twice" { 2 } else { 1 },
+            "{case}"
+        );
+    }
+}
