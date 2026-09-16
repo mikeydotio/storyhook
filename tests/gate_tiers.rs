@@ -542,7 +542,7 @@ fn install_reinstalls_registered_plugins_through_the_installed_binary_ungated() 
     );
 }
 
-/// The curl installer is the third path that replaces the binary, and it
+/// The bootstrap installer is the third path that replaces the binary, and it
 /// refreshes the registered plugins the same way `make install` does: through
 /// the binary it just installed, warning rather than failing, because a
 /// pinned `STORYHOOK_VERSION` older than SH-667 exits 2 on the verb after the
@@ -559,8 +559,8 @@ fn install_sh_reinstalls_registered_plugins_through_the_installed_binary_ungated
         "the reinstall must run the binary just installed, not whatever is on PATH: {line}"
     );
     let installed = src
-        .find("install -m 755 \"${TMPDIR}/${BINARY}\"")
-        .expect("install.sh installs the binary with install(1)");
+        .find("os.replace(staged, destination)")
+        .expect("install.sh atomically publishes the binary");
     let reinstall = src.find(line).expect("the line was found in src");
     assert!(
         reinstall > installed,

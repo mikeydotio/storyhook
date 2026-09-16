@@ -343,6 +343,7 @@ fn the_project_less_verbs_all_answer_outside_a_project() {
             Invocation::Update {
                 check: true,
                 force: false,
+                source: None,
             },
         ),
         (

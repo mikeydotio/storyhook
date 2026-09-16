@@ -345,15 +345,13 @@ Repository configuration:
     receipt is refused before landing; changed is insufficient.
 
   [github]
-  api_url = "https://github.example.com/api/v3"
+  poll = true
 
-    Optional REST API base used by 'story pr-check' and the daemon's
-    unattended poll. Without it, storyhook derives the endpoint from
-    each registered GitHub remote: api.github.com for github.com,
-    api.<tenant>.ghe.com for <tenant>.ghe.com, and /api/v3 on any
-    other host. The value must be an absolute HTTP(S) URL without
-    credentials, a query, or a fragment. A single override cannot be
-    used when matching pull-request links span multiple GitHub hosts.
+    Opt in to background pull-request monitoring (default false).
+    The current origin in the registered checkout selects the host and
+    repository. gh supplies host-specific authentication and API routing.
+    The old api_url option is refused: remove it and configure gh for
+    the actual origin host. StoryHook never launches interactive login.
 
 Settings:
   sync.auto_transition    true|false, default true
@@ -3242,7 +3240,7 @@ Related:
 
         m.insert(
             "update",
-            r#"story update [--check] [--force]
+            r#"story update [--check] [--force] [--source HOST/OWNER/REPO]
 
 Update the story binary in place to the latest GitHub release. Downloads the
 release asset for your platform, verifies it runs, and atomically replaces the
@@ -3258,6 +3256,15 @@ When to use:
 Flags:
   --check    Report whether an update is available; do not download or install.
   --force    Reinstall the latest release even if already up to date.
+  --source HOST/OWNER/REPO
+             Explicit release source. Required for legacy or unmatched metadata.
+             Saved beside the binary after a successful installation.
+
+Source selection:
+  gh must be installed and authenticated for the selected host. The binary source
+  sidecar is bound to its SHA-256 digest. Missing or invalid metadata requires
+  --source; the current project and ambient GH_HOST/GH_REPO are never defaults.
+  --check never changes source metadata. Use --source with --force to recover it.
 
 Examples:
   story update            # Update to the latest release if newer
@@ -3267,7 +3274,7 @@ Examples:
 Notes:
   - Installs into the directory of the current binary; if that directory is
     not writable (e.g. /usr/local/bin), re-run with elevated privileges or use
-    the installer at https://github.com/mikeydotio/storyhook.
+    the installer with an explicit --source HOST/OWNER/REPO.
   - If the binary was replaced but a plugin could not be reinstalled, the
     update reports both and exits non-zero; 'story plugin reinstall' retries
     the plugins alone. Start a new agent session afterwards so the host loads

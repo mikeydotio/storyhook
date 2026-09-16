@@ -10,8 +10,10 @@ use std::time::Duration;
 
 mod command;
 mod local;
+mod release;
 mod transport;
 pub use local::run_local;
+pub use release::ReleaseSource;
 
 /// A checkout and its current, validated GitHub origin.
 #[derive(Debug, Clone, Serialize)]

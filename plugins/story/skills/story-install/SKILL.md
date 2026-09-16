@@ -25,10 +25,15 @@ Run `command -v story`.
 Ask one concise question to get explicit permission to install and to pick a method. Use
 the host's structured question mechanism when available:
 
-- **Official installer (recommended)** — downloads a prebuilt binary to `~/.local/bin/story`:
+- **Official installer (recommended)** — requires gh and Python 3. Select the
+  trusted release source as `HOST/OWNER/REPO` and obtain `install.sh` from that
+  repository. Do not infer a distribution source from the current project or
+  ambient gh defaults. Run the obtained script with the explicit source:
   ```bash
-  curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | bash
+  sh ./install.sh --source HOST/OWNER/REPO
   ```
+  Replace the placeholder with the selected identity. The installer downloads
+  through gh and records that source beside `~/.local/bin/story` after installation.
 - **Cargo (build from source)** — requires a Rust toolchain:
   ```bash
   cargo install storyhook

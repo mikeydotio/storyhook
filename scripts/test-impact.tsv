@@ -115,6 +115,8 @@ harness_path_entries	:(glob)**/*
 help_topic_references	:(glob)**/*
 hook_budgets	:(glob)**/*
 hooks	:(glob)**/*
+install_source	install.sh
+install_source	src/update_source.rs
 invoker_seam	:(glob)**/*
 land_pr	:(glob)**/*
 lifecycle_audit	:(glob)**/*
@@ -184,6 +186,9 @@ story_reset	src/service/story_reset/identity.rs
 story_reset	src/store/schema/0043_story_resets.sql
 story_reset	src/store/sqlite/story_reset.rs
 story_reset	src/store/story_reset.rs
+story_update	src/update.rs
+story_update	src/update_source.rs
+story_update	:(glob)src/github_access/**
 tap_target_comparison	:(glob)**/*
 test_environment	:(glob)**/*
 timing_assertions	:(glob)**/*
