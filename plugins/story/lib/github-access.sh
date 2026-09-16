@@ -20,17 +20,17 @@ github_begin() {
     export STORYHOOK_GITHUB_EXPECTED
 }
 
+# Single-call reads can refresh. Multi-step callers must call github_begin in
+# their parent shell, which supplies the pin inherited by every later call.
 github_call() {
-    local mode="$1" checkout
+    local mode="$1" checkout args
     shift
-    if [ -z "${STORYHOOK_GITHUB_EXPECTED:-}" ] && ! github_begin; then
-        printf '%s\n' "${GITHUB_ACCESS_ERROR:-cannot resolve GitHub origin}" >&2
-        return 1
-    fi
     checkout="$(git rev-parse --show-toplevel)" || return 1
-    "${STORY_BIN:-story}" github "$mode" --checkout "$checkout" \
-        --authority "${STORYHOOK_GITHUB_AUTHORITY:-$checkout}" \
-        --expected "$STORYHOOK_GITHUB_EXPECTED" -- "$@"
+    args=(github "$mode" --checkout "$checkout" --authority "${STORYHOOK_GITHUB_AUTHORITY:-$checkout}")
+    if [ -n "${STORYHOOK_GITHUB_EXPECTED:-}" ]; then
+        args+=(--expected "$STORYHOOK_GITHUB_EXPECTED")
+    fi
+    "${STORY_BIN:-story}" "${args[@]}" -- "$@"
 }
 
 github_exec() { github_call exec "$@"; }
