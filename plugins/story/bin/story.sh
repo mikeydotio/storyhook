@@ -4777,7 +4777,7 @@ cmd_submit_leased() {
   wrong_base=$(printf '%s' "$open" | jq -c --arg b "$default" '[.[] | select(.baseRefName != $b)]')
   if [ "$(printf '%s' "$wrong_base" | jq 'length')" -ne 0 ]; then
     submit_refuse repair "wrong-base-pull-request" \
-      "story.sh submit: $(printf '%s' "$wrong_base" | jq -r 'map("#" + (.number|tostring) + " (" + .url + ") targets `" + .baseRefName + "`") | join("; ")') from \`$branch\` — not \`$default\`, origin's default branch — so it is not this lane's to adopt, and opening another beside it would leave the misdirected one for a person to merge. Retarget it ($(printf '%s' "$wrong_base" | jq -r --arg b "$default" 'map("`gh pr edit " + (.number|tostring) + " --base " + $b + "`") | join(", ")')) or close it, then run \`story move $canonical_id verifying\` again." \
+      "story.sh submit: $(printf '%s' "$wrong_base" | jq -r 'map("#" + (.number|tostring) + " (" + .url + ") targets `" + .baseRefName + "`") | join("; ")') from \`$branch\` — not \`$default\`, origin's default branch — so it is not this lane's to adopt, and opening another beside it would leave the misdirected one for a person to merge. Retarget it ($(printf '%s' "$wrong_base" | jq -r --arg b "$default" --arg repo "$STORYHOOK_GITHUB_EXPECTED" 'map("`gh pr edit " + (.number|tostring) + " --base " + $b + " --repo " + $repo + "`") | join(", ")')) or close it, then run \`story move $canonical_id verifying\` again." \
       "$(jq -n --argjson p "$wrong_base" '{wrong_base_pull_requests: $p}')"
   fi
   open=$(printf '%s' "$open" | jq -c --arg b "$default" '[.[] | select(.baseRefName == $b)]')

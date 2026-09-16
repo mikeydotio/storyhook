@@ -53,11 +53,13 @@ set -euo pipefail
 # Parameters
 # ---------------------------------------------------------------------------
 
-REPO="mikeydotio/storyhook"
+REPO=""
+RELEASE_SOURCE=""
 PLUGIN_DIR="plugins/story"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/branch-policy.sh
 source "$SCRIPT_DIR/branch-policy.sh"
+source "$SCRIPT_DIR/github-access.sh"
 # shellcheck source=scripts/release-targets.sh
 source "$SCRIPT_DIR/release-targets.sh"
 ARTIFACTS=("${RELEASE_ARTIFACTS[@]}")
@@ -102,12 +104,12 @@ run() {
 # drafts (SH-540), and the tag endpoint chooses one instead of exposing the
 # ambiguity that must stop publishing.
 releases_for_tag() {
-  gh api --paginate "repos/$REPO/releases?per_page=100" \
+  github_exec api "repos/$REPO/releases?per_page=100" --paginate \
     --jq ".[] | select(.tag_name == \"$1\") | [.id, .draft] | @tsv"
 }
 
 release_assets() {
-  gh api --paginate "repos/$REPO/releases/$1/assets?per_page=100" \
+  github_exec api "repos/$REPO/releases/$1/assets?per_page=100" --paginate \
     --jq '.[] | [.name, .digest] | @tsv'
 }
 
@@ -139,7 +141,7 @@ install_locally() {
     fi
   fi
 
-  run make install
+  run github_without_credentials make install
 
   # Read back what is now on PATH. Under --dry-run nothing was installed, so
   # reporting the version found here would name the OLD build as though it were
@@ -356,13 +358,26 @@ else
     && die "--local-only installs the plugin and needs the \`claude\` CLI. Use --skip-plugin to omit it."
 fi
 
+# Local-only builds have no GitHub authority or network requirement.
+if [ "$local_only" = 0 ]; then
+  github_begin || die "${GITHUB_ACCESS_ERROR:-cannot resolve release origin}"
+  RELEASE_SOURCE="$STORYHOOK_GITHUB_EXPECTED"
+  REPO="${RELEASE_SOURCE#*/}"
+fi
+
+# Never consult branch upstream configuration for release synchronization.
+release_fast_forward() {
+  local branch="$1"
+  run github_git fetch --quiet origin "refs/heads/$branch:refs/remotes/origin/$branch"
+  run git merge --ff-only "refs/remotes/origin/$branch"
+}
+
 # --------------------------------------------------------------------------
 # PUBLISH — flip an already-assembled draft. Its own step, and it ends here.
 # --------------------------------------------------------------------------
 
 if [ "$do_publish" = 1 ]; then
   command -v gh >/dev/null || die "gh is not on PATH, and publishing needs it"
-  gh auth status >/dev/null 2>&1 || die "gh is not authenticated. Run \`gh auth login\`."
 
   target="${publish:-$current_version}"
   release_version_is_valid "$target" \
@@ -412,35 +427,34 @@ EOF
     || die "$invalid required asset(s) are missing, duplicated, or lack a GitHub SHA-256 digest. Refusing to publish."
 
   confirm "Publish $target? This is the moment it becomes visible to install.sh and \`story update\`."
-  run gh release edit "$target" --repo "$REPO" --draft=false
+  run github_exec release edit "$target" --draft=false
 
   if [ "$dry_run" = 0 ]; then
-    latest="$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null)"
+    latest="$(github_exec release view --json tagName --jq .tagName)"
     info "latest release is now ${latest:-unknown}"
     [ "$latest" = "$target" ] \
       || warn "/releases/latest resolves $latest, not $target — a newer release already exists"
   fi
 
   step "Published $target"
-  info "https://github.com/$REPO/releases/tag/$target"
+  info "https://$RELEASE_SOURCE/releases/tag/$target"
   exit 0
 fi
 
 if [ "$local_only" = 0 ]; then
   command -v gh >/dev/null || die "gh is not on PATH, and a public release needs it"
-  gh auth status >/dev/null 2>&1 || die "gh is not authenticated. Run \`gh auth login\`."
 
   branch="$(git rev-parse --abbrev-ref HEAD)"
   [ "$branch" = "$STORYHOOK_INTEGRATION_BRANCH" ] \
     || die "public releases are cut from $STORYHOOK_INTEGRATION_BRANCH; you are on \`$branch\`"
 
-  git fetch --quiet origin "$STORYHOOK_INTEGRATION_BRANCH"
+  github_git fetch --quiet origin "+refs/heads/$STORYHOOK_INTEGRATION_BRANCH:refs/remotes/origin/$STORYHOOK_INTEGRATION_BRANCH"
   [ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$STORYHOOK_INTEGRATION_BRANCH")" ] \
     || die "local $STORYHOOK_INTEGRATION_BRANCH and origin/$STORYHOOK_INTEGRATION_BRANCH disagree. Pull (or push your merges) first."
 
   # This check is intentionally before semver creates a branch or commit. The
   # actual binaries are built after the bumped tree lands on main.
-  scripts/build-release-assets.sh --check
+  github_without_credentials scripts/build-release-assets.sh --check
 fi
 
 # ---------------------------------------------------------------------------
@@ -530,7 +544,9 @@ EOF
   if git rev-parse -q --verify "refs/tags/$next_version" >/dev/null; then
     die "tag $next_version already exists locally. Tags are never moved here."
   fi
-  if git ls-remote --exit-code --tags origin "refs/tags/$next_version" >/dev/null 2>&1; then
+  remote_tag="$(github_git ls-remote --tags origin "refs/tags/$next_version")" \
+    || die "could not inspect origin tag $next_version"
+  if [ -n "$remote_tag" ]; then
     die "tag $next_version already exists on origin. Tags are never moved here."
   fi
 
@@ -541,7 +557,7 @@ EOF
 
   # `render-release-body.sh` requires a changelog section for the version.
   if [ -f scripts/render-release-body.sh ] && [ "$dry_run" = 0 ]; then
-    if ! scripts/render-release-body.sh --version "$next_version" --repo "$REPO" >/dev/null 2>&1; then
+    if ! scripts/render-release-body.sh --version "$next_version" --repo "$RELEASE_SOURCE" >/dev/null 2>&1; then
       warn "no changelog section for $next_version yet."
       note "\`semver bump\` writes it, so this is expected before the bump and fatal after."
     fi
@@ -561,7 +577,7 @@ run_release_gate() {
     step "Gate — make test-full"
     note "the full battery, including the browser suite (SH-394) -- this also \
 mints the push receipt .githooks/pre-push verifies"
-    run make test-full
+    run github_without_credentials make test-full
   fi
 }
 
@@ -659,7 +675,7 @@ if [ "$dry_run" = 0 ]; then
 
   # Now that the changelog section exists, the body must render before either
   # the local build or the tag can make the release observable.
-  scripts/render-release-body.sh --version "$next_version" --repo "$REPO" >/dev/null \
+  scripts/render-release-body.sh --version "$next_version" --repo "$RELEASE_SOURCE" >/dev/null \
     || die "the release body will not render for $next_version. Fix CHANGELOG.md before tagging."
   note "release body renders"
 fi
@@ -675,10 +691,10 @@ run_release_gate
 step "Opening the stable-release pull request"
 # HTTPS with the gh credential helper: SSH auth here goes through 1Password's
 # agent, which wants an interactive approval.
-run git -c "url.https://github.com/.insteadOf=git@github.com:" push origin "$release_branch"
+run github_git push origin "$release_branch"
 stable_pr=""
 if [ "$dry_run" = 1 ]; then
-  run gh pr create \
+  run github_exec pr create \
     --base "$STORYHOOK_STABLE_BRANCH" \
     --head "$release_branch" \
     --title "chore: release $next_version" \
@@ -687,7 +703,7 @@ if [ "$dry_run" = 1 ]; then
 Merging this lands the bump on \`main\`; \`scripts/release.sh\` then assembles and verifies every release asset locally before it pushes the tag."
   stable_pr="<stable-release-pr>"
 else
-  stable_pr="$(gh pr create \
+  stable_pr="$(github_exec pr create \
     --base "$STORYHOOK_STABLE_BRANCH" \
     --head "$release_branch" \
     --title "chore: release $next_version" \
@@ -704,7 +720,7 @@ run bash scripts/land-pr.sh --base "$STORYHOOK_STABLE_BRANCH" "$stable_pr"
 
 step "Returning to $STORYHOOK_STABLE_BRANCH"
 run git switch "$STORYHOOK_STABLE_BRANCH"
-run git pull --ff-only
+release_fast_forward "$STORYHOOK_STABLE_BRANCH"
 
 if [ "$dry_run" = 0 ]; then
   landed="$(tr -d '[:space:]' < VERSION)"
@@ -716,17 +732,17 @@ step "Synchronizing the release commit back to $STORYHOOK_INTEGRATION_BRANCH"
 # land-pr removes the remote head after verifying a merge. Keep the local
 # release branch until both protected branches contain it, and deliberately
 # re-push that exact branch for the integration PR.
-run git -c "url.https://github.com/.insteadOf=git@github.com:" push origin "$release_branch"
+run github_git push origin "$release_branch"
 integration_pr=""
 if [ "$dry_run" = 1 ]; then
-  run gh pr create \
+  run github_exec pr create \
     --base "$STORYHOOK_INTEGRATION_BRANCH" \
     --head "$release_branch" \
     --title "chore: sync release $next_version to $STORYHOOK_INTEGRATION_BRANCH" \
     --body "Synchronize the exact \`$next_version\` release commit back into \`$STORYHOOK_INTEGRATION_BRANCH\` after its guarded stable merge."
   integration_pr="<integration-release-pr>"
 else
-  integration_pr="$(gh pr create \
+  integration_pr="$(github_exec pr create \
     --base "$STORYHOOK_INTEGRATION_BRANCH" \
     --head "$release_branch" \
     --title "chore: sync release $next_version to $STORYHOOK_INTEGRATION_BRANCH" \
@@ -737,7 +753,7 @@ run bash scripts/land-pr.sh --base "$STORYHOOK_INTEGRATION_BRANCH" "$integration
 
 step "Confirming both long-lived branches contain $next_version"
 run git switch "$STORYHOOK_INTEGRATION_BRANCH"
-run git pull --ff-only
+release_fast_forward "$STORYHOOK_INTEGRATION_BRANCH"
 if [ "$dry_run" = 0 ]; then
   integrated="$(tr -d '[:space:]' < VERSION)"
   [ "$integrated" = "$next_version" ] \
@@ -745,16 +761,16 @@ if [ "$dry_run" = 0 ]; then
 fi
 run git branch -d "$release_branch"
 run git switch "$STORYHOOK_STABLE_BRANCH"
-run git pull --ff-only
+release_fast_forward "$STORYHOOK_STABLE_BRANCH"
 
 artifact_dir="$repo_root/target/release-assets/$next_version"
 step "Building and verifying all release assets locally"
 if [ "$dry_run" = 1 ]; then
-  run scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir" --build-number "$build_number"
-  run scripts/render-release-body.sh --version "$next_version" --repo "$REPO"
+  run github_without_credentials scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir" --build-number "$build_number"
+  run scripts/render-release-body.sh --version "$next_version" --repo "$RELEASE_SOURCE"
 else
-  scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir" --build-number "$build_number"
-  scripts/render-release-body.sh --version "$next_version" --repo "$REPO" \
+  github_without_credentials scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir" --build-number "$build_number"
+  scripts/render-release-body.sh --version "$next_version" --repo "$RELEASE_SOURCE" \
     > "$artifact_dir/release-body.md"
   [ -s "$artifact_dir/release-body.md" ] || die "the rendered release body is empty"
 fi
@@ -786,15 +802,14 @@ else
     release_commit="<release-commit>"
 fi
 run git tag -a "$next_version" -m "$next_version" "$release_commit"
-run git -c "url.https://github.com/.insteadOf=git@github.com:" push origin "$next_version"
+run github_git push origin "$next_version"
 
 asset_paths=()
 for artifact in "${ARTIFACTS[@]}"; do
   asset_paths+=("$artifact_dir/$artifact")
 done
 step "Creating one verified draft"
-run gh release create "$next_version" "${asset_paths[@]}" \
-  --repo "$REPO" \
+run github_exec release create "$next_version" "${asset_paths[@]}" \
   --verify-tag \
   --draft \
   --generate-notes \
@@ -837,7 +852,7 @@ if [ "$no_install" = 0 ]; then
 fi
 
 step "$next_version is cut, built on every platform, and NOT published"
-info "draft   https://github.com/$REPO/releases/tag/$next_version"
+info "draft   https://$RELEASE_SOURCE/releases/tag/$next_version"
 info "$STORYHOOK_STABLE_BRANCH    stable at $next_version"
 info "$STORYHOOK_INTEGRATION_BRANCH     in sync at $next_version"
 note "install.sh and \`story update\` still resolve the previous release: a draft is"

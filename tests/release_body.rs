@@ -123,7 +123,7 @@ fn arguments<'a>(path: &'a Path, version: &'a str, since: Option<&'a str>) -> Ve
         "--changelog",
         path.to_str().expect("a UTF-8 fixture path"),
         "--repo",
-        "mikeydotio/storyhook",
+        "github.com/mikeydotio/storyhook",
         "--version",
         version,
     ];
@@ -379,7 +379,12 @@ fn the_required_inputs_are_refused_when_missing() {
     let (_directory, path) = fixture();
     let changelog = path.to_str().expect("a UTF-8 fixture path");
 
-    render_refused(&["--changelog", changelog, "--repo", "mikeydotio/storyhook"]);
+    render_refused(&[
+        "--changelog",
+        changelog,
+        "--repo",
+        "github.com/mikeydotio/storyhook",
+    ]);
     render_refused(&["--changelog", changelog, "--version", "v3.0.0"]);
 }
 
@@ -390,7 +395,7 @@ fn an_unreadable_changelog_is_refused() {
         "--changelog",
         "/nonexistent/CHANGELOG.md",
         "--repo",
-        "mikeydotio/storyhook",
+        "github.com/mikeydotio/storyhook",
         "--version",
         "v3.0.0",
     ]);
@@ -419,7 +424,7 @@ fn the_repository_changelog_renders_for_the_version_being_shipped() {
 
     let body = render_ok(&[
         "--repo",
-        "mikeydotio/storyhook",
+        "github.com/mikeydotio/storyhook",
         "--version",
         &version,
         "--changelog",
@@ -444,5 +449,21 @@ fn the_changelog_defaults_to_this_repositorys_own() {
         .trim()
         .to_string();
 
-    render_ok(&["--repo", "mikeydotio/storyhook", "--version", &version]);
+    render_ok(&[
+        "--repo",
+        "github.com/mikeydotio/storyhook",
+        "--version",
+        &version,
+    ]);
+}
+
+#[test]
+fn qualified_enterprise_source_owns_every_changelog_link() {
+    let (_directory, path) = fixture();
+    let mut args = arguments(&path, "v3.0.0", Some("v2.0.0"));
+    let index = args.iter().position(|a| *a == "--repo").unwrap() + 1;
+    args[index] = "github.example.com/acme/storyhook";
+    let body = render_ok(&args);
+    assert!(body.contains("https://github.example.com/acme/storyhook/blob/"));
+    assert!(!body.contains("https://github.com/"));
 }

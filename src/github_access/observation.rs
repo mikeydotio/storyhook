@@ -44,10 +44,39 @@ impl OriginObservation {
         } else {
             Destination::Github(Repository::resolve(&checkout)?.identity().clone())
         };
+        // A mirror must not discard a source checkout's redirect policy when
+        // it copies raw origin. Validate the effective read destination here.
+        let effective = git_read(&checkout, &["remote", "get-url", "--all", "origin"])?;
+        let urls: Vec<_> = effective.lines().collect();
+        let matches = urls.len() == 1
+            && match &destination {
+                Destination::Github(identity) => {
+                    super::parse_origin(urls[0]).is_ok_and(|effective| &effective == identity)
+                }
+                Destination::File(path) => {
+                    !urls[0].contains(':')
+                        && checkout.join(urls[0]).canonicalize().ok().as_ref() == Some(path)
+                }
+            };
+        if !matches {
+            return Err(AppError::Validation(
+                "origin observation: URL rewrite differs from origin".into(),
+            ));
+        }
         Ok(Self {
             checkout,
             destination,
         })
+    }
+
+    /// Requires a private observer checkout to match its freshly resolved source.
+    pub(super) fn require_authority(&self, source: &Self) -> Result<(), AppError> {
+        if self.destination != source.destination {
+            return Err(AppError::Validation(
+                "observer checkout differs from source authority".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Reads origin refs or fetches an explicit refspec without granting remote write access.

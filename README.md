@@ -77,7 +77,7 @@ cargo install --path .
 
 ### Prebuilt binaries
 
-Download a release archive from the [releases page](https://github.com/mikeydotio/storyhook/releases) and extract the `story` binary to a directory in your PATH.
+Use the explicit-source installer above to download the matching archive through `gh` and record its source for future updates. A manually extracted binary requires `story update --source HOST/OWNER/REPO --force` before implicit updates can work.
 
 Available targets:
 - `story-x86_64-unknown-linux-gnu.tar.gz` — Linux x86_64
@@ -795,8 +795,8 @@ prefix = "SH"
 [plugin]          # optional, user-authored; storyhook reads it and never writes it
 enabled = true
 
-[github]          # optional REST API base override for this repository
-api_url = "https://github.example.com/api/v3"
+[github]          # optional; opt in to background PR monitoring
+poll = true
 
 [verify]          # optional; the merge gate the verifier runs before landing a PR
 gate = "make test"

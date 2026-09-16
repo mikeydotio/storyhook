@@ -1299,6 +1299,7 @@ impl MergeRepo {
             .env("STORYHOOK_STORE_PATH", "/live/storyhook/store.db")
             .env("STORYHOOK_PROJECT", "live-project")
             .env("GH_TOKEN", "github-secret")
+            .env("GH_CONFIG_DIR", "/verifier/only/gh")
             .env("GITHUB_TOKEN", "github-fallback-secret")
             .env("GH_ENTERPRISE_TOKEN", "enterprise-secret")
             .env("GITHUB_ENTERPRISE_TOKEN", "enterprise-fallback-secret")
@@ -2019,7 +2020,7 @@ fn speculative_run_uses_the_exact_tree_and_restores_after_success_or_failure() {
         &[
             "bash",
             "-c",
-            "test -z \"${STORYHOOK_STORE_PATH+x}\" && test -z \"${STORYHOOK_PROJECT+x}\" && test -z \"${GH_TOKEN+x}\" && test -z \"${GITHUB_TOKEN+x}\" && test -z \"${GH_ENTERPRISE_TOKEN+x}\" && test -z \"${GITHUB_ENTERPRISE_TOKEN+x}\" && test -z \"${STORY_BIN+x}\" && test -z \"${STORYHOOK_GITHUB_AUTHORITY+x}\" && test -z \"${STORYHOOK_GITHUB_EXPECTED+x}\"",
+            "test -z \"${STORYHOOK_STORE_PATH+x}\" && test -z \"${STORYHOOK_PROJECT+x}\" && test -z \"${GH_CONFIG_DIR+x}\" && test -z \"${GH_TOKEN+x}\" && test -z \"${GITHUB_TOKEN+x}\" && test -z \"${GH_ENTERPRISE_TOKEN+x}\" && test -z \"${GITHUB_ENTERPRISE_TOKEN+x}\" && test -z \"${STORY_BIN+x}\" && test -z \"${STORYHOOK_GITHUB_AUTHORITY+x}\" && test -z \"${STORYHOOK_GITHUB_EXPECTED+x}\"",
         ],
     );
     assert_ok(

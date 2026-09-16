@@ -865,3 +865,45 @@ fn generic_enterprise_observations_use_the_https_credential_boundary() {
         output.contains("fetch\nhttps://github.example.com/acme/widgets.git\nrefs/heads/main")
     );
 }
+
+#[test]
+fn observation_mirrors_require_matching_current_source_authority() {
+    let root = checkout("git@github.example.com:acme/widgets.git");
+    let source = checkout("https://github.example.com/acme/widgets.git");
+    recording_transport(root.path());
+    let call = || {
+        helper(
+            root.path(),
+            &[
+                "observe",
+                "--checkout",
+                root.path().to_str().unwrap(),
+                "--authority",
+                source.path().to_str().unwrap(),
+                "--",
+                "fetch",
+                "origin",
+                "main",
+            ],
+            None,
+        )
+    };
+    let matched = call();
+    assert!(
+        matched.status.success(),
+        "{}",
+        String::from_utf8_lossy(&matched.stderr)
+    );
+    git(
+        source.path(),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://other.example/acme/widgets",
+        ],
+    );
+    let refused = call();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("differs from source authority"));
+}

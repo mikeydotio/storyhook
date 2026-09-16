@@ -22,3 +22,16 @@ fn requests_never_serialize_github_credentials() {
     );
     assert!(!format!("{decoded:?}").contains("ghp_legacy"));
 }
+
+#[test]
+fn documented_configuration_does_not_reintroduce_the_retired_api_base() {
+    let readme =
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
+            .unwrap();
+    assert!(
+        !readme
+            .lines()
+            .any(|line| line.trim_start().starts_with("api_url ="))
+    );
+    assert!(readme.contains("poll = true"));
+}

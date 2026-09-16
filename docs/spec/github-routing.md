@@ -92,11 +92,10 @@ All work remains under SH-734. Submission, full-suite verification, PR creation,
   migration; opt-in polling; PAT/CLI/wire removal; submission and verifier/landing
   routing; HTTPS clone support; safe unpinned read refresh; explicit installation
   and update sources with gh downloads and matching per-binary metadata.
-- In progress: generic session/dispatch/cleanup observations and their focused
-  regression suite.
-- Pending: release scripts and observer routing, coverage observer transport,
-  generated operational references, final authentication/host/bypass audit and
-  remaining directly impacted validation.
+- Complete: generic session/dispatch/cleanup observations; credential forwarding
+  to trusted orchestration and isolation from provider panes; release and observer
+  routing; generated operational references; final authentication/host/bypass
+  audit and focused regression guards.
 
 ### Local helper contract
 
@@ -170,3 +169,56 @@ or remote-write authority; `Repository::resolve` still rejects local paths.
 Cleanup pins the origin across its default-branch read and fetch. Generic
 shell callers use `story github observe`; fetch failures retain diagnostics
 while preserving dispatch's documented stale-base fallback policy.
+
+
+### Dispatch and test credential isolation
+
+Dispatch and leased reap use the orchestration allowlist, which includes gh's
+five supported credential selectors. Terminal control and notification children
+retain the narrower environment. `tmux-launch.py` removes credentials from the
+client and supplies empty per-pane overrides for new sessions, new windows, and
+respawns. These overrides apply before the launch shell starts, including when
+an existing server retains credentials. No shared server settings are changed.
+The doctor uses the same launcher. Provider login files remain untouched.
+
+Shell build/test children use `github_without_credentials`; the speculative
+merge gate and Python release preflight remove the same selectors. Network
+orchestration retains authentication. Tests cover actual private tmux servers,
+real daemon dispatch, and child environments.
+
+### Release and observer authority
+
+Non-local release operations pin current origin before network work. Release
+API paths, PR/release commands, transport, rendered changelog links, and final
+web links all use that identity. Local-only builds do not need GitHub authority.
+Tag observation failures cannot be treated as absent tags. Branch synchronization
+uses explicit fetch refspecs plus local fast-forward-only merges, never an
+ambient upstream selected by `git pull`.
+
+The pure release-body renderer requires `--repo HOST/OWNER/REPO`. Private release
+observers copy a single raw origin, canonicalize filesystem paths, and invoke
+`story github observe --checkout PATH --authority SOURCE -- fetch ...`. Both
+checkouts must resolve to the same current destination; effective source URL
+rewrites are checked before use. Remote snapshots remain in the observer's
+private namespaces. Browser and coverage watchers fetch explicit tracking-ref
+destinations before inspecting those refs.
+
+### Final audit
+
+| Surface | Result |
+|---|---|
+| Rust GitHub API and update | Shared gh executor; no PAT/keyring or direct GitHub HTTP client |
+| Shell submission, verifier, landing, release | Shared origin adapter with explicit source and pins |
+| Generic dispatch, cleanup, browser/coverage/release observers | Bounded origin observation; local origins remain file-only |
+| Installer | Explicit release-only bootstrap before a story binary exists |
+| Generated repair instructions | Qualified repository included in gh command |
+| Help, plugin skills/references, README | Explicit sources and gh migration guidance |
+| Cargo provenance, plugin attribution, historical reports | Retained as provenance or historical evidence, not runtime defaults |
+| Git hooks, release-tag-commit, verifier-worktree | Local administration or command observation; no new network authority |
+
+Architecture tests scan tracked production inputs for fixed public-host routing,
+direct GitHub HTTP/PAT bypasses, duplicate gh executors, and raw shell transport.
+The impact manifest includes this dynamic scan. Public-host fixtures remain
+explicit test inputs. Validation uses disposable Git repositories and controlled
+external gh/Git endpoints; no live Enterprise service, provider login, or release
+publication is claimed. Full-suite verification remains with the central verifier.

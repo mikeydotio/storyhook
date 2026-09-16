@@ -81,7 +81,7 @@ fn release_sh_assembles_locally_and_never_delegates_to_actions() {
     let source = read("scripts/release.sh");
     assert!(source.contains("scripts/build-release-assets.sh --check"));
     assert!(source.contains("scripts/build-release-assets.sh"));
-    assert!(source.contains("gh release create"));
+    assert!(source.contains("github_exec release create"));
     for required in [
         "--verify-tag",
         "--draft",
@@ -956,6 +956,11 @@ fn publish_fixture() -> (tempfile::TempDir, PathBuf) {
         root.join("scripts/release-targets.sh"),
     )
     .unwrap();
+    std::fs::copy(
+        repo_root().join("scripts/github-access.sh"),
+        root.join("scripts/github-access.sh"),
+    )
+    .unwrap();
     std::fs::write(root.join("VERSION"), "v9.9.9\n").unwrap();
     std::fs::write(root.join("BUILD"), "0\n").unwrap();
     std::fs::copy(
@@ -968,7 +973,10 @@ fn publish_fixture() -> (tempfile::TempDir, PathBuf) {
         &root.join("bin/gh"),
         r#"#!/bin/bash
 set -eu
-if [ "$1 $2" = "auth status" ]; then exit 0; fi
+[ "$GH_HOST" = github.example.com ] || exit 92
+[ "$GH_REPO" = github.example.com/acme/storyhook ] || exit 93
+RELEASE_SCENARIO=$(cat "$GH_CONFIG_DIR/scenario")
+RELEASE_TEST_LOG="$GH_CONFIG_DIR/publish.log"
 if [ "$1" = api ]; then
   endpoint=""
   for argument in "$@"; do
@@ -998,6 +1006,13 @@ exit 2
 
     for args in [
         ["init", "-q", "-b", "dev"].as_slice(),
+        [
+            "remote",
+            "add",
+            "origin",
+            "git@github.example.com:acme/storyhook.git",
+        ]
+        .as_slice(),
         ["config", "user.email", "release@test"].as_slice(),
         ["config", "user.name", "release-test"].as_slice(),
         ["add", "-A"].as_slice(),
@@ -1010,12 +1025,15 @@ exit 2
             .unwrap();
         assert!(status.success());
     }
-    let log = root.join("publish.log");
+    std::fs::create_dir(root.join(".git/gh-fixture")).unwrap();
+    std::fs::write(root.join(".git/gh-fixture/scenario"), "ok").unwrap();
+    let log = root.join(".git/gh-fixture/publish.log");
     (fixture, log)
 }
 
 fn publish_with_scenario(scenario: &str) -> (Output, String) {
     let (fixture, log) = publish_fixture();
+    std::fs::write(fixture.path().join(".git/gh-fixture/scenario"), scenario).unwrap();
     let path = format!(
         "{}:{}",
         fixture.path().join("bin").display(),
@@ -1026,8 +1044,10 @@ fn publish_with_scenario(scenario: &str) -> (Output, String) {
         .arg(fixture.path().join("scripts/release.sh"))
         .args(["--publish", "v9.9.9", "--yes"])
         .env("PATH", path)
-        .env("RELEASE_SCENARIO", scenario)
-        .env("RELEASE_TEST_LOG", &log)
+        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("GH_CONFIG_DIR", fixture.path().join(".git/gh-fixture"))
+        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("GH_CONFIG_DIR", fixture.path().join(".git/gh-fixture"))
         .output()
         .unwrap();
     let calls = std::fs::read_to_string(log).unwrap_or_default();
@@ -1055,7 +1075,8 @@ fn publish_refuses_a_non_version_before_calling_github() {
         .arg(fixture.path().join("scripts/release.sh"))
         .args(["--publish", "v9.9.9\") | .[]", "--yes"])
         .env("PATH", path)
-        .env("RELEASE_TEST_LOG", &log)
+        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("GH_CONFIG_DIR", fixture.path().join(".git/gh-fixture"))
         .output()
         .unwrap();
     assert!(!result.status.success());
