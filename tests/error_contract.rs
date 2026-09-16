@@ -339,17 +339,29 @@ fn cases() -> Vec<Case> {
         exit_code: 7,
         message: "github api:",
         provoke: |env, json| {
-            // No offline construction site exists — every one needs a
-            // transport error or an HTTP response — so the transport is
-            // made to fail deterministically instead. ureq reads ALL_PROXY
-            // from the environment, and port 1 refuses instantly, so this
-            // is independent of whether the machine has network at all.
-            // `update --check` short-circuits before any download and needs
-            // no project.
+            use std::os::unix::fs::PermissionsExt;
+            // Substitute only gh's external response. Explicit source authority
+            // lets the updater reach the API failure without installed metadata.
             let dir = scratch_dir();
+            let gh = dir.path().join("gh");
+            std::fs::write(
+                &gh,
+                "#!/bin/sh\necho 'fixture transport failure' >&2\nexit 1\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
             let mut cmd = env.story(dir.path());
-            cmd.env("ALL_PROXY", "http://127.0.0.1:1");
-            finish(cmd, &["update", "--check"], json)
+            cmd.env("PATH", format!("{}:/usr/bin:/bin", dir.path().display()));
+            finish(
+                cmd,
+                &[
+                    "update",
+                    "--check",
+                    "--source",
+                    "github.example.com/acme/widgets",
+                ],
+                json,
+            )
         },
     });
 
