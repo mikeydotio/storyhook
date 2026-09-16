@@ -1244,7 +1244,7 @@ Related:
 
         m.insert(
             "github",
-            r#"story github resolve|exec|git --checkout PATH [-- arguments]
+            r#"story github resolve|exec|git --checkout PATH [--authority PATH] [-- arguments]
 
 Resolve the current origin of an explicit checkout. Run gh and Git commands
 against that repository with an explicit host and noninteractive authentication.

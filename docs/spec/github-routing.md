@@ -108,3 +108,16 @@ are refused. Repository commands receive fully qualified destinations. Metadata
 answers reaching 64 KiB are refused rather than silently truncated; release asset
 downloads must write to files. Process deadlines are 120 seconds for network
 operations and 30 seconds for local Git reads. Neither boundary retries writes.
+
+
+### Explicit source and clone execution
+
+The local helper accepts `--authority PATH` after `--checkout PATH`. It resolves
+both checkouts on each call and rejects differing repository identities before
+starting gh or a Git network command. Shell callers that use a leased checkout
+must pass the registered source explicitly.
+
+`story github git --checkout PATH -- clone [--mirror|--bare|--no-checkout] origin DEST`
+requires an absolute destination. The shared transport boundary converts the
+source to HTTPS and supplies the host-scoped gh credential helper. Native Git
+retains responsibility for refusing an existing nonempty destination.
