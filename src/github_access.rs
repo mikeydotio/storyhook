@@ -10,6 +10,8 @@ use std::time::Duration;
 
 mod command;
 mod local;
+mod observation;
+pub use observation::OriginObservation;
 mod release;
 mod transport;
 pub use local::run_local;

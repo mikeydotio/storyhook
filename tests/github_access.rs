@@ -756,3 +756,112 @@ fn read_refresh_is_bounded_and_rechecks_supplied_identity_constraints() {
         );
     }
 }
+
+#[test]
+fn generic_observations_keep_filesystem_origins_off_the_network() {
+    let bare = tempfile::tempdir_in("/tmp").unwrap();
+    git(bare.path(), &["init", "--bare", "--quiet"]);
+    let root = checkout(bare.path().to_str().unwrap());
+    let call = || {
+        Command::new(env!("CARGO_BIN_EXE_story"))
+            .args([
+                "github",
+                "observe",
+                "--checkout",
+                root.path().to_str().unwrap(),
+                "--",
+                "ls-remote",
+                "--symref",
+                "origin",
+                "HEAD",
+            ])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap()
+    };
+    let local = call();
+    assert!(
+        local.status.success(),
+        "{}",
+        String::from_utf8_lossy(&local.stderr)
+    );
+    git(
+        root.path(),
+        &[
+            "config",
+            "url.https://must-not-contact.invalid/repo.insteadOf",
+            bare.path().to_str().unwrap(),
+        ],
+    );
+    let redirected = call();
+    assert!(!redirected.status.success());
+    assert!(String::from_utf8_lossy(&redirected.stderr).contains("rewrite"));
+    assert!(
+        Repository::resolve(root.path()).is_err(),
+        "local origin never grants GitHub authority"
+    );
+}
+
+#[test]
+fn observations_pin_origin_and_cannot_write_remotes() {
+    use storyhook::github_access::OriginObservation;
+    let root = checkout("https://github.example.com/acme/widgets.git");
+    let observation = OriginObservation::resolve(root.path()).unwrap();
+    let push = ["push".into(), "origin".into(), "main".into()];
+    assert!(
+        observation
+            .git(&push)
+            .unwrap_err()
+            .to_string()
+            .contains("only ls-remote and fetch")
+    );
+    git(
+        root.path(),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/other/widgets.git",
+        ],
+    );
+    let read = ["ls-remote".into(), "origin".into(), "HEAD".into()];
+    assert!(
+        observation
+            .git(&read)
+            .unwrap_err()
+            .to_string()
+            .contains("origin changed")
+    );
+}
+
+#[test]
+fn generic_enterprise_observations_use_the_https_credential_boundary() {
+    let root = checkout("git@github.example.com:acme/widgets.git");
+    recording_transport(root.path());
+    let output = helper(
+        root.path(),
+        &[
+            "observe",
+            "--checkout",
+            root.path().to_str().unwrap(),
+            "--",
+            "fetch",
+            "origin",
+            "refs/heads/main",
+        ],
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.contains("credential.https://github.example.com.helper=!gh auth git-credential")
+    );
+    assert!(
+        output.contains("fetch\nhttps://github.example.com/acme/widgets.git\nrefs/heads/main")
+    );
+}
