@@ -458,10 +458,19 @@ fn git_transport_uses_host_scoped_gh_credentials_and_explicit_https_origin() {
                 ),
                 "{output}"
             );
+            let destination = if operation == "push" {
+                assert!(
+                    output.contains(&format!(
+                        "url.https://github.example.com/acme/widgets.git.insteadOf={origin}\n"
+                    )),
+                    "{output}"
+                );
+                "origin"
+            } else {
+                "https://github.example.com/acme/widgets.git"
+            };
             assert!(
-                output.contains(&format!(
-                    "{operation}\nhttps://github.example.com/acme/widgets.git\nrefs/heads/main\n"
-                )),
+                output.contains(&format!("{operation}\n{destination}\nrefs/heads/main\n")),
                 "{output}"
             );
         }
@@ -907,4 +916,41 @@ fn observation_mirrors_require_matching_current_source_authority() {
     let refused = call();
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("differs from source authority"));
+}
+
+#[test]
+fn a_competing_exact_rewrite_cannot_restore_ssh_transport() {
+    let origin = "git@github.example.com:acme/widgets.git";
+    let root = checkout(origin);
+    git(
+        root.path(),
+        &[
+            "config",
+            "url.ssh://git@github.example.com/acme/widgets.git.insteadOf",
+            origin,
+        ],
+    );
+    recording_transport(root.path());
+    let output = helper(
+        root.path(),
+        &[
+            "git",
+            "--checkout",
+            root.path().to_str().unwrap(),
+            "--",
+            "push",
+            "origin",
+            "refs/heads/main",
+        ],
+        Some(RECORD_GH),
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("cannot pin origin to HTTPS"),
+        "{output:?}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "transport must not run: {output:?}"
+    );
 }
