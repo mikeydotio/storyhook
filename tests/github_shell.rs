@@ -160,6 +160,9 @@ fn verifier_network_calls_cannot_bypass_the_origin_boundary() {
         "scripts/verify-pr.sh",
         "scripts/land-pr.sh",
         "scripts/landing-intent.sh",
+        "scripts/release.sh",
+        "scripts/browser-watch.sh",
+        "scripts/coverage-watch.sh",
         "scripts/origin-default-branch.sh",
         "plugins/story/lib/session.sh",
     ] {
@@ -225,4 +228,170 @@ fn plugin_and_verifier_ship_the_same_thin_adapter() {
         fs::read(root.join("plugins/story/lib/github-access.sh")).unwrap(),
         fs::read(root.join("scripts/github-access.sh")).unwrap(),
     );
+}
+
+#[test]
+fn test_children_cannot_inherit_gh_authentication_selectors() {
+    let adapter = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/github-access.sh");
+    let out = Command::new("bash")
+        .args([
+            "-c",
+            "source \"$1\"; github_without_credentials /usr/bin/env",
+            "fixture",
+        ])
+        .arg(adapter)
+        .env("GH_CONFIG_DIR", "/private/credential-fixture")
+        .env("GH_TOKEN", "public-fixture")
+        .env("GITHUB_TOKEN", "fallback-fixture")
+        .env("GH_ENTERPRISE_TOKEN", "enterprise-fixture")
+        .env("GITHUB_ENTERPRISE_TOKEN", "enterprise-fallback-fixture")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let environment = String::from_utf8(out.stdout).unwrap();
+    for name in [
+        "GH_CONFIG_DIR",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+    ] {
+        assert!(
+            !environment
+                .lines()
+                .any(|line| line.starts_with(&format!("{name}=")))
+        );
+    }
+}
+
+#[test]
+fn watch_refreshes_update_the_tracking_ref_read_by_their_plan() {
+    let root = scratch_dir();
+    let source = root.path().join("source");
+    let checkout = root.path().join("checkout");
+    let bin = root.path().join("bin");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&bin).unwrap();
+    git(&source, &["init", "-q", "-b", "dev"]);
+    git(&source, &["config", "user.name", "Fixture"]);
+    git(&source, &["config", "user.email", "fixture@example.test"]);
+    git(&source, &["commit", "--allow-empty", "-qm", "initial"]);
+    git(
+        root.path(),
+        &[
+            "clone",
+            "-q",
+            source.to_str().unwrap(),
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let endpoint = "https://github.pie.apple.com/acme/watches.git";
+    storyhook_test_support::install_git_endpoint(&bin, &[(endpoint, &source)]);
+    git(
+        &checkout,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.pie.apple.com:acme/watches.git",
+        ],
+    );
+    for script in ["browser-watch.sh", "coverage-watch.sh"] {
+        git(&source, &["commit", "--allow-empty", "-qm", script]);
+        let expected = Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        let expected = String::from_utf8(expected.stdout).unwrap();
+        let out = Command::new("bash")
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("scripts")
+                    .join(script),
+            )
+            .arg("--plan")
+            .current_dir(&checkout)
+            .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .env("HOME", root.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{script}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains(&format!("tip={}", expected.trim())));
+    }
+}
+
+#[test]
+fn production_github_access_has_one_cli_executor_and_no_http_or_pat_bypass() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tracked = Command::new("git")
+        .args(["ls-files", "src", "scripts", "plugins", "install.sh"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(tracked.status.success());
+    for name in String::from_utf8(tracked.stdout).unwrap().lines() {
+        if name.contains("/tests/")
+            || name.ends_with("/tests.rs")
+            || name.contains("/fakes/")
+            || name.contains("/_vendor/")
+            || name == "src/store/conformance.rs"
+            || name == "scripts/run-e2e.sh"
+            || !(name.ends_with(".rs") || name.ends_with(".sh") || name.ends_with(".py"))
+        {
+            continue;
+        }
+        let text = fs::read_to_string(root.join(name)).unwrap();
+        let production = text.split("#[cfg(test)]").next().unwrap();
+        let code = production
+            .lines()
+            .filter(|line| {
+                let line = line.trim_start();
+                !line.starts_with("//") && !line.starts_with('#')
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for forbidden in [
+            "github.com",
+            "api.github.com",
+            "raw.githubusercontent.com",
+            "STORYHOOK_GITHUB_TOKEN",
+        ] {
+            if name == "src/help_topics.rs" {
+                continue;
+            } // explicit migration guidance
+            assert!(
+                !code.contains(forbidden),
+                "{name} contains runtime bypass {forbidden}"
+            );
+        }
+        if name != "src/github_access/command.rs" {
+            assert!(
+                !code.contains("Command::new(\"gh\")"),
+                "{name} bypasses the shared gh executor"
+            );
+        }
+        if name.starts_with("src/github/") || name == "src/update.rs" {
+            for forbidden in ["ureq::", "reqwest::", "keyring", "Authorization"] {
+                assert!(
+                    !code.contains(forbidden),
+                    "{name} bypasses gh with {forbidden}"
+                );
+            }
+        }
+    }
 }

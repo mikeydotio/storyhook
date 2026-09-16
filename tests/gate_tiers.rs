@@ -448,10 +448,10 @@ fn test_changed_reads_its_postlude_tier_from_the_state_file_run_changed_sh_write
 /// one — `scripts/release.sh`'s own header already promises this
 /// (`--skip-gate` is refused outside `--local-only`); this pins which
 /// `make` target actually backs that promise. A literal-string check rather
-/// than a bash parse, but a precise one: `run make test-full` contains `run
+/// than a bash parse, but a precise one: `run github_without_credentials make test-full` contains `run
 /// make test` as a substring (because `test-full` starts with `test`), so a
 /// regression to the narrower gate would still match a naive "contains 'make
-/// test-full'" search if a second, bare `run make test` were introduced
+/// test-full'" search if a second, bare `run github_without_credentials make test` were introduced
 /// alongside it. Counting exactly one occurrence of the shorter prefix rules
 /// that out.
 #[test]
@@ -459,15 +459,19 @@ fn release_sh_gates_public_releases_with_the_full_battery() {
     let src = std::fs::read_to_string(checkout().join("scripts/release.sh"))
         .expect("reading scripts/release.sh");
 
-    let occurrences = src.matches("run make test").count();
+    let occurrences = src
+        .matches("run github_without_credentials make test")
+        .count();
     assert_eq!(
         occurrences, 1,
-        "expected exactly one `run make test...` invocation in scripts/release.sh, found {occurrences}"
+        "expected exactly one `run github_without_credentials make test...` invocation in scripts/release.sh, found {occurrences}"
     );
-    let idx = src.find("run make test").expect("checked above");
-    let found = &src[idx..idx + "run make test-full".len()];
+    let idx = src
+        .find("run github_without_credentials make test")
+        .expect("checked above");
+    let found = &src[idx..idx + "run github_without_credentials make test-full".len()];
     assert_eq!(
-        found, "run make test-full",
+        found, "run github_without_credentials make test-full",
         "scripts/release.sh's gate step must run `make test-full`, found `{found}`"
     );
 }

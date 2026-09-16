@@ -43,3 +43,9 @@ origin_git() {
     checkout="$(git rev-parse --show-toplevel)" || return 1
     "${STORY_BIN:-story}" github observe --checkout "$checkout" -- "$@"
 }
+
+# Repository build/test children do not own network orchestration credentials.
+github_without_credentials() {
+    env -u GH_CONFIG_DIR -u GH_TOKEN -u GITHUB_TOKEN \
+        -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN "$@"
+}

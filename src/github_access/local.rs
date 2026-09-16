@@ -7,12 +7,26 @@ use std::path::Path;
 /// Executes the local GitHub helper protocol and returns its machine output.
 pub fn run_local(arguments: &[String]) -> Result<Vec<u8>, AppError> {
     if arguments.first().is_some_and(|mode| mode == "observe") {
-        if arguments.len() < 5 || arguments[1] != "--checkout" || arguments[3] != "--" {
-            return Err(AppError::Usage(
-                "usage: story github observe --checkout PATH -- ls-remote|fetch ARGUMENTS".into(),
-            ));
+        let usage = || {
+            AppError::Usage(
+            "usage: story github observe --checkout PATH [--authority PATH] -- ls-remote|fetch ARGUMENTS".into(),
+        )
+        };
+        if arguments.len() < 5 || arguments[1] != "--checkout" {
+            return Err(usage());
         }
-        return super::OriginObservation::resolve(Path::new(&arguments[2]))?.git(&arguments[4..]);
+        let observation = super::OriginObservation::resolve(Path::new(&arguments[2]))?;
+        let mut remaining = &arguments[3..];
+        if remaining.first().is_some_and(|arg| arg == "--authority") {
+            let authority = remaining.get(1).ok_or_else(usage)?;
+            let source = super::OriginObservation::resolve(Path::new(authority))?;
+            observation.require_authority(&source)?;
+            remaining = &remaining[2..];
+        }
+        if remaining.len() < 2 || remaining[0] != "--" {
+            return Err(usage());
+        }
+        return observation.git(&remaining[1..]);
     }
     run_attempt(arguments, true)
 }

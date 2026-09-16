@@ -104,12 +104,14 @@ gate_lock	:(glob)**/*
 gate_output_reporting	scripts/gate-progress.sh
 gate_tiers	:(glob)**/*
 git_fixture_isolation	:(glob)**/*
+github_auth_retired	README.md
+github_shell	:(glob)**/*
 github_shell	:(glob)scripts/*.sh
 github_shell	:(glob)src/github_access/**
+github_shell	plugins/story/lib/github-access.sh
+github_shell	plugins/story/lib/session.sh
 github_shell	scripts/test-git-endpoint.py
 github_shell	src/daemon/verification.rs
-github_shell	plugins/story/lib/session.sh
-github_shell	plugins/story/lib/github-access.sh
 golden_cli	:(glob)src/**/*.rs
 handoff_endpoint	:(glob)**/*
 handoff_notes	:(glob)**/*
@@ -188,9 +190,9 @@ story_reset	src/service/story_reset/identity.rs
 story_reset	src/store/schema/0043_story_resets.sql
 story_reset	src/store/sqlite/story_reset.rs
 story_reset	src/store/story_reset.rs
+story_update	:(glob)src/github_access/**
 story_update	src/update.rs
 story_update	src/update_source.rs
-story_update	:(glob)src/github_access/**
 tap_target_comparison	:(glob)**/*
 test_environment	:(glob)**/*
 timing_assertions	:(glob)**/*

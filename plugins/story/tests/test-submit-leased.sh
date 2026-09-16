@@ -344,7 +344,7 @@ assert_eq "$(jqf "$out" .class)" "repair" "…as something to repair, not the ve
 assert_contains "$(jqf "$out" .display)" "#77" "…naming the pull request"
 assert_contains "$(jqf "$out" .display)" 'targets `main`' "…and the branch it targets"
 assert_contains "$(jqf "$out" .display)" 'not `dev`' "…and the branch it must target"
-assert_contains "$(jqf "$out" .display)" "gh pr edit 77 --base dev" "…with the remedy"
+assert_contains "$(jqf "$out" .display)" "gh pr edit 77 --base dev --repo github.com/acme/widgets" "…with the origin-bound remedy"
 assert_eq "$(jqf "$out" '.wrong_base_pull_requests | length')" "1" "the receipt carries the misdirected pull request"
 assert_eq "$(jqf "$out" '.wrong_base_pull_requests[0].number')" "77" "…by number"
 assert_eq "$(create_count)" "$before" "nothing was opened beside it"

@@ -1248,7 +1248,7 @@ Resolve the current origin of an explicit checkout. Run gh and Git commands
 against that repository with an explicit host and noninteractive authentication.
 These helpers run locally and do not open the StoryHook store.
 
-story github observe --checkout PATH -- ls-remote|fetch ARGUMENTS
+story github observe --checkout PATH [--authority PATH] -- ls-remote|fetch ARGUMENTS
 
 Generic observations use the same HTTPS boundary for GitHub origins. A
 filesystem origin is allowed only in this mode, restricted to file transport
