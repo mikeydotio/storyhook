@@ -186,3 +186,31 @@ fn verifier_network_calls_cannot_bypass_the_origin_boundary() {
         }
     }
 }
+
+#[test]
+fn endpoint_fixture_refuses_live_urls_without_rewriting_resolution_reads() {
+    let root = scratch_dir();
+    storyhook_test_support::install_git_endpoint(root.path(), &[]);
+    let run = |args: &[&str]| {
+        Command::new(root.path().join("git"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let read = run(&[
+        "ls-remote",
+        "--get-url",
+        "https://unmapped.example/acme/repo.git",
+    ]);
+    assert!(read.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&read.stdout).trim(),
+        "https://unmapped.example/acme/repo.git"
+    );
+    let network = run(&["ls-remote", "https://unmapped.example/acme/repo.git"]);
+    assert!(!network.status.success());
+    assert!(
+        String::from_utf8_lossy(&network.stderr)
+            .contains("fixture refuses unmapped network destination")
+    );
+}

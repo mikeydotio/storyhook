@@ -104,13 +104,14 @@ gate_lock	:(glob)**/*
 gate_output_reporting	scripts/gate-progress.sh
 gate_tiers	:(glob)**/*
 git_fixture_isolation	:(glob)**/*
+github_shell	:(glob)scripts/*.sh
+github_shell	:(glob)src/github_access/**
+github_shell	scripts/test-git-endpoint.py
+github_shell	src/daemon/verification.rs
 golden_cli	:(glob)src/**/*.rs
 handoff_endpoint	:(glob)**/*
 handoff_notes	:(glob)**/*
 harness_path_entries	:(glob)**/*
-github_shell	:(glob)scripts/*.sh
-github_shell	:(glob)src/github_access/**
-github_shell	src/daemon/verification.rs
 help_topic_references	:(glob)**/*
 hook_budgets	:(glob)**/*
 hooks	:(glob)**/*
@@ -121,6 +122,7 @@ machine_lock	:(glob)**/*
 mcp_removal	:(glob)**/*
 mcp_tool_drift	:(glob)**/*
 merge_gate	:(glob)**/*
+merge_gate	scripts/test-git-endpoint.py
 migration_guard	:(glob)**/*
 notify_reasons	plugins/story/bin/story.sh
 notify_reasons	plugins/story/lib/resources.sh
@@ -191,6 +193,7 @@ type_slug_call_sites	:(glob)**/*
 unassessed_priority_paths	:(glob)**/*
 verification_progress_timeout	:(glob)**/*
 verification_queue	:(glob)**/*
+verification_retry_shell	scripts/test-git-endpoint.py
 verifier_bundle	:(glob)scripts/*
 verifier_bundle	build.rs
 verifier_fixture_hygiene	:(glob)**/*
