@@ -285,6 +285,7 @@ fn dispatching_session_start_publishes_a_sentinel_beside_the_hook_envelope() {
 
     let sentinel = read_sentinel(&fixture);
     assert_eq!(sentinel["protocol_version"], 2);
+    assert_eq!(sentinel["context_status"], "loaded");
     assert_eq!(sentinel["written_at"], FIXTURE_NOW);
     assert_eq!(
         sentinel["story_id"],

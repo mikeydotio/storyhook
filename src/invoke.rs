@@ -874,11 +874,7 @@ fn dispatch_inner<S: Store>(
         }
         Invocation::SessionStart => {
             let service = SessionService::new(ctx);
-            // Best-effort and unconditional on the message below succeeding —
-            // see `publish_sentinel`'s own doc comment for why a write failure
-            // must never turn a real context envelope into `{}`.
-            service.publish_sentinel();
-            service.context().map(Response::RawJson)
+            service.start().map(Response::RawJson)
         }
         Invocation::History { action } => match action {
             HistoryAction::Read { id } => session::history(ctx, &id).map(Response::StoryHistory),
