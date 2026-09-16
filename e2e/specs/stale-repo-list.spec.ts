@@ -3,7 +3,12 @@ import type { APIRequestContext, Page } from "@playwright/test";
 import type { HeldFetch } from "./support";
 import {
   cleanUpCreatedStories,
+  clickHeaderAction,
   holdFetch,
+  holdUntilRefused,
+  pressGateSwallows,
+  settledBoundingBox,
+  waitForBoardData,
   openProject,
   projectSlug,
   requiredEnv,
@@ -264,3 +269,77 @@ test("a project list taken before a project existed must not evict the user from
     `${NEW_PROJECT.prefix} · ${NEW_PROJECT.name}`,
   );
 });
+
+// Catalog consumers share one press boundary. Exercise actual successful and
+// failed reads, and retain a no-refresh control for each coordinate gesture.
+for (const surface of ["Home", "project menu", "Settings"] as const) {
+  for (const arrival of ["none", "success", "failure"] as const) {
+    test(`a ${surface} project press survives catalog ${arrival}`, async ({ page, request }) => {
+      let target = page.locator(".repo-card-name", { hasText: "Alpha Project" });
+      let root = page.locator("#home-view");
+      if (surface === "project menu") {
+        await page.locator("#projsel-btn").click();
+        target = page.locator(".projsel-item", { hasText: "Alpha Project" });
+        root = page.locator("#projsel-menu");
+      } else if (surface === "Settings") {
+        await clickHeaderAction(page, "settings-btn");
+        target = page.locator(".settings-table tbody tr", { hasText: "Alpha Project" })
+          .getByRole("button", { name: "Statuses" });
+        root = page.locator("#settings-view");
+      }
+
+      let deliver = async () => {};
+      const failedCatalogReads: string[] = [];
+      if (arrival === "success") {
+        page.on("requestfailed", (read) => {
+          if (new URL(read.url()).pathname === "/api/repos")
+            failedCatalogReads.push(read.failure()?.errorText ?? "unknown failure");
+        });
+        // Seal when the response is captured so a newer reply cannot turn
+        // the intended repaint into a correctly discarded stale response.
+        // Hold competing reads: aborting them would itself repaint readiness
+        // while the coordinate gesture is still being prepared.
+        const held = await holdFetch(page, (url) => url.pathname === "/api/repos",
+          () => true, { sealOnHold: true, sealedRequests: "hold" });
+        await createStory(request, "Beta Project", "SH-737 catalog press success");
+        await held.taken;
+        const competing = page.waitForRequest((read) =>
+          read.method() === "GET" && new URL(read.url()).pathname === "/api/repos");
+        await createStory(request, "Beta Project", "SH-737 competing catalog read");
+        await competing;
+        await held.seal();
+        deliver = held.deliver;
+      } else if (arrival === "failure") {
+        const held = await holdUntilRefused(page, (url) => url.pathname === "/api/repos");
+        await createStory(request, "Beta Project", "SH-737 catalog press failure");
+        deliver = held.refuse;
+      } else {
+        // Establish a quiet catalog before the control gesture; otherwise
+        // bootstrap or SSE reads can repaint during coordinate preparation.
+        const held = await holdUntilRefused(page, (url) => url.pathname === "/api/repos");
+        await createStory(request, "Beta Project", "SH-737 catalog press control");
+        await held.refuse();
+      }
+
+      const box = await settledBoundingBox(root, target);
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      let swallowed: string[];
+      try {
+        await deliver();
+        swallowed = await pressGateSwallows(page);
+      } finally {
+        await page.mouse.up();
+      }
+      expect(swallowed!).toEqual([]);
+      expect(failedCatalogReads).toEqual([]);
+      if (surface === "Settings") {
+        await expect(page.locator(".settings-head h2")).toHaveText("Statuses · Alpha Project");
+      } else {
+        await expect(page.locator("#board-view")).toBeVisible();
+        await waitForBoardData(page);
+        await expect(page.locator("#projsel-btn")).toContainText("AA · Alpha Project");
+      }
+    });
+  }
+}
