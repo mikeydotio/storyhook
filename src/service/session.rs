@@ -51,6 +51,9 @@ const SENTINEL_PROTOCOL_VERSION: u32 = 2;
 #[derive(Debug, serde::Serialize)]
 struct DispatchSentinel {
     protocol_version: u32,
+    /// Context loading is independent of the hook/process readiness proof.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_status: Option<ContextStatus>,
     /// From the SessionStart hook payload's own `session_id` — absent if
     /// stdin was empty, unparseable, or the field was missing. Diagnostic
     /// only: nothing on the readiness path matches against it.
@@ -72,6 +75,13 @@ struct DispatchSentinel {
     /// the dispatcher polls, not from content inside the file it finds.
     story_id: Option<String>,
     written_at: String,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ContextStatus {
+    Loaded,
+    Unavailable,
 }
 
 /// The character budget for the injected context.
@@ -98,8 +108,26 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
 
     /// The raw JSON `story session-start` prints.
     pub fn context(&self) -> Result<String, AppError> {
+        self.load_context().map(|(message, _)| message)
+    }
+
+    /// Loads context and independently publishes the actual outcome as hook evidence.
+    pub fn start(&self) -> Result<String, AppError> {
+        let (message, status) = self.load_context()?;
+        if let Some(status) = status {
+            publish(
+                self.ctx.cwd(),
+                self.ctx.stdin(),
+                self.ctx.now(),
+                Some(status),
+            );
+        }
+        Ok(message)
+    }
+
+    fn load_context(&self) -> Result<(String, Option<ContextStatus>), AppError> {
         if plugin_disabled(self.ctx.cwd()) {
-            return Ok(SILENT.to_string());
+            return Ok((SILENT.to_string(), None));
         }
 
         let mut message = String::new();
@@ -130,9 +158,10 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
             Ok(pair) => pair,
             // The CLI reference alone is still worth injecting: an agent that
             // cannot read the project can at least be told how to ask.
-            Err(_) => {
+            Err(error) => {
+                eprintln!("warning: SessionStart could not load project context: {error}");
                 message.push_str("  Unable to load project state.\n");
-                return Ok(envelope(&message));
+                return Ok((envelope(&message), Some(ContextStatus::Unavailable)));
             }
         };
 
@@ -164,7 +193,7 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
             ));
         }
 
-        Ok(envelope(&truncate(message)))
+        Ok((envelope(&truncate(message)), Some(ContextStatus::Loaded)))
     }
 
     /// Publishes the dispatch sentinel for this session — see
@@ -188,9 +217,8 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
     /// executes on the daemon's own worker thread (SH-114: the daemon is the
     /// only door to the store) — so a warning logged here lands in
     /// `daemon.log`, an operational surface nobody but an investigator reads,
-    /// never in the model's context and never in the hook script's own
-    /// discarded stderr (`session-start.sh`'s `2>/dev/null` only discards the
-    /// short-lived *client* process, a different process from the daemon).
+    /// never in the model's context. The local fallback instead preserves
+    /// diagnostics on the hook's stderr, since no daemon handled that call.
     /// Before this, a write failure here was invisible even to a human
     /// investigator: `story.sh dispatch`'s own readiness gate polls for this
     /// exact file, so a silently-failed write here reads at the caller as
@@ -198,19 +226,112 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
     /// `no-sentinel` reason) — the CLI's own diagnosis pointing at the wrong
     /// layer entirely, with nothing anywhere naming the real cause.
     pub fn publish_sentinel(&self) {
-        let payload = self.ctx.stdin().map(hook_payload).unwrap_or_default();
-        let sentinel = DispatchSentinel {
-            protocol_version: SENTINEL_PROTOCOL_VERSION,
-            session_id: payload.session_id,
-            transcript_path: payload.transcript_path,
-            plugin_root: payload.storyhook_plugin_root,
-            story_id: story_id_from_cwd(self.ctx.cwd()),
-            written_at: self.ctx.now(),
-        };
-        if let Err(error) = write_sentinel(self.ctx.cwd(), &sentinel) {
-            eprintln!("{}", sentinel_write_failure_warning(self.ctx.cwd(), &error));
-        }
+        publish(self.ctx.cwd(), self.ctx.stdin(), self.ctx.now(), None);
     }
+}
+
+fn publish(cwd: &std::path::Path, stdin: Option<&str>, now: String, status: Option<ContextStatus>) {
+    let payload = stdin.map(hook_payload).unwrap_or_default();
+    let sentinel = DispatchSentinel {
+        protocol_version: SENTINEL_PROTOCOL_VERSION,
+        context_status: status,
+        session_id: payload.session_id,
+        transcript_path: payload.transcript_path,
+        plugin_root: payload.storyhook_plugin_root,
+        story_id: story_id_from_cwd(cwd),
+        written_at: now,
+    };
+    if let Err(error) = write_sentinel(cwd, &sentinel) {
+        eprintln!("{}", sentinel_write_failure_warning(cwd, &error));
+    }
+}
+
+/// Publishes hook evidence after a failed invocation, without granting store authority.
+///
+/// Only a valid, enabled local project and a matching native SessionStart payload
+/// qualify. This does not resolve a project, claim a story, or attest to loaded state.
+pub fn publish_unavailable(cwd: &std::path::Path, stdin: Option<&str>, now: String) {
+    let payload = stdin.map(hook_payload).unwrap_or_default();
+    if payload.hook_event_name.as_deref() != Some("SessionStart")
+        || payload.session_id.is_none()
+        || payload.cwd.as_deref().and_then(canonical_directory) != canonical_directory_path(cwd)
+        || canonical_directory_path(cwd).is_none()
+        || payload
+            .storyhook_plugin_root
+            .as_deref()
+            .and_then(canonical_directory)
+            .is_none()
+    {
+        return;
+    }
+    match local_plugin_enabled(cwd) {
+        Ok(true) => publish(cwd, stdin, now, Some(ContextStatus::Unavailable)),
+        Ok(false) => {}
+        Err(error) => eprintln!("warning: SessionStart fallback sentinel refused: {error}"),
+    }
+}
+
+fn canonical_directory(raw: &str) -> Option<std::path::PathBuf> {
+    canonical_directory_path(std::path::Path::new(raw))
+}
+
+fn canonical_directory_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    (path.is_absolute() && path.is_dir())
+        .then(|| path.canonicalize().ok())
+        .flatten()
+}
+
+fn local_plugin_enabled(cwd: &std::path::Path) -> Result<bool, AppError> {
+    for root in super::project::ancestors(cwd) {
+        let path = root.join(".storyhook.toml");
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        }
+        // A broken or unreadable nearer pointer cannot borrow a parent's identity.
+        let pointer = super::project::read_pointer(&root)?.ok_or_else(|| {
+            AppError::Validation(format!("unreadable project pointer {}", path.display()))
+        })?;
+        if pointer.schema != 1
+            || uuid::Uuid::parse_str(&pointer.uuid).is_err()
+            || crate::domain::prefix::validate(&pointer.prefix).is_err()
+        {
+            return Err(AppError::Validation(format!(
+                "invalid project identity in {}",
+                root.join(".storyhook.toml").display()
+            )));
+        }
+        let table = match pointer.plugin {
+            Some(table) => table,
+            None => {
+                let path = root.join(".storyhook/plugin-config.toml");
+                match std::fs::symlink_metadata(&path) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+                    Err(error) => return Err(error.into()),
+                }
+                let raw = std::fs::read_to_string(&path)?;
+                let table: toml::Value = toml::from_str(&raw)?;
+                table.get("plugin").cloned().unwrap_or(table)
+            }
+        };
+        if !table.is_table() {
+            return Err(AppError::Validation(
+                "plugin configuration must be a table".into(),
+            ));
+        }
+        return match table.get("enabled") {
+            None => Ok(true),
+            Some(toml::Value::Boolean(value)) => Ok(*value),
+            Some(toml::Value::String(value)) if value.eq_ignore_ascii_case("true") => Ok(true),
+            Some(toml::Value::String(value)) if value.eq_ignore_ascii_case("false") => Ok(false),
+            Some(_) => Err(AppError::Validation(
+                "plugin.enabled must be true or false".into(),
+            )),
+        };
+    }
+    Ok(false)
 }
 
 /// The `daemon.log` line [`SessionService::publish_sentinel`] emits when its
@@ -230,6 +351,8 @@ fn sentinel_write_failure_warning(cwd: &std::path::Path, error: &AppError) -> St
 
 #[derive(Default, serde::Deserialize)]
 struct HookPayload {
+    cwd: Option<String>,
+    hook_event_name: Option<String>,
     session_id: Option<String>,
     transcript_path: Option<String>,
     storyhook_plugin_root: Option<String>,
@@ -240,13 +363,18 @@ struct HookPayload {
 /// missing plugin identity as a failed autonomous readiness proof.
 fn hook_payload(raw: &str) -> HookPayload {
     let mut payload = serde_json::from_str::<HookPayload>(raw).unwrap_or_default();
-    payload.session_id = payload.session_id.filter(|value| !value.is_empty());
+    payload.session_id = payload.session_id.filter(|value| !value.trim().is_empty());
     payload.transcript_path = payload
         .transcript_path
         .filter(|value| !value.is_empty() && std::path::Path::new(value).is_absolute());
     payload.storyhook_plugin_root = payload
         .storyhook_plugin_root
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            canonical_directory(&value)
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or(value)
+        });
     payload
 }
 
@@ -268,14 +396,11 @@ fn write_sentinel(cwd: &std::path::Path, sentinel: &DispatchSentinel) -> Result<
     let dir = cwd.join(".claude");
     std::fs::create_dir_all(&dir)?;
     let final_path = dir.join("dispatch-sentinel.json");
-    let temp_path = final_path.with_extension("json.tmp");
-
-    let mut file = std::fs::File::create(&temp_path)?;
+    let mut file = tempfile::NamedTempFile::new_in(&dir)?;
     file.write_all(serde_json::to_string_pretty(sentinel)?.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-
-    std::fs::rename(&temp_path, &final_path)?;
+    file.as_file().sync_all()?;
+    file.persist(&final_path)
+        .map_err(|error| AppError::from(error.error))?;
     Ok(())
 }
 
@@ -356,8 +481,8 @@ pub fn unavailable(cwd: &std::path::Path) -> String {
     }
     envelope(
         "storyhook is set up in this repository, but its project state could not be \
-         loaded in time. Run `story load-context` to retry outside this hook's budget \
-         — it will say why if it fails too.",
+         loaded. The SessionStart diagnostic is on stderr. Run `story load-context` \
+         to retry outside this hook's budget.",
     )
 }
 
@@ -369,6 +494,10 @@ pub fn unavailable(cwd: &std::path::Path) -> String {
 /// changes is which file in the repository holds it, and both are read while
 /// the two storage models coexist.
 fn plugin_disabled(root: &std::path::Path) -> bool {
+    let pointer_root = super::project::ancestors(root)
+        .into_iter()
+        .find(|dir| dir.join(".storyhook.toml").exists());
+    let root = pointer_root.as_deref().unwrap_or(root);
     if let Some(table) = super::project::pointer_plugin(root) {
         return table
             .get("enabled")
@@ -557,6 +686,49 @@ fn first_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn concurrent_sentinel_writers_publish_complete_independent_files() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let barrier = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..16)
+                .map(|index| {
+                    let cwd = dir.path();
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        let sentinel = super::DispatchSentinel {
+                            protocol_version: 2,
+                            context_status: Some(super::ContextStatus::Unavailable),
+                            session_id: Some(index.to_string()),
+                            transcript_path: None,
+                            plugin_root: None,
+                            story_id: Some(index.to_string()),
+                            written_at: "now".into(),
+                        };
+                        barrier.wait();
+                        for _ in 0..10 {
+                            super::write_sentinel(cwd, &sentinel).unwrap();
+                            let observed: serde_json::Value = serde_json::from_slice(
+                                &std::fs::read(cwd.join(".claude/dispatch-sentinel.json")).unwrap(),
+                            )
+                            .unwrap();
+                            assert_eq!(observed["session_id"], observed["story_id"]);
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+        assert_eq!(
+            std::fs::read_dir(dir.path().join(".claude"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
     use super::*;
 
     #[test]

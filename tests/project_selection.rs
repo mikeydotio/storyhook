@@ -377,7 +377,7 @@ fn identity_ignores_a_machine_local_insteadof_rewrite() {
 }
 
 /// **AC-4.** `story session-start` never puts a raw diagnosis into a model's
-/// context when no daemon can be reached — exit 0, nothing on stderr, and a
+/// context when no daemon can be reached — exit 0, diagnostics on stderr, and a
 /// payload that is either `{}` or the SH-182 recovery envelope, never the
 /// ~1.2 kB of store-corruption detail `story list` gets for the identical
 /// failure.
@@ -397,7 +397,7 @@ fn identity_ignores_a_machine_local_insteadof_rewrite() {
 /// Isolated rather than shared, because it breaks the store — a fact about a
 /// file every other test in a shared environment would also see.
 #[test]
-fn session_start_reports_no_reachable_daemon_without_a_raw_diagnosis() {
+fn session_start_keeps_raw_daemon_diagnostics_on_stderr() {
     let env = TestEnv::isolated();
     let project = env.project().build();
 
@@ -434,11 +434,17 @@ fn session_start_reports_no_reachable_daemon_without_a_raw_diagnosis() {
         "session-start must succeed even when nothing can serve it: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stderr).trim(),
-        "",
-        "nothing on stderr — this output goes into a model's context"
-    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for expected in [
+        "SessionStart could not load project context",
+        "not a database",
+        env.store_path().to_str().expect("UTF-8 fixture path"),
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "stderr must preserve diagnostic {expected:?}: {stderr}"
+        );
+    }
 
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let parsed: serde_json::Value = serde_json::from_str(&stdout)
