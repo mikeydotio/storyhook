@@ -259,3 +259,19 @@ fn broken_nearer_pointer_cannot_borrow_a_parent_project() {
     assert!(!cwd.join(".claude/dispatch-sentinel.json").exists());
     assert!(String::from_utf8_lossy(&output.stderr).contains("fallback sentinel refused"));
 }
+
+#[cfg(unix)]
+#[test]
+fn broken_legacy_configuration_cannot_enable_fallback_publication() {
+    let env = TestEnv::isolated();
+    let root = scratch_dir();
+    std::fs::write(root.path().join(".storyhook.toml"), POINTER).unwrap();
+    std::fs::create_dir(root.path().join(".storyhook")).unwrap();
+    std::os::unix::fs::symlink("absent", root.path().join(".storyhook/plugin-config.toml"))
+        .unwrap();
+    fail_before_rpc(&env);
+    let output = run(&env, root.path(), &payload(root.path()));
+    assert!(output.status.success());
+    assert!(!root.path().join(".claude/dispatch-sentinel.json").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("fallback sentinel refused"));
+}

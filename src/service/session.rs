@@ -306,14 +306,14 @@ fn local_plugin_enabled(cwd: &std::path::Path) -> Result<bool, AppError> {
             Some(table) => table,
             None => {
                 let path = root.join(".storyhook/plugin-config.toml");
-                match std::fs::read_to_string(&path) {
-                    Ok(raw) => {
-                        let table: toml::Value = toml::from_str(&raw)?;
-                        table.get("plugin").cloned().unwrap_or(table)
-                    }
+                match std::fs::symlink_metadata(&path) {
+                    Ok(_) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
                     Err(error) => return Err(error.into()),
                 }
+                let raw = std::fs::read_to_string(&path)?;
+                let table: toml::Value = toml::from_str(&raw)?;
+                table.get("plugin").cloned().unwrap_or(table)
             }
         };
         if !table.is_table() {
