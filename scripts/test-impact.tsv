@@ -160,10 +160,10 @@ service_git	:(glob)**/*
 service_session	plugins/story/references/story-new.md
 service_session	plugins/story/skills/story/SKILL.md
 service_session	src/help/ste.txt
-session_start_hook	:(glob)**/*
 session_start_degraded	plugins/story/hooks/session-start.sh
 session_start_degraded	plugins/story/lib/codex-bootstrap.sh
 session_start_degraded	plugins/story/lib/plugin-identity.sh
+session_start_hook	:(glob)**/*
 shell_negated_status	:(glob)**/*
 spawn_inventory	:(glob)**/*
 spawned_child_environment	:(glob)src/**/*.rs
