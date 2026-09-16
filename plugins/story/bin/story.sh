@@ -3706,7 +3706,7 @@ cmd_doctor() {
   local integrity_summary="$_INTEGRITY_SUMMARY"
 
   local pane window
-  if ! pane=$(tmux new-window -d -n "$DOCTOR_WINDOW_NAME" -P -F '#{pane_id}' 2>/dev/null) || [ -z "$pane" ]; then
+  if ! pane=$(python3 "$STORY_PLUGIN_ROOT/lib/tmux-launch.py" new-window -d -n "$DOCTOR_WINDOW_NAME" -P -F '#{pane_id}' 2>/dev/null) || [ -z "$pane" ]; then
     fail "failed to open a scratch tmux window for the readiness self-test."
   fi
   window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
