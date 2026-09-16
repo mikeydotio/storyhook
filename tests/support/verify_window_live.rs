@@ -50,14 +50,8 @@ fn fixture_teardown_reaps_banner_and_activity_readers_even_while_unwinding() {
                 vec!["banner", "OWNED_BANNER"],
                 vec!["logs", binary.to_str().unwrap(), store.to_str().unwrap()],
             ] {
-                assert!(
-                    mirror
-                        .command(&project, &args)
-                        .output()
-                        .unwrap()
-                        .status
-                        .success()
-                );
+                let out = mirror.command(&project, &args).output().unwrap();
+                assert!(out.status.success(), "{args:?}: {out:?}");
             }
             mirror.pane_with("OWNED_BANNER");
             mirror.pane_with("OWNED_READER");

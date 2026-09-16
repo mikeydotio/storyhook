@@ -68,6 +68,15 @@ and checks pane-reader identities before deleting fixture directories, even
 during assertion unwinding. A second private server proves cleanup does not
 affect another owner.
 
+SH-736 verification reproduced intermittent macOS `forkpty` failures with
+`Device not configured`. The kernel cause is not established, but this failure
+precedes reader-process creation. The shared respawn boundary preserves each
+diagnostic and permits up to four attempts for this exact error, waiting
+50/100/200 ms. Only the first attempt uses `-k`; later attempts cannot kill an
+active reader another caller has started. Other errors and exhausted attempts
+remain failures. Mirror failure remains non-fatal to verification. The real
+tmux tests retain parallel fixtures and concurrent operations.
+
 The verifier fixture hygiene test scans direct script launches and opt-ins at
 function/helper boundaries. This is a conservative textual fence, not arbitrary
 Rust dataflow analysis; behavioral subprocess and real-tmux tests prove the
