@@ -345,15 +345,13 @@ Repository configuration:
     receipt is refused before landing; changed is insufficient.
 
   [github]
-  api_url = "https://github.example.com/api/v3"
+  poll = true
 
-    Optional REST API base used by 'story pr-check' and the daemon's
-    unattended poll. Without it, storyhook derives the endpoint from
-    each registered GitHub remote: api.github.com for github.com,
-    api.<tenant>.ghe.com for <tenant>.ghe.com, and /api/v3 on any
-    other host. The value must be an absolute HTTP(S) URL without
-    credentials, a query, or a fragment. A single override cannot be
-    used when matching pull-request links span multiple GitHub hosts.
+    Opt in to background pull-request monitoring (default false).
+    The current origin in the registered checkout selects the host and
+    repository. gh supplies host-specific authentication and API routing.
+    The old api_url option is refused: remove it and configure gh for
+    the actual origin host. StoryHook never launches interactive login.
 
 Settings:
   sync.auto_transition    true|false, default true
@@ -1243,38 +1241,40 @@ Related:
         m.insert("sync-git", m["commit-sync"]);
 
         m.insert(
-            "github-auth",
-            r#"story github-auth login|status|logout
+            "github",
+            r#"story github resolve|exec|git --checkout PATH [--authority PATH] [--expected HOST/OWNER/REPO] [-- arguments]
 
-Manage the durable GitHub credential the daemon's background poll uses
-to check linked pull requests unattended (SH-212). Separate from the
-STORYHOOK_GITHUB_TOKEN environment variable `story pr-check` reads per
-invocation: this one is stored once, in your OS keychain (macOS
-Keychain, or the Secret Service on Linux), and spent by the daemon on
-a five-minute timer with nobody typing a command.
+Resolve the current origin of an explicit checkout. Run gh and Git commands
+against that repository with an explicit host and noninteractive authentication.
+These helpers run locally and do not open the StoryHook store.
 
-login    Prompts for a GitHub Personal Access Token (always
-         interactive — there is no non-interactive form) and stores it.
-status   Reports whether a credential is stored, without printing it.
-logout   Deletes the stored credential. The daemon stops using it on
-         its next poll tick; no restart needed.
+story github observe --checkout PATH [--authority PATH] -- ls-remote|fetch ARGUMENTS
 
-When to use:
-  Once, to let close-on-merge links (`story link-pr`) resolve on their
-  own instead of requiring a human or a scheduler to run
-  `story pr-check`. Everyone else can keep running `story pr-check` by
-  hand or from cron/CI, which needs no stored credential at all.
+Generic observations use the same HTTPS boundary for GitHub origins. A
+filesystem origin is allowed only in this mode, restricted to file transport
+with no credentials. It cannot authorize PR operations or write a remote.
+Origin changes are refused within a pinned cleanup observation.
 
-Examples:
-  story github-auth login     # prompts for a token, stores it
-  story github-auth status    # "a GitHub credential is stored..."
-  story github-auth logout    # removes it
+Use --expected with the canonical resolved identity to pin a multi-step operation.
+A pinned origin change is refused; start a fresh operation after an intentional move.
+Unpinned ls-remote and JSON metadata reads may retry once after a failed call
+and a confirmed origin change. Writes and unchanged-origin failures are not retried.
 
-Requires the github-pr feature, like `story pr-check` itself.
+Use gh auth login --hostname HOST to configure gh yourself. StoryHook never
+prompts for a token or starts a login. Manual story pr-check uses gh.
+To enable background PR checks, add this to the registered checkout pointer:
 
-Related:
-  story pr-check      — Check linked pull requests by hand
-  story link-pr        — Link a pull request to a story
+  [github]
+  poll = true
+
+Polling defaults to false. Credentials do not enable it. Set poll = false
+to stop background checks; the next poll reads the setting without a restart.
+
+Migration: remove [github].api_url and use the intended HTTPS origin.
+The github-auth command and STORYHOOK_GITHUB_TOKEN are retired. Old
+storyhook-github keychain entries are unused and left untouched. Remove them
+with the OS credential manager if desired, and revoke the old PAT at its host.
+Do not remove gh credentials.
 "#,
         );
 
@@ -3248,7 +3248,7 @@ Related:
 
         m.insert(
             "update",
-            r#"story update [--check] [--force]
+            r#"story update [--check] [--force] [--source HOST/OWNER/REPO]
 
 Update the story binary in place to the latest GitHub release. Downloads the
 release asset for your platform, verifies it runs, and atomically replaces the
@@ -3264,6 +3264,15 @@ When to use:
 Flags:
   --check    Report whether an update is available; do not download or install.
   --force    Reinstall the latest release even if already up to date.
+  --source HOST/OWNER/REPO
+             Explicit release source. Required for legacy or unmatched metadata.
+             Saved beside the binary after a successful installation.
+
+Source selection:
+  gh must be installed and authenticated for the selected host. The binary source
+  sidecar is bound to its SHA-256 digest. Missing or invalid metadata requires
+  --source; the current project and ambient GH_HOST/GH_REPO are never defaults.
+  --check never changes source metadata. Use --source with --force to recover it.
 
 Examples:
   story update            # Update to the latest release if newer
@@ -3273,7 +3282,7 @@ Examples:
 Notes:
   - Installs into the directory of the current binary; if that directory is
     not writable (e.g. /usr/local/bin), re-run with elevated privileges or use
-    the installer at https://github.com/mikeydotio/storyhook.
+    the installer with an explicit --source HOST/OWNER/REPO.
   - If the binary was replaced but a plugin could not be reinstalled, the
     update reports both and exits non-zero; 'story plugin reinstall' retries
     the plugins alone. Start a new agent session afterwards so the host loads

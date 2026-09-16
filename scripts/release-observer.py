@@ -100,18 +100,23 @@ def watch(root):
         record["log"] = str(Path(log.name).resolve())
         save(directory, record)
         try:
-            remote = git(root, "remote", "get-url", "origin")
+            remote = git(root, "config", "--get-all", "remote.origin.url")
+            if not remote or len(remote.splitlines()) != 1:
+                raise ValueError("release observer requires exactly one raw origin")
             if not (":" in remote or Path(remote).is_absolute()):
                 remote = str((root / remote).resolve())
             checkout = directory / "checkout"
             if not checkout.exists():
                 subprocess.run(["git", "init", "-q", str(checkout)], check=True,
                                stdout=log, stderr=log)
+            subprocess.run(["git", "-C", str(checkout), "config", "--replace-all",
+                            "remote.origin.url", remote], check=True, stdout=log, stderr=log)
             # Explicit namespaces prevent auto-follow from populating refs/tags.
             # Forced updates affect only this observer's private remote snapshot.
             subprocess.run(
-                ["git", "-C", str(checkout), "fetch", "--quiet", "--no-tags", "--prune",
-                 remote, "+refs/heads/main:refs/remotes/origin/main",
+                [os.environ.get("STORY_BIN", "story"), "github", "observe",
+                 "--checkout", str(checkout), "--authority", str(root), "--",
+                 "fetch", "--quiet", "--no-tags", "--prune", "origin", "+refs/heads/main:refs/remotes/origin/main",
                  "+refs/tags/*:" + TAG_PREFIX + "*"],
                 check=True, stdout=log, stderr=log,
             )
@@ -129,9 +134,14 @@ def watch(root):
                 raise ValueError(f"observer checkout has tracked edits: {checkout}; refusing to overwrite them")
             subprocess.run(["git", "-C", str(checkout), "checkout", "--quiet", "--detach",
                             record["commit"]], check=True, stdout=log, stderr=log)
+            preflight_env = os.environ.copy()
+            for name in ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN",
+                         "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "STORY_BIN",
+                         "STORYHOOK_GITHUB_AUTHORITY", "STORYHOOK_GITHUB_EXPECTED"):
+                preflight_env.pop(name, None)
             record["preflight"] = subprocess.run(
                 ["bash", "scripts/build-release-assets.sh", "--check"],
-                cwd=checkout, stdout=log, stderr=log,
+                cwd=checkout, stdout=log, stderr=log, env=preflight_env,
             ).returncode
             if git(checkout, "status", "--porcelain", "--untracked-files=no"):
                 raise ValueError(f"preflight modified tracked files in {checkout}")

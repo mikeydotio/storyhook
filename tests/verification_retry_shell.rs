@@ -68,6 +68,13 @@ fn isolated_scenario(verdict: &str) {
     fs::create_dir(&bin).unwrap();
     fs::write(bin.join("gh"), GH).unwrap();
     fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    storyhook_test_support::install_git_endpoint(
+        &bin,
+        &[(
+            "https://github.example.com/acme/widgets.git",
+            &root.path().join("remote.git"),
+        )],
+    );
     let log_path = root.path().join("worker.log");
     let log = fs::File::create(&log_path).unwrap();
     // The child is the environment boundary: integration-test threads never
@@ -137,10 +144,7 @@ fn retry_shell_worker() {
     let root =
         PathBuf::from(std::env::var_os("SH714_FIXTURE_ROOT").expect("isolated parent required"));
     let verdict = std::env::var("SH714_VERDICT").unwrap();
-    fs::write(root.join(".gitconfig"), format!(
-        "[user]\n name = SH714 Fixture\n email = fixture@example.test\n[url \"{}\"]\n insteadOf = https://github.com/acme/widgets.git\n[protocol \"file\"]\n allow = always\n",
-        root.join("remote.git").display()
-    )).unwrap();
+    fs::write(root.join(".gitconfig"), "[user]\n name = SH714 Fixture\n email = fixture@example.test\n[protocol \"file\"]\n allow = always\n").unwrap();
     git(
         &root,
         &[
@@ -160,7 +164,7 @@ fn retry_shell_worker() {
             "remote",
             "add",
             "origin",
-            "https://github.com/acme/widgets.git",
+            "https://github.example.com/acme/widgets.git",
         ],
     );
     fs::write(checkout.join(".storyhook.toml"), "schema = 1\nuuid = \"fixture-uuid\"\nprefix = \"SH\"\n[verify]\ngate = \"python3 gate.py\"\n").unwrap();
@@ -210,7 +214,7 @@ raise SystemExit(status)
     .unwrap();
 
     let f = ServiceFixture::new();
-    f.link_origin("https://github.com/acme/widgets");
+    f.link_origin("https://github.example.com/acme/widgets");
     f.store()
         .write(|tx| tx.set_checkout_path(f.project(), Some(&checkout)))
         .unwrap();
@@ -225,7 +229,7 @@ raise SystemExit(status)
         PrLinkService::new(&f.ctx())
             .link(
                 &id,
-                &format!("https://github.com/acme/widgets/pull/{number}"),
+                &format!("https://github.example.com/acme/widgets/pull/{number}"),
                 true,
             )
             .unwrap();
@@ -239,7 +243,7 @@ raise SystemExit(status)
     let actuator = ShellVerificationActuator::with_paths_and_timing(
         f.env().clone(),
         root.join("absent-agent-helper"),
-        PathBuf::from("/usr/bin/true"),
+        PathBuf::from(env!("CARGO_BIN_EXE_story")),
         Duration::from_secs(60),
         Duration::from_secs(5),
         Duration::from_secs(5),

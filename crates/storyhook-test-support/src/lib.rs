@@ -42,6 +42,7 @@ pub mod command_reference;
 mod crash;
 mod engine;
 mod env;
+mod git_endpoint;
 mod git_identity;
 mod github;
 mod hooks_manifest;
@@ -63,6 +64,7 @@ pub use env::{
     BINARY_SNAPSHOT_DIR, TestEnv, assert_the_binary_can_fire_faults, daemon_containment,
     installed_copy, story_binary,
 };
+pub use git_endpoint::install_git_endpoint;
 pub use git_identity::approve_fixture_identity;
 pub use github::{FakeGithubApiFactory, RecordedCall};
 pub use hooks_manifest::{

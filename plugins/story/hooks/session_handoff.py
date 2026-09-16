@@ -124,10 +124,8 @@ def handle_stop(payload, env, provider, process=run_process):
         request = parse_request(message, marker)
         if request is None:
             return None
-        # Native feedback can discover a review hold in its continued turn;
-        # only context delivery recurses, whereas administrative holds never do.
-        if payload['stop_hook_active'] and request['kind'] == 'context':
-            return None
+        # A provider turn may contain many acknowledged continuations. The
+        # supervisor admits message generations atomically and bounds recursion.
         if (not isinstance(payload.get('session_id'), str)
                 or not IDENTITY.fullmatch(payload['session_id'])
                 or any(not isinstance(payload.get(key), str)
@@ -151,14 +149,16 @@ def handle_stop(payload, env, provider, process=run_process):
             return {}
         if type(answer.get('native_feedback')) is not bool:
             raise ValueError('supervisor omitted an atomic native feedback receipt')
-        if not answer['native_feedback']:
-            return {}
         record = answer.get('continuation')
         if (not isinstance(record, dict) or record.get('story_id') != marker
                 or not isinstance(record.get('id'), str) or not IDENTITY.fullmatch(record['id'])
-                or record.get('status') != 'awaiting-ack'
-                or record.get('phase') != 'native-continuation'):
+                or (record.get('status'), record.get('phase')) not in (
+                    ('awaiting-ack', 'native-continuation'), ('acknowledged', 'complete'))):
             raise ValueError('supervisor has not admitted native continuation: ' + str(record))
+        if not answer['native_feedback']:
+            return {}
+        if record['status'] != 'awaiting-ack':
+            raise ValueError('supervisor issued feedback for a settled continuation')
         return {'decision': 'block', 'reason': (
             f'StoryHook recorded context handoff {record["id"]} for {marker}. '
             'Continue the assigned work using native context management. '
@@ -180,7 +180,8 @@ def handle_stop(payload, env, provider, process=run_process):
             'justify repeatedly deferring it. Do not type /compact or request a replacement '
             'session; the provider manages its native context and queue.')}
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, RecursionError) as exc:
-        return diagnostic(exc)
+        return diagnostic(f'{exc}. Run story continuation status {marker} --json and '
+                          'story help continuation; resolve the reported refusal before resuming')
 
 
 def native_origin(env):

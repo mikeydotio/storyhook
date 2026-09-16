@@ -62,52 +62,14 @@
 //! The helper runs no repository tests, so the `merge-watch.sh` scrub that
 //! strips the tokens before a gate runs has no analogue here.
 //!
-//! # Two names deliberately left off, and why
+//! # Network orchestration stops at the provider boundary
 //!
-//! Decided by SH-193's council (unanimous, three seats) after
-//! its first-round proposals were rejected on this exact point: both had
-//! copied [`super::git_env`]'s `GIT_MAY_SEE` verbatim, which omits
-//! `SSH_AUTH_SOCK` — safely, for `git_env`, only because *its* call sites
-//! (`src/service/git.rs`'s `rev-parse`/`log`) are local-only and need no
-//! remote auth at all. `story.sh` is not local-only: it runs
-//! `git fetch --quiet origin` (`plugins/story/bin/story.sh`) and
-//! `git ls-remote --heads origin` (`plugins/story/lib/session.sh`)
-//! directly, against a real remote.
-//!
-//! Both call sites were read before this list was written. Both are already
-//! best-effort: `git fetch`'s exit code is captured and a failure falls back
-//! to a cached `origin/<default>` ref rather than blocking dispatch (the
-//! `base_fresh`/`base_note` handling in `story.sh`), and `freshen_base_ref`'s
-//! own doc comment already states its contract as "any fetch failure is
-//! swallowed." So a dispatch whose remote needs `SSH_AUTH_SOCK` to fetch does
-//! not fail — it silently bases the new worktree on a **stale** cached ref
-//! instead of a fresh one. That is a real, user-visible behavior change from
-//! today, and it is accepted rather than fixed by forwarding the socket,
-//! because an SSH agent socket is not a tuning knob — it is a live credential
-//! handle, functionally equivalent to the exported secrets this story exists
-//! to stop leaking, and putting it back on the allowlist for convenience would
-//! undercut the fix. **Known limitation, not an oversight**: if this proves to
-//! break real SSH-remote dispatch workflows, the redesign trigger is a report
-//! of exactly that, and the fix is a fresher-base warning surfaced to the
-//! dispatch caller, not a wider allowlist.
-//!
-//! The second omission is any `claude`-auth variable (`ANTHROPIC_API_KEY` and
-//! siblings). `story.sh`'s `LAUNCH_TPL` starts the real coding-agent session
-//! this dispatch exists to create, inside a **new** tmux session whose
-//! environment is captured from this allowlist at creation time — so a
-//! `claude` install authenticated only via such a variable, never via
-//! `claude login`'s persisted `~/.claude` credentials, would fail to
-//! authenticate on first dispatch. `HOME` is on the allowlist, which is what
-//! makes persisted login work unaffected; an env-var-only auth is not. This is
-//! deliberately not accommodated for the same reason `SSH_AUTH_SOCK` is not: a
-//! model-provider API key is exactly the shape of secret named in SH-193's own
-//! filing (`OPENAI_API_KEY`, alongside it), and forwarding it back in in a
-//! module written to stop that would be the fix rejecting its own premise. A
-//! **pre-existing** tmux session for a project is entirely unaffected — tmux
-//! captured its environment before this fix ever ran — so this narrows, but
-//! does not close, the coding agent's real ambient exposure; that gap is
-//! logged here rather than implied away. Known limitation; the redesign
-//! trigger is the same as above, a report of real breakage.
+//! Dispatch observes origin through the HTTPS/gh transport, so its helper
+//! needs the same authentication as submission. Only that helper receives
+//! [`apply_orchestration_allowlist`]; tmux control and plugin management stay
+//! narrow. The helper's terminal launcher scrubs credentials from the client
+//! and overrides credentials retained by an existing server before pane
+//! startup. SSH agent and model-provider keys remain excluded.
 
 use std::process::Command;
 
@@ -152,10 +114,16 @@ const DISPATCH_MAY_SEE_PREFIXES: [&str; 2] = ["STORY_", "STORYHOOK_"];
 
 /// The names through which `gh` and an HTTPS `git push` find the operator's
 /// GitHub credentials, stated once so every spawn that is permitted to reach
-/// GitHub admits exactly the same three (SH-136: a second hand-copied list is a
+/// GitHub admits exactly the same names (SH-136: a second hand-copied list is a
 /// list that drifts). `GH_CONFIG_DIR` relocates `gh`'s own config and token
-/// store; `GH_TOKEN`/`GITHUB_TOKEN` are the token itself.
-const GITHUB_CREDENTIAL_MAY_SEE: [&str; 3] = ["GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"];
+/// store; the remaining names are gh's public and Enterprise token variables.
+pub(crate) const GITHUB_CREDENTIAL_MAY_SEE: [&str; 5] = [
+    "GH_CONFIG_DIR",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+];
 
 /// Configuration the centralized verifier needs in addition to the common
 /// executable/user environment and the GitHub credentials. The tokens stop at
@@ -217,6 +185,12 @@ fn apply_allowlist(command: &mut Command, permits: impl Fn(&str) -> bool) {
 /// targets the default tmux server, or an explicit cleanup-lease socket.
 pub fn apply_dispatch_allowlist(command: &mut Command) {
     apply_allowlist(command, dispatch_permits);
+}
+
+/// Gives trusted dispatch orchestration its configuration and gh credentials.
+/// The terminal launcher must remove credentials before starting provider panes.
+pub fn apply_orchestration_allowlist(command: &mut Command) {
+    apply_allowlist(command, submission_permits);
 }
 
 /// Clears `command`'s environment and restores exactly what a provider
@@ -320,7 +294,7 @@ mod tests {
     }
 
     /// The submission helper is `story.sh` with GitHub credentials: it must
-    /// see exactly what dispatch sees plus the three credential names, and the
+    /// see exactly what dispatch sees plus the five credential names, and the
     /// credential list must be the one the verification list shares rather
     /// than a second spelling of it.
     #[test]
@@ -339,7 +313,7 @@ mod tests {
         assert!(!submission_permits("SSH_AUTH_SOCK"));
         assert!(
             !dispatch_permits("GH_TOKEN"),
-            "dispatch must not carry GitHub credentials; only the submission helper does"
+            "control must not carry GitHub credentials; orchestration and submission may"
         );
     }
 
@@ -382,17 +356,33 @@ mod tests {
     /// completeness (the allowlist IS the child's whole environment) is the
     /// probe test above.
     #[test]
-    fn every_test_environment_parameter_survives_the_dispatch_allowlist() {
+    fn every_test_environment_parameter_survives_the_orchestration_allowlist() {
         let dropped: Vec<&str> = crate::env::test_environment::TEST_ENVIRONMENT
             .iter()
             .map(|parameter| parameter.name)
-            .filter(|name| !dispatch_permits(name))
+            .filter(|name| !submission_permits(name))
             .collect();
         assert!(
             dropped.is_empty(),
-            "the dispatch allowlist drops {dropped:?}; a `story` run inside the child \
+            "the orchestration allowlist drops {dropped:?}; a `story` run inside the child \
              resolves those from the developer's real environment rather than its parent's"
         );
+    }
+
+    #[test]
+    fn orchestration_preserves_credentials_and_control_excludes_them() {
+        assert_allowlist_is_the_childs_whole_environment(
+            apply_orchestration_allowlist,
+            submission_permits,
+        );
+        for parameter in crate::env::test_environment::TEST_ENVIRONMENT {
+            assert_eq!(
+                dispatch_permits(parameter.name),
+                !GITHUB_CREDENTIAL_MAY_SEE.contains(&parameter.name),
+                "control isolation for {}",
+                parameter.name
+            );
+        }
     }
 
     /// The submission helper runs `story` too (SH-647), so the same derived

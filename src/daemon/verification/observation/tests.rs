@@ -14,7 +14,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let seed = ServiceFixture::new();
-        seed.link_origin("https://github.com/acme/widgets");
+        seed.github_checkout("https://github.com/acme/widgets");
         // Test-support links another crate instance; reopen the real seed
         // with this unit-test crate's types, as the control tests do.
         let store = crate::store::SqliteStore::open(seed.store().path()).unwrap();

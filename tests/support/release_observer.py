@@ -64,6 +64,47 @@ class ObserverTests(unittest.TestCase):
         self.assertNotEqual(first_log, self.record()["log"])
         self.assertEqual(observer.status(self.root)[0], "successful")
 
+    def test_enterprise_observer_fetches_through_the_shared_transport(self):
+        """Only the external Git endpoint is controlled; observer and helper are real."""
+        binary = Path(self.tmp.name) / "bin"
+        binary.mkdir()
+        url = "https://github.example.com/acme/observer.git"
+        subprocess.run(["python3", str(ROOT / "scripts/test-git-endpoint.py"),
+                        str(binary), json.dumps({url: str(self.root)})], check=True)
+        self.git("remote", "set-url", "origin", "git@github.example.com:acme/observer.git")
+        with mock.patch.dict(os.environ, {"PATH": str(binary) + os.pathsep + os.environ["PATH"]}):
+            self.assertEqual(self.run_watch(), 0)
+        self.assertEqual(self.record()["commit"], self.first)
+
+    def test_preflight_does_not_receive_orchestration_selectors(self):
+        """Child isolation preserves the parent's selectors on success and failure."""
+        names = ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN",
+                 "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "STORY_BIN",
+                 "STORYHOOK_GITHUB_AUTHORITY", "STORYHOOK_GITHUB_EXPECTED")
+        checks = "\n".join('test -z "${' + name + '+x}" || exit 93' for name in names)
+        parent = {name: "parent-" + name for name in names}
+        parent["STORY_BIN"] = os.environ["STORY_BIN"]
+        parent["CHILD_UNRELATED"] = "preserved"
+        for code in (0, 23):
+            with self.subTest(code=code):
+                self.write("scripts/build-release-assets.sh", "#!/bin/bash\n" + checks +
+                           '\ntest "$CHILD_UNRELATED" = preserved || exit 94\n' +
+                           f"exit {code}\n")
+                self.commit()
+                with mock.patch.dict(os.environ, parent):
+                    self.assertEqual(self.run_watch(), int(code != 0))
+                    self.assertEqual(self.record()["preflight"], code)
+                    for name, value in parent.items():
+                        self.assertEqual(os.environ[name], value)
+
+    def test_source_rewrite_is_rejected_before_private_fetch(self):
+        """Copying the raw URL must not discard source authority policy."""
+        other = Path(self.tmp.name) / "other"
+        subprocess.run(["git", "clone", "-q", str(self.root), str(other)], check=True)
+        self.git("config", "url." + str(other) + ".insteadOf", str(self.root))
+        self.assertEqual(self.run_watch(), 1)
+        self.assertIn("rewrite", Path(self.record()["log"]).read_text())
+
     def test_wrong_merge_tag_does_not_skip_preflight(self):
         self.git("switch", "-qc", "release")
         self.write("VERSION", "v1.1.0\n")

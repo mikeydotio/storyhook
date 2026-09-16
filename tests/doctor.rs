@@ -573,26 +573,35 @@ fn doctor_json_answers_an_empty_findings_array_when_healthy() {
 // D5 item 3 (SH-408): a close_on_merge link with nothing to check it against
 // ---------------------------------------------------------------------------
 
-/// `refuse_cross_repo` (`PrLinkService::link`) treats "no registered GitHub
-/// origin" as accept rather than refuse — correct for a project that never
-/// had one, but silent for a `close_on_merge` link that used to be validated
-/// by the now-retired sync engine's own comparison (D1 of SH-408). `story
-/// doctor` has to say so, since nothing else will.
+/// A previously authorized automatic PR link loses its authority when origin
+/// disappears. Doctor must report the stale link and explain how to restore
+/// current checkout authority before the next observation.
 #[test]
 fn doctor_flags_a_close_on_merge_link_with_no_registered_origin_to_check_it_against() {
     let env = TestEnv::shared();
-    let project = env.project().seed_story("A").build();
+    let project = env.project().git().seed_story("A").build();
 
+    storyhook_test_support::git(
+        env,
+        project.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/widgets.git",
+        ],
+    );
     project
         .run(&["link-pr", "SH-1", "https://github.com/acme/widgets/pull/7"])
         .success();
 
+    storyhook_test_support::git(env, project.path(), &["remote", "remove", "origin"]);
     project.run(&["doctor"]).success().stdout(
         contains("SH-1")
             .and(contains("close_on_merge"))
             .and(contains("acme/widgets#7"))
-            .and(contains("no registered GitHub origin"))
-            .and(contains("story project link origin")),
+            .and(contains("current origin cannot authorize"))
+            .and(contains("Restore the registered checkout")),
     );
 }
 
@@ -603,11 +612,22 @@ fn the_close_on_merge_advisory_names_every_affected_story() {
     let env = TestEnv::shared();
     let project = env
         .project()
+        .git()
         .seed_story("A")
         .seed_story("B")
         .seed_story("C")
         .build();
 
+    storyhook_test_support::git(
+        env,
+        project.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/widgets.git",
+        ],
+    );
     project
         .run(&["link-pr", "SH-1", "https://github.com/acme/widgets/pull/7"])
         .success();
@@ -624,6 +644,7 @@ fn the_close_on_merge_advisory_names_every_affected_story() {
         ])
         .success();
 
+    storyhook_test_support::git(env, project.path(), &["remote", "remove", "origin"]);
     project.run(&["doctor"]).success().stdout(
         contains("SH-1")
             .and(contains("SH-2"))
@@ -632,15 +653,23 @@ fn the_close_on_merge_advisory_names_every_affected_story() {
     );
 }
 
-/// Registering the project's origin restores the check `refuse_cross_repo`
-/// runs on the next `link-pr`, and clears this advisory — it is derived from
-/// the same "nothing registered" state the guard itself reads, not tracked
-/// separately.
+/// A matching current origin keeps the automatic PR link authorized, so the
+/// derived doctor advisory remains absent.
 #[test]
 fn the_close_on_merge_advisory_clears_once_the_origin_is_registered() {
     let env = TestEnv::shared();
-    let project = env.project().seed_story("A").build();
+    let project = env.project().git().seed_story("A").build();
 
+    storyhook_test_support::git(
+        env,
+        project.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/widgets.git",
+        ],
+    );
     project
         .run(&["link-pr", "SH-1", "https://github.com/acme/widgets/pull/7"])
         .success();
@@ -656,7 +685,7 @@ fn the_close_on_merge_advisory_clears_once_the_origin_is_registered() {
     project
         .run(&["doctor"])
         .success()
-        .stdout(contains("no registered GitHub origin").not());
+        .stdout(contains("current origin cannot authorize").not());
 }
 
 /// A link with `close_on_merge: false` (a bookmark) is exactly what

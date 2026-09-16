@@ -19,19 +19,10 @@
 
 pub mod git_env;
 
-/// The credentials this process takes out of its own environment so that
-/// nothing it spawns can inherit one.
-///
-/// Sibling of [`git_env`] and the same shape of problem: a daemon holds its
-/// spawner's environment for life. A credential makes it sharper, because the
-/// daemon hands that environment on to a user's hook script, the dashboard's
-/// dispatch child and `claude`.
-pub mod secrets;
-
 /// The allowlists for `story.sh`'s dispatch child and `claude`'s plugin
 /// subcommands — the two spawns storyhook itself trusts. Sibling of
 /// [`git_env`], applying the same "deny at the process, allow at the command"
-/// split to the two children SH-193 named that [`secrets`] and `git_env`
+/// split to the two children SH-193 named that `git_env`
 /// (SH-153, SH-160) do not cover.
 pub mod spawn_env;
 mod store_location;
@@ -40,7 +31,7 @@ mod store_location;
 /// stop a run reaching the developer's own store, daemon and credentials,
 /// stated once so that no consumer has to hand-copy them.
 ///
-/// Sibling of [`secrets`] and [`spawn_env`] in kind — all three are about what
+/// Sibling of [`git_env`] and [`spawn_env`] in kind — all three are about what
 /// a storyhook process may see of the machine around it — and the outermost of
 /// the three: those two decide what storyhook's *children* inherit, this one
 /// decides what storyhook itself does.

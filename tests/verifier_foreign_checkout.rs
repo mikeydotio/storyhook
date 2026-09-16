@@ -8,7 +8,7 @@
 //! permanent infrastructure failure that halted the queue.
 //!
 //! This is the regression test for that exact symptom: the **production**
-//! actuator (`new`, not a `with_paths` seam) against a git repository whose
+//! actuator (with an explicit test CLI binary and the production bundle) against a git repository whose
 //! tree holds no `scripts/` directory at all, with a fake `gh` on `PATH`
 //! answering a closed pull request. Before the fix the outcome was the
 //! invalid-JSON infrastructure failure; after it, the verifier ran from the
@@ -124,8 +124,12 @@ printf '%s\n' '{"number":7,"state":"CLOSED","isDraft":false,"isCrossRepository":
         last_checked_at: None,
     };
 
-    let outcome =
-        ShellVerificationActuator::new(daemon_env.clone()).verify(&candidate, &pull_request);
+    let outcome = ShellVerificationActuator::with_paths(
+        daemon_env.clone(),
+        env_root.path().join("unused-helper"),
+        env!("CARGO_BIN_EXE_story").into(),
+    )
+    .verify(&candidate, &pull_request);
 
     match &outcome {
         VerificationOutcome::InvalidSubmission { detail } => assert!(

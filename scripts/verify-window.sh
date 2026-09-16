@@ -75,6 +75,45 @@ verifier_window_ensure() {
     verifier_window_tmux set-window-option -t "$target" allow-rename off >/dev/null 2>&1 || return 1
 }
 
+# Allocate before retiring the old reader. tmux 3.7c leaves a failed respawn's
+# parser freed; retrying that pane can crash the whole server. A failed split
+# instead destroys only its new pane and leaves the old reader intact.
+# This synchronous command group captures the old ID and retires it only after
+# allocation succeeds. Retries use that ID, never a replacement reader's name.
+verifier_window_respawn() {
+    local target="$1" original="$1" output error pane line pause succeeded
+    shift
+    verifier_window_enabled || return 1
+    for pause in 0 0.05 0.1 0.2; do
+        [ "$pause" = 0 ] || sleep "$pause"
+        succeeded=0
+        output="$(verifier_window_tmux display-message -p -t "$target" '#{pane_id}' \
+            ';' split-window -d -c "$HOME" -t "$target" "$@" \
+            ';' kill-pane -t "$target" 2>&1)" && succeeded=1
+        pane=""
+        error=""
+        # tmux buffers stdout separately from stderr; the ID can follow the error.
+        while IFS= read -r line; do
+            case "$line" in
+                %*[!0-9]*|%|[!%]*|'')
+                    [ -z "$error" ] || error+=$'\n'
+                    error+="$line"
+                    ;;
+                *) pane="$line" ;;
+            esac
+        done <<< "$output"
+        [ -z "$error" ] || printf 'verifier view %s: %s\n' "$original" "$error" >&2
+        [ "$succeeded" = 0 ] || return 0
+        [ -n "$pane" ] || return 1
+        target="$pane"
+        case "$error" in
+            'create pane failed: fork failed: Device not configured') ;;
+            *) return 1 ;;
+        esac
+    done
+    return 1
+}
+
 # verifier_window_tail <log-path>
 #
 # Points the pane at a live, read-only follow of <log-path>, from its
@@ -87,8 +126,8 @@ verifier_window_tail() {
     verifier_window_enabled || return 1
     name="$(verifier_window_project)" || return 1
     verifier_window_ensure "$name" || return 1
-    verifier_window_tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
-        tail -n +1 -F "$log" 2>/dev/null || return 1
+    verifier_window_respawn "=${VERIFIER_WINDOW_SESSION}:=$name" \
+        tail -n +1 -F "$log" || return 1
 }
 
 # verifier_window_banner <text>
@@ -108,9 +147,8 @@ verifier_window_banner() {
     # shellcheck disable=SC2016 # deliberate: $1 must NOT expand here -- it
     # is bash -c's own positional parameter, populated at exec time from
     # the argv element that follows, never from this shell's own $1.
-    verifier_window_tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
-        bash -c 'printf "%s\n" "$1"; exec sleep 2147483647' verifier-banner "$text" \
-        2>/dev/null || return 1
+    verifier_window_respawn "=${VERIFIER_WINDOW_SESSION}:=$name" \
+        bash -c 'printf "%s\n" "$1"; exec sleep 2147483647' verifier-banner "$text" || return 1
 }
 
 # The daemon uses its own executable and explicit store; neither is shell code.
@@ -136,7 +174,7 @@ print(f"activity-{label}-{digest}")
 PY
     )" || return 1
     verifier_window_ensure "$name" || return 1
-    verifier_window_tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
+    verifier_window_respawn "=${VERIFIER_WINDOW_SESSION}:=$name" \
         "$1" --store-path "$store" daemon logs --follow || return 1
 }
 

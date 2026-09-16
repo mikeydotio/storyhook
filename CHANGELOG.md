@@ -3,6 +3,48 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v3.0.2] - 2026-09-16
+
+### Added
+- route release and observer workflows through origin authority (15dc433df)
+- route generic Git observations through explicit origins (a2136f2cf)
+- bind installation and updates to explicit release sources (dca66d4dd)
+- resolve default branches through origin-bound transport (daf9711f5)
+- refresh failed discovery reads after origin changes (f42f05d26)
+- submit pull requests through the shared GitHub boundary (2ae6124ef)
+- route verifier and landing through origin-bound helpers (c14aa0e40)
+- add explicit source authority and HTTPS clone support (b00f5f644)
+- route PR monitoring through gh and retire PAT authentication (5b02b9a33)
+- add explicit gh and HTTPS transport boundaries (129f6b795)
+- add origin-bound GitHub repository resolver (1cf6ee467)
+
+### Fixed
+- recover verifier views from transient PTY failures (67920449e)
+- isolate dispatch authentication from provider panes (83fd4ea76)
+- validate project authority before first PR submission (982a1021b)
+- require hook evidence in dispatch diagnostics (df496492f)
+- refuse unreadable fallback plugin configuration (c7164bf1e)
+- reject invalid fallback project pointers (3ada82cde)
+- admit repeated context handoffs by native message (95e750e0d)
+- preserve degraded SessionStart hook evidence (e4fbfa0cc)
+- validate verifier authority against current checkout origin (25ed34d9d)
+
+### Changed
+- Merge pull request #835 from mikeydotio/worktree-SH-734 (149e03268)
+- reconcile SH-734 with startup readiness fixes (7eb7d9676)
+- Merge pull request #834 from mikeydotio/worktree-SH-736 (3b7b655fc)
+- Merge pull request #833 from mikeydotio/worktree-SH-735 (04893b0bd)
+- Merge pull request #831 from mikeydotio/release/v3.0.1 (12ad6f42c)
+
+### Testing
+- align remaining fixtures with GitHub authority contracts (2a5783baf)
+- distinguish orchestration and control environment invariants (ade34d3b4)
+- align startup contracts with hook diagnostics (63b8a8701)
+- give TUI PR fixtures current checkout authority (b4bbcc2f8)
+- share controlled Git endpoint fixtures across harnesses (c7814063d)
+
+_[manual]_
+
 ## [v3.0.1] - 2026-09-14
 
 ### Added

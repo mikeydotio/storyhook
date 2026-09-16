@@ -12718,6 +12718,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * — cheap insurance against a poll or an SSE `repos-changed` tearing out
    * an open, keyboard-focused menu out from under the user. */
   function renderProjectSelector() {
+    if (pressDefer("project-selector", renderProjectSelector)) return;
     var btn = $("projsel-btn");
     var menu = $("projsel-menu");
     if (!btn || !menu) return;
@@ -12962,6 +12963,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * is not merely a copy change, since acting on it writes a project record
    * the user did not ask to create. */
   function renderHome() {
+    if (pressDefer("home", renderHome)) return;
     var container = $("home-view");
     if (!state.repos.length) {
       clear(container);
@@ -13152,6 +13154,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function renderSettings() {
+    if (pressDefer("settings", renderSettings)) return;
     // Guarded: this also runs on every repo-list refresh, and rebuilding
     // the editor under a half-typed description would discard it.
     if (state.settingsRepoId) { if (!statusEditorIsBusy()) renderStatuses(); return; }

@@ -17,18 +17,18 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use storyhook::domain::github_remote::GithubApiBase;
 use storyhook::error::AppError;
 use storyhook::github::api::{GithubApi, GithubApiFactory};
 use storyhook::github::types::PullRequestStatus;
+use storyhook::github_access::Repository;
 
 /// One call the engine made against the fake, in the order it made them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordedCall {
     /// A repository-scoped API client was built with this routing identity.
     Build {
-        /// The REST API base URL.
-        api_base: String,
+        /// The explicit GitHub host.
+        host: String,
         /// The repository owner.
         owner: String,
         /// The repository name.
@@ -95,17 +95,12 @@ impl FakeGithubApiFactory {
 }
 
 impl GithubApiFactory for FakeGithubApiFactory {
-    fn build(
-        &self,
-        _token: String,
-        api_base: GithubApiBase,
-        owner: String,
-        repo: String,
-    ) -> Box<dyn GithubApi> {
+    fn build(&self, repository: Repository) -> Box<dyn GithubApi> {
+        let identity = repository.identity();
         self.state.borrow_mut().recorded.push(RecordedCall::Build {
-            api_base: api_base.as_str().to_string(),
-            owner,
-            repo,
+            host: identity.host.clone(),
+            owner: identity.owner.clone(),
+            repo: identity.repo.clone(),
         });
         Box::new(FakeGithubApi {
             state: Rc::clone(&self.state),

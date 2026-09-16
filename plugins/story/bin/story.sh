@@ -164,7 +164,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../hooks/lib.sh"
 # charter's `<reap>` placeholder (SH-208) expands to: the exact script an
 # unattended session must call back into to reclaim its own worktree.
 SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd)"
+STORY_PLUGIN_ROOT="$(cd "$(dirname "$SELF_PATH")/.." && pwd -P)"
 source "$STORY_PLUGIN_ROOT/lib/codex-bootstrap.sh"
 source "$STORY_PLUGIN_ROOT/lib/resources.sh"
 source "$STORY_PLUGIN_ROOT/lib/workspace.sh"
@@ -959,7 +959,7 @@ enter_checkout() {
 # quietly reinstate the wrong-guard stranding SH-481 was filed for.
 # dispatch_ready_note — one clause naming WHY the readiness check gave up, from
 # the globals it sets (wait_ready_sentinel's reasons since SH-231; wait_ready's
-# own "timeout" default survives for cmd_doctor's still-unported call). A
+# own "timeout" default covers terminal-readiness probes). A
 # timeout and "a shell is sitting in that pane" are different situations with
 # different remedies, and the operator needs to be told which.
 PLAN_MODE_REASON="not-required"
@@ -1083,7 +1083,7 @@ dispatch_ready_note() {
         printf 'Codex runs SessionStart only after the first prompt. Its initialization prompt was submitted, but no dispatch sentinel appeared; check the enabled Storyhook hook package and hook errors. No story charter was delivered'
         return
       fi
-      printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel. Possible causes: the plugin'\''s hooks are not installed in that worktree; %s has not started yet; the sentinel write failed silently on the daemon side (check daemon.log for a "could not publish its dispatch sentinel" warning, SH-544); or the daemon was too slow or busy to answer the hook'\''s own request within its budget (run `story doctor install` to check daemon health)' "$AGENT_LABEL"
+      printf 'timed out waiting for its SessionStart hook to publish a dispatch sentinel. Check that the Storyhook plugin is enabled for %s, then inspect SessionStart stderr and daemon.log for hook, configuration, or sentinel-write failures. Run `story load-context` to diagnose project access' "$AGENT_LABEL"
       ;;
     hook-identity-missing)
       printf 'its SessionStart hook published a legacy or malformed sentinel without protocol-2 plugin identity. Update or repair the enabled Storyhook plugin, then run `story doctor install`'
@@ -1569,7 +1569,7 @@ configure_dispatch_provider() {
 }
 
 # ---- subcommand: dispatch ---------------------------------------------------
-CONTINUATION_PROMPT_CLAUSE='Context capacity alone is not a story blocker. Unknown capacity alone must not defer already assigned work. If context pressure prevents reliable continuation, or the adoption rubric requires deferring additional work, preserve the story and worktree and end with exactly one JSON object whose type is storyhook.session-handoff, version is integer 1, story_id is <n>, kind is context, and evidence contains nonempty context and outstanding_work strings plus approved scope and test evidence when available. StoryHook records this handoff and continues through the provider native context mechanism. Previously adopted work is assigned work in the continuing session. Never block solely for context, erase queued corrections, or type /compact. In Plan mode continue planning and defer continuation acknowledgement until ordinary plan approval switches to Default mode, then review and acknowledge before implementation. For likely-obviated work in Plan mode use the same envelope with kind obviation-review and evidence containing context, original_state and all unique candidate story IDs in candidates. This records a pending human review hold and grants no implementation permission.'
+CONTINUATION_PROMPT_CLAUSE='Context capacity alone is not a story blocker. Unknown capacity alone must not defer already assigned work. If context pressure prevents reliable continuation, or the adoption rubric requires deferring additional work, preserve the story and worktree and end with exactly one JSON object whose type is storyhook.session-handoff, version is integer 1, story_id is <n>, kind is context, and evidence contains nonempty context and outstanding_work strings plus approved scope and test evidence when available. StoryHook records admitted handoffs and continues through the provider native context mechanism. A later handoff requires acknowledgement of the previous request. Three consecutive handoffs without changed HEAD or dirty content stop automatic continuation with a diagnostic. If a handoff is unavailable or refused, read continuation status and resolve the reported reason; do not claim that continuation succeeded. Previously adopted work is assigned work in the continuing session. Never block solely for context, erase queued corrections, or type /compact. In Plan mode continue planning and defer continuation acknowledgement until ordinary plan approval switches to Default mode, then review and acknowledge before implementation. For likely-obviated work in Plan mode use the same envelope with kind obviation-review and evidence containing context, original_state and all unique candidate story IDs in candidates. This records a pending human review hold and grants no implementation permission.'
 # Revalidate the persisted dead-pane ownership before guarded recovery effects.
 continuation_preflight() {
   local answer
@@ -2392,16 +2392,14 @@ cmd_dispatch() {
   # CACHED (fetch failed but a prior origin/<default> ref exists),
   # HEAD-FALLBACK (origin/<default> has never resolved at all, or no default
   # branch could be established — offline and never fetched). Deliberately
-  # NOT routed through freshen_base_ref: that helper's documented contract
-  # is "any fetch failure is swallowed" (it exists for branch_is_merged,
-  # which only needs SOME usable ref, never freshness metadata) — inlining
-  # the fetch here and capturing its OWN exit code is what lets base_fresh
+  # Capture the fetch result here so the dispatch receipt carries freshness
+  # and its diagnostic. Keeping the actual exit code is what lets base_fresh
   # distinguish "resolves" from "was just refreshed". Either way dispatch
   # never blocks on network, and every fallback is stated in the warning
   # (SH-691). On any hard failure from here on, the claim above is rolled
   # back via claim_rollback_note so a failed dispatch never strands the
   # story in the claimed state.
-  local fetch_rc=0
+  local fetch_rc=0 fetch_diagnostic=""
   local base_oid="" base_fresh=false base_note=""
   if [ "$worktree_reused" = true ]; then
     base_oid=$(git -C "$worktree_path" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
@@ -2413,8 +2411,7 @@ cmd_dispatch() {
     base_note="reattached surviving branch $worktree_branch at ${base_oid:0:8}; no base refresh or reset was attempted"
   else
     if [ -n "$default" ]; then
-      git fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" \
-        >/dev/null 2>&1 || fetch_rc=$?
+      fetch_diagnostic=$(origin_git fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" 2>&1) || fetch_rc=$?
     else
       fetch_rc=1
     fi
@@ -2424,11 +2421,11 @@ cmd_dispatch() {
       if [ "$fetch_rc" -eq 0 ]; then
         base_fresh=true
       else
-        base_note="couldn't refresh origin/$default (offline?); based on last-known origin/$default @ ${base_oid:0:8}"
+        base_note="couldn't refresh origin/$default ($fetch_diagnostic); based on last-known origin/$default @ ${base_oid:0:8}"
       fi
     elif base_oid=$(git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) && [ -n "$base_oid" ]; then
       if [ -n "$default" ]; then
-        base_note="could not determine origin/$default; new work is based on the local checkout, NOT the latest origin tip"
+        base_note="could not determine origin/$default ($fetch_diagnostic); new work is based on the local checkout, NOT the latest origin tip"
       else
         base_note="no default branch could be established ($default_reason; no local origin/HEAD cache either); new work is based on the local checkout, NOT an origin tip"
       fi
@@ -2500,8 +2497,7 @@ cmd_dispatch() {
   #
   # `remain-on-exit on`, `automatic-rename off` and `allow-rename off` are
   # chained onto the SAME tmux invocation via `\;` rather than set
-  # afterward in separate `tmux` calls (as this used to do, and as
-  # cmd_doctor's own scratch window below still does): each separate `tmux`
+  # afterward in separate `tmux` calls (as this used to do): each separate `tmux`
   # call is a fresh process launch, and with the shell command now
   # executing AT window-creation time rather than after a later typed step,
   # that gap is a real window for a title escape to land in before the pin
@@ -2633,7 +2629,7 @@ cmd_dispatch() {
   elif [ "$AGENT" = "codex" ]; then
     wait_ready "$pane" "$launch_cmd" && provider_ready=true
   else
-    wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" && provider_ready=true
+    wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" "$STORY_PLUGIN_ROOT" && provider_ready=true
   fi
   if [ "$provider_ready" != true ]; then
     local ready_tail
@@ -3666,7 +3662,7 @@ _project_integrity() {
   esac
 }
 
-cmd_doctor() {
+cmd_doctor() (
   [ "$#" -eq 0 ] || fail "usage: story.sh doctor"
 
   require_story
@@ -3687,14 +3683,15 @@ cmd_doctor() {
         ok: true, dry_run: true, agent: $agent, agent_label: $agent_label, window_name: $wname,
         commands: [
           "story doctor --json",
-          ("tmux new-window -d -n " + $wname + " -P -F #{pane_id}"),
-          ("tmux send-keys -t <pane> -l " + $launch),
-          "tmux send-keys -t <pane> Enter",
+          "create a private Git checkout with the current project pointer",
+          ("tmux new-window -d -c <private-checkout> -n " + $wname + " -e STORYHOOK_DISPATCH=1 -P -F #{pane_id} " + $launch),
+          "verify fresh SessionStart sentinel and original provider process",
+          (if $agent == "codex" then "run the task-free Codex initialization and verify its stopped turn" else empty end),
           (if $agent == "codex" then ("tmux send-keys -t <pane> " + $plan_key + " # if Plan footer is absent") else empty end),
           "printf %s <multi-line probe> | tmux load-buffer -b story-doctor -",
           "tmux paste-buffer -p -d -b story-doctor -t <pane>",
           "tmux capture-pane -p -t <pane>",
-          "tmux kill-window -t <window>"
+          "verify ownership, remove the probe pane and private checkout"
         ],
         display: ("[story] DRY RUN doctor: would run `story doctor` for project integrity, then spin up "
                   + $agent_label + " with `" + $launch + "` in window " + $wname + ", check readiness and Plan mode, paste a multi-line probe "
@@ -3708,23 +3705,89 @@ cmd_doctor() {
   _project_integrity
   local integrity_summary="$_INTEGRITY_SUMMARY"
 
-  local pane window
-  if ! pane=$(tmux new-window -d -n "$DOCTOR_WINDOW_NAME" -P -F '#{pane_id}' 2>/dev/null) || [ -z "$pane" ]; then
-    fail "failed to open a scratch tmux window for the readiness self-test."
+  local probe_dir pane="" pane_pid="" launch_identity="" launch_start="" cleanup_ok=true cleanup_note="" cleaned=false pointer_root
+  probe_dir=$(mktemp -d /tmp/story-doctor.XXXXXX) || fail "cannot create doctor scratch checkout"
+  # Dynamic scope is confined to this subshell. An early refusal still runs
+  # cleanup, and an uncertain/replaced owner keeps its files for diagnosis.
+  doctor_owns_pane() {
+    local current identity
+    current=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null) || return 1
+    [ -n "$pane_pid" ] && [ "$current" = "$pane_pid" ] || return 1
+    identity=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" capture "$pane_pid") || return 1
+    [ -n "$launch_start" ] && [ "$(printf '%s' "$identity" | jq -r '.identity.start')" = "$launch_start" ]
+  }
+  doctor_cleanup() {
+    local stopped detail
+    [ "$cleaned" = false ] || return 0
+    cleaned=true
+    if [ -n "$pane" ]; then
+      if ! stopped=$(python3 "$STORY_PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pane_pid" "$launch_start" 2>&1); then
+        detail=$(printf '%s' "$stopped" | jq -r '.error' 2>/dev/null) || detail="$stopped"
+        cleanup_ok=false
+        cleanup_note="Probe cleanup could not confirm ownership or termination: $detail; retained $probe_dir and pane $pane."
+        printf '%s\n' "$cleanup_note" >&2
+        return 0
+      fi
+    fi
+    if ! rm -rf -- "$probe_dir"; then
+      cleanup_ok=false
+      cleanup_note="Could not remove doctor scratch checkout $probe_dir."
+      printf '%s\n' "$cleanup_note" >&2
+    fi
+  }
+  trap doctor_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  pointer_root=$(pwd -P)
+  while [ ! -e "$pointer_root/.storyhook.toml" ] && [ ! -L "$pointer_root/.storyhook.toml" ]; do
+    [ "$pointer_root" != / ] && [ ! -e "$pointer_root/.git" ] \
+      || fail "doctor needs a readable .storyhook.toml in this checkout to test SessionStart"
+    pointer_root=$(dirname "$pointer_root")
+  done
+  cp "$pointer_root/.storyhook.toml" "$probe_dir/.storyhook.toml" || fail "cannot copy the project pointer for doctor"
+  if [ -e "$pointer_root/.storyhook/plugin-config.toml" ] || [ -L "$pointer_root/.storyhook/plugin-config.toml" ]; then
+    mkdir -p "$probe_dir/.storyhook" \
+      && cp "$pointer_root/.storyhook/plugin-config.toml" "$probe_dir/.storyhook/" \
+      || fail "cannot copy plugin configuration for doctor"
   fi
-  window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
-
-  paste_text "$pane" "$DOCTOR_LAUNCH_TPL" || true
-  tmux send-keys -t "$pane" Enter 2>/dev/null || true
+  git -C "$probe_dir" init -q -b main || fail "cannot initialize doctor scratch checkout"
+  local CODEX_BOOTSTRAP_FILE="" CODEX_BOOTSTRAP_TOKEN="" CODEX_BOOTSTRAP_PHASE=not-started
+  if [ "$AGENT" = codex ]; then
+    codex_bootstrap_prepare "$probe_dir" || fail "cannot prepare doctor Codex initialization"
+  fi
+  pane=$(python3 "$STORY_PLUGIN_ROOT/lib/tmux-launch.py" new-window -d -c "$probe_dir" \
+    -n "$DOCTOR_WINDOW_NAME" -e STORYHOOK_DISPATCH=1 -e STORYHOOK_AUTO= -e STORYHOOK_FULL_AUTO= \
+    -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" -P -F '#{pane_id}' "$DOCTOR_LAUNCH_TPL" \
+    \; set-window-option -t "$DOCTOR_WINDOW_NAME" remain-on-exit on \
+    \; set-window-option -t "$DOCTOR_WINDOW_NAME" automatic-rename off \
+    \; set-window-option -t "$DOCTOR_WINDOW_NAME" allow-rename off) || true
+  [ -n "$pane" ] || fail "failed to open a scratch tmux window for the readiness self-test"
+  pane_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null) || pane_pid=""
+  launch_identity=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" capture "$pane_pid") \
+    || fail "cannot capture doctor launch process: $launch_identity; scratch checkout: $probe_dir"
+  launch_start=$(printf '%s' "$launch_identity" | jq -er '.identity.start') || fail "doctor launch has no process start token"
 
   # This probe launches DOCTOR_LAUNCH_TPL, which need not be LAUNCH_TPL — so the
   # binary pane_runs recognises by identity has to follow it, or doctor would
   # self-test the dispatch launcher's install while running a different one.
   READY_LAUNCH_BIN="$doctor_bin"
 
-  local readiness_confirmed=false plan_mode_confirmed=false tier="none" tail_evidence
+  local readiness_confirmed=false terminal_ready=false sentinel_confirmed=false context_status=unknown
+  local plan_mode_confirmed=false tier="none" tail_evidence ready_reason
   if wait_ready "$pane" "$DOCTOR_LAUNCH_TPL"; then
-    readiness_confirmed=true
+    terminal_ready=true
+  fi
+  if [ "$AGENT" = codex ]; then
+    codex_bootstrap_ready "$pane" "$pane_pid" "$probe_dir" "$DOCTOR_LAUNCH_TPL" && readiness_confirmed=true
+  else
+    wait_ready_sentinel "$pane" "$pane_pid" "$probe_dir" "$STORY_PLUGIN_ROOT" && readiness_confirmed=true
+  fi
+  ready_reason="$WAIT_READY_REASON"
+  if [ "$WAIT_READY_TIER" = sentinel ]; then
+    sentinel_confirmed=true
+    context_status=$(jq -r '.context_status // "unknown"' "$probe_dir/.claude/dispatch-sentinel.json") || context_status=unknown
+  fi
+  if [ "$readiness_confirmed" = true ] && doctor_owns_pane; then
     if ensure_provider_plan_mode "$pane"; then
       plan_mode_confirmed=true
     fi
@@ -3746,7 +3809,7 @@ cmd_doctor() {
   # the `❯` row; had it split at a newline, the first would have submitted and
   # only the last would remain. Diagnostic only — never presses Enter.
   local probe_ran=false probe_first_held=false probe_seen=0 probe_total=3
-  if [ "$readiness_confirmed" = true ] && [ "$plan_mode_confirmed" = true ]; then
+  if [ "$readiness_confirmed" = true ] && [ "$plan_mode_confirmed" = true ] && doctor_owns_pane; then
     local probe capture box_row marker
     probe=$(printf 'story-probe-alpha\nstory-probe-bravo\nstory-probe-charlie')
     if paste_prompt "$pane" "$probe" "story-doctor"; then
@@ -3760,22 +3823,16 @@ cmd_doctor() {
     fi
   fi
 
-  # Tear down the scratch window (best-effort — never flips ok). The probe text
-  # is discarded unsubmitted along with it.
-  if [ -n "$window" ]; then
-    tmux kill-window -t "$window" 2>/dev/null || true
-  else
-    tmux kill-window -t "$pane" 2>/dev/null || true
-  fi
+  doctor_cleanup
 
   local display
   if [ "$readiness_confirmed" = true ]; then
     display="[story] doctor: $AGENT_LABEL readiness OK via the '$tier' tier."
     if [ "$occupant_rule" != "pattern" ]; then
-      display="$display Occupant name \`$occupant\` does NOT match STORY_READY_PROCESS_PATTERN (\`$READY_PROCESS_PATTERN\`); it was recognised as the launch binary itself ($occupant_rule), which resolves to \`$launch_resolved\`. Dispatch works — but a name-only gate would refuse this build, so leave STORY_READY_PROCESS_PATTERN alone rather than pinning it to \`$occupant\`, which changes on every update."
+      display="$display Occupant name \`$occupant\` does NOT match STORY_READY_PROCESS_PATTERN (\`$READY_PROCESS_PATTERN\`); it was recognised as the launch binary itself ($occupant_rule), which resolves to \`$launch_resolved\`. The process identity check passed; leave STORY_READY_PROCESS_PATTERN alone rather than pinning it to \`$occupant\`, which changes on every update."
     fi
   else
-    display="[story] doctor: $AGENT_LABEL readiness NOT confirmed within the poll budget — the readiness marker may have drifted. See pane_tail."
+    display="[story] doctor: $AGENT_LABEL dispatch readiness NOT confirmed ($ready_reason). $(dispatch_ready_note). See pane_tail."
     if [ -n "$occupant" ]; then
       display="$display The pane's occupant was \`$occupant\` and the launch binary resolves to \`${launch_resolved:-<unresolved>}\`."
     fi
@@ -3792,10 +3849,17 @@ cmd_doctor() {
       display="$display Multi-line paste probe: SUSPECT (first-line-held=$probe_first_held, $probe_seen/$probe_total lines seen) — bracketed paste may not be landing."
     fi
   fi
-  display="$display $integrity_summary"
+  display="$display Context: $context_status. $integrity_summary${cleanup_note:+ $cleanup_note}"
+  if [ "$context_status" != loaded ]; then
+    display="$display Run story load-context and inspect SessionStart stderr for the context-loading failure."
+  fi
 
   jq -n \
     --argjson ready "$readiness_confirmed" --arg tier "$tier" \
+    --argjson terminal "$terminal_ready" --argjson sentinel "$sentinel_confirmed" \
+    --arg context "$context_status" --arg reason "$ready_reason" \
+    --argjson cleanup "$cleanup_ok" --arg cleanup_note "$cleanup_note" \
+    --arg probe_dir "$probe_dir" --arg bootstrap "$CODEX_BOOTSTRAP_PHASE" \
     --argjson plan "$plan_mode_confirmed" --arg agent "$AGENT" --arg agent_label "$AGENT_LABEL" \
     --arg tail "$tail_evidence" --arg display "$display" \
     --argjson probe_ran "$probe_ran" --argjson probe_first "$probe_first_held" \
@@ -3805,10 +3869,16 @@ cmd_doctor() {
     --arg launch_bin "$doctor_bin" --arg launch_resolved "$launch_resolved" \
     --arg pattern "$READY_PROCESS_PATTERN" '
     {
-      ok: true,
+      ok: ($ready and $terminal and $plan and $integrity_ok and $cleanup and ($context == "loaded") and $probe_ran and $probe_first and ($probe_seen == $probe_total)),
       agent: $agent,
       agent_label: $agent_label,
       readiness_confirmed: $ready,
+      terminal_readiness_confirmed: $terminal,
+      sentinel_confirmed: $sentinel,
+      context_status: $context,
+      wait_ready_reason: $reason,
+      bootstrap_phase: $bootstrap,
+      cleanup: {ok:$cleanup, detail:$cleanup_note},
       plan_mode_confirmed: $plan,
       matched_tier: $tier,
       occupant: {
@@ -3823,8 +3893,9 @@ cmd_doctor() {
     }
     + (if $probe_ran then {multiline_probe: {first_line_held: $probe_first, lines_seen: $probe_seen, lines_total: $probe_total}} else {} end)
     + (if $tail == "" then {} else {pane_tail: $tail} end)
+    + (if $cleanup then {} else {preserved_path:$probe_dir} end)
     + {display: $display}'
-}
+)
 
 # ---- subcommand: complete ---------------------------------------------------
 # FORKED from mikeydotio/agentics' plugins/storywork/bin/story.sh
@@ -3996,7 +4067,10 @@ _complete_prepare() {
     CMP_DEFAULT_SOURCE=cache
     CMP_DEFAULT_NOTE="default branch \`$CMP_DEFAULT\` is the local origin/HEAD cache and may be stale (origin did not answer: $default_reason) — \`git remote set-head origin -a\` refreshes it"
   fi
-  freshen_base_ref "$CMP_DEFAULT"
+  local refresh_diagnostic
+  if ! refresh_diagnostic=$(freshen_base_ref "$CMP_DEFAULT" 2>&1); then
+    CMP_DEFAULT_NOTE="${CMP_DEFAULT_NOTE:+$CMP_DEFAULT_NOTE; }base refresh failed; checking existing refs: $refresh_diagnostic"
+  fi
 
   CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH" "$caller_toplevel") || refuse "resource-query-failed" "cannot classify resolved worktree"
 
@@ -4568,7 +4642,10 @@ cmd_reap_leased() {
   # refusal by name, never a cached or literal guess.
   default=$(default_branch 2>&1) \
     || refuse "default-branch-unknown" "story.sh reap: origin's default branch could not be established for $canonical_id, so nothing can be classed merged: $(printf '%s' "$default" | tr '\n' ' ')"
-  freshen_base_ref "$default"
+  local refresh_diagnostic refresh_note=""
+  if ! refresh_diagnostic=$(freshen_base_ref "$default" 2>&1); then
+    refresh_note="base refresh failed; checked existing refs: $refresh_diagnostic"
+  fi
   wt_status=$(_story_worktree_status "$leased_worktree" "") || refuse "resource-query-failed" "cannot classify leased worktree"
   case "$wt_status" in
     dirty) refuse "dirty-worktree" "story.sh reap: $canonical_id's leased worktree ($leased_worktree) has uncommitted changes." ;;
@@ -4586,7 +4663,7 @@ cmd_reap_leased() {
   [ "$branch_status" != protected ] \
     || refuse "protected-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is protected."
   [ "$branch_status" != unmerged ] \
-    || refuse "unmerged-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is not merged into \`$default\`."
+    || refuse "unmerged-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is not merged into \`$default\`.${refresh_note:+ $refresh_note}"
   leased_story_windows "$lease" "$canonical_id" \
     || refuse "cleanup-lease-tmux-unverifiable" "story.sh reap: the leased tmux server exists but its story windows cannot be enumerated."
   local initial_tmux_windows="$LEASE_TMUX_WINDOWS"
@@ -4637,6 +4714,7 @@ cmd_reap_leased() {
   else
     display="[story] leased reap $canonical_id failed: ${failure:-one or more exact postconditions remain false}."
   fi
+  [ -z "$refresh_note" ] || display="$display $refresh_note"
   leased_reap_receipt "$lease" "$ok" "$registration_absent" "$path_absent" \
     "$branch_absent" "$tmux_absent" "$reaped_wt" "$reaped_br" "$reaped_tmux" "$display"
   [ "$ok" = true ]
@@ -4703,6 +4781,8 @@ cmd_submit_leased() {
   registered_worktree_branch "$worktree" >/dev/null 2>&1 \
     || submit_refuse repair "cleanup-lease-worktree-missing" "story.sh submit: leased worktree \`$worktree\` is not a registered worktree; nothing to push."
   local default
+  export STORYHOOK_GITHUB_AUTHORITY="${STORYHOOK_GITHUB_AUTHORITY:-$LEASED_REPO}"
+  github_begin || submit_refuse infrastructure "default-branch-unknown" "story.sh submit: cannot establish GitHub origin: ${GITHUB_ACCESS_ERROR:-origin unavailable}"
   default=$(default_branch submission_git 2>&1) \
     || submit_refuse infrastructure "default-branch-unknown" "story.sh submit: origin's default branch could not be established, so there is no base to open $canonical_id's pull request against: $(printf '%s' "$default" | tr '\n' ' ')"
   ! is_protected_branch "$branch" "$default" \
@@ -4763,7 +4843,7 @@ cmd_submit_leased() {
   # `multiple-pull-requests` already is.
   local fields=number,url,baseRefName,headRefOid,isCrossRepository
   local listed open wrong_base count pr adopted title body url view_out
-  listed=$(cd "$worktree" && gh pr list --head "$branch" --state open \
+  listed=$(cd "$worktree" && github_exec pr list --head "$branch" --state open \
     --json "$fields" --limit 20 2>&1) \
     || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh could not list pull requests for \`$branch\`: $listed"
   open=$(printf '%s' "$listed" | jq -c '[.[] | select(.isCrossRepository == false)]' 2>/dev/null) \
@@ -4771,7 +4851,7 @@ cmd_submit_leased() {
   wrong_base=$(printf '%s' "$open" | jq -c --arg b "$default" '[.[] | select(.baseRefName != $b)]')
   if [ "$(printf '%s' "$wrong_base" | jq 'length')" -ne 0 ]; then
     submit_refuse repair "wrong-base-pull-request" \
-      "story.sh submit: $(printf '%s' "$wrong_base" | jq -r 'map("#" + (.number|tostring) + " (" + .url + ") targets `" + .baseRefName + "`") | join("; ")') from \`$branch\` — not \`$default\`, origin's default branch — so it is not this lane's to adopt, and opening another beside it would leave the misdirected one for a person to merge. Retarget it ($(printf '%s' "$wrong_base" | jq -r --arg b "$default" 'map("`gh pr edit " + (.number|tostring) + " --base " + $b + "`") | join(", ")')) or close it, then run \`story move $canonical_id verifying\` again." \
+      "story.sh submit: $(printf '%s' "$wrong_base" | jq -r 'map("#" + (.number|tostring) + " (" + .url + ") targets `" + .baseRefName + "`") | join("; ")') from \`$branch\` — not \`$default\`, origin's default branch — so it is not this lane's to adopt, and opening another beside it would leave the misdirected one for a person to merge. Retarget it ($(printf '%s' "$wrong_base" | jq -r --arg b "$default" --arg repo "$STORYHOOK_GITHUB_EXPECTED" 'map("`gh pr edit " + (.number|tostring) + " --base " + $b + " --repo " + $repo + "`") | join(", ")')) or close it, then run \`story move $canonical_id verifying\` again." \
       "$(jq -n --argjson p "$wrong_base" '{wrong_base_pull_requests: $p}')"
   fi
   open=$(printf '%s' "$open" | jq -c --arg b "$default" '[.[] | select(.baseRefName == $b)]')
@@ -4782,11 +4862,11 @@ cmd_submit_leased() {
       body="Story $canonical_id — $(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.title // ""')
 
 Submitted by the storyhook verifier from branch \`$branch\`. Verification, merge and cleanup are the verifier's; see \`story show $canonical_id\`."
-      url=$(cd "$worktree" && gh pr create --base "$default" --head "$branch" --title "$title" --body "$body" 2>&1) \
+      url=$(cd "$worktree" && github_exec pr create --base "$default" --head "$branch" --title "$title" --body "$body" 2>&1) \
         || submit_refuse infrastructure "pull-request-uncreated" "story.sh submit: gh pr create failed for \`$branch\`; if the pull request was created, the next attempt adopts it. gh said: $url"
       url=$(printf '%s\n' "$url" | grep -E '^https?://' | tail -n 1)
       [ -n "$url" ] || submit_refuse infrastructure "pull-request-uncreated" "story.sh submit: gh pr create printed no URL."
-      view_out=$(cd "$worktree" && gh pr view "$url" --json "$fields" 2>&1) \
+      view_out=$(cd "$worktree" && github_exec pr view "$url" --json "$fields" 2>&1) \
         || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh could not read back \`$url\`: $view_out"
       pr=$(printf '%s' "$view_out" | jq -c . 2>/dev/null) \
         || submit_refuse infrastructure "pull-request-unlisted" "story.sh submit: gh pr view returned something other than JSON: $view_out"

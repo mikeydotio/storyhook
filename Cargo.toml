@@ -28,7 +28,7 @@ ureq = "3"
 
 [package]
 name = "storyhook"
-version = "3.0.1"
+version = "3.0.2"
 edition = "2024"
 rust-version = "1.89"
 description = "CLI-first issue tracker for AI coding agents"
@@ -40,26 +40,8 @@ categories = ["command-line-utilities", "development-tools"]
 
 [features]
 default = ["github-pr"]
-# Named `github-sync` until SH-408 retired the story↔GitHub-Issues sync engine
-# this gate used to serve; renamed alongside it because the code it now names
-# is the PR watcher (`story link-pr`/`pr-check`/`github-auth`), not sync.
-# `ureq` used to be gated here. It is unconditional now — the CLI's default
-# invoker talks to the daemon over HTTP, so a build without an HTTP client
-# could not run a command at all — and this feature gates only the PR-watcher
-# code itself.
-# `dep:keyring-core` and its per-platform backend ride this same gate rather
-# than a feature of their own (SH-212): the OS-keychain-backed GitHub
-# credential and the background poll thread that spends it exist only where
-# `pr_check::run_check` — the code path they both call — is itself reachable.
-# A `--no-default-features` build carries neither the dependencies nor the
-# code that would touch a keychain. Referencing a target-specific optional
-# dependency here is fine even on a platform that does not declare it: Cargo
-# only activates the ones a given target actually has.
-github-pr = [
-    "dep:keyring-core",
-    "dep:apple-native-keyring-store",
-    "dep:zbus-secret-service-keyring-store",
-]
+# PR observations through gh; local linking remains feature-independent.
+github-pr = []
 
 # Named crash points inside the store (`src/store/fault.rs`). NEVER in
 # `default`: with the feature off, every injection point is an inlined
@@ -154,62 +136,8 @@ tui-scrollview = "0.6"
 
 # The RPC client. Not optional: the CLI's default invoker talks to the daemon
 # over HTTP (locked decision 2), so a storyhook built without an HTTP client
-# would have no way to run a command. github-pr uses the same one.
+# would have no way to run a command.
 ureq = { version = "3", features = ["json"] }
-
-# The platform-independent half of the durable GitHub credential `story
-# github auth login` writes and the background poll thread reads (SH-212):
-# the `Entry`/`CredentialStore` API. `src/domain/credential_store.rs` builds
-# an `Arc<keyring_core::api::CredentialStore>` from one of the platform
-# crates below in production, or `keyring_core::mock::Store` in tests — never
-# through the crate's own global `set_default_store`, which would make every
-# test that touches a credential share one process-wide static. `optional`,
-# gated by `github-pr` — see that feature's own comment.
-keyring-core = { version = "1", optional = true }
-
-# Two platform stores, not three: this crate ships prebuilt binaries only for
-# macOS and Linux (`scripts/release-targets.sh`, `install.sh`).
-# A `cfg(target_os = "windows")` table naming `windows-native-keyring-store`
-# used to sit here — activated by default, compiled by nothing, so whether it
-# even built was unknown. `libc` is an unconditional dependency here and
-# `std::os::unix::*` runs unguarded through the daemon's spawn, portfile, and
-# fd-hygiene paths, so a Windows target is not "one more `cfg` arm" the way
-# Linux's was; it is a second platform's worth of work this project has not
-# taken on. `src/github/credential_store.rs`'s fallback arm already answers
-# "no keychain backend on this platform" for a build without one (SH-260).
-[target.'cfg(target_os = "macos")'.dependencies]
-# The "legacy keychain" store — available to every process without a
-# provisioning profile, unlike the sandboxed "protected data" store this
-# crate's `protected` feature would gate instead.
-apple-native-keyring-store = { version = "1", optional = true, default-features = false, features = [
-    "keychain",
-] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-# The FreeDesktop Secret Service over D-Bus (GNOME Keyring, KWallet). `zbus`
-# is a pure-Rust D-Bus client, so this needs no system `libdbus` install —
-# unlike the crate ecosystem's `dbus`-based alternative.
-#
-# The feature is not optional in practice: `secret-service` 5.x is a bare
-# `compile_error!` unless its consumer forwards a runtime choice, so without
-# this the Linux artifact does not build at all (SH-259). Both halves of the
-# choice follow the same rule as the crate itself — depend on nothing the
-# target may not have:
-#
-# * `crypto-rust` over `crypto-openssl`, because one Linux artifact is always
-#   cross-compiled in the Lima guest and a target system OpenSSL is exactly
-#   what cannot be counted on there. The pure-Rust primitives (`aes`, `cbc`,
-#   `sha2`, `hkdf`) build for any target the compiler has.
-# * `rt-async-io` over `rt-tokio`, because this crate has no async runtime and
-#   wants none: every I/O path here is blocking (`ureq`, our own HTTP/1.1
-#   layer). `async-io` is what `zbus` enables by default anyway, so this
-#   selects the runtime already in the graph rather than adding a second.
-#
-# `tests/release_targets.rs` pins both, since `make test` is a macOS build and
-# cannot otherwise see this line at all.
-zbus-secret-service-keyring-store = { version = "1", optional = true, features = [
-    "rt-async-io-crypto-rust",
-] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

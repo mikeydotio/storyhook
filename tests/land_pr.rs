@@ -55,6 +55,7 @@ impl LandRepo {
             .expect("fixture: creating scripts directory");
         for name in [
             "land-pr.sh",
+            "github-access.sh",
             "machine-lock.sh",
             "merge-preflight.sh",
             "gate-receipt.sh",
@@ -154,6 +155,16 @@ impl LandRepo {
             "refs/remotes/origin/main",
             "fixture: the local cache must still say main"
         );
+        storyhook_test_support::install_git_endpoint(
+            &self.path().join(".git/github-endpoint"),
+            &[("https://github.com/acme/widgets.git", &bare)],
+        );
+        self.git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/acme/widgets.git",
+        ]);
         bare
     }
 
@@ -298,6 +309,16 @@ fn command(cwd: &Path, program: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new(program);
     cmd.args(args)
         .current_dir(cwd)
+        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("HOME", cwd)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                cwd.join(".git/github-endpoint").display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE");

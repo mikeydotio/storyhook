@@ -89,7 +89,7 @@ fn run_with_gate(
     ),
 ) {
     let f = ServiceFixture::new();
-    f.link_origin("https://github.com/acme/widgets");
+    f.github_checkout_at(f.project(), f.cwd(), "https://github.com/acme/widgets");
     f.store()
         .write(|tx| tx.set_checkout_path(f.project(), Some(f.cwd())))
         .unwrap();
@@ -344,7 +344,7 @@ fn withdrawal_records(f: &ServiceFixture, id: &str) -> Vec<String> {
 #[test]
 fn a_verifier_killed_by_signal_before_answering_is_retryable_and_named_by_signal() {
     let f = ServiceFixture::new();
-    f.link_origin("https://github.com/acme/widgets");
+    f.github_checkout_at(f.project(), f.cwd(), "https://github.com/acme/widgets");
     f.store()
         .write(|tx| tx.set_checkout_path(f.project(), Some(f.cwd())))
         .unwrap();

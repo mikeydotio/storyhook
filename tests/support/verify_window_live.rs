@@ -50,14 +50,8 @@ fn fixture_teardown_reaps_banner_and_activity_readers_even_while_unwinding() {
                 vec!["banner", "OWNED_BANNER"],
                 vec!["logs", binary.to_str().unwrap(), store.to_str().unwrap()],
             ] {
-                assert!(
-                    mirror
-                        .command(&project, &args)
-                        .output()
-                        .unwrap()
-                        .status
-                        .success()
-                );
+                let out = mirror.command(&project, &args).output().unwrap();
+                assert!(out.status.success(), "{args:?}: {out:?}");
             }
             mirror.pane_with("OWNED_BANNER");
             mirror.pane_with("OWNED_READER");
@@ -104,6 +98,10 @@ struct Mirror {
 
 impl Mirror {
     fn new() -> Self {
+        Self::with_fault(None)
+    }
+
+    fn with_fault(fault: Option<(&Path, &Path)>) -> Self {
         let found = Command::new("sh")
             .args(["-c", "command -v tmux"])
             .output()
@@ -139,6 +137,11 @@ impl Mirror {
             .envs(storyhook_test_support::daemon_containment())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
+        if let Some((library, marker)) = fault {
+            command
+                .env("DYLD_INSERT_LIBRARIES", library)
+                .env("STORY_TEST_PTY_FAILURE", marker);
+        }
         let server = ChildGuard::spawn(&mut command).expect("start owned private tmux server");
         let mut fixture = Self {
             server: Mutex::new(Some(server)),
@@ -600,4 +603,83 @@ fn stores_keep_continuous_readers_alongside_project_and_legacy_windows() {
     ]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(out.stdout, legacy_pid, "legacy reader must not be replaced");
+}
+
+/// Inject the native allocation error, not a fake tmux response: failed
+/// respawn destroys tmux 3.7c's parser, so another respawn segfaults its server.
+#[cfg(target_os = "macos")]
+#[test]
+fn native_pty_failure_preserves_other_readers_and_recovers() {
+    let root = scratch_dir();
+    let source = root.path().join("forkpty.c");
+    let library = root.path().join("forkpty.dylib");
+    let marker = root.path().join("fail-next-allocation");
+    fs::write(
+        &source,
+        r#"
+#include <util.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <unistd.h>
+static int fail_once(int *master, char *name, struct termios *t, struct winsize *w) {
+    const char *marker = getenv("STORY_TEST_PTY_FAILURE");
+    if (marker != NULL && unlink(marker) == 0) { errno = ENXIO; return -1; }
+    return forkpty(master, name, t, w);
+}
+__attribute__((used)) static struct { const void *replacement; const void *original; }
+interpose[] __attribute__((section("__DATA,__interpose"))) = {
+    { (const void *)fail_once, (const void *)forkpty }
+};
+"#,
+    )
+    .unwrap();
+    let build = Command::new("clang")
+        .args(["-dynamiclib", "-Wall", "-Werror"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&library)
+        .output()
+        .unwrap();
+    assert!(build.status.success(), "{build:?}");
+    let mirror = Mirror::with_fault(Some((&library, &marker)));
+    let control = mirror.project("control");
+    let project = mirror.project("target");
+    for (path, text) in [(&control, "CONTROL"), (&project, "BEFORE")] {
+        let out = mirror.command(path, &["banner", text]).output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    let control_window = mirror.pane_with("CONTROL");
+    let control_target = format!("=storyhook-verifier:={control_window}");
+    let before = mirror.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &control_target,
+        "#{pane_id}:#{pane_pid}",
+    ]);
+    assert!(before.status.success(), "{before:?}");
+    mirror.pane_with("BEFORE");
+    fs::write(&marker, "").unwrap();
+    let out = mirror
+        .command(&project, &["banner", "AFTER"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(!marker.exists(), "native fault was not reached");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Device not configured"),
+        "{out:?}"
+    );
+    mirror.pane_with("AFTER");
+    mirror.pane_with("CONTROL");
+    let after = mirror.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        &control_target,
+        "#{pane_id}:#{pane_pid}",
+    ]);
+    assert!(after.status.success(), "{after:?}");
+    assert_eq!(before.stdout, after.stdout, "control reader was replaced");
+    assert_eq!(mirror.windows().len(), 2);
 }

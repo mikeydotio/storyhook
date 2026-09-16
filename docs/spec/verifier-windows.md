@@ -68,9 +68,33 @@ and checks pane-reader identities before deleting fixture directories, even
 during assertion unwinding. A second private server proves cleanup does not
 affect another owner.
 
+SH-736 verification reproduced intermittent macOS `forkpty` failures with
+`Device not configured`. The kernel cause is not established, but this failure
+precedes reader-process creation. The shared respawn boundary preserves each
+diagnostic and permits up to four attempts for this exact error, waiting
+50/100/200 ms. Only the first attempt uses `-k`; later attempts cannot kill an
+active reader another caller has started. Other errors and exhausted attempts
+remain failures. Mirror failure remains non-fatal to verification. The real
+tmux tests retain parallel fixtures and concurrent operations.
+
 The verifier fixture hygiene test scans direct script launches and opt-ins at
 function/helper boundaries. This is a conservative textual fence, not arbitrary
 Rust dataflow analysis; behavioral subprocess and real-tmux tests prove the
 actual policy and ownership contracts. Production windows, including the
 legacy `verification` window, retain their persistent lifetime. Fixture cleanup
 never targets the operator's default server or historical processes.
+
+## Reader replacement — SH-737
+
+Create the replacement pane before retiring the old reader. One synchronous
+server command group reports the old pane ID, creates an inactive replacement,
+and removes the old active pane. If allocation fails, tmux cancels the remaining
+commands and the original reader stays alive. Only macOS ENXIO allocation
+failures receive the bounded retry; retries target the captured pane ID, so a
+concurrent replacement cannot be killed by a stale caller.
+
+Do not use `respawn-pane` for this recovery. In tmux 3.7c, a failed allocation
+leaves its input parser freed; a second respawn dereferences it and crashes the
+server, including unrelated sessions. The native macOS regression interposes
+one `forkpty` failure on a private server and exercises the production helper.
+It checks recovery, the diagnostic, and the unchanged unrelated reader identity.

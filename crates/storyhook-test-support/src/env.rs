@@ -24,7 +24,7 @@ pub const BINARY_SNAPSHOT_DIR: &str = ".storyhook-test-binaries";
 ///
 /// This harness used to carry its own two lists -- `ISOLATED_VARS` and
 /// `CLEARED_VARS` -- which is how it came to be the only one of seven isolating
-/// harnesses that cleared the developer's real `STORYHOOK_GITHUB_TOKEN`
+/// harnesses that cleared the developer's real `GH_TOKEN`
 /// (SH-153, fixed here and nowhere else) and one of only two that redirected
 /// `HOME`. Both lists are read from the shared table now, so this harness and
 /// the shell one cannot answer the same question differently.
@@ -824,7 +824,7 @@ mod tests {
     ///
     /// Checked against what the child actually receives rather than what the
     /// harness believes it set, because the failure this prevents is invisible
-    /// from inside: on a developer machine with `STORYHOOK_GITHUB_TOKEN`
+    /// from inside: on a developer machine with `GH_TOKEN`
     /// exported, every fixture child and every test daemon used to inherit that
     /// PAT, so what the suite did depended on whose shell ran it (SH-153). The
     /// variable is set here deliberately so the removal has something to remove.
@@ -832,7 +832,7 @@ mod tests {
     fn no_real_credential_reaches_a_fixture_child() {
         let env = TestEnv::isolated();
         let mut cmd = std::process::Command::new("/usr/bin/env");
-        cmd.env("STORYHOOK_GITHUB_TOKEN", "ghp_the_developers_real_token");
+        cmd.env("GH_TOKEN", "ghp_the_developers_real_token");
         env.apply(&mut cmd);
         let out = cmd.output().expect("running env(1)");
         let seen = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -859,14 +859,14 @@ mod tests {
     }
 
     /// A test that *wants* a credential still gets one — the harness clears
-    /// before it applies, so a later `env` wins. `tests/github_sync_token.rs`
+    /// before it applies, so a later `env` wins. GitHub boundary tests
     /// depends on this, and it is the sort of ordering that breaks silently.
     #[test]
     fn a_test_can_still_supply_a_credential_on_purpose() {
         let env = TestEnv::isolated();
         let mut cmd = std::process::Command::new("/usr/bin/env");
         env.apply(&mut cmd);
-        cmd.env("STORYHOOK_GITHUB_TOKEN", "ghp_supplied_by_the_test");
+        cmd.env("GH_TOKEN", "ghp_supplied_by_the_test");
         let out = cmd.output().expect("running env(1)");
         let seen = String::from_utf8_lossy(&out.stdout).into_owned();
         assert!(

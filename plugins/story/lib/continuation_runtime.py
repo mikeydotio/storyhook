@@ -12,6 +12,7 @@ import sys
 import tempfile
 
 from workspace_ownership import inherited_fds
+from continuation_identity import handoff_message_id
 
 MAX_BYTES = 64 * 1024 * 1024
 OPTION = '@storyhook-continuation'
@@ -232,12 +233,16 @@ def capture_request(value):
     sentinel = read_json(Path(lease['worktree_path']) / '.claude/dispatch-sentinel.json')
     require(sentinel.get('session_id') == origin['session_id'] and sentinel.get('story_id') == sid,
             'current SessionStart witness belongs to another session')
+    require(origin['transcript_path'] == metadata.get('transcript_path')
+            and origin['transcript_path'] == sentinel.get('transcript_path'),
+            'native transcript differs from dispatcher witness')
     result = metadata | {'lease': lease, 'socket': socket, 'pane': pane,
                          'turn_id': origin['turn_id'], 'mode': origin['collaboration_mode'],
                          'transcript_path': origin['transcript_path'], 'autonomy': True}
     require(result['mode'] in ('plan', 'default') and owner(result) == 'present',
             'native handoff requires a known collaboration mode and live owner')
     native_state(result)
+    result['message_id'] = handoff_message_id(result, origin, value['handoff'], transcript(result))
     result['head'] = git(lease['worktree_path'], 'rev-parse', 'HEAD').decode().strip()
     result['fingerprint'] = fingerprint(lease['worktree_path'])
     result['dirty_status_base64'] = base64.b64encode(

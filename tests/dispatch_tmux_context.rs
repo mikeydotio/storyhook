@@ -91,8 +91,10 @@ fn web_dispatch_uses_default_server_despite_daemons_unrelated_tmux_context() {
 DISPATCH_PROTOCOL=5
 set -eu
 export TMUX_TMPDIR='{}'
+auth=false
+if [ "${{GH_ENTERPRISE_TOKEN:-}}" = fixture-enterprise ] && [ "${{GH_CONFIG_DIR:-}}" = /fixture/gh ]; then auth=true; fi
 socket=$(tmux display-message -p '#{{socket_path}}')
-printf '{{"ok":true,"socket":"%s","argv":"%s"}}\n' "$socket" "$*"
+printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$auth"
 "#,
             tmux_root.display()
         ),
@@ -128,6 +130,8 @@ printf '{{"ok":true,"socket":"%s","argv":"%s"}}\n' "$socket" "$*"
         .env("TMUX", inherited_tmux.trim())
         .env("TMUX_PANE", inherited_pane.trim())
         .env("STORYHOOK_DISPATCH_SCRIPT", &helper)
+        .env("GH_ENTERPRISE_TOKEN", "fixture-enterprise")
+        .env("GH_CONFIG_DIR", "/fixture/gh")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut daemon =
@@ -199,6 +203,10 @@ printf '{{"ok":true,"socket":"%s","argv":"%s"}}\n' "$socket" "$*"
             default_socket.to_string_lossy().as_ref(),
             "web dispatch must use the default server, independent of the daemon's inherited TMUX; unrelated server was {}",
             unrelated_socket.display()
+        );
+        assert_eq!(
+            record["payload"]["auth"], true,
+            "dispatch must retain gh authentication"
         );
         let argv = record["payload"]["argv"].as_str().expect("probe argv");
         assert!(
