@@ -11,8 +11,8 @@
 //! `plugins/story/tests/fakes/tmux` models `story.sh`'s own call shapes —
 //! `\;`-chained `new-window` batches with `-P -F '#{pane_id}'` capture and
 //! `-e NAME=value` markers. `verify-window.sh`'s calls are a different,
-//! narrower shape (plain `respawn-pane`/`has-session`/`new-session`, no
-//! chaining, no pane-id capture), so a fake tuned for the other caller
+//! shape (`has-session`/`new-session` and atomic display/split/kill groups),
+//! so a fake tuned for the other caller
 //! would be validating compatibility with a shape this file doesn't use,
 //! not the property this file actually needs proven: exact argv content.
 //! The stub here (`stub_tmux`) is deliberately minimal, in the same idiom
@@ -64,6 +64,7 @@ fn stub_tmux(path: &Path, log: &Path, has_session_ok: bool) {
              printf '%s\\n' \"$@\" >> {log}\n\
              printf -- '---\\n' >> {log}\n\
              if [ \"$1\" = has-session ]; then exit {has_session_exit}; fi\n\
+             if [ \"$1\" = display-message ]; then printf '%%99\\n'; fi\n\
              exit 0\n",
             log = shell_quote(&log.display().to_string()),
             has_session_exit = has_session_exit,
@@ -114,7 +115,7 @@ fn reader_spawn_failures_preserve_the_tmux_diagnostic() {
     std::fs::write(
         fixture.tmux_dir().join("tmux"),
         format!(
-            "#!/bin/sh\nif [ \"$1\" = respawn-pane ]; then\n  echo attempt >> {}\n  echo 'respawn pane failed: fork failed: fixture cause' >&2\n  exit 1\nfi\nexit 0\n",
+            "#!/bin/sh\nif [ \"$1\" = display-message ]; then\n  echo attempt >> {}\n  echo 'create pane failed: fork failed: fixture cause' >&2\n  exit 1\nfi\nexit 0\n",
             shell_quote(calls.to_str().unwrap())
         ),
     )
@@ -149,16 +150,17 @@ fn pty_allocation_recovery_is_bounded_and_cannot_kill_an_intervening_reader() {
             fixture.tmux_dir().join("tmux"),
             format!(
                 "#!/bin/sh\n\
-                 [ \"$1\" = respawn-pane ] || exit 0\n\
+                 [ \"$1\" = display-message ] || exit 0\n\
+                 printf '%%99\\n'\n\
                  printf '%s\\n' \"$*\" >> {calls}\n\
                  n=$(cat {count} 2>/dev/null || printf 0); n=$((n + 1))\n\
                  printf '%s' \"$n\" > {count}\n\
                  if [ \"$n\" -le {failures} ]; then\n\
-                   echo 'respawn pane failed: fork failed: Device not configured' >&2; exit 1\n\
+                   echo 'create pane failed: fork failed: Device not configured' >&2; exit 1\n\
                  fi\n\
                  if [ {replacement} = true ]; then\n\
-                   case \" $* \" in *' -k '*) exit 0 ;; esac\n\
-                   echo 'respawn pane failed: pane still active' >&2; exit 1\n\
+                   case \" $* \" in *' -t %99 '*) ;; *) exit 0 ;; esac\n\
+                   echo 'pane %99 no longer exists' >&2; exit 1\n\
                  fi\necho 'fixture spawn diagnostic' >&2\nexit 0\n",
                 count = shell_quote(count.to_str().unwrap()),
                 calls = shell_quote(calls.to_str().unwrap()),
@@ -178,8 +180,9 @@ fn pty_allocation_recovery_is_bounded_and_cannot_kill_an_intervening_reader() {
         );
         let calls = std::fs::read_to_string(calls).unwrap();
         let mut attempts = calls.lines();
-        assert!(attempts.next().unwrap().contains(" -k "), "{calls}");
-        assert!(attempts.all(|line| !line.contains(" -k ")), "{calls}");
+        assert!(!attempts.next().unwrap().contains(" -t %99 "), "{calls}");
+        assert!(attempts.all(|line| line.contains(" -t %99 ")), "{calls}");
+        assert!(!calls.contains("respawn-pane"), "{calls}");
         assert!(
             String::from_utf8_lossy(&out.stderr).contains("Device not configured"),
             "{out:?}"
@@ -296,7 +299,7 @@ fn a_log_path_with_a_space_reaches_tail_as_one_untouched_argv_element() {
         calls.lines().any(|line| line == log_path_str),
         "the spaced log path must appear as its own untouched argv line; calls:\n{calls}"
     );
-    // `tail` must be invoked directly (multi-argv respawn-pane), not
+    // `tail` must be invoked directly (multi-argv split-window), not
     // wrapped in a shell string that would need the space escaped.
     assert!(
         calls.lines().any(|line| line == "tail"),
@@ -390,7 +393,7 @@ fn the_target_never_changes_across_different_calls() {
     let calls = tmux_calls(&calls);
     let targets: Vec<_> = calls
         .iter()
-        .filter(|call| call.first() == Some(&"respawn-pane"))
+        .filter(|call| call.contains(&"split-window"))
         .map(|call| call.windows(2).find(|arg| arg[0] == "-t").unwrap()[1])
         .collect();
     assert_eq!(targets.len(), 3);
@@ -431,9 +434,13 @@ fn journal_view_passes_binary_and_store_as_literal_arguments() {
     let calls = tmux_calls(&log);
     let respawn = calls
         .iter()
-        .find(|call| call.first() == Some(&"respawn-pane"))
+        .find(|call| call.contains(&"split-window"))
         .unwrap();
-    assert!(respawn.ends_with(&[binary, "--store-path", store, "daemon", "logs", "--follow"]));
+    assert!(
+        respawn
+            .windows(6)
+            .any(|args| args == [binary, "--store-path", store, "daemon", "logs", "--follow"])
+    );
     assert_stable_home_cwd(respawn, &fixture.home(), &log);
 }
 
@@ -462,7 +469,7 @@ fn journal_identity_works_with_system_python_and_rejects_unresolved_paths() {
     let calls = tmux_calls(&log);
     let targets: Vec<_> = calls
         .iter()
-        .filter(|call| call.first() == Some(&"respawn-pane"))
+        .filter(|call| call.contains(&"split-window"))
         .map(|call| call.windows(2).find(|pair| pair[0] == "-t").unwrap()[1])
         .collect();
     assert_eq!(targets.len(), 2);
@@ -509,7 +516,7 @@ fn daemon_phases_have_a_project_view_and_still_emit_journal_banners() {
     let calls = tmux_calls(&log);
     let respawn = calls
         .iter()
-        .find(|call| call.first() == Some(&"respawn-pane"))
+        .find(|call| call.contains(&"split-window"))
         .expect("daemon phases must now have their own project view");
     assert!(
         respawn
@@ -533,15 +540,13 @@ fn a_new_session_and_its_banner_respawn_use_the_stable_home_cwd() {
         "a missing session must exercise new-session; calls:\n{log}"
     );
     assert!(
-        calls
-            .iter()
-            .any(|call| call.first() == Some(&"respawn-pane")),
-        "the banner must exercise respawn-pane; calls:\n{log}"
+        calls.iter().any(|call| call.contains(&"split-window")),
+        "the banner must exercise split-window; calls:\n{log}"
     );
     for call in calls.iter().filter(|call| {
         matches!(
             call.first(),
-            Some(&"new-session" | &"new-window" | &"respawn-pane")
+            Some(&"new-session" | &"new-window" | &"display-message")
         )
     }) {
         assert_stable_home_cwd(call, &fixture.home(), &log);
@@ -560,12 +565,12 @@ fn existing_session_banner_and_tail_respawns_use_the_stable_home_cwd() {
     let calls = tmux_calls(&log);
     let respawns: Vec<_> = calls
         .iter()
-        .filter(|call| call.first() == Some(&"respawn-pane"))
+        .filter(|call| call.contains(&"split-window"))
         .collect();
     assert_eq!(
         respawns.len(),
         2,
-        "banner and tail must each exercise respawn-pane; calls:\n{log}"
+        "banner and tail must each exercise split-window; calls:\n{log}"
     );
     assert!(
         respawns.iter().any(|call| call.contains(&"bash")),
@@ -582,7 +587,7 @@ fn existing_session_banner_and_tail_respawns_use_the_stable_home_cwd() {
     for call in calls.iter().filter(|call| {
         matches!(
             call.first(),
-            Some(&"new-session" | &"new-window" | &"respawn-pane")
+            Some(&"new-session" | &"new-window" | &"display-message")
         )
     }) {
         assert_stable_home_cwd(call, &fixture.home(), &log);
