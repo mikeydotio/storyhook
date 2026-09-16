@@ -32,7 +32,7 @@ fn run_probe(test: &str, mode: &str, mirror: Option<&str>) {
     );
     executable(
         &bin.join("tmux"),
-        "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$SH699_TMUX_CALLS\"\nexit 0\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$SH699_TMUX_CALLS\"\nexit 0\n",
     );
     let mut paths = vec![bin];
     paths.extend(std::env::split_paths(
@@ -184,6 +184,16 @@ fn activity_window_child_receives_resolved_policy_and_state_home() {
     } else {
         let calls = std::fs::read_to_string(root.join("tmux.calls"))
             .expect("positive control: enabled shipping shell calls recording tmux");
-        assert!(calls.lines().any(|call| call == "respawn-pane"), "{calls}");
+        let calls: Vec<_> = calls.lines().collect();
+        let split = calls
+            .iter()
+            .position(|call| *call == "split-window")
+            .expect("reader allocation");
+        let retire = calls
+            .iter()
+            .position(|call| *call == "kill-pane")
+            .expect("old reader retirement");
+        assert!(split < retire, "{calls:?}");
+        assert!(!calls.contains(&"respawn-pane"), "{calls:?}");
     }
 }

@@ -524,7 +524,7 @@ export async function projectSlug(
  * least one is true — including for a project with no stories at all, where
  * waiting for a card would hang forever.
  */
-async function waitForBoardData(page: Page): Promise<void> {
+export async function waitForBoardData(page: Page): Promise<void> {
   await page.waitForFunction(() => {
     const count = document.getElementById("filter-count");
     const empty = document.getElementById("empty-msg") as HTMLElement | null;
@@ -1037,8 +1037,8 @@ export interface HeldFetch {
    * the snapshot the page will eventually receive has been taken. */
   taken: Promise<void>;
   /**
-   * Refuses every *later* matching fetch, and resolves once the ones already
-   * in flight have landed.
+   * Refuses every *later* matching fetch (or holds it when requested), and
+   * resolves once the other requests already in flight have settled.
    *
    * Without this a staleness spec proves nothing: a mutation is followed by
    * its own fetch and, `FETCH_DEBOUNCE_MS` later, the SSE-driven one, so a
@@ -1088,7 +1088,7 @@ export async function holdFetch<T>(
   page: Page,
   matches: (url: URL) => boolean,
   until: (body: T) => boolean,
-  options?: { sealOnHold?: boolean },
+  options?: { sealOnHold?: boolean; sealedRequests?: "abort" | "hold" },
 ): Promise<HeldFetch> {
   const taken = latch();
   const gate = latch();
@@ -1177,19 +1177,25 @@ export async function holdFetch<T>(
    */
   let decisions: Promise<unknown> = Promise.resolve();
 
+  // An abort can repaint readiness UI. A gesture test that needs exactly one
+  // completion instead parks competing reads until the page is closed; they
+  // cannot repair the view and must not keep seal() waiting for a response.
+  const settleLater = async (route: Route) => {
+    if (!sealed) await route.continue();
+    else if (options?.sealedRequests === "hold") outstanding.delete(route.request());
+    else await route.abort();
+  };
+
   await page.route(matches, async (route) => {
     if (!isHeldFetch(route.request())) {
       await route.continue();
       return;
     }
     if (heldRequest) {
-      // Refused, not held, once sealed: an aborted fetch leaves the applied
-      // state untouched (the page's own `onerror` sets the connection flag
-      // and nothing else), which is precisely a view with no repair on the
-      // way. Answered before the queue, so a slow decision in front of it
+      // Sealed reads cannot repair the view. Handle them before the queue,
+      // so a slow decision in front of them
       // cannot keep a request whose outcome is already known in flight.
-      if (sealed) await route.abort();
-      else await route.continue();
+      await settleLater(route);
       return;
     }
     const decided = decisions.then(() => decide(route));
@@ -1198,8 +1204,7 @@ export async function holdFetch<T>(
     decisions = decided.catch(() => undefined);
     const outcome = await decided;
     if (outcome.kind === "pass") {
-      if (sealed) await route.abort();
-      else await route.continue();
+      await settleLater(route);
       return;
     }
     // Held outside the queue: a request waiting for `deliver()` would

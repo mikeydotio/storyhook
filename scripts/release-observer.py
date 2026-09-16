@@ -136,7 +136,8 @@ def watch(root):
                             record["commit"]], check=True, stdout=log, stderr=log)
             preflight_env = os.environ.copy()
             for name in ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN",
-                         "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+                         "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "STORY_BIN",
+                         "STORYHOOK_GITHUB_AUTHORITY", "STORYHOOK_GITHUB_EXPECTED"):
                 preflight_env.pop(name, None)
             record["preflight"] = subprocess.run(
                 ["bash", "scripts/build-release-assets.sh", "--check"],
