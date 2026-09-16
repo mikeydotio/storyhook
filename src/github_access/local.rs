@@ -6,6 +6,14 @@ use std::path::Path;
 
 /// Executes the local GitHub helper protocol and returns its machine output.
 pub fn run_local(arguments: &[String]) -> Result<Vec<u8>, AppError> {
+    if arguments.first().is_some_and(|mode| mode == "observe") {
+        if arguments.len() < 5 || arguments[1] != "--checkout" || arguments[3] != "--" {
+            return Err(AppError::Usage(
+                "usage: story github observe --checkout PATH -- ls-remote|fetch ARGUMENTS".into(),
+            ));
+        }
+        return super::OriginObservation::resolve(Path::new(&arguments[2]))?.git(&arguments[4..]);
+    }
     run_attempt(arguments, true)
 }
 

@@ -2392,16 +2392,14 @@ cmd_dispatch() {
   # CACHED (fetch failed but a prior origin/<default> ref exists),
   # HEAD-FALLBACK (origin/<default> has never resolved at all, or no default
   # branch could be established — offline and never fetched). Deliberately
-  # NOT routed through freshen_base_ref: that helper's documented contract
-  # is "any fetch failure is swallowed" (it exists for branch_is_merged,
-  # which only needs SOME usable ref, never freshness metadata) — inlining
-  # the fetch here and capturing its OWN exit code is what lets base_fresh
+  # Capture the fetch result here so the dispatch receipt carries freshness
+  # and its diagnostic. Keeping the actual exit code is what lets base_fresh
   # distinguish "resolves" from "was just refreshed". Either way dispatch
   # never blocks on network, and every fallback is stated in the warning
   # (SH-691). On any hard failure from here on, the claim above is rolled
   # back via claim_rollback_note so a failed dispatch never strands the
   # story in the claimed state.
-  local fetch_rc=0
+  local fetch_rc=0 fetch_diagnostic=""
   local base_oid="" base_fresh=false base_note=""
   if [ "$worktree_reused" = true ]; then
     base_oid=$(git -C "$worktree_path" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
@@ -2413,8 +2411,7 @@ cmd_dispatch() {
     base_note="reattached surviving branch $worktree_branch at ${base_oid:0:8}; no base refresh or reset was attempted"
   else
     if [ -n "$default" ]; then
-      git fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" \
-        >/dev/null 2>&1 || fetch_rc=$?
+      fetch_diagnostic=$(origin_git fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default" 2>&1) || fetch_rc=$?
     else
       fetch_rc=1
     fi
@@ -2424,11 +2421,11 @@ cmd_dispatch() {
       if [ "$fetch_rc" -eq 0 ]; then
         base_fresh=true
       else
-        base_note="couldn't refresh origin/$default (offline?); based on last-known origin/$default @ ${base_oid:0:8}"
+        base_note="couldn't refresh origin/$default ($fetch_diagnostic); based on last-known origin/$default @ ${base_oid:0:8}"
       fi
     elif base_oid=$(git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) && [ -n "$base_oid" ]; then
       if [ -n "$default" ]; then
-        base_note="could not determine origin/$default; new work is based on the local checkout, NOT the latest origin tip"
+        base_note="could not determine origin/$default ($fetch_diagnostic); new work is based on the local checkout, NOT the latest origin tip"
       else
         base_note="no default branch could be established ($default_reason; no local origin/HEAD cache either); new work is based on the local checkout, NOT an origin tip"
       fi
@@ -3996,7 +3993,10 @@ _complete_prepare() {
     CMP_DEFAULT_SOURCE=cache
     CMP_DEFAULT_NOTE="default branch \`$CMP_DEFAULT\` is the local origin/HEAD cache and may be stale (origin did not answer: $default_reason) — \`git remote set-head origin -a\` refreshes it"
   fi
-  freshen_base_ref "$CMP_DEFAULT"
+  local refresh_diagnostic
+  if ! refresh_diagnostic=$(freshen_base_ref "$CMP_DEFAULT" 2>&1); then
+    CMP_DEFAULT_NOTE="${CMP_DEFAULT_NOTE:+$CMP_DEFAULT_NOTE; }base refresh failed; checking existing refs: $refresh_diagnostic"
+  fi
 
   CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH" "$caller_toplevel") || refuse "resource-query-failed" "cannot classify resolved worktree"
 
@@ -4568,7 +4568,10 @@ cmd_reap_leased() {
   # refusal by name, never a cached or literal guess.
   default=$(default_branch 2>&1) \
     || refuse "default-branch-unknown" "story.sh reap: origin's default branch could not be established for $canonical_id, so nothing can be classed merged: $(printf '%s' "$default" | tr '\n' ' ')"
-  freshen_base_ref "$default"
+  local refresh_diagnostic refresh_note=""
+  if ! refresh_diagnostic=$(freshen_base_ref "$default" 2>&1); then
+    refresh_note="base refresh failed; checked existing refs: $refresh_diagnostic"
+  fi
   wt_status=$(_story_worktree_status "$leased_worktree" "") || refuse "resource-query-failed" "cannot classify leased worktree"
   case "$wt_status" in
     dirty) refuse "dirty-worktree" "story.sh reap: $canonical_id's leased worktree ($leased_worktree) has uncommitted changes." ;;
@@ -4586,7 +4589,7 @@ cmd_reap_leased() {
   [ "$branch_status" != protected ] \
     || refuse "protected-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is protected."
   [ "$branch_status" != unmerged ] \
-    || refuse "unmerged-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is not merged into \`$default\`."
+    || refuse "unmerged-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is not merged into \`$default\`.${refresh_note:+ $refresh_note}"
   leased_story_windows "$lease" "$canonical_id" \
     || refuse "cleanup-lease-tmux-unverifiable" "story.sh reap: the leased tmux server exists but its story windows cannot be enumerated."
   local initial_tmux_windows="$LEASE_TMUX_WINDOWS"
@@ -4637,6 +4640,7 @@ cmd_reap_leased() {
   else
     display="[story] leased reap $canonical_id failed: ${failure:-one or more exact postconditions remain false}."
   fi
+  [ -z "$refresh_note" ] || display="$display $refresh_note"
   leased_reap_receipt "$lease" "$ok" "$registration_absent" "$path_absent" \
     "$branch_absent" "$tmux_absent" "$reaped_wt" "$reaped_br" "$reaped_tmux" "$display"
   [ "$ok" = true ]

@@ -35,3 +35,11 @@ github_call() {
 
 github_exec() { github_call exec "$@"; }
 github_git() { github_call git "$@"; }
+
+# Generic default/ref observations also support explicitly file-only origins.
+# This mode cannot authorize a PR or write to any remote.
+origin_git() {
+    local checkout
+    checkout="$(git rev-parse --show-toplevel)" || return 1
+    "${STORY_BIN:-story}" github observe --checkout "$checkout" -- "$@"
+}

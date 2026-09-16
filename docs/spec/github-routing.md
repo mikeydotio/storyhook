@@ -88,11 +88,15 @@ All work remains under SH-734. Submission, full-suite verification, PR creation,
   allowlists and gate scrubbing. The transport helper supports fetch, push, and
   ls-remote against an explicit origin operand. It refuses matching pushInsteadOf
   rules instead of reconstructing Git's push rewrite precedence.
-- In progress: migrate existing callers to these boundaries.
-- Pending: registered-project identity and mirror validation; PR client/check/link
-  migration; polling opt-in; PAT/CLI/wire removal; submission/verifier/release
-  routing; clone support; update/install source metadata; documentation and
-  architectural audit; directly impacted test validation.
+- Complete: current registered-project and mirror validation; PR client/check/link
+  migration; opt-in polling; PAT/CLI/wire removal; submission and verifier/landing
+  routing; HTTPS clone support; safe unpinned read refresh; explicit installation
+  and update sources with gh downloads and matching per-binary metadata.
+- In progress: generic session/dispatch/cleanup observations and their focused
+  regression suite.
+- Pending: release scripts and observer routing, coverage observer transport,
+  generated operational references, final authentication/host/bypass audit and
+  remaining directly impacted validation.
 
 ### Local helper contract
 
@@ -154,3 +158,15 @@ stage beside the executable, smoke-test before replacement, then atomically
 publish the binary and matching metadata. An interrupted metadata publication
 reports explicit recovery; a digest mismatch cannot authorize a later update.
 Provider plugin reinstall remains after replacement.
+
+### Generic Git observations
+
+Dispatch and cleanup also support local-only projects. `OriginObservation`
+resolves the actual checkout origin and permits only `ls-remote` and `fetch`.
+URL origins use the strict GitHub HTTPS/gh transport. Filesystem origins are
+canonicalized, reject URL rewrites, receive no credential variables, and run
+with `GIT_ALLOW_PROTOCOL=file`. This separate observation case grants no PR
+or remote-write authority; `Repository::resolve` still rejects local paths.
+Cleanup pins the origin across its default-branch read and fetch. Generic
+shell callers use `story github observe`; fetch failures retain diagnostics
+while preserving dispatch's documented stale-base fallback policy.

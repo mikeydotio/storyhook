@@ -157,17 +157,13 @@ fn verifier_keeps_host_authentication_diagnostics() {
 #[test]
 fn verifier_network_calls_cannot_bypass_the_origin_boundary() {
     for name in [
-        "verify-pr.sh",
-        "land-pr.sh",
-        "landing-intent.sh",
-        "origin-default-branch.sh",
+        "scripts/verify-pr.sh",
+        "scripts/land-pr.sh",
+        "scripts/landing-intent.sh",
+        "scripts/origin-default-branch.sh",
+        "plugins/story/lib/session.sh",
     ] {
-        let source = fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("scripts")
-                .join(name),
-        )
-        .unwrap();
+        let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(name)).unwrap();
         for (n, line) in source.lines().enumerate() {
             if line.trim_start().starts_with('#') {
                 continue;
@@ -181,7 +177,9 @@ fn verifier_network_calls_cannot_bypass_the_origin_boundary() {
             ] {
                 // The adapter's function name includes `git`; only a separate
                 // command word is a bypass, not `github_git`.
-                let code = line.replace("github_git", "routed_transport");
+                let code = line
+                    .replace("github_git", "routed_transport")
+                    .replace("origin_git", "routed_transport");
                 assert!(
                     !code.contains(bypass),
                     "{name}:{} bypasses origin validation: {line}",

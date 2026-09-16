@@ -1247,6 +1247,14 @@ Related:
 Resolve the current origin of an explicit checkout. Run gh and Git commands
 against that repository with an explicit host and noninteractive authentication.
 These helpers run locally and do not open the StoryHook store.
+
+story github observe --checkout PATH -- ls-remote|fetch ARGUMENTS
+
+Generic observations use the same HTTPS boundary for GitHub origins. A
+filesystem origin is allowed only in this mode, restricted to file transport
+with no credentials. It cannot authorize PR operations or write a remote.
+Origin changes are refused within a pinned cleanup observation.
+
 Use --expected with the canonical resolved identity to pin a multi-step operation.
 A pinned origin change is refused; start a fresh operation after an intentional move.
 Unpinned ls-remote and JSON metadata reads may retry once after a failed call
