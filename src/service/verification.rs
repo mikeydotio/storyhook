@@ -360,7 +360,12 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     fn validate_origins(&self, candidates: &mut [VerificationCandidate]) {
         let mut origins = std::collections::BTreeMap::new();
         for candidate in candidates {
-            if candidate.pull_request.is_err() {
+            let awaiting_submission = candidate.cleanup_lease.is_some()
+                && matches!(
+                    candidate.pull_request,
+                    Err(VerificationProblem::MissingPullRequest)
+                );
+            if candidate.pull_request.is_err() && !awaiting_submission {
                 continue;
             }
             let authority = origins.entry(candidate.project).or_insert_with(|| {
@@ -372,13 +377,15 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 );
                 super::github_repository::repository(&ctx).map_err(|e| e.to_string())
             });
-            let link = candidate.pull_request.as_ref().unwrap();
             match authority {
                 Err(detail) => {
                     candidate.pull_request =
                         Err(VerificationProblem::InvalidCheckout(detail.clone()))
                 }
                 Ok(repository) => {
+                    let Ok(link) = &candidate.pull_request else {
+                        continue;
+                    };
                     let identity = repository.identity();
                     if !parse_pr_url(&link.url).is_ok_and(|r| {
                         identity.host.eq_ignore_ascii_case(&r.host)
