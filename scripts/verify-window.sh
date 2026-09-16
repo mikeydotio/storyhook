@@ -75,6 +75,33 @@ verifier_window_ensure() {
     verifier_window_tmux set-window-option -t "$target" allow-rename off >/dev/null 2>&1 || return 1
 }
 
+# A failed macOS PTY allocation happens before the reader is forked. Recover
+# only that error, with a bounded delay. After the first failure, omit -k:
+# tmux must refuse rather than kill a reader another caller has since started.
+verifier_window_respawn() {
+    local target="$1" error pause
+    shift
+    verifier_window_enabled || return 1
+    set -- respawn-pane -k -c "$HOME" -t "$target" "$@"
+    for pause in 0 0.05 0.1 0.2; do
+        [ "$pause" = 0 ] || sleep "$pause"
+        if error="$(verifier_window_tmux "$@" 2>&1)"; then
+            [ -z "$error" ] || printf '%s\n' "$error" >&2
+            return 0
+        fi
+        printf 'verifier view %s: %s\n' "$target" "$error" >&2
+        case "$error" in
+            'respawn pane failed: fork failed: Device not configured') ;;
+            *) return 1 ;;
+        esac
+        if [ "$pause" = 0 ]; then
+            shift 2
+            set -- respawn-pane "$@"
+        fi
+    done
+    return 1
+}
+
 # verifier_window_tail <log-path>
 #
 # Points the pane at a live, read-only follow of <log-path>, from its
@@ -87,8 +114,8 @@ verifier_window_tail() {
     verifier_window_enabled || return 1
     name="$(verifier_window_project)" || return 1
     verifier_window_ensure "$name" || return 1
-    verifier_window_tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
-        tail -n +1 -F "$log" 2>/dev/null || return 1
+    verifier_window_respawn "=${VERIFIER_WINDOW_SESSION}:=$name" \
+        tail -n +1 -F "$log" || return 1
 }
 
 # verifier_window_banner <text>
@@ -108,9 +135,8 @@ verifier_window_banner() {
     # shellcheck disable=SC2016 # deliberate: $1 must NOT expand here -- it
     # is bash -c's own positional parameter, populated at exec time from
     # the argv element that follows, never from this shell's own $1.
-    verifier_window_tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
-        bash -c 'printf "%s\n" "$1"; exec sleep 2147483647' verifier-banner "$text" \
-        2>/dev/null || return 1
+    verifier_window_respawn "=${VERIFIER_WINDOW_SESSION}:=$name" \
+        bash -c 'printf "%s\n" "$1"; exec sleep 2147483647' verifier-banner "$text" || return 1
 }
 
 # The daemon uses its own executable and explicit store; neither is shell code.
@@ -136,7 +162,7 @@ print(f"activity-{label}-{digest}")
 PY
     )" || return 1
     verifier_window_ensure "$name" || return 1
-    verifier_window_tmux respawn-pane -k -c "$HOME" -t "=${VERIFIER_WINDOW_SESSION}:=$name" \
+    verifier_window_respawn "=${VERIFIER_WINDOW_SESSION}:=$name" \
         "$1" --store-path "$store" daemon logs --follow || return 1
 }
 

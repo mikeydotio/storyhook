@@ -25,7 +25,7 @@ The five envelope fields are exact. Evidence must contain nonempty context and
 outstanding_work; additional evidence should include approved scope, decisions,
 commits, tests/results, pending corrections, and prerequisite observations.
 Whole-message parsing rejects duplicate keys, foreign story identities, malformed
-objects, subagent events, repeated context feedback and unbound transcripts. A
+objects, subagent events and unbound transcripts. A
 continued native turn may still report an administrative obviation hold. Parsing runs
 before implementation-plan classification and never consumes approval receipts.
 
@@ -67,7 +67,12 @@ base64-encoded NUL-delimited Git status inventory, provider
 session/turn, tmux socket/window/pane, PID/start time, model/effort/speed/autonomy,
 handoff evidence, revision, timestamps, attempts and reviewed sequence/HEAD.
 Creation and its evidence comment are atomic. Duplicate generations return the
-same record; conflicting same-kind payloads refuse. Only the creating transaction
+same record; conflicting same-kind payloads refuse. Generations include a native
+assistant-message ID, so acknowledged continuations can request another handoff
+in the same provider turn. The runtime validates the latest assistant content
+against the envelope, current root session, task, cwd and mode. Codex uses its
+message ID; Claude uses its root assistant UUID. Stop recursion flags do not
+authorize or prohibit admission. Only the creating transaction
 admits native feedback. A same-turn administrative hold can coexist with its
 pending context transfer. Updates use revision compare-and-swap.
 External observation and process work occur outside store transactions.
@@ -84,7 +89,10 @@ External observation and process work occur outside store transactions.
 Live observation timeout is 45 seconds. It reports uncertainty and preserves the
 session; it never retries input. A validated late acknowledgement may resolve it.
 Three consecutive handoffs with unchanged HEAD and dirty content stop automatic
-continuation. `story continuation retry <id> <request-id>` requires fresh safe
+continuation, including distinct messages within one turn. An unresolved request
+refuses a new context request. False native-feedback receipts are validated before
+being treated as duplicate delivery: needs-attention and invalid records produce
+a visible diagnostic with status and recovery commands. `story continuation retry <id> <request-id>` requires fresh safe
 observations; it cannot replay an ambiguous live effect. A daemon restart during
 an attempting effect marks uncertainty instead of replaying it.
 
@@ -146,3 +154,40 @@ not exercise the real daemon store; Rust tests cover that layer separately.
 Run the actual-tree selector and only new/directly impacted tests. The central
 verifier owns the full suite and submission. No release or installation is part
 of this worktree's implementation.
+
+## SH-735 repeated-handoff regression
+
+SH-734 emitted distinct handoff messages at 2026-09-15T22:03:16Z and
+22:31:40Z in session `01a0a700-e555-7e53-896b-3ed1f4f9027f`, turn
+`01a0a703-a00e-7e71-9a3c-562b73bfd9e8`. The first was acknowledged;
+commit `5b02b9a33` preceded the second. The second was followed by
+`task_complete` without another recorded request. Its original Stop payload
+was not retained, so the transcript alone does not establish that payload.
+
+The isolated real Codex probe reproduced a first Stop with
+`stop_hook_active=false`, acknowledgement through a native tool call, and a
+second Stop in the same turn with `stop_hook_active=true`. Before the fix,
+the production hook returned no continuation and the turn completed. The
+separate Rust regression exposed turn-only generation matching; the SQL index
+also prohibited multiple same-turn records. Repeated-handoff admission therefore
+requires both hook and persistence fixes.
+
+Migration 46 adds message-level uniqueness without rewriting records. A missing
+legacy message identity remains a conservative turn-wide match; an identical
+request cannot acquire another feedback receipt, and changed evidence refuses
+visibly. The current runtime must supply a validated message ID for new records.
+The public five-field handoff envelope remains version 1.
+
+Run `python3 plugins/story/tests/probe_context_compaction.py --native-stop --repeated`
+for the real-provider regression. Model responses and the external StoryHook
+endpoint are fixtures; native Stop handling, message validation, Git progress,
+sandbox enforcement and queued correction delivery execute production behavior.
+The Default fixture preserves its existing commit while editing assigned work
+and retaining a dirty correction between handoffs; the Plan fixture remains read-only without acknowledging. Rust tests
+exercise actual store admission, deduplication, progress limits and migration.
+Neither probe modifies installed plugins or operator sessions.
+
+The sibling Codex plan-approval guard remains intentional: it applies only after
+administrative handling and cannot consume or approve a context handoff. Claude
+uses the shared administrative handler and receives the same bounded admission
+and explicit refusal behavior.

@@ -27,17 +27,21 @@ assert_contains "$out" 'usage: story.sh' "installed helper executed from unrelat
 
 repo=$(mk_story_repo PKG)
 id=$(new_story "$repo" "Relocated helper binds its own plugin")
-dispatch_out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$resolved_helper" dispatch "$id" 2>&1)
-assert_eq "$(jqf "$dispatch_out" .ok)" "true" \
-  "relocated helper: dry dispatch succeeds"
-
-quoted_installed=$(printf '%s' "$installed" | sed "s/'/'\\\\''/g")
+physical_installed=$(cd "$installed" && pwd -P)
+quoted_installed=$(printf '%s' "$physical_installed" | sed "s/'/'\\\\''/g")
 expected_binding="--plugin-dir '$quoted_installed' --permission-mode plan"
-commands=$(jqf "$dispatch_out" '.commands|join(" ")')
-assert_contains "$commands" "$expected_binding" \
-  "relocated helper: plugin root is one POSIX-quoted argument"
-case "$commands" in
-  *"$PLUGIN_ROOT"*) fail_test "relocated helper: launch leaked the source checkout's plugin root" ;;
-esac
+# Exercise an explicit alias on every OS; /tmp is only an alias on some hosts.
+ln -s "$installed" "$cache/package alias"
+for helper in "$resolved_helper" "$cache/package alias/bin/story.sh"; do
+  dispatch_out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$helper" dispatch "$id" 2>&1)
+  assert_eq "$(jqf "$dispatch_out" .ok)" "true" \
+    "relocated helper: dry dispatch succeeds through $helper"
+  commands=$(jqf "$dispatch_out" '.commands|join(" ")')
+  assert_contains "$commands" "$expected_binding" \
+    "relocated helper: physical plugin root is one POSIX-quoted argument"
+  case "$commands" in
+    *"$PLUGIN_ROOT"*) fail_test "relocated helper: launch leaked the source checkout's plugin root" ;;
+  esac
+done
 
 finish

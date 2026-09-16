@@ -4040,3 +4040,56 @@ fn migration_37_preserves_existing_projects_and_constrains_manual_permission() {
             .is_err()
     );
 }
+
+#[test]
+fn continuation_message_migration_preserves_legacy_records_and_unique_delivery() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..45]).unwrap();
+    seed_a_labelled_story(store.path());
+    let conn = Connection::open(store.path()).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    let legacy = serde_json::json!({"generation":{"provider":"codex","session_id":"s","turn_id":"t"},"handoff":{"kind":"context"},"status":"acknowledged","evidence":"retain exactly"}).to_string();
+    conn.execute(
+        "INSERT INTO continuations VALUES ('legacy',1,1,0,?1)",
+        [&legacy],
+    )
+    .unwrap();
+    drop(conn);
+    let report = store.migrate().unwrap();
+    assert_eq!(report.from_version, 45);
+    assert!(report.backup.is_some());
+    let conn = Connection::open(store.path()).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    for message in ["m1", "m2"] {
+        let mut record: serde_json::Value = serde_json::from_str(&legacy).unwrap();
+        record["generation"]["message_id"] = serde_json::json!(message);
+        conn.execute(
+            "INSERT INTO continuations VALUES (?1,1,1,0,?2)",
+            [message, &record.to_string()],
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO continuations VALUES ('duplicate',1,1,0,?1)",
+                [record.to_string()]
+            )
+            .is_err()
+        );
+    }
+    let preserved: String = conn
+        .query_row(
+            "SELECT record FROM continuations WHERE id='legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(preserved, legacy);
+    assert!(
+        conn.execute(
+            "INSERT INTO continuations VALUES ('duplicate-legacy',1,1,0,?1)",
+            [&legacy]
+        )
+        .is_err()
+    );
+}

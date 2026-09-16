@@ -473,7 +473,7 @@ fn main() {
     // the work may run in a daemon, which has no way to reach the user at all.
     let result = match run(request.clone()) {
         Ok(Response::ConfirmationRequired(plan)) => match confirm(&plan, json, flags.quiet) {
-            Confirmed::Yes => run(request.forced()),
+            Confirmed::Yes => run(request.clone().forced()),
             Confirmed::No => {
                 println!("cancelled; nothing was changed");
                 return;
@@ -497,9 +497,17 @@ fn main() {
     // which is what let a session start with no storyhook context and nobody
     // told. `unavailable` answers that only when there is nothing to say.
     let result = match result {
-        Err(_) if silent_on_failure => Ok(Response::RawJson(
-            storyhook::service::session::unavailable(&cwd),
-        )),
+        Err(error) if silent_on_failure => {
+            eprintln!("warning: SessionStart could not load project context: {error}");
+            storyhook::service::session::publish_unavailable(
+                &cwd,
+                request.stdin.as_deref(),
+                environment.now(),
+            );
+            Ok(Response::RawJson(storyhook::service::session::unavailable(
+                &cwd,
+            )))
+        }
         other => other,
     };
 
