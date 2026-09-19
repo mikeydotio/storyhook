@@ -190,7 +190,7 @@ impl<T> GenerationWrite<T> {
 }
 
 /// A malformed verification submission that must return to its author.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum VerificationProblem {
     /// The project has no registered checkout in which to run its gate.
     MissingCheckout,
@@ -235,7 +235,7 @@ impl VerificationProblem {
 }
 
 /// One story selected for centralized verification.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct VerificationCandidate {
     /// Resolved open dependencies holding a visible submission out of execution.
     pub blocked_by: Vec<String>,
@@ -1085,7 +1085,7 @@ fn submission_is_current(
     })
 }
 
-fn candidate_is_current(
+pub(super) fn candidate_is_current(
     tx: &impl ReadOps,
     row: &StoryRow,
     candidate: &VerificationCandidate,

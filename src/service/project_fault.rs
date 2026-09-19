@@ -76,6 +76,15 @@ pub enum ProjectFault {
 }
 
 impl ProjectFault {
+    /// Stable fault identity; changing trees and commands remain observations.
+    pub fn identity(&self) -> (&'static str, &str) {
+        match self {
+            Self::InvalidGateConfiguration { locus, .. } => ("invalid-gate-configuration", locus),
+            Self::MissingGateCommand { locus, .. } => ("missing-gate-command", locus),
+            Self::MissingCertification { locus, .. } => ("missing-certification", locus),
+        }
+    }
+
     /// Refuse malformed protocol evidence before any recovery effect is admitted.
     pub fn validate(&self) -> Result<(), String> {
         if let Self::InvalidGateConfiguration {

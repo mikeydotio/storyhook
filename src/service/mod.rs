@@ -57,6 +57,7 @@ pub mod pr_check;
 pub mod pr_link;
 pub mod project;
 pub mod project_fault;
+pub mod project_recovery;
 pub mod query;
 pub mod questionnaire;
 pub mod relation;
