@@ -40,6 +40,9 @@ pub enum RepairCompletion {
 pub struct RepairAttempt {
     /// Original queue authority, including transient reservations and cleanup lease.
     pub candidate: VerificationCandidate,
+    /// Latest recovery reservation, including a removed no-auto label.
+    #[serde(default)]
+    pub label_revision: Option<GlobalSeq>,
     /// Exact verifier attempt identity.
     pub id: String,
     /// The recovery's repair owner.
@@ -77,6 +80,9 @@ pub enum RepairRefusal {
 pub struct RepairRefusalRecord {
     /// Original queue authority required for disposition after verifier cleanup.
     pub candidate: VerificationCandidate,
+    /// Latest recovery reservation, including a removed no-auto label.
+    #[serde(default)]
+    pub label_revision: Option<GlobalSeq>,
     /// Exact refused verifier attempt.
     pub id: String,
     /// Original target story.
@@ -89,6 +95,9 @@ pub struct RepairRefusalRecord {
     pub reason: RepairRefusal,
     /// RFC3339 refusal time.
     pub at: String,
+    /// Exact applied hold, absent until cleanup has settled.
+    #[serde(default)]
+    pub disposition: Option<super::RepairRefusalDisposition>,
 }
 
 /// Private verifier admission response; it never certifies or merges a tree.
@@ -127,6 +136,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 let Some(mut view) = owner(tx, candidate.project, story)? else {
                     return Ok(RepairAdmission::Proceed { recovery_id: None });
                 };
+                let label_revision = authority::label_revision(tx, candidate.project, story)?;
                 if let Some(previous) = view
                     .state
                     .refusals
@@ -142,6 +152,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                         &previous.input,
                     )?;
                     require_same_authority(candidate, &previous.candidate)?;
+                    require_label_revision(label_revision, previous.label_revision)?;
                     return Ok(RepairAdmission::Deferred {
                         recovery_id: view.record.id.clone(),
                         reason: previous.reason,
@@ -167,6 +178,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                         &previous.input,
                     )?;
                     require_same_authority(candidate, &previous.candidate)?;
+                    require_label_revision(label_revision, previous.label_revision)?;
                 }
                 let certified_retry = view.state.attempts.iter().any(|previous| {
                     previous.completion == Some(RepairCompletion::Certified)
@@ -201,12 +213,14 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 if let Some(reason) = reason {
                     view.state.refusals.push(RepairRefusalRecord {
                         candidate: candidate.clone(),
+                        label_revision,
                         id: attempt.into(),
                         story,
                         generation,
                         input: input.clone(),
                         reason,
                         at: now.clone(),
+                        disposition: None,
                     });
                     persistence::save(tx, &mut view, &now)?;
                     return Ok(RepairAdmission::Deferred {
@@ -226,6 +240,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 }
                 view.state.attempts.push(RepairAttempt {
                     candidate: candidate.clone(),
+                    label_revision,
                     id: attempt.into(),
                     story,
                     generation,
@@ -275,6 +290,10 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                         )
                     })?;
                 require_same_authority(candidate, &view.state.attempts[index].candidate)?;
+                require_label_revision(
+                    authority::label_revision(tx, candidate.project, story)?,
+                    view.state.attempts[index].label_revision,
+                )?;
                 judgment.validate_against(&view.state.attempts[index].input)?;
                 if view.state.refusals.iter().any(|r| r.id == attempt) {
                     return Err(StoreError::Validation(
@@ -371,7 +390,7 @@ pub(super) fn owner(
     Ok(owner)
 }
 
-fn current(
+pub(super) fn current(
     tx: &impl ReadOps,
     candidate: &VerificationCandidate,
 ) -> Result<(StoryNo, GlobalSeq), StoreError> {
@@ -434,6 +453,18 @@ fn same_attempt(
     if story != previous_story || generation != previous_generation || input != previous_input {
         return Err(StoreError::Validation(
             "repair attempt identity has conflicting source or generation evidence".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_label_revision(
+    current: Option<GlobalSeq>,
+    retained: Option<GlobalSeq>,
+) -> Result<(), StoreError> {
+    if current != retained {
+        return Err(StoreError::Validation(
+            "repair reservation changed after admission".into(),
         ));
     }
     Ok(())

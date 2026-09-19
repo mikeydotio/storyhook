@@ -624,3 +624,35 @@ fn retained_completion_requires_its_matching_judgment() {
         .unwrap();
     assert!(service.show(&view.record.id).is_err());
 }
+
+#[test]
+fn transient_no_auto_cannot_renew_an_admitted_repair() {
+    let f = fixture();
+    let _view = prepare(&f);
+    let candidate = resubmit(&f);
+    let ctx = f.ctx();
+    let service = ProjectRecoveryService::new(&ctx);
+    service
+        .admit_repair(&candidate, "reserved", &pins(1))
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_labels("SH-1", &["no-auto".into()], &[])
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_labels("SH-1", &[], &["no-auto".into()])
+        .unwrap();
+    assert!(
+        service
+            .admit_repair(&candidate, "reserved", &pins(1))
+            .is_err()
+    );
+    assert!(
+        service
+            .complete_repair(
+                &candidate,
+                "reserved",
+                &judgment(&pins(1), RepairCompletion::Certified)
+            )
+            .is_err()
+    );
+}

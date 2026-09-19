@@ -94,6 +94,7 @@ pub(super) fn read_view(
     super::work::validate(&state)?;
     super::attempts_validation::validate(&state, record.project)?;
     super::landing::validate(tx, &state, record.project)?;
+    super::refusal::validate(tx, &state, record.project)?;
     for observation in &observations {
         let evidence: FaultObservation = serde_json::from_value(observation.evidence.clone())
             .map_err(|error| {
