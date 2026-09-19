@@ -59,6 +59,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "the engine HTTP controller chooses a working directory only after resolving the project by slug",
     ),
     (
+        "src/api/reset.rs",
+        "the reset response regression clears the selected fixture project's checkout to isolate receipt ordering from repository cleanup; production code does not read it",
+    ),
+    (
         "src/service/catalog.rs",
         "doctor's orphan audit, the catalog listing, and the unregistered-origin probe",
     ),
