@@ -28,7 +28,11 @@ fn repair(f: &ServiceFixture) -> (RecoveryView, VerificationCandidate, RepairInp
         .admit_repair(&candidate, "certified-repair", &input)
         .unwrap();
     service
-        .complete_repair(&candidate, "certified-repair", RepairCompletion::Certified)
+        .complete_repair(
+            &candidate,
+            "certified-repair",
+            &attempts::judgment(&input, RepairCompletion::Certified),
+        )
         .unwrap();
     (view, candidate, input)
 }

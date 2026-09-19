@@ -6,6 +6,7 @@ mod authority;
 mod decision;
 mod decision_effects;
 mod holds;
+mod judgment;
 mod landing;
 mod model;
 mod persistence;
@@ -24,6 +25,7 @@ pub use attempts::{
     RepairRefusalRecord,
 };
 pub use decision::{DecisionInput, DecisionReceipt, RepairScope, RepairSpec};
+pub use judgment::RepairJudgment;
 pub use landing::RepairLanding;
 pub(crate) use landing::record_landing;
 pub use model::*;
@@ -95,6 +97,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                     && admitted.story == story && admitted.generation == generation
                     && attempts::authority_matches(candidate, &admitted.candidate)
                     && admitted.completion == Some(RepairCompletion::ProjectFault)
+                    && admitted.judgment.as_ref() == Some(&RepairJudgment::ProjectFault { fault: fault.clone() })
                     && admitted.input.head == head && admitted.input.head_tree == head_tree
                     && admitted.input.base == base && admitted.input.tree == tree) {
                     return Err(StoreError::Validation("repair fault does not match a completed admitted attempt in its lineage".into()));

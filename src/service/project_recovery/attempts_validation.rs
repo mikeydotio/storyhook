@@ -27,10 +27,20 @@ pub(super) fn validate(
             || !attempt_ids.insert(&attempt.id)
             || attempt.generation <= state.assessment.generation
             || attempt.completion.is_some() != attempt.completed_at.is_some()
+            || attempt
+                .judgment
+                .as_ref()
+                .map(super::RepairJudgment::classification)
+                != attempt.completion
         {
             return Err(StoreError::Corrupt(
                 "repair attempt has inconsistent identity, owner, or completion evidence".into(),
             ));
+        }
+        if let Some(judgment) = &attempt.judgment {
+            judgment.validate_against(&attempt.input).map_err(|error| {
+                StoreError::Corrupt(format!("retained repair judgment: {error}"))
+            })?;
         }
         if attempt.completion.is_some() {
             completed.insert(&attempt.input.head_tree);

@@ -52,6 +52,9 @@ pub struct RepairAttempt {
     pub admitted_at: String,
     /// Completed judgment, absent for unjudged interruptions.
     pub completion: Option<RepairCompletion>,
+    /// Exact judged evidence; a classification alone cannot consume admission.
+    #[serde(default)]
+    pub judgment: Option<super::RepairJudgment>,
     /// RFC3339 completed-judgment time.
     pub completed_at: Option<String>,
 }
@@ -229,6 +232,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                     input: input.clone(),
                     admitted_at: now.clone(),
                     completion: None,
+                    judgment: None,
                     completed_at: None,
                 });
                 persistence::save(tx, &mut view, &now)?;
@@ -243,9 +247,10 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
         &self,
         candidate: &VerificationCandidate,
         attempt: &str,
-        result: RepairCompletion,
+        judgment: &super::RepairJudgment,
     ) -> Result<Option<RecoveryView>, AppError> {
         self.validate_attempt_identity(candidate, attempt)?;
+        let result = judgment.classification();
         let now = self.ctx.now();
         self.ctx
             .store()
@@ -270,13 +275,16 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                         )
                     })?;
                 require_same_authority(candidate, &view.state.attempts[index].candidate)?;
+                judgment.validate_against(&view.state.attempts[index].input)?;
                 if view.state.refusals.iter().any(|r| r.id == attempt) {
                     return Err(StoreError::Validation(
                         "refused repair attempt cannot record a completed gate".into(),
                     ));
                 }
                 if let Some(previous) = view.state.attempts[index].completion {
-                    return if previous == result {
+                    return if previous == result
+                        && view.state.attempts[index].judgment.as_ref() == Some(judgment)
+                    {
                         Ok(Some(view))
                     } else {
                         Err(StoreError::Validation(
@@ -300,6 +308,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                     ));
                 }
                 view.state.attempts[index].completion = Some(result);
+                view.state.attempts[index].judgment = Some(judgment.clone());
                 view.state.attempts[index].completed_at = Some(now.clone());
                 persistence::save(tx, &mut view, &now)?;
                 Ok(Some(view))

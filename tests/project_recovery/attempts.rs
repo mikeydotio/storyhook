@@ -1,6 +1,7 @@
 use super::*;
 use storyhook::service::project_recovery::{
-    RecoveryView, RepairAdmission, RepairCompletion, RepairInput, RepairRefusal, RepairScope,
+    RecoveryView, RepairAdmission, RepairCompletion, RepairInput, RepairJudgment, RepairRefusal,
+    RepairScope,
 };
 
 fn prepare(f: &ServiceFixture) -> RecoveryView {
@@ -117,7 +118,11 @@ fn only_three_changed_completed_repair_inputs_are_admitted() {
             }
         );
         let complete = service
-            .complete_repair(&candidate, &attempt, RepairCompletion::ProjectFault)
+            .complete_repair(
+                &candidate,
+                &attempt,
+                &judgment(&pins(n), RepairCompletion::ProjectFault),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -131,14 +136,22 @@ fn only_three_changed_completed_repair_inputs_are_admitted() {
         );
         assert_eq!(
             service
-                .complete_repair(&candidate, &attempt, RepairCompletion::ProjectFault)
+                .complete_repair(
+                    &candidate,
+                    &attempt,
+                    &judgment(&pins(n), RepairCompletion::ProjectFault)
+                )
                 .unwrap()
                 .unwrap(),
             complete
         );
         assert!(
             service
-                .complete_repair(&candidate, &attempt, RepairCompletion::Certified)
+                .complete_repair(
+                    &candidate,
+                    &attempt,
+                    &judgment(&pins(n), RepairCompletion::Certified)
+                )
                 .is_err()
         );
     }
@@ -192,13 +205,21 @@ fn interrupted_attempts_do_not_consume_completed_budget_or_allow_conflicting_rep
             .is_err()
     );
     service
-        .complete_repair(&candidate, "interrupted-5", RepairCompletion::TestsFailed)
+        .complete_repair(
+            &candidate,
+            "interrupted-5",
+            &judgment(&pins(1), RepairCompletion::TestsFailed),
+        )
         .unwrap()
         .unwrap();
     let newer = resubmit(&f);
     assert!(
         service
-            .complete_repair(&candidate, "interrupted-1", RepairCompletion::Certified)
+            .complete_repair(
+                &candidate,
+                "interrupted-1",
+                &judgment(&pins(1), RepairCompletion::Certified)
+            )
             .is_err()
     );
     assert!(matches!(
@@ -239,7 +260,11 @@ fn a_repair_with_a_different_fault_keeps_its_original_lineage() {
         .admit_repair(&candidate, "recursive", &input)
         .unwrap();
     service
-        .complete_repair(&candidate, "recursive", RepairCompletion::ProjectFault)
+        .complete_repair(
+            &candidate,
+            "recursive",
+            &judgment(&pins(1), RepairCompletion::ProjectFault),
+        )
         .unwrap()
         .unwrap();
     let fault = ProjectFault::InvalidGateConfiguration {
@@ -307,7 +332,11 @@ fn manual_stop_after_admission_revokes_retry_without_granting_completion() {
     );
     assert!(
         service
-            .complete_repair(&candidate, "attempt", RepairCompletion::Certified)
+            .complete_repair(
+                &candidate,
+                "attempt",
+                &judgment(&pins(1), RepairCompletion::Certified)
+            )
             .is_err()
     );
 }
@@ -328,7 +357,11 @@ fn an_old_unfinished_attempt_cannot_bypass_the_completed_budget() {
             .admit_repair(&candidate, &attempt, &pins(n))
             .unwrap();
         service
-            .complete_repair(&candidate, &attempt, RepairCompletion::TestsFailed)
+            .complete_repair(
+                &candidate,
+                &attempt,
+                &judgment(&pins(n), RepairCompletion::TestsFailed),
+            )
             .unwrap()
             .unwrap();
     }
@@ -379,7 +412,11 @@ fn certified_same_generation_retry_does_not_spend_another_changed_input_slot() {
         .admit_repair(&candidate, "certified", &pins(1))
         .unwrap();
     service
-        .complete_repair(&candidate, "certified", RepairCompletion::Certified)
+        .complete_repair(
+            &candidate,
+            "certified",
+            &judgment(&pins(1), RepairCompletion::Certified),
+        )
         .unwrap()
         .unwrap();
     assert!(matches!(
@@ -391,7 +428,11 @@ fn certified_same_generation_retry_does_not_spend_another_changed_input_slot() {
         }
     ));
     service
-        .complete_repair(&candidate, "landing-retry", RepairCompletion::Certified)
+        .complete_repair(
+            &candidate,
+            "landing-retry",
+            &judgment(&pins(1), RepairCompletion::Certified),
+        )
         .unwrap()
         .unwrap();
     for n in [2, 3] {
@@ -406,7 +447,11 @@ fn certified_same_generation_retry_does_not_spend_another_changed_input_slot() {
             }
         ));
         service
-            .complete_repair(&candidate, &attempt, RepairCompletion::TestsFailed)
+            .complete_repair(
+                &candidate,
+                &attempt,
+                &judgment(&pins(n), RepairCompletion::TestsFailed),
+            )
             .unwrap()
             .unwrap();
     }
@@ -446,7 +491,11 @@ fn a_fresh_candidate_cannot_renew_an_old_attempt_after_a_human_reservation() {
     assert_ne!(current.human_only_revision, original.human_only_revision);
     assert!(
         service
-            .complete_repair(&current, "old-owner", RepairCompletion::Certified)
+            .complete_repair(
+                &current,
+                "old-owner",
+                &judgment(&pins(1), RepairCompletion::Certified)
+            )
             .is_err()
     );
     assert!(
@@ -454,4 +503,124 @@ fn a_fresh_candidate_cannot_renew_an_old_attempt_after_a_human_reservation() {
             .admit_repair(&current, "old-owner", &pins(1))
             .is_err()
     );
+}
+
+/// Construct the observed wire judgment for the explicitly supplied test input.
+pub(super) fn judgment(input: &RepairInput, completion: RepairCompletion) -> RepairJudgment {
+    match completion {
+        RepairCompletion::Certified => RepairJudgment::Certified {
+            head: input.head.clone(),
+            tree: input.tree.clone(),
+        },
+        RepairCompletion::TestsFailed => RepairJudgment::TestsFailed {
+            tree: input.tree.clone(),
+        },
+        RepairCompletion::ProjectFault => RepairJudgment::ProjectFault {
+            fault: ProjectFault::InvalidGateConfiguration {
+                locus: ".storyhook.toml#verify.gate".into(),
+                tree: input.tree.clone(),
+                base: input.base.clone(),
+                head: input.head.clone(),
+                head_tree: input.head_tree.clone(),
+                configuration: "f".repeat(64),
+                detail: "repair introduced invalid gate argv".into(),
+            },
+        },
+    }
+}
+
+#[test]
+fn completion_must_match_pinned_admission_before_it_counts_or_replays() {
+    for completion in [
+        RepairCompletion::Certified,
+        RepairCompletion::TestsFailed,
+        RepairCompletion::ProjectFault,
+    ] {
+        let f = fixture();
+        let view = prepare(&f);
+        let candidate = resubmit(&f);
+        let ctx = f.ctx();
+        let service = ProjectRecoveryService::new(&ctx);
+        service
+            .admit_repair(&candidate, "judged", &pins(1))
+            .unwrap();
+        assert!(
+            service
+                .complete_repair(&candidate, "judged", &judgment(&pins(2), completion))
+                .is_err(),
+            "mismatched {completion:?}"
+        );
+        assert!(
+            service.show(&view.record.id).unwrap().state.attempts[0]
+                .completion
+                .is_none()
+        );
+        for field in match completion {
+            RepairCompletion::Certified => vec!["head", "tree"],
+            RepairCompletion::TestsFailed => vec!["tree"],
+            RepairCompletion::ProjectFault => vec!["head", "head_tree", "base", "tree"],
+        } {
+            let mut changed = pins(1);
+            match field {
+                "head" => changed.head = "e".repeat(40),
+                "head_tree" => changed.head_tree = "e".repeat(40),
+                "base" => changed.base = "e".repeat(40),
+                _ => changed.tree = "e".repeat(40),
+            }
+            assert!(
+                service
+                    .complete_repair(&candidate, "judged", &judgment(&changed, completion))
+                    .is_err(),
+                "mismatched {completion:?} {field}"
+            );
+        }
+        let good = judgment(&pins(1), completion);
+        let complete = service
+            .complete_repair(&candidate, "judged", &good)
+            .unwrap()
+            .unwrap();
+        assert_eq!(complete.state.attempts[0].judgment.as_ref(), Some(&good));
+        assert_eq!(
+            service
+                .complete_repair(&candidate, "judged", &good)
+                .unwrap()
+                .unwrap(),
+            complete
+        );
+        assert!(
+            service
+                .complete_repair(&candidate, "judged", &judgment(&pins(2), completion))
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn retained_completion_requires_its_matching_judgment() {
+    let f = fixture();
+    let view = prepare(&f);
+    let candidate = resubmit(&f);
+    let ctx = f.ctx();
+    let service = ProjectRecoveryService::new(&ctx);
+    service
+        .admit_repair(&candidate, "judged", &pins(1))
+        .unwrap();
+    service
+        .complete_repair(
+            &candidate,
+            "judged",
+            &judgment(&pins(1), RepairCompletion::Certified),
+        )
+        .unwrap();
+    f.store()
+        .write(|tx| {
+            let mut record = tx.project_recoveries(f.project())?.remove(0);
+            let revision = record.revision;
+            record.state["attempts"][0]["judgment"]["tree"] = serde_json::json!("f".repeat(40));
+            record.revision += 1;
+            assert!(tx.update_project_recovery(&record, revision)?);
+            Ok(())
+        })
+        .unwrap();
+    assert!(service.show(&view.record.id).is_err());
 }
