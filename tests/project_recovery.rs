@@ -1,5 +1,8 @@
 //! Current generation authority, durable assessment ownership, and bounded delivery.
 
+#[path = "project_recovery/decision.rs"]
+mod decision;
+
 use storyhook::service::project_fault::{ProjectFault, ReceiptRefusal};
 use storyhook::service::project_recovery::{
     AssessmentDelivery, AssessmentHold, AssessmentStatus, ProjectRecoveryService,

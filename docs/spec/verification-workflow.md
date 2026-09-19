@@ -1264,3 +1264,39 @@ An external merge already sent cannot be undone by cancellation. Its durable
 landing intent is retained while labeled; automatic completion and reaping are
 suppressed. After removal, the verifier reconciles that intent before admitting
 another merge. No state migration or new CLI option is required.
+
+## Project fault assessment and scope — SH-742
+
+The recovery service retains typed faults and the exact unjudged submission in
+immutable observations. One active project/code/locus record owns assessment;
+later observations join it. Enrollment returns only the current eligible
+generation, after checking awaiting, landing, reset, and operator authority.
+It records an assessment delivery token without starting an external operation.
+
+`story verifier repair show <recovery-id> --json` exposes the evidence and current
+revision. The managed assessor submits its decision with
+`story verifier repair decide <recovery-id> --input <json-file>`.
+The strict version-1 JSON object requires `revision`, numeric `project` and
+`generation`, `dispatch_identity`, `scope`, `context`, `question`, `decision`,
+`rationale`, and an `evidence` array. Include at least one `attempt:<id>` from the
+retained observations. All explanation and evidence fields must be nonempty.
+
+| Scope | Additional input | Transactional result |
+|---|---|---|
+| `same-story` | None | Original story owns repair; other current subjects depend on it. |
+| `separate-story` | `repair: {title, description, acceptance}` | One critical bug in the owning project, reciprocal dependencies, and a delivery identity. |
+| `external` | `prerequisite` | Contextual awaiting reason, without a repair or delivery identity. |
+
+Critical priority is an explicit exception for this recovery path. It does not
+reprioritize unrelated work. The accepted input is retained for exact replay;
+stale or conflicting decisions are refused. Story creation, both dependency
+ends, comments, decision evidence, and pending delivery identity commit together.
+External delivery must happen after that transaction and verifier ownership end.
+
+The origin must still have assessment authority. Joined subjects with changed
+state, awaiting, labels, or resource authority are retained as skipped rather
+than overwritten. Existing dependencies remain intact, and recovery cannot add
+a self-edge or cycle. A valid in-flight assessor decision proves charter receipt;
+a late matching delivery confirmation does not reopen assessment. Undecided
+assessment allows three proven delivery failures and a 30-minute response window.
+Uncertain ownership retains its hold without spending proven-failure budget.

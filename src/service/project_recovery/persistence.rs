@@ -55,11 +55,41 @@ pub(super) fn read_view(
         })
         || (state.assessment.status == AssessmentStatus::Held) != state.assessment.hold.is_some()
         || state.assessment.failures > 3
+        || (state.assessment.status == AssessmentStatus::Decided) != state.decision.is_some()
     {
         return Err(StoreError::Corrupt(format!(
             "project recovery {} has inconsistent assessment authority",
             record.id
         )));
+    }
+    if let Some(decision) = &state.decision {
+        decision.input.validate().map_err(|error| {
+            StoreError::Corrupt(format!("invalid retained recovery decision: {error}"))
+        })?;
+        let repair_consistent = match decision.input.scope {
+            super::RepairScope::SameStory => decision.repair_story == Some(state.assessment.story),
+            super::RepairScope::SeparateStory => decision
+                .repair_story
+                .is_some_and(|story| story != state.assessment.story),
+            super::RepairScope::External => {
+                decision.repair_story.is_none() && decision.owned_edges.is_empty()
+            }
+        };
+        if decision.input.project != record.project
+            || decision.input.generation != state.assessment.generation
+            || decision.input.dispatch_identity != state.assessment.dispatch_identity
+            || decision.input.revision >= record.revision
+            || !repair_consistent
+            || decision.repair_story.is_some() != decision.delivery_identity.is_some()
+            || decision
+                .owned_edges
+                .iter()
+                .any(|story| Some(*story) == decision.repair_story)
+        {
+            return Err(StoreError::Corrupt(
+                "retained recovery decision has inconsistent authority or repair ownership".into(),
+            ));
+        }
     }
     for observation in &observations {
         let evidence: FaultObservation = serde_json::from_value(observation.evidence.clone())

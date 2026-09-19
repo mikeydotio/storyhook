@@ -2997,8 +2997,24 @@ story verifier stop
 story verifier drain
 story verifier ack <incident-id> [--leave-stopped]
 story verifier gate-config <checkout> <base> <head> <tree> --json
+story verifier repair show <recovery-id> --json
+story verifier repair decide <recovery-id> --input <json-file>
 
 Inspect and control this project's centralized verifier.
+
+  repair show reads durable project-fault evidence, revision, scope assessor,
+  and accepted repair work. It does not grant implementation authority.
+  repair decide accepts the managed assessor's strict JSON decision once.
+  The file needs version (1), revision, project, generation, dispatch_identity,
+  scope (same-story, separate-story, external), context, question, decision,
+  rationale, and evidence (include a retained attempt:<id> reference).
+  Separate-story also needs repair: {title, description, acceptance}.
+  External instead needs prerequisite. Other scopes omit both fields.
+  Read show again before deciding: stale or conflicting input is refused.
+  Identical replay returns the recorded result without duplicate work.
+  A separate repair is a critical bug by explicit project-recovery policy;
+  this exception does not change unrelated story priorities. Scope advice
+  never grants certification, credentials, or permission overrides.
 
   gate-config reads committed gate configuration from the exact proposed merge.
   Supply pinned Git object IDs for both parents and the expected tree. This

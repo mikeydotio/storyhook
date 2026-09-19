@@ -1027,12 +1027,33 @@ fn dispatch_verifier<S: Store>(
     action: VerifierAction,
 ) -> Result<Response, AppError> {
     use crate::service::verification_control::{VerificationAcknowledgement, VerificationAction};
+    let recovery = crate::service::project_recovery::ProjectRecoveryService::new(ctx);
+    match &action {
+        VerifierAction::RepairShow { recovery_id } => {
+            return recovery
+                .show(recovery_id)
+                .map(|view| Response::ProjectRecovery(Box::new(view)));
+        }
+        VerifierAction::RepairDecide { recovery_id, input } => {
+            let raw = read_input(ctx.cwd(), None, Some(input))?;
+            let decision = serde_json::from_str(&raw).map_err(|error| {
+                AppError::Validation(format!("invalid project recovery decision JSON: {error}"))
+            })?;
+            return recovery
+                .decide(recovery_id, &decision)
+                .map(|view| Response::ProjectRecovery(Box::new(view)));
+        }
+        _ => {}
+    }
     let activity = ctx.verification_activity().ok_or_else(|| {
         AppError::Validation(
             "verifier runtime unavailable; run this command through the daemon".into(),
         )
     })?;
     let receipt = match action {
+        VerifierAction::RepairShow { .. } | VerifierAction::RepairDecide { .. } => {
+            unreachable!("recovery operations returned above")
+        }
         VerifierAction::GateConfig { .. } => {
             return dispatch_without_store(Invocation::Verifier { action });
         }

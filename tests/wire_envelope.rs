@@ -223,6 +223,48 @@ fn summary() -> SummaryView {
 // Response
 // ---------------------------------------------------------------------------
 
+fn recovery_response(f: &storyhook_test_support::ServiceFixture) -> Response {
+    use storyhook::service::project_fault::{ProjectFault, ReceiptRefusal};
+    use storyhook::service::project_recovery::ProjectRecoveryService;
+    use storyhook::service::{NewStoryInput, PrLinkService, StoryService, VerificationQueue};
+    f.github_checkout("https://github.com/acme/widgets");
+    let ctx = f.ctx();
+    let story = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "Fault owner".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    PrLinkService::new(&ctx)
+        .link(&story.id, "https://github.com/acme/widgets/pull/1", true)
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state(&story.id, "verifying", None, None, None)
+        .unwrap();
+    let candidate = VerificationQueue::new(f.store())
+        .ordered_for(f.project())
+        .unwrap()
+        .remove(0);
+    let fault = ProjectFault::MissingCertification {
+        locus: ".storyhook.toml#verify.gate".into(),
+        tree: "a".repeat(40),
+        base: "b".repeat(40),
+        head: "c".repeat(40),
+        gate: "make test".into(),
+        log: "/retained/gate.log".into(),
+        execution: "/retained/execution.json".into(),
+        execution_status: 0,
+        receipt: ReceiptRefusal::Missing,
+        detail: "successful gate omitted certification".into(),
+    };
+    Response::ProjectRecovery(Box::new(
+        ProjectRecoveryService::new(&ctx)
+            .observe(&candidate, &fault, "wire-attempt")
+            .unwrap()
+            .unwrap(),
+    ))
+}
+
 /// Every `Response` variant, in both its empty and its populated shape where
 /// the renderers treat those differently (`Stories`, `Issues` and
 /// `PhaseList` all have dedicated "nothing here" branches).
@@ -232,6 +274,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         .status(&fixture.ctx())
         .unwrap();
     vec![
+        ("project_recovery", recovery_response(&fixture)),
         (
             "verifier_status",
             Response::VerifierStatus(Box::new(status.clone())),
@@ -995,6 +1038,7 @@ fn a_story_delete_confirmation_is_flat_and_requires_the_story_id() {
 fn the_response_corpus_covers_every_variant() {
     fn variant_of(response: &Response) -> &'static str {
         match response {
+            Response::ProjectRecovery(_) => "project_recovery",
             Response::VerifierStatus(_) => "verifier_status",
             Response::WithVerifier { .. } => "with_verifier",
             Response::Message(_) => "message",
@@ -1023,7 +1067,8 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 25] = [
+    const EVERY_VARIANT: [&str; 26] = [
+        "project_recovery",
         "verifier_status",
         "with_verifier",
         "message",
@@ -2051,6 +2096,17 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::Verifier {
             action: VerifierAction::Status,
+        },
+        Invocation::Verifier {
+            action: VerifierAction::RepairShow {
+                recovery_id: "recovery-1".into(),
+            },
+        },
+        Invocation::Verifier {
+            action: VerifierAction::RepairDecide {
+                recovery_id: "recovery-1".into(),
+                input: "decision.json".into(),
+            },
         },
         Invocation::Verifier {
             action: VerifierAction::Start,

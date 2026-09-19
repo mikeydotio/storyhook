@@ -843,6 +843,8 @@ pub struct LogEntry {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Response {
+    /// Durable project fault evidence and the accepted repair disposition.
+    ProjectRecovery(Box<crate::service::project_recovery::RecoveryView>),
     /// Shared verifier snapshot, rendered by the client.
     VerifierStatus(Box<crate::daemon::verification::status::VerifierStatus>),
     /// Existing command result with additive project-level verifier evidence.
@@ -1112,6 +1114,9 @@ pub fn render_error(error: &AppError, json: bool) -> String {
 
 fn render_json(response: &Response) -> String {
     let rendered = match response {
+        Response::ProjectRecovery(view) => {
+            serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "recovery":view}))
+        }
         Response::VerifierStatus(status) => {
             serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "verifier":status}))
         }
@@ -1435,6 +1440,22 @@ fn render_json(response: &Response) -> String {
 
 fn render_human(response: &Response) -> String {
     match response {
+        Response::ProjectRecovery(view) => format!(
+            "Recovery {} (revision {})\nFault: {} at {}\nAssessment: {:?} — {}\nRepair: {}\nAffected submissions: {}\nRead with --json for retained evidence and exact decision authority.\n",
+            view.record.id,
+            view.record.revision,
+            view.record.code,
+            view.record.locus,
+            view.state.assessment.status,
+            view.state.assessment.detail,
+            view.state
+                .decision
+                .as_ref()
+                .and_then(|d| d.repair_story)
+                .map(|n| n.get().to_string())
+                .unwrap_or_else(|| "none".into()),
+            view.state.subjects.len()
+        ),
         Response::VerifierStatus(status) => status.render_human(),
         Response::WithVerifier {
             response,

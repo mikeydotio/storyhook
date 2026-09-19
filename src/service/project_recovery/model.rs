@@ -14,6 +14,8 @@ pub enum AssessmentStatus {
     InFlight,
     /// A managed agent received the charter and must provide its decision.
     Delivered,
+    /// A valid decision proves receipt and ends the assessment deadline.
+    Decided,
     /// Delivery, policy, or response timeout requires explicit resolution.
     Held,
 }
@@ -120,6 +122,9 @@ pub struct RecoveryState {
     pub subjects: Vec<AffectedSubmission>,
     /// Scope assessment owner and durable delivery intent.
     pub assessment: Assessment,
+    /// Exact accepted request and resulting work; absent until scope is decided.
+    #[serde(default)]
+    pub decision: Option<super::DecisionReceipt>,
 }
 
 /// Exact structured evidence originally produced by the verifier.
@@ -135,7 +140,7 @@ pub struct FaultObservation {
 }
 
 /// Read-only view returned to recovery orchestration and diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryView {
     /// Stable storage identity and revision.
     pub record: ProjectRecovery,

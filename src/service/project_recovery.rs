@@ -1,6 +1,8 @@
 //! Durable scope assessment for proven project-owned verifier faults.
 
 mod authority;
+mod decision;
+mod decision_effects;
 mod model;
 mod persistence;
 use super::{
@@ -12,6 +14,7 @@ use crate::{
     error::AppError,
     store::{ProjectRecovery, ProjectRecoveryObservation, ReadOps, Store, StoreError, WriteOps},
 };
+pub use decision::{DecisionInput, DecisionReceipt, RepairScope, RepairSpec};
 pub use model::*;
 use persistence::{find, read_view, save, serialize, timestamp};
 
@@ -77,7 +80,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                 read_view(tx, record)?
             } else {
                 let state = RecoveryState {
-                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(),
+                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None,
                     assessment: Assessment {
                         dispatch_identity: uuid::Uuid::new_v4().to_string(), story, generation,
                         status: if policy_hold.is_some() { AssessmentStatus::Held } else { AssessmentStatus::Pending },
@@ -102,7 +105,9 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
             if returned {
                 let states = tx.state_map(candidate.project)?;
                 let target = states.get(super::verification::RETURNED_STATE).ok_or_else(|| StoreError::Validation("project has no in-progress state for fault assessment".into()))?;
-                let instructions = if story == view.state.assessment.story {
+                let instructions = if view.state.decision.is_some() {
+                    format!("Read `story verifier repair show {} --json` and follow its accepted scope decision; retain the existing repair lineage.", view.record.id)
+                } else if story == view.state.assessment.story {
                     assessment_charter(&view)
                 } else {
                     format!("{} owns the scope assessment. Read `story verifier repair show {} --json`. Wait for the recorded scope decision; do not start a competing repair.", view.state.assessment.story.to_id(&prefix), view.record.id)
@@ -117,6 +122,12 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                 state_revision: authority::state_revision(tx, candidate.project, story)?,
                 label_revision: authority::label_revision(tx, candidate.project, story)?,
             });
+            if let Some(mut receipt) = view.state.decision.take() {
+                let mut latest = view.clone();
+                latest.state.subjects = view.state.subjects.last().cloned().into_iter().collect();
+                decision_effects::apply(tx, self.ctx, &latest, &mut receipt, &now)?;
+                view.state.decision = Some(receipt);
+            }
             save(tx, &mut view, &now)?;
             Ok(Some(view))
         }).map_err(Into::into)

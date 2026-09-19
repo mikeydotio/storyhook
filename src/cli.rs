@@ -178,6 +178,18 @@ pub enum EngineAction {
 /// The controls under `story verifier` (SH-666).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerifierAction {
+    /// Read one durable project fault recovery in the selected project.
+    RepairShow {
+        /// Exact stable recovery identity.
+        recovery_id: String,
+    },
+    /// Accept a versioned scope decision under managed assessment authority.
+    RepairDecide {
+        /// Exact stable recovery identity.
+        recovery_id: String,
+        /// JSON file resolved against the caller's working directory.
+        input: String,
+    },
     /// Inspect gate configuration in a pinned proposed merge without the store.
     GateConfig {
         /// Repository containing the pinned parents.
@@ -274,6 +286,8 @@ Usage:
   story engine stop [--run <id>] [--now]
   story verifier status | start | stop | drain
   story verifier ack <incident-id> [--leave-stopped] (acknowledge and retry by default)
+  story verifier repair show <recovery-id> --json
+  story verifier repair decide <recovery-id> --input <json-file>
   story verifier gate-config <checkout> <base> <head> <tree> --json
   story resources <id> [--json]                    (inspect existing resource identity)
   story cleanup [--dry-run]                         (retry the verifier's reap of finished story workspaces)
@@ -1991,6 +2005,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         verb: "verifier",
         subcommand: Some("ack"),
         flags: &[bare("leave-stopped")],
+    },
+    VerbFlags {
+        verb: "verifier",
+        subcommand: Some("repair"),
+        flags: &[value("input")],
     },
     VerbFlags {
         verb: "resources",
@@ -3981,10 +4000,31 @@ const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id> [--lea
 fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(
-            "usage: story verifier <status|start|stop|drain|ack>".to_string(),
+            "usage: story verifier <status|start|stop|drain|ack|repair>".to_string(),
         ));
     };
     let action = match action {
+        "repair" => {
+            const USAGE: &str = "usage: story verifier repair show <recovery-id> | decide <recovery-id> --input <json-file>";
+            let id = args
+                .get(3)
+                .filter(|s| !is_flag_shaped(s))
+                .ok_or_else(|| AppError::Usage(USAGE.into()))?;
+            match args.get(2).map(String::as_str) {
+                Some("show") if args.len() == 4 => VerifierAction::RepairShow {
+                    recovery_id: id.clone(),
+                },
+                Some("decide")
+                    if args.len() == 6 && args[4] == "--input" && !is_flag_shaped(&args[5]) =>
+                {
+                    VerifierAction::RepairDecide {
+                        recovery_id: id.clone(),
+                        input: args[5].clone(),
+                    }
+                }
+                _ => return Err(AppError::Usage(USAGE.into())),
+            }
+        }
         "gate-config" => {
             const USAGE: &str =
                 "usage: story verifier gate-config <checkout> <base> <head> <tree> --json";
@@ -4030,7 +4070,7 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
         }
         _ => {
             return Err(AppError::Usage(
-                "usage: story verifier <status|start|stop|drain|ack>".to_string(),
+                "usage: story verifier <status|start|stop|drain|ack|repair>".to_string(),
             ));
         }
     };
