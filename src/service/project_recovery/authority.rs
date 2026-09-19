@@ -13,8 +13,11 @@ pub(super) fn state_revision(
         .iter()
         .rev()
         .find_map(|event| {
-            matches!(event.known(), Some(StoryEvent::StoryStateChanged { .. }))
-                .then_some(event.global_seq)
+            matches!(
+                event.known(),
+                Some(StoryEvent::StoryStateChanged { .. } | StoryEvent::StoryCreated { .. })
+            )
+            .then_some(event.global_seq)
         })
         .ok_or_else(|| StoreError::Corrupt("recovery subject has no state transition".into()))
 }

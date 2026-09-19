@@ -1,7 +1,7 @@
 use super::*;
 use storyhook::service::project_recovery::{DecisionInput, RecoveryView, RepairScope, RepairSpec};
 
-fn ready(f: &ServiceFixture) -> RecoveryView {
+pub(super) fn ready(f: &ServiceFixture) -> RecoveryView {
     let candidate = submitted(f, "scope assessor");
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
@@ -20,7 +20,7 @@ fn ready(f: &ServiceFixture) -> RecoveryView {
         .unwrap()
 }
 
-fn input(view: &RecoveryView, scope: RepairScope) -> DecisionInput {
+pub(super) fn input(view: &RecoveryView, scope: RepairScope) -> DecisionInput {
     DecisionInput {
         version: 1, revision: view.record.revision, project: view.record.project,
         generation: view.state.assessment.generation,

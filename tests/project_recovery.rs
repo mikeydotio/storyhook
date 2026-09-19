@@ -2,6 +2,8 @@
 
 #[path = "project_recovery/decision.rs"]
 mod decision;
+#[path = "project_recovery/work.rs"]
+mod work;
 
 use storyhook::service::project_fault::{ProjectFault, ReceiptRefusal};
 use storyhook::service::project_recovery::{

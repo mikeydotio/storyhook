@@ -144,6 +144,9 @@ pub struct RecoveryState {
     /// Terminal assessment holds owned by exact event identity.
     #[serde(default)]
     pub holds: Vec<OwnedAssessmentHold>,
+    /// Durable managed repair and affected-agent resume effects.
+    #[serde(default)]
+    pub work: Vec<super::WorkDelivery>,
 }
 
 /// Exact structured evidence originally produced by the verifier.

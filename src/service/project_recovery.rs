@@ -6,6 +6,7 @@ mod decision_effects;
 mod holds;
 mod model;
 mod persistence;
+mod work;
 use super::{
     Ctx, project_fault::ProjectFault, project_prefix, resolve_story,
     verification::VerificationCandidate,
@@ -18,6 +19,7 @@ use crate::{
 pub use decision::{DecisionInput, DecisionReceipt, RepairScope, RepairSpec};
 pub use model::*;
 use persistence::{find, read_view, save, serialize, timestamp};
+pub use work::{WorkDelivery, WorkKind, WorkStatus};
 
 /// Coordinates project recovery using the selected project's ordinary story transactions.
 pub struct ProjectRecoveryService<'a, S: Store> {
@@ -81,7 +83,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                 read_view(tx, record)?
             } else {
                 let state = RecoveryState {
-                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(),
+                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(),
                     assessment: Assessment {
                         dispatch_identity: uuid::Uuid::new_v4().to_string(), story, generation,
                         status: if policy_hold.is_some() { AssessmentStatus::Held } else { AssessmentStatus::Pending },

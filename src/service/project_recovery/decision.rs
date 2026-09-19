@@ -128,6 +128,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 view.state.assessment.detail =
                     "scope decision accepted; follow the retained repair disposition".into();
                 view.state.decision = Some(receipt);
+                super::work::enqueue_repair(tx, &mut view)?;
                 persistence::save(tx, &mut view, &now)?;
                 Ok(view)
             })

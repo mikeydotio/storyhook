@@ -91,6 +91,7 @@ pub(super) fn read_view(
             ));
         }
     }
+    super::work::validate(&state)?;
     for observation in &observations {
         let evidence: FaultObservation = serde_json::from_value(observation.evidence.clone())
             .map_err(|error| {
