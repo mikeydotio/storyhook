@@ -871,9 +871,7 @@ fn generic_enterprise_observations_use_the_https_credential_boundary() {
     assert!(
         output.contains("credential.https://github.example.com.helper=!gh auth git-credential")
     );
-    assert!(
-        output.contains("fetch\nhttps://github.example.com/acme/widgets.git\nrefs/heads/main")
-    );
+    assert!(output.contains("fetch\nhttps://github.example.com/acme/widgets.git\nrefs/heads/main"));
 }
 
 #[test]
