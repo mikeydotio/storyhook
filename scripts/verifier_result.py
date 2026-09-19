@@ -46,6 +46,9 @@ def attach_cleanup(value, failure):
         evidence = value.get("fault")
         if not isinstance(evidence, dict):
             raise Refusal("project fault is missing its evidence")
+        for name in ("base", "head", "head_tree"):
+            if not isinstance(evidence.get(name), str) or not evidence[name]:
+                raise Refusal(f"project fault is missing {name}")
         if evidence.get("code") == "missing-certification":
             if type(evidence.get("execution_status")) is not int or evidence["execution_status"] != 0:
                 raise Refusal("project fault is missing completed gate evidence")

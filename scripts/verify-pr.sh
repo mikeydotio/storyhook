@@ -424,12 +424,15 @@ require_certified_by_gate() {
         || die_json "unknown certification refusal: $recheck. Gate log: $log"
     detail="gate \`$gate_display\` exited 0 on merge tree \`$certified_tree\` but certified nothing: $(printf '%s\n' "$recheck" | jq -r '.detail'). In the configured [verify] gate script, call \"\$STORYHOOK_GATE_RECEIPT\" preflight before testing and \"\$STORYHOOK_GATE_RECEIPT\" postlude gate (or postlude full) only after all required tests pass. The verifier supplies this portable writer; no StoryHook scripts or Git hooks are needed in the project. StoryHook's own scripts/gate-receipt.sh postlude remains supported. A changed receipt or a bare successful test runner cannot certify a merge. Gate log: $log"
     confirm_judged_head "$pr" "$base" "$head" uncertified "Gate log of the superseded attempt: $log"
+    certified_head_tree="$(git rev-parse --verify "$certified_head^{tree}" 2>/dev/null)" \
+        || die_json "could not resolve the committed source tree for uncertified head $certified_head"
     disarm_verification_signal_trap
     jq -n --arg tree "$certified_tree" --arg base "$certified_base" --arg head "$certified_head" \
+        --arg head_tree "$certified_head_tree" \
         --arg gate "$gate_display" --arg log "$log" --arg execution "$execution_file" \
         --arg receipt "$receipt_reason" --arg detail "$detail" \
         '{result:"project-fault",fault:{code:"missing-certification",locus:".storyhook.toml#verify.gate",
-          tree:$tree,base:$base,head:$head,gate:$gate,log:$log,execution:$execution,
+          tree:$tree,base:$base,head:$head,head_tree:$head_tree,gate:$gate,log:$log,execution:$execution,
           execution_status:0,receipt:$receipt,detail:$detail}}'
     exit 0
 }

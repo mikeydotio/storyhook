@@ -26,6 +26,8 @@ pub enum ProjectFault {
         base: String,
         /// Pinned submitted commit.
         head: String,
+        /// Tree of the submitted commit, independent of the moving merge base.
+        head_tree: String,
         /// Digest of the exact committed configuration bytes.
         configuration: String,
         /// Parser diagnosis; never used for classification.
@@ -41,6 +43,8 @@ pub enum ProjectFault {
         base: String,
         /// Pinned submitted commit.
         head: String,
+        /// Tree of the submitted commit, used to reject empty-commit repair retries.
+        head_tree: String,
         /// Digest of the committed configuration bytes.
         configuration: String,
         /// Parsed plain-argv gate command.
@@ -60,6 +64,8 @@ pub enum ProjectFault {
         base: String,
         /// Pinned submitted commit used to construct the merge.
         head: String,
+        /// Committed source tree of the submitted head before merge construction.
+        head_tree: String,
         /// Actual plain-argv command executed for this observation.
         gate: String,
         /// Full attempt log, retained independently of the bounded diagnosis.
@@ -76,6 +82,20 @@ pub enum ProjectFault {
 }
 
 impl ProjectFault {
+    /// Committed source identity retained independently of the proposed merge tree.
+    pub fn source(&self) -> (&str, &str) {
+        match self {
+            Self::InvalidGateConfiguration {
+                head, head_tree, ..
+            }
+            | Self::MissingGateCommand {
+                head, head_tree, ..
+            }
+            | Self::MissingCertification {
+                head, head_tree, ..
+            } => (head, head_tree),
+        }
+    }
     /// Stable fault identity; changing trees and commands remain observations.
     pub fn identity(&self) -> (&'static str, &str) {
         match self {
@@ -92,6 +112,7 @@ impl ProjectFault {
             tree,
             base,
             head,
+            head_tree,
             configuration,
             detail,
         }
@@ -100,11 +121,14 @@ impl ProjectFault {
             tree,
             base,
             head,
+            head_tree,
             configuration,
             detail,
             ..
         } = self
-            && (![tree, base, head].iter().all(|oid| is_pinned_oid(oid))
+            && (![tree, base, head, head_tree]
+                .iter()
+                .all(|oid| is_pinned_oid(oid))
                 || configuration.len() != 64
                 || !is_pinned_oid(configuration)
                 || detail.trim().is_empty()
@@ -131,6 +155,7 @@ impl ProjectFault {
                 tree,
                 base,
                 head,
+                head_tree,
                 gate,
                 log,
                 execution,
@@ -138,7 +163,12 @@ impl ProjectFault {
                 detail,
                 ..
             } => {
-                for (name, oid) in [("tree", tree), ("base", base), ("head", head)] {
+                for (name, oid) in [
+                    ("tree", tree),
+                    ("base", base),
+                    ("head", head),
+                    ("head_tree", head_tree),
+                ] {
                     if !is_pinned_oid(oid) {
                         return Err(format!(
                             "project fault {name} must be a pinned Git object id"
@@ -195,6 +225,7 @@ mod tests {
     fn evidence() -> Value {
         json!({"code":"missing-certification", "locus":".storyhook.toml#verify.gate",
             "tree":"a".repeat(40), "base":"b".repeat(40), "head":"c".repeat(40),
+            "head_tree":"d".repeat(40),
             "gate":"make test", "log":"/logs/attempt", "execution":"/executions/attempt.json",
             "execution_status":0, "receipt":"missing", "detail":"gate did not certify"})
     }
@@ -207,6 +238,7 @@ mod tests {
             ("tree", json!("HEAD")),
             ("base", json!("")),
             ("head", json!("g".repeat(40))),
+            ("head_tree", json!("HEAD^{tree}")),
             ("execution_status", json!(1)),
             ("log", json!("")),
             ("execution", json!("")),
@@ -232,6 +264,7 @@ mod tests {
             "tree",
             "base",
             "head",
+            "head_tree",
             "execution",
             "log",
             "receipt",

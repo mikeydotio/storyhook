@@ -220,7 +220,7 @@ os.kill = kill
         """A late cleanup failure withholds repair while preserving its diagnosis."""
         self.fault_census("session")
         fault = {"code": "missing-certification", "tree": "tree", "base": "base",
-                 "head": "head", "log": "attempt.log", "execution_status": 0,
+                 "head": "head", "head_tree": "head-tree", "log": "attempt.log", "execution_status": 0,
                  "detail": "successful gate omitted certification"}
         payload = {"result": "project-fault", "fault": fault}
         result = self.fx.command("python3", str(self.bundle / "verifier-owner.py"), "run-json",
@@ -245,7 +245,7 @@ os.kill = kill
         """Inspection has no gate execution, but its evidence must survive cleanup."""
         self.fault_census("session")
         fault = {"code": "invalid-gate-configuration", "tree": "a" * 40,
-                 "base": "b" * 40, "head": "c" * 40, "configuration": "d" * 64,
+                 "base": "b" * 40, "head": "c" * 40, "head_tree": "e" * 40, "configuration": "d" * 64,
                  "detail": "invalid committed gate argv"}
         payload = {"result": "project-fault", "fault": fault}
         result = self.fx.command("python3", str(self.bundle / "verifier-owner.py"), "run-json",

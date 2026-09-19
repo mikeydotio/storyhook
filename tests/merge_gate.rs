@@ -3872,6 +3872,11 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
     );
     assert_eq!(payload["fault"]["execution_status"], 0, "{payload}");
     assert_eq!(payload["fault"]["head"], new, "{payload}");
+    assert_eq!(
+        payload["fault"]["head_tree"],
+        repo.tree_of(&new),
+        "{payload}"
+    );
     assert_eq!(payload["fault"]["receipt"], "missing", "{payload}");
     assert!(
         payload["fault"]["log"]
@@ -4064,6 +4069,7 @@ fn gate_snapshot_distinguishes_project_configuration_from_git_failure() {
         let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
         assert_eq!(value["result"], "project-fault", "{value}");
         assert_eq!(value["fault"]["code"], code, "{value}");
+        assert_eq!(value["fault"]["head_tree"], repo.tree_of(&head), "{value}");
         assert_eq!(value["fault"]["tree"], tree, "{value}");
         let fault: storyhook::service::project_fault::ProjectFault =
             serde_json::from_value(value["fault"].clone()).unwrap();

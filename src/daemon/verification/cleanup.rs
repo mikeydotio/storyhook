@@ -261,6 +261,7 @@ mod tests {
         let wire = serde_json::json!({"result":"project-fault", "fault": {
             "code":"missing-certification", "locus":".storyhook.toml#verify.gate",
             "tree":"a".repeat(40), "base":"b".repeat(40), "head":"c".repeat(40),
+            "head_tree":"d".repeat(40),
             "gate":"make test", "log":"/logs/attempt", "execution":"/executions/attempt.json",
             "execution_status":0, "receipt":"missing", "detail":"missing receipt evidence"}});
         let parsed: WireOutcome = serde_json::from_value(wire.clone()).unwrap();

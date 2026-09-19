@@ -38,6 +38,19 @@ pub fn inspect(
             "gate inspection requires pinned base, head and tree object IDs".into(),
         ));
     }
+    let head_tree = run_git(
+        checkout,
+        None,
+        &["rev-parse", "--verify", &format!("{head}^{{tree}}")],
+    )?;
+    let head_tree = String::from_utf8(head_tree)
+        .map_err(|error| AppError::Storage(format!("reading committed head tree: {error}")))?;
+    let head_tree = head_tree.trim();
+    if !is_pinned_oid(head_tree) {
+        return Err(AppError::Storage(
+            "Git returned an invalid committed head tree".into(),
+        ));
+    }
     let common = run_git(
         checkout,
         None,
@@ -87,6 +100,7 @@ pub fn inspect(
                     tree: tree.into(),
                     base: base.into(),
                     head: head.into(),
+                    head_tree: head_tree.into(),
                     configuration,
                     detail: error.to_string(),
                 },
@@ -109,6 +123,7 @@ pub fn inspect(
                     tree: tree.into(),
                     base: base.into(),
                     head: head.into(),
+                    head_tree: head_tree.into(),
                     configuration,
                     gate: gate.display(),
                     detail: format!(

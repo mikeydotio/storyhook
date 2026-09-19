@@ -250,6 +250,7 @@ fn recovery_response(f: &storyhook_test_support::ServiceFixture) -> Response {
         tree: "a".repeat(40),
         base: "b".repeat(40),
         head: "c".repeat(40),
+        head_tree: "d".repeat(40),
         gate: "make test".into(),
         log: "/retained/gate.log".into(),
         execution: "/retained/execution.json".into(),
