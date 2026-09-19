@@ -1318,3 +1318,15 @@ reservation and resource identity. A refreshed candidate cannot renew an older
 attempt after a transient human reservation. A repair that encounters a different
 typed project fault remains in its original recovery and cannot create another
 repair story. Its fault must match the completed admitted source and merge input.
+
+The private `verifier repair-admit` callback requires the exact live project,
+story, generation, and verifier attempt token, plus pinned base, head, head tree,
+and proposed merge tree. It uses the candidate retained at verifier acquisition
+under the registry-before-store lock order. Missing or cancelled ownership and
+transient reservation changes refuse admission; a new queue read cannot renew
+that authority. The callback does not certify or merge anything.
+
+A repair landing receipt is recorded inside validated landing completion. It
+retains the certified repair attempt, exact LandingIntent, and confirmed merge
+event. A mismatched head or tree keeps pending landing authority. A manually
+closed repair, a green comment, or an unrelated event cannot authorize resume.

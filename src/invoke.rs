@@ -1051,6 +1051,15 @@ fn dispatch_verifier<S: Store>(
         )
     })?;
     let receipt = match action {
+        VerifierAction::RepairAdmit {
+            story_id,
+            attempt_id,
+            generation,
+            input,
+        } => {
+            let answer = activity.admit_repair(ctx, &story_id, &attempt_id, generation, &input)?;
+            return Ok(Response::RawJson(serde_json::to_string(&answer)?));
+        }
         VerifierAction::RepairShow { .. } | VerifierAction::RepairDecide { .. } => {
             unreachable!("recovery operations returned above")
         }

@@ -178,6 +178,17 @@ pub enum EngineAction {
 /// The controls under `story verifier` (SH-666).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerifierAction {
+    /// Private subprocess callback bound to the daemon's live verification owner.
+    RepairAdmit {
+        /// Exact story owned by the verifier.
+        story_id: String,
+        /// Unique live verifier attempt token.
+        attempt_id: String,
+        /// Exact submission generation; zero and negative values are invalid.
+        generation: i64,
+        /// Immutable proposed Git input, without any certification authority.
+        input: crate::service::project_recovery::RepairInput,
+    },
     /// Read one durable project fault recovery in the selected project.
     RepairShow {
         /// Exact stable recovery identity.
@@ -4004,6 +4015,34 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
         ));
     };
     let action = match action {
+        "repair-admit" => {
+            const USAGE: &str = "usage: story verifier repair-admit <story> <attempt> <generation> <base> <head> <head-tree> <tree> --json (private verifier callback)";
+            if args.len() != 9
+                || args[2..]
+                    .iter()
+                    .any(|s| s.trim().is_empty() || is_flag_shaped(s))
+            {
+                return Err(AppError::Usage(USAGE.into()));
+            }
+            let generation = args[4]
+                .parse::<i64>()
+                .ok()
+                .filter(|v| *v > 0)
+                .ok_or_else(|| AppError::Usage(USAGE.into()))?;
+            let input = crate::service::project_recovery::RepairInput {
+                base: args[5].clone(),
+                head: args[6].clone(),
+                head_tree: args[7].clone(),
+                tree: args[8].clone(),
+            };
+            input.validate()?;
+            VerifierAction::RepairAdmit {
+                story_id: args[2].clone(),
+                attempt_id: args[3].clone(),
+                generation,
+                input,
+            }
+        }
         "repair" => {
             const USAGE: &str = "usage: story verifier repair show <recovery-id> | decide <recovery-id> --input <json-file>";
             let id = args

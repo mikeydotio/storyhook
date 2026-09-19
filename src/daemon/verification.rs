@@ -18,6 +18,7 @@ mod workspace_tests;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
 mod observation;
+mod repair_admission;
 pub mod status;
 use crate::process::Cancellation;
 pub use crate::process::Cancellation as VerificationCancellation;
@@ -110,6 +111,7 @@ pub struct VerificationActivity {
 }
 
 struct VerificationSlot {
+    candidate: VerificationCandidate,
     workspace: Option<Arc<crate::service::workspace_lock::WorkspaceLock>>,
     active: ActiveVerification,
     cancellation: Cancellation,
@@ -261,6 +263,7 @@ impl VerificationActivity {
         slots.insert(
             candidate.project,
             VerificationSlot {
+                candidate: candidate.clone(),
                 workspace: None,
                 active: active.clone(),
                 cancellation: cancellation.clone(),
@@ -340,6 +343,7 @@ impl VerificationGuard {
             .expect("owned verification slot");
         assert_eq!(slot.active, self.active);
         slot.active = replacement.clone();
+        slot.candidate = candidate.clone();
         slot.output = crate::service::gate_output::OutputObserver::default();
         self.active = replacement;
     }

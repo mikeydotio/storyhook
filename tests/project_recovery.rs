@@ -2,6 +2,8 @@
 
 #[path = "project_recovery/attempts.rs"]
 mod attempts;
+#[path = "project_recovery/callback.rs"]
+mod callback;
 #[path = "project_recovery/decision.rs"]
 mod decision;
 #[path = "project_recovery/landing.rs"]
