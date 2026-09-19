@@ -108,6 +108,22 @@ pub struct AffectedSubmission {
     pub returned: bool,
 }
 
+/// Exact awaiting event created by a terminal assessment, never a blanket unblock grant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedAssessmentHold {
+    /// Subject whose original submission remains unjudged.
+    pub story: StoryNo,
+    /// Original verification generation.
+    pub generation: GlobalSeq,
+    /// Machine-readable terminal assessment cause.
+    pub cause: AssessmentHold,
+    /// Exact reason committed to the story.
+    pub awaiting: String,
+    /// Global sequence of this recovery's awaiting write.
+    pub event: GlobalSeq,
+}
+
 /// Versioned state revised independently of immutable gate observations.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -125,6 +141,9 @@ pub struct RecoveryState {
     /// Exact accepted request and resulting work; absent until scope is decided.
     #[serde(default)]
     pub decision: Option<super::DecisionReceipt>,
+    /// Terminal assessment holds owned by exact event identity.
+    #[serde(default)]
+    pub holds: Vec<OwnedAssessmentHold>,
 }
 
 /// Exact structured evidence originally produced by the verifier.

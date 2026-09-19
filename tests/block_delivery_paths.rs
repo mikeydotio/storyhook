@@ -68,6 +68,11 @@ fn every_event_writer_accounts_for_effective_block_changes() {
     // Obviation evidence changes blocking inside the caller's complete transaction.
     let delegated = [
         (
+            "project_recovery/holds",
+            "project_recovery",
+            "holds::record(",
+        ),
+        (
             "project_recovery/decision_effects",
             "project_recovery",
             "decision_effects::apply(",

@@ -77,6 +77,30 @@ fn confirmed_assessment_expires_without_a_competing_dispatch() {
         assert_eq!(view.state.assessment.hold, expected);
         assert_eq!(view.state.assessment.epoch, 1);
         assert_eq!(view.state.assessment.failures, 0);
+        let row = f
+            .store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.awaiting.is_some(), expected.is_some());
+        if expected.is_some() {
+            assert_eq!(view.state.holds.len(), 1);
+            let owned = &view.state.holds[0];
+            assert_eq!(owned.awaiting, row.awaiting.unwrap());
+            let recorded = f
+                .store()
+                .read(|tx| tx.events_for(f.project(), StoryNo::new(1)))
+                .unwrap();
+            assert!(recorded.iter().any(|event| event.global_seq == owned.event && matches!(event.known(), Some(storyhook::domain::StoryEvent::StoryAwaitingSet { awaiting, .. }) if awaiting == &owned.awaiting)));
+            assert!(
+                f.store()
+                    .read(|tx| tx.block_deliveries(f.project()))
+                    .unwrap()
+                    .iter()
+                    .any(|delivery| delivery.story == owned.story
+                        && delivery.action == storyhook::store::BlockAction::Interrupt)
+            );
+        }
     }
 }
 
@@ -160,6 +184,14 @@ fn uncertain_ownership_holds_without_spending_proven_failure_budget() {
         Some(AssessmentHold::OwnershipUncertain)
     );
     assert_eq!(held.state.assessment.failures, 0);
+    assert!(
+        f.store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap()
+            .awaiting
+            .is_some()
+    );
     assert!(service.claim_assessment(&view.record.id).unwrap().is_none());
 }
 
@@ -202,6 +234,99 @@ fn fixture() -> ServiceFixture {
     let f = ServiceFixture::new();
     f.github_checkout("https://github.com/acme/widgets");
     f
+}
+
+#[test]
+fn terminal_assessment_preserves_independent_awaiting_and_replays_without_more_events() {
+    let f = fixture();
+    let first = submitted(&f, "assessment owner");
+    let second = submitted(&f, "independent hold");
+    let ctx = f.ctx();
+    let service = ProjectRecoveryService::new(&ctx);
+    let view = service.observe(&first, &fault(), "first").unwrap().unwrap();
+    service
+        .observe(&second, &fault(), "second")
+        .unwrap()
+        .unwrap();
+    let claimed = service.claim_assessment(&view.record.id).unwrap().unwrap();
+    StoryService::new(&ctx)
+        .set_awaiting(&second.story_id, "operator prerequisite")
+        .unwrap();
+    let before = f
+        .store()
+        .read(|tx| tx.story(f.project(), StoryNo::new(2)))
+        .unwrap();
+    let held = service
+        .settle_assessment(
+            &view.record.id,
+            &claimed.state.assessment.dispatch_identity,
+            claimed.state.assessment.epoch,
+            AssessmentDelivery::Uncertain("pane owner is ambiguous".into()),
+        )
+        .unwrap();
+    assert_eq!(held.state.holds.len(), 1);
+    assert_eq!(held.state.holds[0].story, StoryNo::new(1));
+    assert_eq!(
+        f.store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(2)))
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        service
+            .settle_assessment(
+                &view.record.id,
+                &claimed.state.assessment.dispatch_identity,
+                claimed.state.assessment.epoch,
+                AssessmentDelivery::Uncertain("pane owner is ambiguous".into())
+            )
+            .unwrap(),
+        held
+    );
+    assert!(service.claim_assessment(&view.record.id).unwrap().is_none());
+}
+
+#[test]
+fn late_subject_inherits_terminal_hold_without_restoring_a_cleared_operator_hold() {
+    let f = fixture();
+    let first = submitted(&f, "original held owner");
+    let ctx = f.ctx();
+    let service = ProjectRecoveryService::new(&ctx);
+    let view = service.observe(&first, &fault(), "first").unwrap().unwrap();
+    let claimed = service.claim_assessment(&view.record.id).unwrap().unwrap();
+    service
+        .settle_assessment(
+            &view.record.id,
+            &claimed.state.assessment.dispatch_identity,
+            claimed.state.assessment.epoch,
+            AssessmentDelivery::Uncertain("ambiguous owner".into()),
+        )
+        .unwrap();
+    StoryService::new(&ctx)
+        .clear_awaiting(&first.story_id)
+        .unwrap();
+    let second = submitted(&f, "late affected story");
+    let joined = service
+        .observe(&second, &fault(), "second")
+        .unwrap()
+        .unwrap();
+    assert_eq!(joined.state.holds.len(), 2);
+    assert!(
+        f.store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap()
+            .awaiting
+            .is_none()
+    );
+    assert!(
+        f.store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(2)))
+            .unwrap()
+            .unwrap()
+            .awaiting
+            .is_some()
+    );
 }
 
 #[test]

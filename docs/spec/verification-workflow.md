@@ -1300,3 +1300,7 @@ a self-edge or cycle. A valid in-flight assessor decision proves charter receipt
 a late matching delivery confirmation does not reopen assessment. Undecided
 assessment allows three proven delivery failures and a 30-minute response window.
 Uncertain ownership retains its hold without spending proven-failure budget.
+Terminal assessment holds also record an awaiting reason on each eligible
+affected story. The recovery retains the exact awaiting-event sequence and
+original generation. It skips independent holds and changed authority; a later
+observation cannot restore a recovery hold that the operator already cleared.

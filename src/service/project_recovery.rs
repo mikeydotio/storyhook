@@ -3,6 +3,7 @@
 mod authority;
 mod decision;
 mod decision_effects;
+mod holds;
 mod model;
 mod persistence;
 use super::{
@@ -80,7 +81,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                 read_view(tx, record)?
             } else {
                 let state = RecoveryState {
-                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None,
+                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(),
                     assessment: Assessment {
                         dispatch_identity: uuid::Uuid::new_v4().to_string(), story, generation,
                         status: if policy_hold.is_some() { AssessmentStatus::Held } else { AssessmentStatus::Pending },
@@ -128,6 +129,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                 decision_effects::apply(tx, self.ctx, &latest, &mut receipt, &now)?;
                 view.state.decision = Some(receipt);
             }
+            holds::record(tx, self.ctx, &mut view, &now)?;
             save(tx, &mut view, &now)?;
             Ok(Some(view))
         }).map_err(Into::into)
@@ -143,8 +145,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
     pub fn claim_assessment(&self, id: &str) -> Result<Option<RecoveryView>, AppError> {
         let now = self.ctx.now();
         self.ctx
-            .store()
-            .write(|tx| {
+            .write_stories(|tx| {
                 let mut view = find(tx, self.ctx.project(), id)?;
                 if !view.record.active {
                     return Ok(None);
@@ -165,6 +166,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                         view.state.assessment.hold = Some(AssessmentHold::ResponseExpired);
                         view.state.assessment.detail =
                             AssessmentHold::ResponseExpired.detail().into();
+                        holds::record(tx, self.ctx, &mut view, &now)?;
                         save(tx, &mut view, &now)?;
                     }
                     return Ok(None);
@@ -176,6 +178,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                     view.state.assessment.status = AssessmentStatus::Held;
                     view.state.assessment.hold = Some(reason);
                     view.state.assessment.detail = reason.detail().into();
+                    holds::record(tx, self.ctx, &mut view, &now)?;
                     save(tx, &mut view, &now)?;
                     return Ok(None);
                 }
@@ -208,8 +211,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
         }
         let now = self.ctx.now();
         self.ctx
-            .store()
-            .write(|tx| {
+            .write_stories(|tx| {
                 let mut view = find(tx, self.ctx.project(), id)?;
                 let assessment = &mut view.state.assessment;
                 if assessment.dispatch_identity != identity || assessment.epoch != epoch {
@@ -263,6 +265,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                         .detail
                         .push_str(&format!("; authority withheld: {}", reason.detail()));
                 }
+                holds::record(tx, self.ctx, &mut view, &now)?;
                 save(tx, &mut view, &now)?;
                 Ok(view)
             })
