@@ -498,3 +498,25 @@ footer reachable with the URL bar shown, the filter disclosure's state surviving
 the actions menu opening on a genuine tap, the list table's horizontal scroll working under
 a real finger, and confirmation that iOS Safari actually stays unzoomed rather than merely
 receiving CSS that computes to the right numbers under emulation.
+
+## Desktop toolbar containment (SH-741)
+
+The header must fit horizontally inside the viewport. Only the kanban board
+owns horizontal scrolling in board view. Desktop toolbar groups wrap when their
+content cannot fit one row, including with enlarged text. Controls remain
+readable and usable; clipping and horizontal toolbar scrolling do not satisfy
+this contract. The project selector retains its existing text ellipsis.
+
+The outer topbar already wrapped, but its nested action group did not. At 769px
+with 200% root text, Chromium measured document widths of 840px with Live status
+and 958px with Disconnected status. Desktop-only bounds and nested wrapping
+remove that intrinsic-width overflow. The filter summary also wraps its items
+without shrinking controls. The <=768px compact grid keeps its existing layout.
+
+`toolbar-containment.spec.ts` measures every visible header control before focus
+or clicks can scroll it into view. It covers desktop widths from 769px to
+1440px, 100% and 200% root text, long project names, a populated draft count,
+expanded filters, failed Auto/connection status, and the compact breakpoint.
+It also checks non-overlap, row containment, unchanged header geometry while
+scrolling the board to both ends, and Drafts/Auto dialog access. Measurements
+wait for CSS transitions to settle. Both desktop browser engines run the spec.

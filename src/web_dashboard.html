@@ -1590,6 +1590,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
 
+/* Outer wrapping cannot constrain a nested nowrap flex group (SH-741).
+   Keep desktop controls inside their row even with enlarged text; the
+   compact grid below owns these same nodes through display:contents. */
+@media (min-width: 769px) {
+  .brand { flex-shrink: 1; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+  .brand .projsel { min-width: 0; max-width: 100%; }
+  .brand .projsel-btn { max-width: min(14rem, 100%); }
+  .search-wrap { flex: 1 1 12rem; min-width: 0; }
+  .topbar-right { flex-shrink: 1; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+  .topbar-right > .connection { flex-shrink: 0; }
+  .filter-summary { flex-wrap: wrap; }
+  .filter-summary > * { flex-shrink: 0; }
+}
+
 /* ---- Mobile ---- */
 @media (max-width: 768px) {
   :root { --inset-main: 0.75rem; }
