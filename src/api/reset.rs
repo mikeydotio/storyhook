@@ -51,17 +51,27 @@ impl ResetController {
         .no_hooks(true))
     }
 
-    fn envelope(&self, reset: &StoryReset) -> serde_json::Value {
-        let running = self
-            .running
-            .lock()
-            .expect("reset registry")
-            .contains(&reset.token);
-        serde_json::json!({"result":"ok", "reset": {
+    fn envelope(&self, reset: &StoryReset) -> Result<serde_json::Value, AppError> {
+        let registry = self.running.lock().expect("reset registry");
+        // A worker commits its receipt before removing its registry entry.
+        // Refresh under this lock so an old receipt cannot report interruption
+        // after the worker has completed or persisted its failure diagnostic.
+        let reset = self.store.read(|tx| {
+            tx.story_reset(reset.project, reset.story)?
+                .filter(|current| current.token == reset.token)
+                .ok_or_else(|| {
+                    crate::store::StoreError::NotFound(format!(
+                        "reset {} for {}",
+                        reset.token, reset.story_id
+                    ))
+                })
+        })?;
+        let running = registry.contains(&reset.token);
+        Ok(serde_json::json!({"result":"ok", "reset": {
             "handle":reset.token, "story":reset.story_id,
             "state":if reset.completed { "ok" } else if running { "running" } else { "error" },
             "detail":reset.failure.clone().or_else(|| (!reset.completed && !running).then(|| "Reset was interrupted. Retry Reset to finish the same cleanup operation.".into()))
-        }})
+        }}))
     }
 
     fn start(
@@ -139,7 +149,7 @@ impl ResetController {
                 return Err(AppError::Storage(format!("starting reset worker: {error}")));
             }
         }
-        Ok(json_reply(202, self.envelope(&reset).to_string()).no_cache())
+        Ok(json_reply(202, self.envelope(&reset)?.to_string()).no_cache())
     }
 }
 
@@ -187,7 +197,7 @@ pub(crate) fn intercept(
         (Method::Get, ["api", "repos", project, "story", id, "reset", handle]) => (|| {
             let ctx = controller.context(project)?;
             let reset = StoryResetService::new(&ctx).get(id, handle)?;
-            Ok(json_reply(200, controller.envelope(&reset).to_string()).no_cache())
+            Ok(json_reply(200, controller.envelope(&reset)?.to_string()).no_cache())
         })(),
         _ => Ok(text_reply(405, "Method not allowed")),
     };
@@ -197,6 +207,66 @@ pub(crate) fn intercept(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_refreshes_the_receipt_after_the_worker_releases_ownership() {
+        use crate::store::WriteOps;
+
+        for failure in [false, true] {
+            let fixture = storyhook_test_support::ServiceFixture::new();
+            let env = Environment::at(fixture.env().home());
+            let controller = ResetController::open(
+                &env,
+                VerificationActivity::default(),
+                Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
+            )
+            .unwrap();
+            let ctx = controller.context("fixture").unwrap();
+            controller
+                .store
+                .write(|tx| tx.set_checkout_path(ctx.project(), None))
+                .unwrap();
+            let story = crate::service::StoryService::new(&ctx)
+                .create(&crate::service::NewStoryInput {
+                    title: "Reset response race".into(),
+                    state: Some("in-progress".into()),
+                    ..Default::default()
+                })
+                .unwrap();
+            let service = StoryResetService::new(&ctx);
+            // Both POST and GET can hold this snapshot when the worker finishes.
+            let pending = service.reserve(&story.id, &story.id).unwrap();
+            controller
+                .running
+                .lock()
+                .unwrap()
+                .insert(pending.token.clone());
+            let result = service.execute(&story.id, &pending.token, || {
+                if failure {
+                    Err(AppError::Validation("controlled cleanup failure".into()))
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result.is_err(), failure);
+            controller.running.lock().unwrap().remove(&pending.token);
+            assert!(!pending.completed);
+            assert!(pending.failure.is_none());
+            let body = controller.envelope(&pending).unwrap();
+            if failure {
+                assert_eq!(body["reset"]["state"], "error");
+                assert!(
+                    body["reset"]["detail"]
+                        .as_str()
+                        .unwrap()
+                        .contains("controlled cleanup failure")
+                );
+            } else {
+                assert_eq!(body["reset"]["state"], "ok", "{body}");
+                assert!(body["reset"]["detail"].is_null());
+            }
+        }
+    }
 
     #[test]
     fn full_capacity_duplicates_reuse_the_handle_and_restart_reports_interruption() {
@@ -220,9 +290,12 @@ mod tests {
         let reset = StoryResetService::new(&ctx)
             .reserve(&story.id, &story.id)
             .unwrap();
-        assert_eq!(controller.envelope(&reset)["reset"]["state"], "error");
+        assert_eq!(
+            controller.envelope(&reset).unwrap()["reset"]["state"],
+            "error"
+        );
         assert!(
-            controller.envelope(&reset)["reset"]["detail"]
+            controller.envelope(&reset).unwrap()["reset"]["detail"]
                 .as_str()
                 .unwrap()
                 .contains("interrupted")
