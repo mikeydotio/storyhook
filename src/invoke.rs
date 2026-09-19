@@ -1033,6 +1033,9 @@ fn dispatch_verifier<S: Store>(
         )
     })?;
     let receipt = match action {
+        VerifierAction::GateConfig { .. } => {
+            return dispatch_without_store(Invocation::Verifier { action });
+        }
         VerifierAction::Status => None,
         VerifierAction::Start => Some(
             activity
@@ -2500,6 +2503,9 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
     matches!(
         invocation,
         Invocation::Daemon { .. }
+            | Invocation::Verifier {
+                action: VerifierAction::GateConfig { .. }
+            }
             | Invocation::Web { .. }
             | Invocation::Token { .. }
             | Invocation::DoctorInstall
@@ -2529,6 +2535,21 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
 /// same invocation differently.
 pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppError> {
     match invocation {
+        Invocation::Verifier {
+            action:
+                VerifierAction::GateConfig {
+                    checkout,
+                    base,
+                    head,
+                    tree,
+                },
+        } => {
+            let result = crate::service::gate_snapshot::inspect(&checkout, &base, &head, &tree)?;
+            Ok(Response::RawJson(
+                serde_json::to_string(&result)
+                    .map_err(|error| AppError::Storage(error.to_string()))?,
+            ))
+        }
         // Pure functions of compiled-in text. They need neither a project nor
         // a store, and answering them here is what lets `story --help` work in
         // a directory storyhook has never heard of — or on a machine whose

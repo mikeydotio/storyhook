@@ -101,7 +101,6 @@ pub(super) fn outcome(
 /// Preserve a complete answer while retaining the independent capture failure.
 pub(super) fn interrupted_outcome(
     stdout: &[u8],
-    gate: &GateCommand,
     capture_detail: &str,
     checkout: &std::path::Path,
 ) -> Option<VerificationOutcome> {
@@ -124,6 +123,7 @@ pub(super) fn interrupted_outcome(
     #[derive(Deserialize)]
     struct Answer {
         result: String,
+        gate: String,
         tree: String,
         detail: String,
         log: Option<String>,
@@ -134,6 +134,7 @@ pub(super) fn interrupted_outcome(
     if answer.tree.trim().is_empty() || answer.detail.trim().is_empty() {
         return None;
     }
+    let gate = GateCommand::parse(&answer.gate).ok()?;
     let verdict = match answer.result.as_str() {
         "tests-failed" | "gate-passed" => {
             let log = answer.log.filter(|log| !log.trim().is_empty())?;
@@ -257,7 +258,6 @@ mod tests {
 
     #[test]
     fn project_fault_wire_preserves_evidence_but_never_bypasses_cleanup() {
-        let gate = GateCommand::parse("make test").unwrap();
         let wire = serde_json::json!({"result":"project-fault", "fault": {
             "code":"missing-certification", "locus":".storyhook.toml#verify.gate",
             "tree":"a".repeat(40), "base":"b".repeat(40), "head":"c".repeat(40),
@@ -265,12 +265,11 @@ mod tests {
             "execution_status":0, "receipt":"missing", "detail":"missing receipt evidence"}});
         let parsed: WireOutcome = serde_json::from_value(wire.clone()).unwrap();
         assert!(matches!(
-            parsed.into_outcome(&gate),
+            parsed.into_outcome(),
             VerificationOutcome::ProjectFault { .. }
         ));
         let interrupted = interrupted_outcome(
             wire.to_string().as_bytes(),
-            &gate,
             "capture timed out",
             Path::new("/source"),
         )
@@ -285,27 +284,25 @@ mod tests {
             "disposition":"permanent"});
         let parsed: WireOutcome = serde_json::from_value(unsafe_wire).unwrap();
         assert!(
-            matches!(parsed.into_outcome(&gate), VerificationOutcome::InfrastructureFailure { detail, .. }
+            matches!(parsed.into_outcome(), VerificationOutcome::InfrastructureFailure { detail, .. }
             if detail.contains("survivors") && detail.contains("missing receipt evidence"))
         );
         let mut invalid = wire;
         invalid["fault"]["execution_status"] = 1.into();
         let parsed: WireOutcome = serde_json::from_value(invalid).unwrap();
         assert!(matches!(
-            parsed.into_outcome(&gate),
+            parsed.into_outcome(),
             VerificationOutcome::InfrastructureFailure { .. }
         ));
     }
 
     #[test]
     fn certify_boundary_refuses_unguarded_merged_results_even_after_capture_failure() {
-        let gate = GateCommand::parse("true").unwrap();
         let wire = serde_json::json!({"result":"merged","tree":"tree","detail":"claimed merge"});
         assert!(serde_json::from_value::<WireOutcome>(wire.clone()).is_err());
         assert!(
             interrupted_outcome(
                 wire.to_string().as_bytes(),
-                &gate,
                 "cancelled",
                 Path::new("/source")
             )
@@ -315,9 +312,8 @@ mod tests {
 
     #[test]
     fn interrupted_capture_rejects_partial_or_malformed_completion() {
-        let gate = GateCommand::parse("make test").unwrap();
-        let original = serde_json::json!({"result":"tests-failed", "tree":"tree", "log":"log", "detail":"failure"});
-        for key in ["tree", "log", "detail"] {
+        let original = serde_json::json!({"result":"tests-failed", "gate":"make test", "tree":"tree", "log":"log", "detail":"failure"});
+        for key in ["tree", "log", "detail", "gate"] {
             for absent in [false, true] {
                 let mut partial = original.clone();
                 if absent {
@@ -328,7 +324,6 @@ mod tests {
                 assert!(
                     interrupted_outcome(
                         partial.to_string().as_bytes(),
-                        &gate,
                         "cancelled",
                         Path::new("/source")
                     )
@@ -337,7 +332,7 @@ mod tests {
             }
         }
         for bytes in [b"{".as_slice(), b"{} {}", b"null"] {
-            assert!(interrupted_outcome(bytes, &gate, "cancelled", Path::new("/source")).is_none());
+            assert!(interrupted_outcome(bytes, "cancelled", Path::new("/source")).is_none());
         }
         let mut malformed = original;
         malformed["cleanup_failure"] =
@@ -345,7 +340,6 @@ mod tests {
         assert!(
             interrupted_outcome(
                 malformed.to_string().as_bytes(),
-                &gate,
                 "cancelled",
                 Path::new("/source")
             )
@@ -357,15 +351,13 @@ mod tests {
     fn wire_preserves_each_completed_result_and_cleanup_diagnosis() {
         for result in ["tests-failed", "gate-passed", "certified"] {
             let wire = serde_json::json!({
-                "result": result, "head": "head", "tree": "tree", "log": "/tmp/log", "detail": "named result",
+                "result": result, "gate":"make test", "head": "head", "tree": "tree", "log": "/tmp/log", "detail": "named result",
                 "cleanup_failure": { "phase": "restoration", "detail": "live writers",
                     "owner": "/tmp/owner", "worktree": "/tmp/verifier", "disposition": "permanent" }
             });
             let outcome = serde_json::from_value::<WireOutcome>(wire)
                 .unwrap()
-                .into_outcome(
-                    &crate::service::gate_command::GateCommand::parse("make test").unwrap(),
-                );
+                .into_outcome();
             let VerificationOutcome::CleanupFailed { verdict, cleanup } = outcome else {
                 panic!("lost cleanup or completed result: {outcome:?}");
             };
@@ -381,12 +373,11 @@ mod tests {
 
     #[test]
     fn wire_keeps_clean_results_compatible_and_refuses_incomplete_cleanup() {
-        let gate = crate::service::gate_command::GateCommand::parse("make test").unwrap();
-        let red = serde_json::json!({"result":"tests-failed", "tree":"tree", "log":"log", "detail":"red"});
+        let red = serde_json::json!({"result":"tests-failed", "gate":"make test", "tree":"tree", "log":"log", "detail":"red"});
         assert!(matches!(
             serde_json::from_value::<WireOutcome>(red.clone())
                 .unwrap()
-                .into_outcome(&gate),
+                .into_outcome(),
             VerificationOutcome::TestsFailed { .. }
         ));
         let mut missing = red.clone();

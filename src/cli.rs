@@ -178,6 +178,17 @@ pub enum EngineAction {
 /// The controls under `story verifier` (SH-666).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerifierAction {
+    /// Inspect gate configuration in a pinned proposed merge without the store.
+    GateConfig {
+        /// Repository containing the pinned parents.
+        checkout: std::path::PathBuf,
+        /// Pinned base commit.
+        base: String,
+        /// Pinned proposed head commit.
+        head: String,
+        /// Expected proposed merge tree.
+        tree: String,
+    },
     /// Read durable permission, incidents, recovery and live ownership.
     Status,
     /// Enable admission without clearing a halt.
@@ -263,6 +274,7 @@ Usage:
   story engine stop [--run <id>] [--now]
   story verifier status | start | stop | drain
   story verifier ack <incident-id> [--leave-stopped] (acknowledge and retry by default)
+  story verifier gate-config <checkout> <base> <head> <tree> --json
   story resources <id> [--json]                    (inspect existing resource identity)
   story cleanup [--dry-run]                         (retry the verifier's reap of finished story workspaces)
   story summary
@@ -3973,6 +3985,19 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
         ));
     };
     let action = match action {
+        "gate-config" => {
+            const USAGE: &str =
+                "usage: story verifier gate-config <checkout> <base> <head> <tree> --json";
+            if args.len() != 6 {
+                return Err(AppError::Usage(USAGE.into()));
+            }
+            VerifierAction::GateConfig {
+                checkout: args[2].clone().into(),
+                base: args[3].clone(),
+                head: args[4].clone(),
+                tree: args[5].clone(),
+            }
+        }
         "status" | "start" | "stop" | "drain" => {
             expect_no_more(
                 &args[2..],

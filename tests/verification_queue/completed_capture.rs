@@ -11,7 +11,7 @@ fn interrupted_capture_preserves_completed_cleanup_results() {
             let (candidate, pr) = shell_actuator_candidate(checkout.path());
             let mut payload = serde_json::json!({
                 "result": result, "head": "judged-head", "tree": "judged-tree", "log": "/tmp/attempt.log",
-                "detail": "named_failure FAILED", "cleanup_failure": {
+                "gate": "cargo test --workspace", "detail": "named_failure FAILED", "cleanup_failure": {
                     "phase": "restoration", "detail": "retained writers",
                     "owner": "/tmp/owner", "worktree": "/tmp/verifier",
                     "disposition": "permanent"

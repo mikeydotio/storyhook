@@ -329,6 +329,7 @@ run_verification_gate() {
     gate_head="$4"
     gate_worktree="$5"
     shift 5
+    gate_display="$*"
     logs="$common_dir/storyhook/verification-logs"
     mkdir -p "$logs" || die_json "could not create verification log directory"
     log="$(mktemp "$logs/pr-$gate_pr-$gate_tree-attempt.XXXXXX")" \
@@ -439,17 +440,17 @@ require_certified_by_gate() {
 emit_tests_failed() {
     disarm_verification_signal_trap
     detail="$(verification_failure_detail "$gate_status" "$log")"
-    jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
+    jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" --arg gate "$gate_display" \
         --argjson status "$gate_status" --argjson cleanup "$gate_cleanup" \
-        '{result:"tests-failed", tree:$tree, log:$log, detail:$detail, exit_status:$status}
+        '{result:"tests-failed", tree:$tree, log:$log, detail:$detail, gate:$gate, exit_status:$status}
          + (if $cleanup == null then {} else {cleanup_failure:$cleanup} end)'
     exit 0
 }
 
 emit_gate_passed() {
     disarm_verification_signal_trap
-    jq -n --arg tree "$gate_tree" --arg log "$log" --argjson cleanup "$gate_cleanup" \
-        '{result:"gate-passed", tree:$tree, log:$log, exit_status:0,
+    jq -n --arg tree "$gate_tree" --arg log "$log" --argjson cleanup "$gate_cleanup" --arg gate "$gate_display" \
+        '{result:"gate-passed", tree:$tree, log:$log, gate:$gate, exit_status:0,
           detail:"Gate command completed successfully; no pull request was landed."}
          + (if $cleanup == null then {} else {cleanup_failure:$cleanup} end)'
     exit 0
@@ -512,7 +513,13 @@ recover_merged() {
     fi
     disarm_verification_signal_trap
     if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
-        jq -n --arg head "$reported_head" --arg tree "$tree" --arg detail "recovered certified merge" '{result:"certified", head:$head, tree:$tree, detail:$detail}'
+        if [ "${project_gate:-0}" -eq 1 ]; then
+            landed_config="$("${STORY_BIN:?verifier binary is required}" verifier gate-config "$root" "$merge_oid" "$merge_oid" "$tree" --json 2>&1)" \
+                || die_json "could not inspect landed gate configuration: $landed_config"
+            gate_display="$(printf '%s\n' "$landed_config" | jq -er 'select(.result == "gate-ready") | .argv | join(" ")')" \
+                || die_json "landed merge has unresolved gate configuration: $landed_config"
+        fi
+        jq -n --arg head "$reported_head" --arg tree "$tree" --arg gate "$gate_display" --arg detail "recovered certified merge" '{result:"certified", head:$head, tree:$tree, gate:$gate, detail:$detail}'
         exit 0
     fi
     jq -n --arg tree "$tree" --arg detail "recovered already-merged PR #$recovered_pr at $merge_oid $recovery_context" \
@@ -780,16 +787,16 @@ if [ "${1:-}" = --ensure-verifier-worktree ]; then
     exit 0
 fi
 
-# The gate is an argument, never a default of this script's own (SH-649):
-# the daemon reads the project's `[verify] gate` from its pointer file and
-# `GateCommand::DEFAULT` is the one place `make test` lives. A caller that
-# names no gate is refused by name rather than handed one it did not choose.
+# Production resolves the gate from the pinned merge. Explicit argv remains
+# available to the private script harness; the Rust parser owns the default.
 [ "$#" -ge 3 ] && [ "$2" = -- ] \
     || die_json "usage: verify-pr.sh <pr-url> -- <gate-command...> (the daemon passes the project's [verify] gate)"
 submitted_pr="$1"
 shift 2
 gate_command=("$@")
 gate_display="$*"
+project_gate=0
+if [ "$#" -eq 1 ] && [ "$1" = --project-gate ]; then project_gate=1; fi
 github_begin || die_json "cannot establish GitHub origin: ${GITHUB_ACCESS_ERROR:-origin unavailable}"
 
 verification_phase="pull request metadata"
@@ -857,6 +864,28 @@ preflight="$(activity_run "merge-preflight.sh" bash "$script_dir/merge-preflight
 preflight_status=$?
 tree="$(printf '%s\n' "$preflight" | head -n1)"
 _preflight_seconds=$(( $(date +%s) - _preflight_start ))
+if [ "$project_gate" -eq 1 ] && { [ "$preflight_status" -eq 0 ] || [ "$preflight_status" -eq 1 ]; }; then
+    verification_phase="pinned gate configuration"
+    gate_config="$("${STORY_BIN:?verifier binary is required}" verifier gate-config "$root" "$base_commit" "$head_commit" "$tree" --json 2>&1)" \
+        || die_json "could not inspect pinned gate configuration: $gate_config"
+    config_result="$(printf '%s\n' "$gate_config" | jq -r '.result')" \
+        || die_json "invalid gate configuration inspection: $gate_config"
+    case "$config_result" in
+    (project-fault)
+        confirm_judged_head "$pr" "$base" "$head" unjudged "Pinned gate configuration is invalid."
+        disarm_verification_signal_trap
+        printf '%s\n' "$gate_config"
+        exit 0
+        ;;
+    (gate-ready)
+        gate_command=()
+        while IFS= read -r word; do gate_command+=("$word"); done < <(printf '%s\n' "$gate_config" | jq -r '.argv[]')
+        [ "${#gate_command[@]}" -gt 0 ] || die_json "gate configuration inspection omitted argv"
+        gate_display="${gate_command[*]}"
+        ;;
+    (*) die_json "unexpected gate configuration inspection: $gate_config" ;;
+    esac
+fi
 case "$preflight_status" in
 (2)
     gate_progress_emit_item "merge preflight" failed "seconds=$_preflight_seconds"
@@ -889,7 +918,7 @@ esac
 
 if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
     disarm_verification_signal_trap
-    jq -n --arg head "$reported_head" --arg tree "$tree" --arg detail "release gate certified the submitted head" '{result:"certified", head:$head, tree:$tree, detail:$detail}'
+    jq -n --arg head "$reported_head" --arg tree "$tree" --arg gate "$gate_display" --arg detail "release gate certified the submitted head" '{result:"certified", head:$head, tree:$tree, gate:$gate, detail:$detail}'
     exit 0
 fi
 

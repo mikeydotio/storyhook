@@ -241,6 +241,21 @@ os.kill = kill
         self.assertEqual(value["result"], "infrastructure-failure", value)
         self.assertIn("outer census", value["detail"])
 
+    def test_outer_refusal_retains_configuration_fault_without_fake_execution(self):
+        """Inspection has no gate execution, but its evidence must survive cleanup."""
+        self.fault_census("session")
+        fault = {"code": "invalid-gate-configuration", "tree": "a" * 40,
+                 "base": "b" * 40, "head": "c" * 40, "configuration": "d" * 64,
+                 "detail": "invalid committed gate argv"}
+        payload = {"result": "project-fault", "fault": fault}
+        result = self.fx.command("python3", str(self.bundle / "verifier-owner.py"), "run-json",
+                                 str(self.fx.common), str(self.fx.wt), "--", "python3", "-c",
+                                 "print(" + repr(json.dumps(payload)) + ")")
+        value = json.loads(result.stdout)
+        self.assertEqual(value["result"], "project-fault", value)
+        self.assertEqual(value["fault"], fault)
+        self.assertIn("outer census", value["cleanup_failure"]["detail"])
+
 
 class ExecutionEvidence(unittest.TestCase):
     """Malformed or foreign execution records never manufacture a verdict."""

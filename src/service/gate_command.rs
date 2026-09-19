@@ -10,8 +10,8 @@
 //! and the verifier runs that command, in the speculative merge checkout, as
 //! the merge gate. Absent — no pointer, no table, no key — the gate is
 //! [`GateCommand::DEFAULT`], and that constant is the **only** place the
-//! default lives: `scripts/verify-pr.sh` requires the argv on its command line
-//! rather than carrying a second copy (the SH-136 rule).
+//! default lives. The bundled verifier asks the store-free snapshot helper
+//! for argv rather than carrying a second copy (the SH-136 rule).
 //!
 //! # Why an argv and not a shell string
 //!
@@ -140,7 +140,30 @@ impl GateCommand {
 /// `read_pointer`'s error, which names the file.
 pub fn gate_command_for(checkout: &Path) -> Result<GateCommand, AppError> {
     let path = super::project::pointer_path(checkout);
-    let Some(pointer) = super::project::read_pointer(checkout)? else {
+    command_from_pointer(super::project::read_pointer(checkout)?, &path)
+}
+
+/// Parse committed pointer bytes without consulting a mutable checkout.
+/// Missing content retains the default; invalid content never fails open.
+pub fn gate_command_from_bytes(raw: Option<&[u8]>) -> Result<GateCommand, AppError> {
+    let pointer = raw
+        .map(|bytes| {
+            let text = std::str::from_utf8(bytes).map_err(|error| {
+                AppError::Validation(format!("committed .storyhook.toml is not UTF-8: {error}"))
+            })?;
+            toml::from_str::<super::project::ProjectPointer>(text).map_err(|error| {
+                AppError::Validation(format!("committed .storyhook.toml is not valid: {error}"))
+            })
+        })
+        .transpose()?;
+    command_from_pointer(pointer, Path::new(".storyhook.toml"))
+}
+
+fn command_from_pointer(
+    pointer: Option<super::project::ProjectPointer>,
+    path: &Path,
+) -> Result<GateCommand, AppError> {
+    let Some(pointer) = pointer else {
         return Ok(default_gate());
     };
     let Some(table) = pointer.verify else {

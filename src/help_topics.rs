@@ -2996,8 +2996,15 @@ story verifier start
 story verifier stop
 story verifier drain
 story verifier ack <incident-id> [--leave-stopped]
+story verifier gate-config <checkout> <base> <head> <tree> --json
 
 Inspect and control this project's centralized verifier.
+
+  gate-config reads committed gate configuration from the exact proposed merge.
+  Supply pinned Git object IDs for both parents and the expected tree. This
+  local, store-free helper does not change the checkout or certify a tree.
+  It reports gate-ready argv or typed project-fault evidence. Git inspection
+  errors remain errors; they never grant repair or certification authority.
 
   status reports admission independently from infrastructure incidents,
   actual owned attempt, verifying and held stories, failure age and cause,

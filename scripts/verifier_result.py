@@ -41,17 +41,25 @@ def attach_cleanup(value, failure):
             "tests-failed", "gate-passed", "merged", "project-fault"):
         raise Refusal("cleanup refused without a completed child verdict")
     evidence = value
+    requires_log = value["result"] != "merged"
     if value["result"] == "project-fault":
         evidence = value.get("fault")
-        if (not isinstance(evidence, dict)
-                or evidence.get("code") != "missing-certification"
-                or type(evidence.get("execution_status")) is not int
-                or evidence["execution_status"] != 0):
-            raise Refusal("project fault is missing completed gate evidence")
+        if not isinstance(evidence, dict):
+            raise Refusal("project fault is missing its evidence")
+        if evidence.get("code") == "missing-certification":
+            if type(evidence.get("execution_status")) is not int or evidence["execution_status"] != 0:
+                raise Refusal("project fault is missing completed gate evidence")
+        elif evidence.get("code") in ("invalid-gate-configuration", "missing-gate-command"):
+            requires_log = False
+            for name in ("base", "head", "configuration"):
+                if not isinstance(evidence.get(name), str) or not evidence[name]:
+                    raise Refusal(f"configuration fault is missing {name}")
+        else:
+            raise Refusal("unknown project fault code")
     for name in ("tree", "detail"):
         if not isinstance(evidence.get(name), str) or not evidence[name]:
             raise Refusal(f"completed child verdict is missing {name}")
-    if value["result"] != "merged" and not isinstance(evidence.get("log"), str):
+    if requires_log and not isinstance(evidence.get("log"), str):
         raise Refusal("completed gate verdict is missing its log")
     previous = value.get("cleanup_failure")
     if previous is not None:

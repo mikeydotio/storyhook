@@ -267,26 +267,33 @@ Full Auto that `awaiting` classifies as `AgentBlocked` (`full-auto-engine.md`,
 
 ### The gate
 
-The gate is the project's own (SH-649, D-D): the daemon reads `[verify] gate`
-from the registered checkout's committed `.storyhook.toml`
-(`service::gate_command::gate_command_for`), `make test` when the file, the
-table or the key is absent, and hands it to `verify-pr.sh` as
-`<pr-url> -- <gate…>`. The script carries no default of its own —
-`GateCommand::DEFAULT` is the one place it lives — and refuses by name to run
-without one. The value is a **plain argv**: space-separated words of ASCII
-alphanumerics and `_.:/=@+,-`, the first not a flag, because every hop from
-the daemon to `merge-watch.sh --speculative-run … -- "$@"` execs it word for
-word with no shell, so `make test && echo ok` would reach `make` as three
-literal arguments. Anything else — and an unknown key under `[verify]`, which
-would otherwise land nowhere and silently run the default — is refused naming
-`[verify].gate`, the file, the value and the offending character; an
-unreadable pointer surfaces `read_pointer`'s own error rather than failing
-open. A refused gate is a **permanent infrastructure failure**: local
-configuration needing a person, taken before any journal or process exists,
-which halts the queue with a comment and is never returned to the implementor
-as a red. The gate named in the GREEN and RED comments is the one the verdict
-carries (`VerificationOutcome::{Merged, TestsFailed}.gate`), derived from the
-same parsed value the argv was.
+The gate is the project's own. The daemon passes `<pr-url> -- --project-gate`
+to the bundled verifier. After it pins both parents and computes the proposed
+merge tree, the verifier invokes the store-free command
+`story verifier gate-config <checkout> <base> <head> <tree> --json`.
+This helper reconstructs that merge in private object storage, verifies the tree
+identity, and reads `.storyhook.toml` from committed Git objects. It does not
+read the registered checkout's working files or change its index, HEAD, refs,
+or objects. Thus a repair branch can repair its own configuration.
+
+The Rust `ProjectPointer` schema and `GateCommand` parser own this policy.
+`make test` remains the default when the pointer, table, or key is absent.
+The value is a plain argv: space-separated ASCII alphanumerics and
+`_.:/=@+,-`, with a command first. No shell interprets it. Invalid committed
+configuration produces `invalid-gate-configuration` evidence. A missing or
+non-executable repository-local entry point produces `missing-gate-command`
+evidence. Both carry pinned parents/tree, configuration digest, locus, and
+parser or file diagnosis. Neither invents command execution or a test verdict.
+In-tree committed symlinks are resolved from objects. Escaping, dangling, or
+cyclic symlinks and Git inspection errors remain infrastructure failures.
+Bare or absolute host tools remain the process supervisor's responsibility.
+
+Completed wire verdicts must carry the resolved command. Both ordinary and
+interrupted capture validate it before GREEN/RED comments use it. No mutable
+checkout value or default replaces missing verdict evidence. Explicit argv
+remains available to the private script harness. An already-landed PR uses
+configuration from its exact landed commit; failed inspection there cannot
+reclassify the landed PR as an unjudged repair candidate.
 
 A tree with no `gate`/`full` receipt runs `run_verification_gate`, which
 takes `machine-lock.sh gate` around the whole run (SH-589) and executes

@@ -41,6 +41,7 @@ pub(crate) mod executor_lock;
 pub mod gate_command;
 pub mod gate_output;
 pub mod gate_progress;
+pub mod gate_snapshot;
 pub mod git;
 pub mod git_links;
 #[cfg(feature = "github-pr")]

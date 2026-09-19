@@ -16,6 +16,40 @@ pub enum ReceiptRefusal {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "code", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ProjectFault {
+    /// The committed project pointer cannot select a valid plain-argv gate.
+    InvalidGateConfiguration {
+        /// Configuration locus that identifies this fault.
+        locus: String,
+        /// Pinned proposed merge tree.
+        tree: String,
+        /// Pinned base commit.
+        base: String,
+        /// Pinned submitted commit.
+        head: String,
+        /// Digest of the exact committed configuration bytes.
+        configuration: String,
+        /// Parser diagnosis; never used for classification.
+        detail: String,
+    },
+    /// The configured repository-local gate entry point is absent or not executable.
+    MissingGateCommand {
+        /// Repository-relative command path identifying the fault.
+        locus: String,
+        /// Pinned proposed merge tree.
+        tree: String,
+        /// Pinned base commit.
+        base: String,
+        /// Pinned submitted commit.
+        head: String,
+        /// Digest of the committed configuration bytes.
+        configuration: String,
+        /// Parsed plain-argv gate command.
+        gate: String,
+        /// Whether the path is absent or not executable.
+        reason: GateEntryRefusal,
+        /// Diagnostic naming the configured path and pinned tree.
+        detail: String,
+    },
     /// The gate completed successfully and restoration settled, but certification is absent.
     MissingCertification {
         /// Repository-relative configuration locus used for fault deduplication.
@@ -44,7 +78,45 @@ pub enum ProjectFault {
 impl ProjectFault {
     /// Refuse malformed protocol evidence before any recovery effect is admitted.
     pub fn validate(&self) -> Result<(), String> {
+        if let Self::InvalidGateConfiguration {
+            locus,
+            tree,
+            base,
+            head,
+            configuration,
+            detail,
+        }
+        | Self::MissingGateCommand {
+            locus,
+            tree,
+            base,
+            head,
+            configuration,
+            detail,
+            ..
+        } = self
+            && (![tree, base, head].iter().all(|oid| is_pinned_oid(oid))
+                || configuration.len() != 64
+                || !is_pinned_oid(configuration)
+                || detail.trim().is_empty()
+                || locus.is_empty()
+                || std::path::Path::new(locus)
+                    .components()
+                    .any(|part| !matches!(part, std::path::Component::Normal(_))))
+        {
+            return Err("invalid pinned project configuration fault evidence".into());
+        }
         match self {
+            Self::InvalidGateConfiguration { locus, .. } => {
+                if locus != ".storyhook.toml#verify.gate" {
+                    return Err("invalid project configuration locus".into());
+                }
+                Ok(())
+            }
+            Self::MissingGateCommand { gate, .. } => {
+                super::gate_command::GateCommand::parse(gate)?;
+                Ok(())
+            }
             Self::MissingCertification {
                 locus,
                 tree,
@@ -58,11 +130,7 @@ impl ProjectFault {
                 ..
             } => {
                 for (name, oid) in [("tree", tree), ("base", base), ("head", head)] {
-                    if !matches!(oid.len(), 40 | 64)
-                        || !oid
-                            .bytes()
-                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                    {
+                    if !is_pinned_oid(oid) {
                         return Err(format!(
                             "project fault {name} must be a pinned Git object id"
                         ));
@@ -85,9 +153,29 @@ impl ProjectFault {
     /// The retained human diagnosis associated with this structured observation.
     pub fn detail(&self) -> &str {
         match self {
-            Self::MissingCertification { detail, .. } => detail,
+            Self::MissingCertification { detail, .. }
+            | Self::InvalidGateConfiguration { detail, .. }
+            | Self::MissingGateCommand { detail, .. } => detail,
         }
     }
+}
+
+/// A repository-local executable cannot be launched from the proposed tree.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GateEntryRefusal {
+    /// No tracked entry names the configured executable.
+    Missing,
+    /// The tracked entry is not an executable file.
+    NotExecutable,
+}
+
+/// Whether a protocol value names a pinned SHA-1 or SHA-256 Git object.
+pub(crate) fn is_pinned_oid(oid: &str) -> bool {
+    matches!(oid.len(), 40 | 64)
+        && oid
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]

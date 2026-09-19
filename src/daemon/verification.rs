@@ -1183,24 +1183,6 @@ impl VerificationActuator for ShellVerificationActuator {
         if let Some(detail) = checkout_repository_problem(&candidate.checkout, pull_request) {
             return VerificationOutcome::InvalidSubmission { detail };
         }
-        // The project's own merge gate (SH-649), read from the registered
-        // checkout's committed pointer — the one thing besides its receipt
-        // store the checkout contributes to verification. A value that
-        // cannot be run is local configuration needing a person, so it is
-        // refused here, before any journal or process exists, and never
-        // handed back to the implementor as a red.
-        let gate = match crate::service::gate_command::gate_command_for(&candidate.checkout) {
-            Ok(gate) => gate,
-            Err(error) => {
-                return VerificationOutcome::InfrastructureFailure {
-                    detail: format!(
-                        "the merge gate for registered checkout `{}` cannot be run: {error}",
-                        candidate.checkout.display()
-                    ),
-                    disposition: VerificationFailureDisposition::Permanent,
-                };
-            }
-        };
         // The verifier's own mechanics travel with this daemon (SH-654): a
         // bundle that cannot be projected describes this daemon's state
         // directory, not the submission, so it is a permanent infrastructure
@@ -1265,7 +1247,7 @@ impl VerificationActuator for ShellVerificationActuator {
             .arg(&script)
             .arg(&pull_request.url)
             .arg("--")
-            .args(gate.argv())
+            .arg("--project-gate")
             .current_dir(&candidate.checkout)
             .env("STORY_BIN", self.story_binary())
             .env("STORYHOOK_GITHUB_AUTHORITY", &candidate.checkout)
@@ -1316,7 +1298,6 @@ impl VerificationActuator for ShellVerificationActuator {
             // status or partial JSON as a test verdict.
             if let Some(outcome) = cleanup::interrupted_outcome(
                 &failure.stdout,
-                &gate,
                 &failure.error.detail(),
                 &candidate.checkout,
             ) {
@@ -1404,7 +1385,7 @@ impl VerificationActuator for ShellVerificationActuator {
                 };
             }
         };
-        parsed.into_outcome(&gate)
+        parsed.into_outcome()
     }
 
     fn notify(
@@ -1550,6 +1531,7 @@ enum WireOutcome {
         cleanup_failure: Option<VerificationCleanupFailure>,
     },
     Certified {
+        gate: String,
         head: String,
         tree: String,
         detail: String,
@@ -1559,12 +1541,14 @@ enum WireOutcome {
         detail: String,
     },
     TestsFailed {
+        gate: String,
         tree: String,
         log: String,
         detail: String,
         cleanup_failure: Option<VerificationCleanupFailure>,
     },
     GatePassed {
+        gate: String,
         tree: String,
         log: String,
         detail: String,
@@ -1580,10 +1564,22 @@ enum WireOutcome {
 }
 
 impl WireOutcome {
-    /// The daemon-side outcome, carrying the gate this run was given. The
-    /// wire shape does not repeat the command: the parsed pointer is its one
-    /// source, and the script only ever ran what it was handed.
-    fn into_outcome(self, gate: &crate::service::gate_command::GateCommand) -> VerificationOutcome {
+    /// Validate the command resolved from the pinned snapshot before reporting it.
+    fn into_outcome(self) -> VerificationOutcome {
+        let reported_gate = match &self {
+            Self::Certified { gate, .. }
+            | Self::TestsFailed { gate, .. }
+            | Self::GatePassed { gate, .. } => Some(gate),
+            _ => None,
+        };
+        if let Some(gate) = reported_gate
+            && let Err(error) = crate::service::gate_command::GateCommand::parse(gate)
+        {
+            return VerificationOutcome::InfrastructureFailure {
+                detail: format!("invalid resolved gate evidence: {error}"),
+                disposition: VerificationFailureDisposition::Permanent,
+            };
+        }
         match self {
             WireOutcome::ProjectFault {
                 fault,
@@ -1606,6 +1602,7 @@ impl WireOutcome {
                 VerificationOutcome::ProjectFault { fault }
             }
             WireOutcome::Certified {
+                gate,
                 head,
                 tree,
                 detail,
@@ -1616,7 +1613,7 @@ impl WireOutcome {
                         head,
                         tree,
                         detail,
-                        gate: gate.display(),
+                        gate,
                     },
                     cleanup,
                 ),
@@ -1624,11 +1621,12 @@ impl WireOutcome {
                     head,
                     tree,
                     detail,
-                    gate: gate.display(),
+                    gate,
                 },
             },
             WireOutcome::Conflict { detail } => VerificationOutcome::Conflict { detail },
             WireOutcome::TestsFailed {
+                gate,
                 tree,
                 log,
                 detail,
@@ -1639,7 +1637,7 @@ impl WireOutcome {
                         tree,
                         log,
                         detail,
-                        gate: gate.display(),
+                        gate,
                     },
                     cleanup,
                 ),
@@ -1647,10 +1645,11 @@ impl WireOutcome {
                     tree,
                     log,
                     detail,
-                    gate: gate.display(),
+                    gate,
                 },
             },
             WireOutcome::GatePassed {
+                gate,
                 tree,
                 log,
                 detail,
@@ -1660,7 +1659,7 @@ impl WireOutcome {
                     tree,
                     log,
                     detail,
-                    gate: gate.display(),
+                    gate,
                 },
                 cleanup_failure,
             ),
