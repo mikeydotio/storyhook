@@ -4,6 +4,8 @@
 mod attempts;
 #[path = "project_recovery/decision.rs"]
 mod decision;
+#[path = "project_recovery/landing.rs"]
+mod landing;
 #[path = "project_recovery/work.rs"]
 mod work;
 

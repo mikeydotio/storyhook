@@ -153,6 +153,9 @@ pub struct RecoveryState {
     /// Exact refused admissions, retained without executing another gate.
     #[serde(default)]
     pub refusals: Vec<super::RepairRefusalRecord>,
+    /// Confirmed landing authority; story closure alone cannot release recovery.
+    #[serde(default)]
+    pub landing: Option<super::RepairLanding>,
 }
 
 /// Exact structured evidence originally produced by the verifier.

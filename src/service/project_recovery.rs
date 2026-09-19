@@ -6,6 +6,7 @@ mod authority;
 mod decision;
 mod decision_effects;
 mod holds;
+mod landing;
 mod model;
 mod persistence;
 mod work;
@@ -23,6 +24,8 @@ pub use attempts::{
     RepairRefusalRecord,
 };
 pub use decision::{DecisionInput, DecisionReceipt, RepairScope, RepairSpec};
+pub use landing::RepairLanding;
+pub(crate) use landing::record_landing;
 pub use model::*;
 use persistence::{find, read_view, save, serialize, timestamp};
 pub use work::{WorkDelivery, WorkKind, WorkStatus};
@@ -102,7 +105,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                 read_view(tx, record)?
             } else {
                 let state = RecoveryState {
-                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(), attempts: Vec::new(), refusals: Vec::new(),
+                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(), attempts: Vec::new(), refusals: Vec::new(), landing: None,
                     assessment: Assessment {
                         dispatch_identity: uuid::Uuid::new_v4().to_string(), story, generation,
                         status: if policy_hold.is_some() { AssessmentStatus::Held } else { AssessmentStatus::Pending },
