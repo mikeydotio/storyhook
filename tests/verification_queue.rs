@@ -6,6 +6,9 @@ mod completed_capture;
 #[path = "verification_queue/output_reporting.rs"]
 mod output_reporting;
 
+#[path = "verification_queue/human_only.rs"]
+mod human_only;
+
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};
@@ -45,6 +48,41 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[test]
+fn human_only_has_no_verifier_queue_position() {
+    let f = ServiceFixture::new();
+    f.github_checkout("https://github.com/acme/widgets");
+    let human = submitted(&f, "Manual acceptance", Priority::Critical, PR_ONE);
+    let automatic = submitted(&f, "Automatic acceptance", Priority::Low, PR_TWO);
+    StoryService::new(&f.ctx())
+        .set_labels(&human, &["human-only".into()], &[])
+        .unwrap();
+    let queue = VerificationQueue::new(f.store());
+    assert_eq!(
+        queue
+            .ordered()
+            .unwrap()
+            .iter()
+            .map(|c| &c.story_id)
+            .collect::<Vec<_>>(),
+        vec![&automatic]
+    );
+    assert_eq!(queue.ordered_for(f.project()).unwrap().len(), 1);
+    let status = VerificationActivity::new().status(&f.ctx()).unwrap();
+    let cards = status_snapshot(&queue.ordered().unwrap(), None, f.env(), FIXTURE_NOW);
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].1, automatic);
+    assert!(matches!(
+        cards[0].2,
+        VerificationStatus::Queued { position: 1, .. }
+    ));
+    assert_eq!(status.verifying, vec![automatic]);
+    StoryService::new(&f.ctx())
+        .set_labels(&human, &[], &["human-only".into()])
+        .unwrap();
+    assert_eq!(queue.next().unwrap().unwrap().story_id, human);
+}
 
 const PR_ONE: &str = "https://github.com/acme/widgets/pull/1";
 const PR_TWO: &str = "https://github.com/acme/widgets/pull/2";
@@ -2502,6 +2540,7 @@ fn the_shell_actuator_refuses_a_different_checkout_origin_before_running_github(
             verifying_since: Some("2026-01-01T00:00:00Z".into()),
             verifying_generation: None,
             blocking_revision: None,
+            human_only_revision: None,
             checkout: checkout.path().to_path_buf(),
             cleanup_lease: None,
             pull_request: Err(VerificationProblem::MissingPullRequest),
@@ -2563,6 +2602,7 @@ wait
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
         blocking_revision: None,
+        human_only_revision: None,
         checkout: checkout.path().to_path_buf(),
         cleanup_lease: None,
         pull_request: Err(VerificationProblem::MissingPullRequest),
@@ -2651,6 +2691,7 @@ fn cleanup_candidate(
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
         blocking_revision: None,
+        human_only_revision: None,
         checkout: repository.to_path_buf(),
         cleanup_lease: Some(StoryCleanupLease {
             version: CLEANUP_LEASE_VERSION,
@@ -5408,6 +5449,7 @@ fn shell_actuator_candidate(checkout: &Path) -> (VerificationCandidate, storyhoo
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
         blocking_revision: None,
+        human_only_revision: None,
         checkout: checkout.to_path_buf(),
         cleanup_lease: None,
         pull_request: Err(VerificationProblem::MissingPullRequest),

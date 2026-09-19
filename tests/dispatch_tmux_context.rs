@@ -289,20 +289,42 @@ fn assert_pane_routing(payload: &serde_json::Value) {
 
 #[test]
 fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
-    use storyhook::service::engine::{Dispatcher, ShellDispatcher, WindowProbe};
+    use storyhook::service::engine::{Dispatcher, ShellDispatcher, TMUX_TIMEOUT, WindowProbe};
 
     const RESULT_ENV: &str = "STORY_ENGINE_TMUX_RESULT";
     if let Some(result_path) = std::env::var_os(RESULT_ENV) {
         // Process-local environment poisoning cannot race sibling Rust tests.
         let env = TestEnv::isolated();
         let dispatcher = ShellDispatcher::new("unused-helper", env.environment());
-        let probe = dispatcher.probe_window("@1");
+        let deadline = Instant::now() + STARTUP_DEADLINE;
+        let mut unanswered = Vec::new();
+        // Reconciliation observes again after Unanswered; only an answered
+        // probe can establish server routing. Gone is never a retry condition.
+        let probe = loop {
+            match dispatcher.probe_window("@1") {
+                alive @ WindowProbe::Alive { .. } => break alive,
+                WindowProbe::Gone { detail } => {
+                    panic!(
+                        "engine selected a missing or wrong occupant: {detail}; prior probes: {unanswered:?}"
+                    );
+                }
+                WindowProbe::Unanswered { detail } => {
+                    unanswered.push(detail);
+                    assert!(
+                        Instant::now() < deadline,
+                        "engine never answered within the harness deadline: {unanswered:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+        };
         let stopped = dispatcher.kill_window("@1");
         std::fs::write(
             result_path,
             serde_json::json!({
                 "alive": matches!(probe, WindowProbe::Alive { .. }),
                 "probe": format!("{probe:?}"),
+                "unanswered": unanswered,
                 "stop_error": stopped.err().map(|error| error.to_string()),
             })
             .to_string(),
@@ -369,8 +391,9 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
         "servers need distinguishable occupants"
     );
 
-    // The adapter changes only tmux's fixture namespace. Real tmux executes
-    // every command, including the potentially destructive kill-window call.
+    // Delay the first probe past the production budget to reproduce a busy
+    // host deterministically. Later calls still execute real tmux, including
+    // the potentially destructive kill-window call, in the private namespace.
     let real_tmux = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
         .map(|directory| directory.join("tmux"))
         .find(|path| path.is_file())
@@ -381,8 +404,11 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
     std::fs::write(
         &adapter,
         format!(
-            "#!/bin/sh\nexport TMUX_TMPDIR='{}'\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\nset -eu\nexport TMUX_TMPDIR='{}'\nif [ \"$1\" = display-message ] && [ ! -e '{}' ]; then\n  touch '{}'\n  sleep {}\nfi\nexec '{}' \"$@\"\n",
             tmux_root.display(),
+            scratch.path().join("first-probe-delayed").display(),
+            scratch.path().join("first-probe-delayed").display(),
+            TMUX_TIMEOUT.as_secs() + 1,
             real_tmux.display()
         ),
     )
@@ -421,6 +447,16 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
     let observed: serde_json::Value =
         serde_json::from_slice(&std::fs::read(result_path).expect("engine result file"))
             .expect("engine result JSON");
+    assert!(
+        observed["unanswered"].as_array().is_some_and(|probes| {
+            probes.iter().any(|detail| {
+                detail
+                    .as_str()
+                    .is_some_and(|text| text.contains("tmux did not answer the liveness probe"))
+            })
+        }),
+        "the fixture must exercise recovery from a real probe timeout: {observed}"
+    );
     let default_windows = tmux(
         &default_socket,
         &["list-windows", "-a", "-F", "#{window_id}"],
@@ -462,6 +498,7 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             verifying_since: None,
             verifying_generation: None,
             blocking_revision: None,
+            human_only_revision: None,
             checkout: std::env::var_os("STORY_CALLBACK_CHECKOUT")
                 .expect("fixture checkout")
                 .into(),

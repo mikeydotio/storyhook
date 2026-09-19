@@ -336,6 +336,49 @@ fn withdrawal_records(f: &ServiceFixture, id: &str) -> Vec<String> {
         .collect()
 }
 
+#[test]
+fn human_only_interrupts_the_gate_and_advances_without_changing_operator_state() {
+    run_with_gate(|f, bus, activity, first, second| {
+        StoryService::new(&f.ctx())
+            .set_labels(&first.story_id, &["human-only".into()], &[])
+            .unwrap();
+        bus.publish(Change::Project(first.project_slug.clone()));
+        wait_for("human-only gate was not terminated", || {
+            marker(f, first, "terminated").exists()
+        });
+        wait_for("next gate did not start", || {
+            marker(f, second, "started").exists()
+        });
+        wait_for("withdrawal did not name human-only", || {
+            withdrawal_records(f, &first.story_id)
+                .iter()
+                .any(|text| text.contains("human-only"))
+        });
+        assert_eq!(
+            activity.active_for(f.project()).unwrap().story_id,
+            second.story_id
+        );
+        let row = f
+            .store()
+            .read(|tx| {
+                tx.story(
+                    f.project(),
+                    StoryNo::parse_id("SH", &first.story_id).unwrap(),
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "verifying");
+        assert_eq!(row.snapshot.labels, vec!["human-only"]);
+        assert!(row.awaiting.is_none());
+        assert!(
+            f.store()
+                .read(|tx| tx.verification_enabled(f.project()))
+                .unwrap()
+        );
+    });
+}
+
 /// SH-692: a verifier killed by a signal before it can answer used to be
 /// reported as "returned invalid JSON", permanent — a halt of the whole queue
 /// over an interruption that says nothing about the tree. The daemon reads

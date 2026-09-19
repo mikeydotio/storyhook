@@ -468,8 +468,7 @@ esac
     );
     let write = fs::read_to_string(fixture.scratch.path().join("published")).unwrap();
     assert!(
-        write.contains(
-            "release edit v9.9.9 --draft=false --repo github.example.com/acme/storyhook"
-        )
+        write
+            .contains("release edit v9.9.9 --draft=false --repo github.example.com/acme/storyhook")
     );
 }

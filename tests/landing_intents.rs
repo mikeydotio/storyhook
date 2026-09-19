@@ -10,6 +10,61 @@ use storyhook_test_support::ServiceFixture;
 const PR: &str = "https://github.com/acme/widgets/pull/1";
 
 #[test]
+fn human_only_preserves_pending_landing_without_completing_it() {
+    let f = ServiceFixture::new();
+    submitted(&f);
+    let queue = VerificationQueue::new(f.store());
+    let candidate = queue.next().unwrap().unwrap();
+    let LandingAdmission::Admitted(intent) = queue
+        .begin_landing(&f.ctx(), &candidate, &certification())
+        .unwrap()
+    else {
+        panic!("expected admission")
+    };
+    StoryService::new(&f.ctx())
+        .set_labels(&candidate.story_id, &["human-only".into()], &[])
+        .unwrap();
+    assert!(queue.ordered().unwrap().is_empty());
+    assert!(
+        !queue
+            .complete_landing(&f.ctx(), &intent, "remote merged")
+            .unwrap()
+    );
+    assert_eq!(
+        f.store().read(|tx| tx.landing_intents()).unwrap(),
+        vec![intent.clone()]
+    );
+    StoryService::new(&f.ctx())
+        .set_labels(&candidate.story_id, &[], &["human-only".into()])
+        .unwrap();
+    assert!(
+        queue
+            .complete_landing(&f.ctx(), &intent, "reconciled remote merge")
+            .unwrap()
+    );
+}
+
+#[test]
+fn transient_human_only_rejects_stale_landing_admission() {
+    let f = ServiceFixture::new();
+    submitted(&f);
+    let queue = VerificationQueue::new(f.store());
+    let candidate = queue.next().unwrap().unwrap();
+    StoryService::new(&f.ctx())
+        .set_labels(&candidate.story_id, &["human-only".into()], &[])
+        .unwrap();
+    StoryService::new(&f.ctx())
+        .set_labels(&candidate.story_id, &[], &["human-only".into()])
+        .unwrap();
+    assert!(matches!(
+        queue
+            .begin_landing(&f.ctx(), &candidate, &certification())
+            .unwrap(),
+        LandingAdmission::Superseded
+    ));
+}
+
+#[test]
 fn external_landing_evidence_cannot_prevent_recording_the_outcome() {
     struct EvidenceActuator(LandingOutcome);
     impl VerificationActuator for EvidenceActuator {

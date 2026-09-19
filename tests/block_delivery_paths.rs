@@ -63,6 +63,7 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "story_reset",
         "transfer",
         "verification",
+        "verification/human",
     ];
     // Obviation evidence changes blocking inside the caller's complete transaction.
     let delegated = [(

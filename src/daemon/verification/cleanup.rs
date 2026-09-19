@@ -63,7 +63,8 @@ pub(super) fn retains_merged_incident(
 ) -> Result<bool, AppError> {
     Ok(store.read(|tx| {
         let Some(row) = tx.story(incident.project, incident.story)? else { return Ok(false); };
-        if row.state != crate::domain::COMPLETION_STATE_SLUG
+        if crate::domain::is_human_only(&row.snapshot)
+            || row.state != crate::domain::COMPLETION_STATE_SLUG
             || crate::service::verification::verifying_entry(tx, incident.project, incident.story)?.map(|(_, generation)| generation) != Some(incident.generation) {
             return Ok(false);
         }

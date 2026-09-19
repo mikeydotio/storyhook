@@ -55,6 +55,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                 return Ok(LandingAdmission::Superseded);
             };
             if current.verifying_generation != candidate.verifying_generation
+                || current.human_only_revision != candidate.human_only_revision
                 || current.pull_request != candidate.pull_request
                 || current.checkout != candidate.checkout
                 || current.project_slug != candidate.project_slug
@@ -99,6 +100,32 @@ impl<S: Store> VerificationQueue<'_, S> {
         intent: &LandingIntent,
         detail: &str,
     ) -> Result<bool, AppError> {
+        self.complete_landing_guarded(ctx, intent, detail, None)
+    }
+
+    /// Resolves a daemon attempt only if its human reservation is still current.
+    pub(crate) fn complete_landing_for(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        intent: &LandingIntent,
+        detail: &str,
+    ) -> Result<bool, AppError> {
+        if candidate.project != intent.project || candidate.story_id != intent.story_id {
+            return Err(AppError::Validation(
+                "landing attempt belongs to another story".into(),
+            ));
+        }
+        self.complete_landing_guarded(ctx, intent, detail, Some(candidate))
+    }
+
+    fn complete_landing_guarded(
+        &self,
+        ctx: &Ctx<'_, S>,
+        intent: &LandingIntent,
+        detail: &str,
+        candidate: Option<&VerificationCandidate>,
+    ) -> Result<bool, AppError> {
         use crate::domain::{StoryEvent, completion_state};
         if ctx.project() != intent.project {
             return Err(AppError::Validation(
@@ -106,6 +133,11 @@ impl<S: Store> VerificationQueue<'_, S> {
             ));
         }
         Ok(self.store.write(|tx| {
+            if let Some(candidate) = candidate
+                && !super::verification::human::permits(tx, candidate)?
+            {
+                return Ok(false);
+            }
             if !tx.landing_intents()?.contains(intent) {
                 return Ok(false);
             }
@@ -114,6 +146,11 @@ impl<S: Store> VerificationQueue<'_, S> {
             let row = tx
                 .story(intent.project, intent.story)?
                 .ok_or_else(|| StoreError::NotFound(intent.story_id.clone()))?;
+            // A remote merge may already have happened. Keep its intent for
+            // reconciliation rather than completing a person's reserved work.
+            if crate::domain::is_human_only(&row.snapshot) {
+                return Ok(false);
+            }
             let done = completion_state(&tx.states(intent.project)?).ok_or_else(|| {
                 StoreError::Validation("project lacks required done state".into())
             })?;

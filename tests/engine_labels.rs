@@ -418,6 +418,10 @@ fn every_label_guidance_surface_names_both_reserved_labels() {
             body.to_lowercase().contains("reserved"),
             "{name} must say the labels are reserved, not merely mention them"
         );
+        assert!(
+            body.to_lowercase().contains("verifier"),
+            "{name} must describe human-only verifier exclusion"
+        );
     }
 }
 

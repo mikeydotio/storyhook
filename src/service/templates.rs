@@ -121,7 +121,7 @@ otherwise — add and remove them with `story label` / `story unlabel`.
 | Label | Effect |
 |---|---|
 | `no-auto` | Needs a person in the loop — questions may be asked and a plan approved. `story next` still offers it and it is still claimable by hand; automation skips it. |
-| `human-only` | Only a person may do it. `story next` and `story claim --next` never return it. |
+| `human-only` | Only a person may do it. `story next` and `story claim --next` never return it. The verifier skips it; adding the label cancels an active verifier and releases its resources. |
 
 `human-only` is **not** a block. The story stays ready everywhere a person
 looks: `story list --ready` carries it, every ready count counts it, and an
@@ -267,7 +267,8 @@ to manage tasks.
 - `story label <id> <label>` — add a label. Two names are reserved:
   `no-auto` (needs a person in the loop; still offered by `story next`) and
   `human-only` (only a person may do it; `story next` never returns it, though
-  the story stays ready and is not blocked). Run `story help label` for detail
+  the story stays ready and is not blocked; the verifier skips it and cancels
+  any active verification). Run `story help label` for detail
 - `story block <id> "reason"` — mark story as blocked
 - `story unblock <id>` — clear blocked status
 - `story relate <a> <rel> <b>` — add a relationship
