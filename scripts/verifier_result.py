@@ -38,12 +38,20 @@ def cleanup_failure(common, worktree, phase, detail):
 def attach_cleanup(value, failure):
     """Preserve a completed primary result and every subsequent cleanup diagnosis."""
     if not isinstance(value, dict) or value.get("result") not in (
-            "tests-failed", "gate-passed", "merged"):
+            "tests-failed", "gate-passed", "merged", "project-fault"):
         raise Refusal("cleanup refused without a completed child verdict")
+    evidence = value
+    if value["result"] == "project-fault":
+        evidence = value.get("fault")
+        if (not isinstance(evidence, dict)
+                or evidence.get("code") != "missing-certification"
+                or type(evidence.get("execution_status")) is not int
+                or evidence["execution_status"] != 0):
+            raise Refusal("project fault is missing completed gate evidence")
     for name in ("tree", "detail"):
-        if not isinstance(value.get(name), str) or not value[name]:
+        if not isinstance(evidence.get(name), str) or not evidence[name]:
             raise Refusal(f"completed child verdict is missing {name}")
-    if value["result"] != "merged" and not isinstance(value.get("log"), str):
+    if value["result"] != "merged" and not isinstance(evidence.get("log"), str):
         raise Refusal("completed gate verdict is missing its log")
     previous = value.get("cleanup_failure")
     if previous is not None:

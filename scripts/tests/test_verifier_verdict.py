@@ -216,6 +216,21 @@ os.kill = kill
         self.assertEqual(result["result"], "tests-failed", result)
         self.assertIn("could not remove gate completion", result["cleanup_failure"]["detail"])
 
+    def test_outer_refusal_retains_project_fault_evidence(self):
+        """A late cleanup failure withholds repair while preserving its diagnosis."""
+        self.fault_census("session")
+        fault = {"code": "missing-certification", "tree": "tree", "base": "base",
+                 "head": "head", "log": "attempt.log", "execution_status": 0,
+                 "detail": "successful gate omitted certification"}
+        payload = {"result": "project-fault", "fault": fault}
+        result = self.fx.command("python3", str(self.bundle / "verifier-owner.py"), "run-json",
+                                 str(self.fx.common), str(self.fx.wt), "--", "python3", "-c",
+                                 "print(" + repr(json.dumps(payload)) + ")")
+        value = json.loads(result.stdout)
+        self.assertEqual(value["result"], "project-fault", value)
+        self.assertEqual(value["fault"], fault)
+        self.assertIn("outer census", value["cleanup_failure"]["detail"])
+
     def test_outer_refusal_does_not_accept_partial_json(self):
         """A child that never published one valid answer cannot invent a verdict."""
         self.fault_census("session")

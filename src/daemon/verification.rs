@@ -45,6 +45,7 @@ use crate::service::engine::{
     DISPATCH_TIMEOUT, DispatchOptions, DispatchOutcomeState, run_shell_dispatch_cancellable,
 };
 use crate::service::gate_progress::GATE_PROGRESS_PREFIX;
+use crate::service::project_fault::ProjectFault;
 use crate::service::verification::GenerationWrite;
 use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_CLEANUP_REQUIRED_PREFIX,
@@ -397,6 +398,11 @@ pub enum VerificationOutcome {
         detail: String,
         /// The gate command that failed, as one line (SH-649).
         gate: String,
+    },
+    /// A settled attempt established a project-owned gate fault, not a test failure.
+    ProjectFault {
+        /// Typed evidence; the daemon binds this to the admitted project and generation.
+        fault: ProjectFault,
     },
     /// GitHub, git, credentials, or the verifier process failed independently
     /// of the submitted code.
@@ -1539,6 +1545,10 @@ fn checkout_repository_problem(
 #[derive(Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
 enum WireOutcome {
+    ProjectFault {
+        fault: ProjectFault,
+        cleanup_failure: Option<VerificationCleanupFailure>,
+    },
     Certified {
         head: String,
         tree: String,
@@ -1575,6 +1585,26 @@ impl WireOutcome {
     /// source, and the script only ever ran what it was handed.
     fn into_outcome(self, gate: &crate::service::gate_command::GateCommand) -> VerificationOutcome {
         match self {
+            WireOutcome::ProjectFault {
+                fault,
+                cleanup_failure,
+            } => {
+                if let Err(error) = fault.validate() {
+                    return VerificationOutcome::InfrastructureFailure {
+                        detail: format!("invalid project fault evidence: {error}; {fault:?}"),
+                        disposition: VerificationFailureDisposition::Permanent,
+                    };
+                }
+                if let Some(cleanup) = cleanup_failure {
+                    return VerificationOutcome::InfrastructureFailure {
+                        detail: format!(
+                            "project fault repair withheld until ownership settles: {cleanup:?}; retained evidence: {fault:?}"
+                        ),
+                        disposition: VerificationFailureDisposition::Permanent,
+                    };
+                }
+                VerificationOutcome::ProjectFault { fault }
+            }
             WireOutcome::Certified {
                 head,
                 tree,
@@ -2261,6 +2291,23 @@ where
                     )?;
                     if matches!(result, GenerationWrite::Applied(_)) {
                         return Ok(TickResult::Returned);
+                    }
+                }
+                VerificationOutcome::ProjectFault { fault } => {
+                    // Fail closed until the durable repair coordinator owns delivery.
+                    // Keep the complete observation so a restart loses no diagnosis.
+                    let detail = serde_json::to_string(&fault).map_err(|error| {
+                        AppError::Storage(format!("serializing project fault evidence: {error}"))
+                    })?;
+                    match record_infrastructure_failure(
+                        &queue,
+                        &ctx,
+                        &candidate,
+                        VerificationFailureDisposition::Permanent,
+                        &detail,
+                    )? {
+                        GenerationWrite::Applied(result) => return Ok(result),
+                        GenerationWrite::Superseded => {}
                     }
                 }
                 VerificationOutcome::InfrastructureFailure {

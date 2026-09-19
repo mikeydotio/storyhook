@@ -50,13 +50,31 @@
 #
 # stdout carries exactly the tree oid on 0/1, and nothing on 2 (there is no
 # valid tree). All commentary goes to stderr, in `gate-receipt.sh`'s idiom.
+# With --json, stdout is a versioned inspection result; exit 3 distinguishes
+# reader/identity failures from a missing or insufficient receipt (exit 1).
 
 set -uo pipefail
 
-readonly USAGE="usage: merge-preflight.sh [--object-dir <absolute-directory>] <base-ref> <head-ref>"
+readonly USAGE="usage: merge-preflight.sh [--json] [--object-dir <absolute-directory>] <base-ref> <head-ref>"
+structured=0
+if [ "${1:-}" = "--json" ]; then
+    structured=1
+    shift
+fi
+
+report() {
+    if [ "$structured" -eq 1 ]; then
+        jq -n --arg result "$1" --arg reason "$2" --arg tree "${tree:-}" --arg detail "$3" \
+            '{version:1,result:$result,reason:$reason,tree:$tree,detail:$detail}'
+    fi
+}
 
 die() {
     printf 'merge-preflight: %s\n' "$1" >&2
+    if [ "$structured" -eq 1 ]; then
+        report inspection-error reader-failure "$1"
+        exit 3
+    fi
     exit 1
 }
 
@@ -160,6 +178,13 @@ git_private() {
         git "$@"
 }
 
+if [ "$structured" -eq 1 ]; then
+    base="$(git_private rev-parse --verify --end-of-options "$base^{commit}")" \
+        || die "cannot resolve the certification base to a commit"
+    head="$(git_private rev-parse --verify --end-of-options "$head^{commit}")" \
+        || die "cannot resolve the certification head to a commit"
+fi
+
 # On a clean merge, `--write-tree` prints exactly one line: the tree oid, and
 # nothing else. On conflict it exits non-zero and stdout instead carries
 # diagnostic conflict info AND a "virtual" tree oid with conflict markers
@@ -196,14 +221,35 @@ describe_ref() {
 if [ "$status" -ne 0 ]; then
     note "CONFLICT — $(describe_ref "$head") does not merge cleanly onto $(describe_ref "$base")"
     printf '%s\n' "$output" | sed 's/^/  /' >&2
+    if [ "$structured" -eq 1 ]; then
+        if [ "$status" -eq 1 ]; then
+            report conflict merge-conflict "$output"
+        else
+            report inspection-error merge-read-failure "$output"
+            exit 3
+        fi
+    fi
     exit 2
 fi
 
 tree="$output"
-printf '%s\n' "$tree"
+[ "$structured" -eq 1 ] || printf '%s\n' "$tree"
 
-if [ -f "$receipts/$tree" ]; then
-    tier="$(sed -n 's/^tier //p' "$receipts/$tree" 2>/dev/null | head -n1)"
+# Opening is authoritative: a directory, unreadable file, or dangling link
+# is a reader failure, never proof that the project omitted certification.
+tier="$(python3 - "$receipts/$tree" <<'PY'
+import os
+import sys
+try:
+    with open(sys.argv[1], encoding="utf-8", newline="") as receipt:
+        print(next((line.rstrip("\n")[5:] for line in receipt if line.startswith("tier ")), "gate") or "gate")
+except FileNotFoundError:
+    if os.path.lexists(sys.argv[1]):
+        raise
+    print("")
+PY
+)" || die "cannot read certification receipt $receipts/$tree"
+if [ -n "$tier" ]; then
     tier="${tier:-gate}"
     # SH-429's council verdict, unanimous: a `changed`-tier receipt is never
     # sufficient to land a merge, even one that happens to exist for this
@@ -216,12 +262,15 @@ if [ -f "$receipts/$tree" ]; then
     # two certify a merge; `changed` reports as UNCERTIFIED here on purpose.
     if [ "$tier" = "gate" ] || [ "$tier" = "full" ]; then
         note "certified — tier $tier (tree $tree)"
+        report certified qualifying-receipt "tree $tree carries a $tier receipt"
         exit 0
     fi
     note "not certified — tree $tree carries only a '$tier' receipt, which \
 merge-preflight.sh does not accept (gate/full only — SH-429)"
+    report uncertified insufficient-tier "tree $tree carries only a '$tier' receipt"
     exit 1
 fi
 
 note "not certified — no receipt for tree $tree"
+report uncertified missing "no receipt for tree $tree"
 exit 1

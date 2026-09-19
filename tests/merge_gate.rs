@@ -3865,9 +3865,20 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
     );
 
     let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin", "--ci"]));
-    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
-    assert_eq!(payload["disposition"], "permanent", "{payload}");
-    let detail = payload["detail"].as_str().unwrap();
+    assert_eq!(payload["result"], "project-fault", "{payload}");
+    assert_eq!(
+        payload["fault"]["code"], "missing-certification",
+        "{payload}"
+    );
+    assert_eq!(payload["fault"]["execution_status"], 0, "{payload}");
+    assert_eq!(payload["fault"]["head"], new, "{payload}");
+    assert_eq!(payload["fault"]["receipt"], "missing", "{payload}");
+    assert!(
+        payload["fault"]["log"]
+            .as_str()
+            .is_some_and(|log| Path::new(log).is_file())
+    );
+    let detail = payload["fault"]["detail"].as_str().unwrap();
     assert!(detail.contains("certified nothing"), "{detail}");
     assert_eq!(
         lifecycle_statuses(&repo.path().join("gate-progress.ndjson"), "release gate"),
@@ -3910,9 +3921,96 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
     );
     assert_eq!(
         repo.fake_gh_calls(),
-        1,
-        "refused after the entry read and before any landing read"
+        2,
+        "entry read and authority recheck; no landing request"
     );
+}
+
+#[test]
+fn structured_preflight_distinguishes_missing_insufficient_and_certified_receipts() {
+    let repo = MergeRepo::new();
+    let tree = repo.tree_of("HEAD");
+    let receipt = repo
+        .common_dir()
+        .join("storyhook/gate-receipts")
+        .join(&tree);
+    fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+    for (contents, result, reason, status) in [
+        (None, "uncertified", "missing", 1),
+        (
+            Some("tier changed\n"),
+            "uncertified",
+            "insufficient-tier",
+            1,
+        ),
+        (Some("tier other\n"), "uncertified", "insufficient-tier", 1),
+        (Some("tier gate\r\n"), "uncertified", "insufficient-tier", 1),
+        (Some("tier gate\n"), "certified", "qualifying-receipt", 0),
+        (Some("tier full\n"), "certified", "qualifying-receipt", 0),
+        (
+            Some("legacy receipt\n"),
+            "certified",
+            "qualifying-receipt",
+            0,
+        ),
+    ] {
+        if let Some(contents) = contents {
+            fs::write(&receipt, contents).unwrap();
+        }
+        let out = run(
+            repo.path(),
+            "bash",
+            &[
+                checkout()
+                    .join("scripts/merge-preflight.sh")
+                    .to_str()
+                    .unwrap(),
+                "--json",
+                "HEAD",
+                "HEAD",
+            ],
+        );
+        let payload: serde_json::Value =
+            serde_json::from_slice(&out.stdout).unwrap_or_else(|error| panic!("{error}: {out:?}"));
+        assert_eq!(out.status.code(), Some(status), "{payload}");
+        assert_eq!(payload["result"], result, "{payload}");
+        assert_eq!(payload["reason"], reason, "{payload}");
+        assert_eq!(payload["tree"], tree, "{payload}");
+        let legacy = repo.preflight("HEAD", "HEAD");
+        assert_eq!(legacy.status.code(), Some(status));
+        assert_eq!(stdout(&legacy), tree);
+    }
+}
+
+#[test]
+fn structured_preflight_never_calls_reader_failures_missing_certification() {
+    let repo = MergeRepo::new();
+    let tree = repo.tree_of("HEAD");
+    let receipt = repo
+        .common_dir()
+        .join("storyhook/gate-receipts")
+        .join(&tree);
+    fs::create_dir_all(&receipt).unwrap();
+    for head in ["HEAD", "no-such-reference"] {
+        let out = run(
+            repo.path(),
+            "bash",
+            &[
+                checkout()
+                    .join("scripts/merge-preflight.sh")
+                    .to_str()
+                    .unwrap(),
+                "--json",
+                "HEAD",
+                head,
+            ],
+        );
+        let payload: serde_json::Value =
+            serde_json::from_slice(&out.stdout).unwrap_or_else(|error| panic!("{error}: {out:?}"));
+        assert_eq!(out.status.code(), Some(3), "{payload}");
+        assert_eq!(payload["result"], "inspection-error", "{payload}");
+        assert_ne!(payload["reason"], "missing", "{payload}");
+    }
 }
 
 /// SH-666's second incident, reconstructed: the gate ran green on the tree
