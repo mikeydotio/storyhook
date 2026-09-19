@@ -82,6 +82,14 @@ pub enum ProjectFault {
 }
 
 impl ProjectFault {
+    /// Pinned integration commit and proposed merge tree; neither is certification.
+    pub fn proposed_merge(&self) -> (&str, &str) {
+        match self {
+            Self::InvalidGateConfiguration { base, tree, .. }
+            | Self::MissingGateCommand { base, tree, .. }
+            | Self::MissingCertification { base, tree, .. } => (base, tree),
+        }
+    }
     /// Committed source identity retained independently of the proposed merge tree.
     pub fn source(&self) -> (&str, &str) {
         match self {

@@ -1,5 +1,7 @@
 //! Durable scope assessment for proven project-owned verifier faults.
 
+mod attempts;
+mod attempts_validation;
 mod authority;
 mod decision;
 mod decision_effects;
@@ -15,6 +17,10 @@ use crate::{
     domain::StoryEvent,
     error::AppError,
     store::{ProjectRecovery, ProjectRecoveryObservation, ReadOps, Store, StoreError, WriteOps},
+};
+pub use attempts::{
+    RepairAdmission, RepairAttempt, RepairCompletion, RepairInput, RepairRefusal,
+    RepairRefusalRecord,
 };
 pub use decision::{DecisionInput, DecisionReceipt, RepairScope, RepairSpec};
 pub use model::*;
@@ -78,12 +84,25 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
             }
             let policy_hold = authority::policy_hold(tx, candidate.project, &row.snapshot)?;
             let (code, locus) = fault.identity();
-            let existing = records.into_iter().find(|r| r.active && r.code == code && r.locus == locus);
+            let repair_owner = attempts::owner(tx, candidate.project, story)?;
+            if let Some(owner) = &repair_owner {
+                let (head, head_tree) = fault.source();
+                let (base, tree) = fault.proposed_merge();
+                if !owner.state.attempts.iter().any(|admitted| admitted.id == attempt
+                    && admitted.story == story && admitted.generation == generation
+                    && attempts::authority_matches(candidate, &admitted.candidate)
+                    && admitted.completion == Some(RepairCompletion::ProjectFault)
+                    && admitted.input.head == head && admitted.input.head_tree == head_tree
+                    && admitted.input.base == base && admitted.input.tree == tree) {
+                    return Err(StoreError::Validation("repair fault does not match a completed admitted attempt in its lineage".into()));
+                }
+            }
+            let existing = repair_owner.map(|owner| owner.record).or_else(|| records.into_iter().find(|r| r.active && r.code == code && r.locus == locus));
             let mut view = if let Some(record) = existing {
                 read_view(tx, record)?
             } else {
                 let state = RecoveryState {
-                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(),
+                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(), attempts: Vec::new(), refusals: Vec::new(),
                     assessment: Assessment {
                         dispatch_identity: uuid::Uuid::new_v4().to_string(), story, generation,
                         status: if policy_hold.is_some() { AssessmentStatus::Held } else { AssessmentStatus::Pending },

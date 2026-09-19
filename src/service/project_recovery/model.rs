@@ -147,6 +147,12 @@ pub struct RecoveryState {
     /// Durable managed repair and affected-agent resume effects.
     #[serde(default)]
     pub work: Vec<super::WorkDelivery>,
+    /// Pinned repair attempts; interruption alone consumes no completion budget.
+    #[serde(default)]
+    pub attempts: Vec<super::RepairAttempt>,
+    /// Exact refused admissions, retained without executing another gate.
+    #[serde(default)]
+    pub refusals: Vec<super::RepairRefusalRecord>,
 }
 
 /// Exact structured evidence originally produced by the verifier.

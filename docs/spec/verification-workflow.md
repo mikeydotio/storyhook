@@ -1304,3 +1304,17 @@ Terminal assessment holds also record an awaiting reason on each eligible
 affected story. The recovery retains the exact awaiting-event sequence and
 original generation. It skips independent holds and changed authority; a later
 observation cannot restore a recovery hold that the operator already cleared.
+
+Repair admission retains the head commit's tree independently of the proposed
+merge tree. An empty commit or moving base does not make previously judged
+repair content new. At most three changed committed repair inputs can complete;
+interrupted attempts consume no completion slot. A certified retry of the same
+generation retains its existing slot. An older unfinished attempt cannot bypass
+the completed-input limit. Admission refusals retain evidence without changing
+story state before verifier cleanup finishes.
+
+Attempts and refusals retain the original verification candidate, including
+reservation and resource identity. A refreshed candidate cannot renew an older
+attempt after a transient human reservation. A repair that encounters a different
+typed project fault remains in its original recovery and cannot create another
+repair story. Its fault must match the completed admitted source and merge input.

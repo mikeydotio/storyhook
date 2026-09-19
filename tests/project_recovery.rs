@@ -1,5 +1,7 @@
 //! Current generation authority, durable assessment ownership, and bounded delivery.
 
+#[path = "project_recovery/attempts.rs"]
+mod attempts;
 #[path = "project_recovery/decision.rs"]
 mod decision;
 #[path = "project_recovery/work.rs"]
