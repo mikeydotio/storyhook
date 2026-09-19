@@ -610,7 +610,8 @@ mod tests {
     #[test]
     fn resolving_gives_paths_under_the_root_and_removes_the_rest() {
         let root = Path::new("/private/tmp/fixture");
-        let settings = resolve(root, 4321, Scope::StoryhookProcessOnly);
+        let pid = std::process::id();
+        let settings = resolve(root, pid, Scope::StoryhookProcessOnly);
 
         for setting in &settings {
             let parameter = TEST_ENVIRONMENT
@@ -635,12 +636,17 @@ mod tests {
                 Disposition::OwnPid => {
                     assert_eq!(
                         setting.value.as_deref(),
-                        Some(OsString::from("4321").as_os_str())
+                        Some(OsString::from(pid.to_string()).as_os_str())
                     );
                 }
                 Disposition::OwnProcessStartTime => {
-                    let expected =
-                        crate::daemon::lifecycle::process_start_time(4321).unwrap_or_default();
+                    let token = crate::daemon::lifecycle::process_start_time(pid);
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    assert!(
+                        token.is_some(),
+                        "the live test process has a native start token"
+                    );
+                    let expected = token.unwrap_or_default();
                     assert_eq!(
                         setting.value.as_deref(),
                         Some(OsString::from(expected).as_os_str())
