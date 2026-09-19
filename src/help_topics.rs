@@ -2580,6 +2580,10 @@ RESERVED LABELS
   human-only   Only a person may do this work. 'story next' and
                'story claim --next' never return it, at any count, so
                it is never handed out as anyone's next assignment.
+               The verifier also skips it: no queue position or automatic
+               cleanup. Adding the label cancels an owned verifier attempt,
+               releases its resources, and lets the next story proceed.
+               Removing the label restores eligibility in its existing state.
 
                It is NOT blocked. The story stays ready everywhere a
                person looks — 'story list --ready' carries it, every

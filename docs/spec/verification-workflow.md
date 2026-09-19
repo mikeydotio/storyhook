@@ -1232,3 +1232,28 @@ If a wrapper reports a complete bare answer and then fails to exit, the daemon
 adds the capture failure as a permanent cleanup halt. It reports the known source
 checkout and explicitly marks owner/shared-worktree paths unavailable when the
 wrapper did not supply them. It never derives guessed cleanup authority.
+
+## Human ownership — SH-740
+
+`human-only` excludes a story from verification and completed-story cleanup,
+including queue positions, malformed-submission repair, and landing recovery.
+It does not change manual readiness, story state, or project admission permission.
+`no-auto` keeps its existing meaning and does not exclude verifier submissions.
+
+Admission checks the label before workspace locking and again transactionally.
+Each candidate captures the latest event that included `human-only`; adding and
+removing the label between observations still revokes the old attempt. Removing
+the label permits a fresh admission under the existing priority and state rules.
+
+A scoped observer watches project changes throughout submission, testing,
+reconciliation, landing, and cleanup. Revocation cancels owned subprocesses and
+waits for their cleanup before releasing resources and advancing the queue.
+The change bus triggers observation immediately; the existing 30-second recovery
+wake covers lost notifications, and subprocess shutdown retains its bounded grace.
+A withdrawal records the reservation and preserves the human's branch, worktree,
+PR, story state, and awaiting reason. Cleanup failures remain diagnostic evidence.
+
+An external merge already sent cannot be undone by cancellation. Its durable
+landing intent is retained while labeled; automatic completion and reaping are
+suppressed. After removal, the verifier reconciles that intent before admitting
+another merge. No state migration or new CLI option is required.

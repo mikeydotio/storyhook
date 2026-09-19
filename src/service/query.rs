@@ -1354,8 +1354,8 @@ fn sort_ready(views: &mut [StoryView], stories: &BTreeMap<String, StorySnapshot>
 /// A story can enter the graph only if it would be claimable with dependency
 /// lookups removed: this retains `is_claimable`'s closed/draft/blocked/
 /// awaiting/obviated/active/verifying gates without duplicating them, and additionally
-/// excludes [`domain::is_human_only`] — the one place the reserved
-/// `human-only` label takes effect (SH-453, assumption A1 of
+/// excludes [`domain::is_human_only`] — where the reserved
+/// `human-only` label filters ready assignments (SH-453, assumption A1 of
 /// `docs/spec/full-auto-engine.md`). It filters *here*, in the queue, rather
 /// than in `is_claimable` or `is_ready`, so a `human-only` story goes on
 /// reading as ready to every surface a person consults while never being

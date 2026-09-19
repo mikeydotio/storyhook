@@ -22,6 +22,8 @@ use super::gate_progress::GATE_PROGRESS_PREFIX;
 use super::story::{append_state_transition, state_transition_events};
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 
+pub(crate) mod human;
+
 /// The required OPEN state that hands a published PR to the verifier.
 pub const VERIFYING_STATE: &str = VERIFYING_STATE_SLUG;
 
@@ -268,6 +270,9 @@ pub struct VerificationCandidate {
     pub verifying_generation: Option<GlobalSeq>,
     /// Latest durable block edge at admission; a transient hold revokes this attempt.
     pub blocking_revision: Option<i64>,
+    /// Last human-only reservation at admission. A later reservation revokes
+    /// this attempt even if the label is removed before the next observation.
+    pub human_only_revision: Option<GlobalSeq>,
     /// Registered checkout where the repository-side verifier runs.
     pub checkout: PathBuf,
     /// Exact disposable resources owned by this verification generation.
@@ -308,6 +313,14 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     #[must_use]
     pub fn new(store: &'a S) -> Self {
         Self { store }
+    }
+
+    /// Whether this attempt still has permission to act for a person.
+    pub(crate) fn human_permits(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<bool, AppError> {
+        Ok(self.store.read(|tx| human::permits(tx, candidate))?)
     }
 
     /// Returns the highest-priority runnable submission, skipping held dependencies
@@ -904,6 +917,9 @@ fn cleanup_candidates_for(
         for row in rows {
             // Completion and cleanup evidence belongs to this submission,
             // including the operator override path added after SH-653.
+            if crate::domain::is_human_only(&row.snapshot) {
+                continue;
+            }
             let events = tx.events_for(project.id, row.story_no)?;
             let Some(generation) = latest_generation(&events) else {
                 continue;
@@ -935,6 +951,7 @@ fn cleanup_candidates_for(
                 verifying_since: None,
                 verifying_generation: None,
                 blocking_revision: None,
+                human_only_revision: human::revision(tx, project.id, row.story_no)?,
                 checkout: checkout.clone(),
                 cleanup_lease: generation.lease,
                 pull_request,
@@ -960,6 +977,9 @@ impl<S: Store> VerificationQueue<'_, S> {
         ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, story_id)?;
+            if crate::domain::is_human_only(&row.snapshot) {
+                return Err(StoreError::Validation(format!("story `{story_id}` is reserved human-only; verifier completion is not permitted")));
+            }
             if row.superstate == SuperState::Closed {
                 return Ok(());
             }
@@ -1038,7 +1058,8 @@ fn submission_is_current(
     row: &StoryRow,
     candidate: &VerificationCandidate,
 ) -> Result<bool, StoreError> {
-    if row.state != VERIFYING_STATE
+    if !human::permits_row(tx, row, candidate)?
+        || row.state != VERIFYING_STATE
         || !candidate_is_latest_generation(tx, row, candidate)?
         || tx
             .story_resets(candidate.project)?
@@ -1104,9 +1125,10 @@ fn candidate_is_latest_generation(
     row: &StoryRow,
     candidate: &VerificationCandidate,
 ) -> Result<bool, StoreError> {
-    if tx
-        .story_reset(candidate.project, row.story_no)?
-        .is_some_and(|reset| !reset.completed)
+    if !human::permits_row(tx, row, candidate)?
+        || tx
+            .story_reset(candidate.project, row.story_no)?
+            .is_some_and(|reset| !reset.completed)
     {
         return Ok(false);
     }
@@ -1208,7 +1230,8 @@ pub(crate) fn ordered_candidates_for(
         let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
         let resets = tx.story_resets(project.id)?;
         for row in rows {
-            if row.snapshot.awaiting.is_some()
+            if crate::domain::is_human_only(&row.snapshot)
+                || row.snapshot.awaiting.is_some()
                 || resets.contains_key(&row.story_no)
                 || tx.engine_reset(project.id, row.story_no)?.is_some()
                 || tx
@@ -1248,6 +1271,7 @@ pub(crate) fn ordered_candidates_for(
                 verifying_since,
                 verifying_generation,
                 blocking_revision: blocking_revision(tx, project.id, row.story_no)?,
+                human_only_revision: human::revision(tx, project.id, row.story_no)?,
                 checkout: checkout.clone().unwrap_or_default(),
                 cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
                 pull_request,
@@ -1741,6 +1765,7 @@ mod tests {
             verifying_since: verifying_since.map(str::to_string),
             verifying_generation: None,
             blocking_revision: None,
+            human_only_revision: None,
             checkout: PathBuf::new(),
             cleanup_lease: None,
             pull_request: Err(VerificationProblem::MissingPullRequest),

@@ -82,6 +82,7 @@ fn exercise<T>(
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
         blocking_revision: None,
+        human_only_revision: None,
         checkout: checkout.path().to_path_buf(),
         cleanup_lease: None,
         pull_request: Err(VerificationProblem::MissingPullRequest),

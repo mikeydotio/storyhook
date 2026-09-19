@@ -2996,11 +2996,11 @@ pub const LABEL_HUMAN_ONLY: &str = "human-only";
 pub const RESERVED_LABELS: [&str; 2] = [LABEL_NO_AUTO, LABEL_HUMAN_ONLY];
 
 /// Whether `story` carries [`LABEL_HUMAN_ONLY`], and so must never be offered
-/// as the next piece of work.
+/// as the next piece of work or admitted to centralized verification.
 ///
-/// This is a filter on the **ready queue** — the `story next` path, which
-/// `story claim --next` reaches through the same implementation — and
-/// nothing else. It is deliberately NOT folded into [`is_ready`] or
+/// This filters automated selection and verifier ownership, including cleanup.
+/// Adding the label withdraws an active verifier without changing story state.
+/// It is deliberately NOT folded into [`is_ready`] or
 /// [`is_claimable`], which is assumption A1 of
 /// `docs/spec/full-auto-engine.md`: a human can still progress a
 /// `human-only` story, so it must keep reading as ready everywhere a person

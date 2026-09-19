@@ -184,6 +184,11 @@ impl VerificationActivity {
         candidate: &VerificationCandidate,
         started_at: String,
     ) -> Result<Option<VerificationGuard>, AppError> {
+        // Avoid even taking the filesystem lock for an already-reserved story.
+        // Admission checks again after locking to close the read/acquire race.
+        if !store.read(|tx| crate::service::verification::human::permits(tx, candidate))? {
+            return Ok(None);
+        }
         let workspace = if !candidate.checkout.as_os_str().is_empty()
             && candidate.checkout.join(".git").exists()
         {
@@ -204,7 +209,8 @@ impl VerificationActivity {
                 .prefix;
             let no = crate::store::StoryNo::parse_id(&prefix, &candidate.story_id)
                 .map_err(|_| crate::store::StoreError::NotFound(candidate.story_id.clone()))?;
-            let allowed = !tx.story_resets(candidate.project)?.contains_key(&no)
+            let allowed = crate::service::verification::human::permits(tx, candidate)?
+                && !tx.story_resets(candidate.project)?.contains_key(&no)
                 && tx.engine_reset(candidate.project, no)?.is_none()
                 && !tx
                     .story_reset(candidate.project, no)?

@@ -60,6 +60,7 @@ fn candidate(fixture: &ServiceFixture, checkout: &Path) -> VerificationCandidate
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
         blocking_revision: None,
+        human_only_revision: None,
         checkout: checkout.to_path_buf(),
         cleanup_lease: Some(StoryCleanupLease {
             version: CLEANUP_LEASE_VERSION,

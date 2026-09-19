@@ -462,6 +462,7 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             verifying_since: None,
             verifying_generation: None,
             blocking_revision: None,
+            human_only_revision: None,
             checkout: std::env::var_os("STORY_CALLBACK_CHECKOUT")
                 .expect("fixture checkout")
                 .into(),
