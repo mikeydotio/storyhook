@@ -167,7 +167,7 @@ fn only_the_store_names_a_file() {
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use storyhook::env::test_environment::{Scope, resolve};
+use storyhook::env::test_environment::{Scope, Setting};
 use storyhook_test_support::scratch_dir;
 
 /// This checkout's root.
@@ -232,8 +232,24 @@ fn poison() -> Vec<(String, String)> {
         .collect()
 }
 
-/// The shell rendering and the library agree, in both directions, for both
-/// scopes.
+/// The shell contract differs from Rust only in its documented PID-only mode.
+/// Keep an explicit empty value so a missing export or inherited token fails.
+fn shell_settings(root: &Path, pid: u32, scope: Scope) -> Vec<Setting> {
+    TEST_ENVIRONMENT
+        .iter()
+        .filter(|parameter| parameter.applies_in(scope))
+        .map(|parameter| Setting {
+            name: parameter.name,
+            value: match parameter.disposition {
+                Disposition::OwnProcessStartTime => Some("".into()),
+                _ => parameter.value(root, pid),
+            },
+        })
+        .collect()
+}
+
+/// The shell rendering and the library agree, except for the documented empty
+/// shell start token, in both directions and for both scopes and parent modes.
 ///
 /// Behavioural, never structural (the SH-357 doctrine): the question asked is
 /// what the two actually put in a process's environment, not whether their
@@ -242,14 +258,25 @@ fn poison() -> Vec<(String, String)> {
 /// has.
 #[test]
 fn the_shell_rendering_and_the_library_isolate_identically() {
+    let parent_pid = std::process::id().to_string();
     for (extra, scope) in [
         (&[][..], Scope::Anywhere),
         (&["--home"][..], Scope::StoryhookProcessOnly),
+        (&["--parent-pid", parent_pid.as_str()][..], Scope::Anywhere),
+        (
+            &["--home", "--parent-pid", parent_pid.as_str()][..],
+            Scope::StoryhookProcessOnly,
+        ),
     ] {
         let fixture = scratch_dir();
         let root = fixture.path();
         let (seen, shell_pid) = isolate_in_bash(root, extra);
-        let expected = resolve(root, shell_pid, scope);
+        let owner_pid = if extra.contains(&"--parent-pid") {
+            std::process::id()
+        } else {
+            shell_pid
+        };
+        let expected = shell_settings(root, owner_pid, scope);
 
         for setting in &expected {
             match &setting.value {
@@ -258,9 +285,8 @@ fn the_shell_rendering_and_the_library_isolate_identically() {
                     assert_eq!(
                         seen.get(setting.name).map(String::as_str),
                         Some(want),
-                        "with {extra:?}, the shell set {} to {:?} and the library \
-                         says {want:?}. One of the two is what a harness will \
-                         actually run under.",
+                        "with {extra:?}, the shell set {} to {:?} but the \
+                         documented shell contract requires {want:?}.",
                         setting.name,
                         seen.get(setting.name)
                     );
@@ -403,14 +429,16 @@ fn the_shell_rendering_refuses_an_unknown_option() {
 /// The printer exists for `scripts/scratch-env.sh --print`, and a printer that
 /// claimed one thing while the function did another would be a third rendering
 /// of the same table. Proven by *evaluating* what it prints and comparing the
-/// result to the function's own, rather than by reading it.
+/// result to the same shell contract used for the function, rather than by
+/// reading it. The live owner keeps this independent of incidental host PIDs.
 #[test]
 fn the_printed_environment_is_the_one_the_function_applies() {
     let fixture = scratch_dir();
     let root = fixture.path();
+    let parent_pid = std::process::id();
 
     let script = format!(
-        ". \"{}/scripts/test-env.sh\"\neval \"$(storyhook_isolate_print --home --parent-pid 4242 \"{}\")\"\nexec /usr/bin/env\n",
+        ". \"{}/scripts/test-env.sh\"\neval \"$(storyhook_isolate_print --home --parent-pid {parent_pid} \"{}\")\"\nexec /usr/bin/env\n",
         repo_root().display(),
         root.display(),
     );
@@ -431,12 +459,12 @@ fn the_printed_environment_is_the_one_the_function_applies() {
         .map(|(name, value)| (name.to_string(), value.to_string()))
         .collect();
 
-    for setting in resolve(root, 4242, Scope::StoryhookProcessOnly) {
+    for setting in shell_settings(root, parent_pid, Scope::StoryhookProcessOnly) {
         match setting.value {
             Some(value) => assert_eq!(
                 seen.get(setting.name).map(String::as_str),
                 Some(value.to_str().expect("a UTF-8 fixture path")),
-                "the printed form disagrees with the library about {}",
+                "the printed form disagrees with the shell contract about {}",
                 setting.name
             ),
             None => assert!(
