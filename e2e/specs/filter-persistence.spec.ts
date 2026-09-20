@@ -38,6 +38,15 @@ function switchToProject(page: import("@playwright/test").Page, name: string) {
     );
 }
 
+function waitForSearchSave(page: import("@playwright/test").Page) {
+  return page.waitForResponse((response) =>
+    response.url().endsWith("/api/preferences") &&
+    response.request().method() === "PATCH" &&
+    response.request().postData()?.includes('"filter"') === true &&
+    response.ok(),
+  );
+}
+
 test("a text search carries over across a project switch", async ({
   page,
 }) => {
@@ -70,7 +79,12 @@ test("Clear filters wipes the carried-over search for the next switch too", asyn
   await switchToProject(page, "Beta Project");
   await expect(page.locator("#search-input")).toHaveValue("flow");
 
+  const clearSave = waitForSearchSave(page);
   await page.locator("#filter-clear").click();
+  await clearSave;
+  await expect(page.locator("#search-input")).toHaveValue("");
+
+  await page.reload();
   await expect(page.locator("#search-input")).toHaveValue("");
 
   await switchToProject(page, "Alpha Project");
@@ -136,13 +150,14 @@ test("filters survive a page reload on the same project", async ({
   page,
 }) => {
   await openProject(page, "Alpha Project");
+  const searchSave = waitForSearchSave(page);
   await page.locator("#search-input").fill("flow");
+  await searchSave;
 
   await page.reload();
 
   // `bootstrap()` re-enters `selectRepo()` for the last-viewed project on
-  // every reload — the exact path the council's decision (sessionStorage,
-  // not a bare in-memory variable) was chosen to survive.
+  // every reload, with the token's saved search preference.
   await expect(page.locator("#board-view")).toBeVisible();
   await expect(page.locator("#search-input")).toHaveValue("flow");
   await expect(
@@ -158,7 +173,9 @@ test("mobile filter values survive reload but the sheet open state does not", as
 }) => {
   await page.setViewportSize({ width: 768, height: 1024 });
   await openProject(page, "Alpha Project");
+  const searchSave = waitForSearchSave(page);
   await page.locator("#search-input").fill("flow");
+  await searchSave;
   await openFilters(page);
   await expect(page.locator("#filter-sheet")).toBeVisible();
 

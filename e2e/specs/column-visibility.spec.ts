@@ -18,7 +18,7 @@ import { openFilters, openProject, seedToken } from "./support";
  *   - "Beta Project" (prefix BB) — the four default states only, no
  *     `review`. One story: "Draft the release notes".
  *
- * `hiddenColumns` is session-scoped and per-repo-vocabulary, pruned the
+ * `hiddenColumns` is token-scoped and per-repo-vocabulary, pruned the
  * same way `filter.states` is (SH-155); `hideEmptyColumns` carries no
  * vocabulary and is a durable, cross-project preference like
  * `showArchived`. See `state.hiddenColumns`/`state.hideEmptyColumns`'s own
