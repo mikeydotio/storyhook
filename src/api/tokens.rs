@@ -233,6 +233,8 @@ pub enum TokenError {
     /// `story token revoke` (or the wire equivalent) named a token that does
     /// not exist — already revoked, never existed, or a typo.
     NotFound,
+    /// The sidecar could not be saved. The registry retains its prior state.
+    Persistence(String),
 }
 
 /// What is persisted to `tokens.json` — the records plus the clock's own
@@ -251,6 +253,7 @@ struct Persisted {
     high_water: Option<DateTime<Utc>>,
 }
 
+#[derive(Clone)]
 struct Inner {
     persisted: Persisted,
     /// Index from hash to position in `persisted.records`, rebuilt whenever
@@ -404,12 +407,13 @@ impl TokenRegistry {
         ttl: chrono::Duration,
     ) -> Result<MintedToken, TokenError> {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let now = self.effective_now(&inner, wall_now, mono_now);
-        prune_expired(&mut inner, now);
-        if inner.persisted.records.iter().any(|r| r.name == name) {
+        let mut next = inner.clone();
+        let now = self.effective_now(&next, wall_now, mono_now);
+        prune_expired(&mut next, now);
+        if next.persisted.records.iter().any(|r| r.name == name) {
             return Err(TokenError::NameTaken);
         }
-        if inner.persisted.records.len() >= MAX_TOKENS {
+        if next.persisted.records.len() >= MAX_TOKENS {
             return Err(TokenError::AtCapacity);
         }
         let secret = random_secret();
@@ -423,10 +427,11 @@ impl TokenRegistry {
             created_at: wall_now,
             expires_at,
         };
-        inner.persisted.records.push(record);
-        touch_high_water(&mut inner, now);
-        inner.reindex();
-        self.persist(&inner.persisted);
+        next.persisted.records.push(record);
+        touch_high_water(&mut next, now);
+        next.reindex();
+        self.persist(&next.persisted)?;
+        *inner = next;
         Ok(MintedToken {
             secret,
             summary: TokenSummary {
@@ -449,17 +454,19 @@ impl TokenRegistry {
         mono_now: Instant,
     ) -> Result<(), TokenError> {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let position = inner
+        let mut next = inner.clone();
+        let position = next
             .persisted
             .records
             .iter()
             .position(|r| r.name == name)
             .ok_or(TokenError::NotFound)?;
-        inner.persisted.records.remove(position);
-        let now = self.effective_now(&inner, wall_now, mono_now);
-        touch_high_water(&mut inner, now);
-        inner.reindex();
-        self.persist(&inner.persisted);
+        next.persisted.records.remove(position);
+        let now = self.effective_now(&next, wall_now, mono_now);
+        touch_high_water(&mut next, now);
+        next.reindex();
+        self.persist(&next.persisted)?;
+        *inner = next;
         Ok(())
     }
 
@@ -501,11 +508,12 @@ impl TokenRegistry {
         })
     }
 
-    fn persist(&self, persisted: &Persisted) {
+    fn persist(&self, persisted: &Persisted) -> Result<(), TokenError> {
         let Some(env) = &self.persist_env else {
-            return;
+            return Ok(());
         };
-        write_tokens_file(env, persisted);
+        write_tokens_file(env, persisted)
+            .map_err(|err| TokenError::Persistence(format!("cannot save tokens.json: {err}")))
     }
 }
 
@@ -567,41 +575,27 @@ fn tokens_path(env: &Environment) -> std::path::PathBuf {
 /// torn JSON document, and this one carries token hashes rather than merely
 /// operational bookkeeping.
 ///
-/// **Best-effort for the directory, not for the write itself.** Unlike
-/// `publish_inflight`, a failed write here is not swallowed silently: mint
-/// and revoke call this synchronously and their durability is the entire
-/// reason this module exists rather than an SQLite table, so a write that
-/// cannot land must be visible to the caller, not merely to a comment. This
-/// function's own callers already hold the lock across it, and the specific
-/// I/O failure is intentionally not surfaced as a `Result` here — retrying
-/// or reporting it precisely is future work; what's load-bearing today is
-/// that the write is attempted synchronously, in this call, before mint or
-/// revoke returns to its own caller.
-fn write_tokens_file(env: &Environment, persisted: &Persisted) {
+/// Unlike `publish_inflight`, a failed write returns its I/O error. The
+/// registry holds its lock and commits its next in-memory state only after
+/// this write succeeds, so a reported mint or revoke survives restart.
+fn write_tokens_file(env: &Environment, persisted: &Persisted) -> std::io::Result<()> {
     let path = tokens_path(env);
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        return;
-    }
-    let Ok(document) = serde_json::to_string(persisted) else {
-        return;
-    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("missing parent directory"))?;
+    std::fs::create_dir_all(parent)?;
+    let document = serde_json::to_vec(persisted)?;
     let temp = path.with_extension("json.tmp");
     let mut options = OpenOptions::new();
     options.create(true).write(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let Ok(mut file) = options.open(&temp) else {
-        return;
-    };
-    if file.write_all(document.as_bytes()).is_err() {
-        return;
-    }
-    let _ = file.sync_all();
+    let mut file = options.open(&temp)?;
+    file.write_all(&document)?;
+    file.sync_all()?;
     drop(file);
-    let _ = std::fs::rename(&temp, &path);
+    std::fs::rename(&temp, &path)?;
+    Ok(())
 }
 
 // --- The control-surface routes ---
@@ -678,6 +672,7 @@ fn handle_collection(
                          run `story token list` and revoke one before minting another"
                     ),
                 ),
+                Err(TokenError::Persistence(detail)) => text_reply(500, detail),
                 Err(TokenError::NotFound) => unreachable!("mint never returns NotFound"),
             }
         }
@@ -707,7 +702,8 @@ fn handle_named(
         Err(TokenError::NotFound) => {
             text_reply(404, format!("storyhook daemon: no token named \"{name}\""))
         }
-        Err(_) => unreachable!("revoke returns only NotFound or Ok"),
+        Err(TokenError::Persistence(detail)) => text_reply(500, detail),
+        Err(_) => unreachable!("revoke returns only NotFound or persistence failure"),
     }
 }
 
@@ -1175,6 +1171,42 @@ mod tests {
                 .is_some()
         );
         assert_eq!(reloaded.list().len(), 1);
+    }
+
+    #[test]
+    fn failed_sidecar_write_does_not_mint_or_revoke_in_memory() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        std::fs::create_dir_all(env.daemon_state_dir().join("tokens.json.tmp")).unwrap();
+
+        assert!(matches!(
+            registry.mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL),
+            Err(TokenError::Persistence(_))
+        ));
+        assert!(registry.list().is_empty());
+
+        std::fs::remove_dir(env.daemon_state_dir().join("tokens.json.tmp")).unwrap();
+        let minted = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        std::fs::create_dir_all(env.daemon_state_dir().join("tokens.json.tmp")).unwrap();
+
+        assert!(matches!(
+            registry.revoke("laptop", epoch(), Instant::now()),
+            Err(TokenError::Persistence(_))
+        ));
+        assert!(
+            registry
+                .validate(&minted.secret, epoch(), Instant::now())
+                .is_some()
+        );
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        assert!(
+            reloaded
+                .validate(&minted.secret, epoch(), Instant::now())
+                .is_some()
+        );
     }
 
     #[test]
