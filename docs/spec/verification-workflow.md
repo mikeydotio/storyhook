@@ -1365,3 +1365,48 @@ as the authority for one new delivery to the same repair story and worktree.
 The third completed changed-input repair records a budget hold without another
 pending dispatch. These are durable service effects; the recovery worker owns
 external transport after verifier workspace ownership has settled.
+
+### Active recovery delivery and operator diagnostics
+
+A settled `ProjectFault` now enrolls recovery and releases the verifier attempt.
+A separate daemon worker reacts to change-bus events and a 30-second wake. It
+waits for the originating and target workspace locks and runs managed delivery
+with its own cancellation token. It cannot keep a project gate occupied while
+an agent assesses or repairs the fault. Other eligible submissions continue.
+
+The worker notifies the managed owner first. Only typed `agent-absent` evidence
+permits resource inspection and dispatch. An original worktree requires its
+exact registered lease. A new dedicated repair uses a fresh managed claim and
+never inherits the originating story's engine identity. An interrupted delivery
+is uncertain until reconciled; it is never pasted again on the assumption that
+it failed. Only proven undelivered attempts spend the three-delivery budget.
+Manual stop, reserved labels, changed authority, and uncertain resources prevent
+automatic effects. No recovery operation grants credentials or overrides.
+
+Dispatch guidance: read the retained story comments and `verifier repair show`
+before edits. The assessment owner must read the scope rubric and submit the
+versioned scope decision. The repair owner follows the accepted decision, keeps
+required gate coverage, tests new and affected behavior, commits, and moves the
+story to verifying as its last action. After a separate repair lands, affected
+agents refresh source and gate configuration against the current base in the
+existing worktree and submit a fresh verification generation. Never reuse the
+old unjudged submission or manufacture certification.
+
+A fault observed on a reserved `no-auto` submission does not change its state or
+labels. Its exact old generation is excluded from further gate admission and is
+shown as a recovery hold. Ordinary no-auto verification remains supported before
+fault enrollment. A changed submission needs a fresh generation. The engine
+recognizes valid pending recovery and exact owned dependency holds as progress;
+this exception does not erase a missing-pane observation, reset, or quarantine.
+
+`story verifier status` and the dashboard share `project_recoveries`: fault and
+locus, affected stories, assessor, repair story and PR, phase, completed-attempt
+budget, and next action. Old payloads decode with an empty array. Project repair
+is displayed independently of infrastructure halt and manual admission control.
+`story verifier repair show <id> --json` retains the full evidence and history.
+
+Legacy incident text cannot prove execution, receipt inspection, or cleanup.
+Automatic conversion requires a matching validated typed recovery observation
+for the exact project, story, and generation. The transaction archives the full
+old incident before clearing its queue-wide halt. Text-only incidents, including
+JSON embedded in diagnostic text, remain subject to ordinary incident recovery.

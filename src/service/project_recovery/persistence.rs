@@ -139,6 +139,11 @@ pub(super) fn read_view(
         if evidence.version != 1
             || evidence.candidate.project != record.project
             || evidence.candidate.verifying_generation != Some(observation.generation)
+            || observation.project != record.project
+            || observation.recovery_id != record.id
+            || !state.subjects.iter().any(|subject| {
+                subject.story == observation.story && subject.candidate == evidence.candidate
+            })
         {
             return Err(StoreError::Corrupt(format!(
                 "project recovery observation {} has inconsistent identity",
@@ -151,6 +156,17 @@ pub(super) fn read_view(
                 observation.attempt_id
             ))
         })?;
+    }
+    for incident in &state.legacy_incidents {
+        if !observations.iter().any(|observation| {
+            observation.project == incident.project
+                && observation.story == incident.story
+                && observation.generation == incident.generation
+        }) {
+            return Err(StoreError::Corrupt(
+                "legacy incident lacks typed recovery evidence".into(),
+            ));
+        }
     }
     let view = RecoveryView {
         record,

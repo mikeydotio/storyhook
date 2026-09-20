@@ -1800,6 +1800,14 @@ where
     W: FnMut(&VerificationCandidate) -> Result<Option<VerificationCandidate>, AppError>,
 {
     let queue = VerificationQueue::new(store);
+    if store
+        .read(|tx| tx.verification_incident(project))?
+        .is_some()
+    {
+        store.write(|tx| {
+            crate::service::project_recovery::reconcile_incident(tx, project, &env.now())
+        })?;
+    }
     let ordered = queue.ordered_for(project)?;
     for intent in store.read(|tx| tx.landing_intents())? {
         let Some(candidate) = ordered

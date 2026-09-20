@@ -10,12 +10,14 @@ mod delivery;
 mod holds;
 mod judgment;
 mod landing;
+mod legacy;
 mod managed_claim;
 mod model;
 mod persistence;
 mod refusal;
 mod repair_return;
 mod resume;
+mod status;
 mod test_return;
 mod work;
 mod work_holds;
@@ -37,10 +39,13 @@ pub use decision::{DecisionInput, DecisionReceipt, RepairScope, RepairSpec};
 pub use judgment::RepairJudgment;
 pub use landing::RepairLanding;
 pub(crate) use landing::record_landing;
+pub(crate) use legacy::reconcile_incident;
 pub use model::*;
 use persistence::{find, read_view, save, serialize, timestamp};
 pub use refusal::RepairRefusalDisposition;
 pub(crate) use resume::owns_resume;
+pub use status::RecoveryStatus;
+pub(crate) use status::snapshot as status_snapshot;
 pub use work::{WorkDelivery, WorkKind, WorkStatus};
 pub use work_holds::WorkHold;
 
@@ -120,7 +125,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                 read_view(tx, record)?
             } else {
                 let state = RecoveryState {
-                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(), attempts: Vec::new(), refusals: Vec::new(), landing: None,
+                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(), attempts: Vec::new(), refusals: Vec::new(), landing: None, legacy_incidents: Vec::new(),
                     assessment: Assessment {
                         dispatch_identity: uuid::Uuid::new_v4().to_string(), story, generation,
                         status: if policy_hold.is_some() { AssessmentStatus::Held } else { AssessmentStatus::Pending },

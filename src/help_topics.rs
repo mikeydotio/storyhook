@@ -3031,6 +3031,21 @@ Inspect and control this project's centralized verifier.
   actual owned attempt, verifying and held stories, failure age and cause,
   attempts/retries, acknowledgement, and the latest recovery request.
   --json carries these facts under verifier; timestamps remain UTC.
+  project_recoveries adds fault, affected stories, assessment and repair owner,
+  repair PR, phase, completed-attempt budget, and next action. These records
+  are distinct from infrastructure halts. Old payloads have no recovery rows.
+  The dashboard reads the same snapshot. Use repair show for full evidence.
+
+  A project fault releases verifier ownership after cleanup. The managed agent
+  decides scope before edits, preserves required gate coverage, tests new and
+  impacted behavior, commits, and moves its repair to verifying as the last
+  action. A separate repair must pass central verification and land before
+  affected agents refresh their existing worktrees and submit fresh generations.
+  Recovery never reruns the exact old unjudged generation or clears a label.
+  Manual stop, no-auto, human-only, resource holds, and unrelated blockers stay
+  in force. Uncertain delivery does not authorize a replacement agent.
+  Text-only legacy incidents remain held. Conversion needs matching typed
+  recovery evidence and archives the old incident before releasing its halt.
 
   start enables admission without clearing a halt. drain prevents new
   admission while owned work finishes. stop also cancels owned work.

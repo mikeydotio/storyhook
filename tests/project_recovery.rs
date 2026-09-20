@@ -16,6 +16,8 @@ mod queue;
 mod refusal;
 #[path = "project_recovery/resume.rs"]
 mod resume;
+#[path = "project_recovery/status.rs"]
+mod status;
 #[path = "project_recovery/work.rs"]
 mod work;
 #[path = "project_recovery/worker.rs"]

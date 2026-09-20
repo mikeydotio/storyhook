@@ -181,6 +181,8 @@ fn queue_disposes_refusal_or_lands_only_the_admitted_repair_input() {
         } else {
             assert!(current.state.landing.is_some());
             assert!(current.state.attempts[0].judgment.is_some());
+            let status = activity.status(&ctx).unwrap();
+            assert_eq!(status.project_recoveries[0].phase, "landed");
         }
     }
 }
@@ -396,4 +398,225 @@ fn no_auto_fault_is_not_reexecuted_or_changed_and_other_work_can_advance() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn legacy_halts_need_typed_corroboration_and_keep_the_original_incident() {
+    for proven in [false, true] {
+        let f = fixture();
+        let candidate = submitted(&f, "legacy incident");
+        let ctx = f.ctx();
+        let old = storyhook::store::VerificationIncident {
+            incident_id: "old-halt".into(),
+            project: f.project(),
+            story: StoryNo::new(1),
+            generation: candidate.verifying_generation.unwrap(),
+            disposition: storyhook::store::VerificationFailureDisposition::Permanent,
+            halted: true,
+            attempts: 1,
+            detail: serde_json::to_string(&fault()).unwrap(),
+            first_failed_at: ctx.now(),
+            last_failed_at: ctx.now(),
+        };
+        f.store()
+            .write(|tx| tx.put_verification_incident(&old))
+            .unwrap();
+        let service = ProjectRecoveryService::new(&ctx);
+        let view = proven.then(|| {
+            service
+                .observe(&candidate, &fault(), "retained-typed-attempt")
+                .unwrap()
+                .unwrap()
+        });
+        let activity = VerificationActivity::new();
+        let gate = GateEndpoint {
+            store: f.store(),
+            env: f.env(),
+            activity: &activity,
+            input: RepairInput {
+                base: "a".repeat(40),
+                head: "b".repeat(40),
+                head_tree: "e".repeat(40),
+                tree: "f".repeat(40),
+            },
+            mismatch: false,
+            fail_tests: false,
+            project_fault: false,
+            executions: AtomicUsize::new(0),
+        };
+        let result = tick_with_activity(
+            f.store(),
+            f.env(),
+            &gate,
+            &activity,
+            &InFlight::new(f.env().clone()),
+            f.project(),
+        )
+        .unwrap();
+        assert_eq!(gate.executions.load(Ordering::SeqCst), 0);
+        if let Some(view) = view {
+            assert_ne!(result, TickResult::Halted);
+            let current = service.show(&view.record.id).unwrap();
+            let json = serde_json::to_value(current).unwrap();
+            assert_eq!(json["state"]["legacy_incidents"], serde_json::json!([old]));
+            assert!(
+                f.store()
+                    .read(|tx| tx.verification_incident(f.project()))
+                    .unwrap()
+                    .is_none()
+            );
+        } else {
+            assert_eq!(result, TickResult::Halted);
+            assert_eq!(
+                f.store()
+                    .read(|tx| tx.verification_incident(f.project()))
+                    .unwrap(),
+                Some(old)
+            );
+            assert!(
+                f.store()
+                    .read(|tx| tx.project_recoveries(f.project()))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+}
+
+#[test]
+fn project_fault_to_managed_repair_landing_and_fresh_verification() {
+    use std::sync::atomic::AtomicBool;
+    use storyhook::daemon::project_recovery::process_one;
+    for scope in [RepairScope::SameStory, RepairScope::SeparateStory] {
+        let f = fixture();
+        let original = submitted(&f, "complete fault recovery flow");
+        let activity = VerificationActivity::new();
+        let inflight = InFlight::new(f.env().clone());
+        let mut gate = GateEndpoint {
+            store: f.store(),
+            env: f.env(),
+            activity: &activity,
+            input: RepairInput {
+                base: "a".repeat(40),
+                head: "b".repeat(40),
+                head_tree: "d".repeat(40),
+                tree: "c".repeat(40),
+            },
+            mismatch: false,
+            fail_tests: false,
+            project_fault: true,
+            executions: AtomicUsize::new(0),
+        };
+        assert_eq!(
+            tick_with_activity(f.store(), f.env(), &gate, &activity, &inflight, f.project())
+                .unwrap(),
+            TickResult::Returned
+        );
+        assert!(activity.active_for(f.project()).is_none());
+        let ctx = f.ctx();
+        let service = ProjectRecoveryService::new(&ctx);
+        let id = f
+            .store()
+            .read(|tx| tx.project_recoveries(f.project()))
+            .unwrap()[0]
+            .id
+            .clone();
+        let delivery = worker::helper(&f, r#"{"ok":true}"#);
+        let stop = AtomicBool::new(false);
+        assert!(process_one(f.store(), f.env(), &delivery, &activity, &stop).unwrap());
+        let assessed = service.show(&id).unwrap();
+        assert_eq!(
+            assessed.state.assessment.status,
+            AssessmentStatus::Delivered
+        );
+        let mut input = decision::input(&assessed, scope);
+        input.evidence[0] = format!("attempt:{}", assessed.observations[0].attempt_id);
+        let decided = service.decide(&id, &input).unwrap();
+        assert!(process_one(f.store(), f.env(), &delivery, &activity, &stop).unwrap());
+        let repair = decided
+            .state
+            .decision
+            .unwrap()
+            .repair_story
+            .unwrap()
+            .to_id("SH");
+        if scope == RepairScope::SeparateStory {
+            assert!(
+                f.store()
+                    .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+                    .unwrap()
+                    .unwrap()
+                    .awaiting
+                    .is_some()
+            );
+            PrLinkService::new(&ctx)
+                .link(&repair, "https://github.com/acme/widgets/pull/2", true)
+                .unwrap();
+        }
+        StoryService::new(&ctx)
+            .set_state(&repair, "verifying", None, None, None)
+            .unwrap();
+        gate.input.head_tree = "e".repeat(40);
+        gate.input.head = "f".repeat(40);
+        gate.input.tree = "1".repeat(40);
+        gate.project_fault = false;
+        assert_eq!(
+            tick_with_activity(f.store(), f.env(), &gate, &activity, &inflight, f.project())
+                .unwrap(),
+            TickResult::Completed
+        );
+        let landed = service.show(&id).unwrap();
+        assert!(landed.state.landing.is_some());
+        assert!(!landed.record.active);
+        assert_eq!(
+            landed
+                .state
+                .attempts
+                .iter()
+                .filter(|a| a.completion.is_some())
+                .count(),
+            1
+        );
+        if scope == RepairScope::SeparateStory {
+            // First wake releases only its owned dependency; next wake delivers resume.
+            assert!(process_one(f.store(), f.env(), &delivery, &activity, &stop).unwrap());
+            assert!(process_one(f.store(), f.env(), &delivery, &activity, &stop).unwrap());
+            let row = f
+                .store()
+                .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+                .unwrap()
+                .unwrap();
+            assert!(row.awaiting.is_none());
+            assert_eq!(row.state, "in-progress");
+            StoryService::new(&ctx)
+                .set_state("SH-1", "verifying", None, None, None)
+                .unwrap();
+            let refreshed = VerificationQueue::new(f.store()).next().unwrap().unwrap();
+            assert_ne!(
+                refreshed.verifying_generation,
+                original.verifying_generation
+            );
+            gate.input.tree = "2".repeat(40);
+            assert_eq!(
+                tick_with_activity(f.store(), f.env(), &gate, &activity, &inflight, f.project())
+                    .unwrap(),
+                TickResult::Completed
+            );
+        }
+        assert_eq!(
+            f.store()
+                .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+                .unwrap()
+                .unwrap()
+                .state,
+            "done"
+        );
+        assert!(
+            f.store()
+                .read(|tx| tx.verification_incident(f.project()))
+                .unwrap()
+                .is_none()
+        );
+        assert!(!process_one(f.store(), f.env(), &delivery, &activity, &stop).unwrap());
+    }
 }

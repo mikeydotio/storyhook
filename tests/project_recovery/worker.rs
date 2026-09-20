@@ -7,7 +7,7 @@ use storyhook::daemon::{
 };
 use storyhook::service::project_recovery::{RepairScope, WorkStatus};
 
-fn helper(f: &ServiceFixture, reply: &str) -> ShellVerificationActuator {
+pub(super) fn helper(f: &ServiceFixture, reply: &str) -> ShellVerificationActuator {
     let checkout = f
         .store()
         .read(|tx| tx.checkout_path(f.project()))

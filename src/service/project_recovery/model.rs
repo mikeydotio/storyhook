@@ -161,6 +161,9 @@ pub struct RecoveryState {
     /// Confirmed landing authority; story closure alone cannot release recovery.
     #[serde(default)]
     pub landing: Option<super::RepairLanding>,
+    /// Original incidents converted only with matching typed fault observations.
+    #[serde(default)]
+    pub legacy_incidents: Vec<crate::store::VerificationIncident>,
 }
 
 /// Exact structured evidence originally produced by the verifier.
