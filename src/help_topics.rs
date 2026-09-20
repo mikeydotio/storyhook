@@ -417,6 +417,10 @@ Git worktree inventory, including custom paths and both legacy provider roots.
 
 JSON returns resources with status resolved, absent, ambiguous, invalid or
 unavailable; candidate provenance and diagnostics remain visible on refusal.
+Each Git registration also has its own observation with health, any private
+marker owner, and repair diagnostics. A damaged unrelated registration does
+not change this story's status. A target claim or credible conflict still
+refuses selection; a failed shared inventory remains unavailable.
 This is a read-only observation, not permission to remove dirty or protected work.
 
 --lease-json binds an exact existing cleanup lease. --window-name and
@@ -426,7 +430,8 @@ it. Otherwise the client carries its current/default socket to the daemon.
 Missing sockets prove absence on that server; failed observations never do.
 
 Conflicting live identities refuse selection, including under a helper's
---force option. Repair stale registrations explicitly; discovery never prunes.
+--force option. Inspect a stale registration and its private Git administration
+before using Git's worktree repair or prune commands. Discovery never prunes.
 Provider selection is required only when launching a session. Deterministic
 reset, unclaim, completion, cleanup and capture do not need STORY_AGENT.
 "#,

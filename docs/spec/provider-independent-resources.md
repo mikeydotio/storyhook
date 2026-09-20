@@ -105,7 +105,8 @@ even when a previous implementation treated every same-named window as garbage.
 Historical identity remains until a validated replacement exists and all old
 resources are absent. A surviving historical custom branch blocks retirement.
 An explicit lease cannot be superseded. Unreadable/malformed private markers
-prevent a clean inventory rather than silently degrading to naming guesses.
+prevent selection when they belong to or credibly conflict with the target;
+their registration stays visible on an unrelated story's report.
 
 ## Regression evidence
 
@@ -151,3 +152,38 @@ target, while repository and metadata write locations remain protected.
 Combined regressions cover protected Claude, Codex and custom worktrees,
 Codex installed entry points operating on Claude worktrees, redirected hints,
 and branch-only/absent cleanup with an installed-path manifest present.
+
+## SH-743: damaged registration isolation
+
+The resolver reads Git's complete worktree inventory and each linked tree's
+private administration through its `gitdir` backlink. It reads the private
+marker there even if the worktree's `.git` file is missing. It does not run Git
+from a broken worktree: Git can fail or walk into a parent repository. The
+`observations` array in `story resources --json` records each linked
+registration's path, branch, marker owner when readable, health (`healthy`,
+`stale`, `invalid`, or `unknown`), and diagnostics. Target `diagnostics` contain
+only failures relevant to target selection. A failed shared inventory still
+reports `unavailable`.
+
+Git path, branch, recorded lease, and private marker claims are compared before
+selection. A target or credible conflicting claim refuses reuse and cleanup.
+Damage at a disjoint registration stays visible but does not block independent
+dispatch. Unknown ownership is not promoted to a verified owner or a healthy
+candidate. Discovery never edits registration, marker, branch, story, or pane.
+The helper re-observes selected identity before mutation.
+
+Temporary agent worktrees have two linked parts: the working directory with
+its `.git` file, and private administration under the repository's common Git
+directory. If either is damaged, preserve both and inspect the exact Git
+registration and private marker. For a moved worktree, use Git's documented
+`git worktree repair` path after inspecting retained files. For a deliberately
+retired stale worktree, first preserve its remaining files and private
+administration, then inspect `git worktree prune --dry-run --verbose`; run
+`git worktree prune` only when every listed retirement is intended. A healthy
+disposable worktree uses `git worktree remove` under its existing cleanup
+policy. Dispatch does not perform any of these recovery steps. The process
+that removed the Agentics incident's worktree files is not established.
+
+Git administration and retirement semantics:
+[repository layout](https://git-scm.com/docs/gitrepository-layout),
+[worktree commands](https://git-scm.com/docs/git-worktree).
