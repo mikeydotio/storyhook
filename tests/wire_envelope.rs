@@ -448,6 +448,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 pane: None,
                 provider: None,
                 candidates: vec![],
+                observations: vec![],
                 diagnostics: vec![],
             })),
         ),

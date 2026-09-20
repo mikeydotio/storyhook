@@ -1,5 +1,6 @@
 //! Provider-independent discovery. Observations never authorize deletion.
 pub mod git;
+mod registration;
 pub(crate) mod tmux;
 
 use super::Ctx;
@@ -48,6 +49,25 @@ pub struct ResourceCandidate {
     pub sources: BTreeSet<String>,
 }
 
+/// One Git registration and its independently observed health.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceObservation {
+    /// Canonical main checkout containing the registration.
+    pub repository: PathBuf,
+    /// Registered worktree path, whether or not its `.git` link survives.
+    pub path: PathBuf,
+    /// Branch reported by Git, when attached.
+    pub branch: Option<String>,
+    /// healthy, stale, invalid, or unknown.
+    pub status: String,
+    /// Project claimed by a readable private marker, if any.
+    pub owner_project: Option<String>,
+    /// Story claimed by a readable private marker, if any.
+    pub owner_story_id: Option<String>,
+    /// Exact failures for this registration; they do not imply target refusal.
+    pub diagnostics: Vec<String>,
+}
+
 /// Complete read-only result; ambiguity is evidence, never a chosen target.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResourceReport {
@@ -75,6 +95,9 @@ pub struct ResourceReport {
     pub provider: Option<String>,
     /// All observed candidates; retained on every refusal.
     pub candidates: Vec<ResourceCandidate>,
+    /// Git registrations observed independently of target selection.
+    #[serde(default)]
+    pub observations: Vec<ResourceObservation>,
     /// Failed invariants and underlying observation diagnostics.
     pub diagnostics: Vec<String>,
 }
@@ -358,6 +381,7 @@ fn resolve(
         pane: None,
         provider: None,
         candidates: Vec::new(),
+        observations: Vec::new(),
         diagnostics: Vec::new(),
     };
     let mut repositories = BTreeSet::new();
@@ -412,34 +436,50 @@ fn resolve(
             .filter(|l| l.repository_path == repository)
             .cloned()
             .collect();
-        let mut current_markers = Vec::new();
-        for record in records.iter() {
-            if record.path == repository || !record.path.exists() {
+        let checked = match registration::inspect(&repository, &records) {
+            Ok(checked) => checked,
+            Err(error) => {
+                report.status = "unavailable".into();
+                report.diagnostics.push(error.to_string());
                 continue;
             }
-            match super::cleanup_lease::marker_at_registered(&record.path) {
-                Ok(Some(lease)) if lease.story_id == id && lease.project_slug == project => {
-                    current_markers.push(lease.clone());
+        };
+        let mut current_markers = Vec::new();
+        for checked_record in checked {
+            let observation = checked_record.observation;
+            let overlaps = branches.contains(observation.branch.as_deref().unwrap_or_default())
+                || expected_paths.contains(&observation.path)
+                || repo_leases.iter().any(|lease| {
+                    lease.worktree_path == observation.path
+                        || observation.branch.as_deref() == Some(&lease.branch)
+                });
+            let marker_claims_target = checked_record
+                .marker
+                .as_ref()
+                .is_some_and(|lease| lease.story_id == id && lease.project_slug == project);
+            if let Some(lease) = checked_record.marker {
+                if marker_claims_target {
+                    if observation.status == "healthy" {
+                        current_markers.push(lease.clone());
+                    }
                     repo_leases.push(lease);
-                }
-                Ok(Some(lease))
-                    if branches.contains(record.branch.as_deref().unwrap_or_default())
-                        || expected_paths.contains(&record.path) =>
-                {
+                } else if overlaps {
                     report.status = "invalid".into();
                     report.diagnostics.push(format!(
                         "{} is marked for {}/{}",
-                        record.path.display(),
+                        observation.path.display(),
                         lease.project_slug,
                         lease.story_id
                     ));
                 }
-                Ok(_) => {}
-                Err(e) => {
-                    report.status = "invalid".into();
-                    report.diagnostics.push(e.to_string());
-                }
             }
+            if (overlaps || marker_claims_target) && observation.status != "healthy" {
+                report.status = "invalid".into();
+                report
+                    .diagnostics
+                    .extend(observation.diagnostics.iter().cloned());
+            }
+            report.observations.push(observation);
         }
         let mut retained = Vec::new();
         for lease in repo_leases {
@@ -508,10 +548,6 @@ fn resolve(
             })?;
             if !exists || record.prunable {
                 report.status = "invalid".into();
-                report.diagnostics.push(format!(
-                    "stale registration at {}; repair Git registration before retrying",
-                    path.display()
-                ));
             }
             let candidate = ResourceCandidate {
                 repository: repository.clone(),

@@ -1,4 +1,5 @@
 //! Checked Git observations shared by resource discovery and cleanup.
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -17,6 +18,15 @@ pub struct WorktreeRecord {
     pub locked: bool,
     /// Whether Git reports stale administrative data.
     pub prunable: bool,
+}
+
+/// Surviving private Git administration and its recorded worktree backlink.
+#[derive(Clone, Debug)]
+pub(super) struct WorktreeAdministration {
+    /// Private Git directory under the common repository directory.
+    pub path: PathBuf,
+    /// Exact `.git` file named by Git's `gitdir` backlink.
+    pub gitfile: PathBuf,
 }
 
 /// Runs one checked Git command with contextual, bounded failure.
@@ -54,6 +64,67 @@ pub fn inventory(repository: &Path) -> Result<Vec<WorktreeRecord>, AppError> {
         repository,
         &["worktree", "list", "--porcelain", "-z"],
     )?)
+}
+
+/// Reads private administration without asking a possibly broken worktree to run Git.
+pub(super) fn administrations(repository: &Path) -> Result<Vec<WorktreeAdministration>, AppError> {
+    let common = text(
+        repository,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let root = canonical(Path::new(common.trim_end_matches('\n')))?.join("worktrees");
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(AppError::Validation(format!(
+                "cannot inspect private Git administrations {}: {error}",
+                root.display()
+            )));
+        }
+    };
+    let mut administrations = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            AppError::Validation(format!(
+                "cannot list private Git administrations {}: {error}",
+                root.display()
+            ))
+        })?;
+        if !entry
+            .file_type()
+            .map_err(|error| {
+                AppError::Validation(format!(
+                    "cannot inspect {}: {error}",
+                    entry.path().display()
+                ))
+            })?
+            .is_dir()
+        {
+            continue;
+        }
+        let path = entry.path();
+        let backlink = path.join("gitdir");
+        let raw = fs::read_to_string(&backlink).map_err(|error| {
+            AppError::Validation(format!(
+                "cannot read Git backlink {}: {error}",
+                backlink.display()
+            ))
+        })?;
+        let gitfile = Path::new(raw.trim_end_matches('\n'));
+        if !gitfile.is_absolute() || gitfile.file_name().is_none_or(|name| name != ".git") {
+            return Err(AppError::Validation(format!(
+                "Git backlink {} does not name an absolute .git file",
+                backlink.display()
+            )));
+        }
+        administrations.push(WorktreeAdministration {
+            path,
+            gitfile: canonical(gitfile)?,
+        });
+    }
+    administrations.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(administrations)
 }
 
 fn parse(listing: &str) -> Result<Vec<WorktreeRecord>, AppError> {

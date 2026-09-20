@@ -69,6 +69,298 @@ fn stale_registration_unregistered_directory_and_dangling_link_are_not_absence()
 }
 
 #[test]
+fn broken_unrelated_registration_does_not_hide_an_independent_story() {
+    let env = TestEnv::isolated();
+    let project = env.project().with_local_origin().build();
+    let affected = project.new_story("damaged worktree");
+    let independent = project.new_story("independent work");
+    let outside = tempfile::tempdir_in("/tmp").unwrap();
+    let path = outside
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("custom agent workspace");
+    let branch = format!("worktree-{affected}");
+    git(
+        &env,
+        project.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            path.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let marker = lease(
+        &project,
+        &affected,
+        &path,
+        &branch,
+        &project.path().join("unused.sock"),
+    );
+    let marker_path = write_marker(&path, &marker);
+    std::fs::write(path.join("uncommitted.txt"), "preserve me\n").unwrap();
+    git(
+        &env,
+        project.path(),
+        &["worktree", "lock", path.to_str().unwrap()],
+    );
+    std::fs::remove_file(path.join(".git")).unwrap();
+
+    let independent_report = report(&project, &[&independent]);
+    assert_eq!(
+        independent_report["status"], "absent",
+        "{independent_report}"
+    );
+    assert_eq!(
+        independent_report["observations"][0]["path"],
+        path.to_str().unwrap()
+    );
+    assert_eq!(independent_report["observations"][0]["status"], "stale");
+    assert!(
+        independent_report["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let affected_report = report(&project, &[&affected]);
+    assert_eq!(affected_report["status"], "invalid", "{affected_report}");
+    assert_eq!(affected_report["candidates"][0]["locked"], true);
+    assert!(affected_report["diagnostics"].to_string().contains("stale"));
+    assert!(marker_path.is_file());
+    assert_eq!(
+        std::fs::read_to_string(path.join("uncommitted.txt")).unwrap(),
+        "preserve me\n"
+    );
+    assert!(path.is_dir());
+    assert!(storyhook::service::resources::git::branch_exists(project.path(), &branch).unwrap());
+}
+
+#[test]
+fn surviving_private_marker_claims_a_custom_path_without_a_worktree_git_link() {
+    let env = TestEnv::isolated();
+    let project = env.project().with_local_origin().build();
+    let target = project.new_story("private claim");
+    let outside = tempfile::tempdir_in("/tmp").unwrap();
+    let path = outside
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("unrelated-looking-custom-path");
+    let branch = "worktree-legacy-name";
+    git(
+        &env,
+        project.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            path.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let marker = lease(
+        &project,
+        &target,
+        &path,
+        branch,
+        &project.path().join("unused.sock"),
+    );
+    write_marker(&path, &marker);
+    std::fs::remove_file(path.join(".git")).unwrap();
+
+    let found = report(&project, &[&target]);
+    assert_eq!(found["status"], "invalid", "{found}");
+    assert_eq!(found["candidates"][0]["worktree"], path.to_str().unwrap());
+    assert!(found["diagnostics"].to_string().contains("stale"));
+}
+
+#[test]
+fn malformed_claimed_path_is_a_registration_failure_not_a_repository_failure() {
+    let env = TestEnv::isolated();
+    let project = env.project().with_local_origin().build();
+    let affected = project.new_story("bad private path");
+    let independent = project.new_story("independent target");
+    let outside = tempfile::tempdir_in("/tmp").unwrap();
+    let root = outside.path().canonicalize().unwrap();
+    let path = root.join("custom");
+    let branch = format!("worktree-{affected}");
+    git(
+        &env,
+        project.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch,
+            path.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let mut marker: serde_json::Value = serde_json::from_str(&lease(
+        &project,
+        &affected,
+        &path,
+        &branch,
+        &project.path().join("unused.sock"),
+    ))
+    .unwrap();
+    let alias = root.join("dangling-repository");
+    std::os::unix::fs::symlink(root.join("missing"), &alias).unwrap();
+    marker["repository_path"] = alias.to_str().unwrap().into();
+    write_marker(&path, &marker.to_string());
+
+    let found = report(&project, &[&independent]);
+    assert_eq!(found["status"], "absent", "{found}");
+    assert_eq!(found["observations"][0]["status"], "invalid");
+    assert_eq!(found["observations"][0]["owner_story_id"], affected);
+    assert_eq!(report(&project, &[&affected])["status"], "invalid");
+}
+
+#[test]
+fn multiple_damaged_registrations_preserve_independent_absence() {
+    let env = TestEnv::isolated();
+    let project = env.project().with_local_origin().build();
+    let independent = project.new_story("independent dispatch");
+    let outside = tempfile::tempdir_in("/tmp").unwrap();
+    let root = outside.path().canonicalize().unwrap();
+    let mut affected = Vec::new();
+    for index in 0..3 {
+        let id = project.new_story(&format!("damaged {index}"));
+        let branch = format!("worktree-{id}");
+        let path = root.join(format!("workspace-{index}"));
+        git(
+            &env,
+            project.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &branch,
+                path.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        if index == 0 {
+            let marker = lease(
+                &project,
+                &id,
+                &path,
+                &branch,
+                &project.path().join("unused.sock"),
+            );
+            write_marker(&path, &marker);
+            std::fs::remove_file(path.join(".git")).unwrap();
+        } else if index == 1 {
+            write_marker(&path, "{malformed");
+            std::fs::remove_file(path.join(".git")).unwrap();
+        } else {
+            std::fs::remove_dir_all(&path).unwrap();
+        }
+        affected.push((id, path));
+    }
+
+    let found = report(&project, &[&independent]);
+    assert_eq!(found["status"], "absent", "{found}");
+    assert_eq!(found["observations"].as_array().unwrap().len(), 3);
+    assert!(found["diagnostics"].as_array().unwrap().is_empty());
+    for (id, path) in affected {
+        let own = report(&project, &[&id]);
+        assert_eq!(own["status"], "invalid", "{own}");
+        assert!(
+            own["diagnostics"].to_string().contains("registration")
+                || own["diagnostics"].to_string().contains("marker")
+        );
+        assert!(
+            storyhook::service::resources::git::branch_exists(
+                project.path(),
+                &format!("worktree-{id}")
+            )
+            .unwrap()
+        );
+        assert!(
+            storyhook::service::resources::git::inventory(project.path())
+                .unwrap()
+                .iter()
+                .any(|record| record.path == path)
+        );
+    }
+}
+
+#[test]
+fn duplicate_private_backlinks_refuse_shared_identity_selection() {
+    let env = TestEnv::isolated();
+    let project = env.project().with_local_origin().build();
+    let independent = project.new_story("identity requires one administration");
+    let outside = tempfile::tempdir_in("/tmp").unwrap();
+    let path = outside.path().canonicalize().unwrap().join("linked");
+    git(
+        &env,
+        project.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "worktree-other",
+            path.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    let common = storyhook::service::resources::git::text(
+        project.path(),
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .unwrap();
+    let duplicate = std::path::Path::new(common.trim()).join("worktrees/duplicate-link");
+    std::fs::create_dir_all(&duplicate).unwrap();
+    std::fs::write(
+        duplicate.join("gitdir"),
+        format!("{}/.git\n", path.display()),
+    )
+    .unwrap();
+    std::fs::write(duplicate.join("HEAD"), "ref: refs/heads/worktree-other\n").unwrap();
+
+    let found = report(&project, &[&independent]);
+    assert_eq!(found["status"], "unavailable", "{found}");
+    assert!(
+        found["diagnostics"]
+            .to_string()
+            .contains("multiple private Git administrations")
+    );
+    assert!(path.join(".git").is_file());
+}
+
+#[test]
+fn failed_full_git_inventory_never_reports_absence() {
+    let env = TestEnv::isolated();
+    let project = env.project().with_local_origin().build();
+    let id = project.new_story("inventory unavailable");
+    std::fs::rename(
+        project.path().join(".git"),
+        project.path().join(".git-held"),
+    )
+    .unwrap();
+
+    let output = project
+        .story()
+        .args(["resources", &id, "--json"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let response: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert!(
+        response["error"].to_string().contains("git worktree list"),
+        "{response}"
+    );
+    assert!(project.path().join(".git-held").is_dir());
+}
+
+#[test]
 fn unrelated_branch_and_main_checkout_never_become_disposable() {
     let env = TestEnv::isolated();
     let project = env.project().with_local_origin().build();
