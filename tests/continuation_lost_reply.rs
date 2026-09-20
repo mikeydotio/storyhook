@@ -5,7 +5,16 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use storyhook_test_support::{TestEnv, scratch_dir, slug_at};
+use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, scratch_dir, slug_at};
+
+/// Three seconds exceeds the unchanged two-second CLI deadline after admission.
+const POST_COMMIT_REPLY_DELAY: Duration = Duration::from_secs(3);
+/// Fifteen seconds allows loaded test runners to observe each fixture milestone
+/// while still detecting a stuck capture, daemon admission, or Stop hook.
+const FIXTURE_MILESTONE_CEILING: Duration = Duration::from_secs(15);
+/// A 200 ms margin around the two-second CLI deadline rejects immediate errors
+/// without treating small timer and process-scheduling variation as a defect.
+const STOP_FEEDBACK_FLOOR: Duration = Duration::from_millis(1800);
 
 #[test]
 fn committed_request_with_lost_cli_reply_enters_exact_status_review() {
@@ -88,29 +97,28 @@ else:
     let mut command = Command::new("python3");
     env.apply(&mut command);
     let started = Instant::now();
-    let mut child = command
+    command
         .arg(hook)
         .current_dir(dir.path())
         .env("STORYHOOK_DISPATCH_SCRIPT", &dispatch)
-        .env("STORYHOOK_TEST_CONTINUATION_REPLY_DELAY_MS", "3000")
+        .env(
+            "STORYHOOK_TEST_CONTINUATION_REPLY_DELAY_MS",
+            POST_COMMIT_REPLY_DELAY.as_millis().to_string(),
+        )
         .env("STORYHOOK_AUTO", &id)
         .env("TMUX", "/tmp/tmux,1,0")
         .env("TMUX_PANE", "%1")
         .env("PYTHONDONTWRITEBYTECODE", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
+        .stdin(Stdio::piped());
+    let mut child = ChildGuard::spawn_with_output(&mut command).unwrap();
+    let mut hook_stdin = child.take_stdin().unwrap();
+    hook_stdin
         .write_all(payload.to_string().as_bytes())
         .unwrap();
+    drop(hook_stdin);
     while !capture_marker.exists() {
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < FIXTURE_MILESTONE_CEILING,
             "capture did not run"
         );
         std::thread::sleep(Duration::from_millis(20));
@@ -135,12 +143,14 @@ else:
             break (started.elapsed(), status);
         }
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < FIXTURE_MILESTONE_CEILING,
             "request not admitted"
         );
         std::thread::sleep(Duration::from_millis(20));
     };
-    let output = child.wait_with_output().unwrap();
+    let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+        "Stop hook did not return after the two-second client deadline".into()
+    });
     let hook_elapsed = started.elapsed();
     assert!(
         capture_elapsed < admission_elapsed,
@@ -150,13 +160,10 @@ else:
         admission_elapsed < hook_elapsed,
         "admission must precede lost reply"
     );
-    assert!(
-        hook_elapsed >= Duration::from_millis(1800),
-        "{hook_elapsed:?}"
-    );
-    assert!(hook_elapsed < Duration::from_secs(5), "{hook_elapsed:?}");
+    assert!(hook_elapsed >= STOP_FEEDBACK_FLOOR, "{hook_elapsed:?}");
+    assert!(hook_elapsed < FIXTURE_MILESTONE_CEILING, "{hook_elapsed:?}");
     eprintln!(
-        "fixture capture {capture_elapsed:?}; admission {admission_elapsed:?}; Stop reply {hook_elapsed:?}; injected post-commit delay 3s"
+        "fixture capture {capture_elapsed:?}; admission {admission_elapsed:?}; Stop reply {hook_elapsed:?}; injected post-commit delay {POST_COMMIT_REPLY_DELAY:?}"
     );
     assert!(
         output.status.success(),
@@ -178,17 +185,12 @@ else:
     let request_id = requests[0]["id"].as_str().unwrap();
 
     let mut duplicate = env.raw_story(dir.path());
-    let mut duplicate = duplicate
-        .args(["continuation", "request", &id, "--stdin", "--json"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
     duplicate
-        .stdin
-        .take()
-        .unwrap()
+        .args(["continuation", "request", &id, "--stdin", "--json"])
+        .stdin(Stdio::piped());
+    let mut duplicate = ChildGuard::spawn_with_output(&mut duplicate).unwrap();
+    let mut duplicate_stdin = duplicate.take_stdin().unwrap();
+    duplicate_stdin
         .write_all(
             json!({
                 "handoff":handoff,"provider":"claude","origin":{
@@ -202,7 +204,10 @@ else:
             .as_bytes(),
         )
         .unwrap();
-    let duplicate = duplicate.wait_with_output().unwrap();
+    drop(duplicate_stdin);
+    let duplicate = duplicate.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+        "duplicate continuation request did not return".into()
+    });
     assert!(
         duplicate.status.success(),
         "{}",
