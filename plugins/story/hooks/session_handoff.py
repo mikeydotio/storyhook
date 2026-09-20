@@ -22,6 +22,26 @@ def diagnostic(reason):
             + '. No implementation approval was issued; inspect continuation status.'}
 
 
+def unconfirmed_delivery(story_id, reason):
+    """Reenter only to inspect an uncertain effect; never replay or grant authority."""
+    return {'decision': 'block', 'reason': (
+        f'StoryHook handoff delivery is unconfirmed for {story_id}: {reason}. '
+        'The daemon may have accepted the request after its client stopped waiting. '
+        'This feedback permits status inspection only; it is not a continuation receipt '
+        'or implementation-plan approval. Do not resend the request. Do not implement '
+        'or acknowledge from this feedback. '
+        f'Read story continuation status {story_id} --json, the latest story comments, '
+        'and story help continuation in the owning session. Find the exact request by '
+        'provider, session, message generation, and handoff evidence. Preserve the '
+        'worktree, commits, pending corrections, and all real holds, including obviation. '
+        'Only after matching an accepted request, perform its full fresh review and '
+        'follow the acknowledgement procedure. Preserve collaboration mode: in Plan mode '
+        'continue planning only and defer acknowledgement until ordinary plan approval '
+        'switches to Default mode. In Default mode, resume only already authorized work '
+        'after acknowledgement succeeds. If acceptance or ownership cannot be proved, '
+        'report the exact status and diagnostics; do not claim continuation succeeded.')}
+
+
 def parse_request(message, story_id):
     """Decode the complete handoff envelope; invalid candidates never become prose."""
     normalized = re.sub(r'\\u([0-9a-fA-F]{4})', lambda match: chr(int(match[1], 16)), message)
@@ -138,11 +158,17 @@ def handle_stop(payload, env, provider, process=run_process):
         else:
             origin = claude_origin(payload)
         origin = origin | native_origin(env)
-        answer = json.loads(process(
-            ['story', '--deadline', '2', 'continuation', 'request', marker, '--stdin', '--json'],
-            timeout=3, cwd=payload['cwd'], text=json.dumps({
-                'handoff': request, 'origin': origin, 'provider': provider})),
-            object_pairs_hook=unique_object)
+        try:
+            answer = json.loads(process(
+                ['story', '--deadline', '2', 'continuation', 'request', marker, '--stdin', '--json'],
+                timeout=3, cwd=payload['cwd'], text=json.dumps({
+                    'handoff': request, 'origin': origin, 'provider': provider})),
+                object_pairs_hook=unique_object)
+        except (OSError, RuntimeError, ValueError, RecursionError) as exc:
+            # A client deadline cannot cancel a committed daemon request. Normal
+            # native feedback still requires its atomic receipt; this turn only
+            # lets the owning session reconcile an otherwise silent lost reply.
+            return unconfirmed_delivery(marker, exc)
         if not isinstance(answer, dict) or answer.get('result') != 'ok':
             raise ValueError('supervisor refused handoff: ' + str(answer))
         if request['kind'] == 'obviation-review':

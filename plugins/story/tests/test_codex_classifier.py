@@ -89,6 +89,21 @@ class ClassifierTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '42.*classifier refused'):
             classifier.run_process([sys.executable, '-c', "import sys;sys.stderr.write('classifier refused');sys.exit(42)"], timeout=2)
 
+    def test_json_only_nonzero_output_retains_deadline_diagnostics(self):
+        error = {'result': 'error', 'error': {'code': 'deadline_exceeded',
+                 'message': 'Client deadline expired; daemon operation may still complete'}}
+        program = f'import sys; print({json.dumps(error)!r}); sys.exit(12)'
+        with self.assertRaisesRegex(RuntimeError, '12.*deadline_exceeded.*may still complete'):
+            classifier.run_process([sys.executable, '-c', program], timeout=2)
+
+    def test_nonzero_output_retains_both_bounded_streams(self):
+        program = "import sys; print('x' * 2000 + 'stdout-tail'); sys.stderr.write('y' * 2000 + 'stderr-tail'); sys.exit(12)"
+        with self.assertRaises(RuntimeError) as failure:
+            classifier.run_process([sys.executable, '-c', program], timeout=2)
+        self.assertIn('stdout-tail', str(failure.exception))
+        self.assertIn('stderr-tail', str(failure.exception))
+        self.assertLess(len(str(failure.exception)), 2200)
+
     def test_parent_termination_kills_owned_child_group(self):
         with tempfile.TemporaryDirectory(dir='/tmp') as root:
             pidfile = Path(root) / 'pid'
