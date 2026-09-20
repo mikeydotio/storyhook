@@ -243,3 +243,33 @@ fn process_record(
     operation.settle(&service, &view, result)?;
     Ok(true)
 }
+
+/// Own recovery control calls independently of every blocking project gate.
+pub(crate) fn poll(
+    store: &impl Store,
+    env: &Environment,
+    bus: &super::bus::ChangeBus,
+    stop: &AtomicBool,
+    activity: &VerificationActivity,
+) {
+    let subscription = bus.subscribe();
+    let actuator = ShellVerificationActuator::new(env.clone());
+    while !stop.load(Ordering::Acquire) {
+        match process_one(store, env, &actuator, activity, stop) {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(error) => eprintln!("storyhook: project recovery delivery: {error}"),
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !stop.load(Ordering::Acquire) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match subscription.recv(remaining) {
+                Some(super::bus::Change::Ping) => {}
+                _ => break,
+            }
+        }
+    }
+}

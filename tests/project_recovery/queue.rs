@@ -15,6 +15,7 @@ struct GateEndpoint<'a> {
     input: RepairInput,
     mismatch: bool,
     fail_tests: bool,
+    project_fault: bool,
     executions: AtomicUsize,
 }
 impl VerificationActuator for GateEndpoint<'_> {
@@ -56,6 +57,17 @@ impl VerificationActuator for GateEndpoint<'_> {
             };
         }
         self.executions.fetch_add(1, Ordering::SeqCst);
+        if self.project_fault {
+            let storyhook::service::project_recovery::RepairJudgment::ProjectFault { fault } =
+                attempts::judgment(
+                    &self.input,
+                    storyhook::service::project_recovery::RepairCompletion::ProjectFault,
+                )
+            else {
+                panic!("fault")
+            };
+            return VerificationOutcome::ProjectFault { fault };
+        }
         if self.fail_tests {
             return VerificationOutcome::TestsFailed {
                 tree: self.input.tree.clone(),
@@ -130,6 +142,7 @@ fn queue_disposes_refusal_or_lands_only_the_admitted_repair_input() {
             },
             mismatch,
             fail_tests: false,
+            project_fault: false,
             executions: AtomicUsize::new(0),
         };
         let result = tick_with_activity(
@@ -201,6 +214,7 @@ fn queue_returns_failed_repair_without_synchronous_agent_delivery() {
             },
             mismatch: false,
             fail_tests: true,
+            project_fault: false,
             executions: AtomicUsize::new(0),
         };
         assert_eq!(
@@ -233,4 +247,153 @@ fn queue_returns_failed_repair_without_synchronous_agent_delivery() {
         assert_eq!(row.state, "in-progress");
         assert_eq!(row.awaiting.is_some(), n == 3);
     }
+}
+
+#[test]
+fn a_project_fault_releases_the_queue_and_retains_unjudged_submission() {
+    let f = fixture();
+    submitted(&f, "faulting submission");
+    submitted(&f, "unrelated queued work");
+    let activity = VerificationActivity::new();
+    let mut endpoint = GateEndpoint {
+        store: f.store(),
+        env: f.env(),
+        activity: &activity,
+        input: RepairInput {
+            base: "a".repeat(40),
+            head: "b".repeat(40),
+            head_tree: "c".repeat(40),
+            tree: "d".repeat(40),
+        },
+        mismatch: false,
+        fail_tests: false,
+        project_fault: true,
+        executions: AtomicUsize::new(0),
+    };
+    assert_eq!(
+        tick_with_activity(
+            f.store(),
+            f.env(),
+            &endpoint,
+            &activity,
+            &InFlight::new(f.env().clone()),
+            f.project()
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+    assert!(activity.active_for(f.project()).is_none());
+    assert!(
+        f.store()
+            .read(|tx| tx.verification_incident(f.project()))
+            .unwrap()
+            .is_none()
+    );
+    let records = f
+        .store()
+        .read(|tx| tx.project_recoveries(f.project()))
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    let ctx = f.ctx();
+    let view = ProjectRecoveryService::new(&ctx)
+        .show(&records[0].id)
+        .unwrap();
+    assert_eq!(view.state.assessment.status, AssessmentStatus::Pending);
+    assert_eq!(view.state.subjects[0].candidate.story_id, "SH-1");
+    endpoint.project_fault = false;
+    assert_eq!(
+        tick_with_activity(
+            f.store(),
+            f.env(),
+            &endpoint,
+            &activity,
+            &InFlight::new(f.env().clone()),
+            f.project()
+        )
+        .unwrap(),
+        TickResult::Completed
+    );
+    assert_eq!(
+        f.store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(2)))
+            .unwrap()
+            .unwrap()
+            .state,
+        "done"
+    );
+    assert_eq!(
+        f.store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap()
+            .state,
+        "in-progress"
+    );
+}
+
+#[test]
+fn no_auto_fault_is_not_reexecuted_or_changed_and_other_work_can_advance() {
+    let f = fixture();
+    submitted(&f, "reserved assessment");
+    let ctx = f.ctx();
+    StoryService::new(&ctx)
+        .set_labels("SH-1", &["no-auto".into()], &[])
+        .unwrap();
+    let activity = VerificationActivity::new();
+    let mut endpoint = GateEndpoint {
+        store: f.store(),
+        env: f.env(),
+        activity: &activity,
+        input: RepairInput {
+            base: "a".repeat(40),
+            head: "b".repeat(40),
+            head_tree: "c".repeat(40),
+            tree: "d".repeat(40),
+        },
+        mismatch: false,
+        fail_tests: false,
+        project_fault: true,
+        executions: AtomicUsize::new(0),
+    };
+    for _ in 0..2 {
+        tick_with_activity(
+            f.store(),
+            f.env(),
+            &endpoint,
+            &activity,
+            &InFlight::new(f.env().clone()),
+            f.project(),
+        )
+        .unwrap();
+    }
+    assert_eq!(endpoint.executions.load(Ordering::SeqCst), 1);
+    let row = f
+        .store()
+        .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "verifying");
+    assert!(row.awaiting.is_none());
+    assert!(row.snapshot.labels.iter().any(|l| l == "no-auto"));
+    submitted(&f, "unrelated submission");
+    endpoint.project_fault = false;
+    assert_eq!(
+        tick_with_activity(
+            f.store(),
+            f.env(),
+            &endpoint,
+            &activity,
+            &InFlight::new(f.env().clone()),
+            f.project()
+        )
+        .unwrap(),
+        TickResult::Completed
+    );
+    assert_eq!(endpoint.executions.load(Ordering::SeqCst), 2);
+    assert!(
+        f.store()
+            .read(|tx| tx.verification_incident(f.project()))
+            .unwrap()
+            .is_none()
+    );
 }

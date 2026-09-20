@@ -1229,6 +1229,7 @@ pub(crate) fn ordered_candidates_for(
         let checkout = tx.checkout_path(project.id)?;
         let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
         let resets = tx.story_resets(project.id)?;
+        let observed = super::project_recovery::observed_generations(tx, project.id)?;
         for row in rows {
             if crate::domain::is_human_only(&row.snapshot)
                 || row.snapshot.awaiting.is_some()
@@ -1257,6 +1258,11 @@ pub(crate) fn ordered_candidates_for(
             let (verifying_since, verifying_generation) = entry
                 .map(|(at, generation)| (Some(at), Some(generation)))
                 .unwrap_or((None, None));
+            if verifying_generation
+                .is_some_and(|generation| observed.contains(&(row.story_no, generation)))
+            {
+                continue;
+            }
             candidates.push(VerificationCandidate {
                 blocked_by: crate::domain::transition::open_blockers(&row.snapshot, &index),
                 landing_pending: intents

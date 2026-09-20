@@ -3,6 +3,7 @@
 mod attempts;
 mod attempts_validation;
 mod authority;
+mod coordination;
 mod decision;
 mod decision_effects;
 mod delivery;
@@ -31,6 +32,7 @@ pub use attempts::{
     RepairAdmission, RepairAttempt, RepairCompletion, RepairInput, RepairRefusal,
     RepairRefusalRecord,
 };
+pub(crate) use coordination::{observed_generations, owns_coordination};
 pub use decision::{DecisionInput, DecisionReceipt, RepairScope, RepairSpec};
 pub use judgment::RepairJudgment;
 pub use landing::RepairLanding;

@@ -2349,22 +2349,14 @@ where
                     }
                 }
                 VerificationOutcome::ProjectFault { fault } => {
-                    // Fail closed until the durable repair coordinator owns delivery.
-                    // Keep the complete observation so a restart loses no diagnosis.
-                    let detail = serde_json::to_string(&fault).map_err(|error| {
-                        AppError::Storage(format!("serializing project fault evidence: {error}"))
-                    })?;
-                    match record_infrastructure_failure(
-                        &queue,
-                        &ctx,
-                        &candidate,
-                        VerificationFailureDisposition::Permanent,
-                        &detail,
-                    )? {
-                        GenerationWrite::Applied(result) => return Ok(result),
-                        GenerationWrite::Superseded => {}
+                    if recovery_service
+                        .observe(&candidate, &fault, &active.active.attempt_id)?
+                        .is_some()
+                    {
+                        return Ok(TickResult::Returned);
                     }
                 }
+
                 VerificationOutcome::InfrastructureFailure {
                     detail,
                     disposition,
@@ -3128,8 +3120,11 @@ pub(crate) fn poll_verification(
     activity: &VerificationActivity,
     inflight: &InFlight,
 ) {
-    poll_verification_with(store, env, bus, stop, activity, inflight, |_| {
-        ShellVerificationActuator::new(env.clone()).with_activity(activity.clone())
+    std::thread::scope(|scope| {
+        scope.spawn(|| super::project_recovery::poll(store, env, bus, stop, activity));
+        poll_verification_with(store, env, bus, stop, activity, inflight, |_| {
+            ShellVerificationActuator::new(env.clone()).with_activity(activity.clone())
+        });
     });
 }
 
