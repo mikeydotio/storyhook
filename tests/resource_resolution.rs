@@ -754,6 +754,17 @@ fn invalid_or_foreign_private_markers_never_authorize_a_target() {
     let valid = lease(&project, &id, &path, &branch, &socket);
     write_marker(&path, &valid);
     assert_eq!(report(&project, &[&id])["status"], "resolved");
+    let mut wrong_branch: serde_json::Value = serde_json::from_str(&valid).unwrap();
+    wrong_branch["branch"] = "foreign-branch".into();
+    write_marker(&path, &wrong_branch.to_string());
+    let mismatch = report(&project, &[&id]);
+    assert_eq!(mismatch["status"], "invalid");
+    assert_eq!(mismatch["observations"][0]["status"], "invalid");
+    let diagnostics = mismatch["diagnostics"].to_string();
+    assert!(diagnostics.contains("cleanup lease marker"));
+    assert!(diagnostics.contains("branch mismatch"));
+    assert!(diagnostics.contains("foreign-branch"));
+    assert!(diagnostics.contains(&branch));
     let foreign = lease(
         &project,
         &project.new_story("another owner"),

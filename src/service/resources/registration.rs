@@ -1,7 +1,7 @@
 //! Per-registration evidence for resource discovery.
 
 use super::{ResourceObservation, git};
-use crate::domain::StoryCleanupLease;
+use crate::domain::{CLEANUP_LEASE_MARKER, StoryCleanupLease};
 use crate::error::AppError;
 use std::path::Path;
 
@@ -62,33 +62,50 @@ pub(super) fn inspect(
                 Ok(Some(lease)) => {
                     observation.owner_project = Some(lease.project_slug.clone());
                     observation.owner_story_id = Some(lease.story_id.clone());
+                    let marker_path = admin.path.join(CLEANUP_LEASE_MARKER);
                     match (
                         git::canonical(&lease.repository_path),
                         git::canonical(&lease.worktree_path),
                     ) {
-                        (Ok(claimed_repository), Ok(claimed_worktree))
-                            if claimed_repository == repository
-                                && claimed_worktree == path
-                                && record.branch.as_deref() == Some(lease.branch.as_str()) => {}
+                        (Ok(claimed_repository), Ok(claimed_worktree)) => {
+                            if claimed_repository != repository {
+                                marker_mismatch(
+                                    &mut observation,
+                                    &marker_path,
+                                    "repository",
+                                    &claimed_repository.display().to_string(),
+                                    &repository.display().to_string(),
+                                );
+                            }
+                            if claimed_worktree != path {
+                                marker_mismatch(
+                                    &mut observation,
+                                    &marker_path,
+                                    "worktree",
+                                    &claimed_worktree.display().to_string(),
+                                    &path.display().to_string(),
+                                );
+                            }
+                            if record.branch.as_deref() != Some(lease.branch.as_str()) {
+                                marker_mismatch(
+                                    &mut observation,
+                                    &marker_path,
+                                    "branch",
+                                    &lease.branch,
+                                    record.branch.as_deref().unwrap_or("<detached>"),
+                                );
+                            }
+                        }
                         (Err(error), _) | (_, Err(error)) => {
                             mark(
                                 &mut observation,
                                 "invalid",
                                 format!(
-                                    "private cleanup marker at {} has an invalid claimed path: {error}",
-                                    admin.path.display()
+                                    "cleanup lease marker `{}` has an invalid claimed path: {error}",
+                                    marker_path.display()
                                 ),
                             );
                         }
-                        _ => mark(
-                            &mut observation,
-                            "invalid",
-                            format!(
-                                "private cleanup marker at {} contradicts Git registration {}",
-                                admin.path.display(),
-                                path.display()
-                            ),
-                        ),
                     }
                     marker = Some(lease);
                 }
@@ -182,6 +199,23 @@ pub(super) fn inspect(
         }
     }
     Ok(checked)
+}
+
+fn marker_mismatch(
+    observation: &mut ResourceObservation,
+    marker: &Path,
+    field: &str,
+    claimed: &str,
+    registered: &str,
+) {
+    mark(
+        observation,
+        "invalid",
+        format!(
+            "cleanup lease marker `{}` {field} mismatch: marker says `{claimed}`, Git registration says `{registered}`",
+            marker.display()
+        ),
+    );
 }
 
 fn mark(observation: &mut ResourceObservation, status: &str, diagnostic: String) {
