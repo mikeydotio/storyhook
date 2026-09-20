@@ -134,11 +134,13 @@ pub(super) fn read_view(
             ))
         })?;
     }
-    Ok(RecoveryView {
+    let view = RecoveryView {
         record,
         state,
         observations,
-    })
+    };
+    super::resume::validate(tx, &view)?;
+    Ok(view)
 }
 
 pub(super) fn save(

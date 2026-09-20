@@ -48,6 +48,7 @@ pub(crate) fn record_landing(
         };
     }
     view.state.landing = Some(receipt);
+    view.record.active = false;
     persistence::save(tx, &mut view, now)
 }
 

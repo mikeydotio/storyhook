@@ -11,6 +11,7 @@ mod landing;
 mod model;
 mod persistence;
 mod refusal;
+mod resume;
 mod work;
 use super::{
     Ctx, project_fault::ProjectFault, project_prefix, resolve_story,
@@ -32,6 +33,7 @@ pub(crate) use landing::record_landing;
 pub use model::*;
 use persistence::{find, read_view, save, serialize, timestamp};
 pub use refusal::RepairRefusalDisposition;
+pub(crate) use resume::owns_resume;
 pub use work::{WorkDelivery, WorkKind, WorkStatus};
 
 /// Coordinates project recovery using the selected project's ordinary story transactions.

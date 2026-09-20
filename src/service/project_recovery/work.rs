@@ -52,6 +52,9 @@ pub struct WorkDelivery {
     pub state_revision: GlobalSeq,
     /// Latest reserved-label event, including transient reservations.
     pub label_revision: Option<GlobalSeq>,
+    /// Exact awaiting-clear event for a certified landing resume.
+    #[serde(default)]
+    pub release_event: Option<GlobalSeq>,
     /// Durable transport lifecycle.
     pub status: WorkStatus,
     /// Structured reason for a held effect.
@@ -81,7 +84,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
         self.ctx.store().write(|tx| {
             let mut view = persistence::find(tx, self.ctx.project(), recovery)?;
             let index = work_index(&view, effect)?;
-            if !view.record.active || view.state.work[index].status != WorkStatus::Pending { return Ok(None); }
+            if (!view.record.active && view.state.work[index].kind != WorkKind::Resume) || view.state.work[index].status != WorkStatus::Pending { return Ok(None); }
             if let Some(reason) = permitted(tx, &view, &view.state.work[index])? {
                 let work = &mut view.state.work[index]; work.status = WorkStatus::Held;
                 work.hold = Some(reason); work.detail = reason.detail().into();
@@ -202,6 +205,7 @@ pub(super) fn enqueue_repair(tx: &impl ReadOps, view: &mut RecoveryView) -> Resu
         state: row.state,
         state_revision: authority::state_revision(tx, view.record.project, story)?,
         label_revision: authority::label_revision(tx, view.record.project, story)?,
+        release_event: None,
         status: WorkStatus::Pending,
         hold: None,
         epoch: 0,
@@ -236,7 +240,11 @@ pub(super) fn validate(state: &super::RecoveryState) -> Result<(), StoreError> {
                         | (RepairScope::SeparateStory, WorkKind::SeparateRepair)
                 )
         });
-        if !owned
+        if !(owned
+            || (work.kind == WorkKind::Resume
+                && state.landing.is_some()
+                && work.release_event.is_some()))
+            || (work.kind != WorkKind::Resume && work.release_event.is_some())
             || work.id.trim().is_empty()
             || !ids.insert(&work.id)
             || work.state.trim().is_empty()
@@ -294,20 +302,14 @@ fn permitted(
     {
         return Ok(Some(AssessmentHold::AuthorityChanged));
     }
-    if row.awaiting.is_some()
+    if (work.kind == WorkKind::Resume
+        && super::resume::awaiting_revision(tx, project, work.story)? != work.release_event)
+        || row.awaiting.is_some()
         || crate::domain::is_blocked(
             &row.snapshot,
             &crate::service::query::story_map(tx, project)?,
         )
-        || tx.story_resets(project)?.contains_key(&work.story)
-        || tx
-            .story_reset(project, work.story)?
-            .is_some_and(|reset| !reset.completed)
-        || tx.engine_reset(project, work.story)?.is_some()
-        || tx
-            .landing_intents()?
-            .iter()
-            .any(|intent| intent.project == project && intent.story == work.story)
+        || super::resume::resource_hold(tx, project, work.story)?
     {
         return Ok(Some(AssessmentHold::ResourceOrDependency));
     }

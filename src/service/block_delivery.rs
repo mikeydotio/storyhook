@@ -86,7 +86,11 @@ impl<S: Store> Ctx<'_, S> {
                 }
                 let action = if !previous.blocked && next.blocked {
                     Some(BlockAction::Interrupt)
-                } else if previous.blocked && !next.blocked && next.active {
+                } else if previous.blocked
+                    && !next.blocked
+                    && next.active
+                    && !super::project_recovery::owns_resume(tx, self.project(), story)?
+                {
                     Some(BlockAction::Resume)
                 } else {
                     None

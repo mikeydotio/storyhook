@@ -58,6 +58,7 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "integrity",
         "pr_check",
         "project_recovery/refusal",
+        "project_recovery/resume",
         "relation",
         "reset",
         "story",

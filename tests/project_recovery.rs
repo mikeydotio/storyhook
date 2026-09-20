@@ -12,6 +12,8 @@ mod landing;
 mod queue;
 #[path = "project_recovery/refusal.rs"]
 mod refusal;
+#[path = "project_recovery/resume.rs"]
+mod resume;
 #[path = "project_recovery/work.rs"]
 mod work;
 
