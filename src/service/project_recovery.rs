@@ -13,6 +13,7 @@ mod persistence;
 mod refusal;
 mod resume;
 mod work;
+mod work_holds;
 use super::{
     Ctx, project_fault::ProjectFault, project_prefix, resolve_story,
     verification::VerificationCandidate,
@@ -35,6 +36,7 @@ use persistence::{find, read_view, save, serialize, timestamp};
 pub use refusal::RepairRefusalDisposition;
 pub(crate) use resume::owns_resume;
 pub use work::{WorkDelivery, WorkKind, WorkStatus};
+pub use work_holds::WorkHold;
 
 /// Coordinates project recovery using the selected project's ordinary story transactions.
 pub struct ProjectRecoveryService<'a, S: Store> {

@@ -140,6 +140,7 @@ pub(super) fn read_view(
         observations,
     };
     super::resume::validate(tx, &view)?;
+    super::work_holds::validate(tx, &view)?;
     Ok(view)
 }
 

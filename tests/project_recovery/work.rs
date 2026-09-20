@@ -212,3 +212,94 @@ fn corrupted_effect_cannot_authorize_work_on_another_story() {
             .is_err()
     );
 }
+
+#[test]
+fn terminal_delivery_holds_the_unchanged_target_and_never_recreates_cleared_hold() {
+    for scope in [RepairScope::SameStory, RepairScope::SeparateStory] {
+        let f = fixture();
+        let view = accepted(&f, scope);
+        let effect = &view.state.work[0];
+        let ctx = f.ctx();
+        let service = ProjectRecoveryService::new(&ctx);
+        service
+            .claim_work(&view.record.id, &effect.id)
+            .unwrap()
+            .unwrap();
+        let result = AssessmentDelivery::Uncertain("provider delivery ownership ambiguous".into());
+        let held = service
+            .settle_work(&view.record.id, &effect.id, 1, result.clone())
+            .unwrap();
+        let row = f
+            .store()
+            .read(|tx| tx.story(f.project(), effect.story))
+            .unwrap()
+            .unwrap();
+        assert!(
+            row.awaiting
+                .as_deref()
+                .is_some_and(|s| s.contains("ownership remains uncertain"))
+        );
+        StoryService::new(&ctx)
+            .clear_awaiting(&row.snapshot.id)
+            .unwrap();
+        assert_eq!(
+            service
+                .settle_work(&view.record.id, &effect.id, 1, result)
+                .unwrap(),
+            held
+        );
+        assert!(
+            f.store()
+                .read(|tx| tx.story(f.project(), effect.story))
+                .unwrap()
+                .unwrap()
+                .awaiting
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn terminal_delivery_preserves_independent_hold_and_changed_target() {
+    for change_state in [false, true] {
+        let f = fixture();
+        let view = accepted(&f, RepairScope::SameStory);
+        let effect = &view.state.work[0];
+        let ctx = f.ctx();
+        let service = ProjectRecoveryService::new(&ctx);
+        service
+            .claim_work(&view.record.id, &effect.id)
+            .unwrap()
+            .unwrap();
+        if change_state {
+            StoryService::new(&ctx)
+                .set_state("SH-1", "todo", None, None, None)
+                .unwrap();
+        } else {
+            StoryService::new(&ctx)
+                .set_awaiting("SH-1", "independent operator hold")
+                .unwrap();
+        }
+        service
+            .settle_work(
+                &view.record.id,
+                &effect.id,
+                1,
+                AssessmentDelivery::Uncertain("ambiguous delivery".into()),
+            )
+            .unwrap();
+        let row = f
+            .store()
+            .read(|tx| tx.story(f.project(), effect.story))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.awaiting.as_deref(),
+            if change_state {
+                None
+            } else {
+                Some("independent operator hold")
+            }
+        );
+    }
+}

@@ -59,6 +59,9 @@ pub struct WorkDelivery {
     pub status: WorkStatus,
     /// Structured reason for a held effect.
     pub hold: Option<AssessmentHold>,
+    /// Exact story hold retained on terminal delivery, if original authority survived.
+    #[serde(default)]
+    pub disposition: Option<super::WorkHold>,
     /// Claimed external-call ordinal.
     pub epoch: u32,
     /// Proven failures, excluding ambiguous operations.
@@ -81,13 +84,14 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
         effect: &str,
     ) -> Result<Option<RecoveryView>, AppError> {
         let now = self.ctx.now();
-        self.ctx.store().write(|tx| {
+        self.ctx.write_stories(|tx| {
             let mut view = persistence::find(tx, self.ctx.project(), recovery)?;
             let index = work_index(&view, effect)?;
             if (!view.record.active && view.state.work[index].kind != WorkKind::Resume) || view.state.work[index].status != WorkStatus::Pending { return Ok(None); }
             if let Some(reason) = permitted(tx, &view, &view.state.work[index])? {
                 let work = &mut view.state.work[index]; work.status = WorkStatus::Held;
                 work.hold = Some(reason); work.detail = reason.detail().into();
+                super::work_holds::record(tx, self.ctx, &mut view, index, &now)?;
                 persistence::save(tx, &mut view, &now)?; return Ok(None);
             }
             let work = &mut view.state.work[index];
@@ -115,8 +119,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
         }
         let now = self.ctx.now();
         self.ctx
-            .store()
-            .write(|tx| {
+            .write_stories(|tx| {
                 let mut view = persistence::find(tx, self.ctx.project(), recovery)?;
                 let index = work_index(&view, effect)?;
                 let work = &mut view.state.work[index];
@@ -174,6 +177,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                     work.detail
                         .push_str(&format!("; authority withheld: {}", reason.detail()));
                 }
+                super::work_holds::record(tx, self.ctx, &mut view, index, &now)?;
                 persistence::save(tx, &mut view, &now)?;
                 Ok(view)
             })
@@ -208,6 +212,7 @@ pub(super) fn enqueue_repair(tx: &impl ReadOps, view: &mut RecoveryView) -> Resu
         release_event: None,
         status: WorkStatus::Pending,
         hold: None,
+        disposition: None,
         epoch: 0,
         failures: 0,
         started_at: None,
