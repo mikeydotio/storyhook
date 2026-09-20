@@ -36,6 +36,10 @@ fn the_guard_is_the_first_executable_statement_in_main() {
 fn the_guarded_set_is_the_complete_current_feature_gated_environment_set() {
     assert_eq!(
         storyhook::fault_injection_guard::GUARDED_VARIABLES,
-        ["STORYHOOK_FAULT", "STORYHOOK_TEST_PANIC"]
+        [
+            "STORYHOOK_FAULT",
+            "STORYHOOK_TEST_PANIC",
+            "STORYHOOK_TEST_CONTINUATION_REPLY_DELAY_MS",
+        ]
     );
 }

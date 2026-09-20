@@ -71,6 +71,19 @@ impl ReferencedBy {
     }
 }
 
+/// An unresolved continuation that requires review before work can be submitted.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ContinuationAlert {
+    /// Durable request identity to inspect and acknowledge from its owner.
+    pub request_id: String,
+    /// Current request status; an alert is emitted only for `needs-attention`.
+    pub status: String,
+    /// Supervisor diagnosis without provider transcript or handoff content.
+    pub detail: String,
+    /// Read-only command that begins exact-request recovery.
+    pub next_step: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoryView {
     /// Incomplete reset authority and diagnostics, absent in ordinary operation.
@@ -83,6 +96,9 @@ pub struct StoryView {
     pub referenced_by: ReferencedBy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Actionable supervisor failures, separate from operator-owned story holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continuation_alerts: Vec<ContinuationAlert>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flagged_reasons: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1582,8 +1598,13 @@ fn render_human(response: &Response) -> String {
                 // the council verdict on SH-175 for why `list` diverges from
                 // the web board here.
                 let draft = if story.story.draft { " [draft]" } else { "" };
+                let continuation = if story.continuation_alerts.is_empty() {
+                    ""
+                } else {
+                    " [continuation needs attention]"
+                };
                 body.push_str(&format!(
-                    "{} [{}]{}{} {}{}{}{}{}{}{}\n",
+                    "{} [{}]{}{} {}{}{}{}{}{}{}{}\n",
                     story.story.id,
                     story.story.state,
                     priority,
@@ -1594,8 +1615,15 @@ fn render_human(response: &Response) -> String {
                     archived,
                     draft,
                     flagged,
+                    continuation,
                     stale
                 ));
+                for alert in &story.continuation_alerts {
+                    body.push_str(&format!(
+                        "  continuation {}: {}. {}\n",
+                        alert.request_id, alert.detail, alert.next_step
+                    ));
+                }
             }
             // Same `warning: ` shape [`Response::MessageWithWarnings`] and
             // `render_story` already use, so all three read alike (SH-358).

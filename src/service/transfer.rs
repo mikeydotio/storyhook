@@ -727,6 +727,7 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                     derived_relationships: Vec::new(),
                     referenced_by,
                     warnings: Vec::new(),
+                    continuation_alerts: Vec::new(),
                     flagged_reasons: Vec::new(),
                     stale_info: None,
                     progress: None,

@@ -771,6 +771,8 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 .verification-chip-running { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .verification-chip-superseding { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
 .verification-chip-stalled { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+.continuation-alert-chip { color: var(--danger-text); }
+.continuation-alert-banner { background: var(--danger-soft); color: var(--danger-text); }
 .card-open-prs { display: flex; flex-wrap: wrap; gap: 0.3125rem; margin: 0 0 0.4375rem; }
 /* SH-597: the anchor owns the pointer target; its child owns the paint. A
    label-sized action can therefore stay compact without giving a finger less
@@ -9652,6 +9654,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // through rather than gating the call outright -- see blockedFlag()'s
     // own comment on why a locally-derivable cause must outrank it.
     var flagDesc = blockedFlag(st, !!blocked[st.id]);
+    var continuationAlerts = Array.isArray(v.continuation_alerts) ? v.continuation_alerts : [];
     // SH-309: `card`'s subtree is presentational to assistive tech (see
     // `.card-actions-btn`'s own comment below), so a blocked reason that
     // reaches only the badge's `title` never reaches AT at all -- appending
@@ -9661,7 +9664,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var baseAriaLabel = st.id + ": " + st.title
       + (engineLaneDesc ? " — " + engineLaneDesc : "")
       + (openPrDesc ? " — " + openPrDesc : "")
-      + (flagDesc ? " — " + flagDesc.ariaText : "");
+      + (flagDesc ? " — " + flagDesc.ariaText : "")
+      + (continuationAlerts.length ? " — Continuation needs attention" : "");
     var verification = (v.display_state || st.state) === "verifying" ? v.verification : null;
     var verificationDesc = verificationDescription(verification);
     card.dataset.baseAriaLabel = baseAriaLabel;
@@ -9758,6 +9762,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var flag = el("span", { class: "flag flag-blocked" }, flagDesc.children);
       if (flagDesc.title) flag.title = flagDesc.title;
       flags.appendChild(flag);
+    }
+    if (continuationAlerts.length) {
+      flags.appendChild(el("span", { class: "flag continuation-alert-chip" }, [
+        "⚠ Continuation needs attention"
+      ]));
     }
     // Ready is the default state and gets no badge — only the blocked
     // exception is called out.
@@ -11874,6 +11883,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var full = state.drawerDetail;
     var st = (full && full.story) || (summary && summary.story);
     if (!st) { closeDrawer(); return; }
+    var continuationAlerts = (full && full.continuation_alerts)
+      || (summary && summary.continuation_alerts) || [];
 
     $("drawer-id").textContent = st.id;
     var typeBadgeMount = $("drawer-type-badge");
@@ -11936,6 +11947,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         el("div", { class: "banner banner-blocked", title: banner.title }, bannerChildren)
       ));
     }
+    continuationAlerts.forEach(function(alert, index) {
+      nextBody.appendChild(drawerSection("continuation-alert-" + index,
+        el("div", { class: "banner continuation-alert-banner" }, [
+          el("div", { class: "banner-head" }, [
+            "Continuation needs attention · ", el("code", {}, [alert.request_id])
+          ]),
+          el("div", { class: "banner-body" }, [alert.detail]),
+          el("div", { class: "banner-body" }, [alert.next_step])
+        ])
+      ));
+    });
     // A relation-only block still needs somewhere to add a note -- shown
     // whenever there is no reason yet, alongside the banner rather than
     // instead of it.
