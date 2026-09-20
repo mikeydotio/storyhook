@@ -1330,3 +1330,16 @@ A repair landing receipt is recorded inside validated landing completion. It
 retains the certified repair attempt, exact LandingIntent, and confirmed merge
 event. A mismatched head or tree keeps pending landing authority. A manually
 closed repair, a green comment, or an unrelated event cannot authorize resume.
+
+The verifier shell calls private admission after preflight pins the proposed
+merge and before configuration inspection or gate execution. A refusal returns
+`repair-deferred`; it runs no gate and creates no certification. Missing,
+malformed, or failed callback answers remain infrastructure failures. A cleanup
+or capture failure retains the refusal as evidence and withholds disposition.
+
+After cleanup settles, the queue applies only the exact retained refusal to its
+original current submission. It returns that repair to in-progress with an
+owned awaiting event. Replays cannot restore an operator-cleared hold or alter
+newer generations, independent prerequisites, or reserved-label decisions.
+Completion accounting compares the settled typed judgment to admitted Git input
+before consuming a repair slot or allowing repair landing.

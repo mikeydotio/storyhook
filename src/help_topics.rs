@@ -3022,6 +3022,11 @@ Inspect and control this project's centralized verifier.
   It reports gate-ready argv or typed project-fault evidence. Git inspection
   errors remain errors; they never grant repair or certification authority.
 
+  repair-admit is a private verifier subprocess callback. It requires the
+  current attempt token, generation, and pinned Git input. It refuses unchanged
+  or exhausted repair submissions before gate execution. It grants no receipt,
+  merge, credential, or operator override authority.
+
   status reports admission independently from infrastructure incidents,
   actual owned attempt, verifying and held stories, failure age and cause,
   attempts/retries, acknowledgement, and the latest recovery request.

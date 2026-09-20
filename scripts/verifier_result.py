@@ -36,12 +36,16 @@ def cleanup_failure(common, worktree, phase, detail):
 
 
 def attach_cleanup(value, failure):
-    """Preserve a completed primary result and every subsequent cleanup diagnosis."""
+    """Preserve completed evidence or admission refusal with cleanup diagnostics."""
     if not isinstance(value, dict) or value.get("result") not in (
-            "tests-failed", "gate-passed", "merged", "project-fault"):
+            "tests-failed", "gate-passed", "merged", "project-fault", "repair-deferred"):
         raise Refusal("cleanup refused without a completed child verdict")
     evidence = value
-    requires_log = value["result"] != "merged"
+    requires_log = value["result"] not in ("merged", "repair-deferred")
+    if value["result"] == "repair-deferred":
+        if (not isinstance(value.get("recovery_id"), str) or not value["recovery_id"].strip()
+                or value.get("reason") not in ("unchanged-input", "budget-exhausted", "policy-hold")):
+            raise Refusal("repair admission refusal is missing its exact recovery or reason")
     if value["result"] == "project-fault":
         evidence = value.get("fault")
         if not isinstance(evidence, dict):
@@ -59,7 +63,7 @@ def attach_cleanup(value, failure):
                     raise Refusal(f"configuration fault is missing {name}")
         else:
             raise Refusal("unknown project fault code")
-    for name in ("tree", "detail"):
+    for name in (() if value["result"] == "repair-deferred" else ("tree", "detail")):
         if not isinstance(evidence.get(name), str) or not evidence[name]:
             raise Refusal(f"completed child verdict is missing {name}")
     if requires_log and not isinstance(evidence.get("log"), str):

@@ -104,6 +104,23 @@ pub(super) fn interrupted_outcome(
     capture_detail: &str,
     checkout: &std::path::Path,
 ) -> Option<VerificationOutcome> {
+    if let Ok(WireOutcome::RepairDeferred {
+        recovery_id,
+        reason,
+        cleanup_failure,
+    }) = serde_json::from_slice(stdout)
+    {
+        if recovery_id.trim().is_empty() {
+            return None;
+        }
+        return Some(VerificationOutcome::InfrastructureFailure {
+            detail: format!(
+                "repair refusal disposition withheld after capture failure: {capture_detail}; recovery={recovery_id}; reason={reason:?}; registered source: {}; cleanup: {cleanup_failure:?}",
+                checkout.display()
+            ),
+            disposition: VerificationFailureDisposition::Permanent,
+        });
+    }
     if let Ok(WireOutcome::ProjectFault {
         fault,
         cleanup_failure,

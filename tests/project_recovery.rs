@@ -8,6 +8,8 @@ mod callback;
 mod decision;
 #[path = "project_recovery/landing.rs"]
 mod landing;
+#[path = "project_recovery/queue.rs"]
+mod queue;
 #[path = "project_recovery/refusal.rs"]
 mod refusal;
 #[path = "project_recovery/work.rs"]

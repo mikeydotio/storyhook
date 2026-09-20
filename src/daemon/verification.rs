@@ -372,6 +372,13 @@ pub const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerificationOutcome {
+    /// The exact repair input was refused before any gate operation; cleanup settled.
+    RepairDeferred {
+        /// Durable coordinator retaining the refused admission.
+        recovery_id: String,
+        /// Typed admission refusal to apply to the original candidate.
+        reason: crate::service::project_recovery::RepairRefusal,
+    },
     /// Execution answered, but its owner cannot yet be reused safely.
     CleanupFailed {
         /// The completed result, independent of cleanup.
@@ -1215,14 +1222,13 @@ impl VerificationActuator for ShellVerificationActuator {
                 disposition: VerificationFailureDisposition::Permanent,
             };
         }
-        let attempt_id = self
-            .activity
-            .active_for(candidate.project)
-            .filter(|held| {
-                held.story_id == candidate.story_id
-                    && held.generation == candidate.verifying_generation
-            })
-            .map_or_else(|| uuid::Uuid::new_v4().to_string(), |held| held.attempt_id);
+        let owned_attempt = self.activity.active_for(candidate.project).filter(|held| {
+            held.story_id == candidate.story_id && held.generation == candidate.verifying_generation
+        });
+        let attempt_id = owned_attempt.as_ref().map_or_else(
+            || uuid::Uuid::new_v4().to_string(),
+            |held| held.attempt_id.clone(),
+        );
         let initial = candidate
             .verifying_generation
             .map_or_else(String::new, |generation| {
@@ -1253,6 +1259,7 @@ impl VerificationActuator for ShellVerificationActuator {
             .arg("--")
             .arg("--project-gate")
             .current_dir(&candidate.checkout)
+            .envs(self.env.child_vars())
             .env("STORY_BIN", self.story_binary())
             .env("STORYHOOK_GITHUB_AUTHORITY", &candidate.checkout)
             // The resolved fixture policy overrides any ambient value the
@@ -1277,7 +1284,20 @@ impl VerificationActuator for ShellVerificationActuator {
             )
             .env("STORYHOOK_GATE_PROGRESS", &journal)
             .env("STORYHOOK_VERIFICATION_ATTEMPT", &attempt_id)
-            .env("STORYHOOK_CERTIFY_ONLY", "1");
+            .env("STORYHOOK_CERTIFY_ONLY", "1")
+            .env_remove("STORYHOOK_REPAIR_ADMISSION")
+            .env_remove("STORYHOOK_REPAIR_PROJECT")
+            .env_remove("STORYHOOK_REPAIR_STORY")
+            .env_remove("STORYHOOK_REPAIR_GENERATION");
+        // Legacy ordinary submissions have no generation and cannot own a
+        // recovery lineage. Preserve their existing path without inventing one.
+        if let Some(generation) = owned_attempt.as_ref().and_then(|owned| owned.generation) {
+            command
+                .env("STORYHOOK_REPAIR_ADMISSION", "1")
+                .env("STORYHOOK_REPAIR_PROJECT", &candidate.project_slug)
+                .env("STORYHOOK_REPAIR_STORY", &candidate.story_id)
+                .env("STORYHOOK_REPAIR_GENERATION", generation.get().to_string());
+        }
         if let Some(workspace) = self.activity.workspace_for(candidate.project) {
             workspace.command(&mut command);
         }
@@ -1530,6 +1550,11 @@ fn checkout_repository_problem(
 #[derive(Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
 enum WireOutcome {
+    RepairDeferred {
+        recovery_id: String,
+        reason: crate::service::project_recovery::RepairRefusal,
+        cleanup_failure: Option<VerificationCleanupFailure>,
+    },
     ProjectFault {
         fault: ProjectFault,
         cleanup_failure: Option<VerificationCleanupFailure>,
@@ -1585,6 +1610,24 @@ impl WireOutcome {
             };
         }
         match self {
+            WireOutcome::RepairDeferred {
+                recovery_id,
+                reason,
+                cleanup_failure,
+            } => {
+                if recovery_id.trim().is_empty() || cleanup_failure.is_some() {
+                    return VerificationOutcome::InfrastructureFailure {
+                        detail: format!(
+                            "repair refusal cannot be disposed until valid ownership settles: recovery={recovery_id}; reason={reason:?}; cleanup={cleanup_failure:?}"
+                        ),
+                        disposition: VerificationFailureDisposition::Permanent,
+                    };
+                }
+                VerificationOutcome::RepairDeferred {
+                    recovery_id,
+                    reason,
+                }
+            }
             WireOutcome::ProjectFault {
                 fault,
                 cleanup_failure,
@@ -2055,7 +2098,7 @@ where
                     TickResult::Returned
                 });
             }
-            let Some(outcome) = observation::verify(
+            let Some(mut outcome) = observation::verify(
                 store,
                 bus,
                 &candidate,
@@ -2116,7 +2159,48 @@ where
             }) {
                 return Ok(TickResult::Returned);
             }
+            use crate::service::project_recovery::{ProjectRecoveryService, RepairJudgment};
+            let recovery_service = ProjectRecoveryService::new(&ctx);
+            let judgment = match &outcome {
+                VerificationOutcome::Certified { head, tree, .. } => {
+                    Some(RepairJudgment::Certified {
+                        head: head.clone(),
+                        tree: tree.clone(),
+                    })
+                }
+                VerificationOutcome::TestsFailed { tree, .. } => {
+                    Some(RepairJudgment::TestsFailed { tree: tree.clone() })
+                }
+                VerificationOutcome::ProjectFault { fault } => Some(RepairJudgment::ProjectFault {
+                    fault: fault.clone(),
+                }),
+                _ => None,
+            };
+            if let Some(judgment) = judgment
+                && let Err(error) = recovery_service.complete_repair(
+                    &candidate,
+                    &active.active.attempt_id,
+                    &judgment,
+                )
+            {
+                outcome = VerificationOutcome::InfrastructureFailure {
+                    detail: format!("completed repair judgment could not match admission: {error}"),
+                    disposition: VerificationFailureDisposition::Permanent,
+                };
+            }
             match outcome {
+                VerificationOutcome::RepairDeferred {
+                    recovery_id,
+                    reason,
+                } => {
+                    recovery_service.apply_refusal(
+                        &candidate,
+                        &active.active.attempt_id,
+                        &recovery_id,
+                        reason,
+                    )?;
+                    return Ok(TickResult::Returned);
+                }
                 VerificationOutcome::CleanupFailed { verdict, cleanup } => {
                     match cleanup::record(
                         &queue,

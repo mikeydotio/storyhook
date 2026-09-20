@@ -867,6 +867,31 @@ preflight="$(activity_run "merge-preflight.sh" bash "$script_dir/merge-preflight
 preflight_status=$?
 tree="$(printf '%s\n' "$preflight" | head -n1)"
 _preflight_seconds=$(( $(date +%s) - _preflight_start ))
+# The daemon callback owns only admission. No gate or configuration inspection
+# may run for a refused repair, including an already certified merge-tree retry.
+if [ -n "${STORYHOOK_REPAIR_ADMISSION:-}" ] && { [ "$preflight_status" -eq 0 ] || [ "$preflight_status" -eq 1 ]; }; then
+    [ "$STORYHOOK_REPAIR_ADMISSION" = 1 ] && [ -n "${STORYHOOK_REPAIR_PROJECT:-}" ] \
+        && [ -n "${STORYHOOK_REPAIR_STORY:-}" ] && [ -n "${STORYHOOK_REPAIR_GENERATION:-}" ] \
+        && [ -n "${STORYHOOK_VERIFICATION_ATTEMPT:-}" ] \
+        || die_json "private repair admission context is incomplete"
+    verification_phase="repair input admission"
+    head_tree="$(git rev-parse --verify "$head_commit^{tree}" 2>/dev/null)" \
+        || die_json "could not resolve committed repair source tree"
+    repair_admission="$("${STORY_BIN:?verifier binary is required}" --project "$STORYHOOK_REPAIR_PROJECT" verifier repair-admit \
+        "$STORYHOOK_REPAIR_STORY" "$STORYHOOK_VERIFICATION_ATTEMPT" "$STORYHOOK_REPAIR_GENERATION" \
+        "$base_commit" "$head_commit" "$head_tree" "$tree" --json 2>&1)" \
+        || die_json "private repair admission failed: $repair_admission"
+    if printf '%s\n' "$repair_admission" | jq -e 'type == "object" and .result == "proceed" and has("recovery_id") and (.recovery_id == null or (.recovery_id | type == "string" and length > 0))' >/dev/null 2>&1; then
+        : # Admission grants no certification; ordinary verification still follows.
+    elif printf '%s\n' "$repair_admission" | jq -e 'type == "object" and .result == "deferred" and (.recovery_id | type == "string" and length > 0) and (.reason == "unchanged-input" or .reason == "budget-exhausted" or .reason == "policy-hold")' >/dev/null 2>&1; then
+        confirm_judged_head "$pr" "$base" "$head" unjudged "Repair admission withheld gate execution."
+        disarm_verification_signal_trap
+        printf '%s\n' "$repair_admission" | jq '.result = "repair-deferred"'
+        exit 0
+    else
+        die_json "invalid private repair admission answer: $repair_admission"
+    fi
+fi
 if [ "$project_gate" -eq 1 ] && { [ "$preflight_status" -eq 0 ] || [ "$preflight_status" -eq 1 ]; }; then
     verification_phase="pinned gate configuration"
     gate_config="$("${STORY_BIN:?verifier binary is required}" verifier gate-config "$root" "$base_commit" "$head_commit" "$tree" --json 2>&1)" \

@@ -264,7 +264,11 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
         attempt: &str,
         judgment: &super::RepairJudgment,
     ) -> Result<Option<RecoveryView>, AppError> {
-        self.validate_attempt_identity(candidate, attempt)?;
+        if candidate.project != self.ctx.project() {
+            return Err(AppError::Validation(
+                "repair completion belongs to another project".into(),
+            ));
+        }
         let result = judgment.classification();
         let now = self.ctx.now();
         self.ctx
@@ -275,6 +279,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 let Some(mut view) = owner(tx, candidate.project, story)? else {
                     return Ok(None);
                 };
+                self.validate_attempt_identity(candidate, attempt)?;
                 let index = view
                     .state
                     .attempts

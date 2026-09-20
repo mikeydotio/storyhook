@@ -231,6 +231,22 @@ os.kill = kill
         self.assertEqual(value["fault"], fault)
         self.assertIn("outer census", value["cleanup_failure"]["detail"])
 
+    def test_outer_refusal_retains_repair_admission(self):
+        """An unexecuted repair refusal stays distinct from a completed gate."""
+        self.fault_census("session")
+        payload = {"result": "repair-deferred", "recovery_id": "recovery-1",
+                   "reason": "unchanged-input"}
+        result = self.fx.command("python3", str(self.bundle / "verifier-owner.py"), "run-json",
+                                 str(self.fx.common), str(self.fx.wt), "--", "python3", "-c",
+                                 "print(" + repr(json.dumps(payload)) + ")")
+        value = json.loads(result.stdout)
+        self.assertEqual(value["result"], "repair-deferred", value)
+        self.assertEqual(value["recovery_id"], "recovery-1")
+        self.assertEqual(value["reason"], "unchanged-input")
+        self.assertIn("outer census", value["cleanup_failure"]["detail"])
+        self.assertNotIn("tree", value)
+        self.assertNotIn("execution_status", value)
+
     def test_outer_refusal_does_not_accept_partial_json(self):
         """A child that never published one valid answer cannot invent a verdict."""
         self.fault_census("session")

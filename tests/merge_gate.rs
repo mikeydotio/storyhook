@@ -4449,3 +4449,105 @@ fn durable_landing_recovery_never_resends_and_requires_exact_merged_evidence() {
         1
     );
 }
+
+#[test]
+fn private_repair_admission_precedes_gate_and_fails_closed() {
+    for (reply, exit, expected, ran) in [
+        (
+            r#"{"result":"deferred","recovery_id":"recovery-1","reason":"unchanged-input"}"#,
+            0,
+            "repair-deferred",
+            false,
+        ),
+        (
+            r#"{"result":"deferred","recovery_id":"recovery-1","reason":"budget-exhausted"}"#,
+            0,
+            "repair-deferred",
+            false,
+        ),
+        (
+            r#"{"result":"proceed","recovery_id":null}"#,
+            0,
+            "project-fault",
+            true,
+        ),
+        (
+            r#"{"result":"proceed","recovery_id":null}"#,
+            1,
+            "infrastructure-failure",
+            false,
+        ),
+        (
+            r#"{"result":"deferred","reason":"unknown"}"#,
+            0,
+            "infrastructure-failure",
+            false,
+        ),
+        (
+            r#"{"result":"unexpected"}"#,
+            0,
+            "infrastructure-failure",
+            false,
+        ),
+    ] {
+        let repo = MergeRepo::new();
+        let (_, head) = reconciled_feature(&repo);
+        repo.publish_origin(42, &head);
+        repo.fake_gh();
+        converge_public_head(&repo, &head);
+        let marker = repo.path().join("gate-ran");
+        let args = repo.path().join("callback-args");
+        repo.fake_gate("gate-bin", &format!("touch '{}'", marker.display()));
+        repo.fake_gate(
+            "story-callback",
+            &format!(
+                "if [ \"${{4:-}}\" != repair-admit ]; then exec '{}' \"$@\"; fi\nprintf '%s\\n' \"$@\" > '{}'\ncat <<'REPLY'\n{reply}\nREPLY\nexit {exit}",
+                env!("CARGO_BIN_EXE_story"), args.display()
+            ),
+        );
+        let path = format!(
+            "{}:{}",
+            repo.path().join("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let out = Command::new("bash")
+            .arg(checkout().join("scripts/verify-pr.sh"))
+            .args(["https://github.com/acme/widgets/pull/42", "--", "gate-bin"])
+            .current_dir(repo.path())
+            .env("PATH", path)
+            .env("STORY_BIN", repo.path().join("bin/story-callback"))
+            .env("STORYHOOK_REPAIR_ADMISSION", "1")
+            .env("STORYHOOK_REPAIR_PROJECT", "fixture")
+            .env("STORYHOOK_REPAIR_STORY", "SH-1")
+            .env("STORYHOOK_REPAIR_GENERATION", "27")
+            .env("STORYHOOK_VERIFICATION_ATTEMPT", "owned-attempt")
+            .env("STORYHOOK_CERTIFY_ONLY", "1")
+            .env("STORYHOOK_LOCK_DIR", repo.path().join("locks"))
+            .env("STORYHOOK_ACTIVITY_LOG_DIR", repo.path().join("activity"))
+            .envs(storyhook_test_support::daemon_containment())
+            .env_remove("STORYHOOK_MACHINE_LOCKS")
+            .output()
+            .unwrap();
+        let payload = public_payload(&out);
+        assert_eq!(payload["result"], expected, "{payload}");
+        assert_eq!(marker.exists(), ran, "gate execution for {reply}");
+        let args = fs::read_to_string(args).expect("private callback was called");
+        let args: Vec<_> = args.lines().collect();
+        assert_eq!(
+            &args[..7],
+            &[
+                "--project",
+                "fixture",
+                "verifier",
+                "repair-admit",
+                "SH-1",
+                "owned-attempt",
+                "27"
+            ]
+        );
+        assert_eq!(args[8], head);
+        assert_eq!(args[9], repo.rev_parse(&format!("{head}^{{tree}}")));
+        assert_eq!(args.len(), 12);
+        assert_eq!(args[11], "--json");
+    }
+}
