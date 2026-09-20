@@ -192,3 +192,17 @@ pub enum AssessmentDelivery {
     /// A live or ambiguous owner must not be replaced automatically.
     Uncertain(String),
 }
+
+/// A dependency hold belongs to one returned submission and one exact awaiting event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedDependencyHold {
+    /// Affected story, never the repair itself.
+    pub story: StoryNo,
+    /// Original unjudged verification generation.
+    pub generation: GlobalSeq,
+    /// Exact text committed to the ordinary story hold.
+    pub awaiting: String,
+    /// Exact awaiting write; a replacement with identical text is independent.
+    pub event: GlobalSeq,
+}

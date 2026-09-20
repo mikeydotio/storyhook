@@ -91,6 +91,21 @@ pub(super) fn read_view(
             ));
         }
     }
+    if let Some(decision) = &state.decision {
+        let mut subjects = std::collections::BTreeSet::new();
+        for hold in &decision.dependency_holds {
+            if !subjects.insert((hold.story, hold.generation))
+                || Some(hold.story) == decision.repair_story
+                || decision.repair_story.is_none()
+                || !state.subjects.iter().any(|subject| subject.returned && subject.story == hold.story
+                    && subject.candidate.verifying_generation == Some(hold.generation))
+                || !tx.events_for(record.project, hold.story)?.iter().any(|event| event.global_seq == hold.event
+                    && matches!(event.known(), Some(crate::domain::StoryEvent::StoryAwaitingSet { awaiting, .. }) if awaiting == &hold.awaiting))
+            {
+                return Err(StoreError::Corrupt("recovery dependency hold has inconsistent submission or event ownership".into()));
+            }
+        }
+    }
     super::work::validate(&state)?;
     super::attempts_validation::validate(&state, record.project)?;
     super::landing::validate(tx, &state, record.project)?;

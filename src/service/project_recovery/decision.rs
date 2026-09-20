@@ -80,6 +80,9 @@ pub struct DecisionReceipt {
     pub delivery_identity: Option<String>,
     /// Subjects whose blocked-by edge was created by this recovery.
     pub owned_edges: Vec<StoryNo>,
+    /// Exact awaiting holds that survive ordinary dependency closure.
+    #[serde(default)]
+    pub dependency_holds: Vec<super::OwnedDependencyHold>,
     /// Joined subjects whose changed authority prevented mutation.
     pub skipped_subjects: Vec<StoryNo>,
 }
@@ -115,6 +118,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                     repair_story,
                     delivery_identity: repair_story.map(|_| uuid::Uuid::new_v4().to_string()),
                     owned_edges: Vec::new(),
+                    dependency_holds: Vec::new(),
                     skipped_subjects: Vec::new(),
                 };
                 super::decision_effects::apply(tx, self.ctx, &view, &mut receipt, &now)?;

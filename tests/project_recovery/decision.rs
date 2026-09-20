@@ -119,7 +119,11 @@ fn separate_decision_creates_one_critical_bug_with_atomic_reciprocal_edges() {
                 .iter()
                 .any(|r| r.relation == "blocks" && r.other_id == row.snapshot.id)
         );
-        assert!(row.awaiting.is_none());
+        assert!(
+            row.awaiting
+                .as_deref()
+                .is_some_and(|reason| reason.contains("certified repair landing"))
+        );
     }
     assert_eq!(service.decide(&view.record.id, &request).unwrap(), accepted);
     assert_eq!(
@@ -506,5 +510,82 @@ fn concurrent_scope_decisions_have_one_winner_and_survive_restart() {
             )
             .unwrap(),
         accepted
+    );
+}
+
+#[test]
+fn manual_repair_closure_cannot_release_affected_submission() {
+    let f = fixture();
+    let initial = ready(&f);
+    let ctx = f.ctx();
+    let service = ProjectRecoveryService::new(&ctx);
+    let view = service
+        .decide(
+            &initial.record.id,
+            &input(&initial, RepairScope::SeparateStory),
+        )
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state("SH-2", "done", Some("manual closure"), None, None)
+        .unwrap();
+    let row = f
+        .store()
+        .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert!(
+        row.awaiting.is_some(),
+        "manual closure is not certified landing"
+    );
+    assert!(
+        f.store()
+            .read(|tx| tx.block_deliveries(f.project()))
+            .unwrap()
+            .iter()
+            .all(|d| d.action != storyhook::store::BlockAction::Resume)
+    );
+    assert!(
+        service
+            .show(&view.record.id)
+            .unwrap()
+            .state
+            .landing
+            .is_none()
+    );
+}
+
+#[test]
+fn dependency_hold_retains_exact_event_and_rejects_substitution() {
+    let f = fixture();
+    let initial = ready(&f);
+    let ctx = f.ctx();
+    let service = ProjectRecoveryService::new(&ctx);
+    let view = service
+        .decide(
+            &initial.record.id,
+            &input(&initial, RepairScope::SeparateStory),
+        )
+        .unwrap();
+    let hold = &view.state.decision.as_ref().unwrap().dependency_holds[0];
+    assert_eq!(hold.story, StoryNo::new(1));
+    assert_eq!(hold.generation, initial.state.assessment.generation);
+    assert_eq!(service.show(&view.record.id).unwrap(), view);
+    f.store()
+        .write(|tx| {
+            let mut record = tx.project_recoveries(f.project())?.remove(0);
+            let revision = record.revision;
+            record.state["decision"]["dependency_holds"][0]["event"] =
+                serde_json::to_value(hold.generation).unwrap();
+            record.revision += 1;
+            assert!(tx.update_project_recovery(&record, revision)?);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        service
+            .show(&view.record.id)
+            .unwrap_err()
+            .to_string()
+            .contains("event ownership")
     );
 }

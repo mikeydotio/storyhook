@@ -110,6 +110,13 @@ pub(super) fn apply<S: Store>(
                     )?;
                     receipt.owned_edges.push(subject.story);
                 }
+                events.push(StoryEvent::StoryAwaitingSet {
+                    at: now.into(),
+                    awaiting: format!(
+                        "Project recovery {}: wait for certified repair landing of {}",
+                        view.record.id, repair_id
+                    ),
+                });
             } else {
                 events.push(StoryEvent::StoryCommentAdded { at: now.into(), text: format!("Repair this fault in this story and worktree. Read recovery {}. Preserve required coverage, run new and impacted tests, commit changed input, and resubmit to central verification.", view.record.id) });
             }
@@ -124,6 +131,33 @@ pub(super) fn apply<S: Store>(
             });
         }
         append(tx, ctx, subject.story, &events)?;
+        if receipt
+            .repair_story
+            .is_some_and(|repair| repair != subject.story)
+        {
+            let (event, awaiting) = tx
+                .events_for(project, subject.story)?
+                .into_iter()
+                .rev()
+                .find_map(|event| {
+                    if let Some(StoryEvent::StoryAwaitingSet { awaiting, .. }) = event.known() {
+                        Some((event.global_seq, awaiting.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    StoreError::Corrupt("recovery dependency hold event missing".into())
+                })?;
+            receipt.dependency_holds.push(super::OwnedDependencyHold {
+                story: subject.story,
+                generation: subject.candidate.verifying_generation.ok_or_else(|| {
+                    StoreError::Corrupt("recovery dependency has no generation".into())
+                })?,
+                awaiting,
+                event,
+            });
+        }
     }
     Ok(())
 }
