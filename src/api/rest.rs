@@ -25,8 +25,9 @@
 //! operation, validated by the same code, firing the same hooks, rather than two
 //! implementations that agree until one of them is edited.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::daemon::http1::{Header, Method};
 use crate::daemon::verification::VerificationActivity;
@@ -36,6 +37,7 @@ use crate::api::http::{
     html_reply, json_reply, parse_json_object, path_segments, require_str, text_reply, to_json,
 };
 use crate::api::routes::{ProjectRoute, Route, StoryAction, classify};
+use crate::api::tokens::{TokenError, TokenRegistry};
 use crate::cli::{Invocation, ProjectAction, StateAction};
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::{Priority, default_open_state, default_type};
@@ -61,6 +63,40 @@ pub struct RouteRequest<'a> {
     path: &'a str,
     headers: &'a [Header],
     body: RouteBody<'a>,
+    token_context: Option<TokenContext<'a>>,
+}
+
+/// The daemon's token registry, available to preference routes and catalog
+/// rendering while direct router tests can use their default all-visible view.
+struct TokenContext<'a> {
+    registry: &'a TokenRegistry,
+    cookie_name: &'a str,
+    master_token: &'a str,
+}
+
+enum Credential<'a> {
+    Master,
+    Named(&'a str),
+    Invalid,
+}
+
+impl TokenContext<'_> {
+    fn credential<'a>(&self, headers: &'a [Header], method: &Method) -> Credential<'a> {
+        if crate::api::rpc::token_ok(headers, self.master_token) {
+            return Credential::Master;
+        }
+        match crate::api::admission::named_token_credential(
+            headers,
+            method,
+            self.cookie_name,
+            self.registry,
+            chrono::Utc::now(),
+            Instant::now(),
+        ) {
+            Some(secret) => Credential::Named(secret),
+            None => Credential::Invalid,
+        }
+    }
 }
 
 /// Borrowed body semantics survive routing without a lossy text conversion.
@@ -78,6 +114,7 @@ impl<'a> RouteRequest<'a> {
             path,
             headers,
             body: RouteBody::Text(body),
+            token_context: None,
         }
     }
 
@@ -94,7 +131,23 @@ impl<'a> RouteRequest<'a> {
             path,
             headers,
             body: RouteBody::Binary(body),
+            token_context: None,
         }
+    }
+
+    /// Supplies the daemon's authenticated-token context for per-token views.
+    pub fn with_token_context(
+        mut self,
+        registry: &'a TokenRegistry,
+        cookie_name: &'a str,
+        master_token: &'a str,
+    ) -> Self {
+        self.token_context = Some(TokenContext {
+            registry,
+            cookie_name,
+            master_token,
+        });
+        self
     }
 }
 
@@ -225,6 +278,7 @@ pub(crate) fn mutating(method: &Method) -> bool {
 fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
     let verb = match route {
         ProjectRoute::Data => "data",
+        ProjectRoute::Visibility => "visibility",
         ProjectRoute::VerificationAck => "verification-ack",
         ProjectRoute::VerificationControl => "verification-control",
         ProjectRoute::StoryCreate => "new",
@@ -319,6 +373,7 @@ pub fn route_with_activity<S: Store>(
         path,
         headers,
         body,
+        token_context,
     } = request;
     let route = classify(&path_segments(path), method);
     if matches!(body, RouteBody::Binary(_))
@@ -337,10 +392,31 @@ pub fn route_with_activity<S: Store>(
     }
     match route {
         Route::Shell => Routed::quiet(html_reply(dashboard_html()).no_cache()),
-        Route::Repos => Routed::quiet(match repos_json(store, env) {
-            Ok(json) => json_reply(200, json).no_cache(),
-            Err(e) => error_reply(&e),
-        }),
+        Route::Repos => {
+            let hidden = match token_context {
+                None => BTreeSet::new(),
+                Some(context) => match context.credential(headers, method) {
+                    Credential::Master => BTreeSet::new(),
+                    Credential::Named(secret) => {
+                        let Some(hidden) = context.registry.hidden_project_uuids(
+                            secret,
+                            chrono::Utc::now(),
+                            Instant::now(),
+                        ) else {
+                            return Routed::quiet(text_reply(401, "missing or invalid token"));
+                        };
+                        hidden
+                    }
+                    Credential::Invalid => {
+                        return Routed::quiet(text_reply(401, "missing or invalid token"));
+                    }
+                },
+            };
+            Routed::quiet(match repos_json(store, env, &hidden) {
+                Ok(json) => json_reply(200, json).no_store(),
+                Err(e) => error_reply(&e),
+            })
+        }
         Route::ReposCreate => Routed::changing(
             method,
             guarded_text(headers, trusted_hosts, body, |b| {
@@ -362,7 +438,17 @@ pub fn route_with_activity<S: Store>(
             // project's event hooks and its git repository are. Refusing here
             // rather than in each handler means a route added later cannot
             // miss it.
-            Ok(Some(Repo { project, checkout })) => {
+            Ok(Some(Repo {
+                project,
+                uuid,
+                checkout,
+            })) => {
+                if matches!(route, ProjectRoute::Visibility) {
+                    let reply = guarded_text(headers, trusted_hosts, body, |b| {
+                        route_visibility(&uuid, id, b, headers, token_context)
+                    });
+                    return Routed::changing(method, reply, Changed::Catalog);
+                }
                 if mutating(method) && checkout.is_none() {
                     return Routed::quiet(error_reply(&pathless_refusal(id)));
                 }
@@ -457,6 +543,7 @@ fn route_project<S: Store>(
             Ok(json) => json_reply(200, json).no_cache(),
             Err(e) => error_reply(&e),
         },
+        ProjectRoute::Visibility => text_reply(404, "Not found"),
         ProjectRoute::VerificationControl => guarded(headers, trusted_hosts, body, |b| {
             (|| -> Result<Reply, AppError> {
                 let obj = parse_json_object(b)?;
@@ -592,6 +679,7 @@ fn route_project<S: Store>(
 /// different answers, and only one of them is a 404.
 struct Repo {
     project: ProjectId,
+    uuid: String,
     checkout: Option<PathBuf>,
 }
 
@@ -631,6 +719,7 @@ fn resolve_repo<S: Store>(store: &S, slug: &str) -> Result<Option<Repo>, AppErro
         let checkout = tx.checkout_path(project.id)?;
         Ok(Some(Repo {
             project: project.id,
+            uuid: project.uuid,
             checkout,
         }))
     })?)
@@ -650,6 +739,50 @@ fn reply_with<S: Store>(ctx: &Ctx<'_, S>, status: u16, invocation: Invocation) -
 }
 
 // --- The project catalog: /api/repos ---
+
+/// `PATCH /api/repos/{slug}/visibility` changes only the presenting token's
+/// preference. A project without a checkout is still configurable here:
+/// this sidecar write runs no project hook or Git operation.
+fn route_visibility(
+    uuid: &str,
+    slug: &str,
+    body: &str,
+    headers: &[Header],
+    token_context: Option<TokenContext<'_>>,
+) -> Reply {
+    let Some(context) = token_context else {
+        return text_reply(403, "a named dashboard token is required");
+    };
+    let secret = match context.credential(headers, &Method::Patch) {
+        Credential::Named(secret) => secret,
+        Credential::Master => return text_reply(403, "a named dashboard token is required"),
+        Credential::Invalid => return text_reply(401, "missing or invalid token"),
+    };
+    let visible = match parse_json_object(body).and_then(|obj| {
+        obj.get("visible")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| AppError::Usage("`visible` is required and must be a boolean".into()))
+    }) {
+        Ok(visible) => visible,
+        Err(error) => return error_reply(&error).no_store(),
+    };
+    match context.registry.set_project_visible(
+        secret,
+        uuid,
+        visible,
+        chrono::Utc::now(),
+        Instant::now(),
+    ) {
+        Ok(()) => json_reply(
+            200,
+            serde_json::json!({"project": slug, "visible": visible}).to_string(),
+        )
+        .no_store(),
+        Err(TokenError::Invalid) => text_reply(401, "missing or invalid token"),
+        Err(TokenError::Persistence(detail)) => text_reply(500, detail).no_store(),
+        Err(_) => unreachable!("visibility writes return only Invalid or Persistence"),
+    }
+}
 
 /// What a repo with no checkout on this machine is told, and tells.
 ///
@@ -678,7 +811,11 @@ use crate::output::NO_CHECKOUT;
 ///
 /// A project that cannot be read at all is reported rather than failing the
 /// request: one broken project must never take down the view of every other.
-fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError> {
+fn repos_json<S: Store>(
+    store: &S,
+    env: &Environment,
+    hidden: &BTreeSet<String>,
+) -> Result<String, AppError> {
     let entries = CatalogService::new(store).all()?;
     let now = env.now();
     let repos: Vec<serde_json::Value> = entries
@@ -689,11 +826,13 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
                 .map_err(AppError::from)
                 .and_then(|inner| inner);
             let read_only = entry.path.is_none();
+            let visible = !hidden.contains(&entry.uuid);
             match summary {
                 Ok(data) => {
                     let drafts = dashboard_drafts_json(&data);
                     serde_json::json!({
                         "id": entry.id,
+                        "visible": visible,
                         "name": entry.name,
                         "prefix": entry.prefix,
                         "path": entry.path,
@@ -706,6 +845,7 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
                 }
                 Err(e) => serde_json::json!({
                     "id": entry.id,
+                    "visible": visible,
                     "name": entry.name,
                     "prefix": entry.prefix,
                     "path": entry.path,

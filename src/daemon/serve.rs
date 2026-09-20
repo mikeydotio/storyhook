@@ -1601,9 +1601,11 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         match &job.body {
             RequestBody::Text(text) => {
                 rest::RouteRequest::new(&job.method, &job.path, &job.headers, text)
+                    .with_token_context(&serving.tokens, &serving.cookie_name, &serving.token)
             }
             RequestBody::Binary(bytes) => {
                 rest::RouteRequest::binary(&job.method, &job.path, &job.headers, bytes)
+                    .with_token_context(&serving.tokens, &serving.cookie_name, &serving.token)
             }
         },
         &trusted_hosts,

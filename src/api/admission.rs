@@ -168,18 +168,27 @@ pub(crate) fn named_token_ok(
     wall_now: DateTime<Utc>,
     mono_now: Instant,
 ) -> bool {
+    named_token_credential(headers, method, cookie_name, tokens, wall_now, mono_now).is_some()
+}
+
+/// The live named credential that passed the same header or cookie checks as
+/// admission. A consumer must revalidate it during any registry mutation.
+pub(crate) fn named_token_credential<'a>(
+    headers: &'a [Header],
+    method: &Method,
+    cookie_name: &str,
+    tokens: &TokenRegistry,
+    wall_now: DateTime<Utc>,
+    mono_now: Instant,
+) -> Option<&'a str> {
     if let Some(offered) = header_value(headers, crate::api::rpc::TOKEN_HEADER)
         && tokens.validate(offered, wall_now, mono_now).is_some()
     {
-        return true;
+        return Some(offered);
     }
-    let Some(offered) = cookie_value(headers, cookie_name) else {
-        return false;
-    };
-    if tokens.validate(offered, wall_now, mono_now).is_none() {
-        return false;
-    }
-    mutating(method) || same_origin_read(headers)
+    let offered = cookie_value(headers, cookie_name)?;
+    tokens.validate(offered, wall_now, mono_now)?;
+    (mutating(method) || same_origin_read(headers)).then_some(offered)
 }
 
 /// Whether a cookie-authenticated **read** proves it came from this

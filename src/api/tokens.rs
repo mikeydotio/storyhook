@@ -52,7 +52,7 @@
 //! the record outright rather than marking it; no clock reading of any kind
 //! can resurrect a record that no longer exists, in either direction.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::sync::{Mutex, PoisonError};
@@ -186,6 +186,9 @@ struct TokenRecord {
     prefix: String,
     created_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
+    /// Portable project identities hidden by this token's dashboard.
+    #[serde(default)]
+    hidden_project_uuids: BTreeSet<String>,
 }
 
 /// What `story token list` (and its wire equivalent) shows for one record —
@@ -220,7 +223,7 @@ pub struct ValidatedToken {
     pub expires_at: DateTime<Utc>,
 }
 
-/// Why a mint or revoke was refused.
+/// Why a token or its display preference could not be changed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TokenError {
     /// [`MAX_TOKENS`] named tokens already exist. Carries the names of the
@@ -233,6 +236,10 @@ pub enum TokenError {
     /// `story token revoke` (or the wire equivalent) named a token that does
     /// not exist — already revoked, never existed, or a typo.
     NotFound,
+    /// A preference request offered no live named token.
+    Invalid,
+    /// The sidecar could not be saved. The registry retains its prior state.
+    Persistence(String),
 }
 
 /// What is persisted to `tokens.json` — the records plus the clock's own
@@ -251,6 +258,7 @@ struct Persisted {
     high_water: Option<DateTime<Utc>>,
 }
 
+#[derive(Clone)]
 struct Inner {
     persisted: Persisted,
     /// Index from hash to position in `persisted.records`, rebuilt whenever
@@ -404,12 +412,13 @@ impl TokenRegistry {
         ttl: chrono::Duration,
     ) -> Result<MintedToken, TokenError> {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let now = self.effective_now(&inner, wall_now, mono_now);
-        prune_expired(&mut inner, now);
-        if inner.persisted.records.iter().any(|r| r.name == name) {
+        let mut next = inner.clone();
+        let now = self.effective_now(&next, wall_now, mono_now);
+        prune_expired(&mut next, now);
+        if next.persisted.records.iter().any(|r| r.name == name) {
             return Err(TokenError::NameTaken);
         }
-        if inner.persisted.records.len() >= MAX_TOKENS {
+        if next.persisted.records.len() >= MAX_TOKENS {
             return Err(TokenError::AtCapacity);
         }
         let secret = random_secret();
@@ -422,11 +431,13 @@ impl TokenRegistry {
             prefix: prefix.clone(),
             created_at: wall_now,
             expires_at,
+            hidden_project_uuids: BTreeSet::new(),
         };
-        inner.persisted.records.push(record);
-        touch_high_water(&mut inner, now);
-        inner.reindex();
-        self.persist(&inner.persisted);
+        next.persisted.records.push(record);
+        touch_high_water(&mut next, now);
+        next.reindex();
+        self.persist(&next.persisted)?;
+        *inner = next;
         Ok(MintedToken {
             secret,
             summary: TokenSummary {
@@ -449,17 +460,19 @@ impl TokenRegistry {
         mono_now: Instant,
     ) -> Result<(), TokenError> {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let position = inner
+        let mut next = inner.clone();
+        let position = next
             .persisted
             .records
             .iter()
             .position(|r| r.name == name)
             .ok_or(TokenError::NotFound)?;
-        inner.persisted.records.remove(position);
-        let now = self.effective_now(&inner, wall_now, mono_now);
-        touch_high_water(&mut inner, now);
-        inner.reindex();
-        self.persist(&inner.persisted);
+        next.persisted.records.remove(position);
+        let now = self.effective_now(&next, wall_now, mono_now);
+        touch_high_water(&mut next, now);
+        next.reindex();
+        self.persist(&next.persisted)?;
+        *inner = next;
         Ok(())
     }
 
@@ -501,11 +514,64 @@ impl TokenRegistry {
         })
     }
 
-    fn persist(&self, persisted: &Persisted) {
-        let Some(env) = &self.persist_env else {
-            return;
+    /// Hidden portable project IDs for one live named token.
+    pub fn hidden_project_uuids(
+        &self,
+        offered: &str,
+        wall_now: DateTime<Utc>,
+        mono_now: Instant,
+    ) -> Option<BTreeSet<String>> {
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = self.effective_now(&inner, wall_now, mono_now);
+        let index = *inner.by_hash.get(&hash_hex(offered))?;
+        let record = inner.persisted.records.get(index)?;
+        (record.expires_at > now).then(|| record.hidden_project_uuids.clone())
+    }
+
+    /// Durably changes one project's display preference for a live token.
+    pub fn set_project_visible(
+        &self,
+        offered: &str,
+        project_uuid: &str,
+        visible: bool,
+        wall_now: DateTime<Utc>,
+        mono_now: Instant,
+    ) -> Result<(), TokenError> {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = self.effective_now(&inner, wall_now, mono_now);
+        let index = *inner
+            .by_hash
+            .get(&hash_hex(offered))
+            .ok_or(TokenError::Invalid)?;
+        let mut next = inner.clone();
+        let record = next
+            .persisted
+            .records
+            .get_mut(index)
+            .ok_or(TokenError::Invalid)?;
+        if record.expires_at <= now {
+            return Err(TokenError::Invalid);
+        }
+        let changed = if visible {
+            record.hidden_project_uuids.remove(project_uuid)
+        } else {
+            record.hidden_project_uuids.insert(project_uuid.to_string())
         };
-        write_tokens_file(env, persisted);
+        if !changed {
+            return Ok(());
+        }
+        touch_high_water(&mut next, now);
+        self.persist(&next.persisted)?;
+        *inner = next;
+        Ok(())
+    }
+
+    fn persist(&self, persisted: &Persisted) -> Result<(), TokenError> {
+        let Some(env) = &self.persist_env else {
+            return Ok(());
+        };
+        write_tokens_file(env, persisted)
+            .map_err(|err| TokenError::Persistence(format!("cannot save tokens.json: {err}")))
     }
 }
 
@@ -567,41 +633,27 @@ fn tokens_path(env: &Environment) -> std::path::PathBuf {
 /// torn JSON document, and this one carries token hashes rather than merely
 /// operational bookkeeping.
 ///
-/// **Best-effort for the directory, not for the write itself.** Unlike
-/// `publish_inflight`, a failed write here is not swallowed silently: mint
-/// and revoke call this synchronously and their durability is the entire
-/// reason this module exists rather than an SQLite table, so a write that
-/// cannot land must be visible to the caller, not merely to a comment. This
-/// function's own callers already hold the lock across it, and the specific
-/// I/O failure is intentionally not surfaced as a `Result` here — retrying
-/// or reporting it precisely is future work; what's load-bearing today is
-/// that the write is attempted synchronously, in this call, before mint or
-/// revoke returns to its own caller.
-fn write_tokens_file(env: &Environment, persisted: &Persisted) {
+/// Unlike `publish_inflight`, a failed write returns its I/O error. The
+/// registry holds its lock and commits its next in-memory state only after
+/// this write succeeds, so a reported mint or revoke survives restart.
+fn write_tokens_file(env: &Environment, persisted: &Persisted) -> std::io::Result<()> {
     let path = tokens_path(env);
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        return;
-    }
-    let Ok(document) = serde_json::to_string(persisted) else {
-        return;
-    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("missing parent directory"))?;
+    std::fs::create_dir_all(parent)?;
+    let document = serde_json::to_vec(persisted)?;
     let temp = path.with_extension("json.tmp");
     let mut options = OpenOptions::new();
     options.create(true).write(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let Ok(mut file) = options.open(&temp) else {
-        return;
-    };
-    if file.write_all(document.as_bytes()).is_err() {
-        return;
-    }
-    let _ = file.sync_all();
+    let mut file = options.open(&temp)?;
+    file.write_all(&document)?;
+    file.sync_all()?;
     drop(file);
-    let _ = std::fs::rename(&temp, &path);
+    std::fs::rename(&temp, &path)?;
+    Ok(())
 }
 
 // --- The control-surface routes ---
@@ -678,7 +730,10 @@ fn handle_collection(
                          run `story token list` and revoke one before minting another"
                     ),
                 ),
-                Err(TokenError::NotFound) => unreachable!("mint never returns NotFound"),
+                Err(TokenError::Persistence(detail)) => text_reply(500, detail),
+                Err(TokenError::NotFound | TokenError::Invalid) => {
+                    unreachable!("mint never returns NotFound or Invalid")
+                }
             }
         }
         Method::Get => json_reply(200, list_reply_body(&registry.list())),
@@ -707,7 +762,8 @@ fn handle_named(
         Err(TokenError::NotFound) => {
             text_reply(404, format!("storyhook daemon: no token named \"{name}\""))
         }
-        Err(_) => unreachable!("revoke returns only NotFound or Ok"),
+        Err(TokenError::Persistence(detail)) => text_reply(500, detail),
+        Err(_) => unreachable!("revoke returns only NotFound or persistence failure"),
     }
 }
 
@@ -1175,6 +1231,219 @@ mod tests {
                 .is_some()
         );
         assert_eq!(reloaded.list().len(), 1);
+    }
+
+    #[test]
+    fn failed_sidecar_write_does_not_mint_or_revoke_in_memory() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        std::fs::create_dir_all(env.daemon_state_dir().join("tokens.json.tmp")).unwrap();
+
+        assert!(matches!(
+            registry.mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL),
+            Err(TokenError::Persistence(_))
+        ));
+        assert!(registry.list().is_empty());
+
+        std::fs::remove_dir(env.daemon_state_dir().join("tokens.json.tmp")).unwrap();
+        let minted = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        std::fs::create_dir_all(env.daemon_state_dir().join("tokens.json.tmp")).unwrap();
+
+        assert!(matches!(
+            registry.revoke("laptop", epoch(), Instant::now()),
+            Err(TokenError::Persistence(_))
+        ));
+        assert!(
+            registry
+                .validate(&minted.secret, epoch(), Instant::now())
+                .is_some()
+        );
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        assert!(
+            reloaded
+                .validate(&minted.secret, epoch(), Instant::now())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn project_visibility_is_isolated_persistent_and_bound_to_token_identity() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let first = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        let second = registry
+            .mint("phone".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+
+        assert!(
+            registry
+                .hidden_project_uuids(&first.secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+        registry
+            .set_project_visible(
+                &first.secret,
+                "project-uuid",
+                false,
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        assert!(
+            registry
+                .hidden_project_uuids(&first.secret, epoch(), Instant::now())
+                .unwrap()
+                .contains("project-uuid")
+        );
+        assert!(
+            registry
+                .hidden_project_uuids(&second.secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        assert!(
+            reloaded
+                .hidden_project_uuids(&first.secret, epoch(), Instant::now())
+                .unwrap()
+                .contains("project-uuid")
+        );
+        reloaded.revoke("laptop", epoch(), Instant::now()).unwrap();
+        assert!(
+            reloaded
+                .hidden_project_uuids(&first.secret, epoch(), Instant::now())
+                .is_none()
+        );
+        let replacement = reloaded
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        assert!(
+            reloaded
+                .hidden_project_uuids(&replacement.secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            reloaded.set_project_visible(
+                &first.secret,
+                "project-uuid",
+                false,
+                epoch(),
+                Instant::now()
+            ),
+            Err(TokenError::Invalid)
+        );
+    }
+
+    #[test]
+    fn a_token_sidecar_without_visibility_field_starts_with_every_project_visible() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let secret = registry
+            .mint("existing".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap()
+            .secret;
+        let path = env.daemon_state_dir().join("tokens.json");
+        let mut sidecar: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        sidecar["records"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("hidden_project_uuids");
+        std::fs::write(&path, serde_json::to_vec(&sidecar).unwrap()).unwrap();
+
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        assert!(
+            reloaded
+                .hidden_project_uuids(&secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn failed_visibility_write_preserves_the_previous_choice() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let token = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        std::fs::create_dir_all(env.daemon_state_dir().join("tokens.json.tmp")).unwrap();
+
+        assert!(matches!(
+            registry.set_project_visible(
+                &token.secret,
+                "project-uuid",
+                false,
+                epoch(),
+                Instant::now()
+            ),
+            Err(TokenError::Persistence(_))
+        ));
+        assert!(
+            registry
+                .hidden_project_uuids(&token.secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        assert!(
+            reloaded
+                .hidden_project_uuids(&token.secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn concurrent_visibility_updates_preserve_both_project_choices() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = Arc::new(TokenRegistry::load_anchored(&env, epoch(), Instant::now()));
+        let secret = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap()
+            .secret;
+        let start = Arc::new(Barrier::new(3));
+        let handles: Vec<_> = ["first-uuid", "second-uuid"]
+            .into_iter()
+            .map(|uuid| {
+                let registry = Arc::clone(&registry);
+                let start = Arc::clone(&start);
+                let secret = secret.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    registry
+                        .set_project_visible(&secret, uuid, false, epoch(), Instant::now())
+                        .unwrap();
+                })
+            })
+            .collect();
+        start.wait();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let hidden = reloaded
+            .hidden_project_uuids(&secret, epoch(), Instant::now())
+            .unwrap();
+        assert_eq!(
+            hidden,
+            BTreeSet::from(["first-uuid".into(), "second-uuid".into()])
+        );
     }
 
     #[test]
