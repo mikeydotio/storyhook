@@ -14,6 +14,7 @@ struct GateEndpoint<'a> {
     activity: &'a VerificationActivity,
     input: RepairInput,
     mismatch: bool,
+    fail_tests: bool,
     executions: AtomicUsize,
 }
 impl VerificationActuator for GateEndpoint<'_> {
@@ -55,6 +56,14 @@ impl VerificationActuator for GateEndpoint<'_> {
             };
         }
         self.executions.fetch_add(1, Ordering::SeqCst);
+        if self.fail_tests {
+            return VerificationOutcome::TestsFailed {
+                tree: self.input.tree.clone(),
+                log: "/tmp/gate.log".into(),
+                detail: "regression failed".into(),
+                gate: "gate".into(),
+            };
+        }
         VerificationOutcome::Certified {
             head: self.input.head.clone(),
             tree: if self.mismatch {
@@ -120,6 +129,7 @@ fn queue_disposes_refusal_or_lands_only_the_admitted_repair_input() {
                 tree: "f".repeat(40),
             },
             mismatch,
+            fail_tests: false,
             executions: AtomicUsize::new(0),
         };
         let result = tick_with_activity(
@@ -159,5 +169,68 @@ fn queue_disposes_refusal_or_lands_only_the_admitted_repair_input() {
             assert!(current.state.landing.is_some());
             assert!(current.state.attempts[0].judgment.is_some());
         }
+    }
+}
+
+#[test]
+fn queue_returns_failed_repair_without_synchronous_agent_delivery() {
+    let f = fixture();
+    let view = decision::ready(&f);
+    let ctx = f.ctx();
+    let recovery = ProjectRecoveryService::new(&ctx);
+    recovery
+        .decide(
+            &view.record.id,
+            &decision::input(&view, RepairScope::SameStory),
+        )
+        .unwrap();
+    let activity = VerificationActivity::new();
+    for n in 1..=3 {
+        StoryService::new(&ctx)
+            .set_state("SH-1", "verifying", None, None, None)
+            .unwrap();
+        let gate = GateEndpoint {
+            store: f.store(),
+            env: f.env(),
+            activity: &activity,
+            input: RepairInput {
+                base: "a".repeat(40),
+                head: format!("{n:040x}"),
+                head_tree: format!("{:040x}", n + 10),
+                tree: format!("{:040x}", n + 20),
+            },
+            mismatch: false,
+            fail_tests: true,
+            executions: AtomicUsize::new(0),
+        };
+        assert_eq!(
+            tick_with_activity(
+                f.store(),
+                f.env(),
+                &gate,
+                &activity,
+                &InFlight::new(f.env().clone()),
+                f.project()
+            )
+            .unwrap(),
+            TickResult::Returned
+        );
+        assert!(activity.active_for(f.project()).is_none());
+        let current = recovery.show(&view.record.id).unwrap();
+        assert_eq!(current.state.attempts.len(), n as usize);
+        assert!(current.state.landing.is_none());
+        assert!(
+            f.store()
+                .read(|tx| tx.verification_incident(f.project()))
+                .unwrap()
+                .is_none()
+        );
+        let row = f
+            .store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "in-progress");
+        assert_eq!(row.awaiting.is_some(), n == 3);
     }
 }

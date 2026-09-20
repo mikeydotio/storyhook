@@ -13,6 +13,7 @@ mod persistence;
 mod refusal;
 mod repair_return;
 mod resume;
+mod test_return;
 mod work;
 mod work_holds;
 use super::{

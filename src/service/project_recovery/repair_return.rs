@@ -1,4 +1,4 @@
-//! Each completed recursive fault owns a separate bounded delivery receipt.
+//! Each completed failed repair owns a separate bounded delivery receipt.
 
 use super::{
     AssessmentHold, RecoveryView, RepairCompletion, WorkDelivery, WorkKind, WorkStatus, authority,
@@ -15,12 +15,13 @@ pub(super) fn enqueue<S: Store>(
     attempt: &str,
     now: &str,
 ) -> Result<(), StoreError> {
-    let Some(admitted) = view
-        .state
-        .attempts
-        .iter()
-        .find(|a| a.id == attempt && a.completion == Some(RepairCompletion::ProjectFault))
-    else {
+    let Some(admitted) = view.state.attempts.iter().find(|a| {
+        a.id == attempt
+            && matches!(
+                a.completion,
+                Some(RepairCompletion::ProjectFault | RepairCompletion::TestsFailed)
+            )
+    }) else {
         return Ok(());
     };
     let id = identity(&view.record.id, attempt);
@@ -60,7 +61,7 @@ pub(super) fn enqueue<S: Store>(
         status: if exhausted { WorkStatus::Held } else { WorkStatus::Pending },
         hold: exhausted.then_some(AssessmentHold::RepairExhausted),
         epoch: 0, failures: 0, started_at: None, delivered_at: None, last_result: None,
-        detail: if exhausted { AssessmentHold::RepairExhausted.detail().into() } else { format!("repair attempt {attempt} found another project fault; resume the same repair lineage and worktree") },
+        detail: if exhausted { AssessmentHold::RepairExhausted.detail().into() } else { format!("repair attempt {attempt} did not resolve the recovery; resume the same repair lineage and worktree") },
     });
     super::work_holds::record(tx, ctx, view, view.state.work.len() - 1, now)
 }
@@ -79,7 +80,10 @@ pub(super) fn owns(state: &super::RecoveryState, work: &WorkDelivery) -> bool {
             state.attempts.iter().any(|a| {
                 &a.id == id
                     && a.story == work.story
-                    && a.completion == Some(RepairCompletion::ProjectFault)
+                    && matches!(
+                        a.completion,
+                        Some(RepairCompletion::ProjectFault | RepairCompletion::TestsFailed)
+                    )
             })
         })
 }
@@ -96,15 +100,17 @@ pub(super) fn validate(view: &RecoveryView) -> Result<(), StoreError> {
         let valid = owns(&view.state, work)
             && work.id == identity(&view.record.id, id)
             && admitted.is_some_and(|a| {
-                view.observations.iter().any(|o| {
-                    o.attempt_id == id && o.story == work.story && o.generation == a.generation
-                }) && view.state.subjects.iter().any(|s| {
-                    s.returned
-                        && s.story == work.story
-                        && s.candidate.verifying_generation == Some(a.generation)
-                        && s.state_revision == work.state_revision
-                        && s.label_revision == work.label_revision
-                })
+                (a.completion == Some(RepairCompletion::TestsFailed)
+                    || view.observations.iter().any(|o| {
+                        o.attempt_id == id && o.story == work.story && o.generation == a.generation
+                    }))
+                    && view.state.subjects.iter().any(|s| {
+                        s.returned
+                            && s.story == work.story
+                            && s.candidate.verifying_generation == Some(a.generation)
+                            && s.state_revision == work.state_revision
+                            && s.label_revision == work.label_revision
+                    })
             });
         if !valid {
             return Err(StoreError::Corrupt(

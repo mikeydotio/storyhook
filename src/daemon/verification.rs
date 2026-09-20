@@ -2323,6 +2323,14 @@ where
                     detail,
                     gate,
                 } => {
+                    if recovery_service.return_failed_repair(
+                        &candidate,
+                        &active.active.attempt_id,
+                        &tree,
+                        &format!("Gate {gate}; full log {log}.\n\n{detail}"),
+                    )? {
+                        return Ok(TickResult::Returned);
+                    }
                     let result = return_for_repair(
                         &queue,
                         &ctx,

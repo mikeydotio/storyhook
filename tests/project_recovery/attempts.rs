@@ -732,3 +732,133 @@ fn recursive_repair_return_replays_and_stops_dispatch_at_completed_budget() {
         }
     }
 }
+
+#[test]
+fn failed_repair_tests_return_once_and_hold_at_three_completed_inputs() {
+    use storyhook::service::project_recovery::WorkStatus;
+    let f = fixture();
+    let view = prepare(&f);
+    let ctx = f.ctx();
+    let service = ProjectRecoveryService::new(&ctx);
+    for n in 1..=3 {
+        let candidate = resubmit(&f);
+        let input = pins(n);
+        let id = format!("failed-{n}");
+        service.admit_repair(&candidate, &id, &input).unwrap();
+        service
+            .complete_repair(
+                &candidate,
+                &id,
+                &judgment(&input, RepairCompletion::TestsFailed),
+            )
+            .unwrap();
+        assert!(
+            service
+                .return_failed_repair(
+                    &candidate,
+                    &id,
+                    &input.tree,
+                    "gate failed; full log: /tmp/gate.log"
+                )
+                .unwrap()
+        );
+        let returned = service.show(&view.record.id).unwrap();
+        assert!(
+            service
+                .return_failed_repair(
+                    &candidate,
+                    &id,
+                    &input.tree,
+                    "gate failed; full log: /tmp/gate.log"
+                )
+                .unwrap()
+        );
+        assert_eq!(service.show(&view.record.id).unwrap(), returned);
+        assert_eq!(
+            returned.observations.len(),
+            1,
+            "test failure is not project fault evidence"
+        );
+        let work = returned.state.work.last().unwrap();
+        assert_eq!(work.source_attempt.as_deref(), Some(id.as_str()));
+        assert_eq!(
+            work.status,
+            if n == 3 {
+                WorkStatus::Held
+            } else {
+                WorkStatus::Pending
+            }
+        );
+        let row = f
+            .store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "in-progress");
+        assert_eq!(row.awaiting.is_some(), n == 3);
+        assert!(
+            service
+                .return_failed_repair(&candidate, &id, &"f".repeat(40), "different tree")
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn failed_repair_return_preserves_operator_and_generation_authority() {
+    for change in ["label", "state", "awaiting", "stop"] {
+        let f = fixture();
+        let view = prepare(&f);
+        let candidate = resubmit(&f);
+        let input = pins(1);
+        let ctx = f.ctx();
+        let service = ProjectRecoveryService::new(&ctx);
+        service.admit_repair(&candidate, "failed", &input).unwrap();
+        service
+            .complete_repair(
+                &candidate,
+                "failed",
+                &judgment(&input, RepairCompletion::TestsFailed),
+            )
+            .unwrap();
+        let stories = StoryService::new(&ctx);
+        match change {
+            "label" => {
+                stories
+                    .set_labels("SH-1", &["no-auto".into()], &[])
+                    .unwrap();
+                stories
+                    .set_labels("SH-1", &[], &["no-auto".into()])
+                    .unwrap();
+            }
+            "state" => {
+                stories.set_state("SH-1", "todo", None, None, None).unwrap();
+            }
+            "awaiting" => {
+                stories.set_awaiting("SH-1", "operator hold").unwrap();
+            }
+            _ => {
+                f.store()
+                    .write(|tx| tx.put_verification_enabled(f.project(), false))
+                    .unwrap();
+            }
+        }
+        let before = f
+            .store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap();
+        assert!(
+            service
+                .return_failed_repair(&candidate, "failed", &input.tree, "failed gate")
+                .unwrap()
+        );
+        let after = f
+            .store()
+            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(before, after);
+        assert_eq!(service.show(&view.record.id).unwrap().state.work.len(), 1);
+    }
+}
