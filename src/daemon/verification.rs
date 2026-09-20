@@ -18,7 +18,9 @@ mod workspace_tests;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
 mod observation;
+mod recovery_transport;
 mod repair_admission;
+pub(crate) use recovery_transport::ControlOwner;
 pub mod status;
 use crate::process::Cancellation;
 pub use crate::process::Cancellation as VerificationCancellation;
@@ -845,39 +847,24 @@ impl ShellVerificationActuator {
 
     fn run_control_command(
         &self,
-        mut command: Command,
+        command: Command,
         role: &str,
         request_id: &str,
         project: ProjectId,
         operation: &str,
     ) -> Result<Captured, AppError> {
-        // The helper must reuse our open description, not reopen and contend
-        // with its own verifier. Keep ownership through child termination too.
         let workspace = self.activity.workspace_for(project);
-        command.env_remove("STORY_WORKSPACE_LOCK_FD");
-        if let Some(workspace) = &workspace {
-            workspace.dispatch_command(&mut command);
-        }
-        run_captured_cancellable(
+        let cancellation = self.activity.cancellation_for(project);
+        self.run_control_owned(
             command,
-            self.control_timeout,
-            TerminationPolicy::TerminateThenKill {
-                grace: self.termination_grace,
-            },
-            &self.activity.cancellation_for(project),
-            |pid| {
-                self.owned_processes
-                    .register(role, pid, Some(request_id))
-                    .map_err(|error| error.to_string())
+            role,
+            request_id,
+            operation,
+            ControlOwner {
+                workspace: workspace.as_deref(),
+                cancellation: &cancellation,
             },
         )
-        .map_err(|error| match error {
-            CaptureError::Timeout(_) => AppError::Storage(format!(
-                "{operation} did not finish within {:?}; its process group was terminated",
-                self.control_timeout
-            )),
-            other => AppError::Storage(format!("could not run {operation}: {}", other.detail())),
-        })
     }
 
     /// Runs one control verb and returns the helper's own answer. `Err` is a
@@ -889,6 +876,7 @@ impl ShellVerificationActuator {
         candidate: &VerificationCandidate,
         verb: &str,
         extra: Option<&str>,
+        owner: ControlOwner<'_>,
     ) -> Result<HelperAnswer, AppError> {
         let script = self.helper_path()?;
         let mut command = Command::new("bash");
@@ -915,12 +903,12 @@ impl ShellVerificationActuator {
         {
             command.env("STORYHOOK_NOTIFY_LEASE_V1", serde_json::to_string(lease)?);
         }
-        let output = self.run_control_command(
+        let output = self.run_control_owned(
             command,
             &format!("verifier-{verb}"),
             &verification_request_id(candidate),
-            candidate.project,
             &format!("story helper `{verb}`"),
+            owner,
         )?;
         let payload: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| {
             AppError::Storage(format!(
@@ -1417,16 +1405,13 @@ impl VerificationActuator for ShellVerificationActuator {
         candidate: &VerificationCandidate,
         message: &str,
     ) -> Result<NotifyDelivery, AppError> {
-        match self.helper(candidate, "notify", Some(message))? {
-            HelperAnswer::Ok => Ok(NotifyDelivery::Delivered),
-            HelperAnswer::Refused { reason, display } => match agent_presence(reason.as_deref()) {
-                AgentPresence::Absent => Ok(NotifyDelivery::AgentAbsent {
-                    reason: reason.unwrap_or_default(),
-                    detail: display,
-                }),
-                AgentPresence::NotAbsent => Err(AppError::Storage(display)),
-            },
-        }
+        let workspace = self.activity.workspace_for(candidate.project);
+        self.notify_owned(
+            candidate,
+            message,
+            workspace.as_deref(),
+            &self.activity.cancellation_for(candidate.project),
+        )
     }
 
     fn redispatch(
@@ -1434,41 +1419,16 @@ impl VerificationActuator for ShellVerificationActuator {
         candidate: &VerificationCandidate,
         plan: &ResumePlan,
     ) -> Result<(), AppError> {
-        let script = self.helper_path()?;
-        let options = DispatchOptions {
-            model: plan.model.clone(),
-            effort: plan.effort.clone(),
-            fast: plan.fast,
-            resume: true,
-        };
-        // The same argv composer the dashboard and the engine use (SH-136),
-        // so a resume typed by the verifier is byte-for-byte the resume a
-        // person would have typed — including the target session, without
-        // which the helper refuses "story requires tmux" from a daemon.
-        let outcome = run_shell_dispatch_cancellable(
-            &script,
-            &candidate.project_slug,
-            &candidate.story_id,
-            plan.agent,
+        let workspace = self.activity.workspace_for(candidate.project);
+        self.dispatch_owned(
+            candidate,
+            plan,
             true,
-            plan.full_auto,
-            &options,
-            &self.env,
-            Some(&self.activity.cancellation_for(candidate.project)),
-            self.activity.workspace_for(candidate.project).as_deref(),
-        )?;
-        match outcome.state {
-            DispatchOutcomeState::Ok => Ok(()),
-            DispatchOutcomeState::Refused => Err(AppError::Storage(
-                outcome
-                    .payload
-                    .get("display")
-                    .or_else(|| outcome.payload.get("reason"))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("story helper `dispatch --resume` refused without diagnostics")
-                    .to_string(),
-            )),
-        }
+            ControlOwner {
+                workspace: workspace.as_deref(),
+                cancellation: &self.activity.cancellation_for(candidate.project),
+            },
+        )
     }
 
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
