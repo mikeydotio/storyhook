@@ -49,12 +49,18 @@ pub struct WorkDelivery {
     /// Completed recursive fault that authorizes this return to the repair owner.
     #[serde(default)]
     pub source_attempt: Option<String>,
+    /// Exact lease of an independently managed claim accepted at delivery admission.
+    #[serde(default)]
+    pub managed_lease: Option<crate::domain::StoryCleanupLease>,
     /// State at authorization, before any external claim.
     pub state: String,
     /// Latest creation or state transition event at authorization.
     pub state_revision: GlobalSeq,
     /// Latest reserved-label event, including transient reservations.
     pub label_revision: Option<GlobalSeq>,
+    /// Latest interruption when this effect was authorized, including cleared holds.
+    #[serde(default)]
+    pub blocking_revision: Option<i64>,
     /// Exact awaiting-clear event for a certified landing resume.
     #[serde(default)]
     pub release_event: Option<GlobalSeq>,
@@ -97,7 +103,9 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 super::work_holds::record(tx, self.ctx, &mut view, index, &now)?;
                 persistence::save(tx, &mut view, &now)?; return Ok(None);
             }
+            let managed_lease = super::managed_claim::lease(tx, &view, &view.state.work[index])?;
             let work = &mut view.state.work[index];
+            work.managed_lease = managed_lease;
             work.status = WorkStatus::InFlight; work.hold = None;
             work.epoch = work.epoch.checked_add(1).ok_or_else(|| StoreError::Corrupt("recovery work epoch overflow".into()))?;
             work.started_at = Some(now.clone()); work.last_result = None;
@@ -210,9 +218,11 @@ pub(super) fn enqueue_repair(tx: &impl ReadOps, view: &mut RecoveryView) -> Resu
             WorkKind::SeparateRepair
         },
         source_attempt: None,
+        managed_lease: None,
         state: row.state,
         state_revision: authority::state_revision(tx, view.record.project, story)?,
         label_revision: authority::label_revision(tx, view.record.project, story)?,
+        blocking_revision: authority::blocking_revision(tx, view.record.project, story)?,
         release_event: None,
         status: WorkStatus::Pending,
         hold: None,
@@ -289,13 +299,15 @@ fn policy(
     if let Some(reason) = authority::policy_hold(tx, project, &row.snapshot)? {
         return Ok(Some(reason));
     }
-    if authority::label_revision(tx, project, work.story)? != work.label_revision {
+    if authority::label_revision(tx, project, work.story)? != work.label_revision
+        || authority::blocking_revision(tx, project, work.story)? != work.blocking_revision
+    {
         return Ok(Some(AssessmentHold::AuthorityChanged));
     }
     Ok(None)
 }
 
-fn permitted(
+pub(super) fn permitted(
     tx: &impl ReadOps,
     view: &RecoveryView,
     work: &WorkDelivery,
@@ -310,7 +322,15 @@ fn permitted(
     if row.state != work.state
         || authority::state_revision(tx, project, work.story)? != work.state_revision
     {
-        return Ok(Some(AssessmentHold::AuthorityChanged));
+        let managed = super::managed_claim::lease(tx, view, work)?;
+        if managed.is_none()
+            || work
+                .managed_lease
+                .as_ref()
+                .is_some_and(|retained| Some(retained) != managed.as_ref())
+        {
+            return Ok(Some(AssessmentHold::AuthorityChanged));
+        }
     }
     if (work.kind == WorkKind::Resume
         && super::resume::awaiting_revision(tx, project, work.story)? != work.release_event)

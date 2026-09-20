@@ -39,6 +39,7 @@ pub(super) fn record<S: Store>(
         || row.awaiting.is_some()
         || authority::state_revision(tx, project, work.story)? != work.state_revision
         || authority::label_revision(tx, project, work.story)? != work.label_revision
+        || authority::blocking_revision(tx, project, work.story)? != work.blocking_revision
         || row
             .snapshot
             .labels

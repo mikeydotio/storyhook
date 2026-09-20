@@ -116,3 +116,17 @@ pub(super) fn assessment_hold(
     }
     Ok(None)
 }
+
+/// The last interruption remains a fence even after its hold is cleared.
+pub(super) fn blocking_revision(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<Option<i64>, StoreError> {
+    Ok(tx
+        .block_deliveries(project)?
+        .iter()
+        .rev()
+        .find(|d| d.story == story && d.action == crate::store::BlockAction::Interrupt)
+        .map(|d| d.id))
+}

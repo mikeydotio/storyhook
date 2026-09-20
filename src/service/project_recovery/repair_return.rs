@@ -57,7 +57,7 @@ pub(super) fn enqueue<S: Store>(
         id, story, kind: WorkKind::SameStoryRepair, source_attempt: Some(attempt.into()), state: row.state,
         state_revision: authority::state_revision(tx, view.record.project, story)?,
         label_revision: authority::label_revision(tx, view.record.project, story)?,
-        release_event: None, disposition: None,
+        blocking_revision: authority::blocking_revision(tx, view.record.project, story)?, managed_lease: None, release_event: None, disposition: None,
         status: if exhausted { WorkStatus::Held } else { WorkStatus::Pending },
         hold: exhausted.then_some(AssessmentHold::RepairExhausted),
         epoch: 0, failures: 0, started_at: None, delivered_at: None, last_result: None,

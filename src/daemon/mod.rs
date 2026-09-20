@@ -57,6 +57,7 @@ pub mod github_poll;
 pub mod http1;
 pub mod install_guard;
 pub mod lifecycle;
+pub mod project_recovery;
 pub mod seat_guard;
 pub mod serve;
 pub mod subscribe;

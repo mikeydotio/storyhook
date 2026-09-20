@@ -16,6 +16,8 @@ mod refusal;
 mod resume;
 #[path = "project_recovery/work.rs"]
 mod work;
+#[path = "project_recovery/worker.rs"]
+mod worker;
 
 use storyhook::service::project_fault::{ProjectFault, ReceiptRefusal};
 use storyhook::service::project_recovery::{

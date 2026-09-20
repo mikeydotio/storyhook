@@ -35,7 +35,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                     id: effect, story: hold.story, kind: WorkKind::Resume, source_attempt: None, state: row.state,
                     state_revision: authority::state_revision(tx, project, hold.story)?,
                     label_revision: authority::label_revision(tx, project, hold.story)?,
-                    release_event: Some(release_event), status: WorkStatus::Pending, hold: None, disposition: None,
+                    blocking_revision: authority::blocking_revision(tx, view.record.project, hold.story)?, managed_lease: None, release_event: Some(release_event), status: WorkStatus::Pending, hold: None, disposition: None,
                     epoch: 0, failures: 0, started_at: None, delivered_at: None, last_result: None,
                     detail: "certified repair landed; managed affected-agent resume pending".into(),
                 });
@@ -47,7 +47,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
     }
 }
 
-fn eligible(
+pub(super) fn eligible(
     tx: &impl ReadOps,
     view: &RecoveryView,
     hold: &OwnedDependencyHold,

@@ -83,25 +83,7 @@ impl ShellVerificationActuator {
         resume: bool,
         owner: ControlOwner<'_>,
     ) -> Result<(), AppError> {
-        let script = self.helper_path()?;
-        let options = DispatchOptions {
-            model: plan.model.clone(),
-            effort: plan.effort.clone(),
-            fast: plan.fast,
-            resume,
-        };
-        let outcome = run_shell_dispatch_cancellable(
-            &script,
-            &candidate.project_slug,
-            &candidate.story_id,
-            plan.agent,
-            true,
-            plan.full_auto,
-            &options,
-            &self.env,
-            Some(owner.cancellation),
-            owner.workspace,
-        )?;
+        let outcome = self.dispatch_outcome_owned(candidate, plan, resume, owner)?;
         match outcome.state {
             DispatchOutcomeState::Ok => Ok(()),
             DispatchOutcomeState::Refused => Err(AppError::Storage(
@@ -118,5 +100,33 @@ impl ShellVerificationActuator {
                     .to_string(),
             )),
         }
+    }
+    /// Preserve typed refusal evidence for the recovery delivery budget.
+    pub(crate) fn dispatch_outcome_owned(
+        &self,
+        candidate: &VerificationCandidate,
+        plan: &ResumePlan,
+        resume: bool,
+        owner: ControlOwner<'_>,
+    ) -> Result<crate::service::engine::DispatchOutcome, AppError> {
+        let script = self.helper_path()?;
+        let options = DispatchOptions {
+            model: plan.model.clone(),
+            effort: plan.effort.clone(),
+            fast: plan.fast,
+            resume,
+        };
+        run_shell_dispatch_cancellable(
+            &script,
+            &candidate.project_slug,
+            &candidate.story_id,
+            plan.agent,
+            true,
+            plan.full_auto,
+            &options,
+            &self.env,
+            Some(owner.cancellation),
+            owner.workspace,
+        )
     }
 }

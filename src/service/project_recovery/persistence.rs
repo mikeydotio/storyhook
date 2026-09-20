@@ -106,6 +106,24 @@ pub(super) fn read_view(
             }
         }
     }
+    for work in &state.work {
+        if let Some(lease) = &work.managed_lease {
+            let project = tx
+                .project(record.project)?
+                .ok_or_else(|| StoreError::Corrupt("recovery project missing".into()))?;
+            if work.kind != super::WorkKind::SeparateRepair
+                || work.source_attempt.is_some()
+                || work.epoch == 0
+                || lease.project_slug != project.slug
+                || lease.story_id != work.story.to_id(&project.prefix)
+                || !super::managed_claim::valid_lease(lease)
+            {
+                return Err(StoreError::Corrupt(
+                    "recovery managed claim has inconsistent target identity".into(),
+                ));
+            }
+        }
+    }
     super::work::validate(&state)?;
     super::attempts_validation::validate(&state, record.project)?;
     super::landing::validate(tx, &state, record.project)?;
