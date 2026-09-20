@@ -288,6 +288,11 @@ fn a_repair_with_a_different_fault_keeps_its_original_lineage() {
     );
     assert_eq!(updated.observations.len(), 2);
     assert_eq!(
+        updated.state.work.len(),
+        2,
+        "completed recursive fault needs its own delivery receipt"
+    );
+    assert_eq!(
         f.store()
             .read(|tx| tx.project_recoveries(f.project()))
             .unwrap()
@@ -655,4 +660,75 @@ fn transient_no_auto_cannot_renew_an_admitted_repair() {
             )
             .is_err()
     );
+}
+
+#[test]
+fn recursive_repair_return_replays_and_stops_dispatch_at_completed_budget() {
+    use storyhook::service::project_recovery::WorkStatus;
+    let f = fixture();
+    let view = prepare(&f);
+    let ctx = f.ctx();
+    let service = ProjectRecoveryService::new(&ctx);
+    let first = &view.state.work[0];
+    service
+        .claim_work(&view.record.id, &first.id)
+        .unwrap()
+        .unwrap();
+    service
+        .settle_work(&view.record.id, &first.id, 1, AssessmentDelivery::Delivered)
+        .unwrap();
+    for n in 1..=3 {
+        let candidate = resubmit(&f);
+        let attempt = format!("recursive-{n}");
+        let input = pins(n);
+        let outcome = judgment(&input, RepairCompletion::ProjectFault);
+        service.admit_repair(&candidate, &attempt, &input).unwrap();
+        service
+            .complete_repair(&candidate, &attempt, &outcome)
+            .unwrap();
+        let RepairJudgment::ProjectFault { fault } = outcome else {
+            panic!("fault")
+        };
+        let returned = service
+            .observe(&candidate, &fault, &attempt)
+            .unwrap()
+            .unwrap();
+        assert_eq!(returned.state.work.len(), usize::from(n) + 1);
+        assert_eq!(
+            service
+                .observe(&candidate, &fault, &attempt)
+                .unwrap()
+                .unwrap(),
+            returned
+        );
+        let work = returned.state.work.last().unwrap();
+        assert_eq!(work.story, StoryNo::new(1));
+        if n < 3 {
+            assert_eq!(work.status, WorkStatus::Pending);
+            service
+                .claim_work(&view.record.id, &work.id)
+                .unwrap()
+                .unwrap();
+            service
+                .settle_work(&view.record.id, &work.id, 1, AssessmentDelivery::Delivered)
+                .unwrap();
+        } else {
+            assert_eq!(work.status, WorkStatus::Held);
+            assert!(
+                service
+                    .claim_work(&view.record.id, &work.id)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                f.store()
+                    .read(|tx| tx.story(f.project(), work.story))
+                    .unwrap()
+                    .unwrap()
+                    .awaiting
+                    .as_deref()
+                    .is_some_and(|s| s.contains("three changed repair submissions"))
+            );
+        }
+    }
 }

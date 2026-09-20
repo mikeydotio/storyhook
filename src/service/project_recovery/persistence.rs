@@ -141,6 +141,7 @@ pub(super) fn read_view(
     };
     super::resume::validate(tx, &view)?;
     super::work_holds::validate(tx, &view)?;
+    super::repair_return::validate(&view)?;
     Ok(view)
 }
 

@@ -11,6 +11,7 @@ mod landing;
 mod model;
 mod persistence;
 mod refusal;
+mod repair_return;
 mod resume;
 mod work;
 mod work_holds;
@@ -162,6 +163,7 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                 decision_effects::apply(tx, self.ctx, &latest, &mut receipt, &now)?;
                 view.state.decision = Some(receipt);
             }
+            repair_return::enqueue(tx, self.ctx, &mut view, attempt, &now)?;
             holds::record(tx, self.ctx, &mut view, &now)?;
             save(tx, &mut view, &now)?;
             Ok(Some(view))

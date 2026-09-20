@@ -1343,3 +1343,25 @@ owned awaiting event. Replays cannot restore an operator-cleared hold or alter
 newer generations, independent prerequisites, or reserved-label decisions.
 Completion accounting compares the settled typed judgment to admitted Git input
 before consuming a repair slot or allowing repair landing.
+
+
+Recovery dependencies also retain an exact awaiting event for each affected
+submission. Ordinary repair closure can retract a dependency, but cannot clear
+that hold. Only a retained certified landing allows reconciliation. It retires
+the active fault identity; later faults get a new coordinator, while unfinished
+resume effects remain durable on the retired record.
+
+Landing reconciliation waits for unrelated dependencies and checks the original
+state, generation, labels, reset, quarantine, and landing authority. It clears
+only its exact awaiting event and commits one managed resume intent in the same
+transaction. The ordinary unblock callback is suppressed only for that release
+event. A later independent block/unblock episode keeps its own callback. Changed
+or replaced holds are preserved, including replacement with identical text.
+
+Terminal managed delivery writes an ordinary awaiting hold when the target still
+has the original authority. It never overwrites another hold or recreates one
+that an operator cleared. A recursive repair fault retains its completed attempt
+as the authority for one new delivery to the same repair story and worktree.
+The third completed changed-input repair records a budget hold without another
+pending dispatch. These are durable service effects; the recovery worker owns
+external transport after verifier workspace ownership has settled.

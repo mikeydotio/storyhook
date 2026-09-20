@@ -46,6 +46,9 @@ pub struct WorkDelivery {
     pub story: StoryNo,
     /// Instructions and managed dispatch mode.
     pub kind: WorkKind,
+    /// Completed recursive fault that authorizes this return to the repair owner.
+    #[serde(default)]
+    pub source_attempt: Option<String>,
     /// State at authorization, before any external claim.
     pub state: String,
     /// Latest creation or state transition event at authorization.
@@ -206,6 +209,7 @@ pub(super) fn enqueue_repair(tx: &impl ReadOps, view: &mut RecoveryView) -> Resu
         } else {
             WorkKind::SeparateRepair
         },
+        source_attempt: None,
         state: row.state,
         state_revision: authority::state_revision(tx, view.record.project, story)?,
         label_revision: authority::label_revision(tx, view.record.project, story)?,
@@ -246,6 +250,7 @@ pub(super) fn validate(state: &super::RecoveryState) -> Result<(), StoreError> {
                 )
         });
         if !(owned
+            || super::repair_return::owns(state, work)
             || (work.kind == WorkKind::Resume
                 && state.landing.is_some()
                 && work.release_event.is_some()))

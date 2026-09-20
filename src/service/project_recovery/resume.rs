@@ -32,7 +32,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                     ], self.ctx.provenance())?;
                 let release_event = awaiting_revision(tx, project, hold.story)?.ok_or_else(|| StoreError::Corrupt("recovery release event missing".into()))?;
                 view.state.work.push(WorkDelivery {
-                    id: effect, story: hold.story, kind: WorkKind::Resume, state: row.state,
+                    id: effect, story: hold.story, kind: WorkKind::Resume, source_attempt: None, state: row.state,
                     state_revision: authority::state_revision(tx, project, hold.story)?,
                     label_revision: authority::label_revision(tx, project, hold.story)?,
                     release_event: Some(release_event), status: WorkStatus::Pending, hold: None, disposition: None,

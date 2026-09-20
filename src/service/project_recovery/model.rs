@@ -36,6 +36,8 @@ pub enum AssessmentHold {
     ResourceOrDependency,
     /// Three delivery attempts have been proven unsuccessful.
     DeliveryExhausted,
+    /// Three changed committed repair inputs completed without resolving the fault.
+    RepairExhausted,
     /// The managed runtime cannot prove that replacement is safe.
     OwnershipUncertain,
     /// A delivered assessor did not decide within thirty minutes.
@@ -56,6 +58,9 @@ impl AssessmentHold {
                 "assessment story has a dependency, reset, or unresolved landing hold"
             }
             Self::DeliveryExhausted => "three proven assessment deliveries failed",
+            Self::RepairExhausted => {
+                "three changed repair submissions completed without resolving this recovery"
+            }
             Self::OwnershipUncertain => "assessment ownership remains uncertain",
             Self::ResponseExpired => {
                 "scope assessment exceeded its 30-minute response deadline; do not launch a competing agent"
