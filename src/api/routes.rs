@@ -127,6 +127,8 @@ impl EngineAction {
 pub enum ProjectRoute<'a> {
     /// `GET .../data` — the whole board in one request.
     Data,
+    /// `PATCH .../visibility` — this token's project display preference.
+    Visibility,
     /// `POST .../verification/ack` — acknowledge one exact halted incident.
     VerificationAck,
     /// `POST .../verification/control` — manually start, drain or stop.
@@ -309,6 +311,10 @@ pub fn classify<'a>(segments: &[&'a str], method: &Method) -> Route<'a> {
 /// Which per-project route `rest` names — the path *after* `/api/repos/{id}`.
 fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
     match rest {
+        ["visibility"] => match method {
+            Method::Patch => ProjectRoute::Visibility,
+            _ => ProjectRoute::MethodNotAllowed,
+        },
         ["data"] => match method {
             Method::Get => ProjectRoute::Data,
             _ => ProjectRoute::MethodNotAllowed,
@@ -437,6 +443,7 @@ impl ProjectRoute<'_> {
     pub fn name(&self) -> &'static str {
         match self {
             ProjectRoute::Data => "Data",
+            ProjectRoute::Visibility => "Visibility",
             ProjectRoute::VerificationAck => "VerificationAck",
             ProjectRoute::VerificationControl => "VerificationControl",
             ProjectRoute::Engine => "Engine",
