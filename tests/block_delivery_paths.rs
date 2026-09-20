@@ -57,6 +57,8 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "history",
         "integrity",
         "pr_check",
+        "project_recovery/refusal",
+        "project_recovery/resume",
         "relation",
         "reset",
         "story",
@@ -66,11 +68,33 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "verification/human",
     ];
     // Obviation evidence changes blocking inside the caller's complete transaction.
-    let delegated = [(
-        "continuation/administrative",
-        "continuation/request",
-        "administrative::record(",
-    )];
+    let delegated = [
+        (
+            "project_recovery/work_holds",
+            "project_recovery/work",
+            "super::work_holds::record(",
+        ),
+        (
+            "project_recovery/holds",
+            "project_recovery",
+            "holds::record(",
+        ),
+        (
+            "project_recovery/decision_effects",
+            "project_recovery",
+            "decision_effects::apply(",
+        ),
+        (
+            "project_recovery/decision_effects",
+            "project_recovery/decision",
+            "super::decision_effects::apply(",
+        ),
+        (
+            "continuation/administrative",
+            "continuation/request",
+            "administrative::record(",
+        ),
+    ];
     // These writers cannot change effective blocking. A new exception requires a reason.
     let exempt = [
         ("attachment", "attachment metadata only"),

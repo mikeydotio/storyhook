@@ -5218,6 +5218,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var verifier = state.data && state.data.verifier;
     var control = state.data && state.data.verification_control;
     var mode = control && control.state;
+    var projectRecoveries = (verifier && verifier.project_recoveries) || [];
     var recovery = verifier && verifier.recovery;
     var request = recovery && recovery.request;
     var requestState = request && request.outcome && request.outcome.state;
@@ -5228,7 +5229,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     observation.halted = halted;
     observation.transition = transition;
     state.verificationObservations[state.repoId] = observation;
-    var visible = halted || !!(mode && mode !== "running") || !!(verifier && verifier.warning) || observation.resumed || requestState === "scheduled";
+    var visible = projectRecoveries.length > 0 || halted || !!(mode && mode !== "running") || !!(verifier && verifier.warning) || observation.resumed || requestState === "scheduled";
     mount.hidden = !visible;
     if (!visible) {
       delete mount.dataset.fingerprint;
@@ -5239,6 +5240,22 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var fingerprint = JSON.stringify([incident, pending, verifier, mode, observation.resumed]);
     if (mount.dataset.fingerprint === fingerprint) return;
     clear(mount);
+    projectRecoveries.forEach(function(item) {
+      var details = [
+        el("div", { class: "engine-banner-title" }, ["Project repair: ", item.fault, " · ", item.phase]),
+        el("div", {}, ["Affected: ", (item.affected_stories || []).join(", "), "; assessor ", item.assessment_owner, "; repair ", item.repair_story || "undecided"]),
+        el("div", {}, ["Completed repair attempts: ", String(item.completed_attempts), "/", String(item.attempt_limit), "; ", item.locus]),
+        el("div", {}, [item.next_action]),
+        el("code", {}, ["story verifier repair show " + item.id + " --json"])
+      ];
+      if (item.repair_link && /^https?:\/\//.test(item.repair_link)) details.push(el("a", { href: item.repair_link, target: "_blank", rel: "noopener noreferrer" }, ["Repair PR"]));
+      mount.appendChild(el("article", { class: "engine-banner project-recovery-banner", role: "status" }, details));
+    });
+    if (!halted && mode === "running" && !(verifier && verifier.warning) && !observation.resumed && requestState !== "scheduled") {
+      mount.dataset.fingerprint = fingerprint;
+      measureNoticeBands();
+      return;
+    }
     if (!halted) {
       var title = mode === "stopped" ? "Central verification stopped" : mode === "stopping" ? "Central verification stopping" : mode === "draining" ? "Central verification draining" : observation.resumed ? "Central verification halt cleared" : requestState === "scheduled" ? "Central verification retry scheduled" : "Central verification needs attention";
       var children = [el("div", { class: "engine-banner-title" }, [title])];

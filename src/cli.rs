@@ -178,6 +178,40 @@ pub enum EngineAction {
 /// The controls under `story verifier` (SH-666).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerifierAction {
+    /// Private subprocess callback bound to the daemon's live verification owner.
+    RepairAdmit {
+        /// Exact story owned by the verifier.
+        story_id: String,
+        /// Unique live verifier attempt token.
+        attempt_id: String,
+        /// Exact submission generation; zero and negative values are invalid.
+        generation: i64,
+        /// Immutable proposed Git input, without any certification authority.
+        input: crate::service::project_recovery::RepairInput,
+    },
+    /// Read one durable project fault recovery in the selected project.
+    RepairShow {
+        /// Exact stable recovery identity.
+        recovery_id: String,
+    },
+    /// Accept a versioned scope decision under managed assessment authority.
+    RepairDecide {
+        /// Exact stable recovery identity.
+        recovery_id: String,
+        /// JSON file resolved against the caller's working directory.
+        input: String,
+    },
+    /// Inspect gate configuration in a pinned proposed merge without the store.
+    GateConfig {
+        /// Repository containing the pinned parents.
+        checkout: std::path::PathBuf,
+        /// Pinned base commit.
+        base: String,
+        /// Pinned proposed head commit.
+        head: String,
+        /// Expected proposed merge tree.
+        tree: String,
+    },
     /// Read durable permission, incidents, recovery and live ownership.
     Status,
     /// Enable admission without clearing a halt.
@@ -263,6 +297,9 @@ Usage:
   story engine stop [--run <id>] [--now]
   story verifier status | start | stop | drain
   story verifier ack <incident-id> [--leave-stopped] (acknowledge and retry by default)
+  story verifier repair show <recovery-id> --json
+  story verifier repair decide <recovery-id> --input <json-file>
+  story verifier gate-config <checkout> <base> <head> <tree> --json
   story resources <id> [--json]                    (inspect existing resource identity)
   story cleanup [--dry-run]                         (retry the verifier's reap of finished story workspaces)
   story summary
@@ -1979,6 +2016,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         verb: "verifier",
         subcommand: Some("ack"),
         flags: &[bare("leave-stopped")],
+    },
+    VerbFlags {
+        verb: "verifier",
+        subcommand: Some("repair"),
+        flags: &[value("input")],
     },
     VerbFlags {
         verb: "resources",
@@ -3969,10 +4011,72 @@ const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id> [--lea
 fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(
-            "usage: story verifier <status|start|stop|drain|ack>".to_string(),
+            "usage: story verifier <status|start|stop|drain|ack|repair>".to_string(),
         ));
     };
     let action = match action {
+        "repair-admit" => {
+            const USAGE: &str = "usage: story verifier repair-admit <story> <attempt> <generation> <base> <head> <head-tree> <tree> --json (private verifier callback)";
+            if args.len() != 9
+                || args[2..]
+                    .iter()
+                    .any(|s| s.trim().is_empty() || is_flag_shaped(s))
+            {
+                return Err(AppError::Usage(USAGE.into()));
+            }
+            let generation = args[4]
+                .parse::<i64>()
+                .ok()
+                .filter(|v| *v > 0)
+                .ok_or_else(|| AppError::Usage(USAGE.into()))?;
+            let input = crate::service::project_recovery::RepairInput {
+                base: args[5].clone(),
+                head: args[6].clone(),
+                head_tree: args[7].clone(),
+                tree: args[8].clone(),
+            };
+            input.validate()?;
+            VerifierAction::RepairAdmit {
+                story_id: args[2].clone(),
+                attempt_id: args[3].clone(),
+                generation,
+                input,
+            }
+        }
+        "repair" => {
+            const USAGE: &str = "usage: story verifier repair show <recovery-id> | decide <recovery-id> --input <json-file>";
+            let id = args
+                .get(3)
+                .filter(|s| !is_flag_shaped(s))
+                .ok_or_else(|| AppError::Usage(USAGE.into()))?;
+            match args.get(2).map(String::as_str) {
+                Some("show") if args.len() == 4 => VerifierAction::RepairShow {
+                    recovery_id: id.clone(),
+                },
+                Some("decide")
+                    if args.len() == 6 && args[4] == "--input" && !is_flag_shaped(&args[5]) =>
+                {
+                    VerifierAction::RepairDecide {
+                        recovery_id: id.clone(),
+                        input: args[5].clone(),
+                    }
+                }
+                _ => return Err(AppError::Usage(USAGE.into())),
+            }
+        }
+        "gate-config" => {
+            const USAGE: &str =
+                "usage: story verifier gate-config <checkout> <base> <head> <tree> --json";
+            if args.len() != 6 {
+                return Err(AppError::Usage(USAGE.into()));
+            }
+            VerifierAction::GateConfig {
+                checkout: args[2].clone().into(),
+                base: args[3].clone(),
+                head: args[4].clone(),
+                tree: args[5].clone(),
+            }
+        }
         "status" | "start" | "stop" | "drain" => {
             expect_no_more(
                 &args[2..],
@@ -4005,7 +4109,7 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
         }
         _ => {
             return Err(AppError::Usage(
-                "usage: story verifier <status|start|stop|drain|ack>".to_string(),
+                "usage: story verifier <status|start|stop|drain|ack|repair>".to_string(),
             ));
         }
     };

@@ -119,7 +119,7 @@ const IDLE: Duration = Duration::from_secs(1);
 /// How a fake reaches the real sibling beside it — the shape the shipped
 /// family uses, since the fake's directory is the bundle's stand-in.
 const SIBLING: &str = r#""$(dirname "${BASH_SOURCE[0]}")""#;
-const CERTIFIED: &str = r#"printf '%s\n' '{"result":"certified","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tree":"verified-tree","detail":"completed"}'"#;
+const CERTIFIED: &str = r#"printf '%s\n' '{"result":"certified","gate":"make test","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tree":"verified-tree","detail":"completed"}'"#;
 
 #[test]
 fn progressing_verification_can_outlive_its_idle_budget() {

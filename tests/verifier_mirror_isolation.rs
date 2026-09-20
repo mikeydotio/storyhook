@@ -141,7 +141,7 @@ fn record_actuator_children(env: Environment) -> BTreeMap<String, Option<String>
          /usr/bin/env > \"$2.env\"\n\
          printf '%s\\n' '{\"result\":\"merged\",\"detail\":\"environment recorded\"}'\n\
          else\n/usr/bin/env > verify.env\n\
-         printf '%s\\n' '{\"result\":\"certified\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tree\":\"t\",\"detail\":\"environment recorded\"}'\nfi\n",
+         printf '%s\\n' '{\"result\":\"certified\",\"gate\":\"make test\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tree\":\"t\",\"detail\":\"environment recorded\"}'\nfi\n",
     )
     .expect("write environment-recording verification helper");
     let actuator =

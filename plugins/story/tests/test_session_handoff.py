@@ -217,13 +217,47 @@ class HandoffProviderTests(unittest.TestCase):
                                                        'claude', self.process))
                 self.process.assert_not_called()
 
-    def test_request_failure_never_approves_or_requests_a_retry(self):
+    def test_request_failure_requests_status_only_without_retry_or_permission(self):
         self.process.side_effect = RuntimeError('daemon delivery unknown')
         result = handoff.handle_stop(self.payload, {'STORYHOOK_AUTO': 'SH-1'},
                                      'claude', self.process)
-        self.assertIn('daemon delivery unknown', result['systemMessage'])
-        self.assertNotIn('decision', result)
+        self.assertEqual(result.get('decision'), 'block', result)
+        self.assertIn('daemon delivery unknown', result['reason'])
+        self.assertIn('story continuation status SH-1 --json', result['reason'])
+        self.assertIn('Do not resend', result['reason'])
+        self.assertIn('Do not implement', result['reason'])
+        self.assertIn('Plan mode', result['reason'])
         self.assertEqual(self.process.call_count, 1)
+
+    def test_accepted_request_with_lost_response_reenters_for_status_inspection(self):
+        accepted = self.root / 'accepted.json'
+        calls = []
+        def endpoint(argv, **kwargs):
+            calls.append(argv)
+            # External endpoint accepts the request, then fails to deliver a reply
+            # before its caller's deadline. The real process boundary owns timeout.
+            program = ('import pathlib,sys,time; '
+                       f'pathlib.Path({str(accepted)!r}).write_text(sys.stdin.read()); '
+                       'time.sleep(2); print("{}")')
+            return handoff.run_process([sys.executable, '-c', program],
+                                       timeout=0.2, cwd=kwargs['cwd'], text=kwargs['text'])
+        result = handoff.handle_stop(self.payload, {'STORYHOOK_AUTO': 'SH-1'}, 'claude', endpoint)
+        self.assertEqual(json.loads(accepted.read_text())['handoff'], request())
+        self.assertEqual(result.get('decision'), 'block', result)
+        self.assertIn('unconfirmed', result['reason'])
+        self.assertIn('Do not resend', result['reason'])
+        self.assertIn('Do not implement', result['reason'])
+        self.assertEqual(len(calls), 1)
+
+    def test_undecodable_reply_requires_status_but_explicit_refusal_does_not(self):
+        for response in ('truncated {', '', '{"result":"ok", "result":"ok"}'):
+            self.process.return_value = response
+            result = handoff.handle_stop(self.payload, {'STORYHOOK_AUTO': 'SH-1'}, 'claude', self.process)
+            self.assertEqual(result.get('decision'), 'block', result)
+        self.process.return_value = json.dumps({'result': 'error', 'error': 'ownership refused'})
+        result = handoff.handle_stop(self.payload, {'STORYHOOK_AUTO': 'SH-1'}, 'claude', self.process)
+        self.assertNotIn('decision', result)
+        self.assertIn('ownership refused', result['systemMessage'])
 
 
 if __name__ == '__main__':

@@ -51,6 +51,26 @@ class StopTests(unittest.TestCase):
     def run_hook(self):
         return stop.handle(self.payload, self.env, self.classify, self.eligible)
 
+    def test_lost_handoff_response_enters_status_review_without_plan_classification(self):
+        self.payload['last_assistant_message'] = json.dumps({
+            'type': 'storyhook.session-handoff', 'version': 1,
+            'story_id': 'SH-672', 'kind': 'context',
+            'evidence': {'context': 'Retain committed work.', 'outstanding_work': 'Finish recovery.'}})
+        for mode in ('default', 'plan'):
+            with self.subTest(mode=mode):
+                self.transcript_for(mode=mode)
+                with patch.object(stop, 'run_process', side_effect=RuntimeError('story exited 12: deadline expired')) as process:
+                    result = self.run_hook()
+                self.assertEqual(result.get('decision'), 'block', result)
+                self.assertIn('status inspection only', result['reason'])
+                self.assertIn('story continuation status SH-672 --json', result['reason'])
+                self.assertIn('Do not implement', result['reason'])
+                self.assertIn('Do not resend', result['reason'])
+                self.assertNotIn('approved automatically', result['reason'])
+                process.assert_called_once()
+        self.classify.assert_not_called()
+        self.eligible.assert_not_called()
+
     def test_observed_default_mode_plan_gets_native_continuation(self):
         result = self.run_hook()
         self.assertEqual(result.get('decision'), 'block')

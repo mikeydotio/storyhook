@@ -36,14 +36,37 @@ def cleanup_failure(common, worktree, phase, detail):
 
 
 def attach_cleanup(value, failure):
-    """Preserve a completed primary result and every subsequent cleanup diagnosis."""
+    """Preserve completed evidence or admission refusal with cleanup diagnostics."""
     if not isinstance(value, dict) or value.get("result") not in (
-            "tests-failed", "gate-passed", "merged"):
+            "tests-failed", "gate-passed", "merged", "project-fault", "repair-deferred"):
         raise Refusal("cleanup refused without a completed child verdict")
-    for name in ("tree", "detail"):
-        if not isinstance(value.get(name), str) or not value[name]:
+    evidence = value
+    requires_log = value["result"] not in ("merged", "repair-deferred")
+    if value["result"] == "repair-deferred":
+        if (not isinstance(value.get("recovery_id"), str) or not value["recovery_id"].strip()
+                or value.get("reason") not in ("unchanged-input", "budget-exhausted", "policy-hold")):
+            raise Refusal("repair admission refusal is missing its exact recovery or reason")
+    if value["result"] == "project-fault":
+        evidence = value.get("fault")
+        if not isinstance(evidence, dict):
+            raise Refusal("project fault is missing its evidence")
+        for name in ("base", "head", "head_tree"):
+            if not isinstance(evidence.get(name), str) or not evidence[name]:
+                raise Refusal(f"project fault is missing {name}")
+        if evidence.get("code") == "missing-certification":
+            if type(evidence.get("execution_status")) is not int or evidence["execution_status"] != 0:
+                raise Refusal("project fault is missing completed gate evidence")
+        elif evidence.get("code") in ("invalid-gate-configuration", "missing-gate-command"):
+            requires_log = False
+            for name in ("base", "head", "configuration"):
+                if not isinstance(evidence.get(name), str) or not evidence[name]:
+                    raise Refusal(f"configuration fault is missing {name}")
+        else:
+            raise Refusal("unknown project fault code")
+    for name in (() if value["result"] == "repair-deferred" else ("tree", "detail")):
+        if not isinstance(evidence.get(name), str) or not evidence[name]:
             raise Refusal(f"completed child verdict is missing {name}")
-    if value["result"] != "merged" and not isinstance(value.get("log"), str):
+    if requires_log and not isinstance(evidence.get("log"), str):
         raise Refusal("completed gate verdict is missing its log")
     previous = value.get("cleanup_failure")
     if previous is not None:

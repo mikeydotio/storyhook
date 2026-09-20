@@ -267,26 +267,33 @@ Full Auto that `awaiting` classifies as `AgentBlocked` (`full-auto-engine.md`,
 
 ### The gate
 
-The gate is the project's own (SH-649, D-D): the daemon reads `[verify] gate`
-from the registered checkout's committed `.storyhook.toml`
-(`service::gate_command::gate_command_for`), `make test` when the file, the
-table or the key is absent, and hands it to `verify-pr.sh` as
-`<pr-url> -- <gate…>`. The script carries no default of its own —
-`GateCommand::DEFAULT` is the one place it lives — and refuses by name to run
-without one. The value is a **plain argv**: space-separated words of ASCII
-alphanumerics and `_.:/=@+,-`, the first not a flag, because every hop from
-the daemon to `merge-watch.sh --speculative-run … -- "$@"` execs it word for
-word with no shell, so `make test && echo ok` would reach `make` as three
-literal arguments. Anything else — and an unknown key under `[verify]`, which
-would otherwise land nowhere and silently run the default — is refused naming
-`[verify].gate`, the file, the value and the offending character; an
-unreadable pointer surfaces `read_pointer`'s own error rather than failing
-open. A refused gate is a **permanent infrastructure failure**: local
-configuration needing a person, taken before any journal or process exists,
-which halts the queue with a comment and is never returned to the implementor
-as a red. The gate named in the GREEN and RED comments is the one the verdict
-carries (`VerificationOutcome::{Merged, TestsFailed}.gate`), derived from the
-same parsed value the argv was.
+The gate is the project's own. The daemon passes `<pr-url> -- --project-gate`
+to the bundled verifier. After it pins both parents and computes the proposed
+merge tree, the verifier invokes the store-free command
+`story verifier gate-config <checkout> <base> <head> <tree> --json`.
+This helper reconstructs that merge in private object storage, verifies the tree
+identity, and reads `.storyhook.toml` from committed Git objects. It does not
+read the registered checkout's working files or change its index, HEAD, refs,
+or objects. Thus a repair branch can repair its own configuration.
+
+The Rust `ProjectPointer` schema and `GateCommand` parser own this policy.
+`make test` remains the default when the pointer, table, or key is absent.
+The value is a plain argv: space-separated ASCII alphanumerics and
+`_.:/=@+,-`, with a command first. No shell interprets it. Invalid committed
+configuration produces `invalid-gate-configuration` evidence. A missing or
+non-executable repository-local entry point produces `missing-gate-command`
+evidence. Both carry pinned parents/tree, configuration digest, locus, and
+parser or file diagnosis. Neither invents command execution or a test verdict.
+In-tree committed symlinks are resolved from objects. Escaping, dangling, or
+cyclic symlinks and Git inspection errors remain infrastructure failures.
+Bare or absolute host tools remain the process supervisor's responsibility.
+
+Completed wire verdicts must carry the resolved command. Both ordinary and
+interrupted capture validate it before GREEN/RED comments use it. No mutable
+checkout value or default replaces missing verdict evidence. Explicit argv
+remains available to the private script harness. An already-landed PR uses
+configuration from its exact landed commit; failed inspection there cannot
+reclassify the landed PR as an unjudged repair candidate.
 
 A tree with no `gate`/`full` receipt runs `run_verification_gate`, which
 takes `machine-lock.sh gate` around the whole run (SH-589) and executes
@@ -1257,3 +1264,149 @@ An external merge already sent cannot be undone by cancellation. Its durable
 landing intent is retained while labeled; automatic completion and reaping are
 suppressed. After removal, the verifier reconciles that intent before admitting
 another merge. No state migration or new CLI option is required.
+
+## Project fault assessment and scope — SH-742
+
+The recovery service retains typed faults and the exact unjudged submission in
+immutable observations. One active project/code/locus record owns assessment;
+later observations join it. Enrollment returns only the current eligible
+generation, after checking awaiting, landing, reset, and operator authority.
+It records an assessment delivery token without starting an external operation.
+
+`story verifier repair show <recovery-id> --json` exposes the evidence and current
+revision. The managed assessor submits its decision with
+`story verifier repair decide <recovery-id> --input <json-file>`.
+The strict version-1 JSON object requires `revision`, numeric `project` and
+`generation`, `dispatch_identity`, `scope`, `context`, `question`, `decision`,
+`rationale`, and an `evidence` array. Include at least one `attempt:<id>` from the
+retained observations. All explanation and evidence fields must be nonempty.
+
+| Scope | Additional input | Transactional result |
+|---|---|---|
+| `same-story` | None | Original story owns repair; other current subjects depend on it. |
+| `separate-story` | `repair: {title, description, acceptance}` | One critical bug in the owning project, reciprocal dependencies, and a delivery identity. |
+| `external` | `prerequisite` | Contextual awaiting reason, without a repair or delivery identity. |
+
+Critical priority is an explicit exception for this recovery path. It does not
+reprioritize unrelated work. The accepted input is retained for exact replay;
+stale or conflicting decisions are refused. Story creation, both dependency
+ends, comments, decision evidence, and pending delivery identity commit together.
+External delivery must happen after that transaction and verifier ownership end.
+
+The origin must still have assessment authority. Joined subjects with changed
+state, awaiting, labels, or resource authority are retained as skipped rather
+than overwritten. Existing dependencies remain intact, and recovery cannot add
+a self-edge or cycle. A valid in-flight assessor decision proves charter receipt;
+a late matching delivery confirmation does not reopen assessment. Undecided
+assessment allows three proven delivery failures and a 30-minute response window.
+Uncertain ownership retains its hold without spending proven-failure budget.
+Terminal assessment holds also record an awaiting reason on each eligible
+affected story. The recovery retains the exact awaiting-event sequence and
+original generation. It skips independent holds and changed authority; a later
+observation cannot restore a recovery hold that the operator already cleared.
+
+Repair admission retains the head commit's tree independently of the proposed
+merge tree. An empty commit or moving base does not make previously judged
+repair content new. At most three changed committed repair inputs can complete;
+interrupted attempts consume no completion slot. A certified retry of the same
+generation retains its existing slot. An older unfinished attempt cannot bypass
+the completed-input limit. Admission refusals retain evidence without changing
+story state before verifier cleanup finishes.
+
+Attempts and refusals retain the original verification candidate, including
+reservation and resource identity. A refreshed candidate cannot renew an older
+attempt after a transient human reservation. A repair that encounters a different
+typed project fault remains in its original recovery and cannot create another
+repair story. Its fault must match the completed admitted source and merge input.
+
+The private `verifier repair-admit` callback requires the exact live project,
+story, generation, and verifier attempt token, plus pinned base, head, head tree,
+and proposed merge tree. It uses the candidate retained at verifier acquisition
+under the registry-before-store lock order. Missing or cancelled ownership and
+transient reservation changes refuse admission; a new queue read cannot renew
+that authority. The callback does not certify or merge anything.
+
+A repair landing receipt is recorded inside validated landing completion. It
+retains the certified repair attempt, exact LandingIntent, and confirmed merge
+event. A mismatched head or tree keeps pending landing authority. A manually
+closed repair, a green comment, or an unrelated event cannot authorize resume.
+
+The verifier shell calls private admission after preflight pins the proposed
+merge and before configuration inspection or gate execution. A refusal returns
+`repair-deferred`; it runs no gate and creates no certification. Missing,
+malformed, or failed callback answers remain infrastructure failures. A cleanup
+or capture failure retains the refusal as evidence and withholds disposition.
+
+After cleanup settles, the queue applies only the exact retained refusal to its
+original current submission. It returns that repair to in-progress with an
+owned awaiting event. Replays cannot restore an operator-cleared hold or alter
+newer generations, independent prerequisites, or reserved-label decisions.
+Completion accounting compares the settled typed judgment to admitted Git input
+before consuming a repair slot or allowing repair landing.
+
+
+Recovery dependencies also retain an exact awaiting event for each affected
+submission. Ordinary repair closure can retract a dependency, but cannot clear
+that hold. Only a retained certified landing allows reconciliation. It retires
+the active fault identity; later faults get a new coordinator, while unfinished
+resume effects remain durable on the retired record.
+
+Landing reconciliation waits for unrelated dependencies and checks the original
+state, generation, labels, reset, quarantine, and landing authority. It clears
+only its exact awaiting event and commits one managed resume intent in the same
+transaction. The ordinary unblock callback is suppressed only for that release
+event. A later independent block/unblock episode keeps its own callback. Changed
+or replaced holds are preserved, including replacement with identical text.
+
+Terminal managed delivery writes an ordinary awaiting hold when the target still
+has the original authority. It never overwrites another hold or recreates one
+that an operator cleared. A recursive repair fault retains its completed attempt
+as the authority for one new delivery to the same repair story and worktree.
+The third completed changed-input repair records a budget hold without another
+pending dispatch. These are durable service effects; the recovery worker owns
+external transport after verifier workspace ownership has settled.
+
+### Active recovery delivery and operator diagnostics
+
+A settled `ProjectFault` now enrolls recovery and releases the verifier attempt.
+A separate daemon worker reacts to change-bus events and a 30-second wake. It
+waits for the originating and target workspace locks and runs managed delivery
+with its own cancellation token. It cannot keep a project gate occupied while
+an agent assesses or repairs the fault. Other eligible submissions continue.
+
+The worker notifies the managed owner first. Only typed `agent-absent` evidence
+permits resource inspection and dispatch. An original worktree requires its
+exact registered lease. A new dedicated repair uses a fresh managed claim and
+never inherits the originating story's engine identity. An interrupted delivery
+is uncertain until reconciled; it is never pasted again on the assumption that
+it failed. Only proven undelivered attempts spend the three-delivery budget.
+Manual stop, reserved labels, changed authority, and uncertain resources prevent
+automatic effects. No recovery operation grants credentials or overrides.
+
+Dispatch guidance: read the retained story comments and `verifier repair show`
+before edits. The assessment owner must read the scope rubric and submit the
+versioned scope decision. The repair owner follows the accepted decision, keeps
+required gate coverage, tests new and affected behavior, commits, and moves the
+story to verifying as its last action. After a separate repair lands, affected
+agents refresh source and gate configuration against the current base in the
+existing worktree and submit a fresh verification generation. Never reuse the
+old unjudged submission or manufacture certification.
+
+A fault observed on a reserved `no-auto` submission does not change its state or
+labels. Its exact old generation is excluded from further gate admission and is
+shown as a recovery hold. Ordinary no-auto verification remains supported before
+fault enrollment. A changed submission needs a fresh generation. The engine
+recognizes valid pending recovery and exact owned dependency holds as progress;
+this exception does not erase a missing-pane observation, reset, or quarantine.
+
+`story verifier status` and the dashboard share `project_recoveries`: fault and
+locus, affected stories, assessor, repair story and PR, phase, completed-attempt
+budget, and next action. Old payloads decode with an empty array. Project repair
+is displayed independently of infrastructure halt and manual admission control.
+`story verifier repair show <id> --json` retains the full evidence and history.
+
+Legacy incident text cannot prove execution, receipt inspection, or cleanup.
+Automatic conversion requires a matching validated typed recovery observation
+for the exact project, story, and generation. The transaction archives the full
+old incident before clearing its queue-wide halt. Text-only incidents, including
+JSON embedded in diagnostic text, remain subject to ordinary incident recovery.

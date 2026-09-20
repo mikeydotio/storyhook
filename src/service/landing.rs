@@ -192,6 +192,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                 ],
                 ctx.provenance(),
             )?;
+            super::project_recovery::record_landing(tx, intent, &now)?;
             Ok(true)
         })?)
     }

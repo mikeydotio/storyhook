@@ -56,6 +56,7 @@ source: tests/golden_cli.rs
         "incident_is_current": false,
         "last_evidence_at": null,
         "project": "[project]",
+        "project_recoveries": [],
         "recovery": {
           "acknowledgement": null,
           "request": null

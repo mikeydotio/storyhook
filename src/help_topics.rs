@@ -3001,13 +3001,56 @@ story verifier start
 story verifier stop
 story verifier drain
 story verifier ack <incident-id> [--leave-stopped]
+story verifier gate-config <checkout> <base> <head> <tree> --json
+story verifier repair show <recovery-id> --json
+story verifier repair decide <recovery-id> --input <json-file>
 
 Inspect and control this project's centralized verifier.
+
+  repair show reads durable project-fault evidence, revision, scope assessor,
+  and accepted repair work. It does not grant implementation authority.
+  repair decide accepts the managed assessor's strict JSON decision once.
+  The file needs version (1), revision, project, generation, dispatch_identity,
+  scope (same-story, separate-story, external), context, question, decision,
+  rationale, and evidence (include a retained attempt:<id> reference).
+  Separate-story also needs repair: {title, description, acceptance}.
+  External instead needs prerequisite. Other scopes omit both fields.
+  Read show again before deciding: stale or conflicting input is refused.
+  Identical replay returns the recorded result without duplicate work.
+  A separate repair is a critical bug by explicit project-recovery policy;
+  this exception does not change unrelated story priorities. Scope advice
+  never grants certification, credentials, or permission overrides.
+
+  gate-config reads committed gate configuration from the exact proposed merge.
+  Supply pinned Git object IDs for both parents and the expected tree. This
+  local, store-free helper does not change the checkout or certify a tree.
+  It reports gate-ready argv or typed project-fault evidence. Git inspection
+  errors remain errors; they never grant repair or certification authority.
+
+  repair-admit is a private verifier subprocess callback. It requires the
+  current attempt token, generation, and pinned Git input. It refuses unchanged
+  or exhausted repair submissions before gate execution. It grants no receipt,
+  merge, credential, or operator override authority.
 
   status reports admission independently from infrastructure incidents,
   actual owned attempt, verifying and held stories, failure age and cause,
   attempts/retries, acknowledgement, and the latest recovery request.
   --json carries these facts under verifier; timestamps remain UTC.
+  project_recoveries adds fault, affected stories, assessment and repair owner,
+  repair PR, phase, completed-attempt budget, and next action. These records
+  are distinct from infrastructure halts. Old payloads have no recovery rows.
+  The dashboard reads the same snapshot. Use repair show for full evidence.
+
+  A project fault releases verifier ownership after cleanup. The managed agent
+  decides scope before edits, preserves required gate coverage, tests new and
+  impacted behavior, commits, and moves its repair to verifying as the last
+  action. A separate repair must pass central verification and land before
+  affected agents refresh their existing worktrees and submit fresh generations.
+  Recovery never reruns the exact old unjudged generation or clears a label.
+  Manual stop, no-auto, human-only, resource holds, and unrelated blockers stay
+  in force. Uncertain delivery does not authorize a replacement agent.
+  Text-only legacy incidents remain held. Conversion needs matching typed
+  recovery evidence and archives the old incident before releasing its halt.
 
   start enables admission without clearing a halt. drain prevents new
   admission while owned work finishes. stop also cancels owned work.

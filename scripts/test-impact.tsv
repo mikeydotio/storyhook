@@ -144,6 +144,7 @@ portfile_fixture_hygiene	:(glob)**/*
 portfile_fixture_hygiene	:(glob)tests/**/*.rs
 press_gate_failsafe	:(glob)**/*
 priority_rubric	:(glob)**/*
+project_recovery_store	src/store/schema/0047_project_recovery.sql
 protect_install_hook	:(glob)**/*
 push_gate	:(glob)**/*
 read_model_column_coverage	:(glob)**/*
@@ -160,6 +161,7 @@ retired_next_claim	:(glob)**/*
 retired_work_verb	:(glob)**/*
 route_authority	:(glob)**/*
 schema_lineage	:(glob)src/store/**
+schema_lineage	src/store/schema/0047_project_recovery.sql
 scope_rubric	:(glob)**/*
 scope_rubric	AGENTS.md
 scope_rubric	src/service/templates.rs
@@ -184,6 +186,7 @@ store_isolation	:(glob)crates/storyhook-test-support/src/**/*.rs
 store_isolation	:(glob)scripts/**/*.sh
 store_isolation	:(glob)tests/**/*.rs
 store_migrations	:(glob)src/store/**
+store_migrations	src/store/schema/0047_project_recovery.sql
 store_schema_fixture	:(glob)**/*
 story_reset	src/service/query.rs
 story_reset	src/service/resources/mod.rs

@@ -1027,12 +1027,45 @@ fn dispatch_verifier<S: Store>(
     action: VerifierAction,
 ) -> Result<Response, AppError> {
     use crate::service::verification_control::{VerificationAcknowledgement, VerificationAction};
+    let recovery = crate::service::project_recovery::ProjectRecoveryService::new(ctx);
+    match &action {
+        VerifierAction::RepairShow { recovery_id } => {
+            return recovery
+                .show(recovery_id)
+                .map(|view| Response::ProjectRecovery(Box::new(view)));
+        }
+        VerifierAction::RepairDecide { recovery_id, input } => {
+            let raw = read_input(ctx.cwd(), None, Some(input))?;
+            let decision = serde_json::from_str(&raw).map_err(|error| {
+                AppError::Validation(format!("invalid project recovery decision JSON: {error}"))
+            })?;
+            return recovery
+                .decide(recovery_id, &decision)
+                .map(|view| Response::ProjectRecovery(Box::new(view)));
+        }
+        _ => {}
+    }
     let activity = ctx.verification_activity().ok_or_else(|| {
         AppError::Validation(
             "verifier runtime unavailable; run this command through the daemon".into(),
         )
     })?;
     let receipt = match action {
+        VerifierAction::RepairAdmit {
+            story_id,
+            attempt_id,
+            generation,
+            input,
+        } => {
+            let answer = activity.admit_repair(ctx, &story_id, &attempt_id, generation, &input)?;
+            return Ok(Response::RawJson(serde_json::to_string(&answer)?));
+        }
+        VerifierAction::RepairShow { .. } | VerifierAction::RepairDecide { .. } => {
+            unreachable!("recovery operations returned above")
+        }
+        VerifierAction::GateConfig { .. } => {
+            return dispatch_without_store(Invocation::Verifier { action });
+        }
         VerifierAction::Status => None,
         VerifierAction::Start => Some(
             activity
@@ -2500,6 +2533,9 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
     matches!(
         invocation,
         Invocation::Daemon { .. }
+            | Invocation::Verifier {
+                action: VerifierAction::GateConfig { .. }
+            }
             | Invocation::Web { .. }
             | Invocation::Token { .. }
             | Invocation::DoctorInstall
@@ -2529,6 +2565,21 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
 /// same invocation differently.
 pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppError> {
     match invocation {
+        Invocation::Verifier {
+            action:
+                VerifierAction::GateConfig {
+                    checkout,
+                    base,
+                    head,
+                    tree,
+                },
+        } => {
+            let result = crate::service::gate_snapshot::inspect(&checkout, &base, &head, &tree)?;
+            Ok(Response::RawJson(
+                serde_json::to_string(&result)
+                    .map_err(|error| AppError::Storage(error.to_string()))?,
+            ))
+        }
         // Pure functions of compiled-in text. They need neither a project nor
         // a store, and answering them here is what lets `story --help` work in
         // a directory storyhook has never heard of — or on a machine whose

@@ -216,6 +216,37 @@ os.kill = kill
         self.assertEqual(result["result"], "tests-failed", result)
         self.assertIn("could not remove gate completion", result["cleanup_failure"]["detail"])
 
+    def test_outer_refusal_retains_project_fault_evidence(self):
+        """A late cleanup failure withholds repair while preserving its diagnosis."""
+        self.fault_census("session")
+        fault = {"code": "missing-certification", "tree": "tree", "base": "base",
+                 "head": "head", "head_tree": "head-tree", "log": "attempt.log", "execution_status": 0,
+                 "detail": "successful gate omitted certification"}
+        payload = {"result": "project-fault", "fault": fault}
+        result = self.fx.command("python3", str(self.bundle / "verifier-owner.py"), "run-json",
+                                 str(self.fx.common), str(self.fx.wt), "--", "python3", "-c",
+                                 "print(" + repr(json.dumps(payload)) + ")")
+        value = json.loads(result.stdout)
+        self.assertEqual(value["result"], "project-fault", value)
+        self.assertEqual(value["fault"], fault)
+        self.assertIn("outer census", value["cleanup_failure"]["detail"])
+
+    def test_outer_refusal_retains_repair_admission(self):
+        """An unexecuted repair refusal stays distinct from a completed gate."""
+        self.fault_census("session")
+        payload = {"result": "repair-deferred", "recovery_id": "recovery-1",
+                   "reason": "unchanged-input"}
+        result = self.fx.command("python3", str(self.bundle / "verifier-owner.py"), "run-json",
+                                 str(self.fx.common), str(self.fx.wt), "--", "python3", "-c",
+                                 "print(" + repr(json.dumps(payload)) + ")")
+        value = json.loads(result.stdout)
+        self.assertEqual(value["result"], "repair-deferred", value)
+        self.assertEqual(value["recovery_id"], "recovery-1")
+        self.assertEqual(value["reason"], "unchanged-input")
+        self.assertIn("outer census", value["cleanup_failure"]["detail"])
+        self.assertNotIn("tree", value)
+        self.assertNotIn("execution_status", value)
+
     def test_outer_refusal_does_not_accept_partial_json(self):
         """A child that never published one valid answer cannot invent a verdict."""
         self.fault_census("session")
@@ -225,6 +256,21 @@ os.kill = kill
         value = json.loads(result.stdout)
         self.assertEqual(value["result"], "infrastructure-failure", value)
         self.assertIn("outer census", value["detail"])
+
+    def test_outer_refusal_retains_configuration_fault_without_fake_execution(self):
+        """Inspection has no gate execution, but its evidence must survive cleanup."""
+        self.fault_census("session")
+        fault = {"code": "invalid-gate-configuration", "tree": "a" * 40,
+                 "base": "b" * 40, "head": "c" * 40, "head_tree": "e" * 40, "configuration": "d" * 64,
+                 "detail": "invalid committed gate argv"}
+        payload = {"result": "project-fault", "fault": fault}
+        result = self.fx.command("python3", str(self.bundle / "verifier-owner.py"), "run-json",
+                                 str(self.fx.common), str(self.fx.wt), "--", "python3", "-c",
+                                 "print(" + repr(json.dumps(payload)) + ")")
+        value = json.loads(result.stdout)
+        self.assertEqual(value["result"], "project-fault", value)
+        self.assertEqual(value["fault"], fault)
+        self.assertIn("outer census", value["cleanup_failure"]["detail"])
 
 
 class ExecutionEvidence(unittest.TestCase):

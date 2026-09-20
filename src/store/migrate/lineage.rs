@@ -116,6 +116,32 @@ fn classify(conn: &Connection) -> Result<bool, StoreError> {
     }
     for (minimum, table, columns) in [
         (
+            47,
+            "project_recoveries",
+            &[
+                "id",
+                "project_id",
+                "code",
+                "locus",
+                "revision",
+                "active",
+                "state",
+            ][..],
+        ),
+        (
+            47,
+            "project_recovery_observations",
+            &[
+                "project_id",
+                "recovery_id",
+                "story_no",
+                "generation",
+                "attempt_id",
+                "observed_at",
+                "evidence",
+            ][..],
+        ),
+        (
             38,
             "block_deliveries",
             &[
@@ -280,6 +306,9 @@ pub(super) fn upgrade(
 
 fn validate_definition(conn: &Connection, table: &str) -> Result<(), StoreError> {
     let source = match table {
+        "project_recoveries" | "project_recovery_observations" => {
+            include_str!("../schema/0047_project_recovery.sql")
+        }
         "dropped_cleanups" => include_str!("../schema/0045_dropped_cleanup.sql"),
         "landing_intents" => include_str!("../schema/0038_landing_intents.sql"),
         "story_reset_reservations" => include_str!("../schema/0044_launch_compatibility.sql"),

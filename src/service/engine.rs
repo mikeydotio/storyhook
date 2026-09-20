@@ -1515,7 +1515,14 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             } else {
                 false
             };
-            let classification = if continuation_owned {
+            let recovery_owned = if let Some(row) = &row {
+                self.ctx.store().read(|tx| {
+                    super::project_recovery::owns_coordination(tx, project, row.story_no, &now)
+                })?
+            } else {
+                false
+            };
+            let classification = if continuation_owned || recovery_owned {
                 LaneClassification::Progressing
             } else if row.is_none() {
                 LaneClassification::HardStop(HardStopKind::StoryMissing)

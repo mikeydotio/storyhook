@@ -18,6 +18,9 @@ mod workspace_tests;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
 mod observation;
+mod recovery_transport;
+mod repair_admission;
+pub(crate) use recovery_transport::ControlOwner;
 pub mod status;
 use crate::process::Cancellation;
 pub use crate::process::Cancellation as VerificationCancellation;
@@ -45,6 +48,7 @@ use crate::service::engine::{
     DISPATCH_TIMEOUT, DispatchOptions, DispatchOutcomeState, run_shell_dispatch_cancellable,
 };
 use crate::service::gate_progress::GATE_PROGRESS_PREFIX;
+use crate::service::project_fault::ProjectFault;
 use crate::service::verification::GenerationWrite;
 use crate::service::{
     Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_CLEANUP_REQUIRED_PREFIX,
@@ -109,6 +113,7 @@ pub struct VerificationActivity {
 }
 
 struct VerificationSlot {
+    candidate: VerificationCandidate,
     workspace: Option<Arc<crate::service::workspace_lock::WorkspaceLock>>,
     active: ActiveVerification,
     cancellation: Cancellation,
@@ -260,6 +265,7 @@ impl VerificationActivity {
         slots.insert(
             candidate.project,
             VerificationSlot {
+                candidate: candidate.clone(),
                 workspace: None,
                 active: active.clone(),
                 cancellation: cancellation.clone(),
@@ -339,6 +345,7 @@ impl VerificationGuard {
             .expect("owned verification slot");
         assert_eq!(slot.active, self.active);
         slot.active = replacement.clone();
+        slot.candidate = candidate.clone();
         slot.output = crate::service::gate_output::OutputObserver::default();
         self.active = replacement;
     }
@@ -367,6 +374,13 @@ pub const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerificationOutcome {
+    /// The exact repair input was refused before any gate operation; cleanup settled.
+    RepairDeferred {
+        /// Durable coordinator retaining the refused admission.
+        recovery_id: String,
+        /// Typed admission refusal to apply to the original candidate.
+        reason: crate::service::project_recovery::RepairRefusal,
+    },
     /// Execution answered, but its owner cannot yet be reused safely.
     CleanupFailed {
         /// The completed result, independent of cleanup.
@@ -397,6 +411,11 @@ pub enum VerificationOutcome {
         detail: String,
         /// The gate command that failed, as one line (SH-649).
         gate: String,
+    },
+    /// A settled attempt established a project-owned gate fault, not a test failure.
+    ProjectFault {
+        /// Typed evidence; the daemon binds this to the admitted project and generation.
+        fault: ProjectFault,
     },
     /// GitHub, git, credentials, or the verifier process failed independently
     /// of the submitted code.
@@ -828,39 +847,24 @@ impl ShellVerificationActuator {
 
     fn run_control_command(
         &self,
-        mut command: Command,
+        command: Command,
         role: &str,
         request_id: &str,
         project: ProjectId,
         operation: &str,
     ) -> Result<Captured, AppError> {
-        // The helper must reuse our open description, not reopen and contend
-        // with its own verifier. Keep ownership through child termination too.
         let workspace = self.activity.workspace_for(project);
-        command.env_remove("STORY_WORKSPACE_LOCK_FD");
-        if let Some(workspace) = &workspace {
-            workspace.dispatch_command(&mut command);
-        }
-        run_captured_cancellable(
+        let cancellation = self.activity.cancellation_for(project);
+        self.run_control_owned(
             command,
-            self.control_timeout,
-            TerminationPolicy::TerminateThenKill {
-                grace: self.termination_grace,
-            },
-            &self.activity.cancellation_for(project),
-            |pid| {
-                self.owned_processes
-                    .register(role, pid, Some(request_id))
-                    .map_err(|error| error.to_string())
+            role,
+            request_id,
+            operation,
+            ControlOwner {
+                workspace: workspace.as_deref(),
+                cancellation: &cancellation,
             },
         )
-        .map_err(|error| match error {
-            CaptureError::Timeout(_) => AppError::Storage(format!(
-                "{operation} did not finish within {:?}; its process group was terminated",
-                self.control_timeout
-            )),
-            other => AppError::Storage(format!("could not run {operation}: {}", other.detail())),
-        })
     }
 
     /// Runs one control verb and returns the helper's own answer. `Err` is a
@@ -872,6 +876,7 @@ impl ShellVerificationActuator {
         candidate: &VerificationCandidate,
         verb: &str,
         extra: Option<&str>,
+        owner: ControlOwner<'_>,
     ) -> Result<HelperAnswer, AppError> {
         let script = self.helper_path()?;
         let mut command = Command::new("bash");
@@ -898,12 +903,12 @@ impl ShellVerificationActuator {
         {
             command.env("STORYHOOK_NOTIFY_LEASE_V1", serde_json::to_string(lease)?);
         }
-        let output = self.run_control_command(
+        let output = self.run_control_owned(
             command,
             &format!("verifier-{verb}"),
             &verification_request_id(candidate),
-            candidate.project,
             &format!("story helper `{verb}`"),
+            owner,
         )?;
         let payload: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| {
             AppError::Storage(format!(
@@ -1177,24 +1182,6 @@ impl VerificationActuator for ShellVerificationActuator {
         if let Some(detail) = checkout_repository_problem(&candidate.checkout, pull_request) {
             return VerificationOutcome::InvalidSubmission { detail };
         }
-        // The project's own merge gate (SH-649), read from the registered
-        // checkout's committed pointer — the one thing besides its receipt
-        // store the checkout contributes to verification. A value that
-        // cannot be run is local configuration needing a person, so it is
-        // refused here, before any journal or process exists, and never
-        // handed back to the implementor as a red.
-        let gate = match crate::service::gate_command::gate_command_for(&candidate.checkout) {
-            Ok(gate) => gate,
-            Err(error) => {
-                return VerificationOutcome::InfrastructureFailure {
-                    detail: format!(
-                        "the merge gate for registered checkout `{}` cannot be run: {error}",
-                        candidate.checkout.display()
-                    ),
-                    disposition: VerificationFailureDisposition::Permanent,
-                };
-            }
-        };
         // The verifier's own mechanics travel with this daemon (SH-654): a
         // bundle that cannot be projected describes this daemon's state
         // directory, not the submission, so it is a permanent infrastructure
@@ -1223,14 +1210,13 @@ impl VerificationActuator for ShellVerificationActuator {
                 disposition: VerificationFailureDisposition::Permanent,
             };
         }
-        let attempt_id = self
-            .activity
-            .active_for(candidate.project)
-            .filter(|held| {
-                held.story_id == candidate.story_id
-                    && held.generation == candidate.verifying_generation
-            })
-            .map_or_else(|| uuid::Uuid::new_v4().to_string(), |held| held.attempt_id);
+        let owned_attempt = self.activity.active_for(candidate.project).filter(|held| {
+            held.story_id == candidate.story_id && held.generation == candidate.verifying_generation
+        });
+        let attempt_id = owned_attempt.as_ref().map_or_else(
+            || uuid::Uuid::new_v4().to_string(),
+            |held| held.attempt_id.clone(),
+        );
         let initial = candidate
             .verifying_generation
             .map_or_else(String::new, |generation| {
@@ -1259,8 +1245,9 @@ impl VerificationActuator for ShellVerificationActuator {
             .arg(&script)
             .arg(&pull_request.url)
             .arg("--")
-            .args(gate.argv())
+            .arg("--project-gate")
             .current_dir(&candidate.checkout)
+            .envs(self.env.child_vars())
             .env("STORY_BIN", self.story_binary())
             .env("STORYHOOK_GITHUB_AUTHORITY", &candidate.checkout)
             // The resolved fixture policy overrides any ambient value the
@@ -1285,7 +1272,20 @@ impl VerificationActuator for ShellVerificationActuator {
             )
             .env("STORYHOOK_GATE_PROGRESS", &journal)
             .env("STORYHOOK_VERIFICATION_ATTEMPT", &attempt_id)
-            .env("STORYHOOK_CERTIFY_ONLY", "1");
+            .env("STORYHOOK_CERTIFY_ONLY", "1")
+            .env_remove("STORYHOOK_REPAIR_ADMISSION")
+            .env_remove("STORYHOOK_REPAIR_PROJECT")
+            .env_remove("STORYHOOK_REPAIR_STORY")
+            .env_remove("STORYHOOK_REPAIR_GENERATION");
+        // Legacy ordinary submissions have no generation and cannot own a
+        // recovery lineage. Preserve their existing path without inventing one.
+        if let Some(generation) = owned_attempt.as_ref().and_then(|owned| owned.generation) {
+            command
+                .env("STORYHOOK_REPAIR_ADMISSION", "1")
+                .env("STORYHOOK_REPAIR_PROJECT", &candidate.project_slug)
+                .env("STORYHOOK_REPAIR_STORY", &candidate.story_id)
+                .env("STORYHOOK_REPAIR_GENERATION", generation.get().to_string());
+        }
         if let Some(workspace) = self.activity.workspace_for(candidate.project) {
             workspace.command(&mut command);
         }
@@ -1310,7 +1310,6 @@ impl VerificationActuator for ShellVerificationActuator {
             // status or partial JSON as a test verdict.
             if let Some(outcome) = cleanup::interrupted_outcome(
                 &failure.stdout,
-                &gate,
                 &failure.error.detail(),
                 &candidate.checkout,
             ) {
@@ -1398,7 +1397,7 @@ impl VerificationActuator for ShellVerificationActuator {
                 };
             }
         };
-        parsed.into_outcome(&gate)
+        parsed.into_outcome()
     }
 
     fn notify(
@@ -1406,16 +1405,13 @@ impl VerificationActuator for ShellVerificationActuator {
         candidate: &VerificationCandidate,
         message: &str,
     ) -> Result<NotifyDelivery, AppError> {
-        match self.helper(candidate, "notify", Some(message))? {
-            HelperAnswer::Ok => Ok(NotifyDelivery::Delivered),
-            HelperAnswer::Refused { reason, display } => match agent_presence(reason.as_deref()) {
-                AgentPresence::Absent => Ok(NotifyDelivery::AgentAbsent {
-                    reason: reason.unwrap_or_default(),
-                    detail: display,
-                }),
-                AgentPresence::NotAbsent => Err(AppError::Storage(display)),
-            },
-        }
+        let workspace = self.activity.workspace_for(candidate.project);
+        self.notify_owned(
+            candidate,
+            message,
+            workspace.as_deref(),
+            &self.activity.cancellation_for(candidate.project),
+        )
     }
 
     fn redispatch(
@@ -1423,41 +1419,16 @@ impl VerificationActuator for ShellVerificationActuator {
         candidate: &VerificationCandidate,
         plan: &ResumePlan,
     ) -> Result<(), AppError> {
-        let script = self.helper_path()?;
-        let options = DispatchOptions {
-            model: plan.model.clone(),
-            effort: plan.effort.clone(),
-            fast: plan.fast,
-            resume: true,
-        };
-        // The same argv composer the dashboard and the engine use (SH-136),
-        // so a resume typed by the verifier is byte-for-byte the resume a
-        // person would have typed — including the target session, without
-        // which the helper refuses "story requires tmux" from a daemon.
-        let outcome = run_shell_dispatch_cancellable(
-            &script,
-            &candidate.project_slug,
-            &candidate.story_id,
-            plan.agent,
+        let workspace = self.activity.workspace_for(candidate.project);
+        self.dispatch_owned(
+            candidate,
+            plan,
             true,
-            plan.full_auto,
-            &options,
-            &self.env,
-            Some(&self.activity.cancellation_for(candidate.project)),
-            self.activity.workspace_for(candidate.project).as_deref(),
-        )?;
-        match outcome.state {
-            DispatchOutcomeState::Ok => Ok(()),
-            DispatchOutcomeState::Refused => Err(AppError::Storage(
-                outcome
-                    .payload
-                    .get("display")
-                    .or_else(|| outcome.payload.get("reason"))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("story helper `dispatch --resume` refused without diagnostics")
-                    .to_string(),
-            )),
-        }
+            ControlOwner {
+                workspace: workspace.as_deref(),
+                cancellation: &self.activity.cancellation_for(candidate.project),
+            },
+        )
     }
 
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
@@ -1539,7 +1510,17 @@ fn checkout_repository_problem(
 #[derive(Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
 enum WireOutcome {
+    RepairDeferred {
+        recovery_id: String,
+        reason: crate::service::project_recovery::RepairRefusal,
+        cleanup_failure: Option<VerificationCleanupFailure>,
+    },
+    ProjectFault {
+        fault: ProjectFault,
+        cleanup_failure: Option<VerificationCleanupFailure>,
+    },
     Certified {
+        gate: String,
         head: String,
         tree: String,
         detail: String,
@@ -1549,12 +1530,14 @@ enum WireOutcome {
         detail: String,
     },
     TestsFailed {
+        gate: String,
         tree: String,
         log: String,
         detail: String,
         cleanup_failure: Option<VerificationCleanupFailure>,
     },
     GatePassed {
+        gate: String,
         tree: String,
         log: String,
         detail: String,
@@ -1570,12 +1553,63 @@ enum WireOutcome {
 }
 
 impl WireOutcome {
-    /// The daemon-side outcome, carrying the gate this run was given. The
-    /// wire shape does not repeat the command: the parsed pointer is its one
-    /// source, and the script only ever ran what it was handed.
-    fn into_outcome(self, gate: &crate::service::gate_command::GateCommand) -> VerificationOutcome {
+    /// Validate the command resolved from the pinned snapshot before reporting it.
+    fn into_outcome(self) -> VerificationOutcome {
+        let reported_gate = match &self {
+            Self::Certified { gate, .. }
+            | Self::TestsFailed { gate, .. }
+            | Self::GatePassed { gate, .. } => Some(gate),
+            _ => None,
+        };
+        if let Some(gate) = reported_gate
+            && let Err(error) = crate::service::gate_command::GateCommand::parse(gate)
+        {
+            return VerificationOutcome::InfrastructureFailure {
+                detail: format!("invalid resolved gate evidence: {error}"),
+                disposition: VerificationFailureDisposition::Permanent,
+            };
+        }
         match self {
+            WireOutcome::RepairDeferred {
+                recovery_id,
+                reason,
+                cleanup_failure,
+            } => {
+                if recovery_id.trim().is_empty() || cleanup_failure.is_some() {
+                    return VerificationOutcome::InfrastructureFailure {
+                        detail: format!(
+                            "repair refusal cannot be disposed until valid ownership settles: recovery={recovery_id}; reason={reason:?}; cleanup={cleanup_failure:?}"
+                        ),
+                        disposition: VerificationFailureDisposition::Permanent,
+                    };
+                }
+                VerificationOutcome::RepairDeferred {
+                    recovery_id,
+                    reason,
+                }
+            }
+            WireOutcome::ProjectFault {
+                fault,
+                cleanup_failure,
+            } => {
+                if let Err(error) = fault.validate() {
+                    return VerificationOutcome::InfrastructureFailure {
+                        detail: format!("invalid project fault evidence: {error}; {fault:?}"),
+                        disposition: VerificationFailureDisposition::Permanent,
+                    };
+                }
+                if let Some(cleanup) = cleanup_failure {
+                    return VerificationOutcome::InfrastructureFailure {
+                        detail: format!(
+                            "project fault repair withheld until ownership settles: {cleanup:?}; retained evidence: {fault:?}"
+                        ),
+                        disposition: VerificationFailureDisposition::Permanent,
+                    };
+                }
+                VerificationOutcome::ProjectFault { fault }
+            }
             WireOutcome::Certified {
+                gate,
                 head,
                 tree,
                 detail,
@@ -1586,7 +1620,7 @@ impl WireOutcome {
                         head,
                         tree,
                         detail,
-                        gate: gate.display(),
+                        gate,
                     },
                     cleanup,
                 ),
@@ -1594,11 +1628,12 @@ impl WireOutcome {
                     head,
                     tree,
                     detail,
-                    gate: gate.display(),
+                    gate,
                 },
             },
             WireOutcome::Conflict { detail } => VerificationOutcome::Conflict { detail },
             WireOutcome::TestsFailed {
+                gate,
                 tree,
                 log,
                 detail,
@@ -1609,7 +1644,7 @@ impl WireOutcome {
                         tree,
                         log,
                         detail,
-                        gate: gate.display(),
+                        gate,
                     },
                     cleanup,
                 ),
@@ -1617,10 +1652,11 @@ impl WireOutcome {
                     tree,
                     log,
                     detail,
-                    gate: gate.display(),
+                    gate,
                 },
             },
             WireOutcome::GatePassed {
+                gate,
                 tree,
                 log,
                 detail,
@@ -1630,7 +1666,7 @@ impl WireOutcome {
                     tree,
                     log,
                     detail,
-                    gate: gate.display(),
+                    gate,
                 },
                 cleanup_failure,
             ),
@@ -1764,6 +1800,14 @@ where
     W: FnMut(&VerificationCandidate) -> Result<Option<VerificationCandidate>, AppError>,
 {
     let queue = VerificationQueue::new(store);
+    if store
+        .read(|tx| tx.verification_incident(project))?
+        .is_some()
+    {
+        store.write(|tx| {
+            crate::service::project_recovery::reconcile_incident(tx, project, &env.now())
+        })?;
+    }
     let ordered = queue.ordered_for(project)?;
     for intent in store.read(|tx| tx.landing_intents())? {
         let Some(candidate) = ordered
@@ -2022,7 +2066,7 @@ where
                     TickResult::Returned
                 });
             }
-            let Some(outcome) = observation::verify(
+            let Some(mut outcome) = observation::verify(
                 store,
                 bus,
                 &candidate,
@@ -2083,7 +2127,48 @@ where
             }) {
                 return Ok(TickResult::Returned);
             }
+            use crate::service::project_recovery::{ProjectRecoveryService, RepairJudgment};
+            let recovery_service = ProjectRecoveryService::new(&ctx);
+            let judgment = match &outcome {
+                VerificationOutcome::Certified { head, tree, .. } => {
+                    Some(RepairJudgment::Certified {
+                        head: head.clone(),
+                        tree: tree.clone(),
+                    })
+                }
+                VerificationOutcome::TestsFailed { tree, .. } => {
+                    Some(RepairJudgment::TestsFailed { tree: tree.clone() })
+                }
+                VerificationOutcome::ProjectFault { fault } => Some(RepairJudgment::ProjectFault {
+                    fault: fault.clone(),
+                }),
+                _ => None,
+            };
+            if let Some(judgment) = judgment
+                && let Err(error) = recovery_service.complete_repair(
+                    &candidate,
+                    &active.active.attempt_id,
+                    &judgment,
+                )
+            {
+                outcome = VerificationOutcome::InfrastructureFailure {
+                    detail: format!("completed repair judgment could not match admission: {error}"),
+                    disposition: VerificationFailureDisposition::Permanent,
+                };
+            }
             match outcome {
+                VerificationOutcome::RepairDeferred {
+                    recovery_id,
+                    reason,
+                } => {
+                    recovery_service.apply_refusal(
+                        &candidate,
+                        &active.active.attempt_id,
+                        &recovery_id,
+                        reason,
+                    )?;
+                    return Ok(TickResult::Returned);
+                }
                 VerificationOutcome::CleanupFailed { verdict, cleanup } => {
                     match cleanup::record(
                         &queue,
@@ -2246,6 +2331,14 @@ where
                     detail,
                     gate,
                 } => {
+                    if recovery_service.return_failed_repair(
+                        &candidate,
+                        &active.active.attempt_id,
+                        &tree,
+                        &format!("Gate {gate}; full log {log}.\n\n{detail}"),
+                    )? {
+                        return Ok(TickResult::Returned);
+                    }
                     let result = return_for_repair(
                         &queue,
                         &ctx,
@@ -2263,6 +2356,15 @@ where
                         return Ok(TickResult::Returned);
                     }
                 }
+                VerificationOutcome::ProjectFault { fault } => {
+                    if recovery_service
+                        .observe(&candidate, &fault, &active.active.attempt_id)?
+                        .is_some()
+                    {
+                        return Ok(TickResult::Returned);
+                    }
+                }
+
                 VerificationOutcome::InfrastructureFailure {
                     detail,
                     disposition,
@@ -3026,8 +3128,11 @@ pub(crate) fn poll_verification(
     activity: &VerificationActivity,
     inflight: &InFlight,
 ) {
-    poll_verification_with(store, env, bus, stop, activity, inflight, |_| {
-        ShellVerificationActuator::new(env.clone()).with_activity(activity.clone())
+    std::thread::scope(|scope| {
+        scope.spawn(|| super::project_recovery::poll(store, env, bus, stop, activity));
+        poll_verification_with(store, env, bus, stop, activity, inflight, |_| {
+            ShellVerificationActuator::new(env.clone()).with_activity(activity.clone())
+        });
     });
 }
 

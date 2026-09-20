@@ -43,6 +43,14 @@ use std::path::Path;
 /// implements it, so naming the column is its job.
 const ALLOWED: &[(&str, &str)] = &[
     (
+        "src/daemon/project_recovery.rs",
+        "recovery delivery chooses its working directory after selecting each durable project id",
+    ),
+    (
+        "src/service/project_recovery/delivery.rs",
+        "managed recovery selects the already-scoped target project checkout; it does not resolve project identity",
+    ),
+    (
         "src/daemon/block_delivery.rs",
         "block delivery chooses a helper working directory after selecting its project by durable id",
     ),

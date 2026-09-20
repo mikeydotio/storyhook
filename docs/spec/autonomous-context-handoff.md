@@ -191,3 +191,21 @@ The sibling Codex plan-approval guard remains intentional: it applies only after
 administrative handling and cannot consume or approve a context handoff. Claude
 uses the shared administrative handler and receives the same bounded admission
 and explicit refusal behavior.
+
+
+## Lost request responses — SH-742
+
+The CLI deadline does not cancel daemon execution. A request can be accepted
+before its response is lost. Transport failure or undecodable request output
+therefore returns native Stop feedback for **status inspection only**. It does
+not replay the request, issue an atomic native-feedback receipt, approve a plan,
+or authorize implementation. The owning session must match retained provider,
+session, message generation, and handoff evidence, perform fresh review, and
+acknowledge an accepted request before resuming previously authorized work.
+Plan mode keeps its ordinary approval boundary. Real holds remain in force.
+
+Explicit decoded supervisor refusals and invalid input remain diagnostic-only.
+Nonzero subprocess errors retain bounded stdout and stderr, so JSON-only
+DeadlineExceeded output is not replaced by an empty error. The hook keeps its
+bounded deadline; increasing that deadline cannot remove the lost-response
+window. The cause of an individual slow request requires separate evidence.
