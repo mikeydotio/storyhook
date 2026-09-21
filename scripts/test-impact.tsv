@@ -169,7 +169,9 @@ scope_rubric	src/service/templates.rs
 scratch_env	:(glob)**/*
 selective_gate	:(glob)**/*
 selective_gate	tests/support/selective_receipt.py
+semver_hook_test	.semver/hooks/pre-bump/sync-build-number.sh
 semver_hook_test	:(glob)**/*
+semver_hook_test	scripts/test-version-build-number.py
 service_git	:(glob)**/*
 service_session	plugins/story/references/story-new.md
 service_session	plugins/story/skills/story/SKILL.md

@@ -10,6 +10,14 @@ use std::process::Command;
 
 use storyhook_test_support::scratch_dir;
 
+#[test]
+fn version_changes_reserve_and_stage_build_numbers() {
+    run(Command::new("python3").arg(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/scripts/test-version-build-number.py"
+    )));
+}
+
 /// Run a command, asserting it succeeded, and return its stdout.
 fn run(cmd: &mut Command) -> String {
     let out = cmd.output().expect("failed to spawn command");

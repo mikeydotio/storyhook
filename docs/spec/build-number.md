@@ -1,8 +1,9 @@
 # Build numbers (SH-732)
 
-`VERSION` identifies a release. `BUILD` identifies a build-for-use invocation
-within a checkout's history. It starts at zero and contains a canonical unsigned
-64-bit decimal integer followed by a newline. Numbered builds reserve the next
+`VERSION` identifies a release. `BUILD` identifies a version change or a
+build-for-use invocation within a checkout's history. It starts at zero and
+contains a canonical unsigned 64-bit decimal integer followed by a newline.
+Numbered builds reserve the next
 number before compilation; failure consumes the reservation.
 
 The 3.0.1 release starts production numbering at 100. `BUILD` participates in
@@ -21,10 +22,28 @@ lock descriptor so a killed wrapper cannot release ownership while compilation
 continues. Concurrent operations in one checkout serialize. Independent clones
 do not coordinate; these numbers are not globally unique identifiers.
 
-Local installs leave BUILD modified. Release preparation validates and preserves
-that advancement, reserves on the release branch, and stages BUILD for the
-version commit. Assembly checks the reservation before using it. A later local
-installation reserves another number. No build wrapper makes Git commits.
+Local installs leave BUILD modified. Each semver bump reserves the next number
+from the current BUILD and stages it in the same version commit (SH-749).
+The pre-bump `sync-build-number.sh` hook uses the same locked allocator and holds
+its lock through staging. It compares OLD_VERSION with NEW_VERSION independently
+of the bump level. A same-version operation does not allocate or stage BUILD.
+Missing hook context and invalid,
+missing, unwritable, or exhausted counters abort the operation. A failed staging
+or later hook consumes its reservation; a retry must not reuse that number.
+
+For example, if an installation left BUILD at 103, a version change allocates
+104 even if HEAD still records 102. Release preparation does not allocate a
+second time: it requires the version commit to contain an advanced BUILD, then
+passes that reservation to all platform builders. Assembly checks the
+reservation before using it. A later local installation reserves another number.
+No build wrapper makes Git commits. Branch switches, historical checkouts, and
+ordinary Cargo builds do not allocate; VERSION changes go through semver.
+
+The installed semver 3.9.4 CLI invokes pre-bump hooks for patch, minor, and major
+bumps, but skips them for explicit `set` and `init` operations. SH-749 records
+this upstream limitation. Those operations need the same pre-hook lifecycle
+before they can satisfy the automatic build-number contract; direct hook tests
+alone do not establish that the CLI calls them.
 
 The compiled display version is `3.0.0 (N)`. CLI output keeps bare semver as its
 second whitespace field and retains the optional Git-content stamp. Semver used

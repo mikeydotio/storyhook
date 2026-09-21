@@ -581,6 +581,23 @@ mints the push receipt .githooks/pre-push verifies"
   fi
 }
 
+# The version hook owns allocation; assembly must use its committed reservation.
+# Checking both advancement and HEAD prevents a skipped hook or a later local
+# build from silently changing the identity of the release assets.
+version_build_number() {
+  local before="$1" after committed
+  after="$(python3 scripts/build-number.py --check)" || return "$?"
+  python3 - "$before" "$after" <<'VERSION_BUILD_CHECK' || return "$?"
+import sys
+if int(sys.argv[2]) <= int(sys.argv[1]):
+    raise SystemExit("version change did not advance BUILD; refusing release")
+VERSION_BUILD_CHECK
+  committed="$(git show HEAD:BUILD)" || return "$?"
+  [ "$after" = "$committed" ] \
+    || die "BUILD differs from the version commit; refusing release"
+  printf '%s\n' "$after"
+}
+
 # ---------------------------------------------------------------------------
 # LOCAL-ONLY
 # ---------------------------------------------------------------------------
@@ -616,6 +633,7 @@ if [ "$local_only" = 1 ]; then
     Run \`semver-cli validate\` to see which check failed; a missing tag for
     the CURRENT version is the usual cause. Nothing was built or installed."
       fi
+      build_number="$(version_build_number "$build_number")"
       current_version="$bumped"
       info "bumped to    $current_version"
     fi
@@ -645,10 +663,6 @@ step "Bumping the version on a release branch"
 # Never on main directly: the org's `protect-main` ruleset forbids it, and the
 # bump has to arrive through a PR like everything else.
 run git switch -c "$release_branch"
-if [ "$dry_run" = 0 ]; then
-  build_number="$(python3 scripts/build-number.py --reserve)"
-fi
-run git add -- BUILD
 # --skip-tag is load-bearing, not tidiness. `semver-cli bump` tags by default,
 # and it would tag THIS branch's commit -- but the tag has to name the merge
 # commit that actually lands on `main`, or `install.sh` resolves a release
@@ -672,6 +686,7 @@ if [ "$dry_run" = 0 ]; then
   actual="$(tr -d '[:space:]' < VERSION)"
   [ "$actual" = "$next_version" ] \
     || die "semver produced $actual but this script planned $next_version. Refusing to continue."
+  build_number="$(version_build_number "$build_number")"
 
   # Now that the changelog section exists, the body must render before either
   # the local build or the tag can make the release observable.
