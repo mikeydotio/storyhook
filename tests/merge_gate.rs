@@ -245,7 +245,7 @@ fn a_gate_terminated_by_signal_is_infrastructure_never_red() {
         &[
             "bash",
             "-c",
-            "printf '%s' $$ > \"$1\"; while :; do :; done",
+            "printf '%s' $$ > \"$1.tmp\"; mv \"$1.tmp\" \"$1\"; while :; do :; done",
             "signal-probe",
             &pid_file.display().to_string(),
         ],
@@ -333,7 +333,7 @@ fn a_terminated_verifier_reports_the_termination_and_leaves_no_completion_record
         &[
             "bash",
             "-c",
-            "printf '%s' $$ > \"$1\"; while :; do :; done",
+            "printf '%s' $$ > \"$1.tmp\"; mv \"$1.tmp\" \"$1\"; while :; do :; done",
             "signal-probe",
             &pid_file.display().to_string(),
         ],
