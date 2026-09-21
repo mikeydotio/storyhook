@@ -744,6 +744,50 @@ fn an_out_dir_of_cargos_shape_stamps_the_profile_directory() {
     assert!(!emitted_warning(&out), "the expected case must be silent");
 }
 
+#[test]
+fn embedded_marketplace_ignores_python_cache_artifacts() {
+    let fixture = ManifestFixture::with_git_and_script();
+    let out_dir = fixture
+        .path()
+        .join("target/debug/build/storyhook-probe/out");
+    fixture.with_marketplace_and_out_dir(&out_dir);
+    let library = fixture.path().join("plugins/story/lib");
+    std::fs::create_dir_all(&library).unwrap();
+    for name in ["helper.py", "__pycache__.py", "pyc"] {
+        std::fs::write(library.join(name), "source payload\n").unwrap();
+    }
+    let generate = || {
+        let output = fixture.run_build_script(&[("OUT_DIR", &out_dir.display().to_string())]);
+        assert_ok(&output, "embedding the marketplace");
+        std::fs::read_to_string(out_dir.join("embedded_marketplace.rs")).unwrap()
+    };
+    let clean = generate();
+    assert!(clean.contains("lib/helper.py"));
+    assert!(clean.contains("lib/__pycache__.py"));
+    assert!(clean.contains("lib/pyc"));
+    std::fs::create_dir(library.join("__pycache__")).unwrap();
+    for name in [
+        "__pycache__/helper.cpython-314.pyc",
+        "legacy.pyc",
+        "legacy.pyo",
+    ] {
+        std::fs::write(library.join(name), "disposable compiled bytes\n").unwrap();
+    }
+    assert_eq!(
+        generate(),
+        clean,
+        "local Python caches must not enter a release payload"
+    );
+    std::fs::remove_dir_all(library.join("__pycache__")).unwrap();
+    std::fs::remove_file(library.join("legacy.pyc")).unwrap();
+    std::fs::remove_file(library.join("legacy.pyo")).unwrap();
+    assert_eq!(
+        generate(),
+        clean,
+        "cache cleanup must not change embedded inputs"
+    );
+}
+
 /// The standalone runner and any non-cargo invocation: no `OUT_DIR`, no stamp,
 /// silently — the same contract `STORYHOOK_BUILD_ID` has for a missing `.git`.
 #[test]
