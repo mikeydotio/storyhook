@@ -1,100 +1,47 @@
-# Concurrent verifier views — SH-662
+# Project verification views — SH-748
 
-Attach with `tmux attach -t storyhook-verifier`. The default tmux server keeps
-one stable session. Each checkout has a verification window; each store has
-an activity window. The implementation decision and alternatives are recorded
-on SH-662. This extends SH-545 and preserves SH-590's continuous journal.
+Each registered project owns one `verification` window in the tmux session
+named by its project slug, on the default server. The daemon uses the registered
+checkout as authority, never a test fixture, speculative worktree, caller pane,
+or Git-directory-derived display name. This supersedes SH-662’s hashed windows
+and SH-590’s automatically opened store activity window.
 
-## Ownership
+## Ownership and recovery
 
-- Project identity is the canonical Git common directory, hashed in full with
-  `git hash-object --stdin`, like the gate lock. All linked worktrees share
-  the window. Equal directory basenames in different repositories do not.
-- Verification windows are named `verification-<directory-label>-<digest>`.
-  The label is sanitized and the digest is complete. A window follows its
-  current attempt log or shows a phase banner. Daemon and standalone
-  invocations use the same identity.
-- Activity windows are named `activity-<store-directory-label>-<sha256>`.
-  Python 3 resolves file symlinks and hashes canonical path bytes in full,
-  independently of Git or the daemon's starting directory. These windows run
-  `story daemon logs --follow`; project phases cannot replace those readers.
-  Banners also continue to enter the activity journal through stderr.
-- Session creation tolerates a concurrent creator. Window creation/reuse is
-  atomic within tmux. Exact targets prevent prefix matching another view.
-- Existing legacy `verification` windows are left intact. New windows persist
-  for later runs. No background cleanup or per-story window is introduced.
+The daemon reconciles activated project journals at startup, before verifier
+subprocesses, and every five seconds independently of running gates. Journal
+existence in a registered checkout preserves activation across restart. A missing
+session is created detached. A healthy window is reused without resetting its
+reader or stealing focus. The view reads the continuous project journal; phase
+banners are records and do not replace readers.
 
-## Preserved boundaries
+A bounded Python helper takes a nonblocking per-directory flock. It identifies
+owned windows with a canonical journal hash, pane ID/PID, and original reader
+command. An unrelated occupant or multiple panes named `verification` is a
+visible ownership conflict. Missing windows are created; dead or changed owned
+readers are replaced. A replacement is allocated and marked before retirement
+of the old exact window ID, whose evidence is checked again before removal.
+Failures are logged and retried on a later reconciliation tick.
 
-The daemon owns verification. Panes only read independently written logs;
-they never pipe gate output or decide results. Paths and banner text remain
-literal arguments. Panes start in stable HOME, never a temporary checkout.
-The default server stays independent of story dispatch cleanup.
+SH-737’s native macOS `forkpty` failure regression remains required. Never use
+`respawn-pane`: a failed respawn can corrupt tmux 3.7c and crash unrelated
+sessions. Literal argv, exact targets, stable reader cwd, and detached window
+creation remain required. A missing tmux or Python interpreter is nonfatal to
+the verifier. `STORYHOOK_VERIFIER_MIRROR=0` prohibits even a tmux probe.
 
-`STORYHOOK_VERIFIER_MIRROR=0` prohibits every tmux call. Journal banners still
-emit when enabled by the activity environment. Missing Git identity or tmux
-causes a helper failure that verification ignores; identity never falls back
-to a shared project window. The activity mirror also needs Python 3; macOS's
-system Python 3.9 is supported. Strict path resolution rejects missing stores,
-dangling links, and link cycles before any tmux call. A missing interpreter
-leaves the journal and verifier working without that view.
+## Fixture lifetime and legacy cleanup
 
-## Verification
+Gate scripts only print diagnostics; they cannot allocate readers. Test stores
+keep their own activity journals and disable mirrors through `Environment` and
+the shared containment table. Their stdout/stderr reaches the project journal
+through the parent gate capture. Explicit mirror tests own foreground private
+servers, bound all control operations, and check reader termination on teardown,
+including assertion failure. Production reader ownership never belongs to a
+fixture or a story’s dispatch-window cleanup.
 
-Tests exercise distinct projects, linked worktrees, directory aliases, repeated
-attempts, concurrent creation, daemon phases, separate stores, literal shell
-metacharacters, legacy windows, exact targets, and non-fatal mirror failure.
-macOS regressions select the system interpreter explicitly so a newer Python
-on the interactive shell's PATH cannot hide a compatibility failure.
-Real tmux runs use private test sockets. Only new and impacted tests run in
-the agent worktree; the central verifier owns the full suite.
-
-## Fixture containment — SH-699
-
-Mirror policy belongs to `Environment`, alongside store and state-home
-selection. `from_process` captures the existing switch: only the exact value
-`0` disables mirrors. `Environment::at` always disables them, independent of
-the invoking shell. `child_vars()` serializes that resolved policy as `0` or
-`1`; verification children apply it after their allowlist, and activity
-startup consults it before dispatching its helper. A disabled mirror does not
-disable the journal.
-
-Standalone verifier-script fixtures apply the table-derived
-`daemon_containment()` settings at their command builder. Tests that explicitly
-enable mirrors own a foreground `tmux -D` process through `ChildGuard` and route
-every client through `-S <private socket>`. Startup and control clients have
-bounded waits. Teardown closes the private server, reaps the owned process,
-and checks pane-reader identities before deleting fixture directories, even
-during assertion unwinding. A second private server proves cleanup does not
-affect another owner.
-
-SH-736 verification reproduced intermittent macOS `forkpty` failures with
-`Device not configured`. The kernel cause is not established, but this failure
-precedes reader-process creation. The shared respawn boundary preserves each
-diagnostic and permits up to four attempts for this exact error, waiting
-50/100/200 ms. Only the first attempt uses `-k`; later attempts cannot kill an
-active reader another caller has started. Other errors and exhausted attempts
-remain failures. Mirror failure remains non-fatal to verification. The real
-tmux tests retain parallel fixtures and concurrent operations.
-
-The verifier fixture hygiene test scans direct script launches and opt-ins at
-function/helper boundaries. This is a conservative textual fence, not arbitrary
-Rust dataflow analysis; behavioral subprocess and real-tmux tests prove the
-actual policy and ownership contracts. Production windows, including the
-legacy `verification` window, retain their persistent lifetime. Fixture cleanup
-never targets the operator's default server or historical processes.
-
-## Reader replacement — SH-737
-
-Create the replacement pane before retiring the old reader. One synchronous
-server command group reports the old pane ID, creates an inactive replacement,
-and removes the old active pane. If allocation fails, tmux cancels the remaining
-commands and the original reader stays alive. Only macOS ENXIO allocation
-failures receive the bounded retry; retries target the captured pane ID, so a
-concurrent replacement cannot be killed by a stale caller.
-
-Do not use `respawn-pane` for this recovery. In tmux 3.7c, a failed allocation
-leaves its input parser freed; a second respawn dereferences it and crashes the
-server, including unrelated sessions. The native macOS regression interposes
-one `forkpty` failure on a private server and exercises the production helper.
-It checks recovery, the diagnostic, and the unchanged unrelated reader identity.
+`scripts/cleanup-verifier-fixtures.py` inventories legacy default-server windows.
+`--apply` removes only single-pane fixture windows whose names and complete
+reader commands prove known fixture origins. It rechecks exact evidence before
+removal and confirms disappearance. Production readers, unknown occupants,
+logs, and the shared server survive. Existing installed binaries are not updated
+or restarted by this cleanup; they can retain old routing until normal rollout.

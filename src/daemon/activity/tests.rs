@@ -3,18 +3,12 @@
 use super::*;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
-use std::sync::atomic::AtomicUsize;
 
 use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, daemon_containment, scratch_dir};
-
-// The window opener is detached. Count its launch synchronously so a forbidden
-// launch cannot evade a negative assertion through thread scheduling.
-pub(super) static WINDOW_STARTS: AtomicUsize = AtomicUsize::new(0);
 
 const PROBE_ROOT: &str = "SH699_ACTIVITY_PROBE_ROOT";
 const PROBE_MODE: &str = "SH699_ACTIVITY_PROBE_MODE";
 const START_TEST: &str = "daemon::activity::isolation_tests::fixture_activity_start_keeps_journaling_without_window_launch";
-const WINDOW_TEST: &str = "daemon::activity::isolation_tests::activity_window_child_receives_resolved_policy_and_state_home";
 
 fn executable(path: &Path, text: &str) {
     std::fs::write(path, text).expect("write recording tool");
@@ -98,11 +92,6 @@ fn fixture_activity_start_keeps_journaling_without_window_launch() {
     );
     drop(guard);
 
-    assert_eq!(
-        WINDOW_STARTS.load(Ordering::SeqCst),
-        0,
-        "Environment::at must prevent the detached activity-window launch itself"
-    );
     assert!(
         !root.join("helper.env").exists(),
         "a window helper was launched"
@@ -132,68 +121,4 @@ fn fixture_activity_start_keeps_journaling_without_window_launch() {
             .iter()
             .any(|record| record.message.starts_with("daemon started "))
     );
-}
-
-#[test]
-fn activity_window_child_receives_resolved_policy_and_state_home() {
-    let Some(root) = std::env::var_os(PROBE_ROOT) else {
-        run_probe(WINDOW_TEST, "fixture", Some("1"));
-        run_probe(WINDOW_TEST, "process", Some("1"));
-        return;
-    };
-    let root = Path::new(&root);
-    let fixture = std::env::var(PROBE_MODE).unwrap() == "fixture";
-    let env = if fixture {
-        Environment::at(root.join("fixture-home"))
-    } else {
-        Environment::from_process(None).unwrap()
-    };
-    std::fs::create_dir_all(env.store_path().parent().unwrap()).unwrap();
-    std::fs::write(env.store_path(), "").unwrap();
-
-    window::open(&env);
-
-    let seen: std::collections::BTreeMap<String, String> =
-        std::fs::read_to_string(root.join("helper.env"))
-            .expect("the real window boundary launched its shell helper")
-            .lines()
-            .filter_map(|line| line.split_once('='))
-            .map(|(name, value)| (name.to_owned(), value.to_owned()))
-            .collect();
-    assert_eq!(
-        seen["STORYHOOK_VERIFIER_MIRROR"],
-        if fixture { "0" } else { "1" }
-    );
-    assert_eq!(
-        Path::new(&seen["XDG_STATE_HOME"]),
-        env.state_home().parent().unwrap()
-    );
-    assert_eq!(Path::new(&seen["STORYHOOK_STORE_PATH"]), env.store_path());
-    assert!(!seen.contains_key("TMUX"));
-    assert!(!seen.contains_key("TMUX_PANE"));
-    if fixture {
-        assert!(
-            !root.join("tmux.calls").exists(),
-            "disabled helper contacted tmux"
-        );
-        assert_ne!(
-            seen["XDG_STATE_HOME"],
-            root.join("ambient-state").to_str().unwrap(),
-            "the fixture must differ from ambient state so the propagation assertion is meaningful"
-        );
-    } else {
-        let calls = std::fs::read_to_string(root.join("tmux.calls"))
-            .expect("positive control: enabled shipping shell calls recording tmux");
-        let calls: Vec<_> = calls.lines().collect();
-        let split = calls
-            .iter()
-            .position(|call| *call == "split-window")
-            .expect("reader allocation");
-        let retire = calls
-            .iter()
-            .position(|call| *call == "kill-pane")
-            .expect("old reader retirement");
-        assert!(split < retire, "{calls:?}");
-        assert!(!calls.contains(&"respawn-pane"), "{calls:?}");
-    }
 }

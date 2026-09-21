@@ -235,12 +235,17 @@ fn main() {
     };
 
     if let Invocation::Daemon {
-        action: DaemonAction::Logs { follow },
+        action: DaemonAction::Logs { follow, directory },
     } = &invocation
     {
         let environment = storyhook::env::Environment::from_process(flags.store_path.as_deref())
             .unwrap_or_else(|error| fail(&error, json));
-        if let Err(error) = storyhook::daemon::activity::read_logs(&environment, *follow, json) {
+        if let Err(error) = storyhook::daemon::activity::read_logs_from(
+            &environment,
+            directory.as_deref(),
+            *follow,
+            json,
+        ) {
             fail(&error, json);
         }
         return;

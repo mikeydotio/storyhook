@@ -125,7 +125,15 @@ pub fn process_one(
         match process_record(&ctx, actuator, activity, stop, &record.id) {
             Ok(true) => return Ok(true),
             Ok(false) => {}
-            Err(error) => errors.push(format!("recovery {}: {error}", record.id)),
+            Err(error) => {
+                super::activity::context::project_error(
+                    store,
+                    record.project,
+                    "project-recovery",
+                    &format!("recovery {}: {error}", record.id),
+                );
+                errors.push(format!("recovery {}: {error}", record.id));
+            }
         }
     }
     if errors.is_empty() {
@@ -160,6 +168,9 @@ fn process_record(
         return Ok(false);
     }
     let candidate = service.delivery_candidate(id, operation.story)?;
+    let _log = super::activity::context::enter(super::activity::context::LogContext::candidate(
+        &candidate, id,
+    ));
     if operation.kind == Some(WorkKind::SeparateRepair)
         && !operation.interrupted
         && ctx.store().read(|tx| {
@@ -218,6 +229,9 @@ fn process_record(
         };
     }
     let candidate = service.delivery_candidate(id, operation.story)?;
+    let _log = super::activity::context::enter(super::activity::context::LogContext::candidate(
+        &candidate, id,
+    ));
     let result = if operation.interrupted {
         // Resource inspection can diagnose surviving ownership, but cannot prove
         // that an interrupted paste was never consumed. Never replay it blindly.

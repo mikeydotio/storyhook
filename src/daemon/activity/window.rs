@@ -1,37 +1,95 @@
-//! The fixed tmux attach point follows the journal, not an attempt's log.
+//! Supervise persistent project readers independently of verification phases.
 
-use crate::{env::Environment, process::run_captured};
-use std::{ffi::OsStr, process::Command, time::Duration};
+use crate::{
+    env::Environment,
+    process::run_captured,
+    store::{ReadOps, Store},
+};
+use std::{
+    ffi::OsStr,
+    path::Path,
+    process::Command,
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
 
-pub(super) fn open(env: &Environment) {
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Opens or repairs only the explicitly owned project view.
+pub(crate) fn open(env: &Environment, project: &str, directory: &Path) {
+    if !env.verifier_mirror_enabled() {
+        return;
+    }
     let result = (|| -> Result<(), String> {
         let binary = std::env::current_exe().map_err(|error| error.to_string())?;
-        let mut command = Command::new("bash");
-        let script = format!(
-            "{}\nverifier_window_logs \"$1\" \"$2\"",
-            include_str!("../../../scripts/verify-window.sh")
-        );
+        let mut command = Command::new("python3");
         command
-            .args(["-c", &script, "verify-window"])
+            .args(["-c", include_str!("../../../scripts/verification-view.py")])
+            .arg(project)
+            .arg(directory)
             .arg(binary)
-            .arg(env.store_path())
             .env("HOME", env.home())
             .envs(env.child_vars())
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
-        // `run_captured` observes this helper as well, including refusals.
         let captured =
             run_captured(command, Duration::from_secs(5)).map_err(|error| error.detail())?;
         if !captured.status.success() {
             return Err(format!(
-                "tmux activity view unavailable ({})",
-                captured.status
+                "project {project} verification view unavailable ({}): {}",
+                captured.status,
+                String::from_utf8_lossy(&captured.stderr).trim()
             ));
         }
         Ok(())
     })();
     if let Err(error) = result {
         super::emit("WARN", "tmux", "event", "", &error);
+    }
+}
+
+/// Reconstructs activated project views on startup and repairs idle readers.
+pub(crate) fn poll(store: &impl Store, env: &Environment, stop: &AtomicBool) {
+    if !env.verifier_mirror_enabled() {
+        return;
+    }
+    while !stop.load(Ordering::Relaxed) {
+        let projects = store.read(|tx| {
+            let mut projects = Vec::new();
+            for project in tx.projects()? {
+                if let Some(checkout) = tx.checkout_path(project.id)? {
+                    projects.push((project.slug, checkout.join(".storyhook/logs")));
+                }
+            }
+            Ok(projects)
+        });
+        match projects {
+            Ok(projects) => {
+                for (project, directory) in projects {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if directory.is_dir() {
+                        let _scope = super::context::enter(Some(super::context::LogContext {
+                            directory: directory.clone(),
+                            label: format!("project={project} reader"),
+                        }));
+                        open(env, &project, &directory);
+                    }
+                }
+            }
+            Err(error) => super::emit(
+                "WARN",
+                "tmux",
+                "event",
+                "",
+                &format!("cannot list project verification views: {error}"),
+            ),
+        }
+        let until = Instant::now() + RECONCILE_INTERVAL;
+        while !stop.load(Ordering::Relaxed) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 }
 

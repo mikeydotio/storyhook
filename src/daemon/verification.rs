@@ -740,6 +740,7 @@ impl ShellVerificationActuator {
         intent: &crate::store::LandingIntent,
         recover: bool,
     ) -> LandingOutcome {
+        let _log = self.log_scope(candidate);
         let run = || -> Result<LandingOutcome, AppError> {
             let link = candidate
                 .pull_request
@@ -839,6 +840,29 @@ impl ShellVerificationActuator {
             .map_err(AppError::Storage)
     }
 
+    fn log_scope(&self, candidate: &VerificationCandidate) -> super::activity::context::Scope {
+        let attempt = self
+            .activity
+            .active_for(candidate.project)
+            .filter(|active| {
+                active.story_id == candidate.story_id
+                    && active.generation == candidate.verifying_generation
+            })
+            .map(|active| active.attempt_id)
+            .unwrap_or_else(|| verification_request_id(candidate));
+        let scope = super::activity::context::enter(
+            super::activity::context::LogContext::candidate(candidate, &attempt),
+        );
+        if candidate.checkout.is_absolute() && candidate.checkout.is_dir() {
+            super::activity::window::open(
+                &self.env,
+                &candidate.project_slug,
+                &candidate.checkout.join(".storyhook/logs"),
+            );
+        }
+        scope
+    }
+
     fn story_binary(&self) -> PathBuf {
         self.story_binary
             .clone()
@@ -878,6 +902,7 @@ impl ShellVerificationActuator {
         extra: Option<&str>,
         owner: ControlOwner<'_>,
     ) -> Result<HelperAnswer, AppError> {
+        let _log = self.log_scope(candidate);
         let script = self.helper_path()?;
         let mut command = Command::new("bash");
         apply_dispatch_allowlist(&mut command);
@@ -946,6 +971,7 @@ impl ShellVerificationActuator {
     }
 
     fn reap_leased(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
+        let _log = self.log_scope(candidate);
         let lease = candidate.cleanup_lease.as_ref().ok_or_else(|| {
             AppError::Storage(format!(
                 "story {} has no cleanup lease for its latest verification generation",
@@ -1044,6 +1070,7 @@ impl ShellVerificationActuator {
         &self,
         candidate: &VerificationCandidate,
     ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        let _log = self.log_scope(candidate);
         let infrastructure = |detail: String| SubmissionFailure::Infrastructure { detail };
         let lease = candidate.cleanup_lease.as_ref().ok_or_else(|| {
             infrastructure(format!(
@@ -1179,6 +1206,7 @@ impl VerificationActuator for ShellVerificationActuator {
         pull_request: &PrLink,
         cancellation: &VerificationCancellation,
     ) -> VerificationOutcome {
+        let _log = self.log_scope(candidate);
         if let Some(detail) = checkout_repository_problem(&candidate.checkout, pull_request) {
             return VerificationOutcome::InvalidSubmission { detail };
         }
@@ -1826,6 +1854,9 @@ where
                 TickResult::Returned
             });
         };
+        let _log = super::activity::context::enter(
+            super::activity::context::LogContext::candidate(candidate, &active.active.attempt_id),
+        );
         let result =
             observation::human_owned(store, env, bus, candidate, &active.cancellation, || {
                 let outcome = actuator.recover_landing(candidate, &intent);
@@ -1926,6 +1957,9 @@ where
         if let Some(request) = admitted_request.as_mut() {
             **request = _active.recovery_request_id.clone();
         }
+        let _log = super::activity::context::enter(
+            super::activity::context::LogContext::candidate(&candidate, &_active.active.attempt_id),
+        );
         return observation::human_owned(
             store,
             env,
@@ -1965,6 +1999,11 @@ where
         let mut submitted: Option<Option<GlobalSeq>> = None;
 
         loop {
+            let _log =
+                super::activity::context::enter(super::activity::context::LogContext::candidate(
+                    &candidate,
+                    &active.active.attempt_id,
+                ));
             if active.is_cancelled() {
                 return Ok(if queue.human_permits(&candidate)? {
                     TickResult::Stopped
@@ -3130,6 +3169,7 @@ pub(crate) fn poll_verification(
 ) {
     std::thread::scope(|scope| {
         scope.spawn(|| super::project_recovery::poll(store, env, bus, stop, activity));
+        scope.spawn(|| super::activity::window::poll(store, env, stop));
         poll_verification_with(store, env, bus, stop, activity, inflight, |_| {
             ShellVerificationActuator::new(env.clone()).with_activity(activity.clone())
         });
@@ -3246,10 +3286,22 @@ fn poll_project_verification(
                     "Daemon restarted after admission; ownership must be reacquired",
                 )
             {
+                super::activity::context::project_error(
+                    store,
+                    project,
+                    "verifier",
+                    &format!("storyhook: project {project} recovery restart failed: {error}"),
+                );
                 eprintln!("storyhook: project {project} recovery restart failed: {error}");
             }
         }
         Err(error) => {
+            super::activity::context::project_error(
+                store,
+                project,
+                "verifier",
+                &format!("storyhook: project {project} recovery startup read failed: {error}"),
+            );
             eprintln!("storyhook: project {project} recovery startup read failed: {error}")
         }
     }
@@ -3257,6 +3309,12 @@ fn poll_project_verification(
         let mut request_id = match store.read(|tx| tx.verification_recovery(project)) {
             Ok(recovery) => recovery.request.map(|r| r.id),
             Err(error) => {
+                super::activity::context::project_error(
+                    store,
+                    project,
+                    "verifier",
+                    &format!("storyhook: project {project} recovery read failed: {error}"),
+                );
                 eprintln!("storyhook: project {project} recovery read failed: {error}");
                 None
             }
@@ -3300,6 +3358,12 @@ fn poll_project_verification(
         if let Err(error) =
             activity.settle_request(store, project, request_id.as_deref(), reason, &detail)
         {
+            super::activity::context::project_error(
+                store,
+                project,
+                "verifier",
+                &format!("storyhook: project {project} recovery settlement failed: {error}"),
+            );
             eprintln!("storyhook: project {project} recovery settlement failed: {error}");
         }
         match result {
@@ -3320,6 +3384,12 @@ fn poll_project_verification(
                 {}
             }
             Err(error) => {
+                super::activity::context::project_error(
+                    store,
+                    project,
+                    "verifier",
+                    &format!("storyhook: centralized verification tick failed: {error}"),
+                );
                 eprintln!("storyhook: centralized verification tick failed: {error}");
                 while matches!(subscription.recv(RECOVERY_WAKE), Some(Change::Ping))
                     && !stop.load(Ordering::Relaxed)
@@ -3330,6 +3400,12 @@ fn poll_project_verification(
                     Ok(Some(_)) => {}
                     Ok(None) => return,
                     Err(error) => {
+                        super::activity::context::project_error(
+                            store,
+                            project,
+                            "verifier",
+                            &format!("verification worker could not confirm its project: {error}"),
+                        );
                         eprintln!(
                             "storyhook: verification worker could not confirm its project: {error}"
                         );

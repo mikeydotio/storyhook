@@ -109,6 +109,7 @@ impl ShellVerificationActuator {
         resume: bool,
         owner: ControlOwner<'_>,
     ) -> Result<crate::service::engine::DispatchOutcome, AppError> {
+        let _log = self.log_scope(candidate);
         let script = self.helper_path()?;
         let options = DispatchOptions {
             model: plan.model.clone(),

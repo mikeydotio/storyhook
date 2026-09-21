@@ -96,7 +96,7 @@ dashboard address for sharing; local status does not confirm remote reachability
   story daemon uninstall
   story daemon token
   story daemon gc [--force]
-  story daemon logs [--follow] [--json]
+  story daemon logs [--directory PATH] [--follow] [--json]
 
 gc reclaims the runtime directories under <state home>/daemons/ whose store no
 longer exists. It removes a directory only when everything inside it proves the
@@ -113,10 +113,11 @@ logs reads today's UTC activity journal directly, even while the daemon is
 stopped. --follow continues across midnight; --json emits one JSON record
 per line. Plain output uses color only at a terminal (NO_COLOR disables it).
 Each record labels its source, stream, process and story/request context.
-Use --store-path to inspect a different store.
+Use --store-path to inspect a different store, or --directory to read a project journal.
 
-The daemon opens a store-specific activity window in storyhook-verifier on
-the default tmux server. Each project's verification uses a separate window.
+The daemon maintains one verification window in each project-slug tmux session
+on the default server. Project logs live in the registered checkout at
+.storyhook/logs/YYYY-MM-DD.jsonl. Closed or failed readers are repaired.
 STORYHOOK_VERIFIER_MIRROR=0 disables these views without disabling the journal.
 A missing tmux or Python 3 activity helper is non-fatal.
 
@@ -126,7 +127,7 @@ Scripts log stdout/stderr as well as process status. Read archived files
 directly when investigating an earlier day. The journal describes observed
 activity; the story store remains the authoritative history.
 
-  tmux attach -t storyhook-verifier
+  tmux attach -t <project-slug>
   story daemon logs --follow
   story daemon logs --json
 ",

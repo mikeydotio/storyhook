@@ -1183,6 +1183,9 @@ pub enum DaemonAction {
     Logs {
         /// Continue reading new entries across UTC midnight.
         follow: bool,
+        /// Explicit project journal directory; omitted for the store journal.
+        #[serde(default)]
+        directory: Option<PathBuf>,
     },
     /// Run the daemon in this process, in the foreground. What the background
     /// spawner execs, and what a launchd agent runs.
@@ -2211,7 +2214,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "daemon",
         subcommand: Some("logs"),
-        flags: &[bare("follow")],
+        flags: &[bare("follow"), value("directory")],
     },
     VerbFlags {
         verb: "daemon",
@@ -5000,18 +5003,28 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
     let usage = "usage: story daemon start [--port <PORT>] | restart | stop [--force] | status | \
-                 install [--this-binary] | uninstall | token | gc [--force] | logs [--follow]";
+                 install [--this-binary] | uninstall | token | gc [--force] | logs [--follow] [--directory <PATH>]";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
     let action = match args[1].as_str() {
-        "logs" => DaemonAction::Logs {
-            follow: match &args[2..] {
-                [] => false,
-                [flag] if flag == "--follow" => true,
-                _ => return Err(AppError::Usage(usage.to_string())),
-            },
-        },
+        "logs" => {
+            let mut follow = false;
+            let mut directory = None;
+            let mut rest = args[2..].iter();
+            while let Some(arg) = rest.next() {
+                match arg.as_str() {
+                    "--follow" if !follow => follow = true,
+                    "--directory" if directory.is_none() => {
+                        directory = Some(PathBuf::from(
+                            rest.next().ok_or_else(|| AppError::Usage(usage.into()))?,
+                        ));
+                    }
+                    _ => return Err(AppError::Usage(usage.into())),
+                }
+            }
+            DaemonAction::Logs { follow, directory }
+        }
         "start" => DaemonAction::Start {
             port: parse_port_flag(&args[2..], usage)?,
         },
