@@ -51,7 +51,7 @@ use rusqlite::Connection;
 
 use crate::domain::provenance::Provenance;
 use crate::domain::remote::RemoteUrl;
-use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
+use crate::domain::{StateDef, StoryEvent, StorySnapshot, TypeDef};
 use crate::store::error::StoreError;
 use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo};
@@ -983,10 +983,6 @@ macro_rules! impl_read_ops {
                 read::types(&self.conn, project)
             }
 
-            fn members(&self, project: ProjectId) -> Result<Vec<Member>, StoreError> {
-                read::members(&self.conn, project)
-            }
-
             fn settings(&self, project: ProjectId) -> Result<ProjectSettings, StoreError> {
                 read::settings(&self.conn, project)
             }
@@ -1477,14 +1473,6 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn put_types(&mut self, project: ProjectId, types: &[TypeDef]) -> Result<(), StoreError> {
         write::put_types(&self.conn, project, types)
-    }
-
-    fn put_member(&mut self, project: ProjectId, member: &Member) -> Result<(), StoreError> {
-        write::put_member(&self.conn, project, member)
-    }
-
-    fn remove_member(&mut self, project: ProjectId, member_id: &str) -> Result<bool, StoreError> {
-        write::remove_member(&self.conn, project, member_id)
     }
 
     fn put_settings(

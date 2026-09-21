@@ -108,7 +108,6 @@ test("Details exposes secondary metadata and stays open only within the current 
   for (const label of [
     "Order",
     "Labels",
-    "Assignee",
     "Updated",
     "Type",
     "State details",
@@ -143,7 +142,7 @@ test("mobile sorting shares desktop order and focus transfers across the breakpo
   page,
 }) => {
   await openList(page);
-  const columns = ["id", "order", "title", "state", "priority", "assignee", "updated"];
+  const columns = ["id", "order", "title", "state", "priority", "updated"];
   for (const column of columns) {
     for (const direction of ["1", "-1"]) {
       await page.locator("#mobile-sort-column").selectOption(column);

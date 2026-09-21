@@ -13,7 +13,6 @@ pub struct Theme {
     pub priority_medium: Style,
     pub priority_low: Style,
     pub labels: Style,
-    pub assignee: Style,
     pub blocked_badge: Style,
     pub section_header: Style,
     pub section_count: Style,
@@ -51,7 +50,6 @@ impl Theme {
             priority_medium: Style::default().fg(Color::Blue),
             priority_low: Style::default().fg(Color::DarkGray),
             labels: Style::default().fg(Color::Cyan),
-            assignee: Style::default().fg(Color::Green),
             blocked_badge: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             section_header: Style::default()
                 .fg(Color::White)
@@ -84,7 +82,6 @@ impl Theme {
             priority_medium: Style::default().fg(reset),
             priority_low: Style::default().fg(reset).add_modifier(Modifier::DIM),
             labels: Style::default().fg(reset),
-            assignee: Style::default().fg(reset),
             blocked_badge: Style::default().fg(reset).add_modifier(Modifier::BOLD),
             section_header: Style::default().fg(reset).add_modifier(Modifier::BOLD),
             section_count: Style::default().fg(reset).add_modifier(Modifier::DIM),
@@ -116,7 +113,6 @@ mod tests {
         assert_eq!(theme.story_title.fg, Some(Color::White));
         assert!(theme.story_title.add_modifier.contains(Modifier::BOLD));
         assert_eq!(theme.labels.fg, Some(Color::Cyan));
-        assert_eq!(theme.assignee.fg, Some(Color::Green));
     }
 
     #[test]
@@ -127,7 +123,6 @@ mod tests {
         assert_eq!(theme.story_title.fg, Some(Color::Reset));
         assert_eq!(theme.priority_critical.fg, Some(Color::Reset));
         assert_eq!(theme.labels.fg, Some(Color::Reset));
-        assert_eq!(theme.assignee.fg, Some(Color::Reset));
         // No bg colors set (except selected_row which uses underline instead)
         assert_eq!(theme.selected_row.bg, None);
     }

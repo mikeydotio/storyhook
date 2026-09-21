@@ -163,12 +163,6 @@ const CASES: &[Case] = &[
         sql: "UPDATE stories SET story_type = 'tampered'",
     },
     Case {
-        name: "a reassigned row",
-        fields: &["assignee"],
-        coupled_because: None,
-        sql: "UPDATE stories SET assignee = 'tampered'",
-    },
-    Case {
         name: "a row made to await something",
         fields: &["awaiting"],
         coupled_because: None,

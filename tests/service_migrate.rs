@@ -40,6 +40,41 @@ fn append_raw(root: &std::path::Path, id: &str, line: &str) {
 }
 
 #[test]
+fn legacy_assignment_data_is_discarded_without_changing_source_files() {
+    let (_tree, root) = custom_config_tree();
+    std::fs::write(
+        root.join(".storyhook/members.jsonl"),
+        "{\"id\":\"ada\",\"display_name\":\"Ada\",\"created_at\":\"2026-01-01T00:00:00Z\"}\n",
+    )
+    .unwrap();
+    append_raw(
+        &root,
+        "ADA-1",
+        r#"{"kind":"StoryAssigned","at":"2026-02-01T00:00:00Z","member_id":"ada"}"#,
+    );
+    append_raw(
+        &root,
+        "ADA-2",
+        r#"{"kind":"StoryAssigneeCleared","at":"2026-02-01T00:00:00Z"}"#,
+    );
+    let before = tree_contents(&root.join(".storyhook"));
+    let (_dir, store, report) = migrate(&root);
+    let project = store.read(|tx| Ok(tx.projects()?.remove(0))).unwrap();
+    let events = store
+        .read(|tx| tx.events_for(project.id, storyhook::store::StoryNo::new(1)))
+        .unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|event| event.kind != "StoryAssigned" && event.kind != "StoryAssigneeCleared")
+    );
+    assert_eq!(report.unknown_events.len(), 0);
+    assert_eq!(tree_contents(&root.join(".storyhook")), before);
+    let snapshots = store_snapshots(&store);
+    assert_eq!(snapshots["ADA-1"].updated_at, "2026-01-03T00:09:00Z");
+}
+
+#[test]
 fn the_real_tree_migrates_with_every_count_the_baseline_recorded() {
     let (_tree, root) = real_tree();
     let (_dir, store, report) = migrate(&root);
@@ -50,7 +85,6 @@ fn the_real_tree_migrates_with_every_count_the_baseline_recorded() {
     assert_eq!(report.prefix, "SH");
     assert_eq!(report.states, 5);
     assert_eq!(report.types, 5);
-    assert_eq!(report.members, 0);
     assert_eq!(
         report.next_story_no, 62,
         "the counter comes from `next-id`, not from a story count"
@@ -949,14 +983,10 @@ fn the_custom_config_tree_brings_its_whole_configuration_surface() {
     let (_dir, store, report) = migrate(&root);
     assert_eq!(report.prefix, "ADA");
 
-    let (states, types, members) = store
+    let (states, types) = store
         .read(|tx| {
             let project = tx.projects()?.first().unwrap().id;
-            Ok((
-                tx.states(project)?,
-                tx.types(project)?,
-                tx.members(project)?,
-            ))
+            Ok((tx.states(project)?, tx.types(project)?))
         })
         .expect("reading");
 
@@ -1000,13 +1030,9 @@ fn the_custom_config_tree_brings_its_whole_configuration_surface() {
         "a state's description is the field SH-49 destroyed; it must survive a migration"
     );
     assert!(types.iter().any(|t| t.slug == "spike"));
-    assert_eq!(members.len(), 2);
-    assert_eq!(members[0].display_name, "Ada Lovelace");
-    assert_eq!(members[0].github.as_deref(), Some("adalovelace"));
 
     let snapshots = store_snapshots(&store);
     assert_eq!(snapshots["ADA-1"].story_type.as_deref(), Some("spike"));
-    assert_eq!(snapshots["ADA-1"].assignee.as_deref(), Some("ada"));
     assert_eq!(
         snapshots["ADA-1"].awaiting.as_deref(),
         Some("a punch-card supplier")

@@ -21,9 +21,7 @@ use rusqlite::{Connection, params};
 
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::remote::RemoteUrl;
-use crate::domain::{
-    KIND_STORY_COMMIT_LINKED, Member, StateDef, StoryEvent, StorySnapshot, TypeDef,
-};
+use crate::domain::{KIND_STORY_COMMIT_LINKED, StateDef, StoryEvent, StorySnapshot, TypeDef};
 use crate::store::VerificationIncident;
 use crate::store::error::StoreError;
 use crate::store::fault::{FaultPoint, fire};
@@ -348,7 +346,6 @@ const PROJECT_SCOPED_TABLES: &[(&str, &str)] = &[
     ("story_labels", "project_id"),
     ("stories", "project_id"),
     ("project_settings", "project_id"),
-    ("project_members", "project_id"),
     ("project_types", "project_id"),
     ("project_states", "project_id"),
     ("project_remotes", "project_id"),
@@ -1138,20 +1135,20 @@ pub(super) fn put_story(
     sql(
         conn.execute(
             "INSERT INTO stories (project_id, story_no, head_seq, head_global_seq, title, \
-                 state, superstate, priority, priority_rank, story_type, assignee, awaiting, \
+                 state, superstate, priority, priority_rank, story_type, awaiting, \
                  archived, created_at, updated_at, closed_at, description, hidden_at, \
                  draft, snapshot) \
              VALUES (?1, ?2, ?3, \
                  COALESCE((SELECT e.global_seq FROM events e \
                             WHERE e.project_id = ?1 AND e.story_no = ?2 AND e.seq = ?3), 0), \
                  ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
-                 ?18, ?19) \
+                 ?18) \
              ON CONFLICT (project_id, story_no) DO UPDATE SET \
                  head_seq = excluded.head_seq, head_global_seq = excluded.head_global_seq, \
                  title = excluded.title, state = excluded.state, \
                  superstate = excluded.superstate, priority = excluded.priority, \
                  priority_rank = excluded.priority_rank, story_type = excluded.story_type, \
-                 assignee = excluded.assignee, awaiting = excluded.awaiting, \
+                 awaiting = excluded.awaiting, \
                  archived = excluded.archived, \
                  created_at = excluded.created_at, updated_at = excluded.updated_at, \
                  closed_at = excluded.closed_at, description = excluded.description, \
@@ -1167,7 +1164,6 @@ pub(super) fn put_story(
                 snapshot.priority.as_str(),
                 priority_rank(&snapshot.priority),
                 snapshot.story_type,
-                snapshot.assignee,
                 snapshot.awaiting,
                 archived,
                 snapshot.created_at,
@@ -1390,47 +1386,6 @@ pub(super) fn put_types(
         )?;
     }
     Ok(())
-}
-
-pub(super) fn put_member(
-    conn: &Connection,
-    project: ProjectId,
-    member: &Member,
-) -> Result<(), StoreError> {
-    sql(
-        conn.execute(
-            "INSERT INTO project_members (project_id, member_id, display_name, email, github, \
-                 created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-             ON CONFLICT (project_id, member_id) DO UPDATE SET \
-                 display_name = excluded.display_name, email = excluded.email, \
-                 github = excluded.github, created_at = excluded.created_at",
-            params![
-                project.get(),
-                member.id,
-                member.display_name,
-                member.email,
-                member.github,
-                member.created_at
-            ],
-        ),
-        "writing a project member",
-    )?;
-    Ok(())
-}
-
-pub(super) fn remove_member(
-    conn: &Connection,
-    project: ProjectId,
-    member_id: &str,
-) -> Result<bool, StoreError> {
-    let removed = sql(
-        conn.execute(
-            "DELETE FROM project_members WHERE project_id = ?1 AND member_id = ?2",
-            params![project.get(), member_id],
-        ),
-        "removing a project member",
-    )?;
-    Ok(removed > 0)
 }
 
 /// Replaces a project's settings.

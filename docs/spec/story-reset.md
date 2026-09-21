@@ -2,7 +2,7 @@
 
 StoryHook retains two deliberate reset contracts. Both apply only to open
 ordinary stories, return to `todo` after proven cleanup, and preserve story
-metadata, relationships, discussion, assignee, remote branches, and pull requests.
+metadata, relationships, discussion, remote branches, and pull requests.
 Epics and closed stories are ineligible.
 
 | Entry point | Local work | Awaiting reason | Confirmation |

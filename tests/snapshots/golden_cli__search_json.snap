@@ -103,7 +103,6 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -145,7 +144,6 @@ source: tests/golden_cli.rs
       "stories": [
         {
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {

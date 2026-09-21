@@ -37,7 +37,6 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::Project { .. }
         | Invocation::New { .. }
         | Invocation::Publish { .. }
-        | Invocation::MemberAdd { .. }
         | Invocation::State { .. }
         | Invocation::List { .. }
         | Invocation::Search { .. }
@@ -65,7 +64,6 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         | Invocation::Show { .. }
         | Invocation::Log { .. }
         | Invocation::Comment { .. }
-        | Invocation::Assign { .. }
         | Invocation::ClearAwaiting { .. }
         | Invocation::SetPriority { .. }
         | Invocation::SetLabels { .. }
@@ -181,7 +179,6 @@ fn variant_names() -> Vec<(&'static str, Invocation)> {
                 title: None,
                 state: None,
                 priority: None,
-                assignee: None,
                 labels: None,
                 blocked: None,
                 unblocked: false,

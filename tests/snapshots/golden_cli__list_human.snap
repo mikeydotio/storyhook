@@ -66,12 +66,6 @@ $ story list --label api,defect
 SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 
-$ story list --assignee ada-lovelace
-SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
-
-$ story list --assignee nobody
-no stories found
-
 $ story list --flagged
 no stories found
 

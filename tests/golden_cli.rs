@@ -67,7 +67,7 @@ static CORPUS: LazyLock<Project<'static>> = LazyLock::new(build_corpus);
 ///
 /// Coverage: four states including a custom one, all five priorities plus
 /// unset, all five built-in types plus a custom one, labels, `parent-of` and
-/// `blocks` relations, comments, assignees, two members, two archived (closed)
+/// `blocks` relations, comments, two archived (closed)
 /// stories, one explicitly closed story, an `awaiting` block, and two phases.
 fn build_corpus() -> Project<'static> {
     let env = TestEnv::shared();
@@ -92,8 +92,6 @@ fn build_corpus() -> Project<'static> {
         project.run(args).success();
     };
 
-    run(&["member", "add", "Ada Lovelace <ada@example.com>"]);
-    run(&["member", "add", "-g", "grace-hopper"]);
     run(&[
         "state",
         "add",
@@ -215,9 +213,6 @@ fn build_corpus() -> Project<'static> {
     run(&["move", "SH-3", "in-progress"]);
     run(&["relate", "SH-2", "blocks", "SH-3"]);
     settled(&project, "SH-3", 2, DeliveryStatus::Unreached);
-
-    run(&["assign", "SH-2", "ada-lovelace"]);
-    run(&["assign", "SH-5", "grace-hopper"]);
 
     run(&[
         "comment",
@@ -559,8 +554,6 @@ const LIST: &[&[&str]] = &[
     &["list", "--priority", "none"],
     &["list", "--label", "backend"],
     &["list", "--label", "api,defect"],
-    &["list", "--assignee", "ada-lovelace"],
-    &["list", "--assignee", "nobody"],
     &["list", "--flagged"],
     &["list", "--blocked"],
     &["list", "--ready"],
@@ -604,7 +597,7 @@ fn list_json() {
 const SHOW: &[&[&str]] = &[
     // parent-of ×3 + a progress rollup.
     &["show", "SH-1"],
-    // assignee, labels, a comment, an outgoing `blocks`.
+    // labels, a comment, an outgoing `blocks`.
     &["show", "SH-5"],
     // `awaiting`, and every optional field unset.
     &["show", "SH-6"],

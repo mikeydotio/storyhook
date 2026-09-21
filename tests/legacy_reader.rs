@@ -60,10 +60,6 @@ fn the_real_tree_reads_back_with_the_shape_the_baseline_recorded() {
     assert_eq!(project.prefix.as_deref(), Some("SH"));
     assert_eq!(project.schema, 1);
     assert_eq!(project.next_id, 62);
-    assert!(
-        project.members.is_empty(),
-        "the real tree has no members — this is the gap the synthetic fixture fills"
-    );
     assert_eq!(
         project
             .states
@@ -182,13 +178,6 @@ fn the_custom_config_tree_reads_back_the_configuration_surface_the_real_one_lack
     assert!(
         project.types.iter().any(|t| t.slug == "spike"),
         "custom types must survive"
-    );
-    assert_eq!(project.members.len(), 2);
-    assert_eq!(project.members[0].id, "ada");
-    assert_eq!(project.members[0].github.as_deref(), Some("adalovelace"));
-    assert!(
-        project.members[1].email.is_none(),
-        "an absent optional field must stay absent"
     );
     assert_eq!(project.next_id, 5);
 }
@@ -502,7 +491,6 @@ fn the_layout_is_the_one_the_legacy_writer_used() {
     assert_eq!(ours.project_file(), theirs.project_file());
     assert_eq!(ours.states_file(), theirs.states_file());
     assert_eq!(ours.types_file(), theirs.types_file());
-    assert_eq!(ours.members_file(), theirs.members_file());
     assert_eq!(ours.next_id_file(), theirs.next_id_file());
     assert_eq!(ours.open_stories_dir(), theirs.open_stories_dir());
     assert_eq!(ours.archive_db(), theirs.archive_db());

@@ -68,8 +68,6 @@ pub use eligibility::{EligibilityReason, SessionEligibility};
 pub struct ListFilters {
     /// `--state <slug>`: exact state match.
     pub state: Option<String>,
-    /// `--assignee <member>`: exact member-id match.
-    pub assignee: Option<String>,
     /// `--flagged`: only stories with integrity flags.
     pub flagged: bool,
     /// `--priority a,b`: any of a comma-separated list.
@@ -199,7 +197,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     ///
     /// The catalog in **configured** order — `tx.states()`, never
     /// `tx.state_map()`, which is alphabetical and would put a board's columns
-    /// in the wrong order — the members, and every unarchived story. One
+    /// in the wrong order — and every unarchived story. One
     /// transaction, so a client cannot observe a catalog from one instant and
     /// stories from another.
     pub fn project_snapshot(&self) -> Result<ProjectSnapshotView, AppError> {
@@ -255,7 +253,6 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             slug: project.slug,
             prefix: project.prefix,
             states: self.tx.states(self.project)?,
-            members: self.tx.members(self.project)?,
             stories,
             drafts,
             head_global_seqs,
@@ -279,9 +276,6 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
 
         if let Some(state) = &filters.state {
             views.retain(|view| &view.story.state == state);
-        }
-        if let Some(assignee) = &filters.assignee {
-            views.retain(|view| view.story.assignee.as_deref() == Some(assignee.as_str()));
         }
         if filters.flagged {
             views.retain(|view| !view.flagged_reasons.is_empty());

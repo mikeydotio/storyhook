@@ -39,7 +39,7 @@ fn story_new_assigns_monotonic_ids_and_show_works() {
 }
 
 #[test]
-fn comment_and_assign_append_events() {
+fn comment_appends_events() {
     let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -47,17 +47,7 @@ fn comment_and_assign_append_events() {
         .success();
 
     story(dir.path())
-        .args(["member", "add", "mikey <mw@mikey.io>"])
-        .assert()
-        .success();
-
-    story(dir.path())
         .args(["new", "Routing"])
-        .assert()
-        .success();
-
-    story(dir.path())
-        .args(["assign", "SH-1", "mikey"])
         .assert()
         .success();
 
@@ -70,7 +60,6 @@ fn comment_and_assign_append_events() {
         .args(["show", "SH-1"])
         .assert()
         .success()
-        .stdout(contains("assignee: mikey"))
         .stdout(contains("First pass done"));
 }
 

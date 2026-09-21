@@ -747,7 +747,6 @@ mod tests {
             state: state.to_string(),
             state_computed: false,
             superstate: SuperState::Open,
-            assignee: None,
             awaiting: None,
             comments: vec![],
             referenced_by_commits: vec![],
@@ -767,7 +766,7 @@ mod tests {
 
     fn make_state(stories: Vec<StorySnapshot>) -> AppState {
         AppState {
-            data: DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![]),
+            data: DataStore::from_test_data(test_states(), stories, "SH".to_string()),
             focus: FocusStack::new(FocusTarget::Graph),
             view: View::Graph,
             filters: Vec::new(),

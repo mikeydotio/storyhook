@@ -183,7 +183,6 @@ fn a_new_story_cannot_open_in_an_undefined_state() {
 #[test]
 fn enrichment_events_are_written_in_one_batch_in_a_fixed_order() {
     let fixture = ServiceFixture::new();
-    fixture.add_member("ada", "Ada Lovelace", Some("ada-gh"));
     let story = StoryService::new(&fixture.ctx())
         .create(&NewStoryInput {
             title: "everything at once".into(),
@@ -192,7 +191,6 @@ fn enrichment_events_are_written_in_one_batch_in_a_fixed_order() {
             description: Some("a description".into()),
             priority: Some("high".into()),
             labels: Some(vec!["b".into(), "a".into()]),
-            assignee: Some("ada".into()),
             draft: false,
         })
         .expect("creating an enriched story");
@@ -203,14 +201,12 @@ fn enrichment_events_are_written_in_one_batch_in_a_fixed_order() {
             "StoryCreated",
             "StoryPrioritySet",
             "StoryLabelsSet",
-            "StoryAssigned",
             "StoryDescriptionSet",
             "StoryTypeSet",
         ]
     );
     assert_eq!(story.priority, Priority::High);
     assert_eq!(story.labels, ["a", "b"]);
-    assert_eq!(story.assignee.as_deref(), Some("ada"));
     assert_eq!(story.story_type.as_deref(), Some("bug"));
     assert_eq!(story.description.as_deref(), Some("a description"));
 }
@@ -279,20 +275,6 @@ fn a_blank_description_writes_no_description_event() {
 }
 
 #[test]
-fn a_new_story_can_be_assigned_by_github_handle() {
-    let fixture = ServiceFixture::new();
-    fixture.add_member("ada", "Ada Lovelace", Some("ada-gh"));
-    let story = StoryService::new(&fixture.ctx())
-        .create(&NewStoryInput {
-            title: "by handle".into(),
-            assignee: Some("ada-gh".into()),
-            ..NewStoryInput::default()
-        })
-        .expect("creating with a github handle");
-    assert_eq!(story.assignee.as_deref(), Some("ada"));
-}
-
-#[test]
 fn an_unknown_type_is_rejected_and_names_the_known_ones() {
     let fixture = ServiceFixture::new();
     let error = StoryService::new(&fixture.ctx())
@@ -321,19 +303,6 @@ fn an_invalid_priority_is_rejected_at_creation() {
         validation_message(error),
         "priority must be one of: critical, high, medium, low"
     );
-}
-
-#[test]
-fn an_unknown_assignee_is_not_found_at_creation() {
-    let fixture = ServiceFixture::new();
-    let error = StoryService::new(&fixture.ctx())
-        .create(&NewStoryInput {
-            title: "ghost".into(),
-            assignee: Some("nobody".into()),
-            ..NewStoryInput::default()
-        })
-        .unwrap_err();
-    assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
 }
 
 #[test]
@@ -428,7 +397,6 @@ fn a_comment_on_a_closed_story_moves_only_updated_at_and_the_comment_list() {
     assert_eq!(after.hidden_at, before.hidden_at);
     assert_eq!(after.draft, before.draft);
     assert_eq!(after.labels, before.labels);
-    assert_eq!(after.assignee, before.assignee);
     assert_eq!(after.priority, before.priority);
     assert_eq!(after.awaiting, before.awaiting);
     assert_eq!(after.relationships, before.relationships);
@@ -526,7 +494,6 @@ fn a_closed_story_still_refuses_every_write_that_is_not_a_comment() {
     let refusal = "story `SH-1` is closed; reopen it with `story reopen SH-1` to change it — a comment needs no reopen";
 
     let attempts: Vec<(&str, AppError)> = vec![
-        ("assign", service.assign(&story.id, "someone").unwrap_err()),
         (
             "set_priority",
             service.set_priority(&story.id, "high").unwrap_err(),
@@ -585,46 +552,6 @@ fn a_story_id_from_another_project_is_not_found_rather_than_invalid() {
             matches!(error, AppError::NotFound(_)),
             "`{id}` gave {error:?}"
         );
-    }
-}
-
-#[test]
-fn assignment_accepts_a_member_id_or_a_github_handle() {
-    let fixture = ServiceFixture::new();
-    fixture.add_member("ada", "Ada Lovelace", Some("ada-gh"));
-    let ctx = fixture.ctx();
-    let service = StoryService::new(&ctx);
-    let first = new_story(&ctx, "by id");
-    let second = new_story(&ctx, "by handle");
-    assert_eq!(
-        service
-            .assign(&first.id, "ada")
-            .unwrap()
-            .assignee
-            .as_deref(),
-        Some("ada")
-    );
-    assert_eq!(
-        service
-            .assign(&second.id, "ada-gh")
-            .unwrap()
-            .assignee
-            .as_deref(),
-        Some("ada")
-    );
-}
-
-#[test]
-fn assigning_to_an_unknown_member_is_not_found() {
-    let fixture = ServiceFixture::new();
-    let ctx = fixture.ctx();
-    let story = new_story(&ctx, "unassignable");
-    let error = StoryService::new(&ctx)
-        .assign(&story.id, "nobody")
-        .unwrap_err();
-    match error {
-        AppError::NotFound(message) => assert_eq!(message, "member `nobody` not found"),
-        other => panic!("expected NotFound, got {other:?}"),
     }
 }
 
@@ -1226,7 +1153,6 @@ fn set_state_refuses_a_reason_combined_with_a_move_to_a_closed_state() {
 #[test]
 fn set_fields_reports_every_change_it_made() {
     let fixture = ServiceFixture::new();
-    fixture.add_member("ada", "Ada Lovelace", None);
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "before");
     let message = StoryService::new(&ctx)
@@ -1235,7 +1161,6 @@ fn set_fields_reports_every_change_it_made() {
             &FieldEdits {
                 title: Some("after".into()),
                 priority: Some("high".into()),
-                assignee: Some("ada".into()),
                 labels: Some("x, y".into()),
                 story_type: Some("bug".into()),
                 description: Some("described".into()),
@@ -1246,7 +1171,7 @@ fn set_fields_reports_every_change_it_made() {
 
     assert_eq!(
         message,
-        "updated SH-1: title -> after, priority -> high, assignee -> ada, labels += x, y, \
+        "updated SH-1: title -> after, priority -> high, labels += x, y, \
          type -> bug, description updated"
     );
     let after = snapshot(&fixture, &story.id);
@@ -1382,25 +1307,6 @@ fn set_fields_adds_labels_rather_than_replacing_them() {
 }
 
 #[test]
-fn set_fields_rejects_an_unknown_assignee_as_invalid_input() {
-    // `story assign` says not-found; `story set --assignee` says invalid. Both
-    // spellings are pinned by the error contract, so neither may drift.
-    let fixture = ServiceFixture::new();
-    let ctx = fixture.ctx();
-    let story = new_story(&ctx, "assignee");
-    let error = StoryService::new(&ctx)
-        .set_fields(
-            &story.id,
-            &FieldEdits {
-                assignee: Some("nobody".into()),
-                ..FieldEdits::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(validation_message(error), "member `nobody` not found");
-}
-
-#[test]
 fn a_rejected_field_in_a_batch_writes_none_of_it() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
@@ -1425,7 +1331,6 @@ fn a_rejected_field_in_a_batch_writes_none_of_it() {
 #[test]
 fn the_json_patch_applies_every_supported_key() {
     let fixture = ServiceFixture::new();
-    fixture.add_member("ada", "Ada Lovelace", None);
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "patchable");
     StoryService::new(&ctx)
@@ -1433,7 +1338,7 @@ fn the_json_patch_applies_every_supported_key() {
             &story.id,
             &FieldEdits {
                 json: Some(
-                    r#"{"title":"patched","priority":"low","assignee":"ada",
+                    r#"{"title":"patched","priority":"low",
                         "labels":["p","q"],"blocked":"waiting","story_type":"bug",
                         "description":"new"}"#
                         .into(),
@@ -1446,7 +1351,6 @@ fn the_json_patch_applies_every_supported_key() {
     let after = snapshot(&fixture, &story.id);
     assert_eq!(after.title, "patched");
     assert_eq!(after.priority, Priority::Low);
-    assert_eq!(after.assignee.as_deref(), Some("ada"));
     assert_eq!(after.labels, ["p", "q"]);
     assert_eq!(after.awaiting.as_deref(), Some("waiting"));
     assert_eq!(after.story_type.as_deref(), Some("bug"));
@@ -1514,30 +1418,26 @@ fn the_json_patch_treats_a_null_or_empty_blocked_as_an_unblock() {
 }
 
 #[test]
-fn the_json_patch_reports_a_cleared_assignee_without_writing_an_event() {
+fn the_json_patch_rejects_a_retired_assignee_without_writing_an_event() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let story = new_story(&ctx, "cleared");
-    let message = StoryService::new(&ctx)
-        .set_fields(
-            &story.id,
-            &FieldEdits {
-                title: Some("kept".into()),
-                json: Some(r#"{"assignee":null}"#.into()),
-                ..FieldEdits::default()
-            },
-        )
-        .unwrap();
-    assert!(message.contains("assignee cleared"), "{message}");
-    assert_eq!(
-        event_kinds(&fixture, &story.id),
-        [
-            "StoryCreated",
-            "StoryPrioritySet",
-            "StoryTypeSet",
-            "StoryTitleSet"
-        ]
-    );
+    let story = new_story(&ctx, "unchanged");
+    let before = event_kinds(&fixture, &story.id);
+    for value in ["null", "7", "\"ada\""] {
+        let error = StoryService::new(&ctx)
+            .set_fields(
+                &story.id,
+                &FieldEdits {
+                    title: Some("must not apply".into()),
+                    json: Some(format!("{{\"assignee\":{value}}}")),
+                    ..FieldEdits::default()
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("assignee"));
+        assert_eq!(event_kinds(&fixture, &story.id), before);
+        assert_eq!(snapshot(&fixture, &story.id).title, "unchanged");
+    }
 }
 
 #[test]
@@ -1572,7 +1472,6 @@ fn the_json_patch_rejects_malformed_input() {
             r#"{"priority":"urgent"}"#,
             "priority must be one of: critical, high, medium, low",
         ),
-        (r#"{"assignee":7}"#, "assignee must be a string or null"),
         (r#"{"labels":"x"}"#, "labels must be an array of strings"),
         (r#"{"blocked":7}"#, "blocked must be a string or null"),
         (r#"{"story_type":"chore"}"#, "unknown type `chore`"),
@@ -2374,14 +2273,12 @@ fn comment_priority_and_label_edits_each_fire_their_own_hook() {
 }
 
 #[test]
-fn assignment_and_awaiting_edits_fire_no_hook() {
+fn awaiting_edits_fire_no_hook() {
     let fixture = ServiceFixture::new();
-    fixture.add_member("ada", "Ada Lovelace", None);
     record_all_hooks(&fixture);
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "quiet edits");
-    service.assign(&story.id, "ada").unwrap();
     service.set_awaiting(&story.id, "review").unwrap();
     service.clear_awaiting(&story.id).unwrap();
     assert_eq!(fired_hooks(&fixture), ["create"]);

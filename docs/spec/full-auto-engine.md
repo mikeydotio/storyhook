@@ -2113,7 +2113,7 @@ caller resources, changed identities and ambiguous windows remain refusals.
 The receipt must echo the token and lease and prove every resource absent.
 Only then does one transaction restore the prior eligible open state (falling
 back to `todo`, never `verifying`), clear free-text awaiting, release the lane
-and remove the reservation. Relationships, labels, assignee and history remain.
+and remove the reservation. Relationships, labels and history remain.
 
 Partial failure retains the reservation and contextual diagnostics, processes
 independent targets, and leaves the run draining without creating a story

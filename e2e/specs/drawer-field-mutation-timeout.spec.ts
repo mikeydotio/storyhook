@@ -9,7 +9,7 @@ import {
 
 /**
  * SH-310: `runFieldMutation()` -- the applier behind every drawer field edit
- * (State, Priority, Assignee, Type) and, since this story, the context
+ * (State, Priority, Type) and, since this story, the context
  * menu's Set Priority -- used to end in a bare `.catch(toastError)`. That
  * cannot tell a definite daemon refusal apart from `api()`'s `status: 0`
  * ("no reply ever arrived, for reasons the client cannot diagnose" -- see

@@ -803,11 +803,6 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
    starts to. Contrast measured in all four theme resolutions by
    e2e/specs/reserved-labels.spec.ts. */
 .chip-reserved { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
-.avatar {
-  width: 1.25rem; height: 1.25rem; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
-  font-size: var(--type-metadata); line-height: var(--line-metadata); font-weight: 700; display: flex; align-items: center; justify-content: center;
-  margin-left: auto; flex-shrink: 0; text-transform: uppercase;
-}
 .dot { width: 0.4375rem; height: 0.4375rem; border-radius: 50%; flex-shrink: 0; }
 /* SH-203: a story-ID reference is its status light (`.dot.story-light`,
    background set inline per story by stateColor()) immediately before a
@@ -846,7 +841,7 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 /* ---- List ---- */
 .list { flex: 1; overflow: auto; padding: 0 var(--inset-main) var(--inset-main); }
 /* SH-235: seven columns don't fit a phone-width wrap -- `overflow: hidden`
-   didn't shrink the table, it silently dropped Labels/Assignee/Updated
+   didn't shrink the table, it silently dropped Labels/Updated
    past the wrap's own right edge. `overflow-y` stays `hidden` (the wrap
    never scrolls vertically -- it's sized to its content, and this is what
    keeps the table's square cell corners from poking out past the wrap's
@@ -864,7 +859,7 @@ thead th:hover { color: var(--fg); }
 .sort-arrow { margin-left: 0.25rem; font-size: 0.625rem; }
 /* SH-448: a list row is metadata except for its prose title. Default every
    cell to one atomic line so status slugs (notably `in-progress`), priority,
-   assignee and any future metadata column cannot break internally. The title
+   and any future metadata column cannot break internally. The title
    opts back into text wrapping below; labels wrap as flex items, not text. */
 tbody td { padding: var(--space-card); border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
 tbody tr { cursor: pointer; transition: background 0.1s; }
@@ -1759,7 +1754,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         <section class="filter-group" aria-labelledby="story-filter-group-title">
           <h2 class="filter-group-title" id="story-filter-group-title">Stories</h2>
           <div class="fdd" id="fdd-priorities"></div>
-          <div class="fdd" id="fdd-assignees"></div>
           <div class="fdd" id="fdd-types"></div>
           <div class="fdd" id="fdd-states"></div>
           <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
@@ -1794,7 +1788,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
               <th data-col="state">State <span class="sort-arrow" id="sort-state"></span></th>
               <th data-col="priority">Priority <span class="sort-arrow" id="sort-priority"></span></th>
               <th data-col="labels">Labels</th>
-              <th data-col="assignee">Assignee <span class="sort-arrow" id="sort-assignee"></span></th>
               <th data-col="updated">Updated <span class="sort-arrow" id="sort-updated"></span></th>
               <th class="col-actions"><span class="sr-only">Actions</span></th>
             </tr>
@@ -1812,7 +1805,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             <option value="title">Title</option>
             <option value="state">State</option>
             <option value="priority">Priority</option>
-            <option value="assignee">Assignee</option>
             <option value="updated">Updated</option>
           </select>
         </label>
@@ -2548,9 +2540,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** A fresh, independently-mutable default filter object. Null means every
    * current and future option in an inclusive facet; an array is an exact
    * selection, including the empty selection that intentionally matches no
-   * stories. Assignee keeps its older optional-filter semantics. */
+   * stories. */
   function defaultFilter() {
-    return { text: "", priorities: null, assignees: [], types: null, states: null };
+    return { text: "", priorities: null, types: null, states: null };
   }
 
   function savePersistedFilters(field, debounce) {
@@ -3636,8 +3628,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Drops any carried-over `state.filter` value (SH-155) that doesn't
    * exist in the repo whose data just loaded — a state or type slug that
-   * happened to also exist in the previous repo, or an assignee who isn't
-   * a member here. `meta()` only reflects this repo's own vocabulary once
+   * happened to also exist in the previous repo. `meta()` only reflects this repo's own vocabulary once
    * `state.data` is set, so this must run from `fetchData()`'s success
    * path, never from `selectRepo()` itself (see that function's comment).
    *
@@ -3656,16 +3647,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * is actually being filtered. */
   function pruneCarriedFilters() {
     var m = meta();
-    var validAssignees = { __unassigned__: true };
-    m.members.forEach(function(mem) { validAssignees[mem.id] = true; });
     var validTypes = {};
     m.types.forEach(function(t) { validTypes[t.slug] = true; });
     var validStates = {};
     m.states.forEach(function(s) { validStates[s.slug] = true; });
-    var validSets = { assignees: validAssignees, types: validTypes, states: validStates };
+    var validSets = { types: validTypes, states: validStates };
 
     var droppedFilter = false, droppedColumns = false, droppedSort = false;
-    ["assignees", "types", "states"].forEach(function(key) {
+    ["types", "states"].forEach(function(key) {
       var selected = state.filter[key];
       if (selected === null) return;
       var kept = selected.filter(function(v) { return validSets[key][v]; });
@@ -4789,7 +4778,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** Which request failed, as a line a reader can act on — or null.
    *
    * The honest sentence `describeFailure` returns for an unprovable outcome
-   * names no subject, and in a burst ("set priority, then assign, then
+   * names no subject, and in a burst ("set priority, then add a label, then
    * comment") that leaves the reader unable to tell which write is in doubt.
    * The request's identity is the one thing that disambiguates it, and unlike
    * a typed error name it is **nowhere else on screen** — which is precisely
@@ -7544,20 +7533,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // DERIVED DATA / LOOKUPS
   // ============================================================
 
-  function meta() { return (state.data && state.data.meta) || { states: [], types: [], members: [], priorities: [], relations: [], labels: [] }; }
-
-  function memberName(id) {
-    if (!id) return null;
-    var m = meta().members.filter(function(x) { return x.id === id; })[0];
-    return m ? m.display_name : id;
-  }
-
-  function initials(name) {
-    if (!name) return "?";
-    var parts = name.trim().split(/\s+/);
-    var s = parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : name.slice(0, 2);
-    return s.toUpperCase();
-  }
+  function meta() { return (state.data && state.data.meta) || { states: [], types: [], priorities: [], relations: [], labels: [] }; }
 
   function stateSuperstate(slug) {
     var s = meta().states.filter(function(x) { return x.slug === slug; })[0];
@@ -7615,7 +7591,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return selection === null || selection.indexOf(value) !== -1;
   }
 
-  /** Applies the shared search/priority/assignee/type/state filters and the
+  /** Applies the shared search/priority/type/state filters and the
    * archived-story visibility toggle. Board and List both render from this. */
   function filteredStories() {
     if (!state.data) return [];
@@ -7632,10 +7608,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         if (hay.indexOf(text) === -1) return false;
       }
       if (!inclusiveFacetMatches(f.priorities, st.priority)) return false;
-      if (f.assignees.length) {
-        var a = st.assignee || "__unassigned__";
-        if (f.assignees.indexOf(a) === -1) return false;
-      }
       if (!inclusiveFacetMatches(f.types, st.story_type)) return false;
       if (!inclusiveFacetMatches(f.states, shownState)) return false;
       return true;
@@ -7695,7 +7667,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var aSlug = was.display_state || a.state, bSlug = newById[id].display_state || b.state;
       if (aSlug !== bSlug) { result.moved.push({ id: id, from: aSlug, to: bSlug }); fields.push("state"); }
       if (a.priority !== b.priority) fields.push("priority");
-      if (a.assignee !== b.assignee) fields.push("assignee");
       if (a.title !== b.title) fields.push("title");
       if (a.story_type !== b.story_type) fields.push("type");
       if ((a.labels || []).join(",") !== (b.labels || []).join(",")) fields.push("labels");
@@ -8283,19 +8254,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * pattern most issue trackers use for faceted filters. */
   var FILTER_DROPDOWNS = {
     priorities: { label: "Priority", container: "fdd-priorities" },
-    assignees: { label: "Assignee", container: "fdd-assignees" },
     types: { label: "Type", container: "fdd-types" },
     states: { label: "State", container: "fdd-states" }
   };
 
   function renderFilterOptions() {
     var m = meta();
-    var assigneeOpts = m.members.map(function(mem) { return { value: mem.id, label: mem.display_name }; });
-    assigneeOpts.push({ value: "__unassigned__", label: "Unassigned" });
     var typeOpts = m.types.map(function(t) { return { value: t.slug, label: typeLabel(t.slug) }; });
 
     buildFilterDropdown("priorities", m.priorities.map(function(p) { return { value: p, label: p }; }));
-    buildFilterDropdown("assignees", assigneeOpts);
     buildFilterDropdown("types", typeOpts);
     buildFilterDropdown("states", m.states.map(function(s) { return { value: s.slug, label: s.slug }; }));
     buildColumnsDropdown(m.states);
@@ -9663,8 +9630,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * argument doesn't carry, so only a fingerprint of the *output* can be
    * complete. A hand-built string here would have to separately enumerate,
    * and keep enumerating as this function grows: a type's emoji glyph
-   * (`meta().types[]`, independent of `st.story_type`'s slug), an
-   * assignee's display name (`meta().members[]`), a referenced blocker's
+   * (`meta().types[]`, independent of `st.story_type`'s slug), a referenced blocker's
    * own status-light color (`storyLight()` -> `findStory(other).
    * display_state`), that color's dependence on the blocker's index/role
    * within `meta().states` (`stateColor()`), and the cleared-blocker dwell
@@ -9818,9 +9784,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       shown.slice(0, 3).forEach(function(l) { labelWrap.appendChild(el("span", { class: labelChipClass(l, "chip") }, [l])); });
       if (shown.length > 3) labelWrap.appendChild(el("span", { class: "chip" }, ["+" + (shown.length - 3)]));
       metaRow.appendChild(labelWrap);
-    }
-    if (st.assignee) {
-      metaRow.appendChild(el("span", { class: "avatar", title: memberName(st.assignee) }, [initials(memberName(st.assignee))]));
     }
     next.appendChild(metaRow);
 
@@ -11137,7 +11100,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     next.appendChild(el("td", {}, [buildStatePill(v)]));
     next.appendChild(el("td", {}, [priorityDot(st.priority)]));
     next.appendChild(el("td", { class: "col-labels" }, [labelChips(st.labels)]));
-    next.appendChild(el("td", {}, [st.assignee ? memberName(st.assignee) : el("span", { style: "color:var(--fg-faint)" }, ["–"])]));
     next.appendChild(el("td", { class: "col-date" }, [updated]));
     // SH-235: a coarse-pointer-only path to the exact menu right-click
     // already opens. SH-600 later made the card affordance universal, while
@@ -11279,7 +11241,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var details = el("dl", { id: detailsId, class: "mobile-story-details", hidden: !expanded }, []);
     appendMobileDetail(details, "Order", order === Infinity ? "—" : String(order + 1));
     appendMobileDetail(details, "Labels", (st.labels || []).length ? labelChips(st.labels) : "—");
-    appendMobileDetail(details, "Assignee", st.assignee ? memberName(st.assignee) : "—");
     appendMobileDetail(details, "Updated", updated);
     appendMobileDetail(details, "Type", st.story_type || "none");
     appendMobileDetail(
@@ -11331,7 +11292,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // sorting the State column must sort by the word the column shows.
       case "state": return v.display_state || st.state;
       case "priority": return PRIORITY_ORDER[st.priority] !== undefined ? PRIORITY_ORDER[st.priority] : 99;
-      case "assignee": return memberName(st.assignee) || "￿";
       case "updated": return st.updated_at || "";
       default: return "";
     }
@@ -12104,16 +12064,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       runFieldMutation(st.id, "POST", "priority", { priority: prioritySelect.value });
     });
     grid.appendChild(el("div", { class: "field" }, [el("label", {}, ["Priority"]), prioritySelect]));
-
-    var assigneeSelect = el("select", {}, [el("option", { value: "" }, ["Unassigned"])].concat(m.members.map(function(mem) {
-      var o = el("option", { value: mem.id }, [mem.display_name]);
-      if (mem.id === st.assignee) o.selected = true;
-      return o;
-    })));
-    assigneeSelect.addEventListener("change", function() {
-      if (assigneeSelect.value) runFieldMutation(st.id, "POST", "assign", { member: assigneeSelect.value });
-    });
-    grid.appendChild(el("div", { class: "field" }, [el("label", {}, ["Assignee"]), assigneeSelect]));
 
     var typeSelect = el("select", {}, m.types.map(function(t) {
       var o = el("option", { value: t.slug }, [typeLabel(t.slug)]);
@@ -12992,7 +12942,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * sort alone: `state.filter`/`state.sort` carry over as-is, and the
    * search control is synced to whatever it already holds rather than forced
    * back to defaults. Per-repo-vocabulary filter values
-   * (assignees, types, states) may not exist in the new repo — those are
+   * (types, states) may not exist in the new repo — those are
    * pruned once its vocabulary is known, in `pruneCarriedFilters()`, called
    * from `fetchData()`'s first successful load for this repo. */
   function selectRepo(id) {
@@ -14919,8 +14869,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `title` is always present (validated non-empty by the caller); every
    * other field is present only when non-default, matching how `PATCH
    * /story/{id}` treats an absent key as "leave alone" — sending every
-   * field unconditionally would clobber a field this form doesn't expose
-   * (e.g. `assignee`) back to blank on every save. */
+   * field unconditionally would reset omitted values on every save. */
   function createFormFields() {
     var title = $("create-title").value.trim();
     var body = { title: title };

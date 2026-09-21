@@ -199,7 +199,6 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::SupersedeBlockDeliveries { id }
         | Invocation::Log { id }
         | Invocation::Comment { id, .. }
-        | Invocation::Assign { id, .. }
         | Invocation::SetState { id, .. }
         | Invocation::SetPriority { id, .. }
         | Invocation::SetLabels { id, .. }
@@ -276,7 +275,6 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         Invocation::Help
         | Invocation::Project { .. }
         | Invocation::New { .. }
-        | Invocation::MemberAdd { .. }
         // `state` is a state slug, not a story id — same reason `SetState::state`
         // above is excluded rather than swept in with `id`.
         | Invocation::HideState { .. }
@@ -505,7 +503,6 @@ mod tests {
                 description: None,
                 priority: None,
                 labels: None,
-                assignee: None,
                 draft: false,
             },
             Invocation::Graph {

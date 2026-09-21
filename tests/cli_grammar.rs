@@ -50,22 +50,6 @@ fn comment_adds_comment() {
 }
 
 #[test]
-fn assign_sets_assignee() {
-    let dir = scratch_dir();
-    init_and_create(dir.path());
-
-    story(dir.path())
-        .args(["member", "add", "Test User <test@test.com>"])
-        .assert()
-        .success();
-
-    story(dir.path())
-        .args(["assign", "SH-1", "test-user"])
-        .assert()
-        .success();
-}
-
-#[test]
 fn move_changes_state() {
     let dir = scratch_dir();
     init_and_create(dir.path());
@@ -430,38 +414,13 @@ fn set_json_patch_unknown_assignee_is_rejected_and_does_not_set() {
         .args(["set", "SH-1", "--json", r#"{"assignee":"nobody"}"#])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("member `nobody` not found"));
+        .stderr(predicate::str::contains("unknown field `assignee`"));
 
     story(dir.path())
         .args(["show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("assignee: -"));
-}
-
-#[test]
-fn set_json_patch_assignee_by_github_handle_normalizes_to_member_id() {
-    let dir = scratch_dir();
-    init_and_create(dir.path());
-
-    // `id` is a lowercased slug of the handle, so this member's id
-    // ("mikeyward") differs in case from its github handle ("MikeyWard").
-    story(dir.path())
-        .args(["member", "add", "-g", "MikeyWard"])
-        .assert()
-        .success();
-
-    story(dir.path())
-        .args(["set", "SH-1", "--json", r#"{"assignee":"MikeyWard"}"#])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("assignee -> MikeyWard"));
-
-    story(dir.path())
-        .args(["show", "SH-1"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("assignee: mikeyward"));
+        .stdout(predicate::str::contains("assignee").not());
 }
 
 #[test]

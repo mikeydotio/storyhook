@@ -22,7 +22,6 @@ fn described(title: &str) -> ImportStory {
         title: title.to_string(),
         priority: None,
         labels: None,
-        assignee: None,
         relationships: None,
         description: None,
         state: None,
@@ -80,7 +79,6 @@ fn restored_project(
 #[test]
 fn an_export_carries_the_catalog_and_every_story() {
     let fixture = ServiceFixture::new();
-    fixture.add_member("ada", "Ada Lovelace", Some("ada"));
     let id = create(&fixture, "Only story");
 
     let export = export(&fixture);
@@ -96,7 +94,6 @@ fn an_export_carries_the_catalog_and_every_story() {
         "the fixture is a default project, so its catalog is the floor"
     );
     assert_eq!(export.types.len(), 2);
-    assert_eq!(export.members.len(), 1);
     assert_eq!(export.stories.len(), 1);
     assert_eq!(export.stories[0].id, id);
     assert!(!export.stories[0].archived);
@@ -188,6 +185,53 @@ fn an_export_puts_open_stories_first_and_sorts_each_group_as_text() {
 }
 
 #[test]
+fn old_export_discards_assignment_but_preserves_unknown_events_and_prose() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "assignee remains valid prose");
+    let mut old = serde_json::to_value(export(&fixture)).unwrap();
+    old["members"] = serde_json::json!([{"id":"ada","display_name":"Ada"}]);
+    let events = old["stories"][0]["events"].as_array_mut().unwrap();
+    events.extend([
+        serde_json::json!({"kind":"StoryAssigned","at":"2026-01-01T00:00:00Z","member_id":"ada"}),
+        serde_json::json!({"kind":"StoryAssigneeCleared","at":"2026-01-02T00:00:00Z"}),
+        serde_json::json!({"kind":"FutureActor","at":"2026-01-03T00:00:00Z","actor":"ada"}),
+    ]);
+    let imported: ProjectExport = serde_json::from_value(old).unwrap();
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &imported, false).unwrap();
+    let project = restored_project(&store, dir.path());
+    let ctx = storyhook::service::Ctx::new(
+        &store,
+        project.id,
+        dir.path(),
+        storyhook::env::Environment::at(dir.path()),
+    );
+    let exported = serde_json::to_value(TransferService::new(&ctx).export().unwrap()).unwrap();
+    assert!(exported.get("members").is_none());
+    let events = exported["stories"][0]["events"].as_array().unwrap();
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[0]["title"], "assignee remains valid prose");
+    assert_eq!(events[3]["kind"], "FutureActor");
+    assert_eq!(events[3]["actor"], "ada");
+    StoryService::new(&ctx)
+        .comment("SH-1", "writes still work")
+        .unwrap();
+}
+
+#[test]
+fn old_batch_import_discards_assignee_fields() {
+    let fixture = ServiceFixture::new();
+    let stories: Vec<ImportStory> =
+        serde_json::from_str(r#"[{"title":"Old batch","assignee":"ada"}]"#).unwrap();
+    TransferService::new(&fixture.ctx())
+        .import(&stories)
+        .unwrap();
+    let current = serde_json::to_value(export(&fixture)).unwrap();
+    assert_eq!(current["stories"][0]["events"].as_array().unwrap().len(), 3);
+    assert!(!current.to_string().contains("ada"));
+}
+
+#[test]
 fn a_non_default_prefix_is_carried_in_the_document() {
     let fixture = ServiceFixture::new();
     let (store, dir) = empty_store();
@@ -218,7 +262,6 @@ fn an_empty_project_exports_an_empty_story_list() {
     let fixture = ServiceFixture::new();
     let export = export(&fixture);
     assert!(export.stories.is_empty());
-    assert!(export.members.is_empty());
 }
 
 // --- a project's settings (SH-133) ------------------------------------------
@@ -1189,7 +1232,6 @@ fn a_legacy_restore_appends_custom_type_and_low_priority_events() {
                 emoji: None,
             },
         ],
-        members: Vec::new(),
         settings: None,
         remotes: Vec::new(),
         github_sync: None,
@@ -1259,7 +1301,6 @@ fn a_pre_types_restore_installs_the_stock_catalog_before_normalizing() {
         prefix: None,
         states: storyhook_test_support::default_states(),
         types: Vec::new(),
-        members: Vec::new(),
         settings: None,
         remotes: Vec::new(),
         github_sync: None,
@@ -1356,7 +1397,6 @@ fn an_older_export_gains_computed_state_authority_for_its_epic() {
 #[test]
 fn a_project_round_trips_through_export_and_import_byte_for_byte() {
     let fixture = ServiceFixture::new();
-    fixture.add_member("ada", "Ada Lovelace", Some("ada"));
     let parent = create(&fixture, "Parent");
     let child = create(&fixture, "Child");
     create(&fixture, "Doomed");
@@ -1626,7 +1666,6 @@ fn a_document_whose_ids_do_not_match_its_prefix_is_rejected_whole() {
         prefix: Some("AB".to_string()),
         states: storyhook_test_support::default_states(),
         types: storyhook_test_support::default_types(),
-        members: Vec::new(),
         settings: None,
         remotes: Vec::new(),
         github_sync: None,

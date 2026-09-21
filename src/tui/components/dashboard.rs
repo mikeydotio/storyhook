@@ -560,7 +560,6 @@ mod tests {
             } else {
                 SuperState::Open
             },
-            assignee: None,
             awaiting: awaiting.map(|s| s.to_string()),
             comments: vec![],
             referenced_by_commits: vec![],
@@ -582,7 +581,7 @@ mod tests {
     /// actually holds one: a story list *and* the state catalog that says
     /// which slug means "claimed".
     fn project(stories: Vec<StorySnapshot>) -> DataStore {
-        DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![])
+        DataStore::from_test_data(test_states(), stories, "SH".to_string())
     }
 
     #[test]

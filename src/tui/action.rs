@@ -25,7 +25,6 @@ pub enum View {
 pub struct FilterSpec {
     pub text: Option<String>,
     pub state: Option<String>,
-    pub assignee: Option<String>,
     pub priority: Option<Priority>,
     pub label: Option<String>,
     /// Keep only stories `story list --blocked` would keep: open, and
@@ -58,7 +57,6 @@ pub enum Action {
         title: String,
         priority: Option<Priority>,
         labels: Vec<String>,
-        assignee: Option<String>,
         description: Option<String>,
     },
     MoveStory {
@@ -80,10 +78,6 @@ pub enum Action {
     SetLabels {
         id: String,
         labels: Vec<String>,
-    },
-    AssignStory {
-        id: String,
-        assignee: String,
     },
     AddComment {
         id: String,

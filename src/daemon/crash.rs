@@ -770,7 +770,6 @@ fn file_one<S: Store>(
             fingerprint_label,
             AUTO_FILED_LABEL.to_string(),
         ]),
-        assignee: None,
         draft: false,
     };
     match StoryService::new(&ctx).create(&input) {

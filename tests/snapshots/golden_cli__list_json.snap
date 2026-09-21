@@ -1,6 +1,5 @@
 ---
 source: tests/golden_cli.rs
-assertion_line: 487
 ---
 [
   {
@@ -45,9 +44,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -82,7 +80,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [
@@ -117,7 +115,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 69,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -142,9 +140,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 64,
+          "head_global_seq": 62,
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -178,7 +175,7 @@ assertion_line: 487
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 68,
+          "head_global_seq": 66,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -212,7 +209,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 67,
+          "head_global_seq": 65,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -288,7 +285,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -315,7 +312,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 84,
+          "head_global_seq": 82,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -348,9 +345,8 @@ assertion_line: 487
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -385,9 +381,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 64,
+          "head_global_seq": 62,
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -421,7 +416,7 @@ assertion_line: 487
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 68,
+          "head_global_seq": 66,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -455,7 +450,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 67,
+          "head_global_seq": 65,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -531,7 +526,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -558,7 +553,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 84,
+          "head_global_seq": 82,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -591,7 +586,7 @@ assertion_line: 487
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 69,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -625,7 +620,7 @@ assertion_line: 487
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -643,7 +638,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 73,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -669,9 +664,8 @@ assertion_line: 487
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 64,
+          "head_global_seq": 62,
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -714,7 +708,7 @@ assertion_line: 487
       "stories": [
         {
           "display_state": "blocked",
-          "head_global_seq": 68,
+          "head_global_seq": 66,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -781,9 +775,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -818,7 +811,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [
@@ -853,9 +846,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 64,
+          "head_global_seq": 62,
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -920,114 +912,8 @@ assertion_line: 487
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
-            "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "Trait shape settled: one method per verb."
-              }
-            ],
-            "created_at": "[timestamp]",
-            "id": "SH-2",
-            "labels": [
-              "api",
-              "backend",
-              "phase:1"
-            ],
-            "priority": "high",
-            "priority_assessed": true,
-            "relationships": [
-              {
-                "other_id": "SH-3",
-                "relation": "blocks"
-              },
-              {
-                "other_id": "SH-1",
-                "relation": "child-of"
-              }
-            ],
-            "state": "todo",
-            "story_type": "normal",
-            "superstate": "OPEN",
-            "title": "Define the Store trait",
-            "updated_at": "[timestamp]"
-          }
-        },
-        {
-          "head_global_seq": 66,
-          "story": {
-            "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
-              }
-            ],
-            "created_at": "[timestamp]",
-            "id": "SH-3",
-            "labels": [
-              "backend",
-              "phase:1"
-            ],
-            "priority": "high",
-            "priority_assessed": true,
-            "relationships": [
-              {
-                "other_id": "SH-2",
-                "relation": "blocked-by"
-              },
-              {
-                "other_id": "SH-1",
-                "relation": "child-of"
-              }
-            ],
-            "state": "in-progress",
-            "story_type": "normal",
-            "superstate": "OPEN",
-            "title": "Implement the SQLite engine",
-            "updated_at": "[timestamp]"
-          }
-        },
-        {
-          "head_global_seq": 69,
-          "story": {
-            "awaiting": null,
-            "comments": [],
-            "created_at": "[timestamp]",
-            "id": "SH-4",
-            "labels": [
-              "backend"
-            ],
-            "priority": "medium",
-            "priority_assessed": true,
-            "relationships": [
-              {
-                "other_id": "SH-1",
-                "relation": "child-of"
-              }
-            ],
-            "state": "review",
-            "story_type": "normal",
-            "superstate": "OPEN",
-            "title": "Write the migration runner",
-            "updated_at": "[timestamp]"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "argv": "story list --label api,defect --json",
-    "stdout": {
-      "result": "ok",
-      "stories": [
-        {
-          "head_global_seq": 65,
-          "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -1064,7 +950,110 @@ assertion_line: 487
         {
           "head_global_seq": 64,
           "story": {
-            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 67,
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-4",
+            "labels": [
+              "backend"
+            ],
+            "priority": "medium",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "review",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Write the migration runner",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --label api,defect --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "head_global_seq": 63,
+          "story": {
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "priority_assessed": true,
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "normal",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "head_global_seq": 62,
+          "story": {
             "awaiting": null,
             "comments": [
               {
@@ -1100,58 +1089,6 @@ assertion_line: 487
     }
   },
   {
-    "argv": "story list --assignee ada-lovelace --json",
-    "stdout": {
-      "result": "ok",
-      "stories": [
-        {
-          "head_global_seq": 65,
-          "story": {
-            "assignee": "ada-lovelace",
-            "awaiting": null,
-            "comments": [
-              {
-                "at": "[timestamp]",
-                "text": "Trait shape settled: one method per verb."
-              }
-            ],
-            "created_at": "[timestamp]",
-            "id": "SH-2",
-            "labels": [
-              "api",
-              "backend",
-              "phase:1"
-            ],
-            "priority": "high",
-            "priority_assessed": true,
-            "relationships": [
-              {
-                "other_id": "SH-3",
-                "relation": "blocks"
-              },
-              {
-                "other_id": "SH-1",
-                "relation": "child-of"
-              }
-            ],
-            "state": "todo",
-            "story_type": "normal",
-            "superstate": "OPEN",
-            "title": "Define the Store trait",
-            "updated_at": "[timestamp]"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "argv": "story list --assignee nobody --json",
-    "stdout": {
-      "result": "ok",
-      "stories": []
-    }
-  },
-  {
     "argv": "story list --flagged --json",
     "stdout": {
       "result": "ok",
@@ -1164,7 +1101,7 @@ assertion_line: 487
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 66,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [
@@ -1200,7 +1137,7 @@ assertion_line: 487
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 68,
+          "head_global_seq": 66,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -1217,7 +1154,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 67,
+          "head_global_seq": 65,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1250,9 +1187,8 @@ assertion_line: 487
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -1287,7 +1223,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 69,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1312,9 +1248,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 64,
+          "head_global_seq": 62,
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -1415,7 +1350,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 84,
+          "head_global_seq": 82,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1448,9 +1383,8 @@ assertion_line: 487
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -1485,7 +1419,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [
@@ -1578,9 +1512,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -1615,7 +1548,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [
@@ -1650,7 +1583,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 69,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1675,9 +1608,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 64,
+          "head_global_seq": 62,
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -1711,7 +1643,7 @@ assertion_line: 487
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 68,
+          "head_global_seq": 66,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -1745,7 +1677,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 67,
+          "head_global_seq": 65,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1821,7 +1753,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -1848,7 +1780,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 84,
+          "head_global_seq": 82,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -1924,9 +1856,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -1961,7 +1892,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [
@@ -1996,7 +1927,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 69,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2021,9 +1952,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 64,
+          "head_global_seq": 62,
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -2057,7 +1987,7 @@ assertion_line: 487
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 68,
+          "head_global_seq": 66,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -2091,7 +2021,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 67,
+          "head_global_seq": 65,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2167,7 +2097,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -2194,7 +2124,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 84,
+          "head_global_seq": 82,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2227,9 +2157,8 @@ assertion_line: 487
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 64,
+          "head_global_seq": 62,
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -2270,9 +2199,8 @@ assertion_line: 487
       "result": "ok",
       "stories": [
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -2307,7 +2235,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [
@@ -2342,7 +2270,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 69,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2410,9 +2338,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -2447,7 +2374,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [
@@ -2482,7 +2409,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 69,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2507,9 +2434,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 64,
+          "head_global_seq": 62,
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -2543,7 +2469,7 @@ assertion_line: 487
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 68,
+          "head_global_seq": 66,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -2577,7 +2503,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -2595,7 +2521,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 67,
+          "head_global_seq": 65,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2671,7 +2597,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 76,
+          "head_global_seq": 74,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -2694,7 +2620,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 73,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -2712,7 +2638,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -2739,7 +2665,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 84,
+          "head_global_seq": 82,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2807,9 +2733,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -2844,7 +2769,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [
@@ -2879,7 +2804,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 69,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -2904,9 +2829,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 64,
+          "head_global_seq": 62,
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -2940,7 +2864,7 @@ assertion_line: 487
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 68,
+          "head_global_seq": 66,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -2974,7 +2898,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -2992,7 +2916,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 67,
+          "head_global_seq": 65,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -3068,7 +2992,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 76,
+          "head_global_seq": 74,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3091,7 +3015,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 73,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3109,7 +3033,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -3136,7 +3060,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 84,
+          "head_global_seq": 82,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -3204,9 +3128,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 65,
+          "head_global_seq": 63,
           "story": {
-            "assignee": "ada-lovelace",
             "awaiting": null,
             "comments": [
               {
@@ -3241,7 +3164,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 66,
+          "head_global_seq": 64,
           "story": {
             "awaiting": null,
             "comments": [
@@ -3276,7 +3199,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 69,
+          "head_global_seq": 67,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -3301,9 +3224,8 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 64,
+          "head_global_seq": 62,
           "story": {
-            "assignee": "grace-hopper",
             "awaiting": null,
             "comments": [
               {
@@ -3337,7 +3259,7 @@ assertion_line: 487
         },
         {
           "display_state": "blocked",
-          "head_global_seq": 68,
+          "head_global_seq": 66,
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
@@ -3371,7 +3293,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 71,
+          "head_global_seq": 69,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3389,7 +3311,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 67,
+          "head_global_seq": 65,
           "story": {
             "awaiting": null,
             "comments": [],
@@ -3465,7 +3387,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 76,
+          "head_global_seq": 74,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3488,7 +3410,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 73,
+          "head_global_seq": 71,
           "story": {
             "awaiting": null,
             "closed_at": "[timestamp]",
@@ -3506,7 +3428,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 86,
+          "head_global_seq": 84,
           "progress": {
             "children_done": 0,
             "children_total": 1
@@ -3533,7 +3455,7 @@ assertion_line: 487
           }
         },
         {
-          "head_global_seq": 84,
+          "head_global_seq": 82,
           "story": {
             "awaiting": null,
             "comments": [],

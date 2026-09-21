@@ -241,15 +241,6 @@ fn compensate(
             labels: normalize_labels(&after.labels),
         });
     }
-    if before.assignee != after.assignee {
-        events.push(match &after.assignee {
-            Some(member) => StoryEvent::StoryAssigned {
-                at: at.clone(),
-                member_id: member.clone(),
-            },
-            None => StoryEvent::StoryAssigneeCleared { at: at.clone() },
-        });
-    }
     if before.awaiting != after.awaiting {
         events.push(match &after.awaiting {
             Some(reason) => StoryEvent::StoryAwaitingSet {

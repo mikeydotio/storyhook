@@ -12,14 +12,14 @@
 //!
 //! The comparison is *snapshot-level equality over every story*, both sides —
 //! not counts, not ids, not a spot check. `StorySnapshot` derives `PartialEq`
-//! over every field a user can see: title, state, superstate, assignee,
+//! over every field a user can see: title, state, superstate,
 //! awaiting, comments, relationships, priority, labels, type, description,
 //! `closed_at`, hidden/archive state, and draft status. A field lost anywhere in the loop is
 //! a failing assertion naming the story.
 //!
 //! # What the round trip does *not* carry, and why that is written here
 //!
-//! An export document holds states, types, members, stories, the project's
+//! An export document holds states, types, stories, the project's
 //! settings and its registered origins. It does **not** hold `project.toml`'s
 //! `created_at`, the `next-id` counter's burned numbers, or `projects.uuid` —
 //! those ride beside the envelope during a migration and have nowhere to sit
@@ -170,14 +170,13 @@ fn assert_round_trips(root: &Path, expected_stories: usize) {
     }
 
     // Whole-project fidelity, not just stories.
-    let (states, types, members, prefix) = store
+    let (states, types, prefix) = store
         .read(|tx| {
             let projects = tx.projects()?;
             let project = projects.first().expect("one project");
             Ok((
                 tx.states(project.id)?,
                 tx.types(project.id)?,
-                tx.members(project.id)?,
                 project.prefix.clone(),
             ))
         })
@@ -194,7 +193,6 @@ fn assert_round_trips(root: &Path, expected_stories: usize) {
     );
     assert_eq!(storage::load_states(&rebuilt).expect("states"), states);
     assert_eq!(storage::load_types(&rebuilt).expect("types"), types);
-    assert_eq!(storage::load_members(&rebuilt).expect("members"), members);
     assert_eq!(
         storage::load_project_prefix(&rebuilt).expect("prefix"),
         prefix,
@@ -271,7 +269,7 @@ fn the_real_tree_round_trips_through_the_store_and_back() {
 fn the_custom_config_tree_round_trips_through_the_store_and_back() {
     // The configuration surface the real tree has never used: a custom prefix,
     // a custom state carrying the project's `active` role, a second CLOSED
-    // state, a custom type, two members, an archived story and a deleted one.
+    // state, a custom type, an archived story and a deleted one.
     let (_tree, root) = custom_config_tree();
     assert_round_trips(&root, 4);
 }
@@ -661,7 +659,6 @@ fn the_real_trees_export_equals_the_golden_document_modulo_the_repairs() {
         );
     }
     assert_eq!(ours.types, golden.types);
-    assert_eq!(ours.members, golden.members);
     assert_eq!(
         ours.stories.iter().map(|s| &s.id).collect::<Vec<_>>(),
         golden.stories.iter().map(|s| &s.id).collect::<Vec<_>>(),

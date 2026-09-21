@@ -97,7 +97,10 @@ pub(super) fn read_jsonl_log(path: &Path) -> Result<Vec<LegacyEvent>, LegacyErro
         if line.trim().is_empty() {
             continue;
         }
-        events.push(parse_event(path, index + 1, line)?);
+        let event = parse_event(path, index + 1, line)?;
+        if !crate::domain::is_retired_assignment(&event.kind) {
+            events.push(event);
+        }
     }
     Ok(events)
 }
@@ -116,6 +119,10 @@ pub(super) fn read_event_array(path: &Path, json: &str) -> Result<Vec<LegacyEven
     raw.into_iter()
         .enumerate()
         .map(|(index, element)| parse_event(path, index + 1, element.get()))
+        .filter(|event| match event {
+            Ok(event) => !crate::domain::is_retired_assignment(&event.kind),
+            Err(_) => true,
+        })
         .collect()
 }
 
@@ -125,6 +132,27 @@ mod tests {
 
     const CREATED: &str =
         r#"{"kind":"StoryCreated","at":"2026-01-01T00:00:00Z","title":"t","state":"todo"}"#;
+
+    #[test]
+    fn retired_events_are_discarded_from_jsonl_and_archives() {
+        let dir = storyhook_test_support::scratch_dir();
+        let path = dir.path().join("SH-1.jsonl");
+        let assigned = r#"{"kind":"StoryAssigned","at":"2026-01-02T00:00:00Z","member_id":"ada"}"#;
+        let cleared = r#"{"kind":"StoryAssigneeCleared","at":"2026-01-03T00:00:00Z"}"#;
+        let unknown = r#"{ "kind":"FutureEvent", "at":"2026-01-04T00:00:00Z", "actor":"ada" }"#;
+        let source = [CREATED, assigned, cleared, unknown].join("\n");
+        std::fs::write(&path, &source).unwrap();
+        let jsonl = read_jsonl_log(&path).unwrap();
+        let archive = read_event_array(
+            &path,
+            &format!("[{CREATED},{assigned},{cleared},{unknown}]"),
+        )
+        .unwrap();
+        assert_eq!(jsonl, archive);
+        assert_eq!(jsonl.len(), 2);
+        assert_eq!(jsonl[1].payload, unknown);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+    }
 
     #[test]
     fn a_known_event_decodes_and_keeps_its_bytes() {

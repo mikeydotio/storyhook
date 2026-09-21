@@ -20,7 +20,6 @@ pub enum CreateField {
     Description,
     Priority,
     Labels,
-    Assignee,
 }
 
 const CREATE_FIELDS: &[CreateField] = &[
@@ -28,7 +27,6 @@ const CREATE_FIELDS: &[CreateField] = &[
     CreateField::Description,
     CreateField::Priority,
     CreateField::Labels,
-    CreateField::Assignee,
 ];
 
 const PRIORITY_OPTIONS: &[Priority] = &[
@@ -44,7 +42,6 @@ pub struct CreateForm {
     pub title_input: tui_input::Input,
     pub description_input: tui_input::Input,
     pub label_input: tui_input::Input,
-    pub assignee_input: tui_input::Input,
     pub priority_cursor: usize,
 }
 
@@ -61,7 +58,6 @@ impl CreateForm {
             title_input: tui_input::Input::default(),
             description_input: tui_input::Input::default(),
             label_input: tui_input::Input::default(),
-            assignee_input: tui_input::Input::default(),
             priority_cursor: 0,
         }
     }
@@ -70,7 +66,7 @@ impl CreateForm {
         CREATE_FIELDS[self.focused_field]
     }
 
-    fn submit(&self, data: &crate::tui::data::DataStore) -> Vec<Action> {
+    fn submit(&self) -> Vec<Action> {
         let title = self.title_input.value().trim().to_string();
         if title.is_empty() {
             return vec![Action::Notify("Title is required".to_string())];
@@ -92,30 +88,17 @@ impl CreateForm {
             .filter(|s| !s.is_empty())
             .collect();
 
-        let assignee_raw = self.assignee_input.value().trim().to_string();
-        let assignee = if assignee_raw.is_empty() {
-            None
-        } else {
-            match data.find_member(&assignee_raw) {
-                Some(member) => Some(member.id.clone()),
-                None => {
-                    return vec![Action::Notify(format!("member `{assignee_raw}` not found"))];
-                }
-            }
-        };
-
         vec![Action::CreateStory {
             title,
             priority,
             labels,
-            assignee,
             description,
         }]
     }
 }
 
 impl Component for CreateForm {
-    fn handle_key(&mut self, key: KeyEvent, state: &AppState) -> Vec<Action> {
+    fn handle_key(&mut self, key: KeyEvent, _state: &AppState) -> Vec<Action> {
         match key.code {
             KeyCode::Tab => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -140,7 +123,7 @@ impl Component for CreateForm {
                 }
                 vec![]
             }
-            KeyCode::Enter => self.submit(&state.data),
+            KeyCode::Enter => self.submit(),
             _ => {
                 // Route to the focused field
                 match self.current_field() {
@@ -165,10 +148,6 @@ impl Component for CreateForm {
                     },
                     CreateField::Labels => {
                         self.label_input
-                            .handle_event(&crossterm::event::Event::Key(key));
-                    }
-                    CreateField::Assignee => {
-                        self.assignee_input
                             .handle_event(&crossterm::event::Event::Key(key));
                     }
                 }
@@ -250,15 +229,6 @@ impl Component for CreateForm {
             &theme,
         ));
 
-        // Assignee
-        lines.push(render_form_field(
-            "Assignee",
-            self.assignee_input.value(),
-            self.focused_field == 4,
-            label_width,
-            &theme,
-        ));
-
         // Help text
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
@@ -312,17 +282,13 @@ fn render_form_field<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Member, StateDef, SuperState};
+    use crate::domain::{StateDef, SuperState};
     use crate::tui::action::View;
     use crate::tui::data::DataStore;
     use crate::tui::focus::{FocusStack, FocusTarget};
     use crate::tui::state::AppState;
 
     fn make_state() -> AppState {
-        make_state_with_members(vec![])
-    }
-
-    fn make_state_with_members(members: Vec<Member>) -> AppState {
         let data = DataStore::from_test_data(
             vec![
                 StateDef {
@@ -340,7 +306,6 @@ mod tests {
             ],
             vec![],
             "SH".to_string(),
-            members,
         );
         AppState {
             data,
@@ -353,16 +318,6 @@ mod tests {
             terminal_size: (120, 40),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-        }
-    }
-
-    fn test_member(id: &str, github: Option<&str>) -> Member {
-        Member {
-            id: id.to_string(),
-            display_name: id.to_string(),
-            email: None,
-            github: github.map(|g| g.to_string()),
-            created_at: "2026-01-01T00:00:00Z".to_string(),
         }
     }
 
@@ -387,9 +342,6 @@ mod tests {
         form.handle_key(key(KeyCode::Tab), &state);
         assert_eq!(form.focused_field, 3); // Labels
 
-        form.handle_key(key(KeyCode::Tab), &state);
-        assert_eq!(form.focused_field, 4); // Assignee
-
         // Wraps around
         form.handle_key(key(KeyCode::Tab), &state);
         assert_eq!(form.focused_field, 0); // Title
@@ -403,10 +355,10 @@ mod tests {
 
         // BackTab goes to last field
         form.handle_key(key(KeyCode::BackTab), &state);
-        assert_eq!(form.focused_field, 4); // Assignee
+        assert_eq!(form.focused_field, 3); // Labels
 
         form.handle_key(key(KeyCode::BackTab), &state);
-        assert_eq!(form.focused_field, 3); // Labels
+        assert_eq!(form.focused_field, 2); // Priority
     }
 
     #[test]
@@ -432,8 +384,8 @@ mod tests {
         let actions = form.handle_key(key(KeyCode::Enter), &state);
         assert_eq!(actions.len(), 1);
         assert!(
-            matches!(&actions[0], Action::CreateStory { title, priority, labels, assignee, description }
-                if title == "My new story" && priority == &Some(Priority::Low) && labels.is_empty() && assignee.is_none() && description.is_none())
+            matches!(&actions[0], Action::CreateStory { title, priority, labels, description }
+                if title == "My new story" && priority == &Some(Priority::Low) && labels.is_empty() && description.is_none())
         );
     }
 
@@ -491,7 +443,7 @@ mod tests {
 
     #[test]
     fn submit_with_all_fields() {
-        let state = make_state_with_members(vec![test_member("mikey", Some("mikeyward"))]);
+        let state = make_state();
         let mut form = CreateForm::new();
 
         // Title
@@ -516,12 +468,6 @@ mod tests {
             form.handle_key(key(KeyCode::Char(ch)), &state);
         }
 
-        // Assignee
-        form.handle_key(key(KeyCode::Tab), &state);
-        for ch in "mikey".chars() {
-            form.handle_key(key(KeyCode::Char(ch)), &state);
-        }
-
         let actions = form.handle_key(key(KeyCode::Enter), &state);
         assert_eq!(actions.len(), 1);
         match &actions[0] {
@@ -529,13 +475,11 @@ mod tests {
                 title,
                 priority,
                 labels,
-                assignee,
                 description,
             } => {
                 assert_eq!(title, "Full story");
                 assert_eq!(priority, &Some(Priority::High));
                 assert_eq!(labels, &vec!["bug".to_string(), "tui".to_string()]);
-                assert_eq!(assignee, &Some("mikey".to_string()));
                 assert_eq!(description, &Some("Everything at once".to_string()));
             }
             other => panic!("Expected CreateStory, got {other:?}"),
@@ -659,7 +603,7 @@ mod tests {
     // =======================================================================
 
     #[test]
-    fn submit_works_from_assignee_field() {
+    fn submit_works_from_labels_field() {
         let state = make_state();
         let mut form = CreateForm::new();
 
@@ -668,74 +612,15 @@ mod tests {
             form.handle_key(key(KeyCode::Char(ch)), &state);
         }
 
-        // Move to assignee (last field)
+        // Move to labels (last field)
         form.handle_key(key(KeyCode::Tab), &state);
         form.handle_key(key(KeyCode::Tab), &state);
         form.handle_key(key(KeyCode::Tab), &state);
-        form.handle_key(key(KeyCode::Tab), &state);
-        assert_eq!(form.focused_field, 4);
+        assert_eq!(form.focused_field, 3);
 
         // Submit should still work
         let actions = form.handle_key(key(KeyCode::Enter), &state);
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], Action::CreateStory { title, .. } if title == "My story"));
-    }
-
-    // =======================================================================
-    // Regression: #39 — assignee must be validated against real members
-    // =======================================================================
-
-    #[test]
-    fn submit_with_unknown_assignee_notifies_and_does_not_create() {
-        let state = make_state_with_members(vec![test_member("mikey", Some("mikeyward"))]);
-        let mut form = CreateForm::new();
-
-        for ch in "Bad assignee".chars() {
-            form.handle_key(key(KeyCode::Char(ch)), &state);
-        }
-        // Move to Assignee (last field) and type an unknown handle
-        for _ in 0..4 {
-            form.handle_key(key(KeyCode::Tab), &state);
-        }
-        for ch in "nobody".chars() {
-            form.handle_key(key(KeyCode::Char(ch)), &state);
-        }
-
-        let actions = form.handle_key(key(KeyCode::Enter), &state);
-        assert_eq!(actions.len(), 1);
-        assert!(
-            matches!(&actions[0], Action::Notify(msg) if msg.contains("nobody") && msg.contains("not found")),
-            "expected a not-found Notify, got {:?}",
-            actions[0]
-        );
-    }
-
-    #[test]
-    fn submit_with_github_handle_normalizes_to_member_id() {
-        let state = make_state_with_members(vec![test_member("mikey", Some("mikeyward"))]);
-        let mut form = CreateForm::new();
-
-        for ch in "Assigned via handle".chars() {
-            form.handle_key(key(KeyCode::Char(ch)), &state);
-        }
-        for _ in 0..4 {
-            form.handle_key(key(KeyCode::Tab), &state);
-        }
-        for ch in "mikeyward".chars() {
-            form.handle_key(key(KeyCode::Char(ch)), &state);
-        }
-
-        let actions = form.handle_key(key(KeyCode::Enter), &state);
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::CreateStory { assignee, .. } => {
-                assert_eq!(
-                    assignee,
-                    &Some("mikey".to_string()),
-                    "github handle should normalize to the canonical member id"
-                );
-            }
-            other => panic!("Expected CreateStory, got {other:?}"),
-        }
     }
 }

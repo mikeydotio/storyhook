@@ -151,7 +151,7 @@ test("a /data reply that changes nothing this card renders does not swallow a cl
 
   // A real mutation through the daemon's own API drives the `repo-changed`
   // SSE this held fetch answers -- deliberately a comment, which changes
-  // nothing `workerCard` renders (not its title, labels, assignee, type,
+  // nothing `workerCard` renders (not its title, labels, type,
   // blocked-by set, or awaiting reason), so the render this forces is a
   // genuine no-op for this card.
   const slug = await projectSlug(request, "Alpha Project");

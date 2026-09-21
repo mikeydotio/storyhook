@@ -177,7 +177,6 @@ fn push_flag(argv: &mut Vec<String>, args: &Map<String, Value>, name: &str, flag
 fn build_list(args: &Map<String, Value>) -> Result<Vec<String>, String> {
     let mut argv = vec!["list".to_string()];
     push_opt(&mut argv, args, "state", "--state");
-    push_opt(&mut argv, args, "assignee", "--assignee");
     push_flag(&mut argv, args, "flagged", "--flagged");
     push_opt(&mut argv, args, "priority", "--priority");
     push_opt(&mut argv, args, "label", "--label");
@@ -275,7 +274,6 @@ fn build_new(args: &Map<String, Value>) -> Result<Vec<String>, String> {
     push_opt(&mut argv, args, "story_type", "--type");
     push_opt(&mut argv, args, "description", "--description");
     push_opt(&mut argv, args, "priority", "--priority");
-    push_opt(&mut argv, args, "assignee", "--assignee");
     for label in str_array_arg(args, "labels") {
         argv.push("--label".to_string());
         argv.push(label);
@@ -307,14 +305,6 @@ fn build_comment(args: &Map<String, Value>) -> Result<Vec<String>, String> {
         "comment".to_string(),
         require_str(args, "id")?,
         require_str(args, "text")?,
-    ])
-}
-
-fn build_assign(args: &Map<String, Value>) -> Result<Vec<String>, String> {
-    Ok(vec![
-        "assign".to_string(),
-        require_str(args, "id")?,
-        require_str(args, "member")?,
     ])
 }
 
@@ -361,7 +351,6 @@ fn build_set(args: &Map<String, Value>) -> Result<Vec<String>, String> {
     push_opt(&mut argv, args, "title", "--title");
     push_opt(&mut argv, args, "state", "--state");
     push_opt(&mut argv, args, "priority", "--priority");
-    push_opt(&mut argv, args, "assignee", "--assignee");
     push_opt(&mut argv, args, "labels", "--labels");
     push_opt(&mut argv, args, "blocked", "--blocked");
     push_flag(&mut argv, args, "unblocked", "--unblocked");
@@ -384,12 +373,6 @@ const LIST_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Str,
         required: false,
         description: "Filter by state slug.",
-    },
-    FieldSpec {
-        name: "assignee",
-        kind: FieldKind::Str,
-        required: false,
-        description: "Filter by assignee id.",
     },
     FieldSpec {
         name: "flagged",
@@ -594,12 +577,6 @@ const NEW_FIELDS: &[FieldSpec] = &[
         description: "Priority level: critical, high, medium, or low. Defaults to low.",
     },
     FieldSpec {
-        name: "assignee",
-        kind: FieldKind::Str,
-        required: false,
-        description: "Member id to assign.",
-    },
-    FieldSpec {
         name: "labels",
         kind: FieldKind::StrArray,
         required: false,
@@ -660,21 +637,6 @@ const COMMENT_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Str,
         required: true,
         description: "The comment text.",
-    },
-];
-
-const ASSIGN_FIELDS: &[FieldSpec] = &[
-    FieldSpec {
-        name: "id",
-        kind: FieldKind::Str,
-        required: true,
-        description: "The story id.",
-    },
-    FieldSpec {
-        name: "member",
-        kind: FieldKind::Str,
-        required: true,
-        description: "The member id to assign.",
     },
 ];
 
@@ -775,12 +737,6 @@ const SET_FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Str,
         required: false,
         description: "New priority level.",
-    },
-    FieldSpec {
-        name: "assignee",
-        kind: FieldKind::Str,
-        required: false,
-        description: "New assignee member id.",
     },
     FieldSpec {
         name: "labels",
@@ -913,12 +869,6 @@ pub const TOOLS: &[ToolDef] = &[
         build_argv: build_comment,
     },
     ToolDef {
-        name: "story_assign",
-        description: "Assign a story to a team member.",
-        fields: ASSIGN_FIELDS,
-        build_argv: build_assign,
-    },
-    ToolDef {
         name: "story_prioritize",
         description: "Set a story's priority.",
         fields: PRIORITIZE_FIELDS,
@@ -1001,7 +951,6 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
         Invocation::New { .. } => Some("story_new"),
         Invocation::SetState { .. } => Some("story_move"),
         Invocation::Comment { .. } => Some("story_comment"),
-        Invocation::Assign { .. } => Some("story_assign"),
         Invocation::SetPriority { .. } => Some("story_prioritize"),
         Invocation::SetLabels { .. } => Some("story_label"),
         Invocation::Relate { .. } => Some("story_relate"),
@@ -1019,7 +968,6 @@ pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
         | Invocation::Help
         | Invocation::Project { .. }
         | Invocation::Publish { .. }
-        | Invocation::MemberAdd { .. }
         | Invocation::Engine { .. }
         | Invocation::Verifier { .. }
         | Invocation::State { .. }
@@ -1091,6 +1039,11 @@ pub fn build_invocation(
         .iter()
         .find(|tool| tool.name == tool_name)
         .ok_or(BuildError::UnknownTool)?;
+    if arguments.contains_key("assignee") {
+        return Err(BuildError::BadArguments(
+            "story assignment has been removed; omit `assignee`".into(),
+        ));
+    }
     for field in COMMON_FIELDS.iter().filter(|f| f.required) {
         if str_arg(arguments, field.name).is_none() {
             return Err(BuildError::BadArguments(format!(
@@ -1101,4 +1054,36 @@ pub fn build_invocation(
     }
     let argv = (tool.build_argv)(arguments).map_err(BuildError::BadArguments)?;
     cli::parse_invocation(&argv).map_err(|e| BuildError::BadArguments(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn retired_assignment_arguments_are_rejected() {
+        assert!(matches!(
+            build_invocation(
+                "story_assign",
+                json!({"project":"p","id":"SH-1","member":"ada"})
+                    .as_object()
+                    .unwrap()
+            ),
+            Err(BuildError::UnknownTool)
+        ));
+        for tool in ["story_new", "story_set", "story_list"] {
+            for value in [json!(null), json!("ada"), json!(7)] {
+                let result = build_invocation(
+                    tool,
+                    json!({"project":"p","title":"Story","id":"SH-1","assignee":value})
+                        .as_object()
+                        .unwrap(),
+                );
+                assert!(
+                    matches!(result, Err(BuildError::BadArguments(ref message)) if message.contains("assignee")),
+                    "{tool} accepted a retired assignee argument"
+                );
+            }
+        }
+    }
 }

@@ -158,7 +158,28 @@ pub struct WireRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<ActorLabel>,
     /// What to do.
+    #[serde(deserialize_with = "deserialize_invocation")]
     pub invocation: Invocation,
+}
+
+/// Reject removed request fields before serde can ignore them. Import document
+/// contents are separate data and retain their legacy compatibility rules.
+fn deserialize_invocation<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Invocation, D::Error> {
+    use serde::de::Error;
+    let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+    let value: serde_json::Value = serde_json::from_str(raw.get()).map_err(D::Error::custom)?;
+    if value.as_object().is_some_and(|variants| {
+        variants
+            .values()
+            .any(|fields| fields.get("assignee").is_some())
+    }) {
+        return Err(D::Error::custom(
+            "story assignment has been removed; omit `assignee`",
+        ));
+    }
+    serde_json::from_str(raw.get()).map_err(D::Error::custom)
 }
 
 impl WireRequest {
@@ -304,6 +325,34 @@ impl WireResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_assignment_fields_are_refused_at_the_wire_boundary() {
+        for args in [
+            vec!["new", "assignee is valid prose"],
+            vec!["set", "SH-1", "--title", "kept"],
+            vec!["list"],
+        ] {
+            let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+            let invocation = crate::cli::parse_invocation(&args).unwrap();
+            for value in [
+                serde_json::Value::Null,
+                serde_json::json!("ada"),
+                serde_json::json!(7),
+            ] {
+                let mut request =
+                    serde_json::to_value(WireRequest::new(invocation.clone(), "/tmp")).unwrap();
+                request["invocation"]
+                    .as_object_mut()
+                    .unwrap()
+                    .values_mut()
+                    .next()
+                    .unwrap()["assignee"] = value;
+                let error = serde_json::from_value::<WireRequest>(request).unwrap_err();
+                assert!(error.to_string().contains("assignee"));
+            }
+        }
+    }
 
     fn round_trip(result: Result<Response, AppError>) -> Result<Response, AppError> {
         let sent = WireResponse::new("req-1".to_string(), result);

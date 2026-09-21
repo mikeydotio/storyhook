@@ -759,7 +759,6 @@ const REBUILD_STORIES: &str = "
         priority      TEXT NOT NULL,
         priority_rank INTEGER NOT NULL,
         story_type    TEXT,
-        assignee      TEXT,
         awaiting      TEXT,
         archived      INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
         created_at    TEXT NOT NULL,
@@ -771,7 +770,7 @@ const REBUILD_STORIES: &str = "
     );
     INSERT INTO stories_new SELECT
         project_id, story_no, head_seq, title, state, superstate, priority,
-        priority_rank, story_type, assignee, awaiting, archived,
+        priority_rank, story_type, awaiting, archived,
         created_at, updated_at, closed_at, description, snapshot
     FROM stories;
     DROP TABLE stories;
@@ -944,7 +943,7 @@ fn a_rebuild_that_leaves_a_dangling_reference_is_refused() {
             superstate TEXT NOT NULL,
             priority   TEXT NOT NULL,
             priority_rank INTEGER NOT NULL,
-            story_type TEXT, assignee TEXT, awaiting TEXT,
+            story_type TEXT, awaiting TEXT,
             archived   INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT,
             description TEXT, snapshot TEXT NOT NULL,
@@ -1011,6 +1010,7 @@ fn a_stories_rebuild_that_leaves_the_append_guard_up_fails() {
     // twelve-step procedure says to do for every trigger associated with the
     // table being rebuilt.
     const REBUILD_WITHOUT_LOWERING_THE_GUARD: &str = "
+        DROP TRIGGER project_recovery_observations_reject_delete;
         CREATE TABLE stories_new (
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             story_no   INTEGER NOT NULL,
@@ -1020,7 +1020,7 @@ fn a_stories_rebuild_that_leaves_the_append_guard_up_fails() {
             superstate TEXT NOT NULL,
             priority   TEXT NOT NULL,
             priority_rank INTEGER NOT NULL,
-            story_type TEXT, assignee TEXT, awaiting TEXT,
+            story_type TEXT, awaiting TEXT,
             archived   INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT,
             description TEXT, snapshot TEXT NOT NULL,
@@ -1028,7 +1028,7 @@ fn a_stories_rebuild_that_leaves_the_append_guard_up_fails() {
         );
         INSERT INTO stories_new SELECT
             project_id, story_no, head_seq, title, state, superstate, priority,
-            priority_rank, story_type, assignee, awaiting, archived,
+            priority_rank, story_type, awaiting, archived,
             created_at, updated_at, closed_at, description, snapshot
         FROM stories;
         DROP TABLE stories;
@@ -1245,7 +1245,7 @@ fn insert_v8_story_row(
             snapshot.priority.as_str(),
             priority_rank(&snapshot.priority),
             snapshot.story_type,
-            snapshot.assignee,
+            Option::<String>::None,
             snapshot.awaiting,
             snapshot.created_at,
             snapshot.updated_at,

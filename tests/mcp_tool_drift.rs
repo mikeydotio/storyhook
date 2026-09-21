@@ -38,7 +38,7 @@ fn map(pairs: &[(&str, Value)]) -> Map<String, Value> {
 fn every_curated_tool_has_a_reverse_entry_in_tool_for_variant() {
     assert_eq!(
         TOOLS.len(),
-        18,
+        17,
         "the curated tool count changed — update this floor deliberately"
     );
     // The tool table's field metadata (`FieldSpec`/`FieldKind`) lives in a
@@ -114,7 +114,6 @@ fn story_list_matches_the_equivalent_cli_invocation() {
         &map(&[
             ("project", json!("SH")),
             ("state", json!("todo")),
-            ("assignee", json!("mikey")),
             ("flagged", json!(true)),
             ("priority", json!("high,critical")),
             ("label", json!("bug")),
@@ -136,8 +135,6 @@ fn story_list_matches_the_equivalent_cli_invocation() {
         "list",
         "--state",
         "todo",
-        "--assignee",
-        "mikey",
         "--flagged",
         "--priority",
         "high,critical",
@@ -389,7 +386,6 @@ fn story_new_matches_the_equivalent_cli_invocation() {
             ("story_type", json!("bug")),
             ("description", json!("It is broken")),
             ("priority", json!("high")),
-            ("assignee", json!("mikey")),
             ("labels", json!(["urgent", "backend"])),
             ("draft", json!(true)),
         ]),
@@ -405,8 +401,6 @@ fn story_new_matches_the_equivalent_cli_invocation() {
         "It is broken",
         "--priority",
         "high",
-        "--assignee",
-        "mikey",
         "--label",
         "urgent",
         "--label",
@@ -455,20 +449,6 @@ fn story_comment_matches_the_equivalent_cli_invocation() {
         ]),
     );
     let via_cli = cli::parse_invocation(&argv(&["comment", "SH-1", "looks good"])).unwrap();
-    assert_eq!(via_tool, via_cli);
-}
-
-#[test]
-fn story_assign_matches_the_equivalent_cli_invocation() {
-    let via_tool = call(
-        "story_assign",
-        &map(&[
-            ("project", json!("SH")),
-            ("id", json!("SH-1")),
-            ("member", json!("mikey")),
-        ]),
-    );
-    let via_cli = cli::parse_invocation(&argv(&["assign", "SH-1", "mikey"])).unwrap();
     assert_eq!(via_tool, via_cli);
 }
 
@@ -549,7 +529,6 @@ fn story_set_matches_the_equivalent_cli_invocation() {
             ("title", json!("New title")),
             ("state", json!("todo")),
             ("priority", json!("low")),
-            ("assignee", json!("mikey")),
             ("labels", json!("a,b")),
             ("blocked", json!("waiting")),
             ("unblocked", json!(false)),
@@ -567,8 +546,6 @@ fn story_set_matches_the_equivalent_cli_invocation() {
         "todo",
         "--priority",
         "low",
-        "--assignee",
-        "mikey",
         "--labels",
         "a,b",
         "--blocked",

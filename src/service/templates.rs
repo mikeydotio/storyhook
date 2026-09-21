@@ -182,7 +182,6 @@ what still gets filed.
 | Set priority | `story prioritize {prefix}-<n> high` |
 | What a level means | `story help priority-rubric` |
 | Adopt or file a mid-work find | `story help scope-rubric` |
-| Assign a story | `story assign {prefix}-<n> <member>` |
 | Add a label | `story label {prefix}-<n> <label>` |
 | Reserved label names | `story help label` |
 | Block on another story | `story block {prefix}-<n> --on {prefix}-<blocker> "reason"` |
@@ -264,7 +263,6 @@ to manage tasks.
 - `story move <id> <state>` — change story state
 - `story prioritize <id> <level>` — set priority (critical, high, medium, low);
   run `story help priority-rubric` for what each level means before choosing one
-- `story assign <id> <member>` — assign a story
 - `story label <id> <label>` — add a label. Two names are reserved:
   `no-auto` (needs a person in the loop; still offered by `story next`) and
   `human-only` (only a person may do it; `story next` never returns it, though
