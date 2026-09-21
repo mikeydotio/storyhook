@@ -44,10 +44,13 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::output::{
-    BlockedChainView, GraphOverview, GraphView, ProjectSnapshotView, ReferencedBy, ReportData,
-    StaleInfo, StoryView, SummaryView,
+    BlockedChainView, ContinuationAlert, GraphOverview, GraphView, ProjectSnapshotView,
+    ReferencedBy, ReportData, StaleInfo, StoryView, SummaryView,
 };
-use crate::store::{GlobalSeq, ProjectId, ReadOps, StoryNo, StoryQuery, StoryRow, partition_known};
+use crate::store::{
+    ContinuationStatus, GlobalSeq, ProjectId, ReadOps, StoryNo, StoryQuery, StoryRow,
+    partition_known,
+};
 
 use super::project_prefix;
 
@@ -1183,6 +1186,19 @@ pub fn story_views(
                     )
                 })
                 .collect(),
+            continuation_alerts: continuations
+                .iter()
+                .filter(|r| r.story_id == id && r.status == ContinuationStatus::NeedsAttention)
+                .map(|r| ContinuationAlert {
+                    request_id: r.id.clone(),
+                    status: "needs-attention".into(),
+                    detail: r.detail.clone(),
+                    next_step: format!(
+                        "Run story continuation status {id} --json; review request {} and story help continuation before recovery.",
+                        r.id
+                    ),
+                })
+                .collect(),
             flagged_reasons,
             stale_info: None,
             progress: progress.get(&id).cloned(),
@@ -1231,6 +1247,7 @@ fn bare_view(story: StorySnapshot) -> StoryView {
         derived_relationships: Vec::new(),
         referenced_by,
         warnings: Vec::new(),
+        continuation_alerts: Vec::new(),
         flagged_reasons: Vec::new(),
         stale_info: None,
         progress: None,

@@ -745,6 +745,19 @@ fn dispatch_inner<S: Store>(
                 ContinuationAction::Status => service.status(&id)?,
                 ContinuationAction::Request => {
                     let (record, native_feedback) = service.request_with_receipt(&id, input()?)?;
+                    #[cfg(feature = "fault-injection")]
+                    if let Ok(raw) = std::env::var("STORYHOOK_TEST_CONTINUATION_REPLY_DELAY_MS") {
+                        let millis = raw.parse::<u64>().map_err(|_| {
+                            AppError::Validation("invalid continuation reply delay".into())
+                        })?;
+                        if millis > 10_000 {
+                            return Err(AppError::Validation(
+                                "continuation reply delay exceeds 10 seconds".into(),
+                            ));
+                        }
+                        // Test the committed-write/lost-reply boundary, never capture latency.
+                        std::thread::sleep(std::time::Duration::from_millis(millis));
+                    }
                     serde_json::json!({"result":"ok","continuation":record,"native_feedback":native_feedback})
                 }
                 ContinuationAction::Receipt { request } => {
