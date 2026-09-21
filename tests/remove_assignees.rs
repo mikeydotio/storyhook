@@ -6,6 +6,11 @@ fn purge_preserves_surviving_history_and_rebuilds_activity() {
     use rusqlite::params;
     use storyhook::domain::{Priority, StoryEvent, fold_story};
     use storyhook::store::{SqliteStore, Store, migrate};
+    const UNKNOWN_KIND: &str = "FutureEvent";
+    assert!(
+        !storyhook::domain::is_known_event_kind(UNKNOWN_KIND),
+        "the purge fixture must include an event this binary cannot decode"
+    );
     let dir = scratch_dir();
     let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
     store.migrate_with(&migrate::MIGRATIONS[..47]).unwrap();
@@ -62,7 +67,7 @@ fn purge_preserves_surviving_history_and_rebuilds_activity() {
                     .to_string();
                 conn.execute("INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload, command, actor) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'fixture', 'test:user')", params![project, story, index+1, story*10+index as i64, kind, created, raw]).unwrap();
             }
-            conn.execute("INSERT INTO events (project_id,story_no,seq,global_seq,kind,at,payload) VALUES (?1,?2,5,?3,'FutureEvent',?4,?5)", params![project,story,story*10+5,last,serde_json::json!({"kind":"FutureEvent","at":last,"actor":"ada"}).to_string()]).unwrap();
+            conn.execute("INSERT INTO events (project_id,story_no,seq,global_seq,kind,at,payload) VALUES (?1,?2,5,?3,?4,?5,?6)", params![project,story,story*10+5,UNKNOWN_KIND,last,serde_json::json!({"kind":UNKNOWN_KIND,"at":last,"actor":"ada"}).to_string()]).unwrap();
             for (seq, kind) in [(6, "StoryAssigned"), (7, "StoryAssigneeCleared")] {
                 let raw = serde_json::json!({"kind":kind,"at":last,"member_id":"ada"}).to_string();
                 conn.execute("INSERT INTO events (project_id, story_no, seq, global_seq, kind, at, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![project,story,seq,story*10+seq,kind,last,raw]).unwrap();
