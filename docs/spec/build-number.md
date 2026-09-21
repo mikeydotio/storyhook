@@ -39,11 +39,12 @@ reservation before using it. A later local installation reserves another number.
 No build wrapper makes Git commits. Branch switches, historical checkouts, and
 ordinary Cargo builds do not allocate; VERSION changes go through semver.
 
-The installed semver 3.9.4 CLI invokes pre-bump hooks for patch, minor, and major
-bumps, but skips them for explicit `set` and `init` operations. SH-749 records
-this upstream limitation. Those operations need the same pre-hook lifecycle
-before they can satisfy the automatic build-number contract; direct hook tests
-alone do not establish that the CLI calls them.
+Use semver 3.9.5 or later for the complete version-change contract. Agentics
+AGE-112 adds the missing pre-bump lifecycle to `set`, fresh `init`, `reinit`,
+`first-version`, and fresh `tracking start --version`. Real CLI fixtures with
+this repository's production hooks verify that each path advances BUILD and
+commits it with VERSION, Cargo metadata, and plugin manifests. Same-version
+operations do not allocate. Semver 3.9.4 supports only incremental bumps here.
 
 The compiled display version is `3.0.0 (N)`. CLI output keeps bare semver as its
 second whitespace field and retains the optional Git-content stamp. Semver used
