@@ -1,6 +1,5 @@
 import { test, expect } from "./support";
 import {
-  showEpics,
   cleanUpCreatedStories,
   deleteStory,
   openProject,
@@ -115,14 +114,8 @@ test("an epic's list pill shows the state its card actually sits in, not its own
   const epicTitle = "SH-277 list pill -- epic";
   const childTitle = "SH-277 list pill -- child";
 
-  // Before the epic exists, not after it acquires a child (SH-499). SH-446
-  // hides epics by default and since SH-499 that filter reads the TYPE, so a
-  // story created `epic` is filtered off the board the instant it is created --
-  // `createStory`'s own "the card is in the todo column" wait would be the
-  // thing that failed, inside a helper, rather than any assertion this test
-  // makes. This test is about what an epic's pill SAYS, so its epic has to be
-  // visible for the whole of its life here.
-  await showEpics(page);
+  // SH-751 makes Type the single owner of epic visibility. The inclusive
+  // default keeps a newly-created epic visible for this test's whole life.
 
   const epicCard = await createStory(page, epicTitle, "epic");
   const childCard = await createStory(page, childTitle);

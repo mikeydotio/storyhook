@@ -27,13 +27,6 @@ function todoCard(page: import("@playwright/test").Page, title: string) {
   return page.locator('.column[data-state="todo"] .card', { hasText: title });
 }
 
-async function showClosed(page: import("@playwright/test").Page) {
-  await openFilters(page);
-  const toggle = page.getByRole("checkbox", { name: "Show dropped", exact: true });
-  if (!(await toggle.isChecked())) await toggle.check();
-  await expect(toggle).toBeChecked();
-}
-
 test("drawer Close requires a reason, records it as a comment, and leaves the closed story open", async ({
   page,
 }) => {
@@ -122,13 +115,12 @@ test("context-menu Close uses the shared modal and retains the story in closed",
   await page.locator("#close-modal-submit").click();
   await expect(page.locator("#toast-stack .toast.success")).toContainText("dropped");
 
-  await showClosed(page);
   await expect(page.locator('.column[data-state="dropped"] .card', { hasText: title })).toBeVisible();
 });
 
-test("SH-663 Show dropped hides only the dropped status", async ({ page }) => {
-  const completedTitle = `SH-551 completed ${Date.now()}`;
-  const closedTitle = `SH-551 closed ${Date.now()}`;
+test("SH-750 State and Columns replace the dedicated dropped toggle", async ({ page }) => {
+  const completedTitle = `SH-750 completed ${Date.now()}`;
+  const closedTitle = `SH-750 dropped ${Date.now()}`;
   const completedId = await createStory(page, completedTitle);
   const closedId = await createStory(page, closedTitle);
 
@@ -152,7 +144,13 @@ test("SH-663 Show dropped hides only the dropped status", async ({ page }) => {
   ).toBeVisible();
 
   await openFilters(page);
-  await page.locator("#toggle-closed").uncheck();
+  await expect(page.getByRole("checkbox", { name: "Show dropped", exact: true })).toHaveCount(0);
+
+  await page.locator("#fdd-states .fdd-btn").click();
+  const droppedState = page.locator(
+    '#fdd-states .fdd-option input[type="checkbox"][value="dropped"]',
+  );
+  await droppedState.uncheck();
   await expect(page.locator(`.card[data-id="${closedId}"]`)).toHaveCount(0);
   await expect(page.locator(`.card[data-id="${completedId}"]`)).toBeVisible();
 
@@ -160,8 +158,22 @@ test("SH-663 Show dropped hides only the dropped status", async ({ page }) => {
   await expect(page.locator(`tr[data-id="${closedId}"]`)).toHaveCount(0);
   await expect(page.locator(`tr[data-id="${completedId}"]`)).toBeVisible();
 
-  await page.locator("#toggle-closed").check();
+  await page.locator("#filter-clear").click();
   await expect(page.locator(`tr[data-id="${closedId}"]`)).toBeVisible();
+
+  await page.locator('#view-toggle button[data-view="board"]').click();
+  const countBeforeColumnChange = await page.locator("#filter-count").innerText();
+  await page.locator("#fdd-columns .fdd-btn").click();
+  const droppedColumn = page
+    .locator("#fdd-columns .fdd-option", { hasText: "dropped" })
+    .locator('input[type="checkbox"]');
+  await droppedColumn.uncheck();
+  await expect(page.locator('.column[data-state="dropped"]')).toHaveCount(0);
+  await expect(page.locator("#filter-count")).toHaveText(countBeforeColumnChange);
+
+  await droppedColumn.check();
+  await expect(page.locator('.column[data-state="dropped"]')).toHaveCount(1);
+  await expect(page.locator(`.card[data-id="${closedId}"]`)).toBeVisible();
 });
 
 test("Delete offers Close instead and never asks for a deletion reason", async ({ page }) => {
