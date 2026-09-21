@@ -79,7 +79,25 @@ test("a refused preference save restores the confirmed control", async ({ page }
   });
   await page.locator("#toggle-hide-empty-columns").click();
   await expect(page.locator("#toggle-hide-empty-columns")).not.toBeChecked();
-  await expect(page.locator("#toast-stack")).toContainText("Could not save dashboard preference");
+  await expect(page.locator("#toast-stack")).toContainText("write failed");
+  await expect(page.locator("#toast-stack")).toContainText("preferences");
+});
+
+test("a preference save without a reply reports uncertainty", async ({ page }) => {
+  await openProject(page, "Alpha Project");
+  await page.locator("#filter-toggle-btn").click();
+  await page.route("**/api/preferences", async (route) => {
+    if (route.request().method() === "PATCH") {
+      await route.abort("failed");
+    } else {
+      await route.continue();
+    }
+  });
+  await page.locator("#toggle-hide-empty-columns").click();
+  await expect(page.locator("#toggle-hide-empty-columns")).not.toBeChecked();
+  await expect(page.locator("#toast-stack")).toContainText("may or may not have gone through");
+  await expect(page.locator("#toast-stack")).toContainText("preferences");
+  await expect(page.locator("#toast-stack")).not.toContainText("network error");
 });
 
 test("a refused column choice restores its checkbox and board", async ({ page }) => {
@@ -99,7 +117,8 @@ test("a refused column choice restores its checkbox and board", async ({ page })
   await todo.click();
   await expect(todo).toBeChecked();
   await expect(page.locator('.column[data-state="todo"]')).toHaveCount(1);
-  await expect(page.locator("#toast-stack")).toContainText("Could not save dashboard preference");
+  await expect(page.locator("#toast-stack")).toContainText("write failed");
+  await expect(page.locator("#toast-stack")).toContainText("preferences");
 });
 
 test("a preference write is not replayed with a replacement token", async ({ page }) => {

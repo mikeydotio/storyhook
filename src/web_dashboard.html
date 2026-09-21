@@ -3414,7 +3414,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }).catch(function(err) {
       if (epoch !== preferenceEpoch) return;
       confirmedPreferences = null;
-      toast("Could not load dashboard preferences: " + err.message, "error");
+      toastError(err);
     }).then(done);
   }
 
@@ -3436,7 +3436,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
             applyPreferenceField(key, confirmedPreferences[key]);
             repaintPreferenceControls(key);
           }
-          toast("Could not save dashboard preference: " + err.message, "error");
+          toastError(err);
         });
       });
     }
