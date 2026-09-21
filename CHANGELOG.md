@@ -3,6 +3,82 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v3.0.3] - 2026-09-20
+
+### Added
+- reserve build numbers for version bumps (1069688f)
+- persist preferences per named token (f2d6ea64)
+- persist project visibility per named token (1055f90f)
+- expose project recovery status and reconcile proven legacy halts (e7b1fb37)
+- activate fault recovery without retaining verifier ownership (90c149a7)
+- deliver recovery work under independent managed ownership (bc348fb9)
+- return failed repair tests through durable work intents (7ec968d1)
+- give recovery transport explicit workspace ownership (2a6557e4)
+- bound recursive repair returns to their completed attempts (51636478)
+- reconcile certified recovery landing into owned resumes (63deb344)
+- enforce repair admission before verifier gate execution (42def00e)
+- apply settled repair refusals with exact hold ownership (fad2b9af)
+- bind repair admission callbacks to live verifier ownership (dbe9bcba)
+- retain certified repair landing authority atomically (6d6b09d4)
+- bound repair attempts by committed source identity (1998194b)
+- persist bounded managed repair delivery intents (7a91f1ce)
+- accept durable project repair scope decisions (d1f753cd)
+- retain generation-safe project fault assessments (40a3ebf4)
+- persist project fault recovery evidence (a1a70d83)
+
+### Fixed
+- restore project journal integration contracts (e330ae22)
+- report uncertain preference saves honestly (aea64eb2)
+- route project logs and recover owned views (b3d1835e)
+- report failed sidecar writes without changing live records (1dc0204c)
+- fail writes when sidecar persistence fails (02f6c594)
+- expose lost-reply recovery alerts (ee2b6a21)
+- wait for daemon process exit during forced stop (e6d1d1f2)
+- name cleanup marker branch mismatches (b13470c4)
+- reconcile uncertain autonomous handoff responses (09128152)
+- isolate damaged worktree registrations by story (74b2aa9e)
+- make terminal recovery delivery holds visible to scheduling (4c254901)
+- retain recovery holds through manual repair closure (a909f170)
+- match completed repair judgments to admitted Git input (f57e4ac0)
+- retain committed source trees in project fault evidence (070ed038)
+- persist affected-story assessment holds (a51a05ed)
+- resolve verification gates from pinned merge configuration (c9835b34)
+- preserve structured project gate fault evidence (30a973e2)
+- contain desktop board toolbars within the viewport (846ee24a)
+- align human-only verifier integration contracts (2f899930)
+- read reset receipts under worker ownership lock (730b4049)
+- withdraw human-only stories from verification (d9ab5620)
+- bind provider pane routing to the current caller (2008a018)
+
+### Changed
+- Merge pull request #846 from mikeydotio/worktree-SH-748 (78116218)
+- Merge pull request #845 from mikeydotio/worktree-SH-747 (e886fac1)
+- Merge pull request #843 from mikeydotio/worktree-SH-744 (ca63c49a)
+- Merge pull request #844 from mikeydotio/worktree-SH-746 (193c29ed)
+- Merge pull request #842 from mikeydotio/worktree-SH-742 (7517d479)
+- Merge pull request #841 from mikeydotio/worktree-SH-743 (fa05d848)
+- Merge pull request #840 from mikeydotio/worktree-SH-741 (cab4eae3)
+- Merge pull request #839 from mikeydotio/worktree-SH-740 (ea3812a1)
+- format Enterprise fixtures for SH-741 verification (a330e308)
+- apply rustfmt to Enterprise fixtures (5e0ca865)
+- Merge pull request #838 from mikeydotio/release/v3.0.2 (b9dc74cc)
+- Merge pull request #836 from mikeydotio/worktree-SH-738 (a26e6e87)
+
+### Documentation
+- require semver 3.9.5 for version build allocation (e2dcdbbe)
+
+### Testing
+- honor fixture safety contracts (77e20b24)
+- align verifier fixtures with recovery contracts (c25b6c6f)
+- make environment ownership contracts deterministic (5bd9cee7)
+- await answered tmux probes in routing regression (78306a6d)
+- register reset fixture checkout-path setup (093a5ca7)
+
+### Maintenance
+- reconcile SH-747 with current base (097bd06c)
+
+_[manual]_
+
 ## [v3.0.2] - 2026-09-16
 
 ### Added
