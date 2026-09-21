@@ -48,7 +48,8 @@ fn violations(text: &str) -> Vec<String> {
         .filter(|block| {
             let script = ["-pr.sh", "-window.sh"]
                 .iter()
-                .any(|suffix| block.contains(&format!("scripts/verify{suffix}")));
+                .any(|suffix| block.contains(&format!("scripts/verify{suffix}")))
+                || block.contains(&["scripts/", "verification-view.py"].concat());
             let opt_in = block.contains("\"STORYHOOK_VERIFIER_MIRROR\", \"1\"")
                 || block.contains("env_remove(\"STORYHOOK_VERIFIER_MIRROR\")");
             let direct_launch = block.contains(".output()")
@@ -81,7 +82,16 @@ fn verifier_commands_are_contained_at_their_function_or_command_helper() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let listed = std::process::Command::new("git")
         .current_dir(root)
-        .args(["ls-files", "-z", "--", "tests/*.rs", "tests/support/*.rs"])
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "tests/*.rs",
+            "tests/support/*.rs",
+        ])
         .output()
         .expect("list tracked fixture sources");
     assert!(
@@ -98,8 +108,12 @@ fn verifier_commands_are_contained_at_their_function_or_command_helper() {
     {
         let relative = std::str::from_utf8(entry).expect("UTF-8 tracked path");
         saw_queue |= relative == "tests/verification_queue.rs";
-        saw_live |= relative == "tests/support/verify_window_live.rs";
-        let source = std::fs::read_to_string(root.join(relative)).expect("read tracked fixture");
+        saw_live |= relative == "tests/verify_window.rs";
+        let path = root.join(relative);
+        if !path.exists() {
+            continue;
+        }
+        let source = std::fs::read_to_string(path).expect("read tracked fixture");
         failures.extend(
             violations(&source)
                 .into_iter()
@@ -133,6 +147,8 @@ fn a_sibling_function_cannot_launder_an_uncontained_launch() {
         violations(&format!("// daemon_containment()\n{}", probe(""))).len(),
         1
     );
+    let viewer = probe("").replace("verify-pr.sh", "verification-view.py");
+    assert_eq!(violations(&viewer).len(), 1);
 }
 
 #[test]

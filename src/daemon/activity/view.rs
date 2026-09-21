@@ -32,8 +32,25 @@ fn render(record: &Record, color: bool) -> String {
 /// output is NDJSON; ordinary redirected output never contains ANSI escapes.
 /// Reading an absent log is an empty result and never starts a daemon.
 pub fn read_logs(env: &Environment, follow: bool, json: bool) -> Result<(), AppError> {
-    read(env, follow, json)
-        .map_err(|error| AppError::Storage(format!("reading activity journal: {error}")))
+    read_logs_from(env, None, follow, json)
+}
+
+/// Reads an explicit project directory, or the store journal when omitted.
+/// This read-only operation never starts or contacts a daemon.
+pub fn read_logs_from(
+    env: &Environment,
+    directory: Option<&std::path::Path>,
+    follow: bool,
+    json: bool,
+) -> Result<(), AppError> {
+    read(
+        directory
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| env.daemon_state_dir().join("activity")),
+        follow,
+        json,
+    )
+    .map_err(|error| AppError::Storage(format!("reading activity journal: {error}")))
 }
 
 struct Follower {
@@ -106,11 +123,11 @@ impl Follower {
     }
 }
 
-fn read(env: &Environment, follow: bool, json: bool) -> io::Result<()> {
+fn read(directory: std::path::PathBuf, follow: bool, json: bool) -> io::Result<()> {
     let stdout = io::stdout();
     let color = !json && stdout.is_terminal() && std::env::var_os("NO_COLOR").is_none();
     let mut out = stdout.lock();
-    let mut follower = Follower::new(env.daemon_state_dir().join("activity"), Utc::now());
+    let mut follower = Follower::new(directory, Utc::now());
     loop {
         follower.tick(Utc::now(), &mut out, json, color)?;
         if !follow {

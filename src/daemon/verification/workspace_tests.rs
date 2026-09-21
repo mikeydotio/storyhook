@@ -21,6 +21,37 @@ fn candidate(store: &SqliteStore, env: &Environment, project: ProjectId) -> Veri
     VerificationQueue::new(store).next().unwrap().unwrap()
 }
 
+#[test]
+fn log_context_uses_only_the_matching_story_and_generation_attempt() {
+    let fixture = ServiceFixture::new();
+    let store = SqliteStore::open(fixture.store().path()).unwrap();
+    let project = ProjectId::new(fixture.project().get());
+    let env = Environment::at(fixture.cwd());
+    let mut candidate = candidate(&store, &env, project);
+    candidate.checkout = fixture.cwd().to_path_buf();
+    let activity = VerificationActivity::new();
+    let guard = activity.acquire(&candidate, env.now());
+    let mut other = candidate.clone();
+    other.story_id = "SH-999".into();
+    let actuator = ShellVerificationActuator::new(env).with_activity(activity);
+    let mut stale = candidate.clone();
+    stale.verifying_generation = None;
+    for unmatched in [&other, &stale] {
+        let _scope = actuator.log_scope(unmatched);
+        let context = crate::daemon::activity::context::current().unwrap();
+        assert!(context.label.contains(&unmatched.story_id));
+        assert!(!context.label.contains(&guard.active.attempt_id));
+        assert!(context.label.contains(&verification_request_id(unmatched)));
+    }
+    let _scope = actuator.log_scope(&candidate);
+    assert!(
+        crate::daemon::activity::context::current()
+            .unwrap()
+            .label
+            .contains(&guard.active.attempt_id)
+    );
+}
+
 fn helper(root: &std::path::Path) -> PathBuf {
     let path = root.join("notify.sh");
     std::fs::write(

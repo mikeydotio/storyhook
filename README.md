@@ -746,27 +746,26 @@ resume, clean, or delete anything.
 
 ### Live daemon and verifier activity
 
-The daemon maintains a continuous log view in
-`storyhook-verifier:verification` on tmux's default server:
+The daemon maintains one `verification` window in each project-slug tmux
+session on the default server. It recreates missing or failed owned readers.
 
 ```bash
-tmux attach -t storyhook-verifier
-story daemon logs --follow
+tmux attach -t <project-slug>
+story daemon logs --directory /path/to/project/.storyhook/logs --follow
 story daemon logs --json
 ```
 
-Entries carry UTC timestamps, source and stream labels, process identifiers,
-and story/request context. The view includes daemon diagnostics, committed
-story events, engine and verifier activity, and script stdout/stderr. Color is
-added only at a terminal; `--json` produces one JSON record per line. Reading
-logs does not start a daemon. `--store-path` selects another store's journal.
+Project entries carry UTC timestamps, subsystem and stream labels, process IDs,
+and story/attempt context. They include verifier events and helper/test output.
+`--directory` reads a project journal; without it, `daemon logs` reads the
+store-wide daemon journal. Reading logs never starts a daemon. Color is added
+only at a terminal; `--json` produces one JSON record per line.
 
-Private `activity/YYYY-MM-DD.jsonl` files live beneath each store's daemon
-state directory. They rotate at UTC midnight, append across restarts, and stay
-until you remove them. Read older files directly. Set
-`STORYHOOK_VERIFIER_MIRROR=0` to disable tmux integration while retaining logs.
-When several stores share a machine, the last daemon started owns the fixed
-pane; each store retains its own files.
+Private project files live at `.storyhook/logs/YYYY-MM-DD.jsonl` in the
+registered checkout. Add `/.storyhook/logs/` to `.gitignore`. Store journals
+remain under `<daemon state directory>/activity/`. Both rotate at UTC midnight,
+append across restarts, and remain until you remove them. Set
+`STORYHOOK_VERIFIER_MIRROR=0` to disable all tmux calls while retaining logs.
 
 ## Storage model
 

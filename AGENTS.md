@@ -179,8 +179,9 @@ Run `story help <command>` for detailed usage on any command, or
 ## Where the data lives
 
 Stories are kept in storyhook's own store, outside this repository — so every
-branch, worktree and clone of this project sees one truth, and no ordinary
-command writes to the working tree.
+branch, worktree and clone of this project sees one truth. Verifier diagnostics
+are local runtime files in `.storyhook/logs/`. Add `/.storyhook/logs/` to
+`.gitignore`; do not commit those logs.
 
 The one file that does belong to the repository is `.storyhook.toml`: it names
 which project this checkout is, and it is where this repository's own storyhook

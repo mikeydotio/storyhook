@@ -99,7 +99,9 @@ impl OutputWatch {
                 pending: Vec::new(),
             })
             .collect();
+        let project = super::context::current();
         let thread = std::thread::spawn(move || {
+            let _scope = super::context::enter(project);
             loop {
                 let final_read = stopped.load(Ordering::Acquire);
                 for cursor in &mut cursors {

@@ -435,6 +435,49 @@ fn watch_refreshes_update_the_tracking_ref_read_by_their_plan() {
     }
 }
 
+fn runtime_github_bypasses(name: &str, code: &str) -> Vec<&'static str> {
+    // SH-748's cleanup classifier compares historical pane text. Exempt only
+    // that exact data declaration, never the script's other executable code.
+    let local_evidence =
+        r#"LEGACY_FIXTURE_BANNER_PREFIX = "verifying https://github.com/acme/widgets/pull/""#;
+    let code = code
+        .lines()
+        .filter(|line| !(name == "scripts/cleanup-verifier-fixtures.py" && *line == local_evidence))
+        .collect::<Vec<_>>()
+        .join("\n");
+    [
+        "github.com",
+        "api.github.com",
+        "raw.githubusercontent.com",
+        "STORYHOOK_GITHUB_TOKEN",
+    ]
+    .into_iter()
+    .filter(|forbidden| code.contains(forbidden))
+    .collect()
+}
+
+#[test]
+fn legacy_fixture_evidence_does_not_exempt_other_github_bypasses() {
+    let name = "scripts/cleanup-verifier-fixtures.py";
+    let evidence =
+        r#"LEGACY_FIXTURE_BANNER_PREFIX = "verifying https://github.com/acme/widgets/pull/""#;
+    assert!(runtime_github_bypasses(name, evidence).is_empty());
+    assert!(!runtime_github_bypasses("scripts/other.py", evidence).is_empty());
+    for bypass in [
+        r#"url = "https://github.com/production/repo""#,
+        r#"url = "https://api.github.com/repos/production/repo""#,
+        r#"url = "https://raw.githubusercontent.com/production/repo/main/file""#,
+        r#"token = os.environ["STORYHOOK_GITHUB_TOKEN"]"#,
+    ] {
+        assert!(!runtime_github_bypasses(name, &format!("{evidence}\n{bypass}")).is_empty());
+    }
+    assert!(!runtime_github_bypasses(name, &format!("{evidence}; request()")).is_empty());
+    assert!(
+        !runtime_github_bypasses(name, &evidence.replace("acme/widgets", "production/repo"))
+            .is_empty()
+    );
+}
+
 #[test]
 fn production_github_access_has_one_cli_executor_and_no_http_or_pat_bypass() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -465,18 +508,12 @@ fn production_github_access_has_one_cli_executor_and_no_http_or_pat_bypass() {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        for forbidden in [
-            "github.com",
-            "api.github.com",
-            "raw.githubusercontent.com",
-            "STORYHOOK_GITHUB_TOKEN",
-        ] {
-            if name == "src/help_topics.rs" {
-                continue;
-            } // explicit migration guidance
+        if name != "src/help_topics.rs" {
+            // Help contains explicit migration guidance, not request endpoints.
+            let forbidden = runtime_github_bypasses(name, &code);
             assert!(
-                !code.contains(forbidden),
-                "{name} contains runtime bypass {forbidden}"
+                forbidden.is_empty(),
+                "{name} contains runtime bypasses {forbidden:?}"
             );
         }
         if name != "src/github_access/command.rs" {

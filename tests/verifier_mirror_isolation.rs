@@ -200,6 +200,20 @@ fn record_actuator_children(env: Environment) -> BTreeMap<String, Option<String>
         .map(|door| {
             let bytes = std::fs::read(checkout.path().join(format!("{door}.env")))
                 .expect("the production actuator reached the recording child");
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(
+                text.lines().any(|line| line
+                    == format!(
+                        "STORYHOOK_ACTIVITY_LOG_DIR={}",
+                        checkout.path().join(".storyhook/logs").display()
+                    )),
+                "{door} lost the registered project journal: {text}"
+            );
+            assert!(
+                text.lines().any(|line| line
+                    .starts_with("STORYHOOK_ACTIVITY_CONTEXT=project=fixture SH-1 attempt=")),
+                "{door} lost story/attempt ownership: {text}"
+            );
             (door.into(), mirror_value(&bytes))
         })
         .collect()

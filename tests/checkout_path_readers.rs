@@ -43,6 +43,14 @@ use std::path::Path;
 /// implements it, so naming the column is its job.
 const ALLOWED: &[(&str, &str)] = &[
     (
+        "src/daemon/activity/context.rs",
+        "project-error logging chooses the journal directory after selecting the project by durable id; it does not resolve project identity",
+    ),
+    (
+        "src/daemon/activity/window.rs",
+        "reader supervision chooses journal directories for already-enumerated store projects; paths never determine project identity",
+    ),
+    (
         "src/daemon/project_recovery.rs",
         "recovery delivery chooses its working directory after selecting each durable project id",
     ),
