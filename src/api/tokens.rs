@@ -643,7 +643,7 @@ impl TokenRegistry {
 
 fn preference_defaults() -> serde_json::Value {
     serde_json::json!({
-        "filter": {"text":"", "priorities":[], "assignees":[], "types":[], "states":[], "showEpics":false},
+        "filter": {"text":"", "priorities":null, "assignees":[], "types":null, "states":null},
         "sort": {"col":"updated", "dir":-1},
         "columnSort": {}, "hiddenColumns": [], "view":"board",
         "showArchived":false, "hideEmptyColumns":false, "keepNotices":false,
@@ -660,12 +660,25 @@ fn effective_preferences(saved: &serde_json::Map<String, serde_json::Value>) -> 
     for (key, value) in saved {
         if fields.contains_key(key) {
             let mut value = value.clone();
-            if key == "filter" {
-                // SH-750: old named tokens and browser tabs can still send
-                // the retired bit. It cannot remain effective after the UI
-                // loses the only control that could change it.
-                if let Some(filter) = value.as_object_mut() {
-                    filter.remove("showClosed");
+            if key == "filter"
+                && let Some(filter) = value.as_object_mut()
+            {
+                // SH-750/SH-751: retired dashboard toggles identify the
+                // legacy filter shape, where [] meant unrestricted. The
+                // inclusive facets now use null for that state so a new
+                // [] can mean the exact, empty selection.
+                let legacy = filter.remove("showEpics").is_some();
+                filter.remove("showClosed");
+                if legacy {
+                    for key in ["priorities", "types", "states"] {
+                        if filter
+                            .get(key)
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(Vec::is_empty)
+                        {
+                            filter.insert(key.to_string(), serde_json::Value::Null);
+                        }
+                    }
                 }
             }
             fields.insert(key.clone(), value);
@@ -682,6 +695,10 @@ fn string_array(value: &serde_json::Value) -> bool {
     value
         .as_array()
         .is_some_and(|items| items.len() <= 64 && items.iter().all(|v| short_string(v, 128)))
+}
+
+fn inclusive_filter_selection(value: &serde_json::Value) -> bool {
+    value.is_null() || string_array(value)
 }
 
 fn sort_value(value: &serde_json::Value, field: &str, keys: &[&str]) -> bool {
@@ -724,16 +741,26 @@ fn valid_preference_field(key: &str, value: &serde_json::Value) -> bool {
                 })
         }),
         "filter" => value.as_object().is_some_and(|map| {
+            let legacy_show_epics = map.get("showEpics");
             let legacy_show_closed = map.get("showClosed");
-            map.len() == if legacy_show_closed.is_some() { 7 } else { 6 }
+            let legacy = legacy_show_epics.is_some();
+            map.len()
+                == 5 + usize::from(legacy_show_epics.is_some())
+                    + usize::from(legacy_show_closed.is_some())
                 && map.get("text").is_some_and(|v| short_string(v, 2048))
-                && ["priorities", "assignees", "types", "states"]
-                    .iter()
-                    .all(|key| map.get(*key).is_some_and(string_array))
-                && map
-                    .get("showEpics")
-                    .is_some_and(serde_json::Value::is_boolean)
+                && map.get("assignees").is_some_and(string_array)
+                && ["priorities", "types", "states"].iter().all(|key| {
+                    map.get(*key).is_some_and(|selection| {
+                        if legacy {
+                            string_array(selection)
+                        } else {
+                            inclusive_filter_selection(selection)
+                        }
+                    })
+                })
+                && legacy_show_epics.is_none_or(serde_json::Value::is_boolean)
                 && legacy_show_closed.is_none_or(serde_json::Value::is_boolean)
+                && (legacy_show_closed.is_none() || legacy)
         }),
         "drawerSections" => value.as_object().is_some_and(|map| {
             map.len() == 3
@@ -1647,7 +1674,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_preferences_omit_show_closed_but_accept_its_legacy_shape() {
+    fn filter_preferences_normalize_retired_visibility_toggles() {
         let registry = registry_at(epoch());
         let token = registry
             .mint("one".into(), epoch(), Instant::now(), DEFAULT_TTL)
@@ -1655,11 +1682,10 @@ mod tests {
             .secret;
         let current = serde_json::json!({
             "text": "",
-            "priorities": [],
+            "priorities": null,
             "assignees": [],
-            "types": [],
-            "states": [],
-            "showEpics": false
+            "types": null,
+            "states": null
         });
 
         let defaults = registry
@@ -1667,6 +1693,7 @@ mod tests {
             .unwrap();
         assert_eq!(defaults["filter"], current);
         assert!(defaults["filter"].get("showClosed").is_none());
+        assert!(defaults["filter"].get("showEpics").is_none());
 
         let saved = registry
             .patch_preferences(
@@ -1677,6 +1704,52 @@ mod tests {
             )
             .unwrap();
         assert_eq!(saved["filter"], current);
+
+        let none_selected = serde_json::json!({
+            "text": "",
+            "priorities": [],
+            "assignees": [],
+            "types": [],
+            "states": []
+        });
+        let saved = registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"filter": none_selected})
+                    .as_object()
+                    .unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(saved["filter"], none_selected);
+
+        let selected = serde_json::json!({
+            "text": "search",
+            "priorities": ["high"],
+            "assignees": ["mikey"],
+            "types": ["bug"],
+            "states": ["todo"]
+        });
+        let legacy_selected = serde_json::json!({
+            "text": "search",
+            "priorities": ["high"],
+            "assignees": ["mikey"],
+            "types": ["bug"],
+            "states": ["todo"],
+            "showEpics": false
+        });
+        let normalized = registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"filter": legacy_selected})
+                    .as_object()
+                    .unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(normalized["filter"], selected);
 
         let legacy = serde_json::json!({
             "text": "",
@@ -1697,6 +1770,7 @@ mod tests {
             .unwrap();
         assert_eq!(normalized["filter"], current);
         assert!(normalized["filter"].get("showClosed").is_none());
+        assert!(normalized["filter"].get("showEpics").is_none());
         assert_eq!(
             registry
                 .preferences(&token, epoch(), Instant::now())

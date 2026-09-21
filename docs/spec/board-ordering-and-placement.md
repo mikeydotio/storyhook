@@ -271,6 +271,9 @@ one-line-away defect the promotion itself creates, not a separate story).
 SH-750 later removed the separate `f.showClosed` predicate. The State filter now
 owns story-status visibility, and Columns independently owns board-column
 visibility.
+SH-751, absorbed into SH-750, later removed `f.showEpics` too. Type now owns
+epic visibility. Priority, Type, and State default to every option selected;
+an explicit empty selection matches no stories.
 
 ## What guards each piece
 

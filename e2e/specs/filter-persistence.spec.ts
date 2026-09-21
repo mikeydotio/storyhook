@@ -47,6 +47,60 @@ function waitForSearchSave(page: import("@playwright/test").Page) {
   );
 }
 
+const inclusiveFacets = [
+  { key: "priorities", label: "Priority" },
+  { key: "types", label: "Type" },
+  { key: "states", label: "State" },
+];
+
+test("inclusive facets start fully selected without redundant type controls", async ({
+  page,
+}) => {
+  await openProject(page, "Alpha Project");
+  await openFilters(page);
+
+  await expect(page.locator("#toggle-epics")).toHaveCount(0);
+  await page.locator("#fdd-types .fdd-btn").click();
+  await expect(page.locator("#fdd-types .fdd-option", { hasText: "none" })).toHaveCount(0);
+
+  for (const facet of inclusiveFacets) {
+    const checkboxes = page.locator(`#fdd-${facet.key} input[type=checkbox]`);
+    const count = await checkboxes.count();
+    expect(count).toBeGreaterThan(0);
+    for (let index = 0; index < count; index += 1) {
+      await expect(checkboxes.nth(index)).toBeChecked();
+    }
+    await expect(page.locator(`#fdd-${facet.key} .fdd-btn`)).toHaveAccessibleName(facet.label);
+  }
+});
+
+for (const facet of inclusiveFacets) {
+  test(`${facet.label} with every option unchecked shows no stories`, async ({ page }) => {
+    await openProject(page, "Alpha Project");
+    await openFilters(page);
+    await page.locator(`#fdd-${facet.key} .fdd-btn`).click();
+
+    const checkboxes = page.locator(`#fdd-${facet.key} input[type=checkbox]`);
+    const count = await checkboxes.count();
+    for (let index = 0; index < count; index += 1) {
+      await checkboxes.nth(index).uncheck();
+    }
+
+    await expect(page.locator("#filter-count")).toHaveText("0 / 2");
+    await expect(page.locator(`#fdd-${facet.key} .fdd-btn`)).toHaveAccessibleName(
+      `${facet.label} (0)`,
+    );
+    await page.locator('#view-toggle button[data-view="list"]').click();
+    await expect(page.locator("#list-body tr")).toHaveCount(0);
+
+    await page.locator("#filter-clear").click();
+    await expect(page.locator("#filter-count")).toHaveText("2 / 2");
+    for (let index = 0; index < count; index += 1) {
+      await expect(checkboxes.nth(index)).toBeChecked();
+    }
+  });
+}
+
 test("a text search carries over across a project switch", async ({
   page,
 }) => {
@@ -106,10 +160,13 @@ test("a state filter absent from the next project is pruned, with a toast, not s
   await openFilters(page);
 
   await page.locator("#fdd-states .fdd-btn").click();
-  await page
-    .locator("#fdd-states .fdd-option", { hasText: "review" })
-    .locator("input[type=checkbox]")
-    .check();
+  const stateOptions = page.locator("#fdd-states .fdd-option");
+  for (let index = 0; index < await stateOptions.count(); index += 1) {
+    const option = stateOptions.nth(index);
+    if (!(await option.textContent())?.includes("review")) {
+      await option.locator("input[type=checkbox]").uncheck();
+    }
+  }
   // Nothing in Alpha is in `review`, so filtering by it empties the board
   // — the starting point that proves the filter is genuinely active
   // before the switch, not merely cosmetically checked.

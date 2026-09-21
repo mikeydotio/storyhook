@@ -1762,7 +1762,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           <div class="fdd" id="fdd-assignees"></div>
           <div class="fdd" id="fdd-types"></div>
           <div class="fdd" id="fdd-states"></div>
-          <label class="filter-toggle"><input type="checkbox" id="toggle-epics"> Show epics</label>
           <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
         </section>
         <section class="filter-group" id="board-filter-group" aria-labelledby="board-filter-group-title">
@@ -2544,12 +2543,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // the next project's vocabulary. Their durable owner is the named token.
   var compactHeaderQuery = window.matchMedia("(max-width: 768px)");
 
-  /** A fresh, independently-mutable default filter object — never a shared
-   * literal, since `state.filter[key]` arrays are pushed/spliced in place
-   * and two call sites holding the same instance would silently share
-   * mutations. */
+  var INCLUSIVE_FILTER_KEYS = { priorities: true, types: true, states: true };
+
+  /** A fresh, independently-mutable default filter object. Null means every
+   * current and future option in an inclusive facet; an array is an exact
+   * selection, including the empty selection that intentionally matches no
+   * stories. Assignee keeps its older optional-filter semantics. */
   function defaultFilter() {
-    return { text: "", priorities: [], assignees: [], types: [], states: [], showEpics: false };
+    return { text: "", priorities: null, assignees: [], types: null, states: null };
   }
 
   function savePersistedFilters(field, debounce) {
@@ -3360,10 +3361,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (key === "dispatchDefaults") dispatchDefaults = copyPreference(value);
     else if (key === "repoId") state.rememberedRepoId = value;
     else state[key] = copyPreference(value);
-    if (key === "filter") {
-      $("search-input").value = state.filter.text;
-      $("toggle-epics").checked = state.filter.showEpics;
-    }
+    if (key === "filter") $("search-input").value = state.filter.text;
     if (key === "showArchived") $("toggle-archived").checked = value;
     if (key === "hideEmptyColumns") $("toggle-hide-empty-columns").checked = value;
     if (key === "view") document.querySelectorAll("#view-toggle button").forEach(function(btn) {
@@ -3378,7 +3376,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         var container = $(FILTER_DROPDOWNS[group].container);
         if (!container) return;
         container.querySelectorAll("input[type=checkbox]").forEach(function(cb) {
-          cb.checked = state.filter[group].indexOf(cb.value) !== -1;
+          cb.checked = filterOptionSelected(group, cb.value);
         });
         syncFilterDropdownLabel(group);
       });
@@ -3660,7 +3658,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var m = meta();
     var validAssignees = { __unassigned__: true };
     m.members.forEach(function(mem) { validAssignees[mem.id] = true; });
-    var validTypes = { __untyped__: true };
+    var validTypes = {};
     m.types.forEach(function(t) { validTypes[t.slug] = true; });
     var validStates = {};
     m.states.forEach(function(s) { validStates[s.slug] = true; });
@@ -3668,9 +3666,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     var droppedFilter = false, droppedColumns = false, droppedSort = false;
     ["assignees", "types", "states"].forEach(function(key) {
-      var kept = state.filter[key].filter(function(v) { return validSets[key][v]; });
-      if (kept.length !== state.filter[key].length) droppedFilter = true;
-      state.filter[key] = kept;
+      var selected = state.filter[key];
+      if (selected === null) return;
+      var kept = selected.filter(function(v) { return validSets[key][v]; });
+      if (kept.length !== selected.length) droppedFilter = true;
+      // A carried exact selection whose every value belongs only to the old
+      // project must not become the user's deliberate "select none" choice
+      // in the new one. Reset that case to the unrestricted default.
+      state.filter[key] = INCLUSIVE_FILTER_KEYS[key] && selected.length && !kept.length
+        ? null
+        : kept;
     });
 
     // `hiddenColumns` (SH-162) is state-slug vocabulary too, and lives
@@ -7604,8 +7609,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return set;
   }
 
+  /** Null is the inclusive facet's unrestricted/all-selected state. Arrays
+   * are exact, so an empty array deliberately matches nothing. */
+  function inclusiveFacetMatches(selection, value) {
+    return selection === null || selection.indexOf(value) !== -1;
+  }
+
   /** Applies the shared search/priority/assignee/type/state filters and the
-   * visibility toggles. Board and List both render from this. */
+   * archived-story visibility toggle. Board and List both render from this. */
   function filteredStories() {
     if (!state.data) return [];
     var f = state.filter;
@@ -7615,26 +7626,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // `display_state || st.state` (SH-407) -- the status this story actually
       // renders under, shared by column placement and the State filter below.
       var shownState = v.display_state || st.state;
-      // SH-499: an epic is a story TYPED `epic`, never one that merely has
-      // children. This read `v.progress`, which is present for ANY parent, so
-      // an ordinary story that gained one sub-task was hidden from the board
-      // by default -- and the story's owner had no way to know why.
-      if (!f.showEpics && st.story_type === "epic") return false;
       if (!state.showArchived && st.hidden_at) return false;
       if (text) {
         var hay = (st.id + " " + st.title + " " + (st.labels || []).join(" ")).toLowerCase();
         if (hay.indexOf(text) === -1) return false;
       }
-      if (f.priorities.length && f.priorities.indexOf(st.priority) === -1) return false;
+      if (!inclusiveFacetMatches(f.priorities, st.priority)) return false;
       if (f.assignees.length) {
         var a = st.assignee || "__unassigned__";
         if (f.assignees.indexOf(a) === -1) return false;
       }
-      if (f.types.length) {
-        var t = st.story_type || "__untyped__";
-        if (f.types.indexOf(t) === -1) return false;
-      }
-      if (f.states.length && f.states.indexOf(shownState) === -1) return false;
+      if (!inclusiveFacetMatches(f.types, st.story_type)) return false;
+      if (!inclusiveFacetMatches(f.states, shownState)) return false;
       return true;
     });
   }
@@ -8290,7 +8293,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var assigneeOpts = m.members.map(function(mem) { return { value: mem.id, label: mem.display_name }; });
     assigneeOpts.push({ value: "__unassigned__", label: "Unassigned" });
     var typeOpts = m.types.map(function(t) { return { value: t.slug, label: typeLabel(t.slug) }; });
-    typeOpts.push({ value: "__untyped__", label: typeLabel(null) });
 
     buildFilterDropdown("priorities", m.priorities.map(function(p) { return { value: p, label: p }; }));
     buildFilterDropdown("assignees", assigneeOpts);
@@ -8468,11 +8470,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
     options.forEach(function(opt) {
       var checkbox = el("input", { type: "checkbox", value: opt.value });
-      checkbox.checked = state.filter[key].indexOf(opt.value) !== -1;
+      checkbox.checked = filterOptionSelected(key, opt.value);
       checkbox.addEventListener("change", function() {
-        var idx = state.filter[key].indexOf(opt.value);
-        if (checkbox.checked && idx === -1) state.filter[key].push(opt.value);
-        else if (!checkbox.checked && idx !== -1) state.filter[key].splice(idx, 1);
+        if (INCLUSIVE_FILTER_KEYS[key] && state.filter[key] === null) {
+          state.filter[key] = options.map(function(option) { return option.value; });
+        }
+        var selection = state.filter[key];
+        var idx = selection.indexOf(opt.value);
+        if (checkbox.checked && idx === -1) selection.push(opt.value);
+        else if (!checkbox.checked && idx !== -1) selection.splice(idx, 1);
+        if (INCLUSIVE_FILTER_KEYS[key] && selection.length === options.length) {
+          state.filter[key] = null;
+        }
         syncFilterDropdownLabel(key);
         savePersistedFilters("filter");
         renderView();
@@ -8498,25 +8507,34 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     syncFilterDropdownLabel(key);
   }
 
+  function filterOptionSelected(key, value) {
+    var selection = state.filter[key];
+    return (INCLUSIVE_FILTER_KEYS[key] && selection === null) || selection.indexOf(value) !== -1;
+  }
+
   function syncFilterDropdownLabel(key) {
     var container = $(FILTER_DROPDOWNS[key].container);
     if (!container) return;
     var btn = container.querySelector(".fdd-btn");
     if (!btn) return;
-    var count = state.filter[key].length;
+    var selection = state.filter[key];
+    var restricted = INCLUSIVE_FILTER_KEYS[key] ? selection !== null : selection.length > 0;
+    var count = selection === null ? 0 : selection.length;
     clear(btn);
-    btn.appendChild(document.createTextNode(FILTER_DROPDOWNS[key].label + (count ? " (" + count + ")" : "")));
+    btn.appendChild(document.createTextNode(FILTER_DROPDOWNS[key].label + (restricted ? " (" + count + ")" : "")));
     var caret = emojiIcon("dropdown", { className: "disclosure-icon", direction: "down" });
     caret.classList.add("fdd-caret");
     btn.appendChild(caret);
-    btn.classList.toggle("active", count > 0 || openFilterDropdown === key);
+    btn.classList.toggle("active", restricted || openFilterDropdown === key);
   }
 
   function resetFilterDropdownUI() {
     Object.keys(FILTER_DROPDOWNS).forEach(function(key) {
       var container = $(FILTER_DROPDOWNS[key].container);
       if (!container) return;
-      container.querySelectorAll("input[type=checkbox]").forEach(function(cb) { cb.checked = false; });
+      container.querySelectorAll("input[type=checkbox]").forEach(function(cb) {
+        cb.checked = !!INCLUSIVE_FILTER_KEYS[key];
+      });
       syncFilterDropdownLabel(key);
     });
   }
@@ -8619,12 +8637,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       savePersistedFilters("filter", true);
       renderView();
     });
-    $("toggle-epics").checked = !!state.filter.showEpics;
-    $("toggle-epics").addEventListener("change", function() {
-      state.filter.showEpics = this.checked;
-      savePersistedFilters("filter");
-      renderView();
-    });
     $("toggle-archived").checked = state.showArchived;
     $("toggle-archived").addEventListener("change", function() {
       state.showArchived = this.checked;
@@ -8640,7 +8652,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("filter-clear").addEventListener("click", function() {
       state.filter = defaultFilter();
       $("search-input").value = "";
-      $("toggle-epics").checked = false;
       resetFilterDropdownUI();
       savePersistedFilters("filter");
       renderView();
@@ -12979,8 +12990,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * dismissal, because this stays on the repo screen, so read SH-290's note
    * there before deleting it) but, since SH-155, leaves the filter bar and
    * sort alone: `state.filter`/`state.sort` carry over as-is, and the
-   * search and epic controls are synced to whatever they already hold rather
-   * than forced back to defaults. Per-repo-vocabulary filter values
+   * search control is synced to whatever it already holds rather than forced
+   * back to defaults. Per-repo-vocabulary filter values
    * (assignees, types, states) may not exist in the new repo — those are
    * pruned once its vocabulary is known, in `pruneCarriedFilters()`, called
    * from `fetchData()`'s first successful load for this repo. */
@@ -13009,7 +13020,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     state.engineRun = null;
     state.engineRuns = [];
     $("search-input").value = state.filter.text;
-    $("toggle-epics").checked = !!state.filter.showEpics;
     state.rememberedRepoId = id;
     savePreference("repoId", id);
     renderScreen();

@@ -147,13 +147,10 @@ test("SH-750 State and Columns replace the dedicated dropped toggle", async ({ p
   await expect(page.getByRole("checkbox", { name: "Show dropped", exact: true })).toHaveCount(0);
 
   await page.locator("#fdd-states .fdd-btn").click();
-  const nonDroppedStates = page.locator(
-    '#fdd-states .fdd-option input[type="checkbox"]:not([value="dropped"])',
+  const droppedState = page.locator(
+    '#fdd-states .fdd-option input[type="checkbox"][value="dropped"]',
   );
-  const stateCount = await nonDroppedStates.count();
-  for (let index = 0; index < stateCount; index += 1) {
-    await nonDroppedStates.nth(index).check();
-  }
+  await droppedState.uncheck();
   await expect(page.locator(`.card[data-id="${closedId}"]`)).toHaveCount(0);
   await expect(page.locator(`.card[data-id="${completedId}"]`)).toBeVisible();
 
