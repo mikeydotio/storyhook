@@ -34,11 +34,11 @@ use storyhook::domain::{
 };
 use storyhook::error::{AppError, IntegrityDetail, WireError};
 use storyhook::output::{
-    BlockedChainView, ConfirmationPlan, DeletePlan, EngineLaneView, EngineNeedsHumanView,
-    EngineRunView, EngineScopeView, GraphOverview, GraphView, PhaseView, ProjectSnapshotView,
-    ReferencedBy, ReportData, Response, SetPrefixPlan, SettingKind, SettingSource, SettingView,
-    StaleInfo, StoryDeletePlan, StoryView, SummaryView, UnclaimFallback, UnclaimOutcome,
-    render_error, render_response,
+    BlockedChainView, ConfirmationPlan, ContinuationAlert, DeletePlan, EngineLaneView,
+    EngineNeedsHumanView, EngineRunView, EngineScopeView, GraphOverview, GraphView, PhaseView,
+    ProjectSnapshotView, ReferencedBy, ReportData, Response, SetPrefixPlan, SettingKind,
+    SettingSource, SettingView, StaleInfo, StoryDeletePlan, StoryView, SummaryView,
+    UnclaimFallback, UnclaimOutcome, render_error, render_response,
 };
 use storyhook::service::{CleanupFailure, CleanupRemoval, CleanupReport, CleanupSkip};
 use storyhook::store::{
@@ -109,6 +109,7 @@ fn view(story: StorySnapshot) -> StoryView {
         derived_relationships: Vec::new(),
         referenced_by: ReferencedBy::default(),
         warnings: Vec::new(),
+        continuation_alerts: Vec::new(),
         flagged_reasons: Vec::new(),
         stale_info: None,
         progress: None,
@@ -190,6 +191,12 @@ fn maximal_view() -> StoryView {
             }],
         },
         warnings: vec!["a warning".to_string()],
+        continuation_alerts: vec![ContinuationAlert {
+            request_id: "request-1".to_string(),
+            status: "needs-attention".to_string(),
+            detail: "receiving review was not acknowledged".to_string(),
+            next_step: "Run story continuation status SH-1 --json".to_string(),
+        }],
         flagged_reasons: vec!["stale for 30 days".to_string(), "no assignee".to_string()],
         stale_info: Some(StaleInfo {
             last_activity_at: "2026-06-01T00:00:00Z".to_string(),

@@ -419,6 +419,8 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 }
 .settings-table td { padding: var(--space-card); border-bottom: 1px solid var(--border); vertical-align: middle; }
 .settings-table tr:last-child td { border-bottom: none; }
+.settings-visibility { width: var(--tap-min); min-width: var(--tap-min); text-align: center; }
+.settings-visibility input { width: var(--tap-min); height: var(--tap-min); cursor: pointer; }
 .settings-path { font-family: var(--mono); font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); overflow-wrap: anywhere; }
 /* SH-322: the Settings screen grew a second category (user preferences beside
    the project registry), so it grew headings to tell them apart. */
@@ -771,6 +773,8 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 .verification-chip-running { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .verification-chip-superseding { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
 .verification-chip-stalled { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+.continuation-alert-chip { color: var(--danger-text); }
+.continuation-alert-banner { background: var(--danger-soft); color: var(--danger-text); }
 .card-open-prs { display: flex; flex-wrap: wrap; gap: 0.3125rem; margin: 0 0 0.4375rem; }
 /* SH-597: the anchor owns the pointer target; its child owns the paint. A
    label-sized action can therefore stay compact without giving a finger less
@@ -2786,6 +2790,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // timer, not a page close.
     dispatchHistory: []
   };
+
+  /** The full catalog stays in `state.repos` for Settings and direct links.
+   * This is the only list used by dashboard navigation and global counts. */
+  function visibleRepos() {
+    return state.repos.filter(function(r) { return r.visible !== false; });
+  }
+
+  /** One in-flight visibility choice per project, so a catalog poll cannot
+   * re-enable its checkbox while the daemon is still saving that choice. */
+  var visibilityPending = Object.create(null);
 
   /** Set by `fetchData()` (from `diffSnapshots`) whenever fresh data arrives
    * with a previous snapshot to compare against; consumed and cleared by
@@ -8015,7 +8029,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `/api/repos[].drafts` shape (SH-442). */
   function catalogDrafts() {
     var result = [];
-    state.repos.forEach(function(project) {
+    visibleRepos().forEach(function(project) {
       (project.drafts || []).forEach(function(draft) {
         result.push({ project: project, draft: draft });
       });
@@ -8024,7 +8038,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   function catalogHasDraftErrors() {
-    return state.repos.some(function(project) { return !!project.error; });
+    return visibleRepos().some(function(project) { return !!project.error; });
   }
 
   /** The topbar's global Drafts count (SH-442). `GET /api/repos` is the
@@ -8074,8 +8088,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (state.screen === "repo") {
       text = "";
     } else if (state.screen === "home") {
-      text = (state.repos.length || state.reposReadiness === "loaded")
-        ? state.repos.length + " " + (state.repos.length === 1 ? "project" : "projects")
+      var visibleCount = visibleRepos().length;
+      text = (visibleCount || state.reposReadiness === "loaded")
+        ? visibleCount + " " + (visibleCount === 1 ? "project" : "projects")
         : "";
     } else if (state.settingsRepoId) {
       text = "Settings · statuses";
@@ -9706,6 +9721,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // through rather than gating the call outright -- see blockedFlag()'s
     // own comment on why a locally-derivable cause must outrank it.
     var flagDesc = blockedFlag(st, !!blocked[st.id]);
+    var continuationAlerts = Array.isArray(v.continuation_alerts) ? v.continuation_alerts : [];
     // SH-309: `card`'s subtree is presentational to assistive tech (see
     // `.card-actions-btn`'s own comment below), so a blocked reason that
     // reaches only the badge's `title` never reaches AT at all -- appending
@@ -9715,7 +9731,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var baseAriaLabel = st.id + ": " + st.title
       + (engineLaneDesc ? " — " + engineLaneDesc : "")
       + (openPrDesc ? " — " + openPrDesc : "")
-      + (flagDesc ? " — " + flagDesc.ariaText : "");
+      + (flagDesc ? " — " + flagDesc.ariaText : "")
+      + (continuationAlerts.length ? " — Continuation needs attention" : "");
     var verification = (v.display_state || st.state) === "verifying" ? v.verification : null;
     var verificationDesc = verificationDescription(verification);
     card.dataset.baseAriaLabel = baseAriaLabel;
@@ -9812,6 +9829,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var flag = el("span", { class: "flag flag-blocked" }, flagDesc.children);
       if (flagDesc.title) flag.title = flagDesc.title;
       flags.appendChild(flag);
+    }
+    if (continuationAlerts.length) {
+      flags.appendChild(el("span", { class: "flag continuation-alert-chip" }, [
+        "⚠ Continuation needs attention"
+      ]));
     }
     // Ready is the default state and gets no badge — only the blocked
     // exception is called out.
@@ -11928,6 +11950,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var full = state.drawerDetail;
     var st = (full && full.story) || (summary && summary.story);
     if (!st) { closeDrawer(); return; }
+    var continuationAlerts = (full && full.continuation_alerts)
+      || (summary && summary.continuation_alerts) || [];
 
     $("drawer-id").textContent = st.id;
     var typeBadgeMount = $("drawer-type-badge");
@@ -11990,6 +12014,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         el("div", { class: "banner banner-blocked", title: banner.title }, bannerChildren)
       ));
     }
+    continuationAlerts.forEach(function(alert, index) {
+      nextBody.appendChild(drawerSection("continuation-alert-" + index,
+        el("div", { class: "banner continuation-alert-banner" }, [
+          el("div", { class: "banner-head" }, [
+            "Continuation needs attention · ", el("code", {}, [alert.request_id])
+          ]),
+          el("div", { class: "banner-body" }, [alert.detail]),
+          el("div", { class: "banner-body" }, [alert.next_step])
+        ])
+      ));
+    });
     // A relation-only block still needs somewhere to add a note -- shown
     // whenever there is no reason yet, alongside the banner rather than
     // instead of it.
@@ -12760,8 +12795,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function projselLabelText() {
     var current = currentProjectLabel();
     if (current) return current;
-    if (state.repos.length) return "All projects";
-    return state.reposReadiness === "loaded" ? "No projects yet" : "Projects";
+    if (visibleRepos().length) return "All projects";
+    if (state.reposReadiness !== "loaded") return "Projects";
+    return state.repos.length ? "No projects selected" : "No projects yet";
   }
 
   /** The index `projselFocusItem` last moved to, so arrow keys can move
@@ -12789,7 +12825,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     projselFocusIndex = index;
   }
 
-  /** Rebuilds the header's project-switcher popover from `state.repos`.
+  /** Rebuilds the header's project-switcher popover from visible projects.
    *
    * Reuses `.fdd-panel`'s styling and `closeAllPopovers`'s document-level
    * click/Escape handling (wired once in `bindShell()`) rather than adding
@@ -12807,28 +12843,32 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var btn = $("projsel-btn");
     var menu = $("projsel-menu");
     if (!btn || !menu) return;
+    var shown = visibleRepos();
 
     $("projsel-label").textContent = projselLabelText();
-    btn.disabled = !state.repos.length;
+    btn.disabled = !shown.length;
     // Same "not yet" vs "not at all" the label itself withholds (SH-301):
     // the button stays disabled either way, since there is nothing to
     // switch to in either case, but the tooltip says which is true. Empty,
     // not merely unset, once the catalog has genuinely answered empty —
     // there is nothing wrong to explain then.
-    btn.title = (state.repos.length || state.reposReadiness === "loaded")
-      ? "" : readinessNote("your projects", state.reposReadiness === "failed");
+    btn.title = shown.length ? "" : (state.repos.length
+      ? "Choose projects in Settings"
+      : (state.reposReadiness === "loaded" ? "" : readinessNote("your projects", state.reposReadiness === "failed")));
 
-    var fingerprint = state.repos.map(repoCardFingerprint).join("|") + "|" + state.repoId;
+    var fingerprint = shown.map(repoCardFingerprint).join("|") + "|" + state.repoId;
     if (menu.dataset.fingerprint === fingerprint) return;
     menu.dataset.fingerprint = fingerprint;
 
     clear(menu);
-    if (!state.repos.length) {
-      menu.appendChild(el("div", { class: "projsel-empty" }, ["No projects yet — add one in Settings."]));
+    if (!shown.length) {
+      menu.appendChild(el("div", { class: "projsel-empty" }, [state.repos.length
+        ? "No projects selected — choose some in Settings."
+        : "No projects yet — add one in Settings."]));
       return;
     }
 
-    state.repos.forEach(function(r) {
+    shown.forEach(function(r) {
       var openable = canOpen(r);
       var checked = r.id === state.repoId;
       menu.appendChild(el("div", {
@@ -12874,7 +12914,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     btn.classList.add("active");
     btn.setAttribute("aria-expanded", "true");
     var checkedIndex = 0;
-    state.repos.forEach(function(r, i) { if (r.id === state.repoId) checkedIndex = i; });
+    visibleRepos().forEach(function(r, i) { if (r.id === state.repoId) checkedIndex = i; });
     projselFocusItem(checkedIndex);
   }
 
@@ -13051,9 +13091,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function renderHome() {
     if (pressDefer("home", renderHome)) return;
     var container = $("home-view");
-    if (!state.repos.length) {
+    var shown = visibleRepos();
+    if (!shown.length) {
       clear(container);
-      container.appendChild(state.reposReadiness === "loaded"
+      container.appendChild(state.reposReadiness === "loaded" && state.repos.length
+        ? el("div", { class: "home-empty" }, [
+            "No projects selected.",
+            el("button", { class: "btn btn-primary", onClick: goSettings }, ["Choose projects in Settings"])
+          ])
+        : state.reposReadiness === "loaded"
         ? el("div", { class: "home-empty" }, [
             "No projects yet.",
             el("button", { class: "btn btn-primary", onClick: goSettings }, ["Add a project"])
@@ -13063,7 +13109,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           ]));
       return;
     }
-    var totals = state.repos.reduce(function(acc, r) {
+    var totals = shown.reduce(function(acc, r) {
       if (canOpen(r) && r.summary) {
         acc.open += r.summary.total_open;
         acc.ready += r.summary.ready_count;
@@ -13096,7 +13142,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
 
     var claimed = {};
-    state.repos.forEach(function(r) {
+    shown.forEach(function(r) {
       claimed[r.id] = true;
       var node = existingById[r.id];
       var fingerprint = repoCardFingerprint(r);
@@ -13479,13 +13525,42 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
   }
 
+  /** Saves a display preference without changing the project catalog itself. */
+  function updateProjectVisibility(id, visible) {
+    visibilityPending[id] = visible;
+    renderSettingsTable();
+    api("PATCH", repoApiBase(id) + "/visibility", { visible: visible })
+      .then(function() {
+        state.repos.forEach(function(r) { if (r.id === id) r.visible = visible; });
+        delete visibilityPending[id];
+        renderSettingsTable();
+        fetchReposOnce();
+      })
+      .catch(function(err) {
+        delete visibilityPending[id];
+        renderSettingsTable();
+        toastError(err);
+      });
+  }
+
   function renderSettingsTable() {
     var wrap = $("settings-table-wrap");
     if (!wrap) return;
+    var focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.visibilityId;
     clear(wrap);
     var tbody = el("tbody", {}, []);
     state.repos.forEach(function(r) {
+      var pending = Object.prototype.hasOwnProperty.call(visibilityPending, r.id);
       tbody.appendChild(el("tr", {}, [
+        el("td", { class: "settings-visibility" }, [el("input", {
+          type: "checkbox",
+          id: "settings-visible-" + r.id,
+          dataset: { visibilityId: r.id },
+          "aria-label": "Show " + r.name,
+          checked: pending ? visibilityPending[r.id] : r.visible !== false,
+          disabled: pending,
+          onChange: function() { updateProjectVisibility(r.id, this.checked); }
+        }, [])]),
         el("td", {}, [r.name + (r.read_only ? " (read-only)" : (r.available ? "" : " (unavailable)"))]),
         el("td", { class: "settings-path" }, [repoWhere(r)]),
         el("td", { class: "col-id" }, [r.id]),
@@ -13506,10 +13581,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
     wrap.appendChild(el("table", { class: "settings-table" }, [
       el("thead", {}, [el("tr", {}, [
+        el("th", { class: "settings-visibility", scope: "col" }, ["Show"]),
         el("th", {}, ["Name"]), el("th", {}, ["Path"]), el("th", {}, ["ID"]), el("th", {}, [""]), el("th", {}, [""])
       ])]),
       tbody
     ]));
+    if (focused) {
+      var replacement = $("settings-visible-" + focused);
+      if (replacement) replacement.focus();
+    }
   }
 
   // ============================================================
@@ -14675,8 +14755,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       ? story.priority
       : (defaults.priority || "low");
 
-    // SH-439: one option per project in `state.repos`, in the same order
-    // the header's own project selector uses. Disabled only for a project
+    // SH-439: visible projects plus the pinned target, in catalog order.
+    // Disabled only for a project
     // that ISN'T the target already selected here and can't be written to
     // (`!r.available` -- no checkout, or unreadable, `src/api/rest.rs`'s
     // `repos_json` doc names both) -- the selected target's own option is
@@ -14688,6 +14768,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     clear($("create-project"));
     state.repos.forEach(function(r) {
       var isTarget = r.id === createTargetProject;
+      if (r.visible === false && !isTarget) return;
       $("create-project").appendChild(el("option", {
         value: r.id,
         disabled: !isTarget && !r.available
@@ -15254,7 +15335,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       });
   }
 
-  /** Populates the dashboard-wide Drafts surface from `state.repos` (SH-442).
+  /** Populates the dashboard-wide Drafts surface from visible projects (SH-442).
    * Clearing precedes every branch so an open popover can never retain stale,
    * clickable rows while a catalog refresh moves through loading or failure.
    * Known rows remain useful during a partial per-project error, but neither
@@ -16112,7 +16193,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       }
       var saved = state.rememberedRepoId;
       var match = saved && state.repos.filter(function(r) { return r.id === saved; })[0];
-      if (match && canOpen(match)) {
+      if (match && match.visible !== false && canOpen(match)) {
         selectRepo(match.id);
       } else {
         goHome();
