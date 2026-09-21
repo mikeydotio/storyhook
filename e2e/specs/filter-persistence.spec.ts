@@ -19,9 +19,9 @@ import { openFilters, openProject, seedToken } from "./support";
  *     ever in a state that doesn't exist for them.
  *   - "Beta Project" (prefix BB) — one story: "Draft the release notes".
  *
- * `text`/`priorities`/`showClosed`/`sort` are project-agnostic and carry
- * over unvalidated; `assignees`/`types`/`states` are per-repo vocabulary
- * and get pruned once the next project's own vocabulary is known.
+ * `text`/`priorities`/`sort` are project-agnostic and carry over unvalidated;
+ * `assignees`/`types`/`states` are per-repo vocabulary and get pruned once the
+ * next project's own vocabulary is known.
  */
 
 test.beforeEach(async ({ page }) => {

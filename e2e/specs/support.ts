@@ -383,7 +383,7 @@ async function resetFixtureTokenPreferences(request: APIRequestContext): Promise
     data: {
       filter: {
         text: "", priorities: [], assignees: [], types: [], states: [],
-        showClosed: true, showEpics: false,
+        showEpics: false,
       },
       sort: { col: "updated", dir: -1 },
       columnSort: {},

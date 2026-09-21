@@ -643,7 +643,7 @@ impl TokenRegistry {
 
 fn preference_defaults() -> serde_json::Value {
     serde_json::json!({
-        "filter": {"text":"", "priorities":[], "assignees":[], "types":[], "states":[], "showClosed":true, "showEpics":false},
+        "filter": {"text":"", "priorities":[], "assignees":[], "types":[], "states":[], "showEpics":false},
         "sort": {"col":"updated", "dir":-1},
         "columnSort": {}, "hiddenColumns": [], "view":"board",
         "showArchived":false, "hideEmptyColumns":false, "keepNotices":false,
@@ -659,7 +659,16 @@ fn effective_preferences(saved: &serde_json::Map<String, serde_json::Value>) -> 
     let fields = result.as_object_mut().expect("defaults are an object");
     for (key, value) in saved {
         if fields.contains_key(key) {
-            fields.insert(key.clone(), value.clone());
+            let mut value = value.clone();
+            if key == "filter" {
+                // SH-750: old named tokens and browser tabs can still send
+                // the retired bit. It cannot remain effective after the UI
+                // loses the only control that could change it.
+                if let Some(filter) = value.as_object_mut() {
+                    filter.remove("showClosed");
+                }
+            }
+            fields.insert(key.clone(), value);
         }
     }
     result
@@ -715,14 +724,16 @@ fn valid_preference_field(key: &str, value: &serde_json::Value) -> bool {
                 })
         }),
         "filter" => value.as_object().is_some_and(|map| {
-            map.len() == 7
+            let legacy_show_closed = map.get("showClosed");
+            map.len() == if legacy_show_closed.is_some() { 7 } else { 6 }
                 && map.get("text").is_some_and(|v| short_string(v, 2048))
                 && ["priorities", "assignees", "types", "states"]
                     .iter()
                     .all(|key| map.get(*key).is_some_and(string_array))
-                && ["showClosed", "showEpics"]
-                    .iter()
-                    .all(|key| map.get(*key).is_some_and(serde_json::Value::is_boolean))
+                && map
+                    .get("showEpics")
+                    .is_some_and(serde_json::Value::is_boolean)
+                && legacy_show_closed.is_none_or(serde_json::Value::is_boolean)
         }),
         "drawerSections" => value.as_object().is_some_and(|map| {
             map.len() == 3
@@ -1633,6 +1644,65 @@ mod tests {
             .unwrap();
         assert_eq!(saved["view"], "list");
         assert_eq!(saved["showArchived"], true);
+    }
+
+    #[test]
+    fn filter_preferences_omit_show_closed_but_accept_its_legacy_shape() {
+        let registry = registry_at(epoch());
+        let token = registry
+            .mint("one".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap()
+            .secret;
+        let current = serde_json::json!({
+            "text": "",
+            "priorities": [],
+            "assignees": [],
+            "types": [],
+            "states": [],
+            "showEpics": false
+        });
+
+        let defaults = registry
+            .preferences(&token, epoch(), Instant::now())
+            .unwrap();
+        assert_eq!(defaults["filter"], current);
+        assert!(defaults["filter"].get("showClosed").is_none());
+
+        let saved = registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"filter": current}).as_object().unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(saved["filter"], current);
+
+        let legacy = serde_json::json!({
+            "text": "",
+            "priorities": [],
+            "assignees": [],
+            "types": [],
+            "states": [],
+            "showClosed": false,
+            "showEpics": false
+        });
+        let normalized = registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"filter": legacy}).as_object().unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(normalized["filter"], current);
+        assert!(normalized["filter"].get("showClosed").is_none());
+        assert_eq!(
+            registry
+                .preferences(&token, epoch(), Instant::now())
+                .unwrap()["filter"],
+            current
+        );
     }
 
     #[test]

@@ -1303,6 +1303,14 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // hidden from the board by default. Epic-ness is the TYPE, and progress
     // stays a fact about children rather than a role -- so the filter reads the
     // type and this assertion follows it.
+    //
+    // SH-750: dropped visibility has no second, conflicting toggle. The State
+    // filter applies to Board and List, while Columns owns board-column
+    // visibility. Keep the removed control and its private filter bit from
+    // returning under a different rendering path.
+    assert!(!body.contains("Show dropped"));
+    assert!(!body.contains("toggle-closed"));
+    assert!(!body.contains("showClosed"));
     assert!(body.contains(r#"id="toggle-epics"> Show epics"#));
     assert!(body.contains("showEpics: false"));
     assert!(body.contains(r#"if (!f.showEpics && st.story_type === "epic") return false;"#));
