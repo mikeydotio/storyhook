@@ -548,7 +548,7 @@ test("hovering a fading notice holds its clock, and leaving resumes it", async (
     // WCAG conformance story — this comment used to claim it was, in the same
     // words `scheduleAutoDismiss` used, and both were wrong (SH-322). SC 2.2.1
     // offers Turn off, Adjust and Extend; pause is SC 2.2.2's vocabulary and
-    // appears nowhere in 2.2.1's. The turn-off is `storyhook.keepNotices`,
+    // appears nowhere in 2.2.1's. The turn-off is the token's `keepNotices` preference,
     // pinned below. Held for thirty seconds — ten times the lifetime — the
     // notice must still be there. The wall-clock version could afford 5.5s.
     await toast.hover();
@@ -662,7 +662,7 @@ test("a fading notice still clears under prefers-reduced-motion, without animati
 // the dead listener fire would have left the second, larger claim standing.
 //
 // So the listeners are deleted rather than revived, and the criterion is met by
-// its own first clause: `storyhook.keepNotices`, a persisted preference on the
+// its own first clause: `keepNotices`, a token-scoped persisted preference on the
 // Settings screen that removes the clock entirely rather than lengthening it,
 // set before any notice is encountered. It defaults OFF — the criterion
 // constrains the mechanism's availability in advance, not its default state,
@@ -850,13 +850,11 @@ test("the choice survives a reload, which is what 'before encountering it' means
   await page.reload();
   await page.locator("#settings-btn").click();
   await expect(page.locator("#toggle-keep-notices")).toBeChecked();
-  // Pinned by name: the storage key is the part a refactor can rename in
-  // silence, and a user's answer to "stop taking my notices away" surviving
-  // exactly one page load would be a session toggle wearing a conformance
-  // claim.
-  expect(
-    await page.evaluate(() => localStorage.getItem("storyhook.keepNotices")),
-  ).toBe("true");
+  const saved = await page.context().request.get(new URL("/api/preferences", page.url()).toString(), {
+    headers: { "X-Storyhook": "1" },
+  });
+  expect(saved.ok()).toBe(true);
+  expect(await saved.json()).toMatchObject({ keepNotices: true });
   await page.locator("#home-btn").click();
 
   // And it still governs a notice afterwards, not merely the checkbox.
@@ -884,9 +882,11 @@ test("the preference is off until the user turns it on", async ({ page }) => {
   // property rather than left to the five tests above to imply: the mechanism
   // must EXIST in advance, not be pre-engaged. Defaulting it on would make
   // every notice permanent for everyone.
-  expect(
-    await page.evaluate(() => localStorage.getItem("storyhook.keepNotices")),
-  ).toBeNull();
+  const defaults = await page.context().request.get(new URL("/api/preferences", page.url()).toString(), {
+    headers: { "X-Storyhook": "1" },
+  });
+  expect(defaults.ok()).toBe(true);
+  expect(await defaults.json()).toMatchObject({ keepNotices: false });
 
   const title = "SH-322 — untouched, the clock still runs";
   const id = await openFreshStory(page, title);

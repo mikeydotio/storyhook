@@ -1280,6 +1280,10 @@ test("the mobile filter sheet is modal without moving the story region", async (
   await expect(done).toBeFocused();
 
   await page.locator("#fdd-states .fdd-btn").click();
+  const stateOptions = page.locator("#fdd-states input[type=checkbox]");
+  for (let index = 0; index < await stateOptions.count(); index += 1) {
+    await stateOptions.nth(index).uncheck();
+  }
   await page
     .locator("#fdd-states .fdd-option", { hasText: "review" })
     .locator("input")

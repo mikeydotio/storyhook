@@ -375,7 +375,11 @@ let activeTestToken: string | null = null;
 
 async function resetFixtureTokenPreferences(request: APIRequestContext): Promise<void> {
   // Some auth specs paste the original suite token into the token modal.
-  const response = await request.patch("/api/preferences", {
+  // Browser-only hostname mappings do not apply to Node's APIRequestContext.
+  // Fixture administration always uses the runner's local daemon socket.
+  const endpoint = new URL("/api/preferences", requiredEnv("DASHBOARD_URL"));
+  endpoint.hostname = "127.0.0.1";
+  const response = await request.patch(endpoint.toString(), {
     headers: {
       "X-Storyhook": "1",
       "X-Storyhook-Token": requiredEnv("DASHBOARD_NAMED_TOKEN"),
