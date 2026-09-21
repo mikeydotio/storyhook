@@ -718,7 +718,7 @@ continues to preserve work.
 
 As built (SH-484), both are `story.sh` verbs — `story.sh unclaim <id>` and
 `story.sh reset <id> [--force]` — because the window and the worktree are tmux
-and git mechanics, which is also why neither is reachable over MCP. Two details
+and git mechanics. Two details
 of the plugin half bear on the engine. First, `story.sh unclaim` refuses when
 the story is not in the active-role state (`unclaim-conflict`) and leaves the
 window alone, so a lane whose story somebody else has already moved is reported

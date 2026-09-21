@@ -38,7 +38,7 @@ pub const UNRESOLVED_REFUSAL: &str = "internal: `story claim` reached the store 
 /// The sentence a claim posts when the caller named no text of their own.
 ///
 /// `window` is the caller's `session:window`, absent when the claiming
-/// process is not inside tmux — a script, an MCP caller, the Full Auto
+/// process is not inside tmux — a script, the Full Auto
 /// engine's own claims. There the tmux clause is **omitted entirely** rather
 /// than completed dishonestly: never an empty window name, never a
 /// placeholder, never a fabricated session (user determination, 2026-08-25).

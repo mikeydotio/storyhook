@@ -1,8 +1,7 @@
-/// Tests verifying that MCP functionality has been completely removed.
+/// Tests for MCP retirement and CLI migration guidance.
 ///
-/// These tests assert the negative — that MCP-related commands, flags,
-/// help topics, and scaffold output references are all gone. They exist
-/// to catch regressions if someone accidentally re-introduces MCP paths.
+/// Protocol execution, old flags, and registration stay removed. The retired
+/// command and its help explain CLI migration. Scaffolds stay CLI-only.
 use assert_cmd::Command;
 use predicates::prelude::*;
 use storyhook_test_support::{TestEnv, scratch_dir};
@@ -304,4 +303,90 @@ fn no_mcp_source_files_exist() {
         !manifest_dir.join("src/mcp_install.rs").exists(),
         "src/mcp_install.rs must not exist after MCP removal"
     );
+}
+
+/// Retired protocol callers must fail before reading input or opening a store.
+#[test]
+fn retired_mcp_refuses_plain_and_json_without_starting_a_daemon() {
+    for json in [false, true] {
+        let env = TestEnv::isolated();
+        let dir = scratch_dir();
+        let mut command = env.story(dir.path());
+        command.arg("mcp");
+        if json {
+            command.arg("--json");
+        }
+        let output = command
+            .write_stdin("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n")
+            .timeout(std::time::Duration::from_secs(5))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let diagnostic = if json {
+            assert!(output.stderr.is_empty());
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["result"], "error");
+            assert_eq!(value["exit_code"], 2);
+            assert!(value.get("jsonrpc").is_none());
+            value["error"].as_str().unwrap().to_owned()
+        } else {
+            assert!(output.stdout.is_empty());
+            String::from_utf8(output.stderr).unwrap()
+        };
+        assert!(diagnostic.contains("retired"), "{diagnostic}");
+        assert!(diagnostic.contains("--json"), "{diagnostic}");
+        assert!(
+            diagnostic.contains("story help json-format"),
+            "{diagnostic}"
+        );
+        assert!(
+            !env.store_path().exists(),
+            "retirement must not open a store"
+        );
+        assert!(!env.environment().daemon_state_dir().exists());
+    }
+}
+
+#[test]
+fn retired_mcp_help_explains_migration() {
+    let dir = scratch_dir();
+    for args in [["mcp", "--help"], ["help", "mcp"]] {
+        story(dir.path())
+            .args(args)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("retired"))
+            .stdout(predicate::str::contains("story help json-format"));
+    }
+}
+
+#[test]
+fn retired_mcp_has_no_server_module_or_plugin_registration() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(!root.join("src/mcp").exists());
+    let plugin: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("plugins/story/.claude-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(plugin.get("mcpServers").is_none());
+}
+
+/// Keep stdin open: a retired server must not wait for a request or EOF.
+#[test]
+fn retired_mcp_exits_while_protocol_input_remains_open() {
+    use std::process::Stdio;
+    use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE};
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let mut command = env.raw_story(dir.path());
+    command.arg("mcp");
+    let mut child = ChildGuard::spawn_with_output(command.stdin(Stdio::piped())).unwrap();
+    let input = child.take_stdin().unwrap();
+    let status = child.wait_within(STORY_COMMAND_DEADLINE, || {
+        "retired MCP waited for stdin".into()
+    });
+    assert_eq!(status.code(), Some(2));
+    drop(input);
+    assert!(!env.store_path().exists());
+    assert!(!env.environment().daemon_state_dir().exists());
 }

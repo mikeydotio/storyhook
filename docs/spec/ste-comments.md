@@ -34,7 +34,7 @@ No new flags, caller exemptions, configuration, or database migration are needed
 
 ## Validation
 
-Test exact text storage through services, CLI, REST, and MCP.
+Test exact text storage through services, CLI, and REST.
 Cover all caller types, compound writes, batches, and approved plans.
 Assert no STE advice appears and unrelated warnings and validation remain active.
 Retain historical restoration, literal evidence, and legacy wire compatibility tests.

@@ -1434,66 +1434,22 @@ Related:
 
         m.insert(
             "mcp",
-            r#"story mcp
+            r#"The MCP server is retired.
 
-Run a Model Context Protocol server on stdin/stdout, exposing a curated set
-of storyhook operations as MCP tools to an AI agent host — the same door
-every other client uses (the daemon's /api/v1/invoke), so a tool call is
-exactly as safe, and exactly as visible in a story's write history, as the
-equivalent typed command.
+Use CLI commands with --json. Remove the storyhook MCP server entry from
+local agent-host configuration. The plugin no longer registers a server.
+The retired command exits 2 without reading stdin or starting a daemon.
 
-When to use:
-  Configure it as an MCP server in an agent host that speaks the protocol
-  (see plugins/story/.claude-plugin/plugin.json's "mcpServers" entry
-  for Claude Code's own configuration). Not something you run by hand at a
-  shell for its own output — it speaks newline-delimited JSON-RPC, not
-  human-readable text.
+Name the project explicitly when the host has no repository working directory:
+  story --project <slug> list --json
+  story --project <slug> claim --next --json
+  story --project <slug> load-context --story <id> --format json
 
-Every tool call names its own project — this server infers nothing from a
-working directory, because a stdio session run by an agent host has none of
-its own that a person chose. An optional 'actor' argument on a writing tool
-records who made the change, the same way $STORYHOOK_ACTOR does for the CLI.
-
-Tools:
-  story_list        List open stories with filters
-  story_next        The highest-priority ready story or stories
-  story_claim       Take a story to work on, atomically
-  story_unclaim     Hand a claimed story back
-  story_show        Full details for one story
-  story_search      Full-text search
-  story_summary     Counts by state and priority
-  story_new         Create a story
-  story_move        Transition a story's state
-  story_comment     Add a comment
-  story_assign      Assign to a team member
-  story_prioritize  Set priority
-  story_label       Add labels
-  story_relate      Add a relationship between two stories
-  story_block       Mark blocked, with a reason
-  story_unblock     Clear blocked status
-  story_set         Update multiple fields at once
-  story_context     A session-start context document
-
-What is not here:
-  This is a curated slice of the CLI's full surface, not a 1:1 mirror of it
-  — verbs like 'story decompose', 'story pr-check', and anything
-  destructive enough to ask a human to confirm (like 'story delete') are not
-  exposed as tools. Use the CLI directly for those.
-
-A claim over MCP posts no comment unless you pass one. The 'story claim'
-command composes a default sentence naming the caller's host and tmux window;
-this server is long-lived and started by an agent host, so its own host and
-terminal describe whoever launched it, not whoever is calling. An unclaim's
-default sentence is composed in the store, so it needs no such caution and is
-posted as usual. Neither tool exposes --dry-run.
-
-Related:
-  story help claim  — the verb story_claim and story_unclaim drive
-  story help priority-rubric — what story_new's and story_prioritize's
-                               level argument means
-  story help --compact — a CLI reference for a host without MCP support
-  story load-context    — what story_context's underlying command answers
-  docs/spec/mcp-server.md — the design of record
+story next only reads the queue. story claim takes work atomically.
+For commands and response contracts, read:
+  story help agent-guide
+  story help --compact
+  story help json-format
 "#,
         );
 
@@ -1613,296 +1569,8 @@ Related:
 "#,
         );
 
-        m.insert(
-            "json-format",
-            r#"JSON Output Format Reference
-
-All storyhook CLI commands support structured JSON output via the global
---json flag. This document describes the envelope format, per-command
-response shapes, error format, and exit codes.
-
-== Global --json flag ==
-
-Pass --json as a global option (before or after the subcommand) to get
-machine-readable JSON instead of human-readable text:
-
-  story list --json
-  story show SH-1 --json
-  story summary --json
-
-The flag applies to every command. When --json is active, all output
-(success and error) is valid JSON printed to stdout.
-
-== JSON Envelope ==
-
-Every successful response is wrapped in a standard envelope:
-
-  {
-    "result": "ok",
-    <data fields depending on command>,
-    "warnings": ["..."],          // omitted when empty
-    "flagged_reasons": ["..."]    // omitted when empty
-  }
-
-The "result" field is always "ok" for success. Data fields vary by
-command (see below). The "warnings" and "flagged_reasons" arrays are
-present only when non-empty.
-
-== Per-Command Response Shapes ==
-
-Commands returning a single story ("story" field):
-  story new <title>                -> "story": StoryView
-  story show <id>                  -> "story": StoryView
-  story comment <id> "<text>"      -> "story": StoryView
-  story assign <id> <member>       -> "story": StoryView
-  story move <id> <state>          -> "story": StoryView
-  story block <id> "<reason>"      -> "story": StoryView
-  story unblock <id>               -> "story": StoryView
-  story prioritize <id> <level>    -> "story": StoryView
-  story label <id> <csv>           -> "story": StoryView
-  story reopen <id>                -> "story": StoryView
-  story relate <a> <rel> <b>       -> "story": StoryView (of story a)
-  story set <id> --field value     -> "story": StoryView
-  story next                       -> "story": StoryView (single result)
-  story claim <id> | --next        -> "story": StoryView, plus "claimed_from"
-
-  StoryView object:
-    {
-      "story": {
-        "id": "SH-1",
-        "title": "Implement auth",
-        "state": "todo",
-        "superstate": "open",
-        "priority": "high",
-        "assignee": "alice",
-        "labels": ["backend"],
-        "awaiting": null,
-        "relationships": [
-          {"relation": "blocked-by", "other_id": "SH-2"}
-        ],
-        "comments": [
-          {"at": "2025-01-15T10:00:00Z", "text": "Started work"}
-        ],
-        "created_at": "2025-01-15T09:00:00Z",
-        "updated_at": "2025-01-15T10:00:00Z",
-        "closed_at": null
-      },
-      "derived_relationships": [],
-      "referenced_by": {
-        "commits": [
-          {"at": "2025-01-15T10:30:00Z", "sha": "abc123...", "subject": "feat: closes SH-1"}
-        ],
-        "prs": [],
-        "comment_mentions": [
-          {"at": "2025-01-16T09:00:00Z", "other_id": "SH-7", "snippet": "superseded by SH-1"}
-        ]
-      },
-      "warnings": [],
-      "flagged_reasons": [],
-      "stale_info": null
-    }
-
-  "referenced_by" is omitted entirely when all three lists are empty, and
-  each list is omitted when it alone is. "commits" comes from `commit-sync`
-  scanning git history; "prs" from `story link-pr`; "comment_mentions" from
-  scanning every *other* story's comments for this story's id (SH-220) —
-  "other_id" is the story that did the mentioning, and "snippet" is the
-  matched line of its comment, capped at 120 bytes. None of the three ever
-  appears in "comments" (SH-169).
-
-  "prs" and "comment_mentions" are cross-story work, so they arrive on
-  `story show` and are absent from `story list`, `story next` and `story
-  search` — the same gate "derived_relationships" and "progress" are behind.
-
-Commands returning a story list ("stories" field):
-  story list [filters]        -> "stories": [StoryView, ...]
-  story search <query>        -> "stories": [StoryView, ...]
-  story next --count <n>      -> "stories": [StoryView, ...]
-  story import [file]          -> "stories": [StoryView, ...]
-  story decompose <file>       -> "stories": [StoryView, ...]
-
-  story list also carries "message" whenever its default visibility filter
-  (or an explicit --state naming a closed slug) changed what's in "stories"
-  — e.g. "3 closed stories match but are not shown — add --include-closed
-  or --all". Omitted when there is nothing to say.
-
-Commands returning a summary ("summary" field):
-  story summary               -> "summary": SummaryView
-  story report                -> "summary": SummaryView
-
-  SummaryView object:
-    {
-      "total_open": 5,
-      "total_closed": 3,
-      "by_state": [["todo", 3], ["in-progress", 2]],
-      "by_priority": [["high", 2], ["medium", 1]],
-      "blocked_count": 1,
-      "flagged_count": 0,
-      "ready_count": 4,
-      "ready_stories": [StoryView, ...]
-    }
-
-Commands returning a graph ("graph" field):
-  story graph                 -> "graph": GraphView
-  story graph --critical-path -> "graph": GraphView
-  story graph --blocked-by <id> -> "graph": GraphView
-  story graph --parallel-groups -> "graph": GraphView
-
-  GraphView object:
-    {
-      "critical_path": ["SH-1", "SH-3", "SH-5"],
-      "blocked_chain": {"source": "SH-2", "blocked": ["SH-4"]},
-      "parallel_groups": [["SH-1", "SH-2"], ["SH-3"]],
-      "overview": {
-        "total_open": 5,
-        "total_edges": 3,
-        "roots": ["SH-1"],
-        "leaves": ["SH-5"]
-      }
-    }
-
-  Fields are present only for the requested mode. For example,
-  --critical-path only populates "critical_path"; other fields are null.
-
-Commands returning issues ("issues" field):
-  story doctor (healthy)      -> "findings": [], "advice": [...]
-                                 "issues" is the deprecated spelling of
-                                 "advice" and holds the same list.
-
-Commands returning a message ("message" field):
-  story project new           -> "message": "created story project..."
-  story member add            -> "message": "added member alice"
-  story state add/remove      -> "message": "added state in-progress (open)"
-  story import-project        -> "message": "imported project with N stories"
-  story context (markdown, the default) -> "message": "<markdown string>"
-  story handoff               -> "message": "<markdown string>"
-  story report --html         -> "message": "<html string>"
-  story scaffold              -> "message": "<template content>"
-  story hooks install/...     -> "message": "<status text>", "warnings": [...]
-  story commit-sync            -> "message": "scanned N commits..."
-  story next (no results)     -> "message": "no ready stories"
-  story help <topic>          -> "message": "<help text>"
-
-Commands that print their own JSON directly, with NO envelope around
-it, regardless of the global --json flag:
-  story export                     the whole export document
-  story context --format json      the whole context document (SH-66)
-
-== Error Format ==
-
-Errors produce:
-
-  {
-    "result": "error",
-    "error": "story `SH-99` not found",
-    "exit_code": 3
-  }
-
-`story doctor` on a damaged project fails like any other command -- exit 5,
-"result": "error" -- and carries its report as data beside the prose:
-
-  {
-    "result": "error",
-    "error": "SH-1: missing inverse relation `blocked-by` on story `SH-2`",
-    "exit_code": 5,
-    "findings": [
-      {
-        "code": "missing_inverse_relation",
-        "subject": "SH-1",
-        "remedy": "SH-2",
-        "message": "SH-1: missing inverse relation `blocked-by` on story `SH-2`"
-      }
-    ],
-    "advice": []
-  }
-
-  "code"     which check found it, as a stable snake_case slug
-  "subject"  the story it concerns; absent for a project-wide finding
-  "remedy"   the story a repair has to be written to, when that differs
-             from "subject" -- `story reopen` it first if it is closed
-  "message"  the exact line the plain-text report prints
-  "data"     what the check held beyond the sentence, keyed by shape. A
-             read-model divergence carries
-             .data.divergence.{field,persisted,rebuilt}
-
-"error" is exactly the findings' own messages joined, then "advice" -- so a
-caller reading it sees what it always saw, and one wanting the parts reads
-them instead of parsing that string.
-
-== Exit Codes ==
-
-  0  Success
-  2  Usage error or validation error (bad arguments, invalid input)
-  3  Not found (story ID does not exist)
-  4  Lock timeout (another process holds the project lock)
-  5  Integrity or storage error (corrupt data, I/O failure)
-
-== Examples ==
-
-Show a story:
-
-  $ story show SH-1 --json
-  {
-    "result": "ok",
-    "story": {
-      "story": {
-        "id": "SH-1",
-        "title": "Add login page",
-        "state": "todo",
-        "superstate": "open",
-        "priority": "high",
-        "assignee": null,
-        "labels": [],
-        "awaiting": null,
-        "relationships": [],
-        "comments": [],
-        "created_at": "2025-01-15T09:00:00Z",
-        "updated_at": "2025-01-15T09:00:00Z",
-        "closed_at": null
-      },
-      "derived_relationships": [],
-      "warnings": [],
-      "flagged_reasons": []
-    }
-  }
-
-List stories:
-
-  $ story list --ready --json
-  {
-    "result": "ok",
-    "stories": [
-      {
-        "story": {
-          "id": "SH-1",
-          "title": "Add login page",
-          "state": "todo",
-          "superstate": "open",
-          "priority": "high",
-          "assignee": null,
-          "labels": [],
-          ...
-        },
-        ...
-      }
-    ]
-  }
-
-Error:
-
-  $ story show SH-999 --json
-  {
-    "result": "error",
-    "error": "story `SH-999` not found",
-    "exit_code": 3
-  }
-
-Related:
-  story help priority-rubric — what the "priority" field's four
-                               values mean, for a caller choosing
-                               one rather than reading one
-"#,
-        );
+        m.insert("json-format", include_str!("help/json-format.txt"));
+        m.insert("agent-guide", include_str!("help/agent-guide.txt"));
 
         m.insert(
             "show",
@@ -3640,16 +3308,16 @@ PROJECT MANAGEMENT
   story tui                       Interactive terminal UI
 
 GLOBAL FLAGS
-  --json          Machine-readable JSON output (works with every command)
+  --json          Structured output; see story help json-format
   --quiet         Suppress non-essential output
   --no-hooks      Skip event hooks for this invocation
 
 WORKFLOW TIPS
-  Start a session:   story load-context → story next → story move <id> in-progress
+  Start a session:   story load-context → story claim --next → story show <id>
   End a session:     story commit-sync → story handoff
   Explore backlog:   story list --ready   or   story summary
 
-Run 'story help <command>' for detail, or 'story help --all' for everything.
+Read 'story help agent-guide' first; 'story help <command>' for detail.
 "#
 }
 

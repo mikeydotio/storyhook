@@ -25,7 +25,7 @@ whatever was already typed.
 `title`, `state`, `type`, `description`, `priority`, `labels`, `draft` from its
 body and dispatches `Invocation::New` against `ctx`, which the route table already
 resolved from `{id}` before the handler runs (`Route::Project`, `src/api/rest.rs`).
-This mirrors the CLI/MCP door's own architecture: `Invocation::New` (`src/cli.rs`)
+This mirrors the CLI door's own architecture: `Invocation::New` (`src/cli.rs`)
 carries no project field on any variant — the project rides beside the invocation,
 on the wire envelope's `project: Option<ProjectSelector>` (`src/api/wire.rs`), and
 `route_create_story` never touches that envelope at all, since browser requests are

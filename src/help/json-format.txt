@@ -1,0 +1,140 @@
+JSON Output Format Reference
+
+Use --json before or after the command, before any -- text terminator:
+  story list --json
+  story show SH-1 --json
+  story summary --json
+
+Most commands use the standard envelope below. Some commands emit raw
+JSON, JSON Lines, terminal output, or delegated output; see Exceptions.
+Do not parse human-readable output as a stable machine interface.
+
+== Standard envelope ==
+
+A successful command returns "result": "ok" plus its data fields.
+For example, an empty list returns:
+  {"result": "ok", "stories": []}
+
+Single-story commands return "story": StoryView. The snapshot is nested:
+  .story.story.id           Canonical ID, such as SH-1
+  .story.story.state        Configured state slug, such as todo
+  .story.story.superstate   OPEN or CLOSED
+  .story.story.comments     Stored discussion, when present
+  .story.head_global_seq    Snapshot sequence, when present
+
+List results carry StoryView objects at .stories[], so their IDs are at
+.stories[].story.id. Optional fields can be absent. Empty labels,
+relationships, warnings, and reference lists can be omitted. Do not require
+null or [] for absent optional data. Accept additional response fields.
+
+StoryView can include "derived_relationships", "referenced_by", "warnings",
+"flagged_reasons", "stale_info", "progress", and operational diagnostics.
+"referenced_by" contains commits, prs, and comment_mentions only when present.
+The show command includes cross-story references that list and next omit.
+Warnings can also appear at the envelope level. Read them before acting.
+
+== Common response shapes ==
+
+  new, show, comment, assign, move, block, unblock, prioritize, label,
+  unlabel, reopen, relate, unrelate, set
+    "story": StoryView
+  claim
+    "story": StoryView, "claimed_from": the prior state
+  unclaim
+    "story": StoryView, "unclaimed_from": the active state;
+    "restore_fallback" is present only when restoration needed a substitute
+  list, search, import, decompose
+    "stories": [StoryView, ...]
+  next (default count, or --count 1) with a result
+    "story": StoryView
+  next --count <n> with n > 1 and at least one result
+    "stories": [StoryView, ...]
+  next or claim --next with no ready work
+    "message": "no ready stories"; no "story" field; exit 0
+  summary, report
+    "summary": SummaryView (counts, ready stories, grouped state/priority/type)
+  graph
+    "graph": GraphView; unrequested modes are omitted, not null
+  doctor on a healthy project
+    "findings": [], "advice": [...], "issues": [...]
+    "issues" is a deprecated alias of "advice"
+  project show
+    "project": ProjectView
+  project settings list
+    "settings": [...]
+  phase list
+    "phases": [...]
+  help, scaffold, handoff, load-context in markdown mode, report --html
+    "message": a string (help, markdown, or HTML)
+
+A list can carry "message" describing stories hidden by its visibility
+filter. "stories": [] is not proof that a project has no closed or archived
+stories. Read story help list for --include-closed and --all.
+
+== Exceptions ==
+
+These commands emit their own JSON documents, without the standard wrapper,
+even without --json:
+  export                         The project export document
+  load-context --format json     The context document
+  session-start                  The agent-host hook document
+  continuation, session-eligibility
+                                 Protocol-specific result objects
+Some verifier and resource operations also carry their own protocol objects.
+Read the relevant command's help; do not assume a uniform data field.
+
+story daemon logs --json emits JSON Lines: one JSON record per line.
+--follow keeps that stream open. It is not a single response document.
+
+story plugin run forwards the packaged helper's stdout, stderr, and exit
+status. It does not wrap the helper's contract in the standard CLI envelope.
+The early internal github protocol also owns its response contract.
+
+story tui is interactive terminal output, not a JSON interface. A bare
+story project new prompts at a terminal; --json requires explicit arguments.
+Commands that require confirmation refuse without a terminal or with --json
+unless their documented explicit confirmation flag is supplied.
+
+--quiet suppresses standard success output even with --json. Raw JSON
+responses and errors remain visible. Avoid --quiet when reading a response.
+The output rules in a command's own help take precedence over this overview.
+
+== Errors and conflicts ==
+
+Standard errors with --json go to stdout; stderr is empty:
+  {"result": "error", "error": "story `SH-99` not found", "exit_code": 3}
+Plain errors go to stderr. The process exit status remains nonzero in both
+modes. Match exit codes and structured fields, not the wording of "error".
+
+A guarded write or claim conflict has a distinct result:
+  {"result": "conflict", "error": "state conflict: expected `todo`, was `in-progress`",
+   "exit_code": 9, "expected": "todo", "actual": "in-progress"}
+Read the current story before deciding what to do. Do not turn a guarded
+write into an unconditional retry.
+
+Integrity failures use exit 5 and can include "findings" and "advice".
+Each finding has a stable "code" and "message"; optional "subject", "remedy",
+and "data" give context. Use these fields instead of parsing the prose.
+
+== Exit codes ==
+
+  0   Success (can include no results or no change)
+  2   Usage or validation error
+  3   Not found
+  4   Lock timeout
+  5   Integrity or storage error
+  6   GitHub authentication error
+  7   GitHub API error
+  9   State conflict
+  11  Read-only store
+  12  Client deadline expired; the daemon may still complete the command
+
+Codes 8 and 10 are retired and must not be reused. Interactive modes and
+external helpers can return their own process statuses, including 1.
+
+Exit 12 does not cancel the request. A transport error can also mean a lost
+reply after a successful write. Check story show or story list, including
+comments and current state, before retrying a mutation. Do not repeat a
+create, comment, or claim automatically when its outcome is uncertain.
+
+Related: story help agent-guide, story help list, story help claim

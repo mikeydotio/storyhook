@@ -31,9 +31,9 @@ empty successful review. The query does not write story events or judgments.
 
 `story help obviation-review` owns the procedure. All built-in dispatch modes,
 resumes, claim/context skills, session guidance, and scaffolds point to it.
-The MCP `story_context` tool accepts the same optional `story` argument through
-the CLI parser. Its description directs agents to review before implementation
-and on resume; the result embeds the same procedure for MCP-only clients.
+CLI agents use `story load-context --story <id>` before implementation and
+on resume. The result embeds the same procedure. The former MCP server is
+retired; its historical design is in `mcp-server.md`.
 Explicit custom prompt overrides retain their existing wholesale semantics.
 The SessionStart hook carries a short pointer, not the potentially large review.
 

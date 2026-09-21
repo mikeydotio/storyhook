@@ -386,6 +386,8 @@ Story ids:
   outright rather than resolved: `--project` decides which project you are in,
   and an id never overrides it.
 
+Agent workflow and output contracts: story help agent-guide; story help json-format
+
 Global options:
   --json          Emit structured JSON
   --quiet         Suppress success output
@@ -751,7 +753,7 @@ pub enum Invocation {
         id: String,
         /// `None` only when `on` is non-empty — `story block <id> --on
         /// <blocker>` needs no prose at all. Every other caller (REST, TUI,
-        /// MCP, and `story block <id> "<reason>"` with no `--on`) still sets
+        /// and `story block <id> "<reason>"` with no `--on`) still sets
         /// this and leaves `on` empty, unchanged from before SH-398.
         awaiting: Option<String>,
         /// Stories to record as `blocked-by` edges, atomically with
@@ -1807,11 +1809,8 @@ fn verb_help_request(args: &[String]) -> Option<Invocation> {
 /// exist, so a typo is reported as an unknown *command* rather than being
 /// answered with usage text or a complaint about one of its flags.
 fn verb_is_recognized(verb: &str) -> bool {
-    // `tui` and `mcp` are both dispatched in main.rs before parsing ever
-    // happens, so `dispatch` does not know either, but they are verbs like
-    // any other here.
+    // `tui` is dispatched in main.rs before ordinary invocation parsing.
     verb == "tui"
-        || verb == "mcp"
         || !matches!(
             dispatch(&[verb.to_string()]),
             Err(AppError::Usage(ref message)) if message.starts_with("unknown command")
@@ -2436,15 +2435,21 @@ fn reject_unknown_flags(args: &[String]) -> Result<(), AppError> {
 /// `story doctor "--typo …"` would be an example that does not work — worse
 /// than no example, because the reader would try it.
 fn unknown_flag_message(args: &[String], token: &str, declared: &[Flag]) -> String {
-    let path = args
-        .iter()
-        .take(2)
-        .take_while(|word| !is_flag_shaped(word))
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let verb = args[0].as_str();
+    // Only a declared subcommand belongs in the command path. Titles and IDs
+    // are user data, even when they occupy the same argv position.
+    let subcommand = args.get(1).filter(|word| {
+        VERB_FLAGS
+            .iter()
+            .any(|entry| entry.verb == verb && entry.subcommand == Some(word.as_str()))
+    });
+    let path = subcommand.map_or_else(|| verb.to_owned(), |sub| format!("{verb} {sub}"));
+    let help = match help_for_verb(verb) {
+        Invocation::HelpTopic { topic } => format!("story help {topic}"),
+        _ => "story --help".to_owned(),
+    };
     let known = if declared.is_empty() {
-        format!("`story {path}` takes no flags.")
+        format!("`story {path}` takes no command-specific flags.")
     } else {
         format!(
             "`story {path}` takes: {}",
@@ -2456,8 +2461,8 @@ fn unknown_flag_message(args: &[String], token: &str, declared: &[Flag]) -> Stri
         )
     };
     format!(
-        "unknown flag `{token}` for `story {path}`.\n\n{known}\nIf `{token}` was meant as text \
-         rather than a flag, quote it as one argument, or put it after a `--`."
+        "unknown flag `{token}` for `story {path}`.\n\n{known}\nRun `{help}` for usage and global options.\n\
+         If `{token}` is literal text, put it after `--`. Shell quotes alone do not escape a flag."
     )
 }
 
@@ -2514,6 +2519,12 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "-h" | "--help" => Ok(Invocation::Help),
         "-V" | "--version" => Ok(Invocation::Version),
         "help" => parse_help(args),
+        "mcp" => Err(AppError::Usage(
+            "`story mcp` is retired. Use CLI commands with --json instead. \
+             Remove the storyhook MCP server from your host configuration. \
+             Run `story help agent-guide` and `story help json-format` for migration guidance."
+                .into(),
+        )),
         "update" => parse_update(args),
         // Not left to fall through to `unknown command`. Five years of
         // documents, this repo's own plugin skill, and every agent that has
@@ -5401,7 +5412,7 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
 /// Sugar over [`Invocation::SetState`], not an invocation of its own. The state
 /// it moves to is a real one ([`crate::domain::DROPPED_STATE_SLUG`]) and the
 /// reason is a real comment, so this needs no new event kind, no new snapshot
-/// field, no dispatch arm, and no MCP or wire surface — `story move <id> dropped
+/// field, no dispatch arm, and no additional wire surface — `story move <id> dropped
 /// "<reason>"` does exactly the same thing and is the same story afterwards.
 ///
 /// What the sugar adds is the requirement: `move` takes an optional comment,
