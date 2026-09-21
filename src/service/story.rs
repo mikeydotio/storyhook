@@ -1598,7 +1598,7 @@ pub(super) fn assignable_priority(raw: &str) -> Result<Priority, AppError> {
 }
 
 /// The events `story new` writes, with every field validated first.
-fn creation_events(
+pub(super) fn creation_events(
     tx: &impl ReadOps,
     project: ProjectId,
     states: &[StateDef],

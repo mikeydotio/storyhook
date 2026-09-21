@@ -32,6 +32,9 @@ pub struct VerifierStatus {
     pub active: Option<ActiveVerification>,
     /// Latest durable acknowledgement and recovery request.
     pub recovery: VerificationRecovery,
+    /// Project fault work, independent of infrastructure admission control.
+    #[serde(default)]
+    pub project_recoveries: Vec<crate::service::project_recovery::RecoveryStatus>,
     /// Receipt of the command being answered; absent on ordinary status reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_receipt: Option<VerificationRecovery>,
@@ -174,6 +177,10 @@ pub(crate) fn snapshot(
             held_stories,
             active: active.cloned(),
             recovery,
+            project_recoveries: crate::service::project_recovery::status_snapshot(
+                tx,
+                ctx.project(),
+            )?,
             command_receipt: None,
             last_evidence_at,
             silence_seconds,
@@ -230,6 +237,16 @@ impl VerifierStatus {
                 self.silence_seconds
                     .map_or_else(|| "unknown".into(), |s| s.to_string())
             ));
+        }
+        for recovery in &self.project_recoveries {
+            text.push_str(&format!("Project recovery {}: {} at {}; {}\nAffected: {}; assessor {}; repair {}; completed attempts {}/{}\nNext: {}\nInspect: story verifier repair show {} --json\n",
+                recovery.id, recovery.fault, recovery.locus, recovery.phase,
+                recovery.affected_stories.join(", "), recovery.assessment_owner,
+                recovery.repair_story.as_deref().unwrap_or("undecided"), recovery.completed_attempts, recovery.attempt_limit,
+                recovery.next_action, recovery.id));
+            if let Some(link) = &recovery.repair_link {
+                text.push_str(&format!("Repair PR: {link}\n"));
+            }
         }
         let receipt = self.command_receipt.as_ref().unwrap_or(&self.recovery);
         if let Some(ack) = &receipt.acknowledgement {

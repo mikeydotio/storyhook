@@ -1,5 +1,8 @@
 //! SH-714: retry observability through the shipped verifier and real local Git.
 
+#[path = "verification_retry_shell/callback.rs"]
+mod callback;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -238,12 +241,13 @@ raise SystemExit(status)
             .unwrap();
     }
     let activity = VerificationActivity::new();
+    let callback = callback::Callback::start(&root, &f, activity.clone());
     // No control helper exists: RED tests real absent-agent parking, and
     // GREEN retains the production pending-cleanup result for an unleased row.
     let actuator = ShellVerificationActuator::with_paths_and_timing(
         f.env().clone(),
         root.join("absent-agent-helper"),
-        PathBuf::from(env!("CARGO_BIN_EXE_story")),
+        callback.executable.clone(),
         Duration::from_secs(60),
         Duration::from_secs(5),
         Duration::from_secs(5),
@@ -262,6 +266,25 @@ raise SystemExit(status)
         )
         .unwrap()
     };
+    let refused = Command::new(&callback.executable)
+        .args([
+            "--project",
+            "fixture",
+            "verifier",
+            "repair-admit",
+            "SH-1",
+            "foreign-owner",
+            "1",
+            &"a".repeat(40),
+            &"b".repeat(40),
+            &"c".repeat(40),
+            &"d".repeat(40),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stdout).contains("live uncancelled verifier owner"));
     assert_eq!(tick(), TickResult::RetryLater);
     let incident = f
         .store()
@@ -287,8 +310,11 @@ raise SystemExit(status)
         while !root.join("gate-ready").exists() {
             if running.is_finished() {
                 panic!(
-                    "retry finished before real gate readiness: {:?}",
-                    running.join().unwrap()
+                    "retry finished before real gate readiness: {:?}; incident: {:?}",
+                    running.join().unwrap(),
+                    f.store()
+                        .read(|tx| tx.verification_incident(f.project()))
+                        .unwrap()
                 );
             }
             assert!(
@@ -428,4 +454,5 @@ raise SystemExit(status)
         );
         assert_eq!(git(&checkout, &["rev-parse", "origin/main"]), base);
     }
+    assert!(callback.calls() >= 2, "real gate never requested admission");
 }

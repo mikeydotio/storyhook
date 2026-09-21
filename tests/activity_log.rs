@@ -4,6 +4,38 @@ use serde_json::Value;
 use storyhook_test_support::TestEnv;
 
 #[test]
+fn project_directory_logs_are_read_without_a_daemon_or_store_journal() {
+    let env = TestEnv::isolated();
+    let directory = env.home().join("project with spaces/.storyhook/logs");
+    std::fs::create_dir_all(&directory).unwrap();
+    let row = serde_json::json!({"at":"2026-09-20T00:00:00Z", "level":"INFO",
+        "source":"fixture", "stream":"stderr", "pid":1,
+        "context":"project=moshtail MT-1000 attempt=one", "message":"fixture output"});
+    std::fs::write(
+        directory.join(format!("{}.jsonl", chrono::Utc::now().format("%Y-%m-%d"))),
+        format!("{row}\n"),
+    )
+    .unwrap();
+    let output = env
+        .story(env.home())
+        .args(["daemon", "logs", "--directory"])
+        .arg(&directory)
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(serde_json::from_slice::<Value>(&output).unwrap(), row);
+    assert!(env.daemon().is_none());
+    env.story(env.home())
+        .args(["daemon", "logs", "--json"])
+        .assert()
+        .success()
+        .stdout("");
+}
+
+#[test]
 fn logs_are_readable_without_starting_a_daemon() {
     let env = TestEnv::isolated();
     env.story(env.home())
@@ -145,9 +177,8 @@ fn an_unwritable_activity_destination_does_not_prevent_story_work() {
 }
 
 #[test]
-fn daemon_start_opens_the_continuous_view_with_its_own_binary_and_store() {
+fn daemon_start_does_not_allocate_a_store_activity_window() {
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{Duration, Instant};
     let env = TestEnv::isolated();
     let bin = env.home().join("bin");
     std::fs::create_dir(&bin).unwrap();
@@ -155,17 +186,14 @@ fn daemon_start_opens_the_continuous_view_with_its_own_binary_and_store() {
     let stub = bin.join("tmux");
     std::fs::write(
         &stub,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$ACTIVITY_TEST_TMUX_CALLS\"\nexit 0\n",
+        "#!/bin/sh\nprintf called >> \"$ACTIVITY_TEST_TMUX_CALLS\"\nexit 99\n",
     )
     .unwrap();
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // launchd can resolve Apple's Python even when the interactive shell uses
-    // Homebrew. Exercise that interpreter instead of inheriting the shell's.
-    #[cfg(target_os = "macos")]
-    std::os::unix::fs::symlink("/usr/bin/python3", bin.join("python3")).unwrap();
-    let mut path = std::ffi::OsString::from(bin);
-    path.push(":");
-    path.push(std::env::var_os("PATH").unwrap_or_default());
+    std::fs::set_permissions(stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
     env.story(env.home())
         .args(["daemon", "start"])
         .env("PATH", path)
@@ -173,36 +201,9 @@ fn daemon_start_opens_the_continuous_view_with_its_own_binary_and_store() {
         .env("ACTIVITY_TEST_TMUX_CALLS", &calls)
         .assert()
         .success();
-    let deadline = Instant::now() + storyhook_test_support::STORY_COMMAND_DEADLINE;
-    let text = loop {
-        let text = std::fs::read_to_string(&calls).unwrap_or_default();
-        if text.contains("--follow\n") {
-            break text;
-        }
-        assert!(
-            env.daemon_is_live(),
-            "daemon exited before opening the view"
-        );
-        let journal: String =
-            std::fs::read_dir(env.environment().daemon_state_dir().join("activity"))
-                .unwrap()
-                .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
-                .collect();
-        assert!(
-            !journal.contains("tmux activity view unavailable"),
-            "activity helper failed: {journal}"
-        );
-        assert!(
-            Instant::now() < deadline,
-            "view never opened: {text}\nactivity journal: {journal}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    assert!(text.contains("=storyhook-verifier:=activity-"));
-    assert!(text.contains(&format!(
-        "{}\n--store-path\n{}\ndaemon\nlogs\n--follow\n",
-        storyhook_test_support::story_binary().display(),
-        env.environment().store_path().display()
-    )));
     env.stop_daemon();
+    assert!(
+        !calls.exists(),
+        "store startup must not allocate a terminal reader"
+    );
 }

@@ -563,6 +563,16 @@ fn expected_marketplace() -> BTreeMap<PathBuf, (Vec<u8>, bool)> {
         );
     }
     for (relative, value) in regular_files(&repository.join("plugins/story")) {
+        if relative
+            .components()
+            .any(|part| part.as_os_str() == "__pycache__")
+            || matches!(
+                relative.extension().and_then(|ext| ext.to_str()),
+                Some("pyc" | "pyo")
+            )
+        {
+            continue;
+        }
         expected.insert(Path::new("plugins/story").join(relative), value);
     }
     expected

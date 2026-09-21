@@ -42,6 +42,47 @@ pub(super) fn marker_at_registered(cwd: &Path) -> Result<Option<StoryCleanupLeas
         return Ok(None);
     }
 
+    let Some(lease) = marker_in_private_admin(&git_dir)? else {
+        return Ok(None);
+    };
+    let marker_path = git_dir.join(CLEANUP_LEASE_MARKER);
+    let actual_worktree = canonical_existing(Path::new(&toplevel), "linked worktree")?;
+    let actual_repository = main_worktree(cwd)?;
+    let actual_branch =
+        git_env::output(cwd, &["symbolic-ref", "--short", "HEAD"]).ok_or_else(|| {
+            AppError::Validation(format!(
+                "cleanup lease marker `{}` belongs to a detached or unreadable worktree",
+                marker_path.display()
+            ))
+        })?;
+
+    validate_path(
+        "repository",
+        &lease.repository_path,
+        &actual_repository,
+        &marker_path,
+    )?;
+    validate_path(
+        "worktree",
+        &lease.worktree_path,
+        &actual_worktree,
+        &marker_path,
+    )?;
+    if lease.branch != actual_branch {
+        return Err(marker_mismatch(
+            &marker_path,
+            "branch",
+            &lease.branch,
+            &actual_branch,
+        ));
+    }
+    Ok(Some(lease))
+}
+
+/// Reads surviving private administration without consulting a broken worktree link.
+pub(super) fn marker_in_private_admin(
+    git_dir: &Path,
+) -> Result<Option<StoryCleanupLease>, AppError> {
     let marker_path = git_dir.join(CLEANUP_LEASE_MARKER);
     match fs::symlink_metadata(&marker_path) {
         Ok(meta) if !meta.file_type().is_file() => {
@@ -84,36 +125,6 @@ pub(super) fn marker_at_registered(cwd: &Path) -> Result<Option<StoryCleanupLeas
         )));
     }
 
-    let actual_worktree = canonical_existing(Path::new(&toplevel), "linked worktree")?;
-    let actual_repository = main_worktree(cwd)?;
-    let actual_branch =
-        git_env::output(cwd, &["symbolic-ref", "--short", "HEAD"]).ok_or_else(|| {
-            AppError::Validation(format!(
-                "cleanup lease marker `{}` belongs to a detached or unreadable worktree",
-                marker_path.display()
-            ))
-        })?;
-
-    validate_path(
-        "repository",
-        &lease.repository_path,
-        &actual_repository,
-        &marker_path,
-    )?;
-    validate_path(
-        "worktree",
-        &lease.worktree_path,
-        &actual_worktree,
-        &marker_path,
-    )?;
-    if lease.branch != actual_branch {
-        return Err(marker_mismatch(
-            &marker_path,
-            "branch",
-            &lease.branch,
-            &actual_branch,
-        ));
-    }
     validate_tmux_target(&lease, &marker_path)?;
     Ok(Some(lease))
 }

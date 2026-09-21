@@ -1,10 +1,9 @@
 # Daemon activity journal (SH-590)
 
-Each store has a continuous activity window in the `storyhook-verifier`
-session. Its chronology covers daemon startup, requests, committed story
-events, engine and verifier work, and script stdout/stderr. SH-662 separates
-store journals from project verification windows; see
-[Concurrent verifier views](verifier-windows.md).
+Each store retains its daemon journal. Each project also has a continuous
+verification journal in its registered checkout at `.storyhook/logs/` and a
+`<project-slug>:verification` tmux view. See [Project verification views](verifier-windows.md).
+The store journal no longer opens a separate activity window.
 
 ## Contract
 
@@ -20,10 +19,14 @@ store journals from project verification windows; see
   `story daemon logs [--follow] [--json]` reads the same files without starting
   or contacting a daemon. Redirected output has no color; JSON is one record
   per line. Missing tmux never blocks daemon startup or verification.
-- One fixed session on the default tmux server remains the attach point.
-  Each canonical store has its own activity window. Project tails and banners
-  use separate verification windows, so neither projects nor stores replace
-  another store's continuous reader.
+- `story daemon logs --directory PATH [--follow] [--json]` reads project logs
+  without contacting a daemon. Omitting the directory keeps the store behavior.
+  The same UTC rotation, permissions, rendering, and archive rules apply.
+- A typed verifier scope selects the project journal and story/attempt context.
+  Each output observer owns an immutable snapshot; no process-global environment
+  mutation or message parsing routes logs. Child commands receive the selected
+  destination explicitly. The existing source field labels the producing subsystem.
+  Scope drop restores the previous context, including during unwinding.
 - Subprocess output is observed from regular files, using independent offsets.
   A descendant holding a descriptor cannot hold a reader at EOF. Observation
   ends with the owned command, including failure and timeout, flushing a final

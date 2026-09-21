@@ -245,7 +245,7 @@ fn a_gate_terminated_by_signal_is_infrastructure_never_red() {
         &[
             "bash",
             "-c",
-            "printf '%s' $$ > \"$1\"; while :; do :; done",
+            "printf '%s' $$ > \"$1.tmp\"; mv \"$1.tmp\" \"$1\"; while :; do :; done",
             "signal-probe",
             &pid_file.display().to_string(),
         ],
@@ -333,7 +333,7 @@ fn a_terminated_verifier_reports_the_termination_and_leaves_no_completion_record
         &[
             "bash",
             "-c",
-            "printf '%s' $$ > \"$1\"; while :; do :; done",
+            "printf '%s' $$ > \"$1.tmp\"; mv \"$1.tmp\" \"$1\"; while :; do :; done",
             "signal-probe",
             &pid_file.display().to_string(),
         ],
@@ -3865,9 +3865,25 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
     );
 
     let payload = public_payload(&repo.verify_public_with_gate(&["gate-bin", "--ci"]));
-    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
-    assert_eq!(payload["disposition"], "permanent", "{payload}");
-    let detail = payload["detail"].as_str().unwrap();
+    assert_eq!(payload["result"], "project-fault", "{payload}");
+    assert_eq!(
+        payload["fault"]["code"], "missing-certification",
+        "{payload}"
+    );
+    assert_eq!(payload["fault"]["execution_status"], 0, "{payload}");
+    assert_eq!(payload["fault"]["head"], new, "{payload}");
+    assert_eq!(
+        payload["fault"]["head_tree"],
+        repo.tree_of(&new),
+        "{payload}"
+    );
+    assert_eq!(payload["fault"]["receipt"], "missing", "{payload}");
+    assert!(
+        payload["fault"]["log"]
+            .as_str()
+            .is_some_and(|log| Path::new(log).is_file())
+    );
+    let detail = payload["fault"]["detail"].as_str().unwrap();
     assert!(detail.contains("certified nothing"), "{detail}");
     assert_eq!(
         lifecycle_statuses(&repo.path().join("gate-progress.ndjson"), "release gate"),
@@ -3910,9 +3926,266 @@ fn a_configured_gate_that_exits_green_but_certifies_nothing_is_refused_before_la
     );
     assert_eq!(
         repo.fake_gh_calls(),
-        1,
-        "refused after the entry read and before any landing read"
+        2,
+        "entry read and authority recheck; no landing request"
     );
+}
+
+#[test]
+fn structured_preflight_distinguishes_missing_insufficient_and_certified_receipts() {
+    let repo = MergeRepo::new();
+    let tree = repo.tree_of("HEAD");
+    let receipt = repo
+        .common_dir()
+        .join("storyhook/gate-receipts")
+        .join(&tree);
+    fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+    for (contents, result, reason, status) in [
+        (None, "uncertified", "missing", 1),
+        (
+            Some("tier changed\n"),
+            "uncertified",
+            "insufficient-tier",
+            1,
+        ),
+        (Some("tier other\n"), "uncertified", "insufficient-tier", 1),
+        (Some("tier gate\r\n"), "uncertified", "insufficient-tier", 1),
+        (Some("tier gate\n"), "certified", "qualifying-receipt", 0),
+        (Some("tier full\n"), "certified", "qualifying-receipt", 0),
+        (
+            Some("legacy receipt\n"),
+            "certified",
+            "qualifying-receipt",
+            0,
+        ),
+    ] {
+        if let Some(contents) = contents {
+            fs::write(&receipt, contents).unwrap();
+        }
+        let out = run(
+            repo.path(),
+            "bash",
+            &[
+                checkout()
+                    .join("scripts/merge-preflight.sh")
+                    .to_str()
+                    .unwrap(),
+                "--json",
+                "HEAD",
+                "HEAD",
+            ],
+        );
+        let payload: serde_json::Value =
+            serde_json::from_slice(&out.stdout).unwrap_or_else(|error| panic!("{error}: {out:?}"));
+        assert_eq!(out.status.code(), Some(status), "{payload}");
+        assert_eq!(payload["result"], result, "{payload}");
+        assert_eq!(payload["reason"], reason, "{payload}");
+        assert_eq!(payload["tree"], tree, "{payload}");
+        let legacy = repo.preflight("HEAD", "HEAD");
+        assert_eq!(legacy.status.code(), Some(status));
+        assert_eq!(stdout(&legacy), tree);
+    }
+}
+
+fn pointer_with_gate(gate: &str) -> String {
+    format!(
+        "schema = 1\nuuid = \"291ea25f-3363-4b5d-9051-66636c1066f9\"\nprefix = \"SH\"\n[verify]\ngate = {gate:?}\n"
+    )
+}
+
+fn inspect_snapshot(repo: &MergeRepo, base: &str, head: &str, tree: &str) -> Output {
+    run(
+        repo.path(),
+        env!("CARGO_BIN_EXE_story"),
+        &[
+            "verifier",
+            "gate-config",
+            repo.path().to_str().unwrap(),
+            base,
+            head,
+            tree,
+            "--json",
+        ],
+    )
+}
+
+#[test]
+fn gate_configuration_comes_from_the_pinned_merge_not_the_registered_checkout() {
+    let repo = MergeRepo::new();
+    repo.write(".storyhook.toml", &pointer_with_gate("make test && true"));
+    repo.git(&["add", ".storyhook.toml"]);
+    repo.git(&["commit", "-qm", "broken base gate"]);
+    let base = repo.rev_parse("HEAD");
+    let head = repo.branch(
+        "feature",
+        "main",
+        ".storyhook.toml",
+        &pointer_with_gate("true"),
+    );
+    let tree = repo.tree_of(&head);
+    repo.git(&["checkout", "-q", "main"]);
+    let result = inspect_snapshot(&repo, &base, &head, &tree);
+    assert_ok(
+        &result,
+        "snapshot inspection must not resolve the malformed registered pointer",
+    );
+    let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(value["result"], "gate-ready", "{value}");
+    assert_eq!(value["argv"], serde_json::json!(["true"]));
+    assert_eq!(value["configuration"].as_str().unwrap().len(), 64);
+    assert_eq!(repo.rev_parse("HEAD"), base);
+    assert!(stdout(&repo.git(&["status", "--porcelain", "--untracked-files=no"])).is_empty());
+
+    repo.publish_origin(42, &head);
+    repo.fake_gh();
+    converge_public_head(&repo, &head);
+    let payload = public_payload(&repo.verify_public_with_gate(&["--project-gate"]));
+    assert_eq!(payload["result"], "project-fault", "{payload}");
+    assert_eq!(
+        payload["fault"]["code"], "missing-certification",
+        "{payload}"
+    );
+    assert_eq!(payload["fault"]["gate"], "true", "{payload}");
+}
+
+#[test]
+fn gate_snapshot_distinguishes_project_configuration_from_git_failure() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("HEAD");
+    for (index, command, code) in [
+        (1, "make test && true", "invalid-gate-configuration"),
+        (2, "./missing-gate.sh", "missing-gate-command"),
+        (3, "./f", "missing-gate-command"),
+    ] {
+        let head = repo.branch(
+            &format!("gate-{index}"),
+            "main",
+            ".storyhook.toml",
+            &pointer_with_gate(command),
+        );
+        let tree = repo.tree_of(&head);
+        let result = inspect_snapshot(&repo, &base, &head, &tree);
+        assert_ok(&result, "project faults are structured outcomes");
+        let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(value["result"], "project-fault", "{value}");
+        assert_eq!(value["fault"]["code"], code, "{value}");
+        assert_eq!(value["fault"]["head_tree"], repo.tree_of(&head), "{value}");
+        assert_eq!(value["fault"]["tree"], tree, "{value}");
+        let fault: storyhook::service::project_fault::ProjectFault =
+            serde_json::from_value(value["fault"].clone()).unwrap();
+        fault.validate().unwrap();
+        assert!(
+            !inspect_snapshot(&repo, &base, &head, &"f".repeat(40))
+                .status
+                .success()
+        );
+    }
+}
+
+#[test]
+fn gate_snapshot_resolves_only_committed_files_and_in_tree_symlinks() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("HEAD");
+    let initial = inspect_snapshot(&repo, &base, &base, &repo.tree_of(&base));
+    assert_ok(&initial, "missing pointer uses the Rust default");
+    let initial: serde_json::Value = serde_json::from_slice(&initial.stdout).unwrap();
+    assert_eq!(initial["argv"], serde_json::json!(["make", "test"]));
+    repo.write("config.toml", &pointer_with_gate("./scripts/gate-link"));
+    fs::create_dir(repo.path().join("scripts")).unwrap();
+    repo.write("scripts/gate", "#!/bin/sh\nexit 0\n");
+    fs::set_permissions(
+        repo.path().join("scripts/gate"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    symlink("config.toml", repo.path().join(".storyhook.toml")).unwrap();
+    symlink("gate", repo.path().join("scripts/gate-link")).unwrap();
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-qm", "committed links"]);
+    let head = repo.rev_parse("HEAD");
+    repo.write("config.toml", "deliberately invalid uncommitted config");
+    let result = inspect_snapshot(&repo, &base, &head, &repo.tree_of(&head));
+    assert_ok(&result, "committed symlinks resolve inside the exact tree");
+    let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(value["argv"], serde_json::json!(["./scripts/gate-link"]));
+    assert_eq!(
+        fs::read_to_string(repo.path().join("config.toml")).unwrap(),
+        "deliberately invalid uncommitted config"
+    );
+    for target in [
+        "/tmp/host-config.toml",
+        "../outside.toml",
+        "missing.toml",
+        ".storyhook.toml",
+    ] {
+        fs::remove_file(repo.path().join(".storyhook.toml")).unwrap();
+        symlink(target, repo.path().join(".storyhook.toml")).unwrap();
+        repo.git(&["add", ".storyhook.toml"]);
+        repo.git(&["commit", "-qm", "unsafe or unresolved link"]);
+        let head = repo.rev_parse("HEAD");
+        let result = inspect_snapshot(&repo, &base, &head, &repo.tree_of(&head));
+        assert!(
+            !result.status.success(),
+            "must not infer a repository-owned fault for {target}"
+        );
+    }
+}
+
+#[test]
+fn pinned_invalid_gate_is_a_project_fault_before_any_execution() {
+    let repo = MergeRepo::new();
+    let head = repo.branch(
+        "feature",
+        "main",
+        ".storyhook.toml",
+        &pointer_with_gate("make test && true"),
+    );
+    repo.git(&["checkout", "-q", "main"]);
+    repo.publish_origin(42, &head);
+    repo.fake_gh();
+    converge_public_head(&repo, &head);
+    let value = public_payload(&repo.verify_phase(&["--project-gate"], true));
+    assert_eq!(value["result"], "project-fault", "{value}");
+    assert_eq!(value["fault"]["code"], "invalid-gate-configuration");
+    assert!(value["fault"].get("execution_status").is_none());
+    assert!(
+        !repo
+            .common_dir()
+            .join("storyhook/verification-executions")
+            .exists()
+    );
+}
+
+#[test]
+fn structured_preflight_never_calls_reader_failures_missing_certification() {
+    let repo = MergeRepo::new();
+    let tree = repo.tree_of("HEAD");
+    let receipt = repo
+        .common_dir()
+        .join("storyhook/gate-receipts")
+        .join(&tree);
+    fs::create_dir_all(&receipt).unwrap();
+    for head in ["HEAD", "no-such-reference"] {
+        let out = run(
+            repo.path(),
+            "bash",
+            &[
+                checkout()
+                    .join("scripts/merge-preflight.sh")
+                    .to_str()
+                    .unwrap(),
+                "--json",
+                "HEAD",
+                head,
+            ],
+        );
+        let payload: serde_json::Value =
+            serde_json::from_slice(&out.stdout).unwrap_or_else(|error| panic!("{error}: {out:?}"));
+        assert_eq!(out.status.code(), Some(3), "{payload}");
+        assert_eq!(payload["result"], "inspection-error", "{payload}");
+        assert_ne!(payload["reason"], "missing", "{payload}");
+    }
 }
 
 /// SH-666's second incident, reconstructed: the gate ran green on the tree
@@ -4175,4 +4448,106 @@ fn durable_landing_recovery_never_resends_and_requires_exact_merged_evidence() {
             .count(),
         1
     );
+}
+
+#[test]
+fn private_repair_admission_precedes_gate_and_fails_closed() {
+    for (reply, exit, expected, ran) in [
+        (
+            r#"{"result":"deferred","recovery_id":"recovery-1","reason":"unchanged-input"}"#,
+            0,
+            "repair-deferred",
+            false,
+        ),
+        (
+            r#"{"result":"deferred","recovery_id":"recovery-1","reason":"budget-exhausted"}"#,
+            0,
+            "repair-deferred",
+            false,
+        ),
+        (
+            r#"{"result":"proceed","recovery_id":null}"#,
+            0,
+            "project-fault",
+            true,
+        ),
+        (
+            r#"{"result":"proceed","recovery_id":null}"#,
+            1,
+            "infrastructure-failure",
+            false,
+        ),
+        (
+            r#"{"result":"deferred","reason":"unknown"}"#,
+            0,
+            "infrastructure-failure",
+            false,
+        ),
+        (
+            r#"{"result":"unexpected"}"#,
+            0,
+            "infrastructure-failure",
+            false,
+        ),
+    ] {
+        let repo = MergeRepo::new();
+        let (_, head) = reconciled_feature(&repo);
+        repo.publish_origin(42, &head);
+        repo.fake_gh();
+        converge_public_head(&repo, &head);
+        let marker = repo.path().join("gate-ran");
+        let args = repo.path().join("callback-args");
+        repo.fake_gate("gate-bin", &format!("touch '{}'", marker.display()));
+        repo.fake_gate(
+            "story-callback",
+            &format!(
+                "if [ \"${{4:-}}\" != repair-admit ]; then exec '{}' \"$@\"; fi\nprintf '%s\\n' \"$@\" > '{}'\ncat <<'REPLY'\n{reply}\nREPLY\nexit {exit}",
+                env!("CARGO_BIN_EXE_story"), args.display()
+            ),
+        );
+        let path = format!(
+            "{}:{}",
+            repo.path().join("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let out = Command::new("bash")
+            .arg(checkout().join("scripts/verify-pr.sh"))
+            .args(["https://github.com/acme/widgets/pull/42", "--", "gate-bin"])
+            .current_dir(repo.path())
+            .env("PATH", path)
+            .env("STORY_BIN", repo.path().join("bin/story-callback"))
+            .env("STORYHOOK_REPAIR_ADMISSION", "1")
+            .env("STORYHOOK_REPAIR_PROJECT", "fixture")
+            .env("STORYHOOK_REPAIR_STORY", "SH-1")
+            .env("STORYHOOK_REPAIR_GENERATION", "27")
+            .env("STORYHOOK_VERIFICATION_ATTEMPT", "owned-attempt")
+            .env("STORYHOOK_CERTIFY_ONLY", "1")
+            .env("STORYHOOK_LOCK_DIR", repo.path().join("locks"))
+            .env("STORYHOOK_ACTIVITY_LOG_DIR", repo.path().join("activity"))
+            .envs(storyhook_test_support::daemon_containment())
+            .env_remove("STORYHOOK_MACHINE_LOCKS")
+            .output()
+            .unwrap();
+        let payload = public_payload(&out);
+        assert_eq!(payload["result"], expected, "{payload}");
+        assert_eq!(marker.exists(), ran, "gate execution for {reply}");
+        let args = fs::read_to_string(args).expect("private callback was called");
+        let args: Vec<_> = args.lines().collect();
+        assert_eq!(
+            &args[..7],
+            &[
+                "--project",
+                "fixture",
+                "verifier",
+                "repair-admit",
+                "SH-1",
+                "owned-attempt",
+                "27"
+            ]
+        );
+        assert_eq!(args[8], head);
+        assert_eq!(args[9], repo.rev_parse(&format!("{head}^{{tree}}")));
+        assert_eq!(args.len(), 12);
+        assert_eq!(args[11], "--json");
+    }
 }

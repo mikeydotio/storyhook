@@ -1098,3 +1098,132 @@ fn legacy_turn_receipts_cannot_acquire_a_second_message_receipt() {
     );
     assert_eq!(requests(&f).len(), 1);
 }
+
+#[test]
+fn unresolved_delivery_is_actionable_in_the_shared_story_view() {
+    use storyhook::service::QueryService;
+    use storyhook::store::{ContinuationStatus, ReadOps, SqliteStore, Store, WriteOps};
+
+    let (f, id) = setup();
+    let ctx = f.ctx();
+    let runtime = Observer::new("busy");
+    let request = ContinuationService::new(&ctx, &runtime)
+        .request(&id, input(&id))
+        .unwrap();
+    f.store()
+        .write(|tx| {
+            let mut record = tx.continuations(f.project())?.remove(0);
+            let revision = record.revision;
+            record.revision += 1;
+            record.updated_at = "2020-01-01T00:00:00Z".into();
+            tx.update_continuation(&record, revision)?;
+            Ok(())
+        })
+        .unwrap();
+    storyhook::daemon::continuation::process_one(f.store(), f.env(), &runtime).unwrap();
+    assert_eq!(requests(&f)[0].status, ContinuationStatus::NeedsAttention);
+    assert_eq!(runtime.calls.borrow().as_slice(), ["capture", "observe"]);
+
+    let reopened = SqliteStore::open(f.store().path()).unwrap();
+    let view = reopened
+        .read(|tx| Ok(QueryService::new(tx, f.project(), "2026-09-20T00:00:00Z").show(&id)))
+        .unwrap()
+        .unwrap();
+    let document = serde_json::to_value(&view).unwrap();
+    assert_eq!(view.story.state, "in-progress");
+    assert_eq!(document["continuation_alerts"][0]["request_id"], request.id);
+    assert_eq!(
+        document["continuation_alerts"][0]["status"],
+        "needs-attention"
+    );
+    assert!(
+        document["continuation_alerts"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("not acknowledged")
+    );
+    assert!(
+        document["continuation_alerts"][0]["next_step"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("story continuation status {id} --json"))
+    );
+    let listed = storyhook::output::render_response(
+        &storyhook::output::Response::Stories {
+            views: vec![view.clone()],
+            message: None,
+            warnings: Vec::new(),
+        },
+        false,
+        false,
+    );
+    assert!(
+        listed.contains("[continuation needs attention]"),
+        "{listed}"
+    );
+    assert!(listed.contains(&request.id), "{listed}");
+    assert!(
+        listed.contains(&format!("story continuation status {id} --json")),
+        "{listed}"
+    );
+    let shown = storyhook::output::render_response(
+        &storyhook::output::Response::Story(Box::new(view)),
+        false,
+        false,
+    );
+    assert!(shown.contains(&request.id), "{shown}");
+    assert!(
+        shown.contains("receiving review was not acknowledged"),
+        "{shown}"
+    );
+
+    f.store()
+        .write(|tx| {
+            let mut record = tx.continuations(f.project())?.remove(0);
+            let revision = record.revision;
+            record.revision += 1;
+            record.status = ContinuationStatus::Acknowledged;
+            tx.update_continuation(&record, revision)?;
+            Ok(())
+        })
+        .unwrap();
+    let cleared = f
+        .store()
+        .read(|tx| Ok(QueryService::new(tx, f.project(), "2026-09-20T00:00:00Z").show(&id)))
+        .unwrap()
+        .unwrap();
+    assert!(
+        serde_json::to_value(cleared)
+            .unwrap()
+            .get("continuation_alerts")
+            .is_none()
+    );
+}
+
+#[test]
+fn superseded_delivery_clears_the_shared_story_alert() {
+    use storyhook::service::QueryService;
+    use storyhook::store::{ContinuationStatus, ReadOps, Store, WriteOps};
+
+    let (f, id) = setup();
+    let ctx = f.ctx();
+    ContinuationService::new(&ctx, &Runtime)
+        .request(&id, input(&id))
+        .unwrap();
+    f.store()
+        .write(|tx| {
+            let mut record = tx.continuations(f.project())?.remove(0);
+            let revision = record.revision;
+            record.revision += 1;
+            record.status = ContinuationStatus::Superseded;
+            tx.update_continuation(&record, revision)?;
+            Ok(())
+        })
+        .unwrap();
+    let view = f
+        .store()
+        .read(|tx| Ok(QueryService::new(tx, f.project(), "2026-09-20T00:00:00Z").show(&id)))
+        .unwrap()
+        .unwrap();
+    assert!(view.continuation_alerts.is_empty());
+}

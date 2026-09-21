@@ -96,7 +96,7 @@ dashboard address for sharing; local status does not confirm remote reachability
   story daemon uninstall
   story daemon token
   story daemon gc [--force]
-  story daemon logs [--follow] [--json]
+  story daemon logs [--directory PATH] [--follow] [--json]
 
 gc reclaims the runtime directories under <state home>/daemons/ whose store no
 longer exists. It removes a directory only when everything inside it proves the
@@ -113,10 +113,11 @@ logs reads today's UTC activity journal directly, even while the daemon is
 stopped. --follow continues across midnight; --json emits one JSON record
 per line. Plain output uses color only at a terminal (NO_COLOR disables it).
 Each record labels its source, stream, process and story/request context.
-Use --store-path to inspect a different store.
+Use --store-path to inspect a different store, or --directory to read a project journal.
 
-The daemon opens a store-specific activity window in storyhook-verifier on
-the default tmux server. Each project's verification uses a separate window.
+The daemon maintains one verification window in each project-slug tmux session
+on the default server. Project logs live in the registered checkout at
+.storyhook/logs/YYYY-MM-DD.jsonl. Closed or failed readers are repaired.
 STORYHOOK_VERIFIER_MIRROR=0 disables these views without disabling the journal.
 A missing tmux or Python 3 activity helper is non-fatal.
 
@@ -126,7 +127,7 @@ Scripts log stdout/stderr as well as process status. Read archived files
 directly when investigating an earlier day. The journal describes observed
 activity; the story store remains the authoritative history.
 
-  tmux attach -t storyhook-verifier
+  tmux attach -t <project-slug>
   story daemon logs --follow
   story daemon logs --json
 ",
@@ -417,6 +418,10 @@ Git worktree inventory, including custom paths and both legacy provider roots.
 
 JSON returns resources with status resolved, absent, ambiguous, invalid or
 unavailable; candidate provenance and diagnostics remain visible on refusal.
+Each Git registration also has its own observation with health, any private
+marker owner, and repair diagnostics. A damaged unrelated registration does
+not change this story's status. A target claim or credible conflict still
+refuses selection; a failed shared inventory remains unavailable.
 This is a read-only observation, not permission to remove dirty or protected work.
 
 --lease-json binds an exact existing cleanup lease. --window-name and
@@ -426,7 +431,8 @@ it. Otherwise the client carries its current/default socket to the daemon.
 Missing sockets prove absence on that server; failed observations never do.
 
 Conflicting live identities refuse selection, including under a helper's
---force option. Repair stale registrations explicitly; discovery never prunes.
+--force option. Inspect a stale registration and its private Git administration
+before using Git's worktree repair or prune commands. Discovery never prunes.
 Provider selection is required only when launching a session. Deterministic
 reset, unclaim, completion, cleanup and capture do not need STORY_AGENT.
 "#,
@@ -2580,6 +2586,10 @@ RESERVED LABELS
   human-only   Only a person may do this work. 'story next' and
                'story claim --next' never return it, at any count, so
                it is never handed out as anyone's next assignment.
+               The verifier also skips it: no queue position or automatic
+               cleanup. Adding the label cancels an owned verifier attempt,
+               releases its resources, and lets the next story proceed.
+               Removing the label restores eligibility in its existing state.
 
                It is NOT blocked. The story stays ready everywhere a
                person looks — 'story list --ready' carries it, every
@@ -2992,13 +3002,56 @@ story verifier start
 story verifier stop
 story verifier drain
 story verifier ack <incident-id> [--leave-stopped]
+story verifier gate-config <checkout> <base> <head> <tree> --json
+story verifier repair show <recovery-id> --json
+story verifier repair decide <recovery-id> --input <json-file>
 
 Inspect and control this project's centralized verifier.
+
+  repair show reads durable project-fault evidence, revision, scope assessor,
+  and accepted repair work. It does not grant implementation authority.
+  repair decide accepts the managed assessor's strict JSON decision once.
+  The file needs version (1), revision, project, generation, dispatch_identity,
+  scope (same-story, separate-story, external), context, question, decision,
+  rationale, and evidence (include a retained attempt:<id> reference).
+  Separate-story also needs repair: {title, description, acceptance}.
+  External instead needs prerequisite. Other scopes omit both fields.
+  Read show again before deciding: stale or conflicting input is refused.
+  Identical replay returns the recorded result without duplicate work.
+  A separate repair is a critical bug by explicit project-recovery policy;
+  this exception does not change unrelated story priorities. Scope advice
+  never grants certification, credentials, or permission overrides.
+
+  gate-config reads committed gate configuration from the exact proposed merge.
+  Supply pinned Git object IDs for both parents and the expected tree. This
+  local, store-free helper does not change the checkout or certify a tree.
+  It reports gate-ready argv or typed project-fault evidence. Git inspection
+  errors remain errors; they never grant repair or certification authority.
+
+  repair-admit is a private verifier subprocess callback. It requires the
+  current attempt token, generation, and pinned Git input. It refuses unchanged
+  or exhausted repair submissions before gate execution. It grants no receipt,
+  merge, credential, or operator override authority.
 
   status reports admission independently from infrastructure incidents,
   actual owned attempt, verifying and held stories, failure age and cause,
   attempts/retries, acknowledgement, and the latest recovery request.
   --json carries these facts under verifier; timestamps remain UTC.
+  project_recoveries adds fault, affected stories, assessment and repair owner,
+  repair PR, phase, completed-attempt budget, and next action. These records
+  are distinct from infrastructure halts. Old payloads have no recovery rows.
+  The dashboard reads the same snapshot. Use repair show for full evidence.
+
+  A project fault releases verifier ownership after cleanup. The managed agent
+  decides scope before edits, preserves required gate coverage, tests new and
+  impacted behavior, commits, and moves its repair to verifying as the last
+  action. A separate repair must pass central verification and land before
+  affected agents refresh their existing worktrees and submit fresh generations.
+  Recovery never reruns the exact old unjudged generation or clears a label.
+  Manual stop, no-auto, human-only, resource holds, and unrelated blockers stay
+  in force. Uncertain delivery does not authorize a replacement agent.
+  Text-only legacy incidents remain held. Conversion needs matching typed
+  recovery evidence and archives the old incident before releasing its halt.
 
   start enables admission without clearing a halt. drain prevents new
   admission while owned work finishes. stop also cancels owned work.

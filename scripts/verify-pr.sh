@@ -329,6 +329,7 @@ run_verification_gate() {
     gate_head="$4"
     gate_worktree="$5"
     shift 5
+    gate_display="$*"
     logs="$common_dir/storyhook/verification-logs"
     mkdir -p "$logs" || die_json "could not create verification log directory"
     log="$(mktemp "$logs/pr-$gate_pr-$gate_tree-attempt.XXXXXX")" \
@@ -404,14 +405,36 @@ require_certified_by_gate() {
     certified_tree="$1"
     certified_base="$2"
     certified_head="$3"
-    recheck="$(bash "$script_dir/merge-preflight.sh" "$certified_base" "$certified_head" 2>&1)"
+    recheck="$(bash "$script_dir/merge-preflight.sh" --json "$certified_base" "$certified_head" 2>>"$log")"
     recheck_status=$?
-    recheck_tree="$(printf '%s\n' "$recheck" | head -n1)"
-    if [ "$recheck_status" -eq 0 ] && [ "$recheck_tree" = "$certified_tree" ]; then
+    recheck_tree="$(printf '%s\n' "$recheck" | jq -er '.tree')" \
+        || die_json "could not inspect the gate certification receipt: $recheck. Gate log: $log"
+    if [ "$recheck_tree" != "$certified_tree" ]; then
+        die_json "certification inspection names a different tree: $recheck. Gate log: $log"
+    fi
+    recheck_result="$(printf '%s\n' "$recheck" | jq -er '.result')" \
+        || die_json "invalid certification inspection result: $recheck. Gate log: $log"
+    if [ "$recheck_status" -eq 0 ] && [ "$recheck_result" = certified ]; then
         return 0
     fi
     gate_progress_emit_item "gate certification receipt" failed
-    die_json "gate \`$gate_display\` exited 0 on merge tree \`$certified_tree\` but certified nothing: $(printf '%s\n' "$recheck" | tail -n +2). In the configured [verify] gate script, call \"\$STORYHOOK_GATE_RECEIPT\" preflight before testing and \"\$STORYHOOK_GATE_RECEIPT\" postlude gate (or postlude full) only after all required tests pass. The verifier supplies this portable writer; no StoryHook scripts or Git hooks are needed in the project. StoryHook's own scripts/gate-receipt.sh postlude remains supported. A changed receipt or a bare successful test runner cannot certify a merge. Gate log: $log"
+    [ "$recheck_status" -eq 1 ] && [ "$recheck_result" = uncertified ] \
+        || die_json "could not inspect the gate certification receipt: $recheck. Gate log: $log"
+    receipt_reason="$(printf '%s\n' "$recheck" | jq -er '.reason | select(. == "missing" or . == "insufficient-tier")')" \
+        || die_json "unknown certification refusal: $recheck. Gate log: $log"
+    detail="gate \`$gate_display\` exited 0 on merge tree \`$certified_tree\` but certified nothing: $(printf '%s\n' "$recheck" | jq -r '.detail'). In the configured [verify] gate script, call \"\$STORYHOOK_GATE_RECEIPT\" preflight before testing and \"\$STORYHOOK_GATE_RECEIPT\" postlude gate (or postlude full) only after all required tests pass. The verifier supplies this portable writer; no StoryHook scripts or Git hooks are needed in the project. StoryHook's own scripts/gate-receipt.sh postlude remains supported. A changed receipt or a bare successful test runner cannot certify a merge. Gate log: $log"
+    confirm_judged_head "$pr" "$base" "$head" uncertified "Gate log of the superseded attempt: $log"
+    certified_head_tree="$(git rev-parse --verify "$certified_head^{tree}" 2>/dev/null)" \
+        || die_json "could not resolve the committed source tree for uncertified head $certified_head"
+    disarm_verification_signal_trap
+    jq -n --arg tree "$certified_tree" --arg base "$certified_base" --arg head "$certified_head" \
+        --arg head_tree "$certified_head_tree" \
+        --arg gate "$gate_display" --arg log "$log" --arg execution "$execution_file" \
+        --arg receipt "$receipt_reason" --arg detail "$detail" \
+        '{result:"project-fault",fault:{code:"missing-certification",locus:".storyhook.toml#verify.gate",
+          tree:$tree,base:$base,head:$head,head_tree:$head_tree,gate:$gate,log:$log,execution:$execution,
+          execution_status:0,receipt:$receipt,detail:$detail}}'
+    exit 0
 }
 
 # Posts the red verdict for the gate `run_verification_gate` just reported as
@@ -420,17 +443,17 @@ require_certified_by_gate() {
 emit_tests_failed() {
     disarm_verification_signal_trap
     detail="$(verification_failure_detail "$gate_status" "$log")"
-    jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" \
+    jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" --arg gate "$gate_display" \
         --argjson status "$gate_status" --argjson cleanup "$gate_cleanup" \
-        '{result:"tests-failed", tree:$tree, log:$log, detail:$detail, exit_status:$status}
+        '{result:"tests-failed", tree:$tree, log:$log, detail:$detail, gate:$gate, exit_status:$status}
          + (if $cleanup == null then {} else {cleanup_failure:$cleanup} end)'
     exit 0
 }
 
 emit_gate_passed() {
     disarm_verification_signal_trap
-    jq -n --arg tree "$gate_tree" --arg log "$log" --argjson cleanup "$gate_cleanup" \
-        '{result:"gate-passed", tree:$tree, log:$log, exit_status:0,
+    jq -n --arg tree "$gate_tree" --arg log "$log" --argjson cleanup "$gate_cleanup" --arg gate "$gate_display" \
+        '{result:"gate-passed", tree:$tree, log:$log, gate:$gate, exit_status:0,
           detail:"Gate command completed successfully; no pull request was landed."}
          + (if $cleanup == null then {} else {cleanup_failure:$cleanup} end)'
     exit 0
@@ -493,7 +516,13 @@ recover_merged() {
     fi
     disarm_verification_signal_trap
     if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
-        jq -n --arg head "$reported_head" --arg tree "$tree" --arg detail "recovered certified merge" '{result:"certified", head:$head, tree:$tree, detail:$detail}'
+        if [ "${project_gate:-0}" -eq 1 ]; then
+            landed_config="$("${STORY_BIN:?verifier binary is required}" verifier gate-config "$root" "$merge_oid" "$merge_oid" "$tree" --json 2>&1)" \
+                || die_json "could not inspect landed gate configuration: $landed_config"
+            gate_display="$(printf '%s\n' "$landed_config" | jq -er 'select(.result == "gate-ready") | .argv | join(" ")')" \
+                || die_json "landed merge has unresolved gate configuration: $landed_config"
+        fi
+        jq -n --arg head "$reported_head" --arg tree "$tree" --arg gate "$gate_display" --arg detail "recovered certified merge" '{result:"certified", head:$head, tree:$tree, gate:$gate, detail:$detail}'
         exit 0
     fi
     jq -n --arg tree "$tree" --arg detail "recovered already-merged PR #$recovered_pr at $merge_oid $recovery_context" \
@@ -761,16 +790,16 @@ if [ "${1:-}" = --ensure-verifier-worktree ]; then
     exit 0
 fi
 
-# The gate is an argument, never a default of this script's own (SH-649):
-# the daemon reads the project's `[verify] gate` from its pointer file and
-# `GateCommand::DEFAULT` is the one place `make test` lives. A caller that
-# names no gate is refused by name rather than handed one it did not choose.
+# Production resolves the gate from the pinned merge. Explicit argv remains
+# available to the private script harness; the Rust parser owns the default.
 [ "$#" -ge 3 ] && [ "$2" = -- ] \
     || die_json "usage: verify-pr.sh <pr-url> -- <gate-command...> (the daemon passes the project's [verify] gate)"
 submitted_pr="$1"
 shift 2
 gate_command=("$@")
 gate_display="$*"
+project_gate=0
+if [ "$#" -eq 1 ] && [ "$1" = --project-gate ]; then project_gate=1; fi
 github_begin || die_json "cannot establish GitHub origin: ${GITHUB_ACCESS_ERROR:-origin unavailable}"
 
 verification_phase="pull request metadata"
@@ -838,6 +867,53 @@ preflight="$(activity_run "merge-preflight.sh" bash "$script_dir/merge-preflight
 preflight_status=$?
 tree="$(printf '%s\n' "$preflight" | head -n1)"
 _preflight_seconds=$(( $(date +%s) - _preflight_start ))
+# The daemon callback owns only admission. No gate or configuration inspection
+# may run for a refused repair, including an already certified merge-tree retry.
+if [ -n "${STORYHOOK_REPAIR_ADMISSION:-}" ] && { [ "$preflight_status" -eq 0 ] || [ "$preflight_status" -eq 1 ]; }; then
+    [ "$STORYHOOK_REPAIR_ADMISSION" = 1 ] && [ -n "${STORYHOOK_REPAIR_PROJECT:-}" ] \
+        && [ -n "${STORYHOOK_REPAIR_STORY:-}" ] && [ -n "${STORYHOOK_REPAIR_GENERATION:-}" ] \
+        && [ -n "${STORYHOOK_VERIFICATION_ATTEMPT:-}" ] \
+        || die_json "private repair admission context is incomplete"
+    verification_phase="repair input admission"
+    head_tree="$(git rev-parse --verify "$head_commit^{tree}" 2>/dev/null)" \
+        || die_json "could not resolve committed repair source tree"
+    repair_admission="$("${STORY_BIN:?verifier binary is required}" --project "$STORYHOOK_REPAIR_PROJECT" verifier repair-admit \
+        "$STORYHOOK_REPAIR_STORY" "$STORYHOOK_VERIFICATION_ATTEMPT" "$STORYHOOK_REPAIR_GENERATION" \
+        "$base_commit" "$head_commit" "$head_tree" "$tree" --json 2>&1)" \
+        || die_json "private repair admission failed: $repair_admission"
+    if printf '%s\n' "$repair_admission" | jq -e 'type == "object" and .result == "proceed" and has("recovery_id") and (.recovery_id == null or (.recovery_id | type == "string" and length > 0))' >/dev/null 2>&1; then
+        : # Admission grants no certification; ordinary verification still follows.
+    elif printf '%s\n' "$repair_admission" | jq -e 'type == "object" and .result == "deferred" and (.recovery_id | type == "string" and length > 0) and (.reason == "unchanged-input" or .reason == "budget-exhausted" or .reason == "policy-hold")' >/dev/null 2>&1; then
+        confirm_judged_head "$pr" "$base" "$head" unjudged "Repair admission withheld gate execution."
+        disarm_verification_signal_trap
+        printf '%s\n' "$repair_admission" | jq '.result = "repair-deferred"'
+        exit 0
+    else
+        die_json "invalid private repair admission answer: $repair_admission"
+    fi
+fi
+if [ "$project_gate" -eq 1 ] && { [ "$preflight_status" -eq 0 ] || [ "$preflight_status" -eq 1 ]; }; then
+    verification_phase="pinned gate configuration"
+    gate_config="$("${STORY_BIN:?verifier binary is required}" verifier gate-config "$root" "$base_commit" "$head_commit" "$tree" --json 2>&1)" \
+        || die_json "could not inspect pinned gate configuration: $gate_config"
+    config_result="$(printf '%s\n' "$gate_config" | jq -r '.result')" \
+        || die_json "invalid gate configuration inspection: $gate_config"
+    case "$config_result" in
+    (project-fault)
+        confirm_judged_head "$pr" "$base" "$head" unjudged "Pinned gate configuration is invalid."
+        disarm_verification_signal_trap
+        printf '%s\n' "$gate_config"
+        exit 0
+        ;;
+    (gate-ready)
+        gate_command=()
+        while IFS= read -r word; do gate_command+=("$word"); done < <(printf '%s\n' "$gate_config" | jq -r '.argv[]')
+        [ "${#gate_command[@]}" -gt 0 ] || die_json "gate configuration inspection omitted argv"
+        gate_display="${gate_command[*]}"
+        ;;
+    (*) die_json "unexpected gate configuration inspection: $gate_config" ;;
+    esac
+fi
 case "$preflight_status" in
 (2)
     gate_progress_emit_item "merge preflight" failed "seconds=$_preflight_seconds"
@@ -870,7 +946,7 @@ esac
 
 if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
     disarm_verification_signal_trap
-    jq -n --arg head "$reported_head" --arg tree "$tree" --arg detail "release gate certified the submitted head" '{result:"certified", head:$head, tree:$tree, detail:$detail}'
+    jq -n --arg head "$reported_head" --arg tree "$tree" --arg gate "$gate_display" --arg detail "release gate certified the submitted head" '{result:"certified", head:$head, tree:$tree, gate:$gate, detail:$detail}'
     exit 0
 fi
 

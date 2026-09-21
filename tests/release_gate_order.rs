@@ -19,10 +19,17 @@ impl ReleaseFixture {
         for directory in [
             repo.join("scripts"),
             repo.join("bin"),
+            repo.join(".semver/hooks/pre-bump"),
             scratch.path().join("home"),
         ] {
             fs::create_dir_all(directory).unwrap();
         }
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(".semver/hooks/pre-bump/sync-build-number.sh"),
+            repo.join(".semver/hooks/pre-bump/sync-build-number.sh"),
+        )
+        .unwrap();
         for file in [
             "branch-policy.sh",
             "github-access.sh",
@@ -63,9 +70,16 @@ case "$1" in
   bump)
     echo bump >> "$RELEASE_TEST_LOG"
     [ "${RELEASE_BUMP_FAIL:-0}" = 0 ] || exit 74
+    if [ "${RELEASE_SKIP_BUILD_HOOK:-0}" = 0 ]; then
+      OLD_VERSION="$(cat VERSION)" NEW_VERSION=v9.9.10 \
+        bash .semver/hooks/pre-bump/sync-build-number.sh
+    fi
     printf 'v9.9.10\n' > VERSION
     git add VERSION
     git commit -qm 'chore: fixture version bump'
+    if [ "${RELEASE_ADVANCE_AFTER_COMMIT:-0}" = 1 ]; then
+      python3 scripts/build-number.py --reserve >/dev/null
+    fi
     ;;
   *) exit 90 ;;
 esac
@@ -312,6 +326,60 @@ fn public_release_preserves_local_build_advancement() {
 }
 
 #[test]
+fn version_change_without_a_new_build_number_never_reaches_the_gate() {
+    for local in [false, true] {
+        let fixture = ReleaseFixture::new();
+        let mut command = fixture.command("bash");
+        command
+            .arg("scripts/release.sh")
+            .args(["--yes", "--skip-plugin", "--skip-daemon", "--bump", "patch"])
+            .env("RELEASE_SKIP_BUILD_HOOK", "1");
+        if local {
+            command.arg("--local-only");
+        }
+        let output = command.output().unwrap();
+        assert_exit(&output, 1);
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("did not advance BUILD"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fixture.calls(), "bump\n");
+        fixture.assert_no_push();
+    }
+}
+
+#[test]
+fn a_build_after_the_version_commit_cannot_replace_the_release_reservation() {
+    for local in [false, true] {
+        let fixture = ReleaseFixture::new();
+        let mut command = fixture.command("bash");
+        command
+            .arg("scripts/release.sh")
+            .args(["--yes", "--skip-plugin", "--skip-daemon", "--bump", "patch"])
+            .env("RELEASE_ADVANCE_AFTER_COMMIT", "1");
+        if local {
+            command.arg("--local-only");
+        }
+        let output = command.output().unwrap();
+        assert_exit(&output, 1);
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("BUILD differs from the version commit"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fixture.git(&["show", "HEAD:BUILD"]), "1");
+        assert_eq!(
+            fs::read_to_string(fixture.repo.join("BUILD")).unwrap(),
+            "2\n"
+        );
+        assert_eq!(fixture.calls(), "bump\n");
+        fixture.assert_no_push();
+    }
+}
+
+#[test]
 fn release_refuses_unrelated_changes_and_counter_rollback() {
     let fixture = ReleaseFixture::new();
     fs::write(fixture.repo.join("BUILD"), "272\n").unwrap();
@@ -468,8 +536,7 @@ esac
     );
     let write = fs::read_to_string(fixture.scratch.path().join("published")).unwrap();
     assert!(
-        write.contains(
-            "release edit v9.9.9 --draft=false --repo github.example.com/acme/storyhook"
-        )
+        write
+            .contains("release edit v9.9.9 --draft=false --repo github.example.com/acme/storyhook")
     );
 }

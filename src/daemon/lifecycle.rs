@@ -2560,7 +2560,11 @@ pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, App
                 );
             }
             let _ = wait_until_instant(deadline, || {
-                !is_live(env) && owned.iter().all(|process| !owned_process_is_live(process))
+                !is_live(env)
+                    && daemon_identity.as_ref().is_none_or(|identity| {
+                        process_identity_has_exited(identity.pid, identity.start_time.as_deref())
+                    })
+                    && owned.iter().all(|process| !owned_process_is_live(process))
             });
         }
     }
@@ -2811,6 +2815,18 @@ pub fn process_identity_is_live(pid: u32, start_time: Option<&str>) -> bool {
         return true;
     };
     process_start_time(pid).is_some_and(|actual| actual == expected)
+}
+
+/// Exit needs positive evidence: an unavailable native token prevents safe
+/// signaling but does not prove PID disappearance (notably for macOS zombies).
+fn process_identity_has_exited(pid: u32, start_time: Option<&str>) -> bool {
+    if !pid_is_live(pid) {
+        return true;
+    }
+    let Some(expected) = start_time.map(str::trim).filter(|token| !token.is_empty()) else {
+        return false;
+    };
+    process_start_time(pid).is_some_and(|actual| actual != expected)
 }
 
 /// Whether `pid` is still a live process.
@@ -3067,6 +3083,16 @@ mod tests {
         assert!(process_identity_is_live(pid, None));
         assert!(process_identity_is_live(pid, Some("")));
         assert!(process_identity_is_live(pid, Some("   ")));
+    }
+
+    #[test]
+    fn exit_evidence_distinguishes_a_live_identity_from_a_reused_pid() {
+        let pid = std::process::id();
+        let token = process_start_time(pid).expect("native process identity");
+        for expected in [None, Some(""), Some("   "), Some(token.as_str())] {
+            assert!(!process_identity_has_exited(pid, expected));
+        }
+        assert!(process_identity_has_exited(pid, Some("not-this-process")));
     }
 
     #[test]
@@ -4007,6 +4033,113 @@ mod tests {
             env.daemon_attempt().parent(),
             env.daemon_spawn_lock().parent()
         );
+    }
+
+    /// Hold the lock-release-to-exit interval open: file cleanup alone must
+    /// not let force-stop report completion while the same daemon still lives.
+    #[cfg(unix)]
+    #[test]
+    fn force_stop_waits_for_daemon_identity_after_lock_release() {
+        use std::io::{BufRead, BufReader};
+        use std::net::TcpListener;
+        use std::os::unix::process::CommandExt;
+        use std::sync::mpsc;
+
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let mut command = Command::new("sleep");
+        command.arg("30").process_group(0);
+        let mut child = storyhook_test_support::ChildGuard::spawn(&mut command)
+            .expect("spawning the daemon identity fixture");
+        let identity = DaemonIdentity {
+            pid: child.pid(),
+            process_group: child.pid(),
+            start_time: Some(process_start_time(child.pid()).expect("native process identity")),
+        };
+        let held = claim_pidfile(&env).expect("holding the daemon lock");
+        std::fs::write(env.daemon_pidfile(), serde_json::to_vec(&identity).unwrap()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut info = info_for(
+            &loopback_only(listener.local_addr().unwrap().port()),
+            "fixture-token".to_string(),
+            "2026-01-01T00:00:00Z",
+            env.store_path(),
+        )
+        .unwrap();
+        info.pid = child.pid();
+        write_info(&env, &info).unwrap();
+
+        std::thread::scope(|scope| {
+            let (released, release_seen) = mpsc::channel();
+            scope.spawn(move || {
+                let deadline = Instant::now() + FORCE_DEADLINE;
+                let mut socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "no shutdown request arrived");
+                            std::thread::sleep(SPAWN_POLL);
+                        }
+                        Err(error) => panic!("accepting shutdown request: {error}"),
+                    }
+                };
+                socket.set_read_timeout(Some(FORCE_DEADLINE)).unwrap();
+                let mut request = BufReader::new(&socket);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    assert!(request.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                drop(held);
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+                released.send(()).unwrap();
+            });
+            let (stopped, stop_seen) = mpsc::channel();
+            let env = &env;
+            scope.spawn(move || stopped.send(stop(env, StopMode::Force)).unwrap());
+            release_seen.recv_timeout(FORCE_DEADLINE).unwrap();
+            assert!(!is_live(env), "the controlled exit released its lock");
+            assert!(process_identity_is_live(
+                identity.pid,
+                identity.start_time.as_deref()
+            ));
+            let early = stop_seen.recv_timeout(FORCE_GRACE);
+            // macOS can withdraw the start token before the parent reaps the
+            // PID. Keep that second interval open independently of the first.
+            #[cfg(target_os = "macos")]
+            let zombie_early = {
+                let result = unsafe {
+                    // SAFETY: this is the guarded child owned by this test.
+                    libc::kill(identity.pid as i32, libc::SIGKILL)
+                };
+                assert_eq!(result, 0);
+                assert!(wait_until(FORCE_GRACE, || process_start_time(identity.pid).is_none()));
+                assert!(pid_is_live(identity.pid), "the child has not been reaped");
+                stop_seen.recv_timeout(FORCE_GRACE)
+            };
+            child.kill_and_reap();
+            assert!(
+                matches!(early, Err(mpsc::RecvTimeoutError::Timeout)),
+                "force-stop returned while the identified daemon was alive: {early:?}"
+            );
+            #[cfg(target_os = "macos")]
+            assert!(
+                matches!(zombie_early, Err(mpsc::RecvTimeoutError::Timeout)),
+                "force-stop returned while the daemon PID was unreaped: {zombie_early:?}"
+            );
+            let result = stop_seen.recv_timeout(FORCE_DEADLINE).unwrap().unwrap();
+            assert_eq!(result.unwrap().pid, identity.pid);
+            assert!(!process_identity_is_live(
+                identity.pid,
+                identity.start_time.as_deref()
+            ));
+        });
     }
 
     #[test]

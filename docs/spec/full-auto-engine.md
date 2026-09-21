@@ -1751,12 +1751,12 @@ acceptance example required it.
 
 ### SH-545 — verifier observability (a tmux mirror, not a second execution path)
 
-**Current window ownership (SH-662):** the fixed session now contains one
-verification window per canonical Git common directory and one continuous
-activity window per store. Project phases do not replace journal readers.
-See [Concurrent verifier views](verifier-windows.md) for names, concurrency,
-and migration behavior. The original SH-545 decision below records the serial
-verifier design that SH-590, SH-648, SH-654, and SH-662 subsequently extended.
+**Current window ownership (SH-748):** each project-slug session owns one
+continuous `verification` window, with daily logs in its registered checkout.
+Store journals remain available through the CLI without an automatic window.
+See [Project verification views](verifier-windows.md) for recovery, concurrency,
+and fixture cleanup. The original SH-545 decision below records the historical
+serial design, superseded by SH-590, SH-648, SH-654, SH-662, and SH-748.
 
 SH-524's checklist answers "how far along is this candidate," but not "what
 is `make test` printing right now" — the one artifact that already grows

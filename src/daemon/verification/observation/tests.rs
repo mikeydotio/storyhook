@@ -89,6 +89,23 @@ fn stale_authority_prevents_spawn() {
 }
 
 #[test]
+fn human_only_removed_between_reads_still_revokes_the_old_attempt() {
+    let f = Fixture::new();
+    let c = candidate(&f);
+    let ctx = f.ctx();
+    let service = StoryService::new(&ctx);
+    service
+        .set_labels(&c.story_id, &["human-only".into()], &[])
+        .unwrap();
+    service
+        .set_labels(&c.story_id, &[], &["human-only".into()])
+        .unwrap();
+    assert!(!current(f.store(), &c).unwrap());
+    let fresh = VerificationQueue::new(f.store()).next().unwrap().unwrap();
+    assert!(current(f.store(), &fresh).unwrap());
+}
+
+#[test]
 fn a_block_cleared_between_observer_reads_still_withdraws_the_attempt() {
     let f = Fixture::new();
     let c = candidate(&f);
@@ -298,4 +315,222 @@ fn panic_in_actuator_stops_and_joins_the_monitor() {
         );
     }));
     assert!(result.is_err());
+}
+
+#[test]
+fn human_observer_cancels_owned_work_outside_verifying_and_preserves_errors() {
+    for state in ["verifying", "in-progress"] {
+        let f = Fixture::new();
+        let c = candidate(&f);
+        if state != "verifying" {
+            StoryService::new(&f.ctx())
+                .set_state(&c.story_id, state, Some("operator state"), None, None)
+                .unwrap();
+        }
+        let bus = ChangeBus::new();
+        let cancellation = Cancellation::default();
+        let result = human_owned(f.store(), &f.env, &bus, &c, &cancellation, || {
+            StoryService::new(&f.ctx())
+                .set_labels(&c.story_id, &["human-only".into()], &[])
+                .unwrap();
+            bus.publish(Change::Project(c.project_slug.clone()));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !cancellation.is_cancelled() {
+                assert!(
+                    Instant::now() < deadline,
+                    "label observer did not cancel {state}"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(AppError::Storage("owned child cleanup diagnostic".into()))
+        })
+        .unwrap();
+        assert_eq!(result, TickResult::Returned);
+        let row = f
+            .store
+            .read(|tx| tx.story(f.project, crate::store::StoryNo::new(1)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, state);
+        assert!(
+            row.snapshot
+                .comments
+                .iter()
+                .any(|comment| comment.text.contains("owned child cleanup diagnostic"))
+        );
+    }
+}
+
+#[test]
+fn revoked_candidates_cannot_write_verdicts_progress_or_remediation() {
+    use crate::service::verification::GenerationWrite;
+    for transient in [false, true] {
+        let f = Fixture::new();
+        let c = candidate(&f);
+        let ctx = f.ctx();
+        let queue = VerificationQueue::new(f.store());
+        StoryService::new(&ctx)
+            .set_labels(&c.story_id, &["human-only".into()], &[])
+            .unwrap();
+        if transient {
+            StoryService::new(&ctx)
+                .set_labels(&c.story_id, &[], &["human-only".into()])
+                .unwrap();
+        }
+        assert!(matches!(
+            queue
+                .record_generation_completed(&ctx, &c, "verdict", None)
+                .unwrap(),
+            GenerationWrite::Superseded
+        ));
+        assert!(matches!(
+            queue
+                .record_generation_returned(&ctx, &c, "repair")
+                .unwrap(),
+            GenerationWrite::Superseded
+        ));
+        assert!(matches!(
+            queue
+                .upsert_generation_comment(&ctx, &c, "progress", "progress", None)
+                .unwrap(),
+            GenerationWrite::Superseded
+        ));
+        StoryService::new(&ctx)
+            .set_state(&c.story_id, "in-progress", None, None, None)
+            .unwrap();
+        assert!(matches!(
+            queue.set_generation_awaiting(&ctx, &c, "park").unwrap(),
+            GenerationWrite::Superseded
+        ));
+        queue
+            .comment_if_human_permitted(&ctx, &c, "stale lifecycle comment")
+            .unwrap();
+        let row = f
+            .store
+            .read(|tx| tx.story(f.project, crate::store::StoryNo::new(1)))
+            .unwrap()
+            .unwrap();
+        assert!(row.awaiting.is_none());
+        assert!(
+            !row.snapshot
+                .comments
+                .iter()
+                .any(|comment| comment.text == "stale lifecycle comment")
+        );
+    }
+}
+
+#[test]
+fn admission_refuses_current_and_transient_human_reservations_without_ownership() {
+    for transient in [false, true] {
+        let f = Fixture::new();
+        let c = candidate(&f);
+        StoryService::new(&f.ctx())
+            .set_labels(&c.story_id, &["human-only".into()], &[])
+            .unwrap();
+        if transient {
+            StoryService::new(&f.ctx())
+                .set_labels(&c.story_id, &[], &["human-only".into()])
+                .unwrap();
+        }
+        let activity = VerificationActivity::new();
+        assert!(
+            activity
+                .try_acquire(f.store(), &c, f.env.now())
+                .unwrap()
+                .is_none()
+        );
+        assert!(activity.active_all().is_empty());
+    }
+}
+
+#[test]
+fn human_withdrawal_preserves_cleanup_failure_evidence_without_a_verdict() {
+    let f = Fixture::new();
+    let c = candidate(&f);
+    let result = verify(
+        f.store(),
+        &ChangeBus::new(),
+        &c,
+        &Cancellation::default(),
+        |_| {
+            StoryService::new(&f.ctx())
+                .set_labels(&c.story_id, &["human-only".into()], &[])
+                .unwrap();
+            VerificationOutcome::CleanupFailed {
+                verdict: CompletedVerification::GatePassed {
+                    tree: "tree".into(),
+                    log: "log".into(),
+                    detail: "passed".into(),
+                    gate: "gate".into(),
+                },
+                cleanup: VerificationCleanupFailure {
+                    phase: "writer-drain".into(),
+                    detail: "child still owns workspace".into(),
+                    owner: Some("owner.json".into()),
+                    worktree: Some("retained-worktree".into()),
+                    disposition: VerificationFailureDisposition::Permanent,
+                },
+            }
+        },
+    )
+    .unwrap();
+    assert!(result.is_none());
+    let row = f
+        .store
+        .read(|tx| tx.story(f.project, crate::store::StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "verifying");
+    assert!(
+        row.snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text.contains("child still owns workspace"))
+    );
+    assert!(
+        !row.snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text.starts_with(VERIFICATION_GREEN_PREFIX))
+    );
+}
+
+#[test]
+fn landing_completion_requires_the_admitted_human_revision() {
+    use crate::service::landing::{LandingAdmission, VerifiedSubmission};
+    let f = Fixture::new();
+    let c = candidate(&f);
+    let ctx = f.ctx();
+    let queue = VerificationQueue::new(f.store());
+    let certificate = VerifiedSubmission {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
+        gate: "gate".into(),
+    };
+    let LandingAdmission::Admitted(intent) = queue.begin_landing(&ctx, &c, &certificate).unwrap()
+    else {
+        panic!("expected admission")
+    };
+    StoryService::new(&ctx)
+        .set_labels(&c.story_id, &["human-only".into()], &[])
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_labels(&c.story_id, &[], &["human-only".into()])
+        .unwrap();
+    assert!(
+        !queue
+            .complete_landing_for(&ctx, &c, &intent, "old merge result")
+            .unwrap()
+    );
+    assert_eq!(
+        f.store.read(|tx| tx.landing_intents()).unwrap(),
+        vec![intent.clone()]
+    );
+    let fresh = queue.ordered_for(f.project).unwrap().remove(0);
+    assert!(
+        queue
+            .complete_landing_for(&ctx, &fresh, &intent, "reconciled merge")
+            .unwrap()
+    );
 }

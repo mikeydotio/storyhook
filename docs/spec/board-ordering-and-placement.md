@@ -268,8 +268,12 @@ that column, since their literal `state` is still e.g. `todo`. Fixed to read
 `display_state || st.state`, the same expression every other renderer in the file
 uses — adopted into this story under `story help scope-rubric` (the same
 one-line-away defect the promotion itself creates, not a separate story).
-`f.showClosed`'s superstate check is untouched: `display_state` never crosses
-OPEN→CLOSED, so there is nothing for that check to reconcile.
+SH-750 later removed the separate `f.showClosed` predicate. The State filter now
+owns story-status visibility, and Columns independently owns board-column
+visibility.
+SH-751, absorbed into SH-750, later removed `f.showEpics` too. Type now owns
+epic visibility. Priority, Type, and State default to every option selected;
+an explicit empty selection matches no stories.
 
 ## What guards each piece
 

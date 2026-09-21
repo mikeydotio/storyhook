@@ -43,6 +43,22 @@ use std::path::Path;
 /// implements it, so naming the column is its job.
 const ALLOWED: &[(&str, &str)] = &[
     (
+        "src/daemon/activity/context.rs",
+        "project-error logging chooses the journal directory after selecting the project by durable id; it does not resolve project identity",
+    ),
+    (
+        "src/daemon/activity/window.rs",
+        "reader supervision chooses journal directories for already-enumerated store projects; paths never determine project identity",
+    ),
+    (
+        "src/daemon/project_recovery.rs",
+        "recovery delivery chooses its working directory after selecting each durable project id",
+    ),
+    (
+        "src/service/project_recovery/delivery.rs",
+        "managed recovery selects the already-scoped target project checkout; it does not resolve project identity",
+    ),
+    (
         "src/daemon/block_delivery.rs",
         "block delivery chooses a helper working directory after selecting its project by durable id",
     ),
@@ -57,6 +73,10 @@ const ALLOWED: &[(&str, &str)] = &[
     (
         "src/api/engine.rs",
         "the engine HTTP controller chooses a working directory only after resolving the project by slug",
+    ),
+    (
+        "src/api/reset.rs",
+        "the reset response regression clears the selected fixture project's checkout to isolate receipt ordering from repository cleanup; production code does not read it",
     ),
     (
         "src/service/catalog.rs",

@@ -69,6 +69,17 @@ fn dashboard() -> String {
         .expect("src/web_dashboard.html is readable")
 }
 
+/// Keep the contract inside the request attempt without a source-length cap.
+fn api_attempt_before_send(source: &str) -> &str {
+    source
+        .split_once("function attempt() {")
+        .expect("api() must define its inner attempt()")
+        .1
+        .split_once("xhr.send(")
+        .expect("api()'s attempt() must send its request")
+        .0
+}
+
 /// Does this line put a raw error message in front of a user?
 ///
 /// Two shapes, which are the only two this page has: a notice (`toast(...)`)
@@ -181,15 +192,7 @@ fn the_one_describer_distinguishes_no_reply_from_a_refusal() {
 fn api_funnels_onerror_and_ontimeout_into_the_same_no_reply_status() {
     let source = dashboard();
 
-    let attempt = source
-        .split_once("function attempt() {")
-        .expect(
-            "`api()`'s inner `attempt()` is where `xhr.onerror`/`xhr.ontimeout` are wired. If it \
-             was renamed, rename it here too — this test is what stops the two handlers drifting \
-             apart from each other.",
-        )
-        .1;
-    let body: String = attempt.chars().take(2000).collect();
+    let body = api_attempt_before_send(&source);
 
     let onerror = body
         .split_once("xhr.onerror = function()")
@@ -210,6 +213,20 @@ fn api_funnels_onerror_and_ontimeout_into_the_same_no_reply_status() {
          A timeout that funnelled anywhere else would make describeFailure's status===0 branch \
          prove nothing about the one outcome (a client-side timeout) SH-312 exists to cover."
     );
+}
+
+#[test]
+fn api_handler_scan_covers_long_attempts_without_scanning_later_code() {
+    let source = format!(
+        "function attempt() {{{}xhr.onerror = function() {{ refuse({{ status: 0 }}); }}; \
+         xhr.ontimeout = function() {{ refuse({{ status: 0 }}); }}; xhr.send(null); }} \
+         later_handler_marker",
+        " ".repeat(2_100)
+    );
+    let body = api_attempt_before_send(&source);
+    assert!(body.contains("xhr.onerror = function()"));
+    assert!(body.contains("xhr.ontimeout = function()"));
+    assert!(!body.contains("later_handler_marker"));
 }
 
 /// A positive control: the scan must be capable of failing.

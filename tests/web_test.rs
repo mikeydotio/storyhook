@@ -1294,20 +1294,27 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // compute_display_state can promote it into that column.
     assert!(body.contains("var shownState = v.display_state || st.state;"));
 
-    // SH-446: both Board and List consume filteredStories(), so this one
-    // persisted toggle hides epics everywhere by default and Clear Filters
-    // restores that default.
-    //
-    // SH-499 changed WHAT it hides. The predicate read `v.progress`, which is
-    // present for any parent, so an ordinary story that gained one sub-task was
-    // hidden from the board by default. Epic-ness is the TYPE, and progress
-    // stays a fact about children rather than a role -- so the filter reads the
-    // type and this assertion follows it.
-    assert!(body.contains(r#"id="toggle-epics"> Show epics"#));
-    assert!(body.contains("showEpics: false"));
-    assert!(body.contains(r#"if (!f.showEpics && st.story_type === "epic") return false;"#));
-    assert!(body.contains("state.filter.showEpics = this.checked;"));
-    assert!(body.contains(r#"$("toggle-epics").checked = false;"#));
+    // SH-750: dropped visibility has no second, conflicting toggle. The State
+    // filter applies to Board and List, while Columns owns board-column
+    // visibility. Keep the removed control and its private filter bit from
+    // returning under a different rendering path.
+    assert!(!body.contains("Show dropped"));
+    assert!(!body.contains("toggle-closed"));
+    assert!(!body.contains("showClosed"));
+
+    // SH-751: Priority, Type, and State use an inclusive facet model. Null is
+    // the unrestricted/all-checked default, while an explicit empty array
+    // matches no stories. Epic visibility belongs to Type, and required story
+    // types make the old synthetic "none" option invalid.
+    assert!(!body.contains("Show epics"));
+    assert!(!body.contains("toggle-epics"));
+    assert!(!body.contains("showEpics"));
+    assert!(!body.contains("__untyped__"));
+    assert!(body.contains("priorities: null"));
+    assert!(body.contains("types: null"));
+    assert!(body.contains("states: null"));
+    assert!(body.contains("function inclusiveFacetMatches"));
+    assert!(body.contains("selection === null || selection.indexOf(value) !== -1"));
 
     // SH-217: the markdown renderer -- builds DOM nodes directly (never an
     // HTML string, see the sink-pin assertions above), and its link

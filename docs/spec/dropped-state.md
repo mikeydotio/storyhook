@@ -3,7 +3,8 @@
 `dropped` means work deliberately abandoned. `done` means work completed.
 Both have superstate `CLOSED`. Custom CLOSED states remain supported.
 The CLI verb `story close <id> "reason"` remains, targeting `dropped`.
-Dashboard abandonment actions say “Drop”; the filter says “Show dropped”.
+Dashboard abandonment actions say “Drop”. State filters control which stories
+are visible, and the Columns control owns board-column visibility.
 
 ## Compatibility contract
 

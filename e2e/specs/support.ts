@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { expect as baseExpect, test as base } from "@playwright/test";
 import { BlockDeliveryBarrier, readBlockDeliverySnapshot } from "../block-delivery-barrier.cjs";
 import type {
@@ -274,7 +276,23 @@ const LOAD_GRACE_RESET_INTERVAL_MS = 5_000;
  * can see is the SH-306 shape one layer up: a gate whose verdict depends on
  * state it never reported.
  */
-export const test = base.extend<{ loadGrace: void }>({
+export const test = base.extend<{ loadGrace: void; testToken: void }>({
+  testToken: [
+    async ({ request }, use) => {
+      await resetFixtureTokenPreferences(request);
+      const name = `e2e-${randomUUID()}`;
+      activeTestToken = execFileSync(storyBinary(), ["token", "new", name], {
+        encoding: "utf8",
+      }).trim();
+      try {
+        await use();
+      } finally {
+        activeTestToken = null;
+        execFileSync(storyBinary(), ["token", "revoke", name]);
+      }
+    },
+    { auto: true },
+  ],
   loadGrace: [
     async ({}, use, testInfo) => {
       if (!loadGraceEnabled()) {
@@ -351,13 +369,48 @@ export const test = base.extend<{ loadGrace: void }>({
   ],
 });
 
-/**
- * Shared across every spec since SH-187: every `/api/**` route requires the
- * daemon's bearer token now, not just dispatch's own endpoint (SH-50). A
- * fresh Playwright browser context has no `sessionStorage`, so without this
- * the app's own bootstrap-time token modal would block the very first
- * `page.goto("/")` in every spec that doesn't itself test that modal.
- */
+// An ended page may still have a preference write in flight. A separate token
+// per test keeps that write out of the next test's preference record.
+let activeTestToken: string | null = null;
+
+async function resetFixtureTokenPreferences(request: APIRequestContext): Promise<void> {
+  // Some auth specs paste the original suite token into the token modal.
+  // Browser-only hostname mappings do not apply to Node's APIRequestContext.
+  // Fixture administration always uses the runner's local daemon socket.
+  const endpoint = new URL("/api/preferences", requiredEnv("DASHBOARD_URL"));
+  endpoint.hostname = "127.0.0.1";
+  const response = await request.patch(endpoint.toString(), {
+    headers: {
+      "X-Storyhook": "1",
+      "X-Storyhook-Token": requiredEnv("DASHBOARD_NAMED_TOKEN"),
+    },
+    data: {
+      filter: {
+        text: "", priorities: null, assignees: [], types: null, states: null,
+      },
+      sort: { col: "updated", dir: -1 },
+      columnSort: {},
+      hiddenColumns: [],
+      view: "board",
+      showArchived: false,
+      hideEmptyColumns: false,
+      keepNotices: false,
+      filtersOpen: false,
+      drawerSections: { relationships: true, comments: true, referencedBy: false },
+      dispatchDefaults: {
+        agent: "claude", auto: false,
+        byAgent: {
+          claude: { model: "", effort: "", speed: "" },
+          codex: { model: "", effort: "", speed: "" },
+        },
+      },
+      repoId: null,
+    },
+  });
+  if (!response.ok()) {
+    throw new Error(`resetting dashboard preferences failed: ${response.status()} ${await response.text()}`);
+  }
+}
 
 /**
  * An environment variable this suite cannot run without. Throws rather than
@@ -437,9 +490,8 @@ export function heldReadDeadlineMs(): number {
 /**
  * Seeds a named token into this page's browser context as the `HttpOnly`
  * cookie `web_dashboard.html` now rides rather than reads (SH-255) --
- * `run-e2e.sh` mints `DASHBOARD_NAMED_TOKEN` for the suite and exports the
- * cookie name the daemon actually published for it, `DASHBOARD_COOKIE_NAME`,
- * rather than this file recomputing the store-keyed digest itself.
+ * The support hook mints a per-test named token. `run-e2e.sh` exports the
+ * cookie name the daemon published as `DASHBOARD_COOKIE_NAME`.
  *
  * `context.addCookies`, not `page.addInitScript` (the pre-SH-255 shape,
  * which wrote to `sessionStorage`): an `HttpOnly` cookie cannot be set from
@@ -453,7 +505,8 @@ export function heldReadDeadlineMs(): number {
  * mid-test reload to keep seeing it.
  */
 export async function seedToken(page: Page): Promise<void> {
-  const token = requiredEnv("DASHBOARD_NAMED_TOKEN");
+  const token = activeTestToken;
+  if (!token) throw new Error("seedToken requires the per-test named token");
   const cookieName = requiredEnv("DASHBOARD_COOKIE_NAME");
   await page.context().addCookies([
     {
@@ -670,7 +723,7 @@ export async function resolvedTokenColor(
  * -- a fresh Playwright context has no localStorage, same reasoning as
  * `seedToken`'s own comment above, so every spec that drives a control
  * inside it (a priority/assignee/type/state/columns dropdown, or "Show
- * closed"/"Show archived"/"Hide empty columns") needs this first. Board
+ * archived"/"Hide empty columns") needs this first. Board
  * sort moved out of this panel entirely in SH-305 -- it's per-column now,
  * opened from each column header's own sort button, so a spec driving it
  * doesn't need this at all. `#filter-count` stays in the always-visible
@@ -696,35 +749,6 @@ export async function clickHeaderAction(
     await expect(action).toBeVisible();
   }
   await action.click();
-}
-
-/**
- * Turns on the "Show epics" filter, so a story that has become an epic is
- * rendered at all (SH-495).
- *
- * SH-446 made `showEpics: false` the default, and the board and list views
- * both drop anything carrying `progress` while it is off
- * (`src/web_dashboard.html`'s filter predicate). A story is not an epic
- * until it HAS a child, so a spec that creates one, adds a child and then
- * looks for its card sees the card vanish mid-test -- which reads as
- * "element not found" rather than as a filter doing its job. Call this
- * AFTER the child is added.
- *
- * Idempotent: an already-checked box is left alone rather than toggled off.
- * The mobile sheet is then completed through Done because every caller's next
- * step acts on the newly revealed story; desktop keeps its inline disclosure.
- */
-export async function showEpics(page: Page): Promise<void> {
-  await openFilters(page);
-  const toggle = page.locator("#toggle-epics");
-  if (!(await toggle.isChecked())) {
-    await toggle.check();
-  }
-  await expect(toggle).toBeChecked();
-  if (await page.locator("#filter-sheet").isVisible()) {
-    await page.locator("#filter-sheet-done").click();
-    await expect(page.locator("#filter-sheet")).toBeHidden();
-  }
 }
 
 /**

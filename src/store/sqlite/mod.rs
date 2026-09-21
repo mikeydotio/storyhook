@@ -36,6 +36,7 @@ mod dropped_cleanup;
 mod engine_reset;
 mod landing;
 mod ownership;
+mod project_recovery;
 pub(crate) mod read;
 mod story_reset;
 pub(crate) mod write;
@@ -822,6 +823,19 @@ impl Store for SqliteStore {
 macro_rules! impl_read_ops {
     ($ty:ident) => {
         impl ReadOps for $ty<'_> {
+            fn project_recoveries(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::ProjectRecovery>, StoreError> {
+                project_recovery::list(&self.conn, project)
+            }
+            fn project_recovery_observations(
+                &self,
+                project: ProjectId,
+                recovery: &str,
+            ) -> Result<Vec<crate::store::ProjectRecoveryObservation>, StoreError> {
+                project_recovery::observations(&self.conn, project, recovery)
+            }
             fn landing_intents(&self) -> Result<Vec<crate::store::LandingIntent>, StoreError> {
                 landing::read(&self.conn)
             }
@@ -1115,6 +1129,25 @@ impl WriteOps for SqliteWriteTx<'_> {
         record: &crate::store::Continuation,
     ) -> Result<(), StoreError> {
         continuation::insert(&self.conn, record)
+    }
+    fn insert_project_recovery(
+        &mut self,
+        record: &crate::store::ProjectRecovery,
+    ) -> Result<bool, StoreError> {
+        project_recovery::insert(&self.conn, record)
+    }
+    fn update_project_recovery(
+        &mut self,
+        record: &crate::store::ProjectRecovery,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        project_recovery::update(&self.conn, record, expected)
+    }
+    fn insert_project_recovery_observation(
+        &mut self,
+        record: &crate::store::ProjectRecoveryObservation,
+    ) -> Result<bool, StoreError> {
+        project_recovery::insert_observation(&self.conn, record)
     }
     fn update_continuation(
         &mut self,

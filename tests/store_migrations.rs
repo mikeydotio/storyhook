@@ -736,10 +736,10 @@ fn the_sql_backfill_and_the_rust_parser_agree() {
 /// this is the exact shape SH-130's constraint needs and the exact shape that
 /// destroys data when foreign keys are left on.
 ///
-/// It opens by dropping `events_reject_delete` and closes by putting it back,
+/// It drops and restores the event and project-observation delete guards,
 /// and that bracket is **not optional** — it is steps 3 and 8 of SQLite's own
-/// procedure, applied to the one trigger that is not attached to `stories` and
-/// still has to be reconstructed. `ALTER TABLE … RENAME TO` re-parses every
+/// procedure, applied to dependent triggers not attached to `stories` that
+/// still have to be reconstructed. `ALTER TABLE … RENAME TO` re-parses every
 /// trigger in the schema so it can rewrite references to the table being
 /// renamed; since SH-130's second half, `events_reject_delete` references
 /// `stories`, and between the `DROP TABLE` and the rename there is no such
@@ -747,6 +747,7 @@ fn the_sql_backfill_and_the_rust_parser_agree() {
 /// is the measurement that keeps this paragraph true.
 const REBUILD_STORIES: &str = "
     DROP TRIGGER events_reject_delete;
+    DROP TRIGGER project_recovery_observations_reject_delete;
 
     CREATE TABLE stories_new (
         project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -776,6 +777,12 @@ const REBUILD_STORIES: &str = "
     DROP TABLE stories;
     ALTER TABLE stories_new RENAME TO stories;
 
+    CREATE TRIGGER project_recovery_observations_reject_delete
+    BEFORE DELETE ON project_recovery_observations
+    WHEN EXISTS(SELECT 1 FROM projects WHERE id=OLD.project_id)
+      AND EXISTS(SELECT 1 FROM stories WHERE project_id=OLD.project_id AND story_no=OLD.story_no)
+      AND EXISTS(SELECT 1 FROM project_recoveries WHERE project_id=OLD.project_id AND id=OLD.recovery_id)
+    BEGIN SELECT RAISE(ABORT, 'project recovery observations are append-only'); END;
     CREATE TRIGGER events_reject_delete
     BEFORE DELETE ON events
     WHEN EXISTS (SELECT 1 FROM projects WHERE id = OLD.project_id)
@@ -862,6 +869,8 @@ fn a_rebuild_migration_that_declares_foreign_keys_off_keeps_its_child_rows() {
 
     let conn = Connection::open(store.path()).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
+    conn.execute_batch("INSERT INTO project_recoveries VALUES('recovery',1,'missing-certification','gate',0,1,'{}');
+        INSERT INTO project_recovery_observations VALUES(1,'recovery',1,1,'attempt','2026-09-19T00:00:00Z','{}');").unwrap();
     migrate::run(
         &conn,
         &with_extra_migration_flagged(REBUILD_STORIES, true),
@@ -875,6 +884,19 @@ fn a_rebuild_migration_that_declares_foreign_keys_off_keeps_its_child_rows() {
         "the label must survive a rebuild of the table it references"
     );
     assert_eq!(user_version(store.path()), NEXT_VERSION);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM project_recovery_observations",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert!(
+        conn.execute("DELETE FROM project_recovery_observations", [])
+            .is_err()
+    );
 }
 
 #[test]
@@ -912,6 +934,7 @@ fn a_rebuild_that_leaves_a_dangling_reference_is_refused() {
     // rebuild drops a story its label still names.
     const REBUILD_LOSING_A_ROW: &str = "
         DROP TRIGGER events_reject_delete;
+        DROP TRIGGER project_recovery_observations_reject_delete;
         CREATE TABLE stories_new (
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             story_no   INTEGER NOT NULL,
@@ -929,6 +952,12 @@ fn a_rebuild_that_leaves_a_dangling_reference_is_refused() {
         );
         DROP TABLE stories;
         ALTER TABLE stories_new RENAME TO stories;
+        CREATE TRIGGER project_recovery_observations_reject_delete
+        BEFORE DELETE ON project_recovery_observations
+        WHEN EXISTS(SELECT 1 FROM projects WHERE id=OLD.project_id)
+          AND EXISTS(SELECT 1 FROM stories WHERE project_id=OLD.project_id AND story_no=OLD.story_no)
+          AND EXISTS(SELECT 1 FROM project_recoveries WHERE project_id=OLD.project_id AND id=OLD.recovery_id)
+        BEGIN SELECT RAISE(ABORT, 'project recovery observations are append-only'); END;
         CREATE TRIGGER events_reject_delete
         BEFORE DELETE ON events
         WHEN EXISTS (SELECT 1 FROM projects WHERE id = OLD.project_id)
@@ -4091,5 +4120,58 @@ fn continuation_message_migration_preserves_legacy_records_and_unique_delivery()
             [&legacy]
         )
         .is_err()
+    );
+}
+
+#[test]
+fn project_recovery_migration_preserves_stories_and_starts_without_inferred_faults() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..46]).unwrap();
+    seed_a_labelled_story(store.path());
+    let before = {
+        let conn = Connection::open(store.path()).unwrap();
+        conn.query_row(
+            "SELECT snapshot FROM stories WHERE project_id=1 AND story_no=1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+    };
+    let report = store.migrate().unwrap();
+    assert_eq!(report.from_version, 46);
+    assert!(report.backup.is_some());
+    let conn = Connection::open(store.path()).unwrap();
+    let after: String = conn
+        .query_row(
+            "SELECT snapshot FROM stories WHERE project_id=1 AND story_no=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(before, after);
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM project_recoveries", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM project_recovery_observations",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert!(
+        conn.prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none()
     );
 }

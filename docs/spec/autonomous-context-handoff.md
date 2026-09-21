@@ -191,3 +191,51 @@ The sibling Codex plan-approval guard remains intentional: it applies only after
 administrative handling and cannot consume or approve a context handoff. Claude
 uses the shared administrative handler and receives the same bounded admission
 and explicit refusal behavior.
+
+
+## Lost request responses — SH-742
+
+The CLI deadline does not cancel daemon execution. A request can be accepted
+before its response is lost. Transport failure or undecodable request output
+therefore returns native Stop feedback for **status inspection only**. It does
+not replay the request, issue an atomic native-feedback receipt, approve a plan,
+or authorize implementation. The owning session must match retained provider,
+session, message generation, and handoff evidence, perform fresh review, and
+acknowledge an accepted request before resuming previously authorized work.
+Plan mode keeps its ordinary approval boundary. Real holds remain in force.
+
+Explicit decoded supervisor refusals and invalid input remain diagnostic-only.
+Nonzero subprocess errors retain bounded stdout and stderr, so JSON-only
+DeadlineExceeded output is not replaced by an empty error. The hook keeps its
+bounded deadline; increasing that deadline cannot remove the lost-response
+window. The cause of an individual slow request requires separate evidence.
+
+## Accepted after deadline — SH-744
+
+An isolated regression runs the production CLI, Stop adapter, daemon intake,
+and persistent continuation service. A fault-injection build delays the reply
+for three seconds **after** the request transaction commits; the unchanged
+Stop call gives its CLI two seconds. In one isolated run, provider capture was
+observed at 218 ms, durable admission at 229 ms, and the Stop hook's lost-reply
+feedback at 2,167 ms from launch. The test then proves that the one durable
+`awaiting-ack` request survives and an identical request has the same ID with
+`native_feedback: false`. These observations measure the client/server timing
+mismatch under a controlled delay; they do not establish why the live
+SH-742 request took longer than its deadline. The test replaces only the
+external provider capture endpoint and does not touch the live SH-742 lane.
+
+After 45 seconds without a receiving review, the supervisor keeps its existing
+`needs-attention` status and does not type into a live provider. The shared
+story view exposes an actionable continuation alert with the exact request ID,
+diagnosis, and read-only status command. CLI list/show and the dashboard card
+and detail banner display it. The story remains in its literal state, and the
+outstanding continuation still prevents submission. A valid late acknowledgement
+or explicit supersession removes the alert; neither the alert nor a status read
+grants approval or acknowledges a request. The receiver must use the exact
+current session, story sequence, and Git HEAD after reviewing pending comments,
+corrections, holds, and the original handoff evidence.
+
+The sibling `codex_stop.py` eligibility lookup and `stop-handoff.sh` handoff
+query are reads. `compact_receipt.py` records an informational receipt, but
+its failure cannot create a second native continuation or complete the required
+receiving acknowledgement. They retain their existing deadlines and ownership.

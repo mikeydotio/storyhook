@@ -8,7 +8,11 @@
 //! [`crate::env::is_test_build`] remains the single source of that capability.
 
 /// Environment variables whose instructions only a fault-injection build can honor.
-pub const GUARDED_VARIABLES: [&str; 2] = ["STORYHOOK_FAULT", "STORYHOOK_TEST_PANIC"];
+pub const GUARDED_VARIABLES: [&str; 3] = [
+    "STORYHOOK_FAULT",
+    "STORYHOOK_TEST_PANIC",
+    "STORYHOOK_TEST_CONTINUATION_REPLY_DELAY_MS",
+];
 
 /// An unsupported request for fault-injection behavior.
 #[derive(Debug, Clone, PartialEq, Eq)]

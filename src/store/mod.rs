@@ -60,8 +60,10 @@
 
 pub mod block_delivery;
 pub mod continuation;
+pub mod project_recovery;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
 pub use continuation::{Continuation, ContinuationPhase, ContinuationStatus};
+pub use project_recovery::{ProjectRecovery, ProjectRecoveryObservation};
 pub mod conformance;
 mod dropped_cleanup;
 pub use dropped_cleanup::{DroppedCleanup, DroppedCleanupPhase};
@@ -267,6 +269,14 @@ pub struct WriteWithSnapshot<T> {
 /// project slug stored on the run; [`Self::live_engine_runs`] is deliberately
 /// machine-wide for restart reconciliation and lane-budget accounting.
 pub trait ReadOps {
+    /// Project-fault coordinators in creation order, including retained history.
+    fn project_recoveries(&self, project: ProjectId) -> Result<Vec<ProjectRecovery>, StoreError>;
+    /// Immutable observations belonging to this project and recovery identity.
+    fn project_recovery_observations(
+        &self,
+        project: ProjectId,
+        recovery: &str,
+    ) -> Result<Vec<ProjectRecoveryObservation>, StoreError>;
     /// Every unresolved external merge authorization across projects.
     fn landing_intents(&self) -> Result<Vec<LandingIntent>, StoreError>;
     /// Durable context handoffs in creation order.
@@ -562,6 +572,19 @@ pub trait ReadOps {
 
 /// Everything that can be written inside a transaction.
 pub trait WriteOps: ReadOps {
+    /// Acquire a new active fault identity; false means an active owner already exists.
+    fn insert_project_recovery(&mut self, record: &ProjectRecovery) -> Result<bool, StoreError>;
+    /// Advance coordination state once without changing immutable identity.
+    fn update_project_recovery(
+        &mut self,
+        record: &ProjectRecovery,
+        expected: i64,
+    ) -> Result<bool, StoreError>;
+    /// Append evidence; identical replay returns false and conflicting replay fails.
+    fn insert_project_recovery_observation(
+        &mut self,
+        observation: &ProjectRecoveryObservation,
+    ) -> Result<bool, StoreError>;
     /// Inserts immutable external merge authority, refusing a second unresolved attempt.
     fn insert_landing_intent(&mut self, intent: &LandingIntent) -> Result<(), StoreError>;
 

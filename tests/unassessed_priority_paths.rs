@@ -50,7 +50,11 @@ fn story_created_sites(files: &[(String, String)], allowed: &[(&str, &str)]) -> 
 
 /// Store code is separately exempt because conformance and migration fixtures
 /// must construct legacy histories deliberately.
-const ALLOWED: [(&str, &str); 7] = [
+const ALLOWED: [(&str, &str); 8] = [
+    (
+        "src/service/project_recovery/authority.rs",
+        "recovery reads historical creation and state transitions to retain authority; this pattern constructs no events",
+    ),
     (
         "src/domain.rs",
         "the enum, fold and domain fixtures; not a production creation door",

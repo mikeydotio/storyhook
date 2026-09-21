@@ -81,6 +81,33 @@ fn web_dispatch_uses_default_server_despite_daemons_unrelated_tmux_context() {
         &["display-message", "-p", "#{socket_path},#{pid},0"],
     );
     let inherited_pane = tmux(&unrelated_socket, &["display-message", "-p", "#{pane_id}"]);
+    for socket in [&default_socket, &unrelated_socket] {
+        for name in [
+            "STORY_BIN",
+            "STORYHOOK_GITHUB_AUTHORITY",
+            "STORYHOOK_GITHUB_EXPECTED",
+        ] {
+            tmux(
+                socket,
+                &["set-environment", "-g", name, "stale-server-value"],
+            );
+        }
+    }
+    let capture = scratch.path().join("capture.py");
+    let receipt = scratch.path().join("pane.json");
+    std::fs::write(
+        &capture,
+        r#"import json, os, pathlib, sys
+target = pathlib.Path(sys.argv[1])
+temporary = target.with_suffix('.tmp')
+temporary.write_text(json.dumps({name: os.environ.get(name) for name in
+    ('STORY_BIN', 'STORYHOOK_GITHUB_AUTHORITY', 'STORYHOOK_GITHUB_EXPECTED',
+     'GH_ENTERPRISE_TOKEN', 'GH_CONFIG_DIR')}))
+temporary.replace(target)
+"#,
+    )
+    .expect("write actual pane environment observer");
+    let launcher = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/lib/tmux-launch.py");
     let helper = scratch.path().join("probe.sh");
     // Set the fixture namespace inside the helper because TMUX_TMPDIR is not
     // part of the production allowlist. Every implicit tmux target stays isolated.
@@ -94,9 +121,20 @@ export TMUX_TMPDIR='{}'
 auth=false
 if [ "${{GH_ENTERPRISE_TOKEN:-}}" = fixture-enterprise ] && [ "${{GH_CONFIG_DIR:-}}" = /fixture/gh ]; then auth=true; fi
 socket=$(tmux display-message -p '#{{socket_path}}')
-printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$auth"
+rm -f '{receipt}'
+pane=$(python3 '{launcher}' new-window -d -t fixture: -P -F '#{{pane_id}}' "python3 '{capture}' '{receipt}'; sleep 120")
+trap 'tmux kill-pane -t "$pane"' EXIT
+for ((i=0; i<200; i++)); do
+  [ ! -f '{receipt}' ] || break
+  sleep 0.025
+done
+[ -f '{receipt}' ] || {{ echo 'pane environment receipt missing' >&2; exit 1; }}
+printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s,"binary":"%s","pane":%s}}\n' "$socket" "$*" "$auth" "$STORY_BIN" "$(cat '{receipt}')"
 "#,
-            tmux_root.display()
+            tmux_root.display(),
+            receipt = receipt.display(),
+            launcher = launcher.display(),
+            capture = capture.display(),
         ),
     )
     .expect("write the boundary probe");
@@ -104,6 +142,12 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$au
     let mut interactive = Command::new("bash");
     interactive
         .arg(&helper)
+        .env("STORY_BIN", env.raw_story(scratch.path()).get_program())
+        .env("STORYHOOK_GITHUB_AUTHORITY", "/interactive/authority")
+        .env(
+            "STORYHOOK_GITHUB_EXPECTED",
+            "github.example/interactive/repo",
+        )
         .env("TMUX", inherited_tmux.trim())
         .env("TMUX_PANE", inherited_pane.trim());
     let output = ChildGuard::spawn_with_output(&mut interactive)
@@ -123,6 +167,7 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$au
         unrelated_socket.to_string_lossy().as_ref(),
         "direct helper invocation must retain the interactive caller's server"
     );
+    assert_pane_routing(&direct);
 
     let mut serve = env.raw_story(scratch.path());
     serve
@@ -132,6 +177,8 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$au
         .env("STORYHOOK_DISPATCH_SCRIPT", &helper)
         .env("GH_ENTERPRISE_TOKEN", "fixture-enterprise")
         .env("GH_CONFIG_DIR", "/fixture/gh")
+        .env("STORYHOOK_GITHUB_AUTHORITY", "/daemon/authority")
+        .env("STORYHOOK_GITHUB_EXPECTED", "github.example/daemon/repo")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut daemon =
@@ -208,6 +255,7 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$au
             record["payload"]["auth"], true,
             "dispatch must retain gh authentication"
         );
+        assert_pane_routing(&record["payload"]);
         let argv = record["payload"]["argv"].as_str().expect("probe argv");
         assert!(
             argv.contains(&format!("--agent={agent}")),
@@ -221,22 +269,62 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s}}\n' "$socket" "$*" "$au
     }
 }
 
+/// Check the observed pane, after the real manual or HTTP dispatch boundary.
+fn assert_pane_routing(payload: &serde_json::Value) {
+    assert!(
+        payload["binary"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert_eq!(payload["pane"]["STORY_BIN"], payload["binary"], "{payload}");
+    for name in [
+        "STORYHOOK_GITHUB_AUTHORITY",
+        "STORYHOOK_GITHUB_EXPECTED",
+        "GH_ENTERPRISE_TOKEN",
+        "GH_CONFIG_DIR",
+    ] {
+        assert_eq!(payload["pane"][name], "", "{name}: {payload}");
+    }
+}
+
 #[test]
 fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
-    use storyhook::service::engine::{Dispatcher, ShellDispatcher, WindowProbe};
+    use storyhook::service::engine::{Dispatcher, ShellDispatcher, TMUX_TIMEOUT, WindowProbe};
 
     const RESULT_ENV: &str = "STORY_ENGINE_TMUX_RESULT";
     if let Some(result_path) = std::env::var_os(RESULT_ENV) {
         // Process-local environment poisoning cannot race sibling Rust tests.
         let env = TestEnv::isolated();
         let dispatcher = ShellDispatcher::new("unused-helper", env.environment());
-        let probe = dispatcher.probe_window("@1");
+        let deadline = Instant::now() + STARTUP_DEADLINE;
+        let mut unanswered = Vec::new();
+        // Reconciliation observes again after Unanswered; only an answered
+        // probe can establish server routing. Gone is never a retry condition.
+        let probe = loop {
+            match dispatcher.probe_window("@1") {
+                alive @ WindowProbe::Alive { .. } => break alive,
+                WindowProbe::Gone { detail } => {
+                    panic!(
+                        "engine selected a missing or wrong occupant: {detail}; prior probes: {unanswered:?}"
+                    );
+                }
+                WindowProbe::Unanswered { detail } => {
+                    unanswered.push(detail);
+                    assert!(
+                        Instant::now() < deadline,
+                        "engine never answered within the harness deadline: {unanswered:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+        };
         let stopped = dispatcher.kill_window("@1");
         std::fs::write(
             result_path,
             serde_json::json!({
                 "alive": matches!(probe, WindowProbe::Alive { .. }),
                 "probe": format!("{probe:?}"),
+                "unanswered": unanswered,
                 "stop_error": stopped.err().map(|error| error.to_string()),
             })
             .to_string(),
@@ -303,8 +391,9 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
         "servers need distinguishable occupants"
     );
 
-    // The adapter changes only tmux's fixture namespace. Real tmux executes
-    // every command, including the potentially destructive kill-window call.
+    // Delay the first probe past the production budget to reproduce a busy
+    // host deterministically. Later calls still execute real tmux, including
+    // the potentially destructive kill-window call, in the private namespace.
     let real_tmux = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
         .map(|directory| directory.join("tmux"))
         .find(|path| path.is_file())
@@ -315,8 +404,11 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
     std::fs::write(
         &adapter,
         format!(
-            "#!/bin/sh\nexport TMUX_TMPDIR='{}'\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\nset -eu\nexport TMUX_TMPDIR='{}'\nif [ \"$1\" = display-message ] && [ ! -e '{}' ]; then\n  touch '{}'\n  sleep {}\nfi\nexec '{}' \"$@\"\n",
             tmux_root.display(),
+            scratch.path().join("first-probe-delayed").display(),
+            scratch.path().join("first-probe-delayed").display(),
+            TMUX_TIMEOUT.as_secs() + 1,
             real_tmux.display()
         ),
     )
@@ -355,6 +447,16 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
     let observed: serde_json::Value =
         serde_json::from_slice(&std::fs::read(result_path).expect("engine result file"))
             .expect("engine result JSON");
+    assert!(
+        observed["unanswered"].as_array().is_some_and(|probes| {
+            probes.iter().any(|detail| {
+                detail
+                    .as_str()
+                    .is_some_and(|text| text.contains("tmux did not answer the liveness probe"))
+            })
+        }),
+        "the fixture must exercise recovery from a real probe timeout: {observed}"
+    );
     let default_windows = tmux(
         &default_socket,
         &["list-windows", "-a", "-F", "#{window_id}"],
@@ -396,6 +498,7 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             verifying_since: None,
             verifying_generation: None,
             blocking_revision: None,
+            human_only_revision: None,
             checkout: std::env::var_os("STORY_CALLBACK_CHECKOUT")
                 .expect("fixture checkout")
                 .into(),

@@ -2,12 +2,13 @@
 //! process-wide sink; library users and CLI clients cannot capture each other's
 //! activity. File-backed observers never wait for a descendant to close a pipe.
 
+pub(crate) mod context;
 mod observe;
 mod view;
-mod window;
+pub(crate) mod window;
 
 pub(crate) use observe::OutputWatch;
-pub use view::read_logs;
+pub use view::{read_logs, read_logs_from};
 pub(crate) use window::command_source;
 
 use std::fs::{File, OpenOptions};
@@ -106,13 +107,30 @@ fn clean(text: &str) -> String {
 
 /// Whether this process is a daemon with an installed activity sink.
 pub(crate) fn enabled() -> bool {
-    ACTIVE.get().is_some()
+    ACTIVE.get().is_some() || context::current().is_some()
 }
 
 /// Emits metadata without ever changing a command's outcome.
 pub(crate) fn emit(level: &str, source: &str, stream: &str, context: &str, message: &str) {
+    let project = self::context::current();
+    let context = project.as_ref().map_or_else(
+        || context.to_owned(),
+        |project| format!("{} {context}", project.label),
+    );
+    if let Some(project) = project
+        && let Err(error) = Journal::new(project.directory).append(
+            Utc::now(),
+            level,
+            source,
+            stream,
+            &context,
+            message,
+        )
+    {
+        report_failure(&error);
+    }
     if let Some(journal) = ACTIVE.get()
-        && let Err(error) = journal.append(Utc::now(), level, source, stream, context, message)
+        && let Err(error) = journal.append(Utc::now(), level, source, stream, &context, message)
     {
         report_failure(&error);
     }
@@ -128,7 +146,19 @@ fn report_failure(error: &io::Error) {
 
 /// Passes only the journal destination to owned scripts, never a store handle.
 pub(crate) fn configure(command: &mut std::process::Command) {
-    if let Some(journal) = ACTIVE.get() {
+    if let Some(project) = context::current() {
+        if !command
+            .get_envs()
+            .any(|(key, _)| key == "STORYHOOK_ACTIVITY_LOG_DIR")
+        {
+            command.env("STORYHOOK_ACTIVITY_LOG_DIR", project.directory);
+        }
+        command.env("STORYHOOK_ACTIVITY_CONTEXT", project.label);
+    } else if let Some(journal) = ACTIVE.get()
+        && !command
+            .get_envs()
+            .any(|(key, _)| key == "STORYHOOK_ACTIVITY_LOG_DIR")
+    {
         command.env("STORYHOOK_ACTIVITY_LOG_DIR", &journal.directory);
     }
 }
@@ -185,12 +215,6 @@ pub(crate) fn start(env: &Environment) -> ActivityGuard {
         }
     };
     *DIAGNOSTICS.lock().unwrap_or_else(PoisonError::into_inner) = diagnostics;
-    if env.verifier_mirror_enabled() {
-        #[cfg(test)]
-        isolation_tests::WINDOW_STARTS.fetch_add(1, Ordering::SeqCst);
-        let env = env.clone();
-        std::thread::spawn(move || window::open(&env));
-    }
     ActivityGuard
 }
 

@@ -82,6 +82,9 @@ fn verifier_usage_covers_every_control() {
         "verifier drain",
         "verifier ack 2:28821",
         "verifier ack 2:28821 --leave-stopped",
+        "verifier gate-config /tmp/project 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567 --json",
+        "verifier repair show recovery-1 --json",
+        "verifier repair decide recovery-1 --input decision.json",
     ]
     .into_iter()
     .map(|command| command.split_whitespace().map(str::to_owned).collect())

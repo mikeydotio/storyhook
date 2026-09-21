@@ -71,6 +71,19 @@ impl ReferencedBy {
     }
 }
 
+/// An unresolved continuation that requires review before work can be submitted.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ContinuationAlert {
+    /// Durable request identity to inspect and acknowledge from its owner.
+    pub request_id: String,
+    /// Current request status; an alert is emitted only for `needs-attention`.
+    pub status: String,
+    /// Supervisor diagnosis without provider transcript or handoff content.
+    pub detail: String,
+    /// Read-only command that begins exact-request recovery.
+    pub next_step: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoryView {
     /// Incomplete reset authority and diagnostics, absent in ordinary operation.
@@ -83,6 +96,9 @@ pub struct StoryView {
     pub referenced_by: ReferencedBy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Actionable supervisor failures, separate from operator-owned story holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continuation_alerts: Vec<ContinuationAlert>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flagged_reasons: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -843,6 +859,8 @@ pub struct LogEntry {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Response {
+    /// Durable project fault evidence and the accepted repair disposition.
+    ProjectRecovery(Box<crate::service::project_recovery::RecoveryView>),
     /// Shared verifier snapshot, rendered by the client.
     VerifierStatus(Box<crate::daemon::verification::status::VerifierStatus>),
     /// Existing command result with additive project-level verifier evidence.
@@ -1112,6 +1130,9 @@ pub fn render_error(error: &AppError, json: bool) -> String {
 
 fn render_json(response: &Response) -> String {
     let rendered = match response {
+        Response::ProjectRecovery(view) => {
+            serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "recovery":view}))
+        }
         Response::VerifierStatus(status) => {
             serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "verifier":status}))
         }
@@ -1435,6 +1456,22 @@ fn render_json(response: &Response) -> String {
 
 fn render_human(response: &Response) -> String {
     match response {
+        Response::ProjectRecovery(view) => format!(
+            "Recovery {} (revision {})\nFault: {} at {}\nAssessment: {:?} — {}\nRepair: {}\nAffected submissions: {}\nRead with --json for retained evidence and exact decision authority.\n",
+            view.record.id,
+            view.record.revision,
+            view.record.code,
+            view.record.locus,
+            view.state.assessment.status,
+            view.state.assessment.detail,
+            view.state
+                .decision
+                .as_ref()
+                .and_then(|d| d.repair_story)
+                .map(|n| n.get().to_string())
+                .unwrap_or_else(|| "none".into()),
+            view.state.subjects.len()
+        ),
         Response::VerifierStatus(status) => status.render_human(),
         Response::WithVerifier {
             response,
@@ -1561,8 +1598,13 @@ fn render_human(response: &Response) -> String {
                 // the council verdict on SH-175 for why `list` diverges from
                 // the web board here.
                 let draft = if story.story.draft { " [draft]" } else { "" };
+                let continuation = if story.continuation_alerts.is_empty() {
+                    ""
+                } else {
+                    " [continuation needs attention]"
+                };
                 body.push_str(&format!(
-                    "{} [{}]{}{} {}{}{}{}{}{}{}\n",
+                    "{} [{}]{}{} {}{}{}{}{}{}{}{}\n",
                     story.story.id,
                     story.story.state,
                     priority,
@@ -1573,8 +1615,15 @@ fn render_human(response: &Response) -> String {
                     archived,
                     draft,
                     flagged,
+                    continuation,
                     stale
                 ));
+                for alert in &story.continuation_alerts {
+                    body.push_str(&format!(
+                        "  continuation {}: {}. {}\n",
+                        alert.request_id, alert.detail, alert.next_step
+                    ));
+                }
             }
             // Same `warning: ` shape [`Response::MessageWithWarnings`] and
             // `render_story` already use, so all three read alike (SH-358).

@@ -60,13 +60,7 @@ fn closed(fixture: &ServiceFixture, project: ProjectId, id: &str) -> bool {
 #[test]
 fn polling_defaults_off_and_reloads_explicit_consent() {
     let fixture = ServiceFixture::new();
-    let id = seed(
-        &fixture,
-        fixture.project(),
-        "github.example.com",
-        7,
-        false,
-    );
+    let id = seed(&fixture, fixture.project(), "github.example.com", 7, false);
     let fake = FakeGithubApiFactory::new();
     fake.seed_pull_request(7, "closed", true);
     tick(fixture.store(), fixture.env(), &fake);

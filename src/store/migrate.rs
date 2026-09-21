@@ -61,9 +61,10 @@ pub struct Migration {
     /// Default `false`, and it should stay that way for every migration that
     /// does not rebuild a referenced table.
     ///
-    /// **A rebuild of `stories` needs one more thing since schema 5**: drop
-    /// `events_reject_delete` at the top of the migration and recreate it at
-    /// the bottom. That trigger names `stories`, and `ALTER TABLE … RENAME TO`
+    /// **A rebuild of `stories` must preserve its dependent guards**: drop
+    /// `events_reject_delete` and (since schema 47)
+    /// `project_recovery_observations_reject_delete`, then recreate them at
+    /// the bottom. These triggers name `stories`, and `ALTER TABLE … RENAME TO`
     /// re-parses every trigger in the schema — so between the `DROP TABLE` and
     /// the rename there is nothing for it to resolve. `0005_purge_story.sql`
     /// explains it, and `tests/store_migrations.rs` measures both directions.
@@ -442,6 +443,12 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 46,
         name: "continuation_messages",
         sql: include_str!("schema/0046_continuation_messages.sql"),
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 47,
+        name: "project_recovery",
+        sql: include_str!("schema/0047_project_recovery.sql"),
         foreign_keys_off: false,
     },
 ];

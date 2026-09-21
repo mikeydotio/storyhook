@@ -11,6 +11,8 @@ import subprocess
 import tempfile
 import unittest
 
+from test_tmux_routing import TmuxRoutingTests
+
 
 HELPER = Path(__file__).resolve().parents[1] / "lib/tmux-launch.py"
 

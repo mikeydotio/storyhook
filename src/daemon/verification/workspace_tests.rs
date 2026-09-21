@@ -21,6 +21,37 @@ fn candidate(store: &SqliteStore, env: &Environment, project: ProjectId) -> Veri
     VerificationQueue::new(store).next().unwrap().unwrap()
 }
 
+#[test]
+fn log_context_uses_only_the_matching_story_and_generation_attempt() {
+    let fixture = ServiceFixture::new();
+    let store = SqliteStore::open(fixture.store().path()).unwrap();
+    let project = ProjectId::new(fixture.project().get());
+    let env = Environment::at(fixture.cwd());
+    let mut candidate = candidate(&store, &env, project);
+    candidate.checkout = fixture.cwd().to_path_buf();
+    let activity = VerificationActivity::new();
+    let guard = activity.acquire(&candidate, env.now());
+    let mut other = candidate.clone();
+    other.story_id = "SH-999".into();
+    let actuator = ShellVerificationActuator::new(env).with_activity(activity);
+    let mut stale = candidate.clone();
+    stale.verifying_generation = None;
+    for unmatched in [&other, &stale] {
+        let _scope = actuator.log_scope(unmatched);
+        let context = crate::daemon::activity::context::current().unwrap();
+        assert!(context.label.contains(&unmatched.story_id));
+        assert!(!context.label.contains(&guard.active.attempt_id));
+        assert!(context.label.contains(&verification_request_id(unmatched)));
+    }
+    let _scope = actuator.log_scope(&candidate);
+    assert!(
+        crate::daemon::activity::context::current()
+            .unwrap()
+            .label
+            .contains(&guard.active.attempt_id)
+    );
+}
+
 fn helper(root: &std::path::Path) -> PathBuf {
     let path = root.join("notify.sh");
     std::fs::write(
@@ -324,5 +355,126 @@ while True:
                 .unwrap()
                 .is_some()
         );
+    }
+}
+
+#[test]
+fn recovery_notification_uses_target_workspace_and_ignores_other_verifier_cancellation() {
+    let fixture = ServiceFixture::new();
+    let store = SqliteStore::open(fixture.store().path()).unwrap();
+    let project = ProjectId::new(fixture.project().get());
+    let env = Environment::at(fixture.cwd());
+    let mut original = candidate(&store, &env, project);
+    original.checkout = fixture.cwd().to_path_buf();
+    git(&original.checkout, &["init", "-q"], None).unwrap();
+    let activity = VerificationActivity::new();
+    let guard = activity
+        .try_acquire(&store, &original, env.now())
+        .unwrap()
+        .unwrap();
+    activity.cancellation_for(project).cancel();
+    let mut target = original.clone();
+    target.story_id = "SH-2".into();
+    let lock = WorkspaceLock::try_acquire(fixture.cwd(), &target.story_id)
+        .unwrap()
+        .unwrap();
+    let actuator =
+        ShellVerificationActuator::with_paths(env, helper(fixture.cwd()), "unused-story".into())
+            .with_activity(activity.clone());
+    assert_eq!(
+        actuator
+            .notify_owned(
+                &target,
+                "independent recovery",
+                Some(&lock),
+                &Cancellation::default()
+            )
+            .unwrap(),
+        NotifyDelivery::Delivered
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.cwd().join("delivered")).unwrap(),
+        "independent recovery"
+    );
+    assert!(
+        WorkspaceLock::try_acquire(fixture.cwd(), &original.story_id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        WorkspaceLock::try_acquire(fixture.cwd(), &target.story_id)
+            .unwrap()
+            .is_none()
+    );
+    drop(lock);
+    drop(guard);
+    assert!(
+        WorkspaceLock::try_acquire(fixture.cwd(), &target.story_id)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn recovery_dispatch_retains_target_lock_and_uses_explicit_fresh_or_resume_mode() {
+    let fixture = ServiceFixture::new();
+    let store = SqliteStore::open(fixture.store().path()).unwrap();
+    let project = ProjectId::new(fixture.project().get());
+    let env = Environment::at(fixture.cwd());
+    let mut original = candidate(&store, &env, project);
+    original.checkout = fixture.cwd().to_path_buf();
+    git(fixture.cwd(), &["init", "-q"], None).unwrap();
+    let activity = VerificationActivity::new();
+    let _guard = activity
+        .try_acquire(&store, &original, env.now())
+        .unwrap()
+        .unwrap();
+    activity.cancellation_for(project).cancel();
+    let mut target = original;
+    target.story_id = "SH-2".into();
+    let lock = WorkspaceLock::acquire(fixture.cwd(), &target.story_id).unwrap();
+    let script = fixture.cwd().join("recovery-dispatch.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/bash
+python3 - "$@" <<'PY'
+import fcntl, json, os, sys
+args = sys.argv[1:]
+assert args[2:4] == ['dispatch', 'SH-2'], args
+fd = int(os.environ['STORY_WORKSPACE_LOCK_FD'])
+path = '.git/storyhook/workspace-locks/SH-2.lock'
+a, b = os.fstat(fd), os.stat(path)
+assert (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+with open(path, 'a') as rival:
+    try: fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError: pass
+    else: raise AssertionError('dispatch lost target ownership')
+with open('dispatch-argv.json', 'w') as out: json.dump(args, out)
+print(json.dumps({'ok': True}))
+PY
+"#,
+    )
+    .unwrap();
+    let actuator = ShellVerificationActuator::with_paths(env, script, "unused-story".into())
+        .with_activity(activity);
+    for resume in [false, true] {
+        actuator
+            .dispatch_owned(
+                &target,
+                &ResumePlan::default(),
+                resume,
+                ControlOwner {
+                    workspace: Some(&lock),
+                    cancellation: &Cancellation::default(),
+                },
+            )
+            .unwrap();
+        let args: Vec<String> = serde_json::from_slice(
+            &std::fs::read(fixture.cwd().join("dispatch-argv.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(args.iter().any(|a| a == "--resume"), resume);
+        assert!(args.iter().any(|a| a == "--auto"));
+        assert!(!args.iter().any(|a| a == "--full-auto" || a == "--force"));
     }
 }

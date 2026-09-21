@@ -41,6 +41,7 @@ pub(crate) mod executor_lock;
 pub mod gate_command;
 pub mod gate_output;
 pub mod gate_progress;
+pub mod gate_snapshot;
 pub mod git;
 pub mod git_links;
 #[cfg(feature = "github-pr")]
@@ -55,6 +56,8 @@ pub mod migrate;
 pub mod pr_check;
 pub mod pr_link;
 pub mod project;
+pub mod project_fault;
+pub mod project_recovery;
 pub mod query;
 pub mod questionnaire;
 pub mod relation;

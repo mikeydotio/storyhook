@@ -34,8 +34,8 @@
 //!
 //! SH-538 makes the provider plugin part of the same artifact as the CLI.
 //! Cargo builds generate an `include_bytes!` table for both root marketplace
-//! manifests and every regular file beneath `plugins/story`, preserving the
-//! executable bit. Unlike the optional identity stamp below, this is a release
+//! manifests and regular source files beneath `plugins/story`, preserving the
+//! executable bit and excluding disposable Python caches. Unlike the optional identity stamp below, this is a release
 //! capability: missing, unsafe, symlinked or special entries fail the build.
 //! The standalone identity tests explicitly remove `OUT_DIR`, so they
 //! exercise only the stamp contract they were built to isolate.
@@ -309,6 +309,16 @@ fn collect_regular_files(directory: &Path, files: &mut Vec<PathBuf>) -> io::Resu
     entries.sort_by_key(fs::DirEntry::file_name);
     for entry in entries {
         let path = entry.path();
+        // Imports can create or remove these independently of tracked source.
+        // Embedding them makes the payload depend on local test execution.
+        if entry.file_name() == "__pycache__"
+            || matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("pyc" | "pyo")
+            )
+        {
+            continue;
+        }
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.is_dir() {
             collect_regular_files(&path, files)?;

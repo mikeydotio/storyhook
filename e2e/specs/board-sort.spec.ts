@@ -1,6 +1,5 @@
 import { test, expect } from "./support";
 import {
-  showEpics,
   cleanUpCreatedStories,
   deleteStory,
   openProject,
@@ -452,13 +451,9 @@ test('choosing "Next" ranks a column by the order story next would hand it out, 
   await expect(page.locator("#board-view")).toBeVisible();
   await expect(page.locator(".card", { hasText: leaf })).toBeVisible();
 
-  // SH-495: the story became an epic the moment `addChild` ran, and SH-446
-  // hides epics by default -- so its card is filtered off the board and
-  // `titles.indexOf(epic)` returns -1 rather than the last position. Turned
-  // on AFTER the reload, which is the order that holds whether or not the
-  // filter survives one. The assertion below is about ORDER, so the epic has
-  // to be on the board to be ordered at all.
-  await showEpics(page);
+  // SH-751 makes Type the single owner of epic visibility. Its inclusive
+  // default keeps the epic on the board after the reload, so this assertion
+  // tests ordering without a second visibility control.
 
   await selectColumnSort(page, "todo", "Next ↓");
   await expect(columnSortBtn(page, "todo")).toHaveAttribute(

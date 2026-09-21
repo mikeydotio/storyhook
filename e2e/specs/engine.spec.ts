@@ -9,7 +9,6 @@ import {
   projectSlug,
   requiredEnv,
   seedToken,
-  showEpics,
   THEMES,
 } from "./support";
 
@@ -1524,7 +1523,6 @@ test("an epic replaces ordinary Dispatch with an epic-scoped Full Auto start", a
 
   await page.goto("/");
   await openProject(page, "Alpha Project");
-  await showEpics(page);
   expect(transformedEpicId).not.toBe("");
   const epicCard = page.locator(`.card[data-id="${transformedEpicId}"]`);
   await epicCard.click();

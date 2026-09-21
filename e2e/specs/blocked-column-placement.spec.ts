@@ -118,6 +118,10 @@ test("a story blocked by an ordinary open story stays in Todo with its badge int
   // shown there.
   await openFilters(page);
   await page.locator("#fdd-states .fdd-btn").click();
+  const stateOptions = page.locator("#fdd-states input[type=checkbox]");
+  for (let index = 0; index < await stateOptions.count(); index += 1) {
+    await stateOptions.nth(index).uncheck();
+  }
   await page
     .locator("#fdd-states .fdd-option", { hasText: "blocked" })
     .locator("input[type=checkbox]")
@@ -125,12 +129,7 @@ test("a story blocked by an ordinary open story stays in Todo with its badge int
   await expect(
     page.locator(".card", { hasText: workerTitle }),
   ).toHaveCount(0);
-  // Checking a checkbox doesn't close the dropdown panel -- no second
-  // `.fdd-btn` click needed before reaching the checkbox again to uncheck.
-  await page
-    .locator("#fdd-states .fdd-option", { hasText: "blocked" })
-    .locator("input[type=checkbox]")
-    .uncheck();
+  await page.locator("#filter-clear").click();
 
   // Now the blocker itself needs a person -- both it and the worker
   // display-promote, the worker transitively through the unchanged edge.
@@ -160,15 +159,15 @@ test("a story blocked by an ordinary open story stays in Todo with its badge int
   if (!(await page.locator("#fdd-states .fdd-panel").isVisible())) {
     await page.locator("#fdd-states .fdd-btn").click();
   }
+  for (let index = 0; index < await stateOptions.count(); index += 1) {
+    await stateOptions.nth(index).uncheck();
+  }
   await page
     .locator("#fdd-states .fdd-option", { hasText: "blocked" })
     .locator("input[type=checkbox]")
     .check();
   await expect(page.locator(".card", { hasText: workerTitle })).toBeVisible();
-  await page
-    .locator("#fdd-states .fdd-option", { hasText: "blocked" })
-    .locator("input[type=checkbox]")
-    .uncheck();
+  await page.locator("#filter-clear").click();
 
   // Clearing the blocker's own reason clears the whole chain in one write,
   // with no edge ever removed.

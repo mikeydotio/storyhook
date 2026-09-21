@@ -429,7 +429,14 @@ pub fn publish_once(
     let projects = store.read(|tx| tx.projects())?;
     let mut moved = false;
     for project in projects {
-        moved |= publish_project(store, env, now, activity, project.id)?;
+        moved |= publish_project(store, env, now, activity, project.id).inspect_err(|error| {
+            super::activity::context::project_error(
+                store,
+                project.id,
+                "verification-progress",
+                &error.to_string(),
+            );
+        })?;
     }
     Ok(moved)
 }

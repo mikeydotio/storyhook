@@ -60,6 +60,7 @@ fn candidate(fixture: &ServiceFixture, checkout: &Path) -> VerificationCandidate
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
         blocking_revision: None,
+        human_only_revision: None,
         checkout: checkout.to_path_buf(),
         cleanup_lease: Some(StoryCleanupLease {
             version: CLEANUP_LEASE_VERSION,
@@ -140,7 +141,7 @@ fn record_actuator_children(env: Environment) -> BTreeMap<String, Option<String>
          /usr/bin/env > \"$2.env\"\n\
          printf '%s\\n' '{\"result\":\"merged\",\"detail\":\"environment recorded\"}'\n\
          else\n/usr/bin/env > verify.env\n\
-         printf '%s\\n' '{\"result\":\"certified\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tree\":\"t\",\"detail\":\"environment recorded\"}'\nfi\n",
+         printf '%s\\n' '{\"result\":\"certified\",\"gate\":\"make test\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tree\":\"t\",\"detail\":\"environment recorded\"}'\nfi\n",
     )
     .expect("write environment-recording verification helper");
     let actuator =
@@ -199,6 +200,20 @@ fn record_actuator_children(env: Environment) -> BTreeMap<String, Option<String>
         .map(|door| {
             let bytes = std::fs::read(checkout.path().join(format!("{door}.env")))
                 .expect("the production actuator reached the recording child");
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(
+                text.lines().any(|line| line
+                    == format!(
+                        "STORYHOOK_ACTIVITY_LOG_DIR={}",
+                        checkout.path().join(".storyhook/logs").display()
+                    )),
+                "{door} lost the registered project journal: {text}"
+            );
+            assert!(
+                text.lines().any(|line| line
+                    .starts_with("STORYHOOK_ACTIVITY_CONTEXT=project=fixture SH-1 attempt=")),
+                "{door} lost story/attempt ownership: {text}"
+            );
             (door.into(), mirror_value(&bytes))
         })
         .collect()

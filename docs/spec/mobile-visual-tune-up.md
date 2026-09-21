@@ -72,7 +72,7 @@ Filters opens over that shell; it does not push the story region down:
 │ Filters                        Done │  Labeled modal, explicit close action
 │ Stories                             │
 │ Priority · Assignee · Type · State   │  Scrollable controls; live changes
-│ Show closed · Show epics · Archived │
+│ Show archived                       │
 │ Board display                       │  Only relevant in Board view
 │ Columns · Hide empty columns        │
 │ Clear filters                       │  Existing reset semantics
@@ -85,7 +85,7 @@ Filters opens over that shell; it does not push the story region down:
 | Results | Keep the existing visible/total meaning, including its empty-state behavior. Keep active filtering recognizable while the sheet is closed. Clear moves into the mobile sheet; desktop retains its always-visible Clear control. Do not represent filter activity using color alone. |
 | Automation | Give Full Auto a separate group in the third row. Run uses a quieter outlined treatment and the full accessible name “Run Full Auto”. Preserve its confirmation dialog. Running/paused states keep status and Pause/Resume/Stop available, with one additional status row if needed. Lane details may open the existing operational surface; alerts and acknowledgement are never buried in More. |
 | Filter sheet | Fixed, bottom-aligned, at most 85dvh with the existing vh fallback and safe-area padding. Header/Done stays visible; body scrolls. At most one live set of filter controls is mounted. Reuse current dropdown options, selection logic, and persistence. Changes apply immediately; Done, Escape and backdrop dismissal close without rollback. |
-| Grouping | Stories contains Priority, Assignee, Type, State, Show closed, Show epics and Show archived. Board display contains Columns and Hide empty columns, hidden in List without resetting them. Do not add an Apply transaction or alter Clear's existing treatment of display preferences. |
+| Grouping | Stories contains Priority, Assignee, Type, State and Show archived. Priority, Type and State start fully selected; an empty selection matches no stories. Type owns epic visibility. Board display contains Columns and Hide empty columns, hidden in List without resetting them. Do not add an Apply transaction or alter Clear's existing treatment of display preferences. |
 | Focus | Register the sheet with the existing overlay stack, backdrop, inertness and return-focus system outside the covered app shell. Initial focus goes to its heading; Done is tabbable. Preserve the existing notice-layer exception and nested authorization dialog behavior. A closed sheet has no reachable controls. |
 | Persistence / resize | Filter values persist exactly as today. Mobile sheet-open state is transient and starts closed even if the old desktop disclosure preference was true. Crossing the breakpoint closes the mobile sheet and any filter popover, preserves values, restores desktop disclosure preference, and transfers focus to the equivalent visible filter trigger when necessary. |
 | Desktop | Above 768px retain the inline disclosure and exposed secondary navigation. Share filter grouping, labels, active-summary semantics, and automation separation. The desktop header may wrap under content pressure; it must not create page overflow. |

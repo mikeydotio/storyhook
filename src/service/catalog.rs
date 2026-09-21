@@ -37,6 +37,8 @@ use crate::store::{ProjectId, ProjectRecord, ReadOps, Store};
 pub struct CatalogEntry {
     /// The project this entry describes, for a caller that goes on to read it.
     pub project: ProjectId,
+    /// The portable identity used by token-specific visibility preferences.
+    pub uuid: String,
     /// The project's slug — what the legacy registry called an id.
     pub id: String,
     /// The project's display name.
@@ -464,6 +466,7 @@ pub enum OriginFinding {
 fn entry(project: ProjectRecord, path: Option<PathBuf>) -> CatalogEntry {
     CatalogEntry {
         project: project.id,
+        uuid: project.uuid,
         id: project.slug,
         name: project.name,
         prefix: project.prefix,

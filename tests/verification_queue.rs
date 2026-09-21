@@ -6,6 +6,9 @@ mod completed_capture;
 #[path = "verification_queue/output_reporting.rs"]
 mod output_reporting;
 
+#[path = "verification_queue/human_only.rs"]
+mod human_only;
+
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};
@@ -45,6 +48,41 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[test]
+fn human_only_has_no_verifier_queue_position() {
+    let f = ServiceFixture::new();
+    f.github_checkout("https://github.com/acme/widgets");
+    let human = submitted(&f, "Manual acceptance", Priority::Critical, PR_ONE);
+    let automatic = submitted(&f, "Automatic acceptance", Priority::Low, PR_TWO);
+    StoryService::new(&f.ctx())
+        .set_labels(&human, &["human-only".into()], &[])
+        .unwrap();
+    let queue = VerificationQueue::new(f.store());
+    assert_eq!(
+        queue
+            .ordered()
+            .unwrap()
+            .iter()
+            .map(|c| &c.story_id)
+            .collect::<Vec<_>>(),
+        vec![&automatic]
+    );
+    assert_eq!(queue.ordered_for(f.project()).unwrap().len(), 1);
+    let status = VerificationActivity::new().status(&f.ctx()).unwrap();
+    let cards = status_snapshot(&queue.ordered().unwrap(), None, f.env(), FIXTURE_NOW);
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].1, automatic);
+    assert!(matches!(
+        cards[0].2,
+        VerificationStatus::Queued { position: 1, .. }
+    ));
+    assert_eq!(status.verifying, vec![automatic]);
+    StoryService::new(&f.ctx())
+        .set_labels(&human, &[], &["human-only".into()])
+        .unwrap();
+    assert_eq!(queue.next().unwrap().unwrap().story_id, human);
+}
 
 const PR_ONE: &str = "https://github.com/acme/widgets/pull/1";
 const PR_TWO: &str = "https://github.com/acme/widgets/pull/2";
@@ -2502,6 +2540,7 @@ fn the_shell_actuator_refuses_a_different_checkout_origin_before_running_github(
             verifying_since: Some("2026-01-01T00:00:00Z".into()),
             verifying_generation: None,
             blocking_revision: None,
+            human_only_revision: None,
             checkout: checkout.path().to_path_buf(),
             cleanup_lease: None,
             pull_request: Err(VerificationProblem::MissingPullRequest),
@@ -2563,6 +2602,7 @@ wait
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
         blocking_revision: None,
+        human_only_revision: None,
         checkout: checkout.path().to_path_buf(),
         cleanup_lease: None,
         pull_request: Err(VerificationProblem::MissingPullRequest),
@@ -2651,6 +2691,7 @@ fn cleanup_candidate(
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
         blocking_revision: None,
+        human_only_revision: None,
         checkout: repository.to_path_buf(),
         cleanup_lease: Some(StoryCleanupLease {
             version: CLEANUP_LEASE_VERSION,
@@ -5388,7 +5429,7 @@ fn recording_checkout() -> (tempfile::TempDir, tempfile::TempDir) {
     std::fs::write(
         tools.path().join("verify-pr.sh"),
         "#!/bin/bash\nprintf '%s\\n' \"$@\" > argv\n\
-         printf '{\"result\":\"certified\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tree\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"detail\":\"landed\"}\\n'\n",
+         printf '{\"result\":\"certified\",\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tree\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"detail\":\"landed\",\"gate\":\"cargo test --workspace\"}\\n'\n",
     )
     .unwrap();
     (checkout, tools)
@@ -5408,6 +5449,7 @@ fn shell_actuator_candidate(checkout: &Path) -> (VerificationCandidate, storyhoo
         verifying_since: Some(FIXTURE_NOW.into()),
         verifying_generation: None,
         blocking_revision: None,
+        human_only_revision: None,
         checkout: checkout.to_path_buf(),
         cleanup_lease: None,
         pull_request: Err(VerificationProblem::MissingPullRequest),
@@ -5438,11 +5480,10 @@ fn shell_actuator(
     .with_verifier_script(tools.join("verify-pr.sh"))
 }
 
-/// The configured gate reaches `verify-pr.sh` as `<url> -- <argv…>`, one word
-/// per element, and the verdict carries the same command so the GREEN and RED
-/// comments name what actually ran rather than a literal.
+/// The daemon delegates snapshot selection; the verdict supplies the command
+/// for GREEN and RED comments. Registered working files are not authority.
 #[test]
-fn the_configured_gate_reaches_verify_pr_as_a_bare_argv_and_names_the_verdict() {
+fn the_verifier_resolves_the_pinned_gate_and_names_the_verdict() {
     let (checkout, tools) = recording_checkout();
     std::fs::write(
         checkout.path().join(".storyhook.toml"),
@@ -5471,15 +5512,15 @@ fn the_configured_gate_reaches_verify_pr_as_a_bare_argv_and_names_the_verdict() 
     let argv = std::fs::read_to_string(checkout.path().join("argv")).unwrap();
     assert_eq!(
         argv,
-        format!("{PR_ONE}\n--\ncargo\ntest\n--workspace\n"),
-        "each word is its own argv element"
+        format!("{PR_ONE}\n--\n--project-gate\n"),
+        "the daemon requests pinned snapshot configuration"
     );
 }
 
-/// No pointer at all is the default gate, spelled out to the script rather
-/// than left for it to assume — the script carries no default of its own.
+/// The registered pointer is irrelevant even when absent; the proposed merge
+/// can introduce configuration.
 #[test]
-fn a_checkout_without_a_pointer_runs_the_default_gate() {
+fn a_checkout_without_a_pointer_still_requests_snapshot_configuration() {
     let (checkout, tools) = recording_checkout();
     let (candidate, pull_request) = shell_actuator_candidate(checkout.path());
     let env_root = scratch_dir();
@@ -5491,19 +5532,16 @@ fn a_checkout_without_a_pointer_runs_the_default_gate() {
 
     let outcome = actuator.verify(&candidate, &pull_request);
     assert!(
-        matches!(outcome, VerificationOutcome::Certified { ref gate, .. } if gate == GateCommand::DEFAULT),
+        matches!(outcome, VerificationOutcome::Certified { ref gate, .. } if gate == "cargo test --workspace"),
         "{outcome:?}"
     );
     let argv = std::fs::read_to_string(checkout.path().join("argv")).unwrap();
-    assert_eq!(argv, format!("{PR_ONE}\n--\nmake\ntest\n"));
+    assert_eq!(argv, format!("{PR_ONE}\n--\n--project-gate\n"));
 }
 
-/// A gate that is not a plain argv is local configuration needing a person:
-/// a permanent infrastructure failure naming the key and the character,
-/// taken before the verifier is spawned and before a journal is written, and
-/// never a red returned to the implementor as if the code were wrong.
+/// Registered checkout configuration is not the proposed merge configuration.
 #[test]
-fn a_gate_that_is_not_a_plain_argv_halts_before_the_verifier_is_spawned() {
+fn invalid_registered_configuration_does_not_preempt_snapshot_inspection() {
     let (checkout, tools) = recording_checkout();
     std::fs::write(
         checkout.path().join(".storyhook.toml"),
@@ -5517,29 +5555,12 @@ fn a_gate_that_is_not_a_plain_argv_halts_before_the_verifier_is_spawned() {
     let actuator = shell_actuator(&daemon_env, checkout.path(), tools.path());
 
     let outcome = actuator.verify(&candidate, &pull_request);
-    match outcome {
-        VerificationOutcome::InfrastructureFailure {
-            detail,
-            disposition,
-        } => {
-            assert_eq!(
-                disposition,
-                storyhook::store::VerificationFailureDisposition::Permanent
-            );
-            assert!(detail.contains("[verify].gate"), "{detail}");
-            assert!(detail.contains("`&`"), "{detail}");
-            assert!(detail.contains(".storyhook.toml"), "{detail}");
-        }
-        other => panic!("a misconfigured gate is an infrastructure failure, got {other:?}"),
-    }
     assert!(
-        !checkout.path().join("argv").exists(),
-        "the verifier must not have been spawned"
+        matches!(outcome, VerificationOutcome::Certified { .. }),
+        "{outcome:?}"
     );
-    assert!(
-        !journal_path(&daemon_env, &candidate).exists(),
-        "no progress journal is written for a run that never started"
-    );
+    let argv = std::fs::read_to_string(checkout.path().join("argv")).unwrap();
+    assert_eq!(argv, format!("{PR_ONE}\n--\n--project-gate\n"));
 }
 
 /// The worker's comments are derived from the verdict's own gate, never from

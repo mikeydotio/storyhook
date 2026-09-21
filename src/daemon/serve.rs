@@ -1309,6 +1309,23 @@ fn worker(
     };
 
     if let RequestBody::Text(text) = &body
+        && let Some(reply) = crate::api::tokens::intercept_preferences(
+            &segments,
+            &method,
+            &headers,
+            text,
+            trusted_hosts,
+            cookie_name,
+            tokens,
+            chrono::Utc::now(),
+            std::time::Instant::now(),
+        )
+    {
+        finish(request, reply);
+        return;
+    }
+
+    if let RequestBody::Text(text) = &body
         && let Some(reply) = crate::api::reset::intercept(
             &segments,
             &method,
@@ -1601,9 +1618,11 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         match &job.body {
             RequestBody::Text(text) => {
                 rest::RouteRequest::new(&job.method, &job.path, &job.headers, text)
+                    .with_token_context(&serving.tokens, &serving.cookie_name, &serving.token)
             }
             RequestBody::Binary(bytes) => {
                 rest::RouteRequest::binary(&job.method, &job.path, &job.headers, bytes)
+                    .with_token_context(&serving.tokens, &serving.cookie_name, &serving.token)
             }
         },
         &trusted_hosts,

@@ -53,7 +53,8 @@ def run_process(argv, *, timeout, env=None, cwd=None, text=''):
         stderr.seek(0)
         out, err = stdout.read().decode(), stderr.read().decode()
         if child.returncode:
-            raise RuntimeError(f'{Path(argv[0]).name} exited {child.returncode}: {err[-1000:]}')
+            detail = f'stderr: {err[-1000:]} stdout: {out[-1000:]}'
+            raise RuntimeError(f'{Path(argv[0]).name} exited {child.returncode}: {detail}')
         return out
 
 

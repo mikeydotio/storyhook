@@ -52,7 +52,7 @@
 //! the record outright rather than marking it; no clock reading of any kind
 //! can resurrect a record that no longer exists, in either direction.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::sync::{Mutex, PoisonError};
@@ -63,7 +63,7 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 use crate::api::http::{
-    Reply, TrustedHosts, header_value, json_reply, mutation_guard_ok, text_reply,
+    Reply, TrustedHosts, cookie_value, header_value, json_reply, mutation_guard_ok, text_reply,
 };
 use crate::api::rpc::token_ok;
 use crate::daemon::http1::{Header, Method};
@@ -186,6 +186,12 @@ struct TokenRecord {
     prefix: String,
     created_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
+    /// Dashboard controls saved for this named token.
+    #[serde(default)]
+    preferences: serde_json::Map<String, serde_json::Value>,
+    /// Portable project identities hidden by this token's dashboard.
+    #[serde(default)]
+    hidden_project_uuids: BTreeSet<String>,
 }
 
 /// What `story token list` (and its wire equivalent) shows for one record —
@@ -220,7 +226,7 @@ pub struct ValidatedToken {
     pub expires_at: DateTime<Utc>,
 }
 
-/// Why a mint or revoke was refused.
+/// Why a token or its display preference could not be changed.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TokenError {
     /// [`MAX_TOKENS`] named tokens already exist. Carries the names of the
@@ -233,6 +239,21 @@ pub enum TokenError {
     /// `story token revoke` (or the wire equivalent) named a token that does
     /// not exist — already revoked, never existed, or a typo.
     NotFound,
+    /// A preference request offered no live named token.
+    Invalid,
+    /// The sidecar could not be saved. The registry retains its prior state.
+    Persistence(String),
+}
+
+/// Why a dashboard preference read or write was refused.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PreferenceError {
+    /// No live named token matches the supplied credential.
+    Unauthorized,
+    /// A patch field has an unsupported name or value.
+    Invalid(String),
+    /// The token sidecar could not be replaced.
+    Storage(String),
 }
 
 /// What is persisted to `tokens.json` — the records plus the clock's own
@@ -251,6 +272,7 @@ struct Persisted {
     high_water: Option<DateTime<Utc>>,
 }
 
+#[derive(Clone)]
 struct Inner {
     persisted: Persisted,
     /// Index from hash to position in `persisted.records`, rebuilt whenever
@@ -404,12 +426,13 @@ impl TokenRegistry {
         ttl: chrono::Duration,
     ) -> Result<MintedToken, TokenError> {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let now = self.effective_now(&inner, wall_now, mono_now);
-        prune_expired(&mut inner, now);
-        if inner.persisted.records.iter().any(|r| r.name == name) {
+        let mut next = inner.clone();
+        let now = self.effective_now(&next, wall_now, mono_now);
+        prune_expired(&mut next, now);
+        if next.persisted.records.iter().any(|r| r.name == name) {
             return Err(TokenError::NameTaken);
         }
-        if inner.persisted.records.len() >= MAX_TOKENS {
+        if next.persisted.records.len() >= MAX_TOKENS {
             return Err(TokenError::AtCapacity);
         }
         let secret = random_secret();
@@ -422,11 +445,14 @@ impl TokenRegistry {
             prefix: prefix.clone(),
             created_at: wall_now,
             expires_at,
+            preferences: serde_json::Map::new(),
+            hidden_project_uuids: BTreeSet::new(),
         };
-        inner.persisted.records.push(record);
-        touch_high_water(&mut inner, now);
-        inner.reindex();
-        self.persist(&inner.persisted);
+        next.persisted.records.push(record);
+        touch_high_water(&mut next, now);
+        next.reindex();
+        self.persist(&next.persisted)?;
+        *inner = next;
         Ok(MintedToken {
             secret,
             summary: TokenSummary {
@@ -449,17 +475,19 @@ impl TokenRegistry {
         mono_now: Instant,
     ) -> Result<(), TokenError> {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let position = inner
+        let mut next = inner.clone();
+        let position = next
             .persisted
             .records
             .iter()
             .position(|r| r.name == name)
             .ok_or(TokenError::NotFound)?;
-        inner.persisted.records.remove(position);
-        let now = self.effective_now(&inner, wall_now, mono_now);
-        touch_high_water(&mut inner, now);
-        inner.reindex();
-        self.persist(&inner.persisted);
+        next.persisted.records.remove(position);
+        let now = self.effective_now(&next, wall_now, mono_now);
+        touch_high_water(&mut next, now);
+        next.reindex();
+        self.persist(&next.persisted)?;
+        *inner = next;
         Ok(())
     }
 
@@ -501,12 +529,295 @@ impl TokenRegistry {
         })
     }
 
-    fn persist(&self, persisted: &Persisted) {
-        let Some(env) = &self.persist_env else {
-            return;
-        };
-        write_tokens_file(env, persisted);
+    /// Returns defaults merged with the live token's saved dashboard settings.
+    pub fn preferences(
+        &self,
+        offered: &str,
+        wall_now: DateTime<Utc>,
+        mono_now: Instant,
+    ) -> Option<serde_json::Value> {
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = self.effective_now(&inner, wall_now, mono_now);
+        let index = *inner.by_hash.get(&hash_hex(offered))?;
+        let record = inner.persisted.records.get(index)?;
+        if record.expires_at <= now {
+            return None;
+        }
+        Some(effective_preferences(&record.preferences))
     }
+
+    /// Hidden portable project IDs for one live named token.
+    pub fn hidden_project_uuids(
+        &self,
+        offered: &str,
+        wall_now: DateTime<Utc>,
+        mono_now: Instant,
+    ) -> Option<BTreeSet<String>> {
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = self.effective_now(&inner, wall_now, mono_now);
+        let index = *inner.by_hash.get(&hash_hex(offered))?;
+        let record = inner.persisted.records.get(index)?;
+        (record.expires_at > now).then(|| record.hidden_project_uuids.clone())
+    }
+
+    /// Durably changes one project's display preference for a live token.
+    pub fn set_project_visible(
+        &self,
+        offered: &str,
+        project_uuid: &str,
+        visible: bool,
+        wall_now: DateTime<Utc>,
+        mono_now: Instant,
+    ) -> Result<(), TokenError> {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = self.effective_now(&inner, wall_now, mono_now);
+        let index = *inner
+            .by_hash
+            .get(&hash_hex(offered))
+            .ok_or(TokenError::Invalid)?;
+        let mut next = inner.clone();
+        let record = next
+            .persisted
+            .records
+            .get_mut(index)
+            .ok_or(TokenError::Invalid)?;
+        if record.expires_at <= now {
+            return Err(TokenError::Invalid);
+        }
+        let changed = if visible {
+            record.hidden_project_uuids.remove(project_uuid)
+        } else {
+            record.hidden_project_uuids.insert(project_uuid.to_string())
+        };
+        if !changed {
+            return Ok(());
+        }
+        touch_high_water(&mut next, now);
+        self.persist(&next.persisted)?;
+        *inner = next;
+        Ok(())
+    }
+
+    /// Atomically replaces only the supplied preference fields for one live token.
+    pub fn patch_preferences(
+        &self,
+        offered: &str,
+        patch: &serde_json::Map<String, serde_json::Value>,
+        wall_now: DateTime<Utc>,
+        mono_now: Instant,
+    ) -> Result<serde_json::Value, PreferenceError> {
+        validate_preference_patch(patch)?;
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = self.effective_now(&inner, wall_now, mono_now);
+        let index = *inner
+            .by_hash
+            .get(&hash_hex(offered))
+            .ok_or(PreferenceError::Unauthorized)?;
+        if inner.persisted.records[index].expires_at <= now {
+            return Err(PreferenceError::Unauthorized);
+        }
+        let mut next = inner.clone();
+        for (key, value) in patch {
+            next.persisted.records[index]
+                .preferences
+                .insert(key.clone(), value.clone());
+        }
+        touch_high_water(&mut next, now);
+        self.persist(&next.persisted).map_err(|err| match err {
+            TokenError::Persistence(detail) => PreferenceError::Storage(detail),
+            _ => unreachable!("persistence returns only a storage error"),
+        })?;
+        let result = effective_preferences(&next.persisted.records[index].preferences);
+        *inner = next;
+        Ok(result)
+    }
+
+    fn persist(&self, persisted: &Persisted) -> Result<(), TokenError> {
+        let Some(env) = &self.persist_env else {
+            return Ok(());
+        };
+        write_tokens_file(env, persisted)
+            .map_err(|err| TokenError::Persistence(format!("cannot save tokens.json: {err}")))
+    }
+}
+
+fn preference_defaults() -> serde_json::Value {
+    serde_json::json!({
+        "filter": {"text":"", "priorities":null, "assignees":[], "types":null, "states":null},
+        "sort": {"col":"updated", "dir":-1},
+        "columnSort": {}, "hiddenColumns": [], "view":"board",
+        "showArchived":false, "hideEmptyColumns":false, "keepNotices":false,
+        "filtersOpen":false,
+        "drawerSections":{"relationships":true, "comments":true, "referencedBy":false},
+        "dispatchDefaults":{"agent":"claude", "auto":false, "byAgent":{"claude":{"model":"", "effort":"", "speed":""}, "codex":{"model":"", "effort":"", "speed":""}}},
+        "repoId":null
+    })
+}
+
+fn effective_preferences(saved: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+    let mut result = preference_defaults();
+    let fields = result.as_object_mut().expect("defaults are an object");
+    for (key, value) in saved {
+        if fields.contains_key(key) {
+            let mut value = value.clone();
+            if key == "filter"
+                && let Some(filter) = value.as_object_mut()
+            {
+                // SH-750/SH-751: retired dashboard toggles identify the
+                // legacy filter shape, where [] meant unrestricted. The
+                // inclusive facets now use null for that state so a new
+                // [] can mean the exact, empty selection.
+                let legacy = filter.remove("showEpics").is_some();
+                filter.remove("showClosed");
+                if legacy {
+                    for key in ["priorities", "types", "states"] {
+                        if filter
+                            .get(key)
+                            .and_then(serde_json::Value::as_array)
+                            .is_some_and(Vec::is_empty)
+                        {
+                            filter.insert(key.to_string(), serde_json::Value::Null);
+                        }
+                    }
+                }
+            }
+            fields.insert(key.clone(), value);
+        }
+    }
+    result
+}
+
+fn short_string(value: &serde_json::Value, max: usize) -> bool {
+    value.as_str().is_some_and(|s| s.len() <= max)
+}
+
+fn string_array(value: &serde_json::Value) -> bool {
+    value
+        .as_array()
+        .is_some_and(|items| items.len() <= 64 && items.iter().all(|v| short_string(v, 128)))
+}
+
+fn inclusive_filter_selection(value: &serde_json::Value) -> bool {
+    value.is_null() || string_array(value)
+}
+
+fn sort_value(value: &serde_json::Value, field: &str, keys: &[&str]) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.len() == 2
+        && object
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|k| keys.contains(&k))
+        && matches!(
+            object.get("dir").and_then(serde_json::Value::as_i64),
+            Some(-1 | 1)
+        )
+}
+
+fn valid_preference_field(key: &str, value: &serde_json::Value) -> bool {
+    match key {
+        "view" => matches!(value.as_str(), Some("board" | "list")),
+        "showArchived" | "hideEmptyColumns" | "keepNotices" | "filtersOpen" => value.is_boolean(),
+        "repoId" => value.is_null() || short_string(value, 128),
+        "hiddenColumns" => string_array(value),
+        "sort" => sort_value(
+            value,
+            "col",
+            &[
+                "id", "order", "title", "state", "priority", "assignee", "updated",
+            ],
+        ),
+        "columnSort" => value.as_object().is_some_and(|map| {
+            map.len() <= 64
+                && map.iter().all(|(slug, sort)| {
+                    slug.len() <= 128
+                        && sort_value(
+                            sort,
+                            "key",
+                            &["added", "modified", "priority", "next", "completed"],
+                        )
+                })
+        }),
+        "filter" => value.as_object().is_some_and(|map| {
+            let legacy_show_epics = map.get("showEpics");
+            let legacy_show_closed = map.get("showClosed");
+            let legacy = legacy_show_epics.is_some();
+            map.len()
+                == 5 + usize::from(legacy_show_epics.is_some())
+                    + usize::from(legacy_show_closed.is_some())
+                && map.get("text").is_some_and(|v| short_string(v, 2048))
+                && map.get("assignees").is_some_and(string_array)
+                && ["priorities", "types", "states"].iter().all(|key| {
+                    map.get(*key).is_some_and(|selection| {
+                        if legacy {
+                            string_array(selection)
+                        } else {
+                            inclusive_filter_selection(selection)
+                        }
+                    })
+                })
+                && legacy_show_epics.is_none_or(serde_json::Value::is_boolean)
+                && legacy_show_closed.is_none_or(serde_json::Value::is_boolean)
+                && (legacy_show_closed.is_none() || legacy)
+        }),
+        "drawerSections" => value.as_object().is_some_and(|map| {
+            map.len() == 3
+                && ["relationships", "comments", "referencedBy"]
+                    .iter()
+                    .all(|key| map.get(*key).is_some_and(serde_json::Value::is_boolean))
+        }),
+        "dispatchDefaults" => value.as_object().is_some_and(|map| {
+            if map.len() != 3
+                || !matches!(
+                    map.get("agent").and_then(serde_json::Value::as_str),
+                    Some("claude" | "codex")
+                )
+                || !map.get("auto").is_some_and(serde_json::Value::is_boolean)
+            {
+                return false;
+            }
+            let Some(agents) = map.get("byAgent").and_then(serde_json::Value::as_object) else {
+                return false;
+            };
+            agents.len() == 2
+                && ["claude", "codex"].iter().all(|agent| {
+                    agents
+                        .get(*agent)
+                        .and_then(serde_json::Value::as_object)
+                        .is_some_and(|item| {
+                            item.len() == 3
+                                && ["model", "effort", "speed"]
+                                    .iter()
+                                    .all(|key| item.get(*key).is_some_and(|v| short_string(v, 128)))
+                                && item
+                                    .get("speed")
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(|speed| speed.is_empty() || speed == "fast")
+                        })
+                })
+        }),
+        _ => false,
+    }
+}
+
+fn validate_preference_patch(
+    patch: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), PreferenceError> {
+    if patch.is_empty() || serde_json::to_vec(patch).map_or(true, |bytes| bytes.len() > 16_384) {
+        return Err(PreferenceError::Invalid(
+            "preference patch is empty or too large".into(),
+        ));
+    }
+    for (key, value) in patch {
+        if !valid_preference_field(key, value) {
+            return Err(PreferenceError::Invalid(format!(
+                "invalid preference field {key}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Removes every record whose expiry has passed as of `now`, without
@@ -567,41 +878,91 @@ fn tokens_path(env: &Environment) -> std::path::PathBuf {
 /// torn JSON document, and this one carries token hashes rather than merely
 /// operational bookkeeping.
 ///
-/// **Best-effort for the directory, not for the write itself.** Unlike
-/// `publish_inflight`, a failed write here is not swallowed silently: mint
-/// and revoke call this synchronously and their durability is the entire
-/// reason this module exists rather than an SQLite table, so a write that
-/// cannot land must be visible to the caller, not merely to a comment. This
-/// function's own callers already hold the lock across it, and the specific
-/// I/O failure is intentionally not surfaced as a `Result` here — retrying
-/// or reporting it precisely is future work; what's load-bearing today is
-/// that the write is attempted synchronously, in this call, before mint or
-/// revoke returns to its own caller.
-fn write_tokens_file(env: &Environment, persisted: &Persisted) {
+/// Unlike `publish_inflight`, a failed write returns its I/O error. The
+/// registry holds its lock and commits its next in-memory state only after
+/// this write succeeds, so a reported token or preference change survives restart.
+fn write_tokens_file(env: &Environment, persisted: &Persisted) -> std::io::Result<()> {
     let path = tokens_path(env);
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        return;
-    }
-    let Ok(document) = serde_json::to_string(persisted) else {
-        return;
-    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("missing parent directory"))?;
+    std::fs::create_dir_all(parent)?;
+    let document = serde_json::to_vec(persisted)?;
     let temp = path.with_extension("json.tmp");
     let mut options = OpenOptions::new();
     options.create(true).write(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let Ok(mut file) = options.open(&temp) else {
-        return;
-    };
-    if file.write_all(document.as_bytes()).is_err() {
-        return;
-    }
-    let _ = file.sync_all();
+    let mut file = options.open(&temp)?;
+    file.write_all(&document)?;
+    file.sync_all()?;
     drop(file);
-    let _ = std::fs::rename(&temp, &path);
+    std::fs::rename(&temp, &path)?;
+    Ok(())
+}
+
+/// Handles named-token dashboard settings before a store job is queued.
+#[allow(clippy::too_many_arguments)]
+pub fn intercept_preferences(
+    segments: &[&str],
+    method: &Method,
+    headers: &[Header],
+    body: &str,
+    trusted_hosts: &TrustedHosts,
+    cookie_name: &str,
+    registry: &TokenRegistry,
+    wall_now: DateTime<Utc>,
+    mono_now: Instant,
+) -> Option<Reply> {
+    if segments != ["api", "preferences"] {
+        return None;
+    }
+    if !matches!(method, Method::Get | Method::Patch) {
+        return Some(text_reply(405, "storyhook daemon: use GET or PATCH").no_store());
+    }
+    if matches!(method, Method::Patch) && !mutation_guard_ok(headers, trusted_hosts) {
+        return Some(text_reply(403, "Forbidden").no_store());
+    }
+    if !crate::api::admission::named_token_ok(
+        headers,
+        method,
+        cookie_name,
+        registry,
+        wall_now,
+        mono_now,
+    ) {
+        return Some(unauthorized().no_store());
+    }
+    let offered = header_value(headers, crate::api::rpc::TOKEN_HEADER)
+        .filter(|token| registry.validate(token, wall_now, mono_now).is_some())
+        .or_else(|| cookie_value(headers, cookie_name))?;
+    let reply = if matches!(method, Method::Get) {
+        match registry.preferences(offered, wall_now, mono_now) {
+            Some(preferences) => json_reply(200, preferences.to_string()),
+            None => unauthorized(),
+        }
+    } else {
+        let parsed = if body.len() <= 16_384 {
+            serde_json::from_str::<serde_json::Value>(body).ok()
+        } else {
+            None
+        };
+        let Some(patch) = parsed.as_ref().and_then(serde_json::Value::as_object) else {
+            return Some(text_reply(400, "storyhook daemon: invalid preference patch").no_store());
+        };
+        match registry.patch_preferences(offered, patch, wall_now, mono_now) {
+            Ok(preferences) => json_reply(200, preferences.to_string()),
+            Err(PreferenceError::Unauthorized) => unauthorized(),
+            Err(PreferenceError::Invalid(detail)) => {
+                text_reply(400, format!("storyhook daemon: {detail}"))
+            }
+            Err(PreferenceError::Storage(detail)) => text_reply(
+                500,
+                format!("storyhook daemon: preference save failed: {detail}"),
+            ),
+        }
+    };
+    Some(reply.no_store())
 }
 
 // --- The control-surface routes ---
@@ -678,7 +1039,10 @@ fn handle_collection(
                          run `story token list` and revoke one before minting another"
                     ),
                 ),
-                Err(TokenError::NotFound) => unreachable!("mint never returns NotFound"),
+                Err(TokenError::Persistence(detail)) => text_reply(500, detail),
+                Err(TokenError::NotFound | TokenError::Invalid) => {
+                    unreachable!("mint never returns NotFound or Invalid")
+                }
             }
         }
         Method::Get => json_reply(200, list_reply_body(&registry.list())),
@@ -707,7 +1071,8 @@ fn handle_named(
         Err(TokenError::NotFound) => {
             text_reply(404, format!("storyhook daemon: no token named \"{name}\""))
         }
-        Err(_) => unreachable!("revoke returns only NotFound or Ok"),
+        Err(TokenError::Persistence(detail)) => text_reply(500, detail),
+        Err(_) => unreachable!("revoke returns only NotFound or persistence failure"),
     }
 }
 
@@ -1178,6 +1543,542 @@ mod tests {
     }
 
     #[test]
+    fn failed_sidecar_write_does_not_mint_or_revoke_in_memory() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        std::fs::create_dir_all(env.daemon_state_dir().join("tokens.json.tmp")).unwrap();
+
+        assert!(matches!(
+            registry.mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL),
+            Err(TokenError::Persistence(_))
+        ));
+        assert!(registry.list().is_empty());
+
+        std::fs::remove_dir(env.daemon_state_dir().join("tokens.json.tmp")).unwrap();
+        let minted = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        std::fs::create_dir_all(env.daemon_state_dir().join("tokens.json.tmp")).unwrap();
+
+        assert!(matches!(
+            registry.revoke("laptop", epoch(), Instant::now()),
+            Err(TokenError::Persistence(_))
+        ));
+        assert!(
+            registry
+                .validate(&minted.secret, epoch(), Instant::now())
+                .is_some()
+        );
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        assert!(
+            reloaded
+                .validate(&minted.secret, epoch(), Instant::now())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn preferences_follow_the_token_across_restart_and_end_on_revocation() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let first = {
+            let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+            let first = registry
+                .mint("one".into(), epoch(), Instant::now(), DEFAULT_TTL)
+                .unwrap();
+            let second = registry
+                .mint("two".into(), epoch(), Instant::now(), DEFAULT_TTL)
+                .unwrap();
+            registry
+                .patch_preferences(
+                    &first.secret,
+                    serde_json::json!({"view": "list"}).as_object().unwrap(),
+                    epoch(),
+                    Instant::now(),
+                )
+                .unwrap();
+            assert_eq!(
+                registry
+                    .preferences(&second.secret, epoch(), Instant::now())
+                    .unwrap()["view"],
+                "board"
+            );
+            first.secret
+        };
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        assert_eq!(
+            registry
+                .preferences(&first, epoch(), Instant::now())
+                .unwrap()["view"],
+            "list"
+        );
+        registry.revoke("one", epoch(), Instant::now()).unwrap();
+        let replacement = registry
+            .mint("one".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        assert_eq!(
+            registry
+                .preferences(&replacement.secret, epoch(), Instant::now())
+                .unwrap()["view"],
+            "board"
+        );
+        assert!(
+            registry
+                .preferences(&first, epoch(), Instant::now())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn preference_patch_rejects_bad_shapes_and_does_not_lose_other_fields() {
+        let registry = registry_at(epoch());
+        let token = registry
+            .mint("one".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap()
+            .secret;
+        for bad in [
+            serde_json::json!({"view": "unknown"}),
+            serde_json::json!({"filter": {"text": 7}}),
+            serde_json::json!({"secret": "value"}),
+        ] {
+            assert!(
+                registry
+                    .patch_preferences(&token, bad.as_object().unwrap(), epoch(), Instant::now())
+                    .is_err()
+            );
+        }
+        registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"view": "list"}).as_object().unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"showArchived": true})
+                    .as_object()
+                    .unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        let saved = registry
+            .preferences(&token, epoch(), Instant::now())
+            .unwrap();
+        assert_eq!(saved["view"], "list");
+        assert_eq!(saved["showArchived"], true);
+    }
+
+    #[test]
+    fn filter_preferences_normalize_retired_visibility_toggles() {
+        let registry = registry_at(epoch());
+        let token = registry
+            .mint("one".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap()
+            .secret;
+        let current = serde_json::json!({
+            "text": "",
+            "priorities": null,
+            "assignees": [],
+            "types": null,
+            "states": null
+        });
+
+        let defaults = registry
+            .preferences(&token, epoch(), Instant::now())
+            .unwrap();
+        assert_eq!(defaults["filter"], current);
+        assert!(defaults["filter"].get("showClosed").is_none());
+        assert!(defaults["filter"].get("showEpics").is_none());
+
+        let saved = registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"filter": current}).as_object().unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(saved["filter"], current);
+
+        let none_selected = serde_json::json!({
+            "text": "",
+            "priorities": [],
+            "assignees": [],
+            "types": [],
+            "states": []
+        });
+        let saved = registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"filter": none_selected})
+                    .as_object()
+                    .unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(saved["filter"], none_selected);
+
+        let selected = serde_json::json!({
+            "text": "search",
+            "priorities": ["high"],
+            "assignees": ["mikey"],
+            "types": ["bug"],
+            "states": ["todo"]
+        });
+        let legacy_selected = serde_json::json!({
+            "text": "search",
+            "priorities": ["high"],
+            "assignees": ["mikey"],
+            "types": ["bug"],
+            "states": ["todo"],
+            "showEpics": false
+        });
+        let normalized = registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"filter": legacy_selected})
+                    .as_object()
+                    .unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(normalized["filter"], selected);
+
+        let legacy = serde_json::json!({
+            "text": "",
+            "priorities": [],
+            "assignees": [],
+            "types": [],
+            "states": [],
+            "showClosed": false,
+            "showEpics": false
+        });
+        let normalized = registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"filter": legacy}).as_object().unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(normalized["filter"], current);
+        assert!(normalized["filter"].get("showClosed").is_none());
+        assert!(normalized["filter"].get("showEpics").is_none());
+        assert_eq!(
+            registry
+                .preferences(&token, epoch(), Instant::now())
+                .unwrap()["filter"],
+            current
+        );
+    }
+
+    #[test]
+    fn concurrent_preference_patches_preserve_unrelated_fields() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let token = registry
+            .mint("one".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap()
+            .secret;
+        let barrier = std::sync::Barrier::new(3);
+
+        std::thread::scope(|scope| {
+            for patch in [
+                serde_json::json!({"view": "list"}),
+                serde_json::json!({"showArchived": true}),
+            ] {
+                let barrier = &barrier;
+                let registry = &registry;
+                let token = &token;
+                scope.spawn(move || {
+                    barrier.wait();
+                    registry
+                        .patch_preferences(
+                            token,
+                            patch.as_object().unwrap(),
+                            epoch(),
+                            Instant::now(),
+                        )
+                        .unwrap();
+                });
+            }
+            barrier.wait();
+        });
+
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let saved = reloaded
+            .preferences(&token, epoch(), Instant::now())
+            .unwrap();
+        assert_eq!(saved["view"], "list");
+        assert_eq!(saved["showArchived"], true);
+    }
+
+    #[test]
+    fn failed_preference_write_preserves_live_and_disk_values() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let token = registry
+            .mint("one".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap()
+            .secret;
+        let temp = tokens_path(&env).with_extension("json.tmp");
+        std::fs::create_dir(&temp).unwrap();
+
+        let result = registry.patch_preferences(
+            &token,
+            serde_json::json!({"view": "list"}).as_object().unwrap(),
+            epoch(),
+            Instant::now(),
+        );
+        assert!(matches!(result, Err(PreferenceError::Storage(_))));
+        assert_eq!(
+            registry
+                .preferences(&token, epoch(), Instant::now())
+                .unwrap()["view"],
+            "board"
+        );
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        assert_eq!(
+            reloaded
+                .preferences(&token, epoch(), Instant::now())
+                .unwrap()["view"],
+            "board"
+        );
+    }
+
+    #[test]
+    fn project_visibility_is_isolated_persistent_and_bound_to_token_identity() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let first = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        let second = registry
+            .mint("phone".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+
+        assert!(
+            registry
+                .hidden_project_uuids(&first.secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+        registry
+            .set_project_visible(
+                &first.secret,
+                "project-uuid",
+                false,
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        assert!(
+            registry
+                .hidden_project_uuids(&first.secret, epoch(), Instant::now())
+                .unwrap()
+                .contains("project-uuid")
+        );
+        assert!(
+            registry
+                .hidden_project_uuids(&second.secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        assert!(
+            reloaded
+                .hidden_project_uuids(&first.secret, epoch(), Instant::now())
+                .unwrap()
+                .contains("project-uuid")
+        );
+        reloaded.revoke("laptop", epoch(), Instant::now()).unwrap();
+        assert!(
+            reloaded
+                .hidden_project_uuids(&first.secret, epoch(), Instant::now())
+                .is_none()
+        );
+        let replacement = reloaded
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        assert!(
+            reloaded
+                .hidden_project_uuids(&replacement.secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            reloaded.set_project_visible(
+                &first.secret,
+                "project-uuid",
+                false,
+                epoch(),
+                Instant::now()
+            ),
+            Err(TokenError::Invalid)
+        );
+    }
+
+    #[test]
+    fn a_token_sidecar_without_visibility_field_starts_with_every_project_visible() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let secret = registry
+            .mint("existing".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap()
+            .secret;
+        let path = env.daemon_state_dir().join("tokens.json");
+        let mut sidecar: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        sidecar["records"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("hidden_project_uuids");
+        std::fs::write(&path, serde_json::to_vec(&sidecar).unwrap()).unwrap();
+
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        assert!(
+            reloaded
+                .hidden_project_uuids(&secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn failed_visibility_write_preserves_the_previous_choice() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let token = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        std::fs::create_dir_all(env.daemon_state_dir().join("tokens.json.tmp")).unwrap();
+
+        assert!(matches!(
+            registry.set_project_visible(
+                &token.secret,
+                "project-uuid",
+                false,
+                epoch(),
+                Instant::now()
+            ),
+            Err(TokenError::Persistence(_))
+        ));
+        assert!(
+            registry
+                .hidden_project_uuids(&token.secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        assert!(
+            reloaded
+                .hidden_project_uuids(&token.secret, epoch(), Instant::now())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn concurrent_visibility_updates_preserve_both_project_choices() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = Arc::new(TokenRegistry::load_anchored(&env, epoch(), Instant::now()));
+        let secret = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap()
+            .secret;
+        let start = Arc::new(Barrier::new(3));
+        let handles: Vec<_> = ["first-uuid", "second-uuid"]
+            .into_iter()
+            .map(|uuid| {
+                let registry = Arc::clone(&registry);
+                let start = Arc::clone(&start);
+                let secret = secret.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    registry
+                        .set_project_visible(&secret, uuid, false, epoch(), Instant::now())
+                        .unwrap();
+                })
+            })
+            .collect();
+        start.wait();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let hidden = reloaded
+            .hidden_project_uuids(&secret, epoch(), Instant::now())
+            .unwrap();
+        assert_eq!(
+            hidden,
+            BTreeSet::from(["first-uuid".into(), "second-uuid".into()])
+        );
+    }
+
+    #[test]
+    fn visibility_and_dashboard_preferences_share_one_durable_token_record() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let token = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap()
+            .secret;
+
+        registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"view": "list"}).as_object().unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+        registry
+            .set_project_visible(&token, "project-uuid", false, epoch(), Instant::now())
+            .unwrap();
+        registry
+            .patch_preferences(
+                &token,
+                serde_json::json!({"showArchived": true})
+                    .as_object()
+                    .unwrap(),
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap();
+
+        let reloaded = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let preferences = reloaded
+            .preferences(&token, epoch(), Instant::now())
+            .unwrap();
+        assert_eq!(preferences["view"], "list");
+        assert_eq!(preferences["showArchived"], true);
+        assert!(
+            reloaded
+                .hidden_project_uuids(&token, epoch(), Instant::now())
+                .unwrap()
+                .contains("project-uuid")
+        );
+    }
+
+    #[test]
     fn a_corrupt_sidecar_fails_closed_rather_than_admitting_everything() {
         let dir = tempdir();
         let env = env_at(&dir);
@@ -1614,6 +2515,78 @@ mod tests {
     #[test]
     fn the_exchange_path_constant_is_what_the_router_matches() {
         assert_eq!(crate::api::http::path_segments(EXCHANGE_PATH), ["token"]);
+    }
+
+    #[test]
+    fn preference_http_route_requires_a_named_token_and_merges_patches() {
+        let registry = registry_at(epoch());
+        let minted = registry
+            .mint("laptop".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap();
+        let route = |method: &Method, offered: &[Header], body: &str| {
+            intercept_preferences(
+                &["api", "preferences"],
+                method,
+                offered,
+                body,
+                &trusted_hosts(),
+                "storyhook_test",
+                &registry,
+                epoch(),
+                Instant::now(),
+            )
+            .unwrap()
+        };
+        assert_eq!(route(&Method::Get, &[], "").status, 401);
+        assert_eq!(
+            route(
+                &Method::Get,
+                &guard_headers(&[("X-Storyhook-Token", TOKEN)]),
+                ""
+            )
+            .status,
+            401
+        );
+        let named = guard_headers(&[("X-Storyhook-Token", &minted.secret)]);
+        let initial = route(&Method::Get, &named, "");
+        assert_eq!(initial.status, 200);
+        let cookie = format!("storyhook_test={}", minted.secret);
+        assert_eq!(
+            route(&Method::Get, &guard_headers(&[("Cookie", &cookie)]), "").status,
+            200
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(initial.body()).unwrap()["view"],
+            "board"
+        );
+        let changed = route(&Method::Patch, &named, r#"{"view":"list"}"#);
+        assert_eq!(changed.status, 200);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(changed.body()).unwrap()["view"],
+            "list"
+        );
+        assert_eq!(
+            route(&Method::Patch, &named, r#"{"view":"bad"}"#).status,
+            400
+        );
+        assert_eq!(
+            route(&Method::Patch, &named, r#"{"view":"list","unknown":true}"#).status,
+            400
+        );
+        assert_eq!(route(&Method::Patch, &named, "{").status, 400);
+        assert_eq!(
+            route(&Method::Patch, &named, &"x".repeat(16_385)).status,
+            400
+        );
+        assert_eq!(
+            route(
+                &Method::Patch,
+                &headers(&[("Host", "127.0.0.1"), ("X-Storyhook-Token", &minted.secret)]),
+                r#"{"view":"list"}"#
+            )
+            .status,
+            403
+        );
     }
 
     // --- Test fixtures ---
