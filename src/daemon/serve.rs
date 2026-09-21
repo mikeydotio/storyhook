@@ -1309,6 +1309,23 @@ fn worker(
     };
 
     if let RequestBody::Text(text) = &body
+        && let Some(reply) = crate::api::tokens::intercept_preferences(
+            &segments,
+            &method,
+            &headers,
+            text,
+            trusted_hosts,
+            cookie_name,
+            tokens,
+            chrono::Utc::now(),
+            std::time::Instant::now(),
+        )
+    {
+        finish(request, reply);
+        return;
+    }
+
+    if let RequestBody::Text(text) = &body
         && let Some(reply) = crate::api::reset::intercept(
             &segments,
             &method,

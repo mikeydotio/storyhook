@@ -2423,8 +2423,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `replaceState`, never `pushState`: this keeps the address bar honest,
    * not the history stack navigable. A `pushState` per drawer-open would
    * make Back mean "close the drawer" while the filter bar, sort and
-   * hidden columns -- persisted in `sessionStorage`/`localStorage`, not the
-   * history entry -- silently stayed wherever they were, which is a worse
+   * hidden columns -- persisted with the named token, not the history
+   * entry -- silently stayed wherever they were, which is a worse
    * Back than none at all. Never creating an entry also means `popstate`
    * can never fire from our own doing, so there is nothing to keep in sync
    * on that side either. */
@@ -2460,7 +2460,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * toasting exactly why when it can't be honored. Returns the matching
    * repo, or `null` when there is nothing to resolve (no `?project=` at
    * all) or it can't be opened -- `bootstrap()` falls back to its ordinary
-   * localStorage/Home logic in either case, the same as an unrecognized
+   * saved-project/Home logic in either case, the same as an unrecognized
    * saved repo id today. */
   function resolveDeepLinkProject() {
     if (!deepLink.project) {
@@ -2538,22 +2538,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   // ============================================================
-  // FILTER PERSISTENCE (SH-155)
+  // TOKEN-OWNED FILTER PERSISTENCE (SH-747)
   // ============================================================
   //
-  // Carries the filter bar and sort column across a project switch, within
-  // one tab's lifetime -- sessionStorage, not localStorage, because
-  // `bootstrap()` re-enters `selectRepo()` on every page reload just as a
-  // live project switch does, so only a store that survives a reload but
-  // dies with the tab can deliver "within a given site visit" through that
-  // path. Distinct from `storyhook.view`/`storyhook.showArchived`
-  // (localStorage): those are durable per-user preferences, not in-visit
-  // working state, and reusing localStorage here would collide with that
-  // already-claimed semantic. Per-repo-vocabulary values (assignees, types,
-  // states) are pruned against the freshly-loaded repo once its vocabulary
-  // is known -- see `pruneCarriedFilters()`, called from `fetchData()`.
-
-  var FILTER_STORAGE_KEY = "storyhookFilters";
+  // Filters still carry across project switches and prune values outside
+  // the next project's vocabulary. Their durable owner is the named token.
   var compactHeaderQuery = window.matchMedia("(max-width: 768px)");
 
   /** A fresh, independently-mutable default filter object — never a shared
@@ -2564,29 +2553,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return { text: "", priorities: [], assignees: [], types: [], states: [], showClosed: true, showEpics: false };
   }
 
-  function loadPersistedFilters() {
-    try {
-      var raw = sessionStorage.getItem(FILTER_STORAGE_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch (e) { return null; } // storage disabled, or a shape from an older build
+  function savePersistedFilters(field, debounce) {
+    savePreference(field, state[field], debounce);
   }
-  /** Mirrors the live `state.filter`/`state.sort`/`state.columnSort`/
-   * `state.hiddenColumns` to sessionStorage. Also how "Clear filters"
-   * un-persists filters: it resets `state.filter` to `defaultFilter()` first
-   * and then calls this, rather than removing the storage entry outright —
-   * a removal would also drop the persisted `state.sort`/`state.columnSort`/
-   * `state.hiddenColumns`, none of which Clear Filters has ever touched
-   * (SH-162: hidden columns are a board layout preference, the same
-   * category as sort order, not a story filter). */
-  function savePersistedFilters() {
-    try {
-      sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({
-        filter: state.filter, sort: state.sort, columnSort: state.columnSort, hiddenColumns: state.hiddenColumns
-      }));
-    } catch (e) { /* nothing to do -- filters just won't carry over this time */ }
-  }
-
-  var persistedFilters = loadPersistedFilters();
 
   /** A persisted drawer-section open/closed preference (SH-169), read once
    * at startup. `defaultOpen` is the section's own stated default — spelled
@@ -2594,10 +2563,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * trick against the stored string, so a future section's intended default
    * is never a copy-paste guess against an existing, oppositely-polarized
    * line. */
-  function sectionOpenDefault(key, defaultOpen) {
-    var stored = localStorage.getItem("storyhook.section." + key + ".open");
-    return stored === null ? defaultOpen : stored === "true";
-  }
+  function sectionOpenDefault(key, defaultOpen) { return defaultOpen; }
 
   // ============================================================
   // STATE
@@ -2690,49 +2656,38 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // observed. The one-second footer tick advances only elapsed durations;
     // test counts remain server-owned and refresh with the next snapshot.
     verificationObservedAt: 0,
-    view: localStorage.getItem("storyhook.view") === "list" ? "list" : "board",
+    view: "board",
     // A display preference, not a per-repo filter: like `view` above, it
     // persists across repo switches and "Clear filters" (SH-43's council
     // decision calls for default-off, discoverable, persisted behavior —
-    // this is the client-local approximation of that; a server-backed
-    // per-project preference is future hardening, not this story's scope).
-    showArchived: localStorage.getItem("storyhook.showArchived") === "true",
-    // Restored from sessionStorage when this tab already had filters set
-    // this visit (SH-155) — see FILTER PERSISTENCE above. Per-repo-vocabulary
+    // the named token carries this choice across browsers and projects).
+    showArchived: false,
+    // Restored from the named token (SH-747). Per-repo-vocabulary
     // values get pruned once a repo's own vocabulary is known, in
     // `pruneCarriedFilters()`.
-    filter: (persistedFilters && persistedFilters.filter) || defaultFilter(),
-    sort: (persistedFilters && persistedFilters.sort) || { col: "updated", dir: -1 },
+    filter: defaultFilter(),
+    sort: { col: "updated", dir: -1 },
     // Board-only (SH-305, replacing SH-128's single board-wide `boardSort`):
     // a sparse map of state slug -> `{key, dir}`, so every column carries
     // its own choice of "added"/"modified"/"priority" and direction. Sparse
     // on purpose -- an absent slug means `DEFAULT_COLUMN_SORT`, read through
     // `columnSortFor()`, rather than every column's default being
     // pre-populated here; a project's states can then change without
-    // leaving stale entries behind. Renamed from `boardSort` rather than
-    // reshaped in place: an older build's persisted blob holds a flat
-    // `{key, dir}` there, and reading that shape as a slug map would treat
-    // the literal strings "key"/"dir" as state slugs. Same persistence
-    // category as `sort` above (a sort-order preference, not a story
-    // filter) per this block's own SH-155 comment, so it lives in the same
-    // sessionStorage bundle rather than `hideEmptyColumns`'s durable
-    // cross-project localStorage -- and per-repo vocabulary like
-    // `hiddenColumns` below, so it's pruned alongside it in
-    // `pruneCarriedFilters()`.
-    columnSort: (persistedFilters && persistedFilters.columnSort) || {},
+    // leaving stale entries behind. Like `hiddenColumns` below, this map
+    // contains per-repo state slugs, so it is pruned alongside them in
+    // `pruneCarriedFilters()`. The named token owns the saved map.
+    columnSort: {},
     // Board-only (SH-162): state slugs whose column is hidden regardless of
-    // card count. Per-repo vocabulary, like `filter.states` — sessionStorage
-    // and pruned in `pruneCarriedFilters()`, not localStorage, for the same
-    // reason SH-155 kept `filter.states` session-scoped: a hidden-column
-    // slug that happens to also exist in the next project would silently
+    // card count. Per-repo vocabulary, like `filter.states`, pruned in
+    // `pruneCarriedFilters()`: a hidden-column slug in the next project would silently
     // hide an unrelated column there.
-    hiddenColumns: (persistedFilters && persistedFilters.hiddenColumns) || [],
+    hiddenColumns: [],
     // Board-only (SH-162): collapses any column with zero *currently
     // visible* cards (i.e. after `state.filter` is applied). Unlike
     // `hiddenColumns` this carries no per-repo vocabulary — "empty" means
     // the same thing in any project — so it's a durable cross-project
     // preference like `showArchived` above, not a session/prune value.
-    hideEmptyColumns: localStorage.getItem("storyhook.hideEmptyColumns") === "true",
+    hideEmptyColumns: false,
     // SH-322: WCAG 2.2 SC 2.2.1's "Turn off" clause, which is the dashboard's
     // conformance route for a self-clearing notice's time limit -- see
     // `scheduleAutoDismiss` for why it is a turn-off rather than a pause.
@@ -2745,17 +2700,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // advance, not its default state, and defaulting on would make every
     // notice permanent for everyone -- gutting SH-304's corroboration split,
     // which is settled and not this preference's to reopen.
-    keepNotices: localStorage.getItem("storyhook.keepNotices") === "true",
+    keepNotices: false,
     // SH-235: the filter panel's own open/closed state, at every viewport
-    // size -- not `hideEmptyColumns`'s sessionStorage-adjacent category,
-    // but the exact same durable, cross-project, `sectionOpenDefault`
+    // size -- the same durable, cross-project, `sectionOpenDefault`
     // shape the drawer's own sections use below. Defaults closed: the
     // filter bar's dropdowns, sort buttons and checkboxes cost real
     // vertical space (145px measured at a 390px width) that most sessions
     // never touch after the first filter is set, and `.filter-summary`
     // stays visible regardless, so a reader always sees whether a filter
     // is active without opening this.
-    filtersOpen: sectionOpenDefault("filters", false),
+    filtersOpen: false,
     // SH-613: unlike the desktop disclosure above, the mobile sheet is a
     // transient overlay. It deliberately has no storage key and begins
     // closed on every load and project switch.
@@ -2772,6 +2726,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       comments: sectionOpenDefault("comments", true),
       referencedBy: sectionOpenDefault("referencedBy", false)
     },
+    rememberedRepoId: null,
     // SH-614: project-scoped, page-session-only mobile metadata disclosures.
     // Unlike drawer section preferences, these answer a transient question
     // about one story in one project and therefore belong in neither web
@@ -3308,6 +3263,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * attachment transport's octet-stream content type instead. Resolves with
    * the parsed body on 2xx and rejects with {status, message} otherwise.
    * `opts.headers` adds extra headers; `opts.timeoutMs` overrides the default.
+   * `opts.noAuthRetry` opens the token modal but refuses a 401 without
+   * replaying a write whose ownership belongs to the old credential.
    *
    * The default itself is method-derived (SH-312): a GET keeps the original
    * 10s (reads have no server-side write to wait out, and every hot read
@@ -3364,9 +3321,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           if (xhr.status >= 200 && xhr.status < 300) {
             resolve(parsed || {});
           } else if (xhr.status === 401) {
-            openTokenModal(attempt, function() {
-              refuse({ status: 401, message: "authentication cancelled" });
-            });
+            if (opts.noAuthRetry) {
+              openTokenModal();
+              refuse({ status: 401, message: "token expired; preference was not saved" });
+            } else {
+              openTokenModal(attempt, function() {
+                refuse({ status: 401, message: "authentication cancelled" });
+              });
+            }
           } else {
             // Not every error body is JSON -- the dispatch endpoint's own
             // 500/429/403 (src/api/dispatch.rs) are plain text (SH-196), and
@@ -3384,6 +3346,107 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       }
       attempt();
     });
+  }
+
+  var confirmedPreferences = null;
+  var preferenceWriteQueue = Promise.resolve();
+  var preferenceEpoch = 0;
+  var preferenceFieldVersions = Object.create(null);
+  var filterSaveTimer = null;
+  var appStarted = false;
+
+  function copyPreference(value) { return JSON.parse(JSON.stringify(value)); }
+
+  function applyPreferenceField(key, value) {
+    if (key === "dispatchDefaults") dispatchDefaults = copyPreference(value);
+    else if (key === "repoId") state.rememberedRepoId = value;
+    else state[key] = copyPreference(value);
+    if (key === "filter") {
+      $("search-input").value = state.filter.text;
+      $("toggle-closed").checked = state.filter.showClosed;
+      $("toggle-epics").checked = state.filter.showEpics;
+    }
+    if (key === "showArchived") $("toggle-archived").checked = value;
+    if (key === "hideEmptyColumns") $("toggle-hide-empty-columns").checked = value;
+    if (key === "view") document.querySelectorAll("#view-toggle button").forEach(function(btn) {
+      btn.classList.toggle("active", btn.dataset.view === value);
+    });
+  }
+
+  function repaintPreferenceControls(key) {
+    if (!appStarted) return;
+    if (!key || key === "filter") {
+      Object.keys(FILTER_DROPDOWNS).forEach(function(group) {
+        var container = $(FILTER_DROPDOWNS[group].container);
+        if (!container) return;
+        container.querySelectorAll("input[type=checkbox]").forEach(function(cb) {
+          cb.checked = state.filter[group].indexOf(cb.value) !== -1;
+        });
+        syncFilterDropdownLabel(group);
+      });
+    }
+    if (!key || key === "hiddenColumns") {
+      var columns = $("fdd-columns");
+      columns.querySelectorAll("input[type=checkbox]").forEach(function(cb) {
+        cb.checked = state.hiddenColumns.indexOf(cb.value) === -1;
+      });
+      syncColumnsDropdownLabel();
+    }
+    if (!key || key === "keepNotices") {
+      var notice = $("toggle-keep-notices");
+      if (notice) notice.checked = state.keepNotices;
+    }
+    renderScreen();
+    if ((!key || key === "drawerSections") && state.drawerId) renderDrawer();
+  }
+
+  function applyPreferenceDocument(preferences) {
+    Object.keys(preferences).forEach(function(key) { applyPreferenceField(key, preferences[key]); });
+    repaintPreferenceControls(null);
+  }
+
+  function loadTokenPreferences(done) {
+    var epoch = preferenceEpoch;
+    api("GET", "/api/preferences").then(function(preferences) {
+      if (epoch !== preferenceEpoch) return;
+      confirmedPreferences = copyPreference(preferences);
+      applyPreferenceDocument(preferences);
+    }).catch(function(err) {
+      if (epoch !== preferenceEpoch) return;
+      confirmedPreferences = null;
+      toastError(err);
+    }).then(done);
+  }
+
+  function savePreference(key, value, debounce) {
+    if (!confirmedPreferences) return;
+    var epoch = preferenceEpoch;
+    var version = (preferenceFieldVersions[key] || 0) + 1;
+    preferenceFieldVersions[key] = version;
+    var patch = {};
+    patch[key] = copyPreference(value);
+    function enqueue() {
+      preferenceWriteQueue = preferenceWriteQueue.then(function() {
+        if (epoch !== preferenceEpoch) return;
+        return api("PATCH", "/api/preferences", patch, { noAuthRetry: true }).then(function(saved) {
+          if (epoch === preferenceEpoch) confirmedPreferences[key] = copyPreference(saved[key]);
+        }).catch(function(err) {
+          if (epoch !== preferenceEpoch) return;
+          if (preferenceFieldVersions[key] === version) {
+            applyPreferenceField(key, confirmedPreferences[key]);
+            repaintPreferenceControls(key);
+          }
+          toastError(err);
+        });
+      });
+    }
+    if (debounce) {
+      clearTimeout(filterSaveTimer);
+      filterSaveTimer = setTimeout(enqueue, 300);
+    } else {
+      if (key === "filter") clearTimeout(filterSaveTimer);
+      enqueue();
+    }
   }
 
   /** Tickets for `fetchData()`'s replies, and the floor below which one is
@@ -3605,17 +3668,17 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     m.states.forEach(function(s) { validStates[s.slug] = true; });
     var validSets = { assignees: validAssignees, types: validTypes, states: validStates };
 
-    var dropped = false;
+    var droppedFilter = false, droppedColumns = false, droppedSort = false;
     ["assignees", "types", "states"].forEach(function(key) {
       var kept = state.filter[key].filter(function(v) { return validSets[key][v]; });
-      if (kept.length !== state.filter[key].length) dropped = true;
+      if (kept.length !== state.filter[key].length) droppedFilter = true;
       state.filter[key] = kept;
     });
 
     // `hiddenColumns` (SH-162) is state-slug vocabulary too, and lives
     // outside `state.filter` — pruned the same way for the same reason.
     var keptColumns = state.hiddenColumns.filter(function(v) { return validStates[v]; });
-    if (keptColumns.length !== state.hiddenColumns.length) dropped = true;
+    if (keptColumns.length !== state.hiddenColumns.length) droppedColumns = true;
     state.hiddenColumns = keptColumns;
 
     // `columnSort` (SH-305) is keyed by state slug too, for the same reason:
@@ -3624,7 +3687,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var keptColumnSort = {};
     Object.keys(state.columnSort).forEach(function(slug) {
       if (validStates[slug]) keptColumnSort[slug] = state.columnSort[slug];
-      else dropped = true;
+      else droppedSort = true;
     });
     state.columnSort = keptColumnSort;
 
@@ -3635,8 +3698,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var columnsContainer = $("fdd-columns");
     if (columnsContainer) delete columnsContainer.dataset.fingerprint;
 
-    if (dropped) toast("Some filters didn't carry over to this project", "info");
-    savePersistedFilters();
+    if (droppedFilter || droppedColumns || droppedSort) toast("Some filters didn't carry over to this project", "info");
+    if (droppedFilter) savePersistedFilters("filter");
+    if (droppedColumns) savePersistedFilters("hiddenColumns");
+    if (droppedSort) savePersistedFilters("columnSort");
   }
 
   /** Tickets for `fetchReposOnce()`'s replies, and the floor below which one
@@ -4908,7 +4973,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         var callback = tokenModalCallback;
         tokenModalCancelCallback = null;
         closeTokenModal();
-        if (callback) callback();
+        if (appStarted) {
+          preferenceEpoch++;
+          confirmedPreferences = null;
+          clearTimeout(filterSaveTimer);
+          loadTokenPreferences(function() { if (callback) callback(); });
+        } else if (callback) callback();
       } else if (xhr.status === 422) {
         // SH-319 AC3: the daemon's own bearer token was recognized but
         // cannot be exchanged (it rotates every restart) -- name what to
@@ -4946,7 +5016,6 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   var DISPATCH_POLL_MS = 5000;
   var DISPATCH_MAX_POLLS = 40; // ~200s -- comfortably past the daemon's own 180s dispatch timeout
-  var DISPATCH_DEFAULTS_STORAGE_KEY = "storyhook.dispatch.defaults";
 
   /** SH-517: model/effort/speed are provider-scoped -- a Claude model is
    * meaningless once Codex is selected -- so they are stored per-provider
@@ -4971,24 +5040,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       auto: false,
       byAgent: { claude: sanitizeDispatchAgentDefaults(null), codex: sanitizeDispatchAgentDefaults(null) }
     };
-    try {
-      var raw = localStorage.getItem(DISPATCH_DEFAULTS_STORAGE_KEY);
-      if (!raw) return defaults;
-      var stored = JSON.parse(raw);
-      if (stored && (stored.agent === "claude" || stored.agent === "codex")) {
-        defaults.agent = stored.agent;
-      }
-      if (stored && typeof stored.auto === "boolean") defaults.auto = stored.auto;
-      if (stored && stored.byAgent) {
-        defaults.byAgent.claude = sanitizeDispatchAgentDefaults(stored.byAgent.claude);
-        defaults.byAgent.codex = sanitizeDispatchAgentDefaults(stored.byAgent.codex);
-      }
-    } catch (e) { /* storage unavailable or malformed -- use the safe defaults */ }
     return defaults;
   }
 
-  /** Commits one submitted provider configuration to memory first, then
-   * best-effort localStorage. Full Auto and attended Dispatch share this
+  /** Commits one submitted provider configuration to memory and the token
+   * preferences service. Full Auto and attended Dispatch share this
    * provider preference, while attended Auto mode remains separately owned. */
   var dispatchDefaults = loadDispatchDefaults();
   function saveDispatchProviderDefaults(agent, model, effort, speed) {
@@ -4997,9 +5053,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     dispatchDefaults.byAgent[normalizedAgent] = sanitizeDispatchAgentDefaults({
       model: model, effort: effort, speed: speed
     });
-    try {
-      localStorage.setItem(DISPATCH_DEFAULTS_STORAGE_KEY, JSON.stringify(dispatchDefaults));
-    } catch (e) { /* the in-memory preference above remains authoritative */ }
+    savePreference("dispatchDefaults", dispatchDefaults);
   }
 
   function saveDispatchDefaults(agent, auto, model, effort, speed) {
@@ -7428,7 +7482,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         checked: active.key === opt.key && active.dir === opt.dir,
         onSelect: function() {
           state.columnSort[slug] = { key: opt.key, dir: opt.dir };
-          savePersistedFilters();
+          savePersistedFilters("columnSort");
           renderView();
         }
       };
@@ -8214,7 +8268,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function setView(view) {
     state.view = view;
-    localStorage.setItem("storyhook.view", view);
+    savePreference("view", view);
     document.querySelectorAll("#view-toggle button").forEach(function(btn) {
       btn.classList.toggle("active", btn.dataset.view === view);
     });
@@ -8425,7 +8479,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         if (checkbox.checked && idx === -1) state.filter[key].push(opt.value);
         else if (!checkbox.checked && idx !== -1) state.filter[key].splice(idx, 1);
         syncFilterDropdownLabel(key);
-        savePersistedFilters();
+        savePersistedFilters("filter");
         renderView();
       });
       var row = el("label", { class: "fdd-option" }, [checkbox, opt.label]);
@@ -8500,7 +8554,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         if (!checkbox.checked && idx === -1) state.hiddenColumns.push(stateDef.slug);
         else if (checkbox.checked && idx !== -1) state.hiddenColumns.splice(idx, 1);
         syncColumnsDropdownLabel();
-        savePersistedFilters();
+        savePersistedFilters("hiddenColumns");
         renderView();
       });
       var row = el("label", { class: "fdd-option" }, [checkbox, stateDef.slug]);
@@ -8562,35 +8616,35 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         return;
       }
       state.filtersOpen = !state.filtersOpen;
-      localStorage.setItem("storyhook.section.filters.open", String(state.filtersOpen));
+      savePreference("filtersOpen", state.filtersOpen);
       syncFilterToggle(filteredStories().length, state.data ? state.data.stories.length : 0);
     });
     $("search-input").addEventListener("input", function() {
       state.filter.text = this.value;
-      savePersistedFilters();
+      savePersistedFilters("filter", true);
       renderView();
     });
     $("toggle-closed").addEventListener("change", function() {
       state.filter.showClosed = this.checked;
-      savePersistedFilters();
+      savePersistedFilters("filter");
       renderView();
     });
     $("toggle-epics").checked = !!state.filter.showEpics;
     $("toggle-epics").addEventListener("change", function() {
       state.filter.showEpics = this.checked;
-      savePersistedFilters();
+      savePersistedFilters("filter");
       renderView();
     });
     $("toggle-archived").checked = state.showArchived;
     $("toggle-archived").addEventListener("change", function() {
       state.showArchived = this.checked;
-      localStorage.setItem("storyhook.showArchived", String(this.checked));
+      savePreference("showArchived", state.showArchived);
       renderView();
     });
     $("toggle-hide-empty-columns").checked = state.hideEmptyColumns;
     $("toggle-hide-empty-columns").addEventListener("change", function() {
       state.hideEmptyColumns = this.checked;
-      localStorage.setItem("storyhook.hideEmptyColumns", String(this.checked));
+      savePreference("hideEmptyColumns", state.hideEmptyColumns);
       renderView();
     });
     $("filter-clear").addEventListener("click", function() {
@@ -8599,7 +8653,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       $("toggle-closed").checked = true;
       $("toggle-epics").checked = false;
       resetFilterDropdownUI();
-      savePersistedFilters();
+      savePersistedFilters("filter");
       renderView();
     });
     $("filter-sheet-done").addEventListener("click", closeFilterSheet);
@@ -11290,18 +11344,18 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         if (col === "labels") return;
         if (state.sort.col === col) state.sort.dir *= -1;
         else { state.sort.col = col; state.sort.dir = 1; }
-        savePersistedFilters();
+        savePersistedFilters("sort");
         renderView();
       });
     });
     $("mobile-sort-column").addEventListener("change", function() {
       state.sort.col = this.value;
-      savePersistedFilters();
+      savePersistedFilters("sort");
       renderView();
     });
     $("mobile-sort-direction").addEventListener("change", function() {
       state.sort.dir = Number(this.value);
-      savePersistedFilters();
+      savePersistedFilters("sort");
       renderView();
     });
   }
@@ -12390,7 +12444,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** A clickable, persisted `.section-label` replacement (SH-169). `key`
-   * indexes `state.drawerSections` and the matching localStorage key;
+   * indexes `state.drawerSections` on the named token;
    * `count`, when given, renders beside the label so a collapsed section
    * still says whether there's anything under it. */
   function buildSectionToggle(key, label, count) {
@@ -12407,7 +12461,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       "aria-expanded": String(open),
       onClick: function() {
         state.drawerSections[key] = !open;
-        localStorage.setItem("storyhook.section." + key + ".open", String(!open));
+        savePreference("drawerSections", state.drawerSections);
         renderDrawer();
       }
     }, children);
@@ -12968,7 +13022,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("search-input").value = state.filter.text;
     $("toggle-closed").checked = state.filter.showClosed;
     $("toggle-epics").checked = !!state.filter.showEpics;
-    localStorage.setItem("storyhook.repoId", id);
+    state.rememberedRepoId = id;
+    savePreference("repoId", id);
     renderScreen();
     fetchData();
     fetchEngineRuns();
@@ -13200,7 +13255,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           checked: state.keepNotices,
           onChange: function() {
             state.keepNotices = this.checked;
-            localStorage.setItem("storyhook.keepNotices", String(this.checked));
+            savePreference("keepNotices", state.keepNotices);
           }
         }),
         " Keep notices until I dismiss them"
@@ -16136,7 +16191,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         selectRepo(linked.id);
         return;
       }
-      var saved = localStorage.getItem("storyhook.repoId");
+      var saved = state.rememberedRepoId;
       var match = saved && state.repos.filter(function(r) { return r.id === saved; })[0];
       if (match && match.visible !== false && canOpen(match)) {
         selectRepo(match.id);
@@ -16160,6 +16215,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   /** Starts the app proper: the initial fetch, the live-update channel, and
    * the safety-net intervals. */
   function startApp() {
+    appStarted = true;
     bootstrap();
     connectEvents();
     setInterval(pollTick, SAFETY_POLL_INTERVAL_MS);
@@ -16220,23 +16276,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // calls back immediately when there is no coupon at all, which is every tab
   // that was not opened by `story web open`.
   //
-  // Nothing here prompts. The bootstrap used to, when `sessionStorage` held
-  // no token, because every `/api/**` route required one and the first
-  // request was a guaranteed 401 -- one prompt beat a wasted round-trip.
-  // Since SH-250 a *read* on the loopback listener needs no token, so that
-  // first request succeeds and the modal was the only thing left standing
-  // between a fresh tab and a rendered dashboard; since SH-251 a tab opened
-  // by `story web open` arrives holding the token, so writes do not prompt
-  // either.
-  //
-  // The prompt is now purely reactive, through machinery that already
-  // existed: `fetchData()`'s 401 branch opens the modal, and `api()`'s opens
-  // it and transparently retries the exact request once the exchange
-  // succeeds. So the tailnet listener still prompts -- it just pays one
-  // failed round-trip first, which is the cost of loopback never paying
-  // anything. A hand-typed loopback URL prompts on its first write the same
-  // way: it carries no coupon, and the read exemption covers reads only.
-  redeemHandoff(startApp);
+  // The first preference read asks for a named token if the tab has no
+  // cookie. Bootstrap starts only after that read settles, so its remembered
+  // project and controls belong to the credential that opened the page.
+  redeemHandoff(function() { loadTokenPreferences(startApp); });
 })();
 </script>
 
