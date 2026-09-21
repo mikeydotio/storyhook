@@ -11,6 +11,8 @@ import subprocess
 
 FORMAT = "#{session_name}\t#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_start_command}"
 TIMEOUT = 5
+# Historical pane text used only as local ownership evidence, never a request URL.
+LEGACY_FIXTURE_BANNER_PREFIX = "verifying https://github.com/acme/widgets/pull/"
 
 
 def fixture_path(path):
@@ -38,7 +40,7 @@ def classify(row):
         if (len(argv) == 5 and argv[:2] == ["bash", "-c"]
                 and argv[2] == 'printf "%s\\n" "$1"; exec sleep 2147483647'
                 and argv[3] == "verifier-banner"
-                and argv[4].startswith("verifying https://github.com/acme/widgets/pull/")):
+                and argv[4].startswith(LEGACY_FIXTURE_BANNER_PREFIX)):
             return "fixture verification banner"
         if len(argv) == 5 and argv[:4] == ["tail", "-n", "+1", "-F"] and fixture_path(argv[4]):
             return "fixture verification tail"
