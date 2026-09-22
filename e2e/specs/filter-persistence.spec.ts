@@ -20,7 +20,7 @@ import { openFilters, openProject, seedToken } from "./support";
  *   - "Beta Project" (prefix BB) — one story: "Draft the release notes".
  *
  * `text`/`priorities`/`sort` are project-agnostic and carry over unvalidated;
- * `assignees`/`types`/`states` are per-repo vocabulary and get pruned once the
+ * `types`/`states` are per-repo vocabulary and get pruned once the
  * next project's own vocabulary is known.
  */
 

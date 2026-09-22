@@ -15,7 +15,6 @@ It keeps every project's stories in one local SQLite store as an append-only eve
 
 - Create and show stories
 - Add comments with `story comment <id> "comment"`
-- Assign members
 - Define project states mapped to `OPEN` or `CLOSED`, and edit, reorder, or
   remove them later from the CLI, the web dashboard, or the TUI
 - Set and clear `awaiting` blockers
@@ -293,17 +292,9 @@ Create a story:
 story new "Build CLI parser"
 ```
 
-Add collaborators:
-
-```bash
-story member add "Mikey Ward <mw@mikey.io>"
-story member add -g mikeyward
-```
-
 Work the story:
 
 ```bash
-story assign SH-1 mikey
 story comment SH-1 "Parser skeleton is in place"
 story block SH-1 "waiting on command grammar decision"
 story unblock SH-1
@@ -335,7 +326,6 @@ Inspect and report:
 ```bash
 story show SH-1
 story list --state todo
-story list --assignee mikey
 story list --flagged
 story doctor
 ```
@@ -366,11 +356,10 @@ story project settings get <key>
 story project settings set <key> <value>
 story project settings unset <key>
 
-story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--assignee <member>] [--label <name>] [--labels <csv>] [--draft]
+story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--label <name>] [--labels <csv>] [--draft]
 story show <id>
 story log <id>
 story comment <id> "<text>"
-story assign <id> <member>
 story move <id> <slug> [--if-state <expected>] [--reason <text>] ["<comment>"]
 story block <id> "<reason>"
 story unblock <id>
@@ -384,14 +373,12 @@ story unarchive <id>
 story archive-state <slug> [--force]
 story publish <id>
 story delete <id> [--force]
-story set <id> (--title "<title>" | --state <slug> | --priority <level> | --assignee <member> | --labels "<csv>" | --blocked "<reason>" | --unblocked | --json "<json>" | --type <slug> | --description "<text>")  # at least one; combine as many as you like
+story set <id> (--title "<title>" | --state <slug> | --priority <level> | --labels "<csv>" | --blocked "<reason>" | --unblocked | --json "<json>" | --type <slug> | --description "<text>")  # at least one; combine as many as you like
 story relate <a> <relationship-type> <b>
 story unrelate <a> <relationship-type> <b>
 story link <a> <relationship-type> <b>        # alias of relate
 story unlink <a> <relationship-type> <b>      # alias of unrelate
 
-story member add "<name <email>>"
-story member add -g <github-handle>
 
 story state list
 story state add <slug> --super OPEN|CLOSED [--role active] [--description "<text>"]
@@ -415,7 +402,7 @@ story epic show <id>
 story epic create "<title>"
 story epic add <epic-id> <story-id>
 
-story list [--state <slug>] [--assignee <member>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]
+story list [--state <slug>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]
 story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
 story claim <id> [--comment <text> | --no-comment] [--dry-run]
 story claim --next [--phase <N>] [--epic <id>] [--exclude-label <csv>] [--comment <text> | --no-comment] [--dry-run]
@@ -861,8 +848,8 @@ Open the URL printed on start — `http://127.0.0.1:<port>` by default. If Tails
 - **Settings** — create a new project, or delete an existing one. Deleting removes the project and everything recorded against it from the store; it never touches the project's own files on disk. **Statuses** on any project row opens that project's state configuration: reorder (which is the board's column order), flip open/closed, set the active role and descriptions, add and remove. Reclassifying or removing a status that still holds stories asks where those stories go first; deletion is disabled, with the reason, when a status has archived history or is the last open or closed one.
 - **Board** — a kanban view with one column per project state, in `states.toml` order. Drag a card to a different column to move the story; dropping onto a `CLOSED` state archives it in place, and it stays visible in that column rather than vanishing. A "Columns" filter-bar control picks which columns are shown, and a "Hide empty columns" toggle collapses any column with no currently-visible cards.
 - **List** — a filterable, sortable table view.
-- **Detail drawer** — click any card or row to view and edit a story's full detail: title, state, priority, assignee, type, labels, block/unblock, comments, and relationships, plus reopen and delete.
-- Faceted filters (priority, assignee, type, state) and free-text search, shared between both project views.
+- **Detail drawer** — click any card or row to view and edit a story's full detail: title, state, priority, type, labels, block/unblock, comments, and relationships, plus reopen and delete.
+- Faceted filters (priority, type, state) and free-text search, shared between both project views.
 - Live updates over a server-sent-events stream — every write, from any client, appears without a reload — with a slow poll as a fallback for the rare case a push is missed. Dark mode follows your system theme.
 - Times are shown in your browser's timezone. Hover any date or time for the stored UTC instant and the zone it is shown in; the store, the API and every sort stay UTC (`docs/spec/local-time-display.md`).
 

@@ -1,6 +1,5 @@
 ---
 source: tests/golden_cli.rs
-assertion_line: 487
 ---
 [
   {
@@ -49,9 +48,8 @@ assertion_line: 487
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 64,
+        "head_global_seq": 62,
         "story": {
-          "assignee": "grace-hopper",
           "awaiting": null,
           "comments": [
             {
@@ -91,7 +89,7 @@ assertion_line: 487
       "result": "ok",
       "story": {
         "display_state": "blocked",
-        "head_global_seq": 68,
+        "head_global_seq": 66,
         "story": {
           "awaiting": "waiting on the benchmark harness",
           "comments": [],
@@ -137,7 +135,7 @@ assertion_line: 487
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 66,
+        "head_global_seq": 64,
         "story": {
           "awaiting": null,
           "comments": [
@@ -178,7 +176,7 @@ assertion_line: 487
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 71,
+        "head_global_seq": 69,
         "story": {
           "awaiting": null,
           "closed_at": "[timestamp]",
@@ -202,7 +200,7 @@ assertion_line: 487
     "stdout": {
       "result": "ok",
       "story": {
-        "head_global_seq": 76,
+        "head_global_seq": 74,
         "story": {
           "awaiting": null,
           "closed_at": "[timestamp]",

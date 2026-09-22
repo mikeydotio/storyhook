@@ -22,9 +22,7 @@ use std::path::Path;
 
 use storyhook::domain::provenance::Provenance;
 use storyhook::domain::remote::RemoteUrl;
-use storyhook::domain::{
-    Member, StateDef, StoryCleanupLease, StoryEvent, SuperState, TypeDef, fold_story,
-};
+use storyhook::domain::{StateDef, StoryCleanupLease, StoryEvent, SuperState, TypeDef, fold_story};
 use storyhook::env::Environment;
 use storyhook::service::{Clock, Ctx};
 use storyhook::store::{
@@ -66,7 +64,7 @@ pub struct ServiceFixture {
 impl ServiceFixture {
     /// A fixture with the default catalog: `todo` (open), `in-progress` (open,
     /// active), `verifying` and `blocked` (open), `done` and `dropped` (both closed); types
-    /// `feature` and `bug`; no members.
+    /// `feature` and `bug`.
     #[must_use]
     pub fn new() -> Self {
         Self::with_states(&default_states())
@@ -139,24 +137,6 @@ impl ServiceFixture {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(project);
         project
-    }
-
-    /// Adds a member the assignment paths can find.
-    pub fn add_member(&self, id: &str, display_name: &str, github: Option<&str>) {
-        self.store
-            .write(|tx| {
-                tx.put_member(
-                    self.project,
-                    &Member {
-                        id: id.to_string(),
-                        display_name: display_name.to_string(),
-                        email: None,
-                        github: github.map(str::to_string),
-                        created_at: FIXTURE_NOW.to_string(),
-                    },
-                )
-            })
-            .expect("adding a member");
     }
 
     /// Registers a git origin on the fixture's project.

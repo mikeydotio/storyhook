@@ -145,12 +145,10 @@ pub struct MigrationReport {
     pub archived: usize,
     /// How many are soft-deleted.
     pub deleted: usize,
-    /// Configured states, types and members carried over.
+    /// Configured states carried over.
     pub states: usize,
     /// Configured story types carried over.
     pub types: usize,
-    /// Members carried over.
-    pub members: usize,
     /// The next story number `story new` will mint.
     pub next_story_no: u64,
     /// Every one-sided relation that was repaired.
@@ -228,8 +226,8 @@ impl MigrationReport {
             self.source.display()
         ));
         out.push_str(&format!(
-            "  prefix {}, {} states, {} types, {} members, next story {}-{}\n",
-            self.prefix, self.states, self.types, self.members, self.prefix, self.next_story_no
+            "  prefix {}, {} states, {} types, next story {}-{}\n",
+            self.prefix, self.states, self.types, self.prefix, self.next_story_no
         ));
         for setting in &self.settings {
             out.push_str(&format!("  setting: {setting}\n"));
@@ -313,7 +311,7 @@ impl MigrationReport {
 /// # What travels, and what a rollback therefore does not carry
 ///
 /// A [`ProjectExport`](crate::service::transfer::ProjectExport) holds states,
-/// types, members and stories, and the project's settings since SH-133. A
+/// types and stories, and the project's settings since SH-133. A
 /// *tree* also holds `project.toml`'s `created_at` and `next-id`, which ride
 /// alongside the envelope rather than inside it and are what a rollback still
 /// does not restore, along with `projects.uuid` and the registered origins.
@@ -538,7 +536,6 @@ impl MigrationPlan {
             deleted: self.stories.iter().filter(|s| s.legacy_deleted).count(),
             states: self.project.states.len(),
             types: self.project.types.len(),
-            members: self.project.members.len(),
             next_story_no: u64::try_from(self.highest.get()).unwrap_or(0) + 1,
             repairs: self.repairs.clone(),
             metadata_repairs: self.metadata_repairs.clone(),
@@ -608,9 +605,6 @@ impl MigrationPlan {
                 tx.put_types(project, &default_types())?;
             }
             let default_type = default_story_type(&*tx, project)?;
-            for member in &self.project.members {
-                tx.put_member(project, member)?;
-            }
             // A fresh row, not a read-modify-write: this transaction created
             // the project a few lines above, so there is nothing of anyone
             // else's to preserve. `transfer::import_project` needs the other

@@ -354,7 +354,6 @@ fn importing_a_document_below_the_floor_repairs_its_catalog() {
             state("done", SuperState::Closed),
         ],
         types: Vec::new(),
-        members: Vec::new(),
         settings: None,
         remotes: Vec::new(),
         github_sync: None,

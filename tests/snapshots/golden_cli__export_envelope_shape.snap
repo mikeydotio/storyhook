@@ -6,7 +6,6 @@ source: tests/golden_cli.rs
   "is_the_export_document": true,
   "is_wrapped_in_an_envelope": false,
   "keys": [
-    "members",
     "prefix",
     "schema",
     "states",

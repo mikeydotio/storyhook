@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::cli::UnclaimComment;
 use crate::domain::provenance::Provenance;
 use crate::domain::{
-    COMPLETION_STATE_SLUG, Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState,
+    COMPLETION_STATE_SLUG, Priority, StateDef, StoryEvent, StorySnapshot, SuperState,
     VERIFYING_STATE_SLUG, active_state, is_epic, normalize_labels, undefined_state_error,
 };
 use crate::error::AppError;
@@ -222,8 +222,6 @@ pub struct NewStoryInput {
     pub priority: Option<String>,
     /// Labels, deduplicated and sorted before they are written.
     pub labels: Option<Vec<String>>,
-    /// A member id or GitHub handle to assign to.
-    pub assignee: Option<String>,
     /// Creates the story as a draft (SH-175) — `story new --draft`. Claims a
     /// story id like any other creation; `StoryService::publish` is the only
     /// way out, and it is one-way.
@@ -242,8 +240,6 @@ pub struct FieldEdits {
     pub state: Option<String>,
     /// A new priority slug.
     pub priority: Option<String>,
-    /// A member id or GitHub handle.
-    pub assignee: Option<String>,
     /// Comma-separated labels to *add* to the story's current set.
     pub labels: Option<String>,
     /// What the story is now awaiting.
@@ -339,35 +335,6 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             }),
         );
         Ok(snapshot)
-    }
-
-    /// Assigns an open story to a project member, looked up by member id or by
-    /// GitHub handle.
-    ///
-    /// The lookup happens inside the write transaction, so a member cannot be
-    /// removed between being found and being recorded.
-    pub fn assign(&self, id: &str, member: &str) -> Result<StorySnapshot, AppError> {
-        let now = self.ctx.now();
-        let project = self.ctx.project();
-        Ok(self.ctx.write_stories(|tx| {
-            let prefix = project_prefix(&*tx, project)?;
-            let states = tx.state_map(project)?;
-            let (story_no, row) = resolve_open_story(&*tx, project, &prefix, id)?;
-            let member = find_member(&*tx, project, member)?;
-            Ok(append_and_fold(
-                tx,
-                project,
-                story_no,
-                &prefix,
-                &states,
-                ExpectedSeq::Exact(row.head_seq),
-                &[StoryEvent::StoryAssigned {
-                    at: now.clone(),
-                    member_id: member.id,
-                }],
-                self.ctx.provenance(),
-            )?)
-        })?)
     }
 
     /// Sets an open story's priority.
@@ -1618,11 +1585,6 @@ pub(super) fn creation_events(
         .map(assignable_priority)
         .transpose()?
         .unwrap_or(Priority::Low);
-    let assignee = input
-        .assignee
-        .as_deref()
-        .map(|lookup| find_member(tx, project, lookup))
-        .transpose()?;
 
     let state_slug = match &input.state {
         Some(slug) => {
@@ -1662,12 +1624,6 @@ pub(super) fn creation_events(
                 labels: normalized,
             });
         }
-    }
-    if let Some(member) = assignee {
-        events.push(StoryEvent::StoryAssigned {
-            at: now.to_string(),
-            member_id: member.id,
-        });
     }
     if let Some(description) = &input.description
         && !description.trim().is_empty()
@@ -1728,13 +1684,6 @@ fn plan_field_edits(
             priority,
         });
         plan.changes.push(format!("priority -> {raw}"));
-    }
-    if let Some(lookup) = &edits.assignee {
-        plan.events.push(StoryEvent::StoryAssigned {
-            at: now.to_string(),
-            member_id: resolve_assignee(tx, project, lookup)?,
-        });
-        plan.changes.push(format!("assignee -> {lookup}"));
     }
     if let Some(csv) = &edits.labels {
         let labels = normalize_labels(
@@ -1823,24 +1772,6 @@ fn apply_json_patch(
                 });
                 plan.changes.push(format!("priority -> {raw}"));
             }
-            "assignee" => match value {
-                serde_json::Value::Null => plan.changes.push("assignee cleared".to_string()),
-                serde_json::Value::String(lookup) if lookup.is_empty() => {
-                    plan.changes.push("assignee cleared".to_string());
-                }
-                serde_json::Value::String(lookup) => {
-                    plan.events.push(StoryEvent::StoryAssigned {
-                        at: now.to_string(),
-                        member_id: resolve_assignee(tx, project, lookup)?,
-                    });
-                    plan.changes.push(format!("assignee -> {lookup}"));
-                }
-                _ => {
-                    return Err(AppError::Validation(
-                        "assignee must be a string or null".to_string(),
-                    ));
-                }
-            },
             "labels" => {
                 let items = value.as_array().ok_or_else(|| {
                     AppError::Validation("labels must be an array of strings".to_string())
@@ -1902,7 +1833,7 @@ fn apply_json_patch(
             other => {
                 return Err(AppError::Validation(format!(
                     "unknown field `{other}` in JSON. Valid fields: title, state, priority, \
-                     assignee, labels, blocked, story_type, description"
+                     labels, blocked, story_type, description"
                 )));
             }
         }
@@ -1990,38 +1921,6 @@ fn require_known_type(tx: &impl ReadOps, project: ProjectId, slug: &str) -> Resu
         "unknown type `{slug}`. Available types: {}",
         known.join(", ")
     )))
-}
-
-/// A member by id or GitHub handle. Absent is *not found*.
-fn find_member(tx: &impl ReadOps, project: ProjectId, lookup: &str) -> Result<Member, AppError> {
-    lookup_member(tx, project, lookup)?
-        .ok_or_else(|| AppError::NotFound(format!("member `{lookup}` not found")))
-}
-
-/// A member id for `story set --assignee`. Absent is *invalid input*.
-///
-/// The two spellings are not an oversight: `story assign` reports a missing
-/// member as not-found (exit 3) and `story set --assignee` as a validation
-/// error (exit 2), and both are pinned by the error contract.
-fn resolve_assignee(
-    tx: &impl ReadOps,
-    project: ProjectId,
-    lookup: &str,
-) -> Result<String, AppError> {
-    lookup_member(tx, project, lookup)?
-        .map(|member| member.id)
-        .ok_or_else(|| AppError::Validation(format!("member `{lookup}` not found")))
-}
-
-fn lookup_member(
-    tx: &impl ReadOps,
-    project: ProjectId,
-    lookup: &str,
-) -> Result<Option<Member>, AppError> {
-    Ok(tx
-        .members(project)?
-        .into_iter()
-        .find(|member| member.id == lookup || member.github.as_deref() == Some(lookup)))
 }
 
 /// The project's OPEN state slugs, in configured order.

@@ -3,7 +3,7 @@
 //! Not to be confused with two neighbours that share the word "config":
 //!
 //! - [`ConfigService`](super::config::ConfigService) is a project's *catalog* —
-//!   its states, its story types, its members. Different table, different
+//!   its states, its story types. Different table, different
 //!   lifecycle, different verbs.
 //! - `.storyhook.toml`'s `[plugin]`, `[hooks]`, and `[github]` tables are
 //!   *repository* configuration: decisions about one checkout, versioned with

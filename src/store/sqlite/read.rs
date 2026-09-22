@@ -21,7 +21,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use crate::domain::provenance::{ActorLabel, Provenance};
 use crate::domain::remote::RemoteUrl;
 use crate::domain::{
-    Member, StateDef, StoryCleanupLease, StoryEvent, TypeDef, validate_dispatch_option_token,
+    StateDef, StoryCleanupLease, StoryEvent, TypeDef, validate_dispatch_option_token,
 };
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
@@ -47,7 +47,7 @@ const PROJECT_COLUMNS: &str =
 /// build still read a newer store?" is answered by production's own column
 /// list rather than by a second copy of it that could drift.
 pub(super) const STORY_COLUMNS: &str = "story_no, head_seq, title, state, superstate, priority, story_type, \
-     assignee, awaiting, archived, created_at, updated_at, closed_at, description, \
+     awaiting, archived, created_at, updated_at, closed_at, description, \
      hidden_at, draft, snapshot, head_global_seq";
 
 fn sql<T>(result: Result<T, rusqlite::Error>, context: &str) -> Result<T, StoreError> {
@@ -709,29 +709,6 @@ pub(super) fn types(conn: &Connection, project: ProjectId) -> Result<Vec<TypeDef
     collect(rows, "reading types")
 }
 
-pub(super) fn members(conn: &Connection, project: ProjectId) -> Result<Vec<Member>, StoreError> {
-    let mut stmt = sql(
-        conn.prepare_cached(
-            "SELECT member_id, display_name, email, github, created_at FROM project_members \
-             WHERE project_id = ?1 ORDER BY member_id",
-        ),
-        "preparing members",
-    )?;
-    let rows = sql(
-        stmt.query_map(params![project.get()], |row| {
-            Ok(Member {
-                id: row.get(0)?,
-                display_name: row.get(1)?,
-                email: row.get(2)?,
-                github: row.get(3)?,
-                created_at: row.get(4)?,
-            })
-        }),
-        "reading members",
-    )?;
-    collect(rows, "reading members")
-}
-
 pub(super) fn settings(
     conn: &Connection,
     project: ProjectId,
@@ -928,7 +905,6 @@ struct RawStoryRow {
     superstate: String,
     priority: String,
     story_type: Option<String>,
-    assignee: Option<String>,
     awaiting: Option<String>,
     archived: bool,
     created_at: String,
@@ -950,17 +926,16 @@ fn raw_story_from_row(row: &Row<'_>) -> Result<RawStoryRow, rusqlite::Error> {
         superstate: row.get(4)?,
         priority: row.get(5)?,
         story_type: row.get(6)?,
-        assignee: row.get(7)?,
-        awaiting: row.get(8)?,
-        archived: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
-        closed_at: row.get(12)?,
-        description: row.get(13)?,
-        hidden_at: row.get(14)?,
-        draft: row.get(15)?,
-        snapshot: row.get(16)?,
-        head_global_seq: row.get(17)?,
+        awaiting: row.get(7)?,
+        archived: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+        closed_at: row.get(11)?,
+        description: row.get(12)?,
+        hidden_at: row.get(13)?,
+        draft: row.get(14)?,
+        snapshot: row.get(15)?,
+        head_global_seq: row.get(16)?,
     })
 }
 
@@ -974,7 +949,6 @@ fn hydrate(raw: RawStoryRow, labels: Vec<String>) -> Result<StoryRow, StoreError
         superstate: parse_superstate(&raw.superstate)?,
         priority: parse_priority(&raw.priority)?,
         story_type: raw.story_type,
-        assignee: raw.assignee,
         awaiting: raw.awaiting,
         archived: raw.archived,
         created_at: raw.created_at,
@@ -1238,9 +1212,6 @@ pub(super) fn stories(
     }
     if let Some(priority) = &query.priority {
         filter!(priority.as_str().to_string(), " AND priority = ?{}");
-    }
-    if let Some(assignee) = &query.assignee {
-        filter!(assignee.clone(), " AND assignee = ?{}");
     }
     if let Some(story_type) = &query.story_type {
         filter!(story_type.clone(), " AND story_type = ?{}");

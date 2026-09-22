@@ -35,7 +35,7 @@ Warnings can also appear at the envelope level. Read them before acting.
 
 == Common response shapes ==
 
-  new, show, comment, assign, move, block, unblock, prioritize, label,
+  new, show, comment, move, block, unblock, prioritize, label,
   unlabel, reopen, relate, unrelate, set
     "story": StoryView
   claim

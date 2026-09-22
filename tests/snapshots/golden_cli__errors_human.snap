@@ -14,7 +14,7 @@ stdout: <empty>
 stderr: 
 error: unknown flag `--no-such-flag` for `story list`.
 
-`story list` takes: --state --assignee --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready --drafts --unassessed --include-closed --include-archived --all
+`story list` takes: --state --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready --drafts --unassessed --include-closed --include-archived --all
 Run `story help list` for usage and global options.
 If `--no-such-flag` is literal text, put it after `--`. Shell quotes alone do not escape a flag.
 
@@ -23,7 +23,7 @@ $ story new
 exit: 2
 stdout: <empty>
 stderr: 
-error: usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--assignee <member>] [--label <name> ...] [--labels <csv>] [--draft]
+error: usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--label <name> ...] [--labels <csv>] [--draft]
 
 
 $ story move SH-1 not-a-state
@@ -37,7 +37,7 @@ $ story list --state
 exit: 2
 stdout: <empty>
 stderr: 
-error: usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]
+error: usage: story list [--state <slug>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]
 
 
 $ story show
@@ -196,4 +196,4 @@ $ story member no-such-subcommand
 exit: 2
 stdout: <empty>
 stderr: 
-error: usage: story member add "<name <email>>" | story member add -g <github-handle>
+error: unknown command `member`. Run `story --help` for usage.

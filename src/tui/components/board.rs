@@ -671,11 +671,6 @@ fn render_story_row(
         right_parts.push((format!(" {pri_sym}"), pri_style));
     }
 
-    // Assignee (compute first to know fixed overhead)
-    let assignee_part: Option<(String, ratatui::style::Style)> = story
-        .assignee
-        .as_ref()
-        .map(|a| (format!(" @{a}"), theme.assignee));
     let blocked_part: Option<(String, ratatui::style::Style)> = if story.awaiting.is_some() {
         Some((" BLK".to_string(), theme.blocked_badge))
     } else {
@@ -687,7 +682,6 @@ fn render_story_row(
         .iter()
         .map(|(s, _)| s.chars().count())
         .sum::<usize>()
-        + assignee_part.as_ref().map_or(0, |(s, _)| s.chars().count())
         + blocked_part.as_ref().map_or(0, |(s, _)| s.chars().count());
 
     // Labels: fit as many as possible, show "+N more" if truncated
@@ -719,9 +713,6 @@ fn render_story_row(
     }
 
     right_parts.extend(label_parts);
-    if let Some(part) = assignee_part {
-        right_parts.push(part);
-    }
     if let Some(part) = blocked_part {
         right_parts.push(part);
     }
@@ -847,7 +838,6 @@ mod tests {
             } else {
                 SuperState::Open
             },
-            assignee: None,
             awaiting: None,
             comments: vec![],
             referenced_by_commits: vec![],
@@ -892,7 +882,6 @@ mod tests {
                 test_snapshot("SH-3", "in-progress", "Third"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let board = Board::new();
@@ -924,7 +913,6 @@ mod tests {
                 test_snapshot("SH-3", "in-progress", "Third"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -947,7 +935,7 @@ mod tests {
 
     #[test]
     fn visible_rows_empty_project() {
-        let data = DataStore::from_test_data(test_states(), vec![], "SH".to_string(), vec![]);
+        let data = DataStore::from_test_data(test_states(), vec![], "SH".to_string());
         let state = make_state(data);
         let board = Board::new();
         let rows = board.build_visible_rows(&state);
@@ -969,7 +957,6 @@ mod tests {
                 test_snapshot("SH-3", "in-progress", "Third"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1002,7 +989,6 @@ mod tests {
                 test_snapshot("SH-2", "in-progress", "Second"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1044,7 +1030,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1072,7 +1057,6 @@ mod tests {
                 test_snapshot("SH-3", "in-progress", "Third"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1116,7 +1100,6 @@ mod tests {
                 test_snapshot("SH-2", "todo", "Second"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1146,7 +1129,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1163,7 +1145,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1179,7 +1160,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1201,7 +1181,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "in-progress", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1224,7 +1203,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1243,7 +1221,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "review", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1279,7 +1256,6 @@ mod tests {
             states,
             vec![test_snapshot("SH-1", "review", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1307,7 +1283,6 @@ mod tests {
                 test_snapshot("SH-2", "todo", "Second"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1333,7 +1308,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1362,7 +1336,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1391,7 +1364,6 @@ mod tests {
                 test_snapshot("SH-3", "in-progress", "Third"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1429,7 +1401,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1452,7 +1423,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1483,7 +1453,6 @@ mod tests {
                 test_snapshot("SH-2", "in-progress", "Second"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let mut state = make_state(data);
         state.terminal_size = (20, 5); // Very small terminal
@@ -1586,7 +1555,6 @@ mod tests {
                 test_snapshot("SH-2", "in-progress", "Second"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1626,7 +1594,6 @@ mod tests {
                 test_snapshot("SH-5", "review", "Epsilon"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let mut state = make_state(data);
         let mut board = Board::new();
@@ -1662,7 +1629,6 @@ mod tests {
                 test_snapshot("SH-2", "in-progress", "Beta"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let mut state = make_state(data);
         let mut board = Board::new();
@@ -1693,7 +1659,6 @@ mod tests {
                 test_snapshot("SH-3", "in-progress", "Gamma"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let mut state = make_state(data);
         let mut board = Board::new();
@@ -1752,7 +1717,6 @@ mod tests {
                 test_snapshot("SH-3", "in-progress", "Gamma"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let mut state = make_state(data);
         let mut board = Board::new();
@@ -1798,7 +1762,6 @@ mod tests {
                 test_snapshot("SH-3", "review", "Gamma"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1855,7 +1818,6 @@ mod tests {
             vec![], // no states
             vec![], // no stories
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1903,7 +1865,6 @@ mod tests {
             vec![], // no states
             vec![], // no stories
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1922,7 +1883,6 @@ mod tests {
             vec![], // no states
             vec![], // no stories
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -1952,7 +1912,6 @@ mod tests {
             }],
             vec![],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let board = Board::new();
@@ -1968,7 +1927,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -2001,7 +1959,6 @@ mod tests {
                 test_snapshot("SH-3", "in-progress", "Gamma"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -2031,7 +1988,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "Alpha")],
             "SH".to_string(),
-            vec![],
         );
         let mut state = make_state(data);
         state.terminal_size = (80, 0); // height = 0
@@ -2056,7 +2012,7 @@ mod tests {
                 &format!("Story {i}"),
             ));
         }
-        let data = DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![]);
+        let data = DataStore::from_test_data(test_states(), stories, "SH".to_string());
         let mut state = make_state(data);
         state.terminal_size = (80, 10); // small viewport
 
@@ -2094,7 +2050,6 @@ mod tests {
                 test_snapshot("SH-2", "todo", "Second"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -2124,7 +2079,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -2159,7 +2113,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -2212,7 +2165,6 @@ mod tests {
                 test_snapshot("SH-2", "in-progress", "Second"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -2315,7 +2267,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -2336,7 +2287,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -2366,7 +2316,6 @@ mod tests {
                 test_snapshot("SH-2", "todo", "Second"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();
@@ -2404,7 +2353,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
-            vec![],
         );
         let state = make_state(data);
         let mut board = Board::new();

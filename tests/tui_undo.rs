@@ -101,7 +101,6 @@ fn create_story(fixture: &Fixture, title: &str) -> String {
             description: None,
             priority: None,
             labels: None,
-            assignee: None,
             draft: false,
         },
     )

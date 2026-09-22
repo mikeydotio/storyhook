@@ -158,7 +158,6 @@ what still gets filed.
 | Set priority | `story prioritize SH-<n> high` |
 | What a level means | `story help priority-rubric` |
 | Adopt or file a mid-work find | `story help scope-rubric` |
-| Assign a story | `story assign SH-<n> <member>` |
 | Add a label | `story label SH-<n> <label>` |
 | Reserved label names | `story help label` |
 | Block on another story | `story block SH-<n> --on SH-<blocker> "reason"` |

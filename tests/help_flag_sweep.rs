@@ -41,8 +41,6 @@ const VERBS: &[&[&str]] = &[
     &["search"],
     &["phase"],
     &["phase", "create"],
-    &["member"],
-    &["member", "add"],
     &["import"],
     &["decompose"],
     &["web"],
@@ -75,7 +73,6 @@ const VERBS: &[&[&str]] = &[
     &["plugin"],
     &["show"],
     &["comment"],
-    &["assign"],
     &["move"],
     &["block"],
     &["unblock"],
@@ -194,10 +191,6 @@ fn store_state(project: &Project<'_>) -> BTreeMap<String, String> {
             state.insert("store/prefix".to_string(), record.prefix.clone());
             state.insert("store/states".to_string(), format!("{:?}", tx.states(id)?));
             state.insert("store/types".to_string(), format!("{:?}", tx.types(id)?));
-            state.insert(
-                "store/members".to_string(),
-                format!("{:?}", tx.members(id)?),
-            );
             for row in tx.stories(id, &StoryQuery::all())? {
                 state.insert(
                     format!("store/story/{}", row.story_no.get()),

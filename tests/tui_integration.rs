@@ -158,7 +158,6 @@ fn create_story(fixture: &Fixture, title: &str) -> String {
             description: None,
             priority: None,
             labels: None,
-            assignee: None,
             draft: false,
         },
     )
@@ -167,17 +166,6 @@ fn create_story(fixture: &Fixture, title: &str) -> String {
         Response::Story(view) => view.story.id,
         other => panic!("expected a story, got {other:?}"),
     }
-}
-
-/// Helper: add a member so `story assign` has someone to resolve to.
-fn add_member(fixture: &Fixture, handle: &str) {
-    run(
-        fixture,
-        Invocation::MemberAdd {
-            input: storyhook::cli::MemberInput::Github(handle.to_string()),
-        },
-    )
-    .unwrap();
 }
 
 /// Helper: move a story into a state.
@@ -262,29 +250,12 @@ fn create_and_edit_story_flow() {
     let story = store.find_story("CE-1").unwrap();
     assert_eq!(story.title, "Initial title");
     assert_eq!(story.priority, Priority::Low);
-    assert!(story.assignee.is_none());
     assert!(story.comments.is_empty());
 
     // Set priority
     set_priority(&fixture, "CE-1", "high");
     let store = load(&fixture).unwrap();
     assert_eq!(store.find_story("CE-1").unwrap().priority, Priority::High);
-
-    // Assign
-    add_member(&fixture, "mikey");
-    run(
-        &fixture,
-        Invocation::Assign {
-            id: "CE-1".to_string(),
-            member: "mikey".to_string(),
-        },
-    )
-    .unwrap();
-    let store = load(&fixture).unwrap();
-    assert_eq!(
-        store.find_story("CE-1").unwrap().assignee.as_deref(),
-        Some("mikey")
-    );
 
     // Add comment
     run(
@@ -383,20 +354,10 @@ fn filter_narrows_visible_stories() {
     let id3 = create_story(&fixture, "Refactor database");
 
     // Set different priorities and labels
-    add_member(&fixture, "mikey");
     set_priority(&fixture, &id1, "high");
     set_labels(&fixture, &id1, &["bug"]);
     set_priority(&fixture, &id2, "medium");
     set_labels(&fixture, &id3, &["tech-debt"]);
-    run(
-        &fixture,
-        Invocation::Assign {
-            id: id3.clone(),
-            member: "mikey".to_string(),
-        },
-    )
-    .unwrap();
-
     let store = load(&fixture).unwrap();
     assert_eq!(store.story_count(), 3);
 
@@ -442,11 +403,11 @@ fn filter_narrows_visible_stories() {
         .collect();
     assert_eq!(story_rows.len(), 1);
 
-    // Combined filters (priority + assignee) should AND together
+    // Combined filters (priority + label) should AND together
     let store = load(&fixture).unwrap();
     let mut state = AppState::new(store);
     state.filters.push(FilterSpec {
-        assignee: Some("mikey".to_string()),
+        label: Some("tech-debt".to_string()),
         ..Default::default()
     });
     state.filters.push(FilterSpec {
@@ -1338,7 +1299,6 @@ fn create_draft(fixture: &Fixture, title: &str) -> String {
             description: None,
             priority: None,
             labels: None,
-            assignee: None,
             draft: true,
         },
     )

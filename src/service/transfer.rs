@@ -27,8 +27,8 @@ use sha2::{Digest, Sha256};
 use crate::domain::provenance::Provenance;
 use crate::domain::remote::{OwnedOrigin, RemoteUrl};
 use crate::domain::{
-    ImportStory, Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef,
-    fold_story, has_children, is_epic, normalize_labels, relation_edges,
+    ImportStory, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef, fold_story,
+    has_children, is_epic, normalize_labels, relation_edges,
 };
 use crate::error::AppError;
 use crate::output::{ReferencedBy, StoryView};
@@ -71,8 +71,6 @@ pub struct ProjectExport {
     /// The configured story types, in order.
     #[serde(default)]
     pub types: Vec<TypeDef>,
-    /// The project's members.
-    pub members: Vec<Member>,
     /// The settings a user wrote, absent when they wrote none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<ExportedSettings>,
@@ -262,6 +260,7 @@ pub struct ExportedStory {
     pub id: String,
     /// Every event, oldest first — including the ones this binary cannot
     /// decode.
+    #[serde(deserialize_with = "deserialize_export_events")]
     pub events: Vec<ExportedEvent>,
     /// Whether the story lives in the legacy archive rather than as an open
     /// log.
@@ -379,6 +378,21 @@ impl ExportedEvent {
     }
 }
 
+fn deserialize_export_events<'de, D>(deserializer: D) -> Result<Vec<ExportedEvent>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let events = Vec::<ExportedEvent>::deserialize(deserializer)?;
+    Ok(events
+        .into_iter()
+        .filter(|event| match event {
+            ExportedEvent::Unknown(raw) => !crate::domain::is_retired_assignment(&raw.kind),
+            ExportedEvent::Known(_) => true,
+        })
+        .collect())
+}
+
 impl serde::Serialize for ExportedEvent {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
@@ -475,7 +489,7 @@ pub fn parse_import_documents(raw: &str) -> Result<Vec<ImportStory>, AppError> {
                     "this looks like a `story export` document, which `story import` cannot \
                      read.\n\n`story import` bulk-creates stories from a JSON array of \
                      descriptions, each needing at minimum a \"title\". An export document is \
-                     a whole project — ids, event histories, states, types and members — and \
+                     a whole project — ids, event histories, states and types — and \
                      its restore verb is:\n\n  story import-project <file>\n\nIt restores into \
                      an empty project."
                         .to_string(),
@@ -629,7 +643,6 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                 prefix: exported_prefix(&prefix),
                 states: tx.states(project)?,
                 types: tx.types(project)?,
-                members: tx.members(project)?,
                 settings: ExportedSettings::new(
                     stored.sync_auto_transition,
                     stored.doctor_stale_threshold,
@@ -678,7 +691,7 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
 
             let mut created_ids: Vec<String> = Vec::new();
             for story in stories {
-                let events = import_events(&*tx, project, &ordered, &default_type, story, &now)?;
+                let events = import_events(&ordered, &default_type, story, &now)?;
                 let story_no = tx.allocate_story_no(project)?;
                 let snapshot = append_and_fold(
                     tx,
@@ -958,9 +971,6 @@ pub fn import_project<S: Store>(
             tx.put_types(project, &default_types())?;
         }
         let default_type = default_story_type(&*tx, project)?;
-        for member in &export.members {
-            tx.put_member(project, member)?;
-        }
         apply_settings(tx, project, export.settings.as_ref())?;
 
         let mut skipped_remotes = Vec::new();
@@ -1007,7 +1017,10 @@ pub fn import_project<S: Store>(
                 .events
                 .iter()
                 .map(ExportedEvent::to_raw)
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|event| !crate::domain::is_retired_assignment(&event.kind))
+                .collect::<Vec<_>>();
             let link_source = if legacy_links {
                 LinkSource::Replayed
             } else {
@@ -1244,8 +1257,6 @@ fn require_known_types(
 /// [`creation_events`](super::story) builds for `story new`. The story type has
 /// already been validated for the whole batch.
 fn import_events(
-    tx: &impl ReadOps,
-    project: ProjectId,
     states: &[StateDef],
     default_type: &str,
     story: &ImportStory,
@@ -1303,12 +1314,6 @@ fn import_events(
                 labels: normalized,
             });
         }
-    }
-    if let Some(lookup) = &story.assignee {
-        events.push(StoryEvent::StoryAssigned {
-            at: now.to_string(),
-            member_id: find_member(tx, project, lookup)?.id,
-        });
     }
     if let Some(description) = &story.description
         && !description.trim().is_empty()
@@ -1439,14 +1444,4 @@ fn is_open(
     Ok(tx
         .story(project, story_no)?
         .is_some_and(|row| !row.archived))
-}
-
-/// A member by id or by GitHub handle.
-fn find_member(tx: &impl ReadOps, project: ProjectId, lookup: &str) -> Result<Member, AppError> {
-    tx.members(project)?
-        .into_iter()
-        .find(|member| {
-            member.id == lookup || member.github.as_deref() == Some(lookup.trim_start_matches('@'))
-        })
-        .ok_or_else(|| AppError::NotFound(format!("member `{lookup}` not found")))
 }

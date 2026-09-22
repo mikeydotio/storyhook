@@ -2477,7 +2477,6 @@ fn web_serve_root_html_uses_shared_visual_hierarchy_roles() {
         ".filter-count",
         ".card-id",
         ".chip",
-        ".avatar",
         ".flag",
         ".col-order",
         ".col-date",
@@ -4522,7 +4521,7 @@ fn web_serve_api_data_meta_states_are_ordered() {
 }
 
 #[test]
-fn web_serve_api_data_meta_has_types_priorities_relations_members() {
+fn web_serve_api_data_meta_has_current_catalogs() {
     let fixture = served();
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
@@ -4576,8 +4575,7 @@ fn web_serve_api_data_meta_has_types_priorities_relations_members() {
     assert!(relations.contains(&"blocks"));
     assert!(relations.contains(&"parent-of"));
 
-    // Fresh project has no members yet.
-    assert_eq!(json["meta"]["members"].as_array().unwrap().len(), 0);
+    assert!(json["meta"].get("members").is_none());
 }
 
 #[test]
@@ -4637,9 +4635,8 @@ fn web_meta_includes_sorted_unique_labels() {
 }
 
 #[test]
-fn web_serve_api_data_meta_includes_members() {
+fn web_serve_api_data_omits_retired_member_catalog() {
     let fixture = served();
-    fixture.seed(&["member", "add", "Alice"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
@@ -4651,13 +4648,8 @@ fn web_serve_api_data_meta_includes_members() {
     let body = resp.into_body().read_to_string().unwrap();
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
 
-    let member_ids: Vec<&str> = json["meta"]["members"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|m| m["id"].as_str().unwrap())
-        .collect();
-    assert!(member_ids.contains(&"alice"));
+    assert!(json["meta"].get("members").is_none());
+    assert!(json.get("members").is_none());
 }
 
 // --- GET /api/repos/{id}/story/{sid} ---
@@ -5715,42 +5707,40 @@ fn web_priority_story_sets_priority() {
 }
 
 #[test]
-fn web_assign_story_to_valid_member_succeeds() {
+fn web_assignment_route_is_removed() {
     let fixture = served();
     fixture.seed(&["new", "Story"]);
-    fixture.seed(&["member", "add", "Alice"]);
-
-    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-
-    let resp = post_json(
-        &fixture,
-        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/assign"),
-        r#"{"member":"alice"}"#,
-    )
-    .unwrap();
-    assert_eq!(resp.status(), 200);
-    let json: serde_json::Value =
-        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
-    assert_eq!(story_field(&json, "assignee"), "alice");
-}
-
-#[test]
-fn web_assign_story_to_missing_member_is_404() {
-    let fixture = served();
-    fixture.seed(&["new", "Story"]);
-
-    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-
-    // storage::find_member returns AppError::NotFound (not Validation) for
-    // an unknown member id, matching `story assign <id> <unknown-member>`
-    // on the CLI (exit code 3, not 2).
     let err = post_json(
         &fixture,
-        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/assign"),
-        r#"{"member":"nobody"}"#,
+        &format!(
+            "http://127.0.0.1:{}/api/repos/{}/story/SH-1/assign",
+            fixture.port, fixture.repo_id
+        ),
+        r#"{"member":"alice"}"#,
     )
     .unwrap_err();
     assert_eq!(status_of(err), 404);
+}
+
+#[test]
+fn web_mutations_reject_retired_assignment_fields() {
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    for value in ["null", "\"ada\"", "7"] {
+        let payload = format!("{{\"title\":\"rejected\",\"assignee\":{value}}}");
+        let base = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story");
+        assert_eq!(
+            status_of(post_json(&fixture, &base, &payload).unwrap_err()),
+            422
+        );
+        assert_eq!(
+            status_of(patch_json(&fixture, &format!("{base}/SH-1"), &payload).unwrap_err()),
+            422
+        );
+    }
 }
 
 #[test]

@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use storyhook::domain::{Member, StateDef, SuperState, TypeDef};
+use storyhook::domain::{StateDef, SuperState, TypeDef};
 use storyhook::help_topics::get_help_topic;
 use storyhook::service::transfer::{
     ExportedRemote, ExportedSettings, ExportedStory, ProjectExport,
@@ -55,13 +55,6 @@ fn the_export_topic_names_every_key_the_export_document_carries() {
             description: None,
             emoji: None,
         }],
-        members: vec![Member {
-            id: "ada".to_string(),
-            display_name: "Ada Lovelace".to_string(),
-            email: None,
-            github: None,
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-        }],
         settings: ExportedSettings::new(Some(true), Some("30d".to_string())),
         remotes: vec![ExportedRemote {
             normalized: "github.com/acme/widgets".to_string(),
@@ -92,9 +85,9 @@ fn the_export_topic_names_every_key_the_export_document_carries() {
     // Vacuity guard: a fully-populated document that still omitted an
     // optional field would make the assertion below trivially satisfiable.
     assert!(
-        object.len() >= 8,
-        "a fully-populated ProjectExport should carry at least 8 top-level keys \
-         (schema, prefix, states, types, members, settings, remotes, stories); \
+        object.len() >= 7,
+        "a fully-populated ProjectExport should carry at least 7 top-level keys \
+         (schema, prefix, states, types, settings, remotes, stories); \
          found {}: {:?}",
         object.len(),
         object.keys().collect::<Vec<_>>()
@@ -477,6 +470,22 @@ fn json_guide_covers_conflicts_empty_results_and_output_exceptions() {
         render_response(&Response::RawJson("{}".into()), true, true),
         "{}\n"
     );
+}
+
+/// Every verb in the guide's single-story list must still have command help.
+#[test]
+fn json_guide_single_story_verbs_have_help_topics() {
+    let help = get_help_topic("json-format").unwrap();
+    let shapes = help.split_once("== Common response shapes ==").unwrap().1;
+    let commands = shapes.split_once("\"story\": StoryView").unwrap().0;
+    let commands: Vec<_> = commands.split(',').map(str::trim).collect();
+    assert!(commands.len() >= 10, "the command list must not be empty");
+    for command in commands {
+        assert!(
+            get_help_topic(command).is_some(),
+            "json-format advertises an unsupported command: {command}"
+        );
+    }
 }
 
 /// Run the documented read/write flow through the production CLI and daemon.

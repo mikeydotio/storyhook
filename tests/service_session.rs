@@ -579,47 +579,6 @@ mod undo {
     }
 
     #[test]
-    fn an_assignment_is_undone_by_clearing_the_assignee() {
-        // The sibling case: a field with an event that sets it and, until now,
-        // none that cleared it.
-        let fixture = ServiceFixture::new();
-        fixture.add_member("ada", "Ada", None);
-        let (id, before) = snapshot(&fixture, "Gets assigned");
-        StoryService::new(&fixture.ctx())
-            .assign(&id, "ada")
-            .expect("assigning");
-        assert_eq!(show(&fixture, &id).assignee.as_deref(), Some("ada"));
-
-        let compensation = undo(&fixture, &id, &before);
-        assert!(
-            matches!(
-                compensation.as_slice(),
-                [StoryEvent::StoryAssigneeCleared { .. }]
-            ),
-            "{compensation:?}"
-        );
-        assert_eq!(show(&fixture, &id).assignee, None);
-    }
-
-    #[test]
-    fn a_reassignment_is_undone_by_assigning_the_previous_member() {
-        let fixture = ServiceFixture::new();
-        fixture.add_member("ada", "Ada", None);
-        fixture.add_member("grace", "Grace", None);
-        let (id, _) = snapshot(&fixture, "Changes hands");
-        StoryService::new(&fixture.ctx())
-            .assign(&id, "ada")
-            .expect("assigning");
-        let before = session::history(&fixture.ctx(), &id).expect("history");
-        StoryService::new(&fixture.ctx())
-            .assign(&id, "grace")
-            .expect("reassigning");
-
-        undo(&fixture, &id, &before);
-        assert_eq!(show(&fixture, &id).assignee.as_deref(), Some("ada"));
-    }
-
-    #[test]
     fn the_scalar_fields_are_each_set_back() {
         let fixture = ServiceFixture::new();
         let (id, before) = snapshot(&fixture, "Edited everywhere");

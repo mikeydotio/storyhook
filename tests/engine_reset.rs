@@ -524,7 +524,6 @@ fn reset_preserves_metadata_and_dependency_edges_while_clearing_awaiting() {
         .snapshot;
     assert_eq!(after.relationships, before.relationships);
     assert_eq!(after.labels, before.labels);
-    assert_eq!(after.assignee, before.assignee);
     assert!(after.comments.starts_with(&before.comments));
     assert_eq!(after.awaiting, None);
     assert_eq!(after.state, "todo");

@@ -129,7 +129,7 @@ test("the panel's open state is a durable preference: it survives a reload and a
 /**
  * Regression test for the `closeAllPopovers` scoping fix this story also
  * made: that function resets every `[aria-expanded="true"]` element on any
- * outside click (it's what dismisses the priority/assignee/etc. dropdowns
+ * outside click (it's what dismisses the priority/etc. dropdowns
  * and the project selector), and used to do so unconditionally. Without
  * excluding `.filter-toggle-btn`, opening the panel and then clicking a
  * board card (which doesn't itself call renderView/syncFilterToggle) would

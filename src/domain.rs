@@ -94,8 +94,6 @@ pub struct ImportStory {
     #[serde(default)]
     pub labels: Option<Vec<String>>,
     #[serde(default)]
-    pub assignee: Option<String>,
-    #[serde(default)]
     pub relationships: Option<Vec<ImportRelationship>>,
     #[serde(default)]
     pub description: Option<String>,
@@ -296,17 +294,6 @@ pub struct ProgressRollup {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Member {
-    pub id: String,
-    pub display_name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub github: Option<String>,
-    pub created_at: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoryComment {
     pub at: String,
     pub text: String,
@@ -391,8 +378,6 @@ pub struct StorySnapshot {
     /// supported read surface sees it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub state_computed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub assignee: Option<String>,
     #[serde(default)]
     pub awaiting: Option<String>,
     #[serde(default)]
@@ -680,19 +665,6 @@ pub enum StoryEvent {
         comment_at: String,
         text: String,
     },
-    StoryAssigned {
-        at: String,
-        member_id: String,
-    },
-    /// Clears a story's assignee — the inverse of
-    /// [`StoryAssigned`](Self::StoryAssigned) when the story had nobody before.
-    ///
-    /// Sibling of [`StoryAwaitingCleared`](Self::StoryAwaitingCleared), and
-    /// added for the same reason: a field with an event that sets it and none
-    /// that clears it cannot be put back without rewriting history.
-    StoryAssigneeCleared {
-        at: String,
-    },
     StoryAwaitingSet {
         at: String,
         awaiting: String,
@@ -742,8 +714,7 @@ pub enum StoryEvent {
     /// [`StoryPrioritySet`](Self::StoryPrioritySet) when the story had no
     /// priority on record before it (SH-359).
     ///
-    /// Sibling of [`StoryAssigneeCleared`](Self::StoryAssigneeCleared), added
-    /// for the reason that variant's own doc comment states: a field with an
+    /// A field with an
     /// event that sets it and none that clears it cannot be put back without
     /// rewriting history. It remains decodable and usable when undoing an old
     /// history whose creation predates the required `low` event (SH-449).
@@ -903,8 +874,7 @@ pub enum StoryEvent {
     /// A zero-payload event rather than a `StoryDraftSet { draft: bool }`
     /// deliberately: this codebase's precedent for an on/off fact is a
     /// distinct paired event per direction
-    /// ([`StoryHidden`](Self::StoryHidden)/[`StoryUnhidden`](Self::StoryUnhidden),
-    /// [`StoryAssigned`](Self::StoryAssigned)/[`StoryAssigneeCleared`](Self::StoryAssigneeCleared)),
+    /// ([`StoryHidden`](Self::StoryHidden)/[`StoryUnhidden`](Self::StoryUnhidden)),
     /// which makes "there is no bool payload to misuse" true by construction.
     StoryCreatedAsDraft {
         at: String,
@@ -1062,12 +1032,10 @@ fn git_link_subject(text: &str) -> Option<&str> {
 /// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
 /// reads serde's own `unknown variant, expected one of …` list back out of the
 /// derive and compares it to this array.
-pub const EVENT_KINDS: [&str; 31] = [
+pub const EVENT_KINDS: [&str; 29] = [
     "StoryCreated",
     "StoryCommentAdded",
     "StoryCommentRetracted",
-    "StoryAssigned",
-    "StoryAssigneeCleared",
     "StoryAwaitingSet",
     "StoryAwaitingCleared",
     "StoryStateChanged",
@@ -1102,6 +1070,11 @@ pub fn is_known_event_kind(kind: &str) -> bool {
     EVENT_KINDS.contains(&kind)
 }
 
+/// Historical assignment events discarded at import boundaries (SH-752).
+pub(crate) fn is_retired_assignment(kind: &str) -> bool {
+    matches!(kind, "StoryAssigned" | "StoryAssigneeCleared")
+}
+
 /// The serde `kind` tag `event` serializes with.
 ///
 /// An exhaustive match, so a new variant cannot reach the store's `kind` column
@@ -1112,8 +1085,6 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
         StoryEvent::StoryCreated { .. } => "StoryCreated",
         StoryEvent::StoryCommentAdded { .. } => "StoryCommentAdded",
         StoryEvent::StoryCommentRetracted { .. } => "StoryCommentRetracted",
-        StoryEvent::StoryAssigned { .. } => "StoryAssigned",
-        StoryEvent::StoryAssigneeCleared { .. } => "StoryAssigneeCleared",
         StoryEvent::StoryAwaitingSet { .. } => "StoryAwaitingSet",
         StoryEvent::StoryAwaitingCleared { .. } => "StoryAwaitingCleared",
         StoryEvent::StoryStateChanged { .. } => "StoryStateChanged",
@@ -1193,8 +1164,6 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryCreated { .. } => "created",
             StoryEvent::StoryCommentAdded { .. } => "comment",
             StoryEvent::StoryCommentRetracted { .. } => "comment-retracted",
-            StoryEvent::StoryAssigned { .. } => "assigned",
-            StoryEvent::StoryAssigneeCleared { .. } => "assignee-cleared",
             StoryEvent::StoryAwaitingSet { .. } => "awaiting-set",
             StoryEvent::StoryAwaitingCleared { .. } => "awaiting-cleared",
             StoryEvent::StoryStateChanged { .. } => "state-change",
@@ -1735,7 +1704,6 @@ pub fn fold_story(
     let mut updated_at = None;
     let mut state = None;
     let mut state_computed = false;
-    let mut assignee = None;
     let mut awaiting = None;
     let mut priority = Priority::None;
     let mut priority_assessed = false;
@@ -1815,14 +1783,6 @@ pub fn fold_story(
                 {
                     comments.remove(index);
                 }
-                updated_at = Some(at.clone());
-            }
-            StoryEvent::StoryAssigned { at, member_id } => {
-                assignee = Some(member_id.clone());
-                updated_at = Some(at.clone());
-            }
-            StoryEvent::StoryAssigneeCleared { at } => {
-                assignee = None;
                 updated_at = Some(at.clone());
             }
             StoryEvent::StoryAwaitingSet {
@@ -2173,7 +2133,6 @@ pub fn fold_story(
         state,
         superstate,
         state_computed,
-        assignee,
         awaiting,
         priority,
         priority_assessed,
@@ -5642,7 +5601,6 @@ mod tests {
             state: "blocked".to_string(),
             state_computed: false,
             superstate: SuperState::Open,
-            assignee: None,
             awaiting: None,
             priority: Priority::None,
             priority_assessed: false,
@@ -5679,7 +5637,6 @@ mod tests {
             state: "in-progress".to_string(),
             state_computed: false,
             superstate: SuperState::Open,
-            assignee: None,
             awaiting: None,
             priority: Priority::None,
             priority_assessed: false,
@@ -5788,7 +5745,6 @@ mod tests {
             state: "todo".to_string(),
             state_computed: false,
             superstate: SuperState::Open,
-            assignee: None,
             awaiting: None,
             priority: Priority::None,
             priority_assessed: false,
@@ -6177,7 +6133,6 @@ mod tests {
                 state: "todo".to_string(),
                 state_computed: false,
                 superstate: SuperState::Open,
-                assignee: None,
                 awaiting: None,
                 priority: Priority::None,
                 priority_assessed: false,
@@ -6204,7 +6159,6 @@ mod tests {
                 state: "todo".to_string(),
                 state_computed: false,
                 superstate: SuperState::Open,
-                assignee: None,
                 awaiting: None,
                 priority: Priority::None,
                 priority_assessed: false,
@@ -6237,7 +6191,6 @@ mod tests {
                 state: "todo".to_string(),
                 state_computed: false,
                 superstate: SuperState::Open,
-                assignee: None,
                 awaiting: None,
                 priority: Priority::None,
                 priority_assessed: false,
@@ -6264,7 +6217,6 @@ mod tests {
                 state: "todo".to_string(),
                 state_computed: false,
                 superstate: SuperState::Open,
-                assignee: None,
                 awaiting: None,
                 priority: Priority::None,
                 priority_assessed: false,
@@ -7375,7 +7327,6 @@ mod tests {
             state: "todo".to_string(),
             state_computed: false,
             superstate: SuperState::Open,
-            assignee: None,
             awaiting: None,
             comments: Vec::new(),
             referenced_by_commits: Vec::new(),
@@ -7907,7 +7858,6 @@ mod ready_order_properties {
             state: "todo".to_string(),
             state_computed: false,
             superstate: SuperState::Open,
-            assignee: None,
             awaiting: None,
             comments: Vec::new(),
             referenced_by_commits: Vec::new(),

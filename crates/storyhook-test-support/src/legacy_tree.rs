@@ -246,7 +246,6 @@ mod tests {
         assert_eq!(project.next_id, 2, "creating a story consumes the counter");
         assert_eq!(project.states, default_states());
         assert_eq!(project.types, default_types());
-        assert!(project.members.is_empty());
 
         assert_eq!(project.stories.len(), 1);
         let story = &project.stories[0];

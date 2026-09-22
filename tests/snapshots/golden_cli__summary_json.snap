@@ -1,6 +1,5 @@
 ---
 source: tests/golden_cli.rs
-assertion_line: 487
 ---
 [
   {
@@ -75,9 +74,8 @@ assertion_line: 487
         "ready_count": 8,
         "ready_stories": [
           {
-            "head_global_seq": 64,
+            "head_global_seq": 62,
             "story": {
-              "assignee": "grace-hopper",
               "awaiting": null,
               "comments": [
                 {
@@ -110,9 +108,8 @@ assertion_line: 487
             }
           },
           {
-            "head_global_seq": 65,
+            "head_global_seq": 63,
             "story": {
-              "assignee": "ada-lovelace",
               "awaiting": null,
               "comments": [
                 {
@@ -164,7 +161,7 @@ assertion_line: 487
             }
           },
           {
-            "head_global_seq": 69,
+            "head_global_seq": 67,
             "story": {
               "awaiting": null,
               "comments": [],
@@ -304,9 +301,8 @@ assertion_line: 487
         "ready_count": 8,
         "ready_stories": [
           {
-            "head_global_seq": 64,
+            "head_global_seq": 62,
             "story": {
-              "assignee": "grace-hopper",
               "awaiting": null,
               "comments": [
                 {
@@ -339,9 +335,8 @@ assertion_line: 487
             }
           },
           {
-            "head_global_seq": 65,
+            "head_global_seq": 63,
             "story": {
-              "assignee": "ada-lovelace",
               "awaiting": null,
               "comments": [
                 {
@@ -393,7 +388,7 @@ assertion_line: 487
             }
           },
           {
-            "head_global_seq": 69,
+            "head_global_seq": 67,
             "story": {
               "awaiting": null,
               "comments": [],

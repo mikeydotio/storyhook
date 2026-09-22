@@ -572,13 +572,6 @@ fn every_story_action_answers_as_it_did() {
         ),
         row(
             Method::Post,
-            "/api/repos/{repo}/story/SH-1/assign",
-            "{}",
-            400,
-            Feed::Project,
-        ),
-        row(
-            Method::Post,
             "/api/repos/{repo}/story/SH-1/labels",
             "{}",
             400,
@@ -645,7 +638,6 @@ fn every_story_action_keeps_its_guard() {
         "move",
         "comment",
         "priority",
-        "assign",
         "labels",
         "block",
         "reopen",

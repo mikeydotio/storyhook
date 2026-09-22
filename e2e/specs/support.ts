@@ -386,7 +386,7 @@ async function resetFixtureTokenPreferences(request: APIRequestContext): Promise
     },
     data: {
       filter: {
-        text: "", priorities: null, assignees: [], types: null, states: null,
+        text: "", priorities: null, types: null, states: null,
       },
       sort: { col: "updated", dir: -1 },
       columnSort: {},
@@ -722,7 +722,7 @@ export async function resolvedTokenColor(
  * open, and waits for it to actually render. The panel defaults collapsed
  * -- a fresh Playwright context has no localStorage, same reasoning as
  * `seedToken`'s own comment above, so every spec that drives a control
- * inside it (a priority/assignee/type/state/columns dropdown, or "Show
+ * inside it (a priority/type/state/columns dropdown, or "Show
  * archived"/"Hide empty columns") needs this first. Board
  * sort moved out of this panel entirely in SH-305 -- it's per-column now,
  * opened from each column header's own sort button, so a spec driving it

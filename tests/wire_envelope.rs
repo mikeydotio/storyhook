@@ -22,15 +22,15 @@ use std::path::PathBuf;
 use storyhook::cli::{
     AbandonedAction, Attach, AttachmentAction, ClaimComment, ClaimTarget, ContinuationAction,
     CrashesAction, DaemonAction, EngineAction, EpicAction, GraphMode, HistoryAction, HooksAction,
-    Invocation, MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction,
-    ProjectAction, SettingsAction, StateAction, StoreAction, TokenAction, TypeAction,
-    UnclaimComment, VerifierAction, WebAction,
+    Invocation, NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction, ProjectAction,
+    SettingsAction, StateAction, StoreAction, TokenAction, TypeAction, UnclaimComment,
+    VerifierAction, WebAction,
 };
 use storyhook::daemon::gc::{Candidate, KeepReason, Kept, RuntimeGcPlan};
 use storyhook::domain::finding::{Finding, FindingCode, FindingData};
 use storyhook::domain::{
-    CommentMention, CommitReference, Member, Priority, ProgressRollup, StateDef, StoryComment,
-    StoryEvent, StoryRelation, StorySnapshot, SuperState,
+    CommentMention, CommitReference, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent,
+    StoryRelation, StorySnapshot, SuperState,
 };
 use storyhook::error::{AppError, IntegrityDetail, WireError};
 use storyhook::output::{
@@ -84,7 +84,6 @@ fn snapshot(id: &str, title: &str) -> StorySnapshot {
         state: "todo".to_string(),
         state_computed: false,
         superstate: SuperState::Open,
-        assignee: None,
         awaiting: None,
         comments: Vec::new(),
         referenced_by_commits: Vec::new(),
@@ -125,7 +124,6 @@ fn maximal_view() -> StoryView {
     StoryView {
         reset: None,
         story: StorySnapshot {
-            assignee: Some("ada-lovelace".to_string()),
             awaiting: Some("SH-9 to land".to_string()),
             comments: vec![
                 StoryComment {
@@ -733,7 +731,6 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 slug: "storyhook".to_string(),
                 prefix: "SH".to_string(),
                 states: Vec::new(),
-                members: Vec::new(),
                 stories: Vec::new(),
                 drafts: Vec::new(),
                 head_global_seqs: std::collections::BTreeMap::new(),
@@ -758,13 +755,6 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                         description: None,
                     },
                 ],
-                members: vec![Member {
-                    id: "ada".to_string(),
-                    display_name: "Ada Lovelace".to_string(),
-                    email: Some("ada@example.com".to_string()),
-                    github: Some("ada-gh".to_string()),
-                    created_at: "2026-01-01T00:00:00Z".to_string(),
-                }],
                 stories: vec![maximal_view().story],
                 drafts: vec![StorySnapshot {
                     draft: true,
@@ -1531,14 +1521,7 @@ fn invocation_corpus() -> Vec<Invocation> {
             description: Some("multi\nline".to_string()),
             priority: Some("high".to_string()),
             labels: Some(vec!["backend".to_string(), "api".to_string()]),
-            assignee: Some("ada-lovelace".to_string()),
             draft: true,
-        },
-        Invocation::MemberAdd {
-            input: MemberInput::Identity("Ada Lovelace <ada@example.com>".to_string()),
-        },
-        Invocation::MemberAdd {
-            input: MemberInput::Github("ada".to_string()),
         },
         Invocation::State {
             action: StateAction::List,
@@ -1574,7 +1557,6 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::List {
             state: Some("todo".to_string()),
-            assignee: Some("ada".to_string()),
             flagged: true,
             priority: Some("high".to_string()),
             label: Some("api".to_string()),
@@ -1617,10 +1599,6 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Comment {
             id: "SH-1".to_string(),
             text: "a comment".to_string(),
-        },
-        Invocation::Assign {
-            id: "SH-1".to_string(),
-            member: "ada".to_string(),
         },
         Invocation::SetState {
             id: "SH-1".to_string(),
@@ -1790,7 +1768,6 @@ fn invocation_corpus() -> Vec<Invocation> {
             title: Some("New title".to_string()),
             state: Some("done".to_string()),
             priority: Some("low".to_string()),
-            assignee: Some("none".to_string()),
             labels: Some("api,backend".to_string()),
             blocked: Some("SH-2".to_string()),
             unblocked: true,
@@ -2165,7 +2142,6 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Help => "Help",
         Invocation::Project { .. } => "Project",
         Invocation::New { .. } => "New",
-        Invocation::MemberAdd { .. } => "MemberAdd",
         Invocation::State { .. } => "State",
         Invocation::List { .. } => "List",
         Invocation::Log { .. } => "Log",
@@ -2187,7 +2163,6 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::DoctorCrashes { .. } => "DoctorCrashes",
         Invocation::Show { .. } => "Show",
         Invocation::Comment { .. } => "Comment",
-        Invocation::Assign { .. } => "Assign",
         Invocation::SetState { .. } => "SetState",
         Invocation::SetAwaiting { .. } => "SetAwaiting",
         Invocation::ClearAwaiting { .. } => "ClearAwaiting",
@@ -2248,7 +2223,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        74,
+        72,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

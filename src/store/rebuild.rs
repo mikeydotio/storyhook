@@ -597,7 +597,6 @@ fn column_comparisons(
         superstate,
         priority,
         story_type,
-        assignee,
         awaiting,
         archived,
         created_at,
@@ -647,12 +646,6 @@ fn column_comparisons(
             "story_type",
             optional(story_type.as_deref()),
             optional(expected.story_type.as_deref()),
-            Basis::Fold,
-        ),
-        (
-            "assignee",
-            optional(assignee.as_deref()),
-            optional(expected.assignee.as_deref()),
             Basis::Fold,
         ),
         (

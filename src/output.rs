@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    CommentMention, CommitReference, Member, Priority, ProgressRollup, StateDef, StoryRelation,
+    CommentMention, CommitReference, Priority, ProgressRollup, StateDef, StoryRelation,
     StorySnapshot, SuperState,
 };
 use crate::error::AppError;
@@ -655,8 +655,6 @@ pub struct ProjectSnapshotView {
     /// The state catalog, in configured order — which is the order a board
     /// puts its columns in, so it is not merely a set.
     pub states: Vec<StateDef>,
-    /// The project's members, for resolving an assignee client-side.
-    pub members: Vec<Member>,
     /// Every unarchived, non-draft story — what the board renders.
     pub stories: Vec<StorySnapshot>,
     /// Every draft (SH-175), carried separately rather than folded into
@@ -2130,7 +2128,6 @@ pub fn render_delete_plan(plan: &DeletePlan) -> String {
 
 fn render_story(view: &StoryView) -> String {
     let story = &view.story;
-    let assignee = story.assignee.as_deref().unwrap_or("-");
     let mut body = String::new();
     body.push_str(&format!("{} {}\n", story.id, story.title));
     body.push_str(&format!(
@@ -2145,7 +2142,6 @@ fn render_story(view: &StoryView) -> String {
         "draft: {}\n",
         if story.draft { "yes" } else { "no" }
     ));
-    body.push_str(&format!("assignee: {assignee}\n"));
     // The parenthetical only appears on the legacy `none` representation when
     // no priority event exists (SH-359). Current creation always emits low,
     // but old logs and exports remain readable.
@@ -2446,7 +2442,7 @@ pub fn render_html_report(
         String::from("<p class=\"empty\">No stories in this project.</p>")
     } else {
         format!(
-            "<table>\n<thead><tr><th>ID</th><th>Title</th><th>State</th><th>Priority</th><th>Labels</th><th>Assignee</th><th>Updated</th></tr></thead>\n<tbody>\n{}</tbody>\n</table>",
+            "<table>\n<thead><tr><th>ID</th><th>Title</th><th>State</th><th>Priority</th><th>Labels</th><th>Updated</th></tr></thead>\n<tbody>\n{}</tbody>\n</table>",
             table_rows
         )
     };
@@ -2692,16 +2688,10 @@ fn build_table_rows(
                 .join(" ")
         };
 
-        let assignee = s
-            .assignee
-            .as_deref()
-            .map(html_escape)
-            .unwrap_or_else(|| String::from("<span class=\"muted\">-</span>"));
-
         let updated_display = html_escape(&local_time::day(&s.updated_at));
 
         html.push_str(&format!(
-            "<tr{row_class}><td class=\"col-id\">{}</td><td>{}</td><td>{}</td><td><span class=\"priority-badge {priority_cls}\">{}</span></td><td>{labels_html}</td><td>{assignee}</td><td class=\"col-date\">{updated_display}</td></tr>\n",
+            "<tr{row_class}><td class=\"col-id\">{}</td><td>{}</td><td>{}</td><td><span class=\"priority-badge {priority_cls}\">{}</span></td><td>{labels_html}</td><td class=\"col-date\">{updated_display}</td></tr>\n",
             html_escape(&s.id),
             html_escape(&s.title),
             html_escape(&s.state),

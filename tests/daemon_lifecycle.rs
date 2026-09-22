@@ -923,7 +923,7 @@ fn restart_drains_in_flight_work_before_starting_the_successor() {
         .assert()
         .success()
         .stdout(predicates::str::contains("state: todo"))
-        .stdout(predicates::str::contains("assignee: -"));
+        .stdout(predicates::str::contains("priority: low"));
 }
 
 /// The engine loop's drain check is the claim-side half of restart: once the

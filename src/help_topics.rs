@@ -296,7 +296,6 @@ Related:
   story help project-settings — The settings keys, in detail
   story help relate — story link/unlink, which are about STORIES
   story migrate     — Bring a .storyhook/ repository into the store
-  story member add  — Add team members after creating a project
   story new         — Create your first story
 "#,
         );
@@ -317,7 +316,7 @@ other two:
 
   story project settings — per PROJECT, in the store. This command.
   story set <id> ...     — per STORY. Sets a story's fields (title,
-                           state, priority, assignee). Nothing to do
+                           state, priority). Nothing to do
                            with a project.
   .storyhook.toml        — per REPOSITORY. Its [plugin], [hooks],
                            [github] and [verify] tables are decisions
@@ -492,7 +491,7 @@ step and a later explicit or scheduled pass can retry idempotently.
         m.insert(
             "new",
             r#"story new <title> [--state <slug>] [--type <slug>] [--description <text>]
-              [--priority <level>] [--assignee <member>] [--label <name> ...]
+              [--priority <level>] [--label <name> ...]
               [--labels <csv>] [--draft]
 
 Create a new story with the given title. Returns the assigned ID.
@@ -540,7 +539,7 @@ Related:
 
         m.insert(
             "list",
-            r#"story list [--state <slug>] [--assignee <id>] [--flagged]
+            r#"story list [--state <slug>] [--flagged]
            [--priority <levels>] [--label <labels>] [--created-after <date>]
            [--updated-after <date>] [--blocked] [--ready] [--stale <duration>]
            [--phase <N>] [--type <slug>] [--drafts] [--unassessed]
@@ -560,7 +559,6 @@ Filters:
                            Naming a closed state (e.g. done) lifts the
                            closed exclusion for this call, but not the
                            archived one.
-  --assignee <id>         Filter by assignee member ID or GitHub handle
   --priority <levels>     Comma-separated: critical,high,medium,low,none
   --label <labels>        Comma-separated label filter
   --phase <N>             Filter by phase number
@@ -1411,7 +1409,6 @@ Filtering:
   Press / to focus the filter bar, then type a filter query:
     state:todo        Filter by state
     priority:high     Filter by priority
-    assignee:mikey    Filter by assignee
     label:bug         Filter by label
     blocked           Only blocked stories
     ready             Only unblocked stories
@@ -1489,7 +1486,7 @@ Related:
 
 Exports the whole project as one JSON document -- not an array. Every
 story, open and closed alike, each with its full event history, plus
-the project's states, types and members, and -- when the project has
+the project's states and types, and -- when the project has
 them -- its settings and registered git remotes.
 
 The document's top-level keys:
@@ -1497,7 +1494,6 @@ The document's top-level keys:
   prefix         the story-id prefix, absent when it is the default
   states         the configured states, in order
   types          the configured story types, in order
-  members        the project's members
   settings       user-set settings, absent when none were ever set
   remotes        registered git origins, absent when there are none
   stories        every story: id, full event history, and whether it
@@ -1531,7 +1527,7 @@ Related:
             r#"story import-project <file> [--legacy-links]
 
 Restores a whole project from a 'story export' document: every
-story's exact id and full event history, its states, types, members,
+story's exact id and full event history, its states, types,
 and -- when the document carries them -- its settings and registered
 git remotes.
 
@@ -1801,7 +1797,7 @@ Related:
         m.insert(
             "set",
             r#"story set <id> (--title "<title>" | --state <slug> | --priority <level>
-              | --assignee <member> | --labels "<csv>" | --blocked "<reason>"
+              | --labels "<csv>" | --blocked "<reason>"
               | --unblocked | --json "<json>" | --type <slug>
               | --description "<text>")
 
@@ -1814,12 +1810,12 @@ lowercase; case variants name the same label.
 When to use:
   When you need to update more than one field at a time, or when
   using the --json flag for structured metadata. For single-field
-  updates, the dedicated verb commands (move, prioritize, assign,
+  updates, the dedicated verb commands (move, prioritize,
   label, block, unblock) are more concise.
 
 Examples:
   story set SH-1 --priority high --state in-progress
-  story set SH-1 --assignee alice --labels "backend,urgent"
+  story set SH-1 --labels "backend,urgent"
   story set SH-1 --json '{"estimate": "3d", "epic": "auth"}'
   story set SH-1 --blocked "waiting for deploy"
   story set SH-1 --unblocked
@@ -1829,7 +1825,6 @@ Related:
   story help priority-rubric — What the --priority levels mean
   story move <id>        — Change state only
   story prioritize <id>  — Set priority only
-  story assign <id>      — Set assignee only
   story label <id>       — Add labels only
   story block <id>       — Set blocked status only
 "#,
@@ -1868,25 +1863,6 @@ Examples:
 Related:
   story show <id>  — View a story including its comments
   story move <id>  — Move state with an optional comment
-"#,
-        );
-
-        m.insert(
-            "assign",
-            r#"story assign <id> <member>
-
-Assign a story to a team member by their member ID or GitHub handle.
-
-When to use:
-  To indicate who is responsible for a story.
-
-Examples:
-  story assign SH-1 alice
-  story assign SH-3 mikey
-
-Related:
-  story list --assignee <id>  — Filter stories by assignee
-  story member add            — Add a team member
 "#,
         );
 
@@ -2827,7 +2803,7 @@ Screens:
             CLOSED state archives the story in place.
   List      A filterable, sortable table.
   Drawer    Click any card or row for full detail: title, state,
-            priority, assignee, type, labels, block/unblock, comments,
+            priority, type, labels, block/unblock, comments,
             relationships, reopen, and delete.
 
 Security:
@@ -3024,7 +3000,7 @@ Related:
             r#"story migrate [<path>] [--dry-run]
 
 Move an existing .storyhook/ project into storyhook's store. Reads the legacy
-tree — states, types, members, every story's event history, the archive, and
+tree — states, types, every story's event history, the archive, and
 the story-number counter — and writes it into the store as one project. The
 .storyhook/ directory is never modified: it is your rollback, and it should
 stay in the repository until you are satisfied with the result.
@@ -3281,7 +3257,6 @@ QUERY & NAVIGATION
 
 STORY METADATA
   story comment <id> "<text>"     Add timestamped comment
-  story assign <id> <member>      Assign to team member
   story prioritize <id> <level>   Set priority: story help priority-rubric
   story label <id> <csv>          Add comma-separated labels
   story unlabel <id> <csv>        Remove labels
@@ -3484,7 +3459,6 @@ mod tests {
             "story next",
             "story load-context",
             "story comment",
-            "story assign",
             "story prioritize",
             "story decompose",
             "story handoff",
