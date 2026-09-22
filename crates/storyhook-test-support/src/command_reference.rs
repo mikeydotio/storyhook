@@ -217,7 +217,6 @@ pub const PARSED_ELSEWHERE: &[(&str, &str)] = &[
         "src/main.rs dispatches the local protocol; tests/github_access.rs exercises its parser",
     ),
     ("tui", "src/main.rs dispatches it ahead of parse_invocation"),
-    ("mcp", "src/main.rs dispatches it ahead of parse_invocation"),
 ];
 
 fn skip_leading_globals(pieces: &[Piece]) -> usize {

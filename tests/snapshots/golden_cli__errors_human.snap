@@ -15,7 +15,8 @@ stderr:
 error: unknown flag `--no-such-flag` for `story list`.
 
 `story list` takes: --state --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready --drafts --unassessed --include-closed --include-archived --all
-If `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.
+Run `story help list` for usage and global options.
+If `--no-such-flag` is literal text, put it after `--`. Shell quotes alone do not escape a flag.
 
 
 $ story new
@@ -95,7 +96,8 @@ stderr:
 error: unknown flag `--no-such-mode` for `story graph`.
 
 `story graph` takes: --critical-path --parallel-groups --blocked-by
-If `--no-such-mode` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.
+Run `story help graph` for usage and global options.
+If `--no-such-mode` is literal text, put it after `--`. Shell quotes alone do not escape a flag.
 
 
 $ story report --no-such-flag
@@ -105,7 +107,8 @@ stderr:
 error: unknown flag `--no-such-flag` for `story report`.
 
 `story report` takes: --html
-If `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.
+Run `story help report` for usage and global options.
+If `--no-such-flag` is literal text, put it after `--`. Shell quotes alone do not escape a flag.
 
 
 $ story context --format
@@ -143,7 +146,8 @@ stderr:
 error: unknown flag `--no-such-flag` for `story doctor`.
 
 `story doctor` takes: --fix
-If `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.
+Run `story help doctor` for usage and global options.
+If `--no-such-flag` is literal text, put it after `--`. Shell quotes alone do not escape a flag.
 
 
 $ story phase show 0

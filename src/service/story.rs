@@ -244,7 +244,6 @@ pub struct FieldEdits {
     pub priority: Option<String>,
     /// Explicit complexity change; omission leaves the current assessment.
     pub complexity: Option<String>,
-    /// A member id or GitHub handle.
     /// Comma-separated labels to *add* to the story's current set.
     pub labels: Option<String>,
     /// What the story is now awaiting.
@@ -805,7 +804,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// story was claimed *from* is derived by
     /// [`domain::state_claimed_from`](crate::domain::state_claimed_from)
     /// rather than stored: no schema change, no column, no `--to` flag, and
-    /// every caller — a human, MCP, the Full Auto engine — gets restoration
+    /// every caller — a human, a script, the Full Auto engine — gets restoration
     /// for free because the store answers the question instead of the caller
     /// carrying the answer around.
     ///

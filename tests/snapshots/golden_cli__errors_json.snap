@@ -11,7 +11,7 @@ stderr: <empty>
 $ story list --no-such-flag --json
 exit: 2
 stdout: 
-{"error":"unknown flag `--no-such-flag` for `story list`.\n\n`story list` takes: --state --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready --drafts --unassessed --include-closed --include-archived --all\nIf `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.","exit_code":2,"result":"error"}
+{"error":"unknown flag `--no-such-flag` for `story list`.\n\n`story list` takes: --state --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready --drafts --unassessed --include-closed --include-archived --all\nRun `story help list` for usage and global options.\nIf `--no-such-flag` is literal text, put it after `--`. Shell quotes alone do not escape a flag.","exit_code":2,"result":"error"}
 
 stderr: <empty>
 
@@ -88,14 +88,14 @@ stderr: <empty>
 $ story graph --no-such-mode --json
 exit: 2
 stdout: 
-{"error":"unknown flag `--no-such-mode` for `story graph`.\n\n`story graph` takes: --critical-path --parallel-groups --blocked-by\nIf `--no-such-mode` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.","exit_code":2,"result":"error"}
+{"error":"unknown flag `--no-such-mode` for `story graph`.\n\n`story graph` takes: --critical-path --parallel-groups --blocked-by\nRun `story help graph` for usage and global options.\nIf `--no-such-mode` is literal text, put it after `--`. Shell quotes alone do not escape a flag.","exit_code":2,"result":"error"}
 
 stderr: <empty>
 
 $ story report --no-such-flag --json
 exit: 2
 stdout: 
-{"error":"unknown flag `--no-such-flag` for `story report`.\n\n`story report` takes: --html\nIf `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.","exit_code":2,"result":"error"}
+{"error":"unknown flag `--no-such-flag` for `story report`.\n\n`story report` takes: --html\nRun `story help report` for usage and global options.\nIf `--no-such-flag` is literal text, put it after `--`. Shell quotes alone do not escape a flag.","exit_code":2,"result":"error"}
 
 stderr: <empty>
 
@@ -130,7 +130,7 @@ stderr: <empty>
 $ story doctor --no-such-flag --json
 exit: 2
 stdout: 
-{"error":"unknown flag `--no-such-flag` for `story doctor`.\n\n`story doctor` takes: --fix\nIf `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.","exit_code":2,"result":"error"}
+{"error":"unknown flag `--no-such-flag` for `story doctor`.\n\n`story doctor` takes: --fix\nRun `story help doctor` for usage and global options.\nIf `--no-such-flag` is literal text, put it after `--`. Shell quotes alone do not escape a flag.","exit_code":2,"result":"error"}
 
 stderr: <empty>
 

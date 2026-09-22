@@ -52,3 +52,43 @@ fn unknown_command_with_hyphen_not_story_id() {
         .code(2)
         .stderr(contains("unknown command"));
 }
+
+/// A data argument must not become part of the command name in a diagnostic.
+#[test]
+fn unknown_flag_names_the_command_and_a_working_help_topic() {
+    let dir = scratch_dir();
+    for (args, path, topic) in [
+        (vec!["new", "private title", "--typo"], "new", "new"),
+        (vec!["show", "SH-1", "--typo"], "show", "show"),
+        (vec!["engine", "start", "--typo"], "engine start", "engine"),
+    ] {
+        for json in [false, true] {
+            let mut command = story(dir.path());
+            command.args(&args);
+            if json {
+                command.arg("--json");
+            }
+            let output = command.output().unwrap();
+            assert_eq!(output.status.code(), Some(2));
+            let message = if json {
+                assert!(output.stderr.is_empty());
+                let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(value["result"], "error");
+                value["error"].as_str().unwrap().to_owned()
+            } else {
+                assert!(output.stdout.is_empty());
+                String::from_utf8(output.stderr).unwrap()
+            };
+            assert!(
+                message.contains(&format!("for `story {path}`.")),
+                "{message}"
+            );
+            assert!(
+                message.contains(&format!("story help {topic}")),
+                "{message}"
+            );
+            assert!(!message.contains("private title"), "{message}");
+            assert!(storyhook::help_topics::get_help_topic(topic).is_some());
+        }
+    }
+}

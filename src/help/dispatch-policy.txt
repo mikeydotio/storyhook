@@ -1,15 +1,15 @@
-story dispatch-policy show|set|reset|resolve
+story dispatch-policy show [--global]
+story dispatch-policy set [--global] --agent codex|claude
+    --complexity low|medium|high --model <id> [--effort <id>]
+story dispatch-policy set [--global] --agent codex|claude
+    --complexity low|medium|high --effort <id>
+story dispatch-policy reset [--global] --agent codex|claude
+    --complexity low|medium|high [--model] [--effort]
+story dispatch-policy resolve <id> --agent codex|claude
 
 Inspect or change automatic model and effort settings. Commands use the current
 project unless --global selects installation settings. Installation settings
 need no project. All checkouts of a project share its overrides.
-
-  story dispatch-policy show [--global]
-  story dispatch-policy set [--global] --agent codex|claude
-      --complexity low|medium|high [--model <id>] [--effort <id>]
-  story dispatch-policy reset [--global] --agent codex|claude
-      --complexity low|medium|high [--model] [--effort]
-  story dispatch-policy resolve <id> --agent codex|claude
 
 Set changes only supplied fields. Reset without field flags removes both
 overrides. Reset with --model or --effort removes only that override; these

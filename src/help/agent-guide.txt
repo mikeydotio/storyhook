@@ -1,0 +1,73 @@
+Agent guide: learn the command, select the project, then act.
+
+Discovery
+  story help --compact        Short command reference
+  story help <command>        Syntax, effects, and examples
+  story help json-format      Output contracts and exit codes
+  story help --all            Complete reference
+  story project list --json   Available project slugs
+  story state list --json     Configured states in the selected project
+  story type list --json      Configured story types
+
+Use the binary's help instead of guessing a command or state. Plugin routes
+such as /story do are not CLI verbs. The plugin runs its packaged helper.
+Internal controls (continuation, verifier repair, and internal) are protocols
+for their owning workflows; read their help before use.
+
+Project selection
+--project <slug> overrides STORYHOOK_PROJECT. Without either, resolution uses
+the nearest .storyhook.toml, then the repository's registered origin. No match
+is an error. Run story project show --json to check the selected project.
+A story ID never selects a project. Bare numeric IDs use the selected project;
+an explicit ID with another project's prefix is refused. Use --project when
+your caller has no repository working directory.
+
+--store-path <file> selects a different store, not a project in the current
+store. Read story help storage before changing it.
+
+Read and claim
+1. Run story load-context. If work is assigned, read story show <id> --json;
+   its comments can change the requirements.
+2. story next is read-only. When taking work, use story claim <id> --json or
+   story claim --next --json. Claim selects and changes state atomically.
+   An empty queue is a successful answer, not an error to retry.
+3. Before implementation or resumption, run story help obviation-review and
+   story load-context --story <id>. Follow the procedure for every candidate.
+4. Use the repository's workflow for tests, commits, and submission. Claiming
+   a story does not approve a plan or authorize deployment.
+
+Write with care
+- Read story help priority-rubric before choosing a priority. Read story help
+  scope-rubric before filing a problem found during work.
+- Read story help complexity-rubric before choosing complexity. Complexity
+  selects default dispatch resources; it does not change queue priority.
+- story move <id> <state> --if-state <expected> guards a state transition.
+  Exit 9 means the current state differs. Read the story and reassess.
+- story set changes several fields together. Read its help for supported
+  fields. Its --json <object> is input; a separate --json requests JSON output.
+- story block <id> --on <blocker-id> "reason" records a dependency. A reason
+  without --on does not clear itself when another story closes.
+- Commands that need confirmation cannot prompt with --json or without a
+  terminal. Inspect the target and use the documented explicit flags only
+  when you intend the operation. --json is not permission to delete.
+- Not every command supports --dry-run. Check the command's help first.
+
+Literal text
+Quote a title or comment so the shell keeps it as one argument. For a comment
+that is itself an option token, put it after --. Put global options before --:
+  story --json comment SH-1 -- --priority
+Shell quotes alone do not escape a standalone --priority token. The terminator
+stops global and unknown-option scanning, but some verb parsers still recognize
+their own options after it: new still treats --priority as an option. A literal
+-h or --help is also interpreted as help, even after --; avoid sending it as a
+standalone argument. A help response does not mutate data.
+
+Read results before the next action
+Use --json for supported machine output. Do not combine it with --quiet when
+you need a standard success response. Read story help json-format for streams,
+raw documents, nested StoryView fields, and empty-result shapes.
+
+Exit 12 means the client stopped waiting, not that the write was cancelled.
+A lost-reply error also leaves the outcome uncertain. Read story show or
+story list, including comments, before retrying. Do not automatically repeat
+a create, comment, claim, or other mutation after an uncertain outcome.

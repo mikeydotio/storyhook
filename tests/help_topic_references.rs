@@ -185,3 +185,21 @@ fn the_handoff_topic_states_the_real_default_window() {
          `{expected}` in:\n{topic}"
     );
 }
+
+/// Agent entry points must not send a caller to a missing topic.
+#[test]
+fn agent_guidance_links_resolve_in_the_installed_help_catalog() {
+    let reference = regex::Regex::new(r"story help ([a-z][a-z-]*)").unwrap();
+    for name in ["agent-guide", "json-format", "mcp"] {
+        let body = get_help_topic(name).unwrap();
+        let links: Vec<_> = reference.captures_iter(body).collect();
+        assert!(!links.is_empty(), "{name} must link to detailed help");
+        for link in links {
+            assert!(
+                get_help_topic(&link[1]).is_some(),
+                "{name} links to {}",
+                &link[1]
+            );
+        }
+    }
+}

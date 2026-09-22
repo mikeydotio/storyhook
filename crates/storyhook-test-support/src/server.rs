@@ -9,7 +9,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Output, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -315,14 +315,6 @@ impl ChildGuard {
     /// Takes the child's piped stdin for a long-lived interactive session.
     pub fn take_stdin(&mut self) -> Option<ChildStdin> {
         self.child.stdin.take()
-    }
-
-    /// Takes the child's piped stdout for a long-lived interactive session.
-    ///
-    /// Returns `None` for a child created by [`Self::spawn_with_output`], whose
-    /// output is already being drained for [`Self::wait_with_output_within`].
-    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
-        self.child.stdout.take()
     }
 
     /// Waits for the child to exit and reports how it died, giving up at

@@ -33,3 +33,14 @@ fn every_help_topic_with_a_complexity_flag_points_at_the_rubric() {
         }
     }
 }
+
+#[test]
+fn agent_and_json_guides_lead_complexity_choices_to_the_rubric() {
+    for name in ["agent-guide", "json-format"] {
+        let text = get_help_topic(name).unwrap();
+        assert!(
+            text.contains("story help complexity-rubric"),
+            "{name} has no complexity criteria link"
+        );
+    }
+}

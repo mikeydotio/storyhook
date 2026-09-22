@@ -254,6 +254,10 @@ fn every_story_command_in_the_readme_parses() {
 /// without writing down why, which is the review this list exists to force.
 const EXCLUDED_VERBS: &[(&str, &str)] = &[
     (
+        "mcp",
+        "retired protocol; a migration error, never a runnable command",
+    ),
+    (
         "internal",
         "private revocation protocol for managed replacement under workspace exclusion; not an operator command",
     ),
