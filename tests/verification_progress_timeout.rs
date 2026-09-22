@@ -10,7 +10,9 @@ use storyhook::daemon::verification::{
 use storyhook::domain::Priority;
 use storyhook::service::{VerificationCandidate, VerificationProblem};
 use storyhook::store::{PrLink, VerificationFailureDisposition};
-use storyhook_test_support::{FIXTURE_NOW, ServiceFixture, scratch_dir};
+use storyhook_test_support::{
+    ChildGuard, FIXTURE_NOW, STORY_COMMAND_DEADLINE, ServiceFixture, TestEnv, scratch_dir,
+};
 
 fn verify_script(script: &str, idle: Duration) -> VerificationOutcome {
     verify_with_preparation(script, idle, |_, _| {})
@@ -110,7 +112,9 @@ fn exercise<T>(
         idle / 4,
     )
     .with_verifier_script(tools.path().join("verify-pr.sh"));
-    let outcome = action(actuator, &candidate, &pull_request, &fixture);
+    let outcome = with_stall_watchdog(checkout.path(), || {
+        action(actuator, &candidate, &pull_request, &fixture)
+    });
     assert!(!checkout.path().join("must-not-run").exists());
     outcome
 }
@@ -134,11 +138,75 @@ fn progressing_verification_can_outlive_its_idle_budget() {
     );
 }
 
+/// A stalled probe cannot publish a verdict, even if supervision is delayed.
+fn stalled_work(chatter: bool) -> String {
+    let output = if chatter { "echo waiting >&2;" } else { "" };
+    format!("while [ ! -f release-stall ]; do {output} sleep 0.05; done\nexit 97\n")
+}
+
+/// Bound a broken timeout without letting the fixture turn a stall into success.
+fn with_stall_watchdog<T>(checkout: &Path, action: impl FnOnce() -> T) -> T {
+    std::thread::scope(|scope| {
+        let (finished, receiver) = std::sync::mpsc::channel::<()>();
+        let watchdog = scope.spawn(move || {
+            if matches!(
+                receiver.recv_timeout(STORY_COMMAND_DEADLINE),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                std::fs::write(checkout.join("release-stall"), "").unwrap();
+                true
+            } else {
+                false
+            }
+        });
+        let outcome = action();
+        drop(finished);
+        assert!(
+            !watchdog.join().expect("stall watchdog must not panic"),
+            "the production timeout did not stop the stalled fixture before the harness deadline"
+        );
+        outcome
+    })
+}
+
+#[test]
+fn stalled_fixtures_cannot_complete_before_a_delayed_observer() {
+    let env = TestEnv::isolated();
+    let mut probes = Vec::new();
+    for chatter in [false, true] {
+        let root = scratch_dir();
+        let mut command = Command::new("bash");
+        env.apply(&mut command);
+        command
+            .args(["-c", &stalled_work(chatter)])
+            .current_dir(root.path());
+        let child = ChildGuard::spawn_with_output(&mut command).unwrap();
+        probes.push((root, child, chatter));
+    }
+    // Both old fixtures returned a completion within four idle windows.
+    std::thread::sleep(IDLE * 5);
+    for (root, mut child, chatter) in probes {
+        let early_exit = child.try_wait();
+        // Release before asserting, including on the failure path.
+        std::fs::write(root.path().join("release-stall"), "").unwrap();
+        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "stalled fixture did not accept explicit cleanup".into()
+        });
+        assert!(early_exit.is_none(), "chatter={chatter}: {output:?}");
+        assert_eq!(output.status.code(), Some(97), "{output:?}");
+        assert!(
+            output.stdout.is_empty(),
+            "a stalled fixture emitted a verdict"
+        );
+        assert_eq!(!output.stderr.is_empty(), chatter);
+    }
+}
+
 #[test]
 fn silence_after_progress_still_times_out() {
     let script = format!(
-        "set -eu\n. {SIBLING}/gate-progress.sh\ngate_progress_emit_case 'release gate/plugin' pass\nsleep {}\n{CERTIFIED}\n",
-        (IDLE * 4).as_secs()
+        "set -eu\n. {SIBLING}/gate-progress.sh\ngate_progress_emit_case 'release gate/plugin' pass\n{}",
+        stalled_work(false)
     );
     let outcome = verify_script(&script, IDLE);
     assert!(
@@ -149,10 +217,7 @@ fn silence_after_progress_still_times_out() {
 
 #[test]
 fn output_chatter_does_not_keep_a_stalled_verifier_alive() {
-    let script = format!(
-        "for i in {{1..12}}; do echo waiting >&2; sleep {}; done\n{CERTIFIED}\n",
-        IDLE.as_secs_f64() / 4.0
-    );
+    let script = stalled_work(true);
     let outcome = verify_script(&script, IDLE);
     assert!(
         matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains("no progress")),
@@ -259,8 +324,9 @@ fn progressing_landing_outlives_the_control_budget_but_silence_keeps_authority_u
     for progressing in [true, false] {
         let work = if progressing {
             "for i in {1..12}; do gate_progress_emit_case 'landing/lock' pass; sleep 0.25; done"
+                .to_string()
         } else {
-            "sleep 4"
+            stalled_work(false)
         };
         let script = format!(
             "set -eu\n. {SIBLING}/gate-progress.sh\n{work}\nprintf '%s\\n' '{{\"result\":\"merged\",\"detail\":\"confirmed\"}}'\n"

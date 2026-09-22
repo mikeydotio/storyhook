@@ -106,18 +106,34 @@ fn both_deadline_modes_record_output_and_timeouts() {
     assert_eq!(captured.stderr, b"progressing-err");
 
     let mut command = Command::new("sh");
-    command
-        .args(["-c", "printf stalled-err >&2; sleep \"$1\"", "stall-probe"])
-        .arg((idle * 4).as_secs_f64().to_string());
-    assert!(matches!(
-        run_captured_with_progress_and_registration(
+    command.args(["-c", "printf stalled-err >&2; while :; do sleep 30; done"]);
+    let cancellation = Cancellation::default();
+    let stalled = std::thread::scope(|scope| {
+        let (finished, receiver) = std::sync::mpsc::channel::<()>();
+        let watchdog_cancellation = &cancellation;
+        scope.spawn(move || {
+            // A regressed timeout must fail as cancellation instead of hanging
+            // the harness; finite fake work can otherwise beat a late observer.
+            if matches!(
+                receiver.recv_timeout(STORY_COMMAND_DEADLINE),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                watchdog_cancellation.cancel();
+            }
+        });
+        let result = run_captured_with_progress_and_registration(
             command,
             idle,
             TerminationPolicy::Kill,
             &progress,
-            &Cancellation::default(),
+            &cancellation,
             |_| Ok(()),
-        ),
+        );
+        drop(finished);
+        result
+    });
+    assert!(matches!(
+        stalled,
         Err(CaptureFailure {
             error: CaptureError::Timeout(_),
             ..
