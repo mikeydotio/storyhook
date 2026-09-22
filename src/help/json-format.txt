@@ -138,3 +138,4 @@ comments and current state, before retrying a mutation. Do not repeat a
 create, comment, or claim automatically when its outcome is uncertain.
 
 Related: story help agent-guide, story help list, story help claim
+Before choosing a priority, read story help priority-rubric.
