@@ -738,3 +738,21 @@ fn legacy_text_lint_keeps_structured_context_and_http_contract() {
             .contains("writing a comment")
     );
 }
+
+/// Keep the shipped exit-code reference in step with each reachable error.
+#[test]
+fn json_help_documents_every_current_error_exit_code() {
+    let help = storyhook::help_topics::get_help_topic("json-format").unwrap();
+    let documented: Vec<i32> = help
+        .lines()
+        .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+        .collect();
+    for case in cases() {
+        assert!(
+            documented.contains(&case.exit_code),
+            "json-format omits {} for {}",
+            case.exit_code,
+            case.variant
+        );
+    }
+}

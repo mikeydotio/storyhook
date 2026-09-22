@@ -133,8 +133,7 @@ fn exactly_the_three_known_doors_set_awaiting() {
     );
 }
 
-/// One representative value per [`Invocation`] variant, named the same way
-/// `mcp::tools::tool_for_variant`'s own tests do -- enough to drive
+/// One representative value per [`Invocation`] variant, enough to drive
 /// [`sets_awaiting`] without constructing every field meaningfully.
 fn variant_names() -> Vec<(&'static str, Invocation)> {
     let s = || "SH-1".to_string();

@@ -31,8 +31,7 @@ UTC wall-clock read as if it were local:
 
 Stays UTC, with an explicit `Z`:
 
-- SQLite rows, the event log, and every `--json` / RPC / REST payload. The MCP
-  server renders with `json = true`, so agents see no change.
+- SQLite rows, the event log, and every `--json` / RPC / REST payload.
 - Comment bodies composed by the verifier and gate progress, crash reports and
   crash ids, backup filenames, the activity journal and its viewer
   (`docs/spec/activity-log.md`: days and timestamps are UTC).

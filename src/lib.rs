@@ -23,7 +23,6 @@ pub mod invoke;
 pub mod lane_budget;
 pub mod legacy;
 pub mod local_time;
-pub mod mcp;
 pub mod migration_guard;
 pub mod output;
 pub mod path_identity;

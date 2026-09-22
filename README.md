@@ -493,7 +493,6 @@ story daemon gc [--force]
 story store new <path>
 story store backup [--label <text>]
 story tui
-story mcp
 story session-start
 ```
 
@@ -952,10 +951,10 @@ Only list hostnames that are themselves no more exposed than your tailnet.
 
 Global flags:
 
-- `--json` emits a structured JSON response envelope
+- `--json` requests structured output; see the output contracts below
 - timestamps in `--json` are RFC3339 UTC (`2026-09-12T20:31:59Z`); human output shows the same instants in the process's timezone with an explicit offset (`2026-09-12T13:31:59-07:00`), and `TZ=UTC` reproduces the stored string
 - `--quiet` suppresses normal success output
-- `--no-hooks` skips this command's git hooks
+- `--no-hooks` skips this command's event hooks
 - `--store-path <file>` names the store file for this command, overriding `$STORYHOOK_STORE_PATH`
   and `$STORYHOOK_DATA_DIR` (see [Storage model](#storage-model))
 - `--project <slug>` names the project for this command, overriding `$STORYHOOK_PROJECT` and the
@@ -975,6 +974,30 @@ Exit codes:
 - `9` state conflict
 - `11` read-only store
 - `12` client deadline expired; the command may still complete in the daemon
+
+Codes `8` and `10` are retired. Code `12` does not cancel a request. Read the
+story and its comments before retrying a write after a deadline or lost reply.
+A state conflict uses `result: "conflict"`, exit `9`, and `expected` / `actual`
+fields. Read the current state and reassess; do not retry unconditionally.
+
+| Output contract | Commands and rules |
+|---|---|
+| Standard envelope | Most commands with `--json`: `result` plus command data; a story ID is at `.story.story.id`. Errors go to stdout as JSON. Plain errors go to stderr. |
+| Raw document | `export`, `load-context --format json`, `session-start`, and internal control commands emit their own JSON shapes. See each command's help. |
+| JSON Lines | `daemon logs --json` emits one record per line; `--follow` keeps the stream open. |
+| Delegated output | `plugin run` forwards the helper's output and exit status. |
+| Interactive | `tui` uses the terminal. A bare `project new` needs a terminal; pass explicit flags for automation. |
+| Quiet mode | `--quiet` suppresses standard success output even with `--json`. Raw JSON and errors remain visible. |
+
+`list --json` can return an empty `stories` array. `next --json` with no ready
+work returns `result: "ok"` and `message: "no ready stories"`, without `story`.
+Do not assume every success carries a story. Optional fields can be absent.
+Read `story help json-format` for the response contract.
+
+For text that looks like a flag, put global options first and literal text
+after `--`, for example `story --json comment SH-1 -- --priority`.
+Quotes group shell words; they do not escape a standalone option token.
+Read `story help agent-guide` for project selection and guarded writes.
 
 Examples:
 
@@ -1048,17 +1071,16 @@ Three commands support AI coding agent workflows:
 - `story unclaim <id>` -- hands a claim back. The inverse of `story claim`, and the store half of it: the state change and its comment, never a tmux window and never a worktree. The story returns to the state it was claimed **from**, derived from its own event log inside the same write transaction rather than stored anywhere — so no caller has to carry the answer around. When that state cannot be restored (the story was created directly in the active state, or that state has since been removed or reclassified CLOSED) it returns to `todo` instead, and the substitution is reported in the result and written into the default comment rather than performed silently. A story somebody else has already moved is answered with `result:"conflict"` and `.actual` naming the state found.
 - `story handoff --since <duration>` -- generates a session handoff document summarizing what changed during a work session (e.g. `--since 2h`). Useful when passing context between agents or between an agent and a human.
 
-### MCP server
+### MCP migration
 
-`story mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on
-stdin/stdout, exposing a curated set of eighteen tools (`story_list`, `story_next`,
-`story_claim`, `story_new`, `story_move`, and so on — `story help mcp` lists them all) to an
-agent host that speaks the protocol, over the same `/api/v1/invoke` door every other client
-uses. A tool call is exactly as safe, and exactly as visible in a story's write history, as
-the equivalent typed command. `story_claim` and `story_unclaim` are how an agent takes and
-hands back work atomically; `story_next` stays a pure read. Every tool names its own `project` explicitly, since a long-lived server process has
-no working directory of its own to infer one from. See `docs/spec/mcp-server.md` for the
-design, including why this is not the first time storyhook has shipped one.
+The MCP server is retired. Remove the storyhook MCP entry from your agent host.
+The plugin no longer registers a server. Existing `story mcp` calls exit 2 with
+migration guidance, without reading protocol input or starting a daemon.
+
+Use CLI commands with `--json`. Name the project with `--project <slug>` when
+calling outside its checkout. Start with `story help agent-guide` and
+`story help json-format`. The [command audit](docs/reports/SH-755-cli-audit.html)
+records command redesign proposals for separate approval.
 
 ## Integrity checks
 

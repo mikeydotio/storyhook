@@ -429,3 +429,104 @@ fn the_engine_topic_documents_immutable_launch_configuration() {
         "the engine topic must explain reuse and visibility: {topic}"
     );
 }
+
+/// The output guide must describe the actual renderer, including exceptions.
+#[test]
+fn json_guide_covers_conflicts_empty_results_and_output_exceptions() {
+    use storyhook::error::AppError;
+    use storyhook::output::{Response, render_error, render_response};
+    let help = get_help_topic("json-format").unwrap();
+    let conflict: serde_json::Value = serde_json::from_str(&render_error(
+        &AppError::StateConflict("todo".into(), "in-progress".into()),
+        true,
+    ))
+    .unwrap();
+    assert_eq!(conflict["result"], "conflict");
+    assert_eq!(conflict["exit_code"], 9);
+    for key in [
+        "conflict",
+        "expected",
+        "actual",
+        "JSON Lines",
+        "--quiet",
+        "12",
+        "11",
+        "retired",
+    ] {
+        assert!(help.contains(key), "json-format omits {key}");
+    }
+    assert!(!help.contains("The flag applies to every command."));
+    let empty: serde_json::Value = serde_json::from_str(&render_response(
+        &Response::Message("no ready stories".into()),
+        true,
+        false,
+    ))
+    .unwrap();
+    assert_eq!(empty["result"], "ok");
+    assert!(empty.get("story").is_none());
+    assert!(help.contains("no ready stories"));
+    assert!(render_response(&Response::Message("ok".into()), true, true).is_empty());
+    assert_eq!(
+        render_response(&Response::RawJson("{}".into()), true, true),
+        "{}\n"
+    );
+}
+
+/// Every verb in the guide's single-story list must still have command help.
+#[test]
+fn json_guide_single_story_verbs_have_help_topics() {
+    let help = get_help_topic("json-format").unwrap();
+    let shapes = help.split_once("== Common response shapes ==").unwrap().1;
+    let commands = shapes.split_once("\"story\": StoryView").unwrap().0;
+    let commands: Vec<_> = commands.split(',').map(str::trim).collect();
+    assert!(commands.len() >= 10, "the command list must not be empty");
+    for command in commands {
+        assert!(
+            get_help_topic(command).is_some(),
+            "json-format advertises an unsupported command: {command}"
+        );
+    }
+}
+
+/// Run the documented read/write flow through the production CLI and daemon.
+#[test]
+fn agent_guide_flow_preserves_text_and_requires_conflict_review() {
+    let project = TestEnv::shared().project().build();
+    let run = |args: &[&str]| -> serde_json::Value {
+        let output = project.story().args(args).arg("--json").output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty());
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let empty = run(&["next"]);
+    assert_eq!(empty["message"], "no ready stories");
+    assert!(empty.get("story").is_none());
+    let created = run(&["new", "Guide example"]);
+    let id = created["story"]["story"]["id"].as_str().unwrap();
+    assert_eq!(created["story"]["story"]["superstate"], "OPEN");
+    let queued = run(&["next", "--count", "2"]);
+    assert_eq!(queued["stories"].as_array().unwrap().len(), 1);
+    assert!(queued.get("story").is_none());
+    let literal = project
+        .story()
+        .args(["--json", "comment", id, "--", "--priority"])
+        .output()
+        .unwrap();
+    assert!(literal.status.success());
+    let body: serde_json::Value = serde_json::from_slice(&literal.stdout).unwrap();
+    assert_eq!(body["story"]["story"]["comments"][0]["text"], "--priority");
+    let claimed = run(&["claim", id, "--no-comment"]);
+    assert_eq!(claimed["claimed_from"], "todo");
+    let conflict = project
+        .story()
+        .args(["move", id, "done", "--if-state", "todo", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(conflict.status.code(), Some(9));
+    let conflict: serde_json::Value = serde_json::from_slice(&conflict.stdout).unwrap();
+    assert_eq!(conflict["result"], "conflict");
+    assert_eq!(conflict["expected"], "todo");
+    assert_eq!(conflict["actual"], claimed["story"]["story"]["state"]);
+    let unchanged = run(&["show", id]);
+    assert_eq!(unchanged["story"]["story"]["state"], conflict["actual"]);
+}

@@ -1,3 +1,7 @@
+> **Retired by SH-755.** This document records the former design.
+> The CLI is the supported agent interface. See `story help agent-guide`
+> and `story help json-format` for migration.
+
 # The MCP server: `story mcp`
 
 Design of record for **SH-340**. A reversal of a recorded decision, not a new feature in a
