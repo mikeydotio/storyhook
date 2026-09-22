@@ -3,6 +3,10 @@ name: story-plan
 description: "Use when breaking down a feature, spec, or requirement into structured stories with dependencies and priorities. Accepts a file path (markdown or YAML spec) or inline description. Creates stories in storyhook with relationships."
 ---
 
+Read `story help complexity-rubric` before creating or assessing a story.
+Choose `--complexity low|medium|high` from the evidence. An omission remains
+medium, unassessed. Use `story dispatch-policy show` to inspect launch defaults.
+
 # Storyhook Plan
 
 Decompose a feature or spec into structured stories with dependencies.

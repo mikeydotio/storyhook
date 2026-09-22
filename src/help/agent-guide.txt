@@ -39,6 +39,8 @@ Read and claim
 Write with care
 - Read story help priority-rubric before choosing a priority. Read story help
   scope-rubric before filing a problem found during work.
+- Read story help complexity-rubric before choosing complexity. Complexity
+  selects default dispatch resources; it does not change queue priority.
 - story move <id> <state> --if-state <expected> guards a state transition.
   Exit 9 means the current state differs. Read the story and reassess.
 - story set changes several fields together. Read its help for supported

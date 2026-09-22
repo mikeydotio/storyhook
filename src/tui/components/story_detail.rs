@@ -25,6 +25,8 @@ pub enum DetailField {
     Relationships,
     Comments,
     Description,
+    /// Explicit reasoning complexity.
+    Complexity,
 }
 
 const FIELDS: &[DetailField] = &[
@@ -36,6 +38,7 @@ const FIELDS: &[DetailField] = &[
     DetailField::Relationships,
     DetailField::Comments,
     DetailField::Description,
+    DetailField::Complexity,
 ];
 
 /// The editing mode for the story detail component.
@@ -44,6 +47,8 @@ pub enum DetailMode {
     Viewing,
     EditingTitle,
     EditingPriority,
+    /// Choose low, medium, or high.
+    EditingComplexity,
     EditingLabels,
     EditingAwaiting,
     AddingComment,
@@ -61,6 +66,8 @@ pub struct StoryDetail {
     pub comment_input: tui_input::Input,
     pub description_input: tui_input::Input,
     pub priority_cursor: usize,
+    /// Cursor into the three complexity levels.
+    pub complexity_cursor: usize,
     pub scroll_offset: u16,
     /// This story's derived view, as the dispatch loop last fetched it for the
     /// drawer — the two `Referenced By` sources that a
@@ -101,6 +108,7 @@ impl StoryDetail {
             comment_input: tui_input::Input::default(),
             description_input: tui_input::Input::default(),
             priority_cursor: 0,
+            complexity_cursor: 0,
             scroll_offset: 0,
             referenced_by: None,
         }
@@ -177,6 +185,13 @@ impl StoryDetail {
                     DetailField::Title => {
                         self.title_input = tui_input::Input::new(story.title.clone());
                         self.mode = DetailMode::EditingTitle;
+                    }
+                    DetailField::Complexity => {
+                        self.complexity_cursor = crate::domain::Complexity::ALL
+                            .iter()
+                            .position(|level| *level == story.complexity)
+                            .unwrap_or(1);
+                        self.mode = DetailMode::EditingComplexity;
                     }
                     DetailField::Priority => {
                         self.priority_cursor = PRIORITY_OPTIONS
@@ -282,6 +297,33 @@ impl StoryDetail {
                     vec![Action::SetPriority {
                         id: self.story_id.clone(),
                         priority,
+                    }]
+                }
+                KeyCode::Esc => {
+                    self.mode = DetailMode::Viewing;
+                    vec![]
+                }
+                _ => vec![],
+            },
+            DetailMode::EditingComplexity => match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if self.complexity_cursor + 1 < crate::domain::Complexity::ALL.len() {
+                        self.complexity_cursor += 1;
+                    }
+                    vec![]
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if self.complexity_cursor > 0 {
+                        self.complexity_cursor -= 1;
+                    }
+                    vec![]
+                }
+                KeyCode::Enter => {
+                    let complexity = crate::domain::Complexity::ALL[self.complexity_cursor];
+                    self.mode = DetailMode::Viewing;
+                    vec![Action::SetComplexity {
+                        id: self.story_id.clone(),
+                        complexity,
                     }]
                 }
                 KeyCode::Esc => {
@@ -608,6 +650,28 @@ impl Component for StoryDetail {
             ));
         }
 
+        let level = if self.mode == DetailMode::EditingComplexity {
+            crate::domain::Complexity::ALL[self.complexity_cursor]
+        } else {
+            story.complexity
+        };
+        let label = format!(
+            "{}{}",
+            level.as_str(),
+            if self.mode != DetailMode::EditingComplexity && !story.complexity_assessed {
+                " (unassessed)"
+            } else {
+                ""
+            }
+        );
+        lines.push(render_field(
+            "Complexity",
+            &label,
+            self.selected_field == 8,
+            label_width,
+            &theme,
+        ));
+
         // Timestamps
         lines.push(Line::from(""));
         lines.push(render_field(
@@ -834,6 +898,8 @@ mod tests {
             relationships: vec![],
             priority: Priority::High,
             priority_assessed: true,
+            complexity: Default::default(),
+            complexity_assessed: false,
             labels: vec!["bug".to_string(), "tui".to_string()],
             story_type: None,
             description: None,
@@ -1578,5 +1644,32 @@ mod tests {
     #[test]
     fn a_freshly_constructed_drawer_has_no_derived_view() {
         assert!(StoryDetail::new("SH-1".to_string()).referenced_by.is_none());
+    }
+    #[test]
+    fn complexity_editor_assesses_medium_and_bounds_its_selection() {
+        let state = make_state(vec![test_snapshot()]);
+        let mut detail = StoryDetail::new("SH-1".into());
+        detail.selected_field = FIELDS.len() - 1;
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingComplexity);
+        let actions = detail.handle_key(key(KeyCode::Enter), &state);
+        assert!(matches!(
+            &actions[0],
+            Action::SetComplexity {
+                complexity: crate::domain::Complexity::Medium,
+                ..
+            }
+        ));
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        for _ in 0..5 {
+            detail.handle_key(key(KeyCode::Char('k')), &state);
+        }
+        assert_eq!(detail.complexity_cursor, 0);
+        for _ in 0..5 {
+            detail.handle_key(key(KeyCode::Char('j')), &state);
+        }
+        assert_eq!(detail.complexity_cursor, 2);
+        detail.handle_key(key(KeyCode::Esc), &state);
+        assert_eq!(detail.mode, DetailMode::Viewing);
     }
 }

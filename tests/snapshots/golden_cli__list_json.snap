@@ -17,6 +17,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-1",
             "priority": "critical",
@@ -53,6 +55,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -89,6 +93,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -119,6 +125,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-4",
             "labels": [
@@ -153,6 +161,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -179,6 +189,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -196,6 +208,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-7",
             "priority": "low",
@@ -213,6 +227,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -238,6 +254,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-10",
             "priority": "medium",
@@ -255,6 +273,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-11",
             "priority": "low",
@@ -272,6 +292,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-12",
             "priority": "high",
@@ -293,6 +315,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-15",
             "priority": "low",
@@ -316,6 +340,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-16",
             "labels": [
@@ -354,6 +380,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -394,6 +422,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -420,6 +450,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -437,6 +469,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-7",
             "priority": "low",
@@ -454,6 +488,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -479,6 +515,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-10",
             "priority": "medium",
@@ -496,6 +534,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-11",
             "priority": "low",
@@ -513,6 +553,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-12",
             "priority": "high",
@@ -534,6 +576,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-15",
             "priority": "low",
@@ -557,6 +601,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-16",
             "labels": [
@@ -590,6 +636,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-4",
             "labels": [
@@ -625,6 +673,8 @@ source: tests/golden_cli.rs
             "awaiting": null,
             "closed_at": "[timestamp]",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-8",
             "priority": "low",
@@ -643,6 +693,8 @@ source: tests/golden_cli.rs
             "awaiting": null,
             "closed_at": "[timestamp]",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-14",
             "priority": "medium",
@@ -677,6 +729,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -712,6 +766,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -748,6 +804,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-1",
             "priority": "critical",
@@ -784,6 +842,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -820,6 +880,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -859,6 +921,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -884,6 +948,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-12",
             "priority": "high",
@@ -921,6 +987,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -957,6 +1025,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -987,6 +1057,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-4",
             "labels": [
@@ -1025,6 +1097,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -1065,6 +1139,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -1110,6 +1186,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -1141,6 +1219,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -1158,6 +1238,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -1196,6 +1278,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -1227,6 +1311,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-4",
             "labels": [
@@ -1261,6 +1347,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -1286,6 +1374,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-7",
             "priority": "low",
@@ -1303,6 +1393,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-10",
             "priority": "medium",
@@ -1320,6 +1412,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-11",
             "priority": "low",
@@ -1337,6 +1431,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-12",
             "priority": "high",
@@ -1354,6 +1450,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-16",
             "labels": [
@@ -1392,6 +1490,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -1428,6 +1528,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -1485,6 +1587,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-1",
             "priority": "critical",
@@ -1521,6 +1625,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -1557,6 +1663,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -1587,6 +1695,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-4",
             "labels": [
@@ -1621,6 +1731,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -1647,6 +1759,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -1664,6 +1778,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-7",
             "priority": "low",
@@ -1681,6 +1797,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -1706,6 +1824,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-10",
             "priority": "medium",
@@ -1723,6 +1843,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-11",
             "priority": "low",
@@ -1740,6 +1862,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-12",
             "priority": "high",
@@ -1761,6 +1885,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-15",
             "priority": "low",
@@ -1784,6 +1910,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-16",
             "labels": [
@@ -1829,6 +1957,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-1",
             "priority": "critical",
@@ -1865,6 +1995,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -1901,6 +2033,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -1931,6 +2065,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-4",
             "labels": [
@@ -1965,6 +2101,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -1991,6 +2129,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -2008,6 +2148,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-7",
             "priority": "low",
@@ -2025,6 +2167,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -2050,6 +2194,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-10",
             "priority": "medium",
@@ -2067,6 +2213,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-11",
             "priority": "low",
@@ -2084,6 +2232,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-12",
             "priority": "high",
@@ -2105,6 +2255,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-15",
             "priority": "low",
@@ -2128,6 +2280,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-16",
             "labels": [
@@ -2170,6 +2324,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -2208,6 +2364,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -2244,6 +2402,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -2274,6 +2434,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-4",
             "labels": [
@@ -2311,6 +2473,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-1",
             "priority": "critical",
@@ -2347,6 +2511,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -2383,6 +2549,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -2413,6 +2581,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-4",
             "labels": [
@@ -2447,6 +2617,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -2473,6 +2645,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -2490,6 +2664,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-7",
             "priority": "low",
@@ -2508,6 +2684,8 @@ source: tests/golden_cli.rs
             "awaiting": null,
             "closed_at": "[timestamp]",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-8",
             "priority": "low",
@@ -2525,6 +2703,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -2550,6 +2730,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-10",
             "priority": "medium",
@@ -2567,6 +2749,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-11",
             "priority": "low",
@@ -2584,6 +2768,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-12",
             "priority": "high",
@@ -2607,6 +2793,8 @@ source: tests/golden_cli.rs
                 "text": "superseded by the global store"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-13",
             "priority": "low",
@@ -2625,6 +2813,8 @@ source: tests/golden_cli.rs
             "awaiting": null,
             "closed_at": "[timestamp]",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-14",
             "priority": "medium",
@@ -2646,6 +2836,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-15",
             "priority": "low",
@@ -2669,6 +2861,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-16",
             "labels": [
@@ -2706,6 +2900,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-1",
             "priority": "critical",
@@ -2742,6 +2938,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -2778,6 +2976,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -2808,6 +3008,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-4",
             "labels": [
@@ -2842,6 +3044,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -2868,6 +3072,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -2885,6 +3091,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-7",
             "priority": "low",
@@ -2903,6 +3111,8 @@ source: tests/golden_cli.rs
             "awaiting": null,
             "closed_at": "[timestamp]",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-8",
             "priority": "low",
@@ -2920,6 +3130,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -2945,6 +3157,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-10",
             "priority": "medium",
@@ -2962,6 +3176,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-11",
             "priority": "low",
@@ -2979,6 +3195,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-12",
             "priority": "high",
@@ -3002,6 +3220,8 @@ source: tests/golden_cli.rs
                 "text": "superseded by the global store"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-13",
             "priority": "low",
@@ -3020,6 +3240,8 @@ source: tests/golden_cli.rs
             "awaiting": null,
             "closed_at": "[timestamp]",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-14",
             "priority": "medium",
@@ -3041,6 +3263,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-15",
             "priority": "low",
@@ -3064,6 +3288,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-16",
             "labels": [
@@ -3101,6 +3327,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-1",
             "priority": "critical",
@@ -3137,6 +3365,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -3173,6 +3403,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -3203,6 +3435,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-4",
             "labels": [
@@ -3237,6 +3471,8 @@ source: tests/golden_cli.rs
                 "text": "Root cause is the committed next-id counter."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-5",
             "labels": [
@@ -3263,6 +3499,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": "waiting on the benchmark harness",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-6",
             "priority": "low",
@@ -3280,6 +3518,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-7",
             "priority": "low",
@@ -3298,6 +3538,8 @@ source: tests/golden_cli.rs
             "awaiting": null,
             "closed_at": "[timestamp]",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-8",
             "priority": "low",
@@ -3315,6 +3557,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [
@@ -3340,6 +3584,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-10",
             "priority": "medium",
@@ -3357,6 +3603,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-11",
             "priority": "low",
@@ -3374,6 +3622,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-12",
             "priority": "high",
@@ -3397,6 +3647,8 @@ source: tests/golden_cli.rs
                 "text": "superseded by the global store"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-13",
             "priority": "low",
@@ -3415,6 +3667,8 @@ source: tests/golden_cli.rs
             "awaiting": null,
             "closed_at": "[timestamp]",
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-14",
             "priority": "medium",
@@ -3436,6 +3690,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-15",
             "priority": "low",
@@ -3459,6 +3715,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-16",
             "labels": [

@@ -34,6 +34,7 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         Invocation::Continuation { .. } => false,
 
         Invocation::Help
+        | Invocation::DispatchPolicy { .. }
         | Invocation::Project { .. }
         | Invocation::New { .. }
         | Invocation::Publish { .. }
@@ -174,6 +175,7 @@ fn variant_names() -> Vec<(&'static str, Invocation)> {
         (
             "SetFields",
             Invocation::SetFields {
+                complexity: None,
                 id: s(),
                 title: None,
                 state: None,

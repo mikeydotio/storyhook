@@ -220,6 +220,8 @@ pub struct NewStoryInput {
     pub description: Option<String>,
     /// An assignable priority slug. Defaults to `low` when absent.
     pub priority: Option<String>,
+    /// Explicit complexity; omission preserves the unassessed medium fallback.
+    pub complexity: Option<String>,
     /// Labels, deduplicated and sorted before they are written.
     pub labels: Option<Vec<String>>,
     /// Creates the story as a draft (SH-175) — `story new --draft`. Claims a
@@ -240,6 +242,8 @@ pub struct FieldEdits {
     pub state: Option<String>,
     /// A new priority slug.
     pub priority: Option<String>,
+    /// Explicit complexity change; omission leaves the current assessment.
+    pub complexity: Option<String>,
     /// Comma-separated labels to *add* to the story's current set.
     pub labels: Option<String>,
     /// What the story is now awaiting.
@@ -1612,6 +1616,12 @@ pub(super) fn creation_events(
             at: now.to_string(),
         });
     }
+    if let Some(raw) = &input.complexity {
+        events.push(StoryEvent::StoryComplexitySet {
+            at: now.to_string(),
+            complexity: crate::domain::Complexity::parse(raw)?,
+        });
+    }
     events.push(StoryEvent::StoryPrioritySet {
         at: now.to_string(),
         priority,
@@ -1676,6 +1686,13 @@ fn plan_field_edits(
     }
     if let Some(slug) = &edits.state {
         push_state_change(&mut plan, states, story, slug, now)?;
+    }
+    if let Some(raw) = &edits.complexity {
+        plan.events.push(StoryEvent::StoryComplexitySet {
+            at: now.to_string(),
+            complexity: crate::domain::Complexity::parse(raw)?,
+        });
+        plan.changes.push(format!("complexity -> {raw}"));
     }
     if let Some(raw) = &edits.priority {
         let priority = assignable_priority(raw)?;
@@ -1763,6 +1780,14 @@ fn apply_json_patch(
                 }
             }
             "state" => push_state_change(plan, states, story, json_str(value, "state")?, now)?,
+            "complexity" => {
+                let raw = json_str(value, "complexity")?;
+                plan.events.push(StoryEvent::StoryComplexitySet {
+                    at: now.to_string(),
+                    complexity: crate::domain::Complexity::parse(raw)?,
+                });
+                plan.changes.push(format!("complexity -> {raw}"));
+            }
             "priority" => {
                 let raw = json_str(value, "priority")?;
                 let priority = assignable_priority(raw)?;
@@ -1832,7 +1857,7 @@ fn apply_json_patch(
             }
             other => {
                 return Err(AppError::Validation(format!(
-                    "unknown field `{other}` in JSON. Valid fields: title, state, priority, \
+                    "unknown field `{other}` in JSON. Valid fields: title, state, priority, complexity, \
                      labels, blocked, story_type, description"
                 )));
             }

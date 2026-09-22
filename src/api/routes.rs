@@ -123,6 +123,10 @@ impl EngineAction {
 /// such project) rather than the 405 its shape suggests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectRoute<'a> {
+    /// GET/PATCH automatic dispatch settings.
+    DispatchPolicy,
+    /// GET one story/provider policy preview.
+    PolicyResolve { id: &'a str, agent: &'a str },
     /// `GET .../data` — the whole board in one request.
     Data,
     /// `PATCH .../visibility` — this token's project display preference.
@@ -205,6 +209,8 @@ pub enum ProjectRoute<'a> {
 /// of every single request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route<'a> {
+    /// GET/PATCH installation automatic dispatch settings.
+    DispatchPolicy,
     /// `GET /` — the single-page app itself, served so the browser has
     /// something to bootstrap from.
     Shell,
@@ -281,6 +287,10 @@ pub fn classify<'a>(segments: &[&'a str], method: &Method) -> Route<'a> {
             Method::Get => Route::DispatchLog,
             _ => Route::MethodNotAllowed,
         },
+        ["api", "dispatch-policy"] => match method {
+            Method::Get | Method::Patch => Route::DispatchPolicy,
+            _ => Route::MethodNotAllowed,
+        },
         ["api", "dispatch-options"] => match method {
             Method::Get => Route::DispatchOptions,
             _ => Route::MethodNotAllowed,
@@ -309,6 +319,14 @@ pub fn classify<'a>(segments: &[&'a str], method: &Method) -> Route<'a> {
 /// Which per-project route `rest` names — the path *after* `/api/repos/{id}`.
 fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
     match rest {
+        ["dispatch-policy"] => match method {
+            Method::Get | Method::Patch => ProjectRoute::DispatchPolicy,
+            _ => ProjectRoute::MethodNotAllowed,
+        },
+        ["story", id, "dispatch-policy", agent] => match method {
+            Method::Get => ProjectRoute::PolicyResolve { id, agent },
+            _ => ProjectRoute::MethodNotAllowed,
+        },
         ["visibility"] => match method {
             Method::Patch => ProjectRoute::Visibility,
             _ => ProjectRoute::MethodNotAllowed,
@@ -413,6 +431,7 @@ impl Route<'_> {
     /// named here too.
     pub fn name(&self) -> &'static str {
         match self {
+            Route::DispatchPolicy => "DispatchPolicy",
             Route::Shell => "Shell",
             Route::Repos => "Repos",
             Route::ReposCreate => "ReposCreate",
@@ -440,6 +459,8 @@ impl ProjectRoute<'_> {
     /// This route's variant name, as declared. See [`Route::name`].
     pub fn name(&self) -> &'static str {
         match self {
+            ProjectRoute::DispatchPolicy => "DispatchPolicy",
+            ProjectRoute::PolicyResolve { .. } => "PolicyResolve",
             ProjectRoute::Data => "Data",
             ProjectRoute::Visibility => "Visibility",
             ProjectRoute::VerificationAck => "VerificationAck",

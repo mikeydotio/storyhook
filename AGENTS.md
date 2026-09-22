@@ -45,6 +45,9 @@ story prioritize SH-4 high
 story prioritize SH-6 medium
 ```
 
+Read `story help complexity-rubric` before setting `--complexity low|medium|high`.
+Complexity selects default dispatch model and effort; it does not change priority.
+
 **Read `story help priority-rubric` before choosing a level.** Priority is
 `story next`'s sort key, not a label — it decides what the next session picks
 up, ties break toward the older story, and every inflated level costs the

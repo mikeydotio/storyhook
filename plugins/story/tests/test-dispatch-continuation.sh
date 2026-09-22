@@ -108,10 +108,13 @@ assert_eq "$(cat "$worktree/.claude/dispatch-sentinel.json" 2>/dev/null)" 'old s
 assert_eq "$(cat "$private_git/storyhook-cleanup-lease-v1.json" 2>/dev/null)" "$original_lease" \
   'atomic refusal preserves the inherited cleanup lease'
 out=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
+  STORY_MODEL=gpt-6-astra STORY_EFFORT=ultra \
   TMUX="$socket,0,0" TMUX_PANE=%0 STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
   STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   bash "$SCRIPT" dispatch "$id" --auto --resume --require-absent \
     --continuation-file="$record" 2>&1)
+assert_eq "$(jqf "$out" .model)" opusplan "continuation retains captured model despite ambient defaults"
+assert_eq "$(jqf "$out" .model_source)" continuation "continuation reports captured source"
 assert_eq "$(jqf "$out" .ok)" true "guarded resume succeeds over retained work: $out"
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
   'Unknown capacity alone must not defer already assigned work' \

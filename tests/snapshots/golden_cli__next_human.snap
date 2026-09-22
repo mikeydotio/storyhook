@@ -6,6 +6,7 @@ SH-5 Fix the id collision across worktrees
 state: todo (OPEN)
 draft: no
 priority: critical
+complexity: medium (unassessed)
 type: bug
 labels: defect
 flagged: no
@@ -36,6 +37,7 @@ SH-2 Define the Store trait
 state: todo (OPEN)
 draft: no
 priority: high
+complexity: medium (unassessed)
 type: normal
 labels: api, backend, phase:1
 flagged: no

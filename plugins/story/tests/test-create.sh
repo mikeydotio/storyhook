@@ -81,4 +81,11 @@ assert_eq "$(jqf "$out" .ok)" "false" "create: unknown flag is rejected"
 out=$(cd "$repo" && bash "$SCRIPT" create --title "x" --type no-such-type 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "create: a CLI validation failure surfaces as ok:false"
 
+# Complexity crosses the helper boundary as one explicit choice.
+out=$(cd "$repo" && bash "$SCRIPT" create --title "Assessed work" --complexity high 2>&1)
+assert_eq "$(jqf "$out" .ok)" true "create accepts complexity"
+assessed=$(jqf "$out" .id)
+stored=$(cd "$repo" && story show "$assessed" --json)
+assert_eq "$(jqf "$stored" .story.story.complexity)" high "helper stores the complexity"
+assert_eq "$(jqf "$stored" .story.story.complexity_assessed)" true "helper marks explicit choice assessed"
 finish

@@ -170,6 +170,7 @@ source "$STORY_PLUGIN_ROOT/lib/resources.sh"
 source "$STORY_PLUGIN_ROOT/lib/workspace.sh"
 source "$STORY_PLUGIN_ROOT/lib/submission-git.sh"
 source "$STORY_PLUGIN_ROOT/lib/daemon-status.sh"
+source "$STORY_PLUGIN_ROOT/lib/dispatch-policy.sh"
 AUTO_APPROVAL_HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../hooks" && pwd)/full-auto.sh"
 
 # ---- config (all env-overridable) -------------------------------------------
@@ -201,7 +202,7 @@ canonical_agent() {
 claude_capability_json() {
   jq -n '{
     models: [
-      {id:"opusplan", label:"Opus+Sonnet", default:true},
+      {id:"opusplan", label:"Opus+Sonnet"},
       {id:"opus",     label:"Opus"},
       {id:"fable",    label:"Fable"},
       {id:"sonnet",   label:"Sonnet"},
@@ -217,9 +218,7 @@ claude_capability_json() {
 }
 
 codex_capability_json() {
-  # No default model: an unselected dispatch passes no `-m` flag at all and
-  # lets the operator's own ~/.codex/config.toml decide, matching today's
-  # behavior untouched.
+  # No catalog default: dispatch resolves the story complexity policy.
   jq -n '{
     models: [
       {id:"gpt-6-astra",   label:"GPT-6 Astra"},
@@ -1522,12 +1521,19 @@ configure_dispatch_provider() {
   configure_agent "$1"
 
   # model/effort/speed selectors (SH-517): explicit flag > STORY_MODEL/
-  # STORY_EFFORT/STORY_SPEED > provider default -- the same precedence
+  # STORY_EFFORT/STORY_SPEED > complexity policy -- the same precedence
   # --agent already has beneath STORY_AGENT, above. Resolved and validated
   # here, before any claim/worktree side effect, same as --agent.
   resolved_model="${requested_model:-${STORY_MODEL:-}}"
   resolved_effort="${requested_effort:-${STORY_EFFORT:-}}"
   resolved_speed="${requested_speed:-${STORY_SPEED:-standard}}"
+  if [ -n "$require_absent" ]; then
+    # Captured selectors, including absent ones, belong to the retained launch.
+    # Ambient defaults may have changed or now name the other provider.
+    [ -n "$requested_model" ] || resolved_model=$(printf '%s' "$continuation_record" | jq -r '.capture.model // ""')
+    [ -n "$requested_effort" ] || resolved_effort=$(printf '%s' "$continuation_record" | jq -r '.capture.effort // ""')
+    [ -n "$requested_speed" ] || resolved_speed=$(printf '%s' "$continuation_record" | jq -r '.capture.speed // "standard"')
+  fi
   if [ -n "$resolved_model" ] || [ -n "$resolved_effort" ] || [ "$resolved_speed" != standard ]; then
     validate_agent_model "$resolved_model"
     validate_agent_effort "$resolved_effort"
@@ -1542,17 +1548,17 @@ configure_dispatch_provider() {
       || fail "--model/--effort/--speed cannot be combined with \$STORY_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_LAUNCH_CMD, or drop the selector."
     [ -z "$full_auto" ] || [ "$FULL_AUTO_LAUNCH_OVERRIDDEN" != true ] \
       || fail "--model/--effort/--speed cannot be combined with \$STORY_FULL_AUTO_LAUNCH_CMD -- it is a wholesale launch override with no seam for a selector. Unset \$STORY_FULL_AUTO_LAUNCH_CMD, or drop the selector."
+  fi
+  apply_complexity_policy
+  if [ "$model_source" != custom-command ] && { [ -n "$resolved_model" ] || [ -n "$resolved_effort" ] || [ "$resolved_speed" != standard ]; }; then
     LAUNCH_TPL=$(compose_launch_tpl base "$resolved_model" "$resolved_effort" "$resolved_speed")
     AUTO_LAUNCH_TPL=$(compose_launch_tpl auto "$resolved_model" "$resolved_effort" "$resolved_speed")
     FULL_AUTO_LAUNCH_TPL="$AUTO_LAUNCH_TPL"
   fi
-  # Reported in the result JSON below. Claude always launches SOME model
-  # (opusplan is baked into its templates even unselected); Codex has no
-  # such default -- an unselected Codex model stays "" and is omitted from
-  # the JSON entirely, the same presence-signals-selection contract effort
-  # already has.
+  # Old continuations can have an absent Claude model; the historical
+  # template used opusplan. Fresh managed launches always resolve policy.
   effective_model="$resolved_model"
-  [ -n "$effective_model" ] || { [ "$AGENT" != claude ] || effective_model="opusplan"; }
+  [ -n "$effective_model" ] || { [ "$AGENT" != claude ] || [ "$model_source" = custom-command ] || effective_model="opusplan"; }
 
   launch_source="$AUTO_LAUNCH_SOURCE" launch_overridden="$AUTO_LAUNCH_OVERRIDDEN"
   ignored_general_override=""
@@ -1688,6 +1694,7 @@ cmd_dispatch() {
   # story is identified (below); declared here so its assignments land in this
   # scope.
   local resolved_model="" resolved_effort="" resolved_speed="" effective_model=""
+  local policy_json="" model_source="" effort_source="" policy_note="" selected_complexity=""
   local launch_source="" launch_overridden="" ignored_general_override=""
   local window_provider=""
 
@@ -2014,6 +2021,8 @@ cmd_dispatch() {
     id=$(printf '%s' "$next_json" | jq -r '.story.story.id')
     title=$(printf '%s' "$next_json" | jq -r '.story.story.title // ""')
     state=$(printf '%s' "$next_json" | jq -r '.story.story.state // ""')
+    show_json="$next_json"
+    configure_dispatch_provider "$AGENT"
     if [ -z "$DRY_RUN" ]; then
       local claimed_state="$state"
       reserve_dispatch_workspace
@@ -2315,7 +2324,8 @@ cmd_dispatch() {
       --argjson window_reused "$window_reused" --arg pane "$existing_pane" \
       --arg wtpath "$worktree_path" --arg wtbranch "$worktree_branch" \
       --arg dispatch_comment "$post_dispatch_comment" \
-      --arg model "$effective_model" --arg effort "$resolved_effort" --arg speed "$resolved_speed" '
+      --arg model_source "$model_source" --arg effort_source "$effort_source" --arg policy_note "$policy_note" \
+    --arg model "$effective_model" --arg effort "$resolved_effort" --arg speed "$resolved_speed" '
       {
         ok: true, dry_run: true,
         id: $id, title: $title, dir: $dir,
@@ -2368,6 +2378,8 @@ cmd_dispatch() {
       + (if $full_auto then {full_auto: true} else {} end)
       + (if $ignored_general_override == "" then {}
          else {ignored_general_override: $ignored_general_override} end)
+      + {model_source: $model_source, effort_source: $effort_source}
+      + (if $policy_note == "" then {} else {policy_note: $policy_note} end)
       + (if $model == "" then {} else {model: $model} end)
       + (if $effort == "" then {} else {effort: $effort} end)
       + {speed: $speed}'
@@ -2855,6 +2867,7 @@ cmd_dispatch() {
     --arg session "$TARGET_SESSION" --argjson session_created "$session_created" \
     --arg pane_pid "$pane_pid" \
     --argjson cleanup_lease "$DISPATCH_CLEANUP_LEASE" \
+    --arg model_source "$model_source" --arg effort_source "$effort_source" --arg policy_note "$policy_note" \
     --arg model "$effective_model" --arg effort "$resolved_effort" --arg speed "$resolved_speed" '
     {
       ok: true,
@@ -2888,6 +2901,8 @@ cmd_dispatch() {
     + (if $tail == "" then {} else {pane_tail: $tail} end)
     + (if $session == "" then {} else {session: $session, session_created: $session_created} end)
     + (if $pane_pid == "" then {} else {pane_pid: $pane_pid} end)
+    + {model_source: $model_source, effort_source: $effort_source}
+    + (if $policy_note == "" then {} else {policy_note: $policy_note} end)
     + (if $model == "" then {} else {model: $model} end)
     + (if $effort == "" then {} else {effort: $effort} end)
     + {speed: $speed}
@@ -3020,19 +3035,20 @@ cmd_list() {
 }
 
 cmd_create() {
-  local title="" desc="" desc_file="" stype="" priority="" labels=""
+  local title="" desc="" desc_file="" stype="" priority="" complexity="" labels=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --title)            title="${2:-}";      shift 2 || fail "--title needs a value." ;;
       --description)      desc="${2:-}";       shift 2 || fail "--description needs a value." ;;
       --description-file) desc_file="${2:-}";  shift 2 || fail "--description-file needs a value." ;;
       --type)             stype="${2:-}";      shift 2 || fail "--type needs a value." ;;
+      --complexity)       complexity="${2:-}"; shift 2 || fail "--complexity needs a value." ;;
       --priority)         priority="${2:-}";   shift 2 || fail "--priority needs a value." ;;
       --label|--labels)   labels="${2:-}";     shift 2 || fail "--label needs a value." ;;
-      *) fail "unknown argument \`$1\` — usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--label <csv>]" ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--complexity low|medium|high] [--label <csv>]" ;;
     esac
   done
-  [ -n "$title" ] || fail "usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--label <csv>]"
+  [ -n "$title" ] || fail "usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--complexity low|medium|high] [--label <csv>]"
 
   # A description reaches the CLI as ONE argv element. `story new` has no
   # --description-file (unlike `gh issue create --body-file`), so the skill
@@ -3049,12 +3065,13 @@ cmd_create() {
   local -a args=(new "$title")
   [ -n "$stype" ]    && args+=(--type "$stype")
   [ -n "$priority" ] && args+=(--priority "$priority")
+  [ -n "$complexity" ] && args+=(--complexity "$complexity")
   [ -n "$labels" ]   && args+=(--labels "$labels")
   [ -n "$desc" ]     && args+=(--description "$desc")
 
   if [ -n "$DRY_RUN" ]; then
     jq -n --arg title "$title" --argjson cmds \
-      "$(printf '%s\n' "story ${args[*]:0:1} <title>${stype:+ --type $stype}${priority:+ --priority $priority}${labels:+ --labels $labels}${desc:+ --description <text>}" | jq -R -s 'split("\n")|map(select(length>0))')" '
+      "$(printf '%s\n' "story ${args[*]:0:1} <title>${stype:+ --type $stype}${priority:+ --priority $priority}${complexity:+ --complexity $complexity}${labels:+ --labels $labels}${desc:+ --description <text>}" | jq -R -s 'split("\n")|map(select(length>0))')" '
       {ok:true, dry_run:true, title:$title, commands:$cmds,
        display:("[story] DRY RUN — would create a story titled: " + $title)}'
     return 0

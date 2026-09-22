@@ -19,6 +19,7 @@ use storyhook_test_support::{ServiceFixture, scratch_dir};
 /// A description with nothing but a title.
 fn described(title: &str) -> ImportStory {
     ImportStory {
+        complexity: None,
         title: title.to_string(),
         priority: None,
         labels: None,
@@ -2014,4 +2015,73 @@ fn importing_an_empty_document_says_so_without_writing() {
     )
     .expect("importing");
     assert!(matches!(response, Response::Message(ref m) if m == "no stories to import"));
+}
+
+#[test]
+fn complexity_survives_archive_export_restore_and_rebuild() {
+    use storyhook::domain::Complexity;
+    use storyhook::service::FieldEdits;
+    let fixture = ServiceFixture::new();
+    for (index, complexity) in [None, Some("low"), Some("medium"), Some("high")]
+        .into_iter()
+        .enumerate()
+    {
+        let id = StoryService::new(&fixture.ctx())
+            .create(&NewStoryInput {
+                title: format!("Complexity {index}"),
+                complexity: complexity.map(str::to_string),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        if index == 3 {
+            StoryService::new(&fixture.ctx())
+                .set_fields(
+                    &id,
+                    &FieldEdits {
+                        state: Some("done".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            dispatch(&fixture.ctx(), Invocation::Hide { id }).unwrap();
+        }
+    }
+    let exported = export(&fixture);
+    let encoded = document(&exported);
+    let decoded: ProjectExport = serde_json::from_str(&encoded).unwrap();
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &decoded, false).unwrap();
+    let project = restored_project(&store, dir.path()).id;
+    for (index, complexity) in [
+        Complexity::Medium,
+        Complexity::Low,
+        Complexity::Medium,
+        Complexity::High,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let row = store
+            .read(|tx| tx.story(project, StoryNo::new(index as i64 + 1)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.snapshot.complexity, complexity);
+        assert_eq!(row.snapshot.complexity_assessed, index != 0);
+    }
+    assert!(
+        storyhook::store::diff_read_model(&store, project)
+            .unwrap()
+            .is_clean()
+    );
+    let ctx = storyhook::service::Ctx::new(
+        &store,
+        project,
+        dir.path(),
+        storyhook::env::Environment::at(dir.path()),
+    );
+    assert_eq!(
+        document(&TransferService::new(&ctx).export().unwrap()),
+        encoded
+    );
 }

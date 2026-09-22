@@ -36,6 +36,7 @@ pub mod cleanup;
 mod cleanup_lease;
 pub mod config;
 pub mod continuation;
+pub mod dispatch_policy;
 pub mod engine;
 pub(crate) mod executor_lock;
 pub mod gate_command;

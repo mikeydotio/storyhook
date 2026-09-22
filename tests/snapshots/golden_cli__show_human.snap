@@ -6,6 +6,7 @@ SH-1 Design the storage engine
 state: in-progress (OPEN)
 draft: no
 priority: critical
+complexity: medium (unassessed)
 type: epic
 labels: -
 flagged: no
@@ -20,6 +21,7 @@ SH-5 Fix the id collision across worktrees
 state: todo (OPEN)
 draft: no
 priority: critical
+complexity: medium (unassessed)
 type: bug
 labels: defect
 flagged: no
@@ -34,6 +36,7 @@ SH-6 Benchmark the rebuild path
 state: todo (OPEN)
 draft: no
 priority: low
+complexity: medium (unassessed)
 type: spike
 labels: -
 awaiting: waiting on the benchmark harness
@@ -44,6 +47,7 @@ SH-7 Document the data layer
 state: todo (OPEN)
 draft: no
 priority: low
+complexity: medium (unassessed)
 type: chore
 labels: -
 flagged: no
@@ -53,6 +57,7 @@ SH-3 Implement the SQLite engine
 state: in-progress (OPEN)
 draft: no
 priority: high
+complexity: medium (unassessed)
 type: normal
 labels: backend, phase:1
 flagged: no
@@ -69,6 +74,7 @@ SH-8 Retire the JSONL reader
 state: done (CLOSED)
 draft: no
 priority: low
+complexity: medium (unassessed)
 type: chore
 labels: -
 closed_at: [timestamp]
@@ -79,6 +85,7 @@ SH-13 Old approach: file-per-story
 state: dropped (CLOSED)
 draft: no
 priority: low
+complexity: medium (unassessed)
 type: chore
 labels: -
 closed_at: [timestamp]

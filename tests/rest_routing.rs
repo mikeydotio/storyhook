@@ -916,3 +916,104 @@ fn the_fixture_holds_the_story_the_table_names() {
         "the fixture must hold SH-1, or the id-bearing rows prove nothing"
     );
 }
+
+#[test]
+fn policy_routes_preserve_mutation_guards_and_validate_input() {
+    for (path, feed) in [
+        ("/api/dispatch-policy", Feed::Catalog),
+        ("/api/repos/{repo}/dispatch-policy", Feed::Project),
+    ] {
+        characterize(&[
+            row(Method::Get, path, "", 200, Feed::Silent),
+            row(
+                Method::Patch,
+                path,
+                r#"{"agent":"codex","complexity":"low","model":"gpt-5.6-sol","effort":"high"}"#,
+                200,
+                feed,
+            ),
+            row(
+                Method::Patch,
+                path,
+                r#"{"agent":"claude","complexity":"medium","model":null,"effort":null}"#,
+                200,
+                feed,
+            ),
+            row(
+                Method::Patch,
+                path,
+                r#"{"agent":"claude","complexity":"high","model":"haiku"}"#,
+                422,
+                feed,
+            ),
+            row(
+                Method::Patch,
+                path,
+                r#"{"agent":"claude","complexity":"high","effort":"ultra"}"#,
+                422,
+                feed,
+            ),
+            row(
+                Method::Patch,
+                path,
+                r#"{"agent":"unknown","complexity":"high","effort":"high"}"#,
+                422,
+                feed,
+            ),
+            row(
+                Method::Patch,
+                path,
+                r#"{"agent":"codex","complexity":4,"model":"gpt-6-astra"}"#,
+                400,
+                feed,
+            ),
+            refused(Method::Patch, path, Sent::NoCsrfHeader, 403),
+            refused(Method::Patch, path, Sent::NoContentType, 415),
+            row(Method::Post, path, "{}", 405, Feed::Silent),
+        ]);
+    }
+    characterize(&[
+        row(
+            Method::Get,
+            "/api/repos/{repo}/story/SH-1/dispatch-policy/codex",
+            "",
+            200,
+            Feed::Silent,
+        ),
+        row(
+            Method::Get,
+            "/api/repos/{repo}/story/SH-999/dispatch-policy/codex",
+            "",
+            404,
+            Feed::Silent,
+        ),
+        row(
+            Method::Get,
+            "/api/repos/{repo}/story/SH-1/dispatch-policy/unknown",
+            "",
+            422,
+            Feed::Silent,
+        ),
+        row(
+            Method::Patch,
+            "/api/repos/{repo}/story/SH-1",
+            r#"{"complexity":"high"}"#,
+            200,
+            Feed::Project,
+        ),
+        row(
+            Method::Patch,
+            "/api/repos/{repo}/story/SH-1",
+            r#"{"complexity":null}"#,
+            400,
+            Feed::Project,
+        ),
+        row(
+            Method::Patch,
+            "/api/repos/{repo}/story/SH-1",
+            r#"{"complexity":"extreme"}"#,
+            422,
+            Feed::Project,
+        ),
+    ]);
+}

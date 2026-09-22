@@ -3,6 +3,10 @@ name: story
 description: "Use for the complete Storyhook lifecycle: list or view stories, file a new story, start ready work, complete work safely, inspect context, plan, triage, sync, hand off, install, update, or configure Storyhook. Routes deterministic operations through the packaged helper and delegates focused workflows to sibling Storyhook skills."
 ---
 
+Read `story help complexity-rubric` before creating or assessing a story.
+Choose `--complexity low|medium|high` from the evidence. An omission remains
+medium, unassessed. Use `story dispatch-policy show` to inspect launch defaults.
+
 # Storyhook lifecycle router
 
 Infer the requested verb and arguments from the user's request or direct skill invocation. Do

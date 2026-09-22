@@ -277,6 +277,7 @@ pub(crate) fn mutating(method: &Method) -> bool {
 /// arm a route added later could silently fall into.
 fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
     let verb = match route {
+        ProjectRoute::DispatchPolicy | ProjectRoute::PolicyResolve { .. } => "dispatch-policy",
         ProjectRoute::Data => "data",
         ProjectRoute::Visibility => "visibility",
         ProjectRoute::VerificationAck => "verification-ack",
@@ -390,6 +391,17 @@ pub fn route_with_activity<S: Store>(
         ));
     }
     match route {
+        Route::DispatchPolicy => Routed::changing(
+            method,
+            if method == &Method::Get {
+                super::dispatch_policy::show(store, None, None)
+            } else {
+                guarded_text(headers, trusted_hosts, body, |b| {
+                    super::dispatch_policy::patch(store, None, b)
+                })
+            },
+            Changed::Catalog,
+        ),
         Route::Shell => Routed::quiet(html_reply(dashboard_html()).no_cache()),
         Route::Repos => {
             let hidden = match token_context {
@@ -459,6 +471,7 @@ pub fn route_with_activity<S: Store>(
                     .with_verification_activity(Some(verification_activity));
                 let reply = route_project(
                     &ctx,
+                    method,
                     verification_activity,
                     route,
                     headers,
@@ -513,6 +526,7 @@ fn attachment_reply<S: Store>(ctx: &Ctx<'_, S>, id: &str, raw_id: &str) -> Resul
 /// without an answer here.
 fn route_project<S: Store>(
     ctx: &Ctx<'_, S>,
+    method: &Method,
     verification_activity: &VerificationActivity,
     route: ProjectRoute<'_>,
     headers: &[Header],
@@ -533,6 +547,18 @@ fn route_project<S: Store>(
         }
     };
     match route {
+        ProjectRoute::DispatchPolicy => {
+            if method == &Method::Get {
+                super::dispatch_policy::show(ctx.store(), Some(ctx.project()), None)
+            } else {
+                guarded(headers, trusted_hosts, body, |b| {
+                    super::dispatch_policy::patch(ctx.store(), Some(ctx.project()), b)
+                })
+            }
+        }
+        ProjectRoute::PolicyResolve { id, agent } => {
+            super::dispatch_policy::show(ctx.store(), Some(ctx.project()), Some((id, agent)))
+        }
         ProjectRoute::StoryAttachmentUpload { id } => {
             guarded_no_body(headers, trusted_hosts, || {
                 crate::api::upload::reply(ctx, id, headers, body.as_bytes())
@@ -1238,6 +1264,10 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
         let story_type = get_str(&obj, "type").map(str::to_string);
         let description = get_str(&obj, "description").map(str::to_string);
         let priority = get_str(&obj, "priority").map(str::to_string);
+        let complexity = obj
+            .get("complexity")
+            .map(|_| require_str(&obj, "complexity").map(str::to_string))
+            .transpose()?;
         let labels = if obj.contains_key("labels") {
             Some(get_str_array(&obj, "labels"))
         } else {
@@ -1253,6 +1283,7 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
                 story_type,
                 description,
                 priority,
+                complexity,
                 labels,
                 draft,
             },
@@ -1290,6 +1321,10 @@ fn route_patch_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply 
             title: get_str(&obj, "title").map(str::to_string),
             state: get_str(&obj, "state").map(str::to_string),
             priority: get_str(&obj, "priority").map(str::to_string),
+            complexity: obj
+                .get("complexity")
+                .map(|_| require_str(&obj, "complexity").map(str::to_string))
+                .transpose()?,
             labels: None,
             blocked: None,
             unblocked: false,

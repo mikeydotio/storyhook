@@ -55,6 +55,8 @@ pub enum Action {
     // Data mutations
     CreateStory {
         title: String,
+        /// Explicit complexity; None keeps medium unassessed.
+        complexity: Option<crate::domain::Complexity>,
         priority: Option<Priority>,
         labels: Vec<String>,
         description: Option<String>,
@@ -74,6 +76,13 @@ pub enum Action {
     SetPriority {
         id: String,
         priority: Priority,
+    },
+    /// Assess a story through the same event-backed edit as the CLI.
+    SetComplexity {
+        /// Target story.
+        id: String,
+        /// Assessed complexity.
+        complexity: crate::domain::Complexity,
     },
     SetLabels {
         id: String,

@@ -4138,8 +4138,11 @@ fn project_recovery_migration_preserves_stories_and_starts_without_inferred_faul
         )
         .unwrap()
     };
-    let report = store.migrate().unwrap();
+    // This assertion belongs to migration 47. Later migrations can legitimately
+    // change snapshots, such as adding the unassessed complexity fallback.
+    let report = store.migrate_with(&migrate::MIGRATIONS[..47]).unwrap();
     assert_eq!(report.from_version, 46);
+    assert_eq!(report.to_version, 47);
     assert!(report.backup.is_some());
     let conn = Connection::open(store.path()).unwrap();
     let after: String = conn

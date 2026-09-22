@@ -32,6 +32,7 @@
 
 mod block_delivery;
 mod continuation;
+mod dispatch_policy;
 mod dropped_cleanup;
 mod engine_reset;
 mod landing;
@@ -983,6 +984,15 @@ macro_rules! impl_read_ops {
                 read::types(&self.conn, project)
             }
 
+            fn dispatch_policy(
+                &self,
+                project: Option<ProjectId>,
+                agent: crate::store::EngineAgent,
+                complexity: crate::domain::Complexity,
+            ) -> Result<crate::store::DispatchPolicyOverride, StoreError> {
+                dispatch_policy::read(&self.conn, project, agent, complexity)
+            }
+
             fn settings(&self, project: ProjectId) -> Result<ProjectSettings, StoreError> {
                 read::settings(&self.conn, project)
             }
@@ -1473,6 +1483,16 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn put_types(&mut self, project: ProjectId, types: &[TypeDef]) -> Result<(), StoreError> {
         write::put_types(&self.conn, project, types)
+    }
+
+    fn put_dispatch_policy(
+        &mut self,
+        project: Option<ProjectId>,
+        agent: crate::store::EngineAgent,
+        complexity: crate::domain::Complexity,
+        value: &crate::store::DispatchPolicyOverride,
+    ) -> Result<(), StoreError> {
+        dispatch_policy::write(&self.conn, project, agent, complexity, value)
     }
 
     fn put_settings(

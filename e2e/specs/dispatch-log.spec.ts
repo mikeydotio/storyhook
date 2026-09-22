@@ -283,3 +283,14 @@ test("a dispatch stub does not swallow the log route", async ({ page }) => {
   await openSettings(page);
   await expect(page.locator(".dispatch-log-row", { hasText: "AA-7" })).toBeVisible();
 });
+
+test("dispatch log shows resolved model and effort sources", async ({ page }) => {
+  await stubLog(page, [{ ...REFUSED, story: "AA-99", state: "ok", reason: undefined,
+    payload: { display: "Session ready", model: "gpt-6-astra", effort: "xhigh", model_source: "installation", effort_source: "project" }
+  }]);
+  await page.goto("/");
+  await openSettings(page);
+  const row = page.locator(".dispatch-log-row", { hasText: "AA-99" });
+  await expect(row).toContainText("Model: gpt-6-astra (installation)");
+  await expect(row).toContainText("Effort: xhigh (project)");
+});

@@ -73,6 +73,10 @@ use finding::{Finding, FindingCode, FindingData};
 
 pub mod provenance;
 
+/// Complexity levels and validation.
+pub mod complexity;
+pub use complexity::Complexity;
+
 /// Sniffing and naming an attachment's media type from its own bytes
 /// (SH-315).
 ///
@@ -89,6 +93,9 @@ use media_type::MediaType;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportStory {
     pub title: String,
+    /// Explicit complexity choice; absence keeps the story unassessed.
+    #[serde(default)]
+    pub complexity: Option<String>,
     #[serde(default)]
     pub priority: Option<String>,
     #[serde(default)]
@@ -409,6 +416,12 @@ pub struct StorySnapshot {
     /// remains reachable only while decoding legacy histories.
     #[serde(default, skip_serializing_if = "is_false")]
     pub priority_assessed: bool,
+    /// Effective complexity; missing historical values resolve to medium.
+    #[serde(default)]
+    pub complexity: Complexity,
+    /// Whether an explicit complexity choice exists in event history.
+    #[serde(default)]
+    pub complexity_assessed: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -705,6 +718,18 @@ pub enum StoryEvent {
         at: String,
         other_id: String,
         relation: String,
+    },
+    /// Records an explicit complexity choice.
+    StoryComplexitySet {
+        /// Event timestamp.
+        at: String,
+        /// Assessed level.
+        complexity: Complexity,
+    },
+    /// Restores the unassessed medium fallback, including during undo.
+    StoryComplexityCleared {
+        /// Event timestamp.
+        at: String,
     },
     StoryPrioritySet {
         at: String,
@@ -1032,7 +1057,7 @@ fn git_link_subject(text: &str) -> Option<&str> {
 /// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
 /// reads serde's own `unknown variant, expected one of …` list back out of the
 /// derive and compares it to this array.
-pub const EVENT_KINDS: [&str; 29] = [
+pub const EVENT_KINDS: [&str; 31] = [
     "StoryCreated",
     "StoryCommentAdded",
     "StoryCommentRetracted",
@@ -1043,6 +1068,8 @@ pub const EVENT_KINDS: [&str; 29] = [
     "StoryStateCleared",
     "StoryRelationshipAdded",
     "StoryRelationshipRemoved",
+    "StoryComplexitySet",
+    "StoryComplexityCleared",
     "StoryPrioritySet",
     "StoryPriorityCleared",
     "StoryTypeSet",
@@ -1092,6 +1119,8 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
         StoryEvent::StoryStateCleared { .. } => "StoryStateCleared",
         StoryEvent::StoryRelationshipAdded { .. } => "StoryRelationshipAdded",
         StoryEvent::StoryRelationshipRemoved { .. } => "StoryRelationshipRemoved",
+        StoryEvent::StoryComplexitySet { .. } => "StoryComplexitySet",
+        StoryEvent::StoryComplexityCleared { .. } => "StoryComplexityCleared",
         StoryEvent::StoryPrioritySet { .. } => "StoryPrioritySet",
         StoryEvent::StoryPriorityCleared { .. } => "StoryPriorityCleared",
         StoryEvent::StoryTypeSet { .. } => "StoryTypeSet",
@@ -1171,6 +1200,8 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryStateCleared { .. } => "state-cleared",
             StoryEvent::StoryRelationshipAdded { .. } => "relationship-added",
             StoryEvent::StoryRelationshipRemoved { .. } => "relationship-removed",
+            StoryEvent::StoryComplexitySet { .. } => "complexity-set",
+            StoryEvent::StoryComplexityCleared { .. } => "complexity-cleared",
             StoryEvent::StoryPrioritySet { .. } => "priority-set",
             StoryEvent::StoryPriorityCleared { .. } => "priority-cleared",
             StoryEvent::StoryTypeSet { .. } => "type-set",
@@ -1707,6 +1738,8 @@ pub fn fold_story(
     let mut awaiting = None;
     let mut priority = Priority::None;
     let mut priority_assessed = false;
+    let mut complexity = Complexity::default();
+    let mut complexity_assessed = false;
     let mut story_type = None;
     let mut description = None;
     let mut labels = Vec::new();
@@ -1860,6 +1893,19 @@ pub fn fold_story(
                 // fallback, but remove its authority. Query projection derives
                 // the effective state from children while this latch is set.
                 state_computed = true;
+                updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryComplexitySet {
+                at,
+                complexity: level,
+            } => {
+                complexity = *level;
+                complexity_assessed = true;
+                updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryComplexityCleared { at } => {
+                complexity = Complexity::default();
+                complexity_assessed = false;
                 updated_at = Some(at.clone());
             }
             StoryEvent::StoryPrioritySet {
@@ -2136,6 +2182,8 @@ pub fn fold_story(
         awaiting,
         priority,
         priority_assessed,
+        complexity,
+        complexity_assessed,
         labels,
         story_type,
         description,
@@ -5604,6 +5652,8 @@ mod tests {
             awaiting: None,
             priority: Priority::None,
             priority_assessed: false,
+            complexity: Default::default(),
+            complexity_assessed: false,
             labels: Vec::new(),
             story_type: None,
             description: None,
@@ -5640,6 +5690,8 @@ mod tests {
             awaiting: None,
             priority: Priority::None,
             priority_assessed: false,
+            complexity: Default::default(),
+            complexity_assessed: false,
             labels: Vec::new(),
             story_type: None,
             description: None,
@@ -5748,6 +5800,8 @@ mod tests {
             awaiting: None,
             priority: Priority::None,
             priority_assessed: false,
+            complexity: Default::default(),
+            complexity_assessed: false,
             labels: Vec::new(),
             story_type: None,
             description: None,
@@ -6136,6 +6190,8 @@ mod tests {
                 awaiting: None,
                 priority: Priority::None,
                 priority_assessed: false,
+                complexity: Default::default(),
+                complexity_assessed: false,
                 labels: Vec::new(),
                 story_type: None,
                 description: None,
@@ -6162,6 +6218,8 @@ mod tests {
                 awaiting: None,
                 priority: Priority::None,
                 priority_assessed: false,
+                complexity: Default::default(),
+                complexity_assessed: false,
                 labels: Vec::new(),
                 story_type: None,
                 description: None,
@@ -6194,6 +6252,8 @@ mod tests {
                 awaiting: None,
                 priority: Priority::None,
                 priority_assessed: false,
+                complexity: Default::default(),
+                complexity_assessed: false,
                 labels: Vec::new(),
                 story_type: None,
                 description: None,
@@ -6220,6 +6280,8 @@ mod tests {
                 awaiting: None,
                 priority: Priority::None,
                 priority_assessed: false,
+                complexity: Default::default(),
+                complexity_assessed: false,
                 labels: Vec::new(),
                 story_type: None,
                 description: None,
@@ -7332,6 +7394,8 @@ mod tests {
             referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
             priority_assessed: priority != Priority::None,
+            complexity: Default::default(),
+            complexity_assessed: false,
             priority,
             labels: Vec::new(),
             story_type: None,
@@ -7863,6 +7927,8 @@ mod ready_order_properties {
             referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
             priority_assessed: priority != Priority::None,
+            complexity: Default::default(),
+            complexity_assessed: false,
             priority,
             labels: Vec::new(),
             story_type: None,

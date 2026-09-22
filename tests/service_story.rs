@@ -185,6 +185,7 @@ fn enrichment_events_are_written_in_one_batch_in_a_fixed_order() {
     let fixture = ServiceFixture::new();
     let story = StoryService::new(&fixture.ctx())
         .create(&NewStoryInput {
+            complexity: None,
             title: "everything at once".into(),
             state: None,
             story_type: Some("bug".into()),

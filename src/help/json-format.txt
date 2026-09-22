@@ -19,6 +19,8 @@ Single-story commands return "story": StoryView. The snapshot is nested:
   .story.story.id           Canonical ID, such as SH-1
   .story.story.state        Configured state slug, such as todo
   .story.story.superstate   OPEN or CLOSED
+  .story.story.complexity   low, medium, or high; independent of priority
+  .story.story.complexity_assessed  Whether complexity was explicitly chosen
   .story.story.comments     Stored discussion, when present
   .story.head_global_seq    Snapshot sequence, when present
 
@@ -64,6 +66,8 @@ Warnings can also appear at the envelope level. Read them before acting.
     "settings": [...]
   phase list
     "phases": [...]
+  dispatch-policy show, set, reset, resolve
+    "dispatch_policy": effective policy entries and their field sources
   help, scaffold, handoff, load-context in markdown mode, report --html
     "message": a string (help, markdown, or HTML)
 
@@ -139,3 +143,4 @@ create, comment, or claim automatically when its outcome is uncertain.
 
 Related: story help agent-guide, story help list, story help claim
 Before choosing a priority, read story help priority-rubric.
+Before choosing complexity, read story help complexity-rubric.

@@ -46,7 +46,7 @@ dispatch_and_capture() {
 
 disp=$(dispatch_and_capture CLA)
 assert_contains "$disp" \
-  "with \`claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model opusplan\`" \
+  "with \`claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model fable --effort high\`" \
   "claude attended default: binds StoryHook's plugin"
 case "$disp" in *--settings*) fail_test "claude attended default: unexpected --settings" ;; esac
 
@@ -58,7 +58,7 @@ case "$disp" in *--settings*) fail_test "claude attended model+effort: unexpecte
 
 disp=$(dispatch_and_capture CLC --speed=fast)
 assert_contains "$disp" \
-  "with \`claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model opusplan --settings '{\"fastMode\":true}'\`" \
+  "with \`claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model fable --effort high --settings '{\"fastMode\":true}'\`" \
   "claude attended fast-only: settings holds only fastMode"
 
 disp=$(dispatch_and_capture CLD --model=sonnet --effort=low --speed=fast)
@@ -70,7 +70,7 @@ assert_contains "$disp" \
 
 disp=$(dispatch_and_capture CLE --auto)
 assert_contains "$disp" \
-  "claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model opusplan --settings '{\"permissions\":{\"defaultMode\":\"acceptEdits\"}}'" \
+  "claude --plugin-dir '$PLUGIN_ROOT' --permission-mode plan --model fable --effort high --settings '{\"permissions\":{\"defaultMode\":\"acceptEdits\"}}'" \
   "claude auto default: binds StoryHook's plugin"
 
 disp=$(dispatch_and_capture CLF --auto --speed=fast)
@@ -98,9 +98,9 @@ assert_contains "$disp" \
 # --- Codex, attended ---------------------------------------------------------
 
 disp=$(dispatch_and_capture CDA --agent=codex)
-assert_contains "$disp" 'with `codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false`' \
+assert_contains "$disp" 'with `codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false -m gpt-6-astra -c model_reasoning_effort="high"`' \
   "codex attended default: unchanged from today"
-case "$disp" in *"-m "*) fail_test "codex attended default: unexpected -m flag" ;; esac
+assert_contains "$disp" "-m gpt-6-astra" "codex attended default: complexity policy model"
 # SH-694: Codex 0.154.0 animates the idle composer of an Astra model with a
 # Braille sparkle, which defeated the empty-input check that confirms the
 # initialization turn was submitted. The managed launch turns animations off
@@ -119,7 +119,7 @@ assert_contains "$disp" \
   "codex attended GPT-5.6+low: existing composition preserved"
 
 disp=$(dispatch_and_capture CDC --agent=codex --speed=fast)
-assert_contains "$disp" 'codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false -c service_tier="priority"' \
+assert_contains "$disp" 'codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false -m gpt-6-astra -c model_reasoning_effort="high" -c service_tier="priority"' \
   "codex attended fast: service_tier flag appended"
 
 # --- Codex, --auto -----------------------------------------------------------
@@ -133,7 +133,7 @@ assert_contains "$disp" '-c tui.animations=false' \
 
 disp=$(dispatch_and_capture CDE --agent=codex --auto --model=gpt-5.6-luna --speed=fast)
 assert_contains "$disp" \
-  'codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false --approve-for-me --dangerously-bypass-hook-trust -m gpt-5.6-luna -c service_tier="priority"' \
+  'codex --no-alt-screen -c check_for_update_on_startup=false -c tui.animations=false --approve-for-me --dangerously-bypass-hook-trust -m gpt-5.6-luna -c model_reasoning_effort="high" -c service_tier="priority"' \
   "codex auto + model + fast: fixed auto flags precede the selectors"
 
 finish

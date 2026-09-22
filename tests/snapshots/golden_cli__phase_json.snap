@@ -50,6 +50,8 @@ source: tests/golden_cli.rs
                 "text": "Trait shape settled: one method per verb."
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-2",
             "labels": [
@@ -86,6 +88,8 @@ source: tests/golden_cli.rs
                 "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
               }
             ],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-3",
             "labels": [
@@ -124,6 +128,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-9",
             "labels": [

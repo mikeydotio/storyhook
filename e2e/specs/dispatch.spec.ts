@@ -146,10 +146,10 @@ test("Dispatch opens with defaults and does not remember cancelled edits", async
   // not a fixture, since this spec (unlike dispatch_endpoint.rs's stubbed
   // suite) runs against the real helper.
   await expect(page.locator("#dispatch-model option")).toHaveText([
-    "Default", "Opus+Sonnet", "Opus", "Fable", "Sonnet", "Haiku",
+    "Default (complexity)", "Opus+Sonnet", "Opus", "Fable", "Sonnet", "Haiku",
   ]);
   await expect(page.locator("#dispatch-effort option")).toHaveText([
-    "Default", "low", "medium", "high", "xhigh", "max",
+    "Default (complexity)", "low", "medium", "high", "xhigh", "max",
   ]);
   await expect(page.locator("#dispatch-speed option")).toHaveText(["Default", "Fast"]);
   await expect(page.locator("#dispatch-model")).toHaveValue("");
@@ -162,10 +162,10 @@ test("Dispatch opens with defaults and does not remember cancelled edits", async
   // no forced default model).
   await page.locator("#dispatch-agent").selectOption("codex");
   await expect(page.locator("#dispatch-model option")).toHaveText([
-    "Default", "GPT-6 Astra", "GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna",
+    "Default (complexity)", "GPT-6 Astra", "GPT-5.6 Sol", "GPT-5.6 Terra", "GPT-5.6 Luna",
   ]);
   await expect(page.locator("#dispatch-effort option")).toHaveText([
-    "Default", "none", "low", "medium", "high", "xhigh", "max", "ultra",
+    "Default (complexity)", "none", "low", "medium", "high", "xhigh", "max", "ultra",
   ]);
   await expect(page.locator("#dispatch-speed option")).toHaveText(["Default", "Fast"]);
 

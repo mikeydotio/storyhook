@@ -717,6 +717,8 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
                     "title": view.story.title,
                     "state": view.story.state,
                     "priority": view.story.priority.as_str(),
+                    "complexity": view.story.complexity.as_str(),
+                    "complexity_assessed": view.story.complexity_assessed,
                 })).collect::<Vec<_>>(),
             });
             return Ok(serde_json::to_string_pretty(&document).unwrap_or_default());
@@ -729,6 +731,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             total_closed
         );
 
+        body.push_str("Read `story help complexity-rubric` before assessing complexity. `story dispatch-policy show` lists automatic launch settings.\n\n");
         body.push_str("## State Distribution\n\n");
         for (state, count) in &state_counts {
             body.push_str(&format!("- {state}: {count}\n"));
@@ -747,8 +750,16 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
                     format!(" ({})", view.story.priority.as_str())
                 };
                 body.push_str(&format!(
-                    "- {} {}{}\n",
-                    view.story.id, view.story.title, priority
+                    "- {} {}{}; complexity: {}{}\n",
+                    view.story.id,
+                    view.story.title,
+                    priority,
+                    view.story.complexity.as_str(),
+                    if view.story.complexity_assessed {
+                        ""
+                    } else {
+                        " (unassessed)"
+                    }
                 ));
             }
         }

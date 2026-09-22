@@ -101,13 +101,12 @@ out=$(cd "$repo8" \
      bash "$SCRIPT" dispatch "$id8" --model=haiku 2>&1)
 assert_eq "$(jqf "$out" .model)" "haiku" "flag outranks env: explicit --model wins"
 
-# An unselected dispatch reports no model/effort override and a standard
-# speed -- today's behavior, unchanged.
+# An unselected dispatch uses the unassessed medium policy; speed is standard.
 repo9=$(mk_story_repo MDN)
 id9=$(new_story "$repo9" "No selection: today's defaults")
 out=$(dispatch_real "$repo9" "$id9")
-assert_eq "$(jqf "$out" .model)" "opusplan" "no selection: reports the built-in default model"
-assert_eq "$(jqf "$out" 'has("effort")')" "false" "no selection: no effort field"
+assert_eq "$(jqf "$out" .model)" "fable" "no selection: reports the complexity policy model"
+assert_eq "$(jqf "$out" .effort)" "high" "no selection: medium complexity effort"
 assert_eq "$(jqf "$out" .speed)" "standard" "no selection: standard speed"
 
 finish

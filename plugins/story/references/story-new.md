@@ -38,6 +38,9 @@ structured question mechanism when available. Useful dimensions:
   known good state. For a feature: the observable outcome that means "done".
 - **Priority** — only if the user signalled urgency.
 
+Read `story help complexity-rubric` and assess the reasoning the work needs.
+Omitted complexity is medium, unassessed. Pass an explicit value when assessed.
+
 ## 5. Draft
 
 Title: imperative, under 72 characters, no type prefix (storyhook has a real
@@ -86,7 +89,7 @@ otherwise a temp file.
 bash "<story-helper>" create \
   --title "<title>" \
   --description-file <path> \
-  [--type <slug>] [--priority <level>] [--label <csv>]
+  [--type <slug>] [--priority <level>] [--complexity low|medium|high] [--label <csv>]
 ```
 
 `<csv>` means comma-separated: `--label backend,api` files two labels,

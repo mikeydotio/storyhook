@@ -20,6 +20,8 @@ pub enum CreateField {
     Description,
     Priority,
     Labels,
+    /// Reasoning demands; default is unassessed medium.
+    Complexity,
 }
 
 const CREATE_FIELDS: &[CreateField] = &[
@@ -27,6 +29,7 @@ const CREATE_FIELDS: &[CreateField] = &[
     CreateField::Description,
     CreateField::Priority,
     CreateField::Labels,
+    CreateField::Complexity,
 ];
 
 const PRIORITY_OPTIONS: &[Priority] = &[
@@ -43,6 +46,8 @@ pub struct CreateForm {
     pub description_input: tui_input::Input,
     pub label_input: tui_input::Input,
     pub priority_cursor: usize,
+    /// Zero is unassessed; one through three are low, medium, high.
+    pub complexity_cursor: usize,
 }
 
 impl Default for CreateForm {
@@ -59,6 +64,7 @@ impl CreateForm {
             description_input: tui_input::Input::default(),
             label_input: tui_input::Input::default(),
             priority_cursor: 0,
+            complexity_cursor: 0,
         }
     }
 
@@ -89,6 +95,10 @@ impl CreateForm {
             .collect();
 
         vec![Action::CreateStory {
+            complexity: self
+                .complexity_cursor
+                .checked_sub(1)
+                .map(|i| crate::domain::Complexity::ALL[i]),
             title,
             priority,
             labels,
@@ -135,6 +145,15 @@ impl Component for CreateForm {
                         self.description_input
                             .handle_event(&crossterm::event::Event::Key(key));
                     }
+                    CreateField::Complexity => match key.code {
+                        KeyCode::Char('j') | KeyCode::Down if self.complexity_cursor < 3 => {
+                            self.complexity_cursor += 1
+                        }
+                        KeyCode::Char('k') | KeyCode::Up if self.complexity_cursor > 0 => {
+                            self.complexity_cursor -= 1
+                        }
+                        _ => {}
+                    },
                     CreateField::Priority => match key.code {
                         KeyCode::Char('j') | KeyCode::Down
                             if self.priority_cursor + 1 < PRIORITY_OPTIONS.len() =>
@@ -225,6 +244,15 @@ impl Component for CreateForm {
             "Labels",
             self.label_input.value(),
             self.focused_field == 3,
+            label_width,
+            &theme,
+        ));
+
+        let complexity = ["medium (unassessed)", "low", "medium", "high"][self.complexity_cursor];
+        lines.push(render_form_field(
+            "Complexity",
+            complexity,
+            self.focused_field == 4,
             label_width,
             &theme,
         ));
@@ -342,6 +370,9 @@ mod tests {
         form.handle_key(key(KeyCode::Tab), &state);
         assert_eq!(form.focused_field, 3); // Labels
 
+        form.handle_key(key(KeyCode::Tab), &state);
+        assert_eq!(form.focused_field, 4); // Complexity
+
         // Wraps around
         form.handle_key(key(KeyCode::Tab), &state);
         assert_eq!(form.focused_field, 0); // Title
@@ -355,10 +386,10 @@ mod tests {
 
         // BackTab goes to last field
         form.handle_key(key(KeyCode::BackTab), &state);
-        assert_eq!(form.focused_field, 3); // Labels
+        assert_eq!(form.focused_field, 4); // Complexity
 
         form.handle_key(key(KeyCode::BackTab), &state);
-        assert_eq!(form.focused_field, 2); // Priority
+        assert_eq!(form.focused_field, 3); // Labels
     }
 
     #[test]
@@ -384,7 +415,7 @@ mod tests {
         let actions = form.handle_key(key(KeyCode::Enter), &state);
         assert_eq!(actions.len(), 1);
         assert!(
-            matches!(&actions[0], Action::CreateStory { title, priority, labels, description }
+            matches!(&actions[0], Action::CreateStory { title, priority, labels, description, .. }
                 if title == "My new story" && priority == &Some(Priority::Low) && labels.is_empty() && description.is_none())
         );
     }
@@ -476,6 +507,7 @@ mod tests {
                 priority,
                 labels,
                 description,
+                ..
             } => {
                 assert_eq!(title, "Full story");
                 assert_eq!(priority, &Some(Priority::High));
@@ -622,5 +654,29 @@ mod tests {
         let actions = form.handle_key(key(KeyCode::Enter), &state);
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], Action::CreateStory { title, .. } if title == "My story"));
+    }
+    #[test]
+    fn complexity_creation_distinguishes_unassessed_and_explicit_medium() {
+        let state = make_state();
+        let mut form = CreateForm::new();
+        form.title_input = tui_input::Input::new("Complexity".into());
+        let actions = form.handle_key(key(KeyCode::Enter), &state);
+        assert!(matches!(
+            &actions[0],
+            Action::CreateStory {
+                complexity: None,
+                ..
+            }
+        ));
+        form.focused_field = CREATE_FIELDS.len() - 1;
+        for expected in crate::domain::Complexity::ALL {
+            form.handle_key(key(KeyCode::Char('j')), &state);
+            let actions = form.handle_key(key(KeyCode::Enter), &state);
+            assert!(
+                matches!(&actions[0], Action::CreateStory { complexity: Some(value), .. } if *value == expected)
+            );
+        }
+        form.handle_key(key(KeyCode::Char('j')), &state);
+        assert_eq!(form.complexity_cursor, 3);
     }
 }

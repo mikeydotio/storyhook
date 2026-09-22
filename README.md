@@ -213,7 +213,10 @@ Plan-mode check rolls back the claim and worktree before any charter is submitte
 `--model=<id>`, `--effort=<id>`, and `--speed=standard|fast` (or the
 `STORY_MODEL`/`STORY_EFFORT`/`STORY_SPEED` env vars, ranked beneath an explicit
 flag the same way `STORY_AGENT` sits beneath `--agent`) each narrow the dispatched
-session, defaulting to the selected provider's own built-in choice when omitted.
+session. Missing model and effort values use the story complexity policy; speed
+defaults to standard. Read `story help complexity-rubric` for assessment and mapping
+criteria. `story dispatch-policy show|set|reset` and web Settings manage
+installation defaults (`--global`) and project overrides independently per field.
 Every id is provider-scoped — a Claude model is not a valid Codex one and vice
 versa — and validated against that provider's own catalog before any claim or
 worktree side effect. `story.sh capabilities --agent=claude|codex` reports the
@@ -356,7 +359,7 @@ story project settings get <key>
 story project settings set <key> <value>
 story project settings unset <key>
 
-story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--label <name>] [--labels <csv>] [--draft]
+story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--complexity low|medium|high] [--label <name>] [--labels <csv>] [--draft]
 story show <id>
 story log <id>
 story comment <id> "<text>"
@@ -364,6 +367,10 @@ story move <id> <slug> [--if-state <expected>] [--reason <text>] ["<comment>"]
 story block <id> "<reason>"
 story unblock <id>
 story prioritize <id> <level>
+story dispatch-policy show [--global]
+story dispatch-policy set [--global] --agent codex|claude --complexity low|medium|high (--model <id> | --effort <id>)  # at least one; both are accepted
+story dispatch-policy reset [--global] --agent codex|claude --complexity low|medium|high [--model] [--effort]
+story dispatch-policy resolve <id> --agent codex|claude
 story label <id> <labels-csv>
 story unlabel <id> <labels-csv>
 story close <id> "<reason>"
@@ -373,7 +380,7 @@ story unarchive <id>
 story archive-state <slug> [--force]
 story publish <id>
 story delete <id> [--force]
-story set <id> (--title "<title>" | --state <slug> | --priority <level> | --labels "<csv>" | --blocked "<reason>" | --unblocked | --json "<json>" | --type <slug> | --description "<text>")  # at least one; combine as many as you like
+story set <id> (--title "<title>" | --state <slug> | --priority <level> | --complexity low|medium|high | --labels "<csv>" | --blocked "<reason>" | --unblocked | --json "<json>" | --type <slug> | --description "<text>")  # at least one; combine as many as you like
 story relate <a> <relationship-type> <b>
 story unrelate <a> <relationship-type> <b>
 story link <a> <relationship-type> <b>        # alias of relate

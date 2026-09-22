@@ -231,6 +231,18 @@ fn compensate(
             StoryEvent::StoryPriorityCleared { at: at.clone() }
         });
     }
+    if before.complexity != after.complexity
+        || before.complexity_assessed != after.complexity_assessed
+    {
+        events.push(if after.complexity_assessed {
+            StoryEvent::StoryComplexitySet {
+                at: at.clone(),
+                complexity: after.complexity,
+            }
+        } else {
+            StoryEvent::StoryComplexityCleared { at: at.clone() }
+        });
+    }
     if before.labels != after.labels {
         // Normalized rather than restored verbatim: `after` can be a snapshot
         // folded from history that predates SH-164's guard, and undo

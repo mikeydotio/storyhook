@@ -20,6 +20,8 @@ struct YamlStory {
     #[serde(default)]
     priority: Option<String>,
     #[serde(default)]
+    complexity: Option<String>,
+    #[serde(default)]
     labels: Option<Vec<String>>,
     #[serde(default)]
     description: Option<String>,
@@ -95,6 +97,7 @@ fn flatten_yaml(
         output.push(ImportStory {
             title: story.title.clone(),
             priority: story.priority.clone(),
+            complexity: story.complexity.clone(),
             labels: story.labels.clone(),
             description: story.description.clone(),
             relationships,
@@ -110,6 +113,22 @@ fn flatten_yaml(
 // ---------------------------------------------------------------------------
 // Helpers: priority and label extraction
 // ---------------------------------------------------------------------------
+
+fn extract_complexity(text: &str) -> (String, Option<String>) {
+    let Some(start) = text.find("[complexity:") else {
+        return (text.to_string(), None);
+    };
+    let Some(end) = text[start..].find(']').map(|offset| offset + start) else {
+        return (text.to_string(), None);
+    };
+    let value = text[start + "[complexity:".len()..end].trim().to_string();
+    (
+        format!("{}{}", &text[..start], &text[end + 1..])
+            .trim()
+            .to_string(),
+        Some(value),
+    )
+}
 
 fn extract_priority(text: &str) -> (String, Option<String>) {
     for (marker, value) in [
@@ -203,6 +222,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             // Non-wave ### heading: reset wave tracking
             current_wave = None;
 
+            let (title, complexity) = extract_complexity(&title);
             let (title, priority) = extract_priority(&title);
             let (title, labels) = extract_labels(&title);
             // Find parent: nearest ## heading
@@ -222,6 +242,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             stories.push(ImportStory {
                 title,
                 priority,
+                complexity,
                 labels: if labels.is_empty() {
                     None
                 } else {
@@ -244,6 +265,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             if title.is_empty() {
                 continue;
             }
+            let (title, complexity) = extract_complexity(&title);
             let (title, priority) = extract_priority(&title);
             let (title, labels) = extract_labels(&title);
             // Find parent: nearest # heading
@@ -263,6 +285,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             stories.push(ImportStory {
                 title,
                 priority,
+                complexity,
                 labels: if labels.is_empty() {
                     None
                 } else {
@@ -285,12 +308,14 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             if title.is_empty() {
                 continue;
             }
+            let (title, complexity) = extract_complexity(&title);
             let (title, priority) = extract_priority(&title);
             let (title, labels) = extract_labels(&title);
             let index = stories.len();
             stories.push(ImportStory {
                 title,
                 priority,
+                complexity,
                 labels: if labels.is_empty() {
                     None
                 } else {
@@ -311,6 +336,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             if title.is_empty() {
                 continue;
             }
+            let (title, complexity) = extract_complexity(&title);
             let (title, priority) = extract_priority(&title);
             let (title, labels) = extract_labels(&title);
 
@@ -348,6 +374,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             stories.push(ImportStory {
                 title,
                 priority,
+                complexity,
                 labels: if labels.is_empty() {
                     None
                 } else {

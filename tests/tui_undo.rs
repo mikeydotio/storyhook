@@ -95,6 +95,7 @@ fn create_story(fixture: &Fixture, title: &str) -> String {
     match run(
         fixture,
         Invocation::New {
+            complexity: None,
             title: title.to_string(),
             state: None,
             story_type: None,
@@ -485,4 +486,48 @@ fn undoing_a_reprioritize_leaves_the_story_assessed() {
         restored.priority_assessed,
         "a story that has been assessed twice is still assessed after undoing one"
     );
+}
+
+#[test]
+fn undoing_complexity_restores_the_assessment_state() {
+    let (fixture, _) = init_project("SH");
+    let id = create_story(&fixture, "Complexity undo");
+    for prior in [None, Some("low")] {
+        if let Some(value) = prior {
+            run(
+                &fixture,
+                storyhook::cli::parse_invocation(&[
+                    "set".into(),
+                    id.clone(),
+                    "--complexity".into(),
+                    value.into(),
+                ])
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let before = load_events(&fixture, &id);
+        run(
+            &fixture,
+            storyhook::cli::parse_invocation(&[
+                "set".into(),
+                id.clone(),
+                "--complexity".into(),
+                "high".into(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        perform_undo(
+            &fixture,
+            &UndoEntry {
+                description: "Complexity".into(),
+                story_id: id.clone(),
+                events_before: before,
+            },
+        );
+        let restored = load(&fixture).find_story(&id).unwrap().clone();
+        assert_eq!(restored.complexity.as_str(), prior.unwrap_or("medium"));
+        assert_eq!(restored.complexity_assessed, prior.is_some());
+    }
 }
