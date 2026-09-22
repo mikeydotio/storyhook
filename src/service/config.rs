@@ -1,4 +1,4 @@
-//! A project's configuration: its states, its story types, its members.
+//! A project's configuration: its states, its story types.
 //!
 //! Every edit here used to be a read-modify-write of a whole TOML document.
 //! Adding a state meant loading `states.toml`, pushing onto a `Vec`,
@@ -29,11 +29,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cli::MemberInput;
 use crate::domain::provenance::Provenance;
 use crate::domain::{
-    FieldEdit, Member, StateChanges, StateDef, StateUsage, StoryEvent, SuperState, TypeChanges,
-    TypeDef, is_epic, validate_required_states, validate_state_defs_for_write, validate_type_glyph,
+    FieldEdit, StateChanges, StateDef, StateUsage, StoryEvent, SuperState, TypeChanges, TypeDef,
+    is_epic, validate_required_states, validate_state_defs_for_write, validate_type_glyph,
     validate_type_slug,
 };
 use crate::error::AppError;
@@ -456,38 +455,6 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
             Ok(())
         })?)
     }
-
-    // --- members -----------------------------------------------------------
-
-    /// Every member, ordered by id.
-    pub fn list_members(&self) -> Result<Vec<Member>, AppError> {
-        let project = self.ctx.project();
-        Ok(self.ctx.store().read(|tx| tx.members(project))?)
-    }
-
-    /// Adds a member, deriving its id from what the caller typed.
-    ///
-    /// Two members cannot share an id. The store's `put_member` is an upsert —
-    /// which is what a later sync path wants — so the uniqueness rule is
-    /// enforced here, where a duplicate is a user error rather than a
-    /// correction.
-    pub fn add_member(&self, input: &MemberInput) -> Result<Member, AppError> {
-        let project = self.ctx.project();
-        let member = build_member(input, &self.ctx.now());
-        Ok(self.ctx.write_stories(|tx| {
-            if tx
-                .members(project)?
-                .iter()
-                .any(|existing| existing.id == member.id)
-            {
-                return Err(
-                    AppError::Validation(format!("member `{}` already exists", member.id)).into(),
-                );
-            }
-            tx.put_member(project, &member)?;
-            Ok(member)
-        })?)
-    }
 }
 
 /// How many stories sit in each configured state.
@@ -685,79 +652,6 @@ fn refold_occupants(
         refold_story(tx, project, row.story_no, &prefix, &states)?;
     }
     Ok(())
-}
-
-/// The member a `story member add` argument describes.
-///
-/// `Name <email>` is split into its two halves; anything else becomes a
-/// display name on its own. The id is always a slug of the display name, so
-/// `story assign` has something short to take.
-fn build_member(input: &MemberInput, now: &str) -> Member {
-    match input {
-        MemberInput::Github(handle) => Member {
-            id: slugify(handle),
-            display_name: handle.clone(),
-            email: None,
-            github: Some(handle.clone()),
-            created_at: now.to_string(),
-        },
-        MemberInput::Identity(identity) => {
-            let trimmed = identity.trim();
-            match parse_identity(trimmed) {
-                Some((name, email)) => Member {
-                    id: slugify(name),
-                    display_name: name.to_string(),
-                    email: Some(email.to_string()),
-                    github: None,
-                    created_at: now.to_string(),
-                },
-                None => Member {
-                    id: slugify(trimmed),
-                    display_name: trimmed.to_string(),
-                    email: None,
-                    github: None,
-                    created_at: now.to_string(),
-                },
-            }
-        }
-    }
-}
-
-/// Splits `Ada Lovelace <ada@example.com>` into its name and its address.
-fn parse_identity(input: &str) -> Option<(&str, &str)> {
-    let start = input.find('<')?;
-    let end = input.rfind('>')?;
-    if start >= end {
-        return None;
-    }
-    let name = input[..start].trim();
-    let email = input[start + 1..end].trim();
-    if name.is_empty() || email.is_empty() {
-        return None;
-    }
-    Some((name, email))
-}
-
-/// Lowercases `value` and collapses every run of non-alphanumerics into a
-/// single dash, falling back to `member` when nothing survives.
-fn slugify(value: &str) -> String {
-    let mut slug = String::new();
-    let mut last_dash = false;
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch.to_ascii_lowercase());
-            last_dash = false;
-        } else if !last_dash {
-            slug.push('-');
-            last_dash = true;
-        }
-    }
-    let slug = slug.trim_matches('-').to_string();
-    if slug.is_empty() {
-        "member".to_string()
-    } else {
-        slug
-    }
 }
 
 /// "story" / "stories" for a count.

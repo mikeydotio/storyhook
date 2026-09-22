@@ -291,7 +291,6 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
             StoryAction::Move => "move",
             StoryAction::Comment => "comment",
             StoryAction::Priority => "set-priority",
-            StoryAction::Assign => "assign",
             StoryAction::Labels => "set-labels",
             StoryAction::Block => "set-awaiting",
             StoryAction::Unblock => "clear-awaiting",
@@ -597,9 +596,6 @@ fn route_project<S: Store>(
             }),
             StoryAction::Priority => guarded(headers, trusted_hosts, body, |b| {
                 route_priority_story(ctx, id, b)
-            }),
-            StoryAction::Assign => guarded(headers, trusted_hosts, body, |b| {
-                route_assign_story(ctx, id, b)
             }),
             StoryAction::Labels => guarded(headers, trusted_hosts, body, |b| {
                 route_labels_story(ctx, id, b)
@@ -1162,7 +1158,7 @@ fn route_ack_verification<S: Store>(
 }
 
 /// The `meta` object describing the project's configuration — states in
-/// configured order (which the board's columns must follow), types, members,
+/// configured order (which the board's columns must follow), types,
 /// the fixed priority/relation vocabularies, and the default state/type a new
 /// story should preselect (SH-44) — so the frontend never has to hardcode
 /// anything project-specific.
@@ -1198,18 +1194,6 @@ fn meta_json<R: ReadOps>(
         })
         .collect();
 
-    let members: Vec<serde_json::Value> = tx
-        .members(project)?
-        .into_iter()
-        .map(|m| {
-            serde_json::json!({
-                "id": m.id,
-                "display_name": m.display_name,
-                "github": m.github,
-            })
-        })
-        .collect();
-
     let priorities: Vec<&str> = PRIORITIES.iter().map(Priority::as_str).collect();
     // Derived from the stories already read rather than from a second query:
     // the legacy `storage::distinct_labels` folded every surviving snapshot's
@@ -1223,7 +1207,6 @@ fn meta_json<R: ReadOps>(
     Ok(serde_json::json!({
         "states": states,
         "types": types,
-        "members": members,
         "priorities": priorities,
         "relations": RELATIONS,
         "labels": labels,
@@ -1245,6 +1228,11 @@ fn meta_json<R: ReadOps>(
 fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
+        if obj.contains_key("assignee") {
+            return Err(AppError::Validation(
+                "story assignment has been removed; omit `assignee`".into(),
+            ));
+        }
         let title = require_str(&obj, "title")?.to_string();
         let state = get_str(&obj, "state").map(str::to_string);
         let story_type = get_str(&obj, "type").map(str::to_string);
@@ -1266,7 +1254,6 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
                 description,
                 priority,
                 labels,
-                assignee: None,
                 draft,
             },
         ))
@@ -1274,7 +1261,7 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
     .unwrap_or_else(|e| error_reply(&e))
 }
 
-/// `PATCH /api/repos/{id}/story/{story}` — update title/state/priority/assignee/type.
+/// `PATCH /api/repos/{id}/story/{story}` — update title/state/priority/type.
 ///
 /// Label changes go through the dedicated `/labels` route instead: `SetFields`
 /// only ever *adds* labels via this field, which would be a confusing PATCH
@@ -1294,11 +1281,15 @@ fn route_patch_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply 
     (|| -> Result<Reply, AppError> {
         let id = &crate::invoke::story_ids::canonicalize_one(ctx, id)?;
         let obj = parse_json_object(body)?;
+        if obj.contains_key("assignee") {
+            return Err(AppError::Validation(
+                "story assignment has been removed; omit `assignee`".into(),
+            ));
+        }
         let edits = FieldEdits {
             title: get_str(&obj, "title").map(str::to_string),
             state: get_str(&obj, "state").map(str::to_string),
             priority: get_str(&obj, "priority").map(str::to_string),
-            assignee: get_str(&obj, "assignee").map(str::to_string),
             labels: None,
             blocked: None,
             unblocked: false,
@@ -1368,22 +1359,6 @@ fn route_priority_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Rep
             Invocation::SetPriority {
                 id: id.to_string(),
                 priority,
-            },
-        ))
-    })()
-    .unwrap_or_else(|e| error_reply(&e))
-}
-
-fn route_assign_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
-    (|| -> Result<Reply, AppError> {
-        let obj = parse_json_object(body)?;
-        let member = require_str(&obj, "member")?.to_string();
-        Ok(reply_with(
-            ctx,
-            200,
-            Invocation::Assign {
-                id: id.to_string(),
-                member,
             },
         ))
     })()

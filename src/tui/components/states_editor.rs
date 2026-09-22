@@ -572,7 +572,6 @@ mod tests {
             state: state.to_string(),
             state_computed: false,
             superstate: SuperState::Open,
-            assignee: None,
             awaiting: None,
             comments: Vec::new(),
             referenced_by_commits: Vec::new(),
@@ -601,7 +600,6 @@ mod tests {
             states,
             vec![snapshot("SH-1", "todo")],
             "SH".to_string(),
-            Vec::new(),
         ))
     }
 
@@ -868,7 +866,6 @@ mod tests {
             states,
             vec![snapshot("SH-1", "todo")],
             "SH".to_string(),
-            Vec::new(),
         ));
         let mut editor = StatesEditor::new();
 

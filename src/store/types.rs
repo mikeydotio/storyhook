@@ -687,8 +687,6 @@ pub struct StoryRow {
     pub priority: Priority,
     /// Column: story type slug.
     pub story_type: Option<String>,
-    /// Column: assignee member id.
-    pub assignee: Option<String>,
     /// Column: what the story is awaiting.
     pub awaiting: Option<String>,
     /// Column: whether the story is archived.
@@ -836,8 +834,6 @@ pub struct StoryQuery {
     pub state: Option<String>,
     /// Restrict to one priority.
     pub priority: Option<Priority>,
-    /// Restrict to one assignee's member id.
-    pub assignee: Option<String>,
     /// Restrict to one story type slug.
     pub story_type: Option<String>,
     /// Restrict to stories carrying this label.
@@ -885,13 +881,6 @@ impl StoryQuery {
     #[must_use]
     pub fn priority(mut self, priority: Priority) -> Self {
         self.priority = Some(priority);
-        self
-    }
-
-    /// Restricts to an assignee.
-    #[must_use]
-    pub fn assignee(mut self, assignee: impl Into<String>) -> Self {
-        self.assignee = Some(assignee.into());
         self
     }
 

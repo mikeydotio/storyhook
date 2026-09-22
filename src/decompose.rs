@@ -22,8 +22,6 @@ struct YamlStory {
     #[serde(default)]
     labels: Option<Vec<String>>,
     #[serde(default)]
-    assignee: Option<String>,
-    #[serde(default)]
     description: Option<String>,
     #[serde(default)]
     children: Option<Vec<YamlStory>>,
@@ -98,7 +96,6 @@ fn flatten_yaml(
             title: story.title.clone(),
             priority: story.priority.clone(),
             labels: story.labels.clone(),
-            assignee: story.assignee.clone(),
             description: story.description.clone(),
             relationships,
             state: None,
@@ -230,7 +227,6 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 } else {
                     Some(labels)
                 },
-                assignee: None,
                 description: None,
                 relationships,
                 state: None,
@@ -272,7 +268,6 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 } else {
                     Some(labels)
                 },
-                assignee: None,
                 description: None,
                 relationships,
                 state: None,
@@ -301,7 +296,6 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 } else {
                     Some(labels)
                 },
-                assignee: None,
                 description: None,
                 relationships: None,
                 state: None,
@@ -359,7 +353,6 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 } else {
                     Some(labels)
                 },
-                assignee: None,
                 description: None,
                 relationships,
                 state: None,

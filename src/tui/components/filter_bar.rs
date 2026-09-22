@@ -164,7 +164,6 @@ impl Component for FilterBar {
 /// Supported formats:
 /// - `state:todo` or `s:todo` -> state filter
 /// - `priority:high` or `p:high` -> priority filter
-/// - `assignee:mikey` or `@mikey` or `a:mikey` -> assignee filter
 /// - `label:bug` or `#bug` or `l:bug` -> label filter
 /// - `blocked` -> blocked filter
 /// - `ready` -> ready filter
@@ -176,15 +175,6 @@ pub fn parse_filter(raw: &str) -> Option<FilterSpec> {
     }
 
     // Check for shorthand prefixes first
-    if let Some(value) = trimmed.strip_prefix('@')
-        && !value.is_empty()
-    {
-        return Some(FilterSpec {
-            assignee: Some(value.to_string()),
-            ..Default::default()
-        });
-    }
-
     if let Some(value) = trimmed.strip_prefix('#')
         && !value.is_empty()
     {
@@ -241,12 +231,6 @@ pub fn parse_filter(raw: &str) -> Option<FilterSpec> {
                     ..Default::default()
                 });
             }
-            "assignee" | "a" => {
-                return Some(FilterSpec {
-                    assignee: Some(value),
-                    ..Default::default()
-                });
-            }
             "label" | "l" => {
                 return Some(FilterSpec {
                     label: Some(value),
@@ -277,9 +261,6 @@ pub fn format_chip(spec: &FilterSpec) -> String {
     }
     if let Some(ref priority) = spec.priority {
         return format!("p:{}", priority.as_str());
-    }
-    if let Some(ref assignee) = spec.assignee {
-        return format!("@{assignee}");
     }
     if let Some(ref label) = spec.label {
         return format!("#{label}");
@@ -330,19 +311,19 @@ mod tests {
     #[test]
     fn parse_assignee_filter_at_sign() {
         let spec = parse_filter("@mikey").unwrap();
-        assert_eq!(spec.assignee, Some("mikey".to_string()));
+        assert_eq!(spec.text, Some("@mikey".to_string()));
     }
 
     #[test]
     fn parse_assignee_filter_prefix() {
         let spec = parse_filter("a:mikey").unwrap();
-        assert_eq!(spec.assignee, Some("mikey".to_string()));
+        assert_eq!(spec.text, Some("a:mikey".to_string()));
     }
 
     #[test]
     fn parse_assignee_filter_full_prefix() {
         let spec = parse_filter("assignee:bob").unwrap();
-        assert_eq!(spec.assignee, Some("bob".to_string()));
+        assert_eq!(spec.text, Some("assignee:bob".to_string()));
     }
 
     #[test]
@@ -419,15 +400,6 @@ mod tests {
     }
 
     #[test]
-    fn format_chip_assignee() {
-        let spec = FilterSpec {
-            assignee: Some("mikey".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(format_chip(&spec), "@mikey");
-    }
-
-    #[test]
     fn format_chip_label() {
         let spec = FilterSpec {
             label: Some("bug".to_string()),
@@ -454,7 +426,7 @@ mod tests {
         use crate::tui::focus::{FocusStack, FocusTarget};
         use crate::tui::state::AppState;
 
-        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string(), vec![]);
+        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string());
         let state = AppState {
             data,
             focus: FocusStack::new(FocusTarget::Board),
@@ -523,7 +495,7 @@ mod tests {
         use crate::tui::focus::{FocusStack, FocusTarget};
         use crate::tui::state::AppState;
 
-        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string(), vec![]);
+        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string());
         let state = AppState {
             data,
             focus: FocusStack::new(FocusTarget::Board),
@@ -560,7 +532,7 @@ mod tests {
         use crate::tui::data::DataStore;
         use crate::tui::focus::{FocusStack, FocusTarget};
 
-        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string(), vec![]);
+        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string());
         AppState {
             data,
             focus: FocusStack::new(FocusTarget::Board),
@@ -624,7 +596,7 @@ mod tests {
         use crate::tui::data::DataStore;
         use crate::tui::focus::{FocusStack, FocusTarget};
 
-        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string(), vec![]);
+        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string());
         let state = AppState {
             data,
             focus: FocusStack::new(FocusTarget::Board),

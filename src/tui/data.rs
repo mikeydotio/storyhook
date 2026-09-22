@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::cli::Invocation;
-use crate::domain::{self, Member, StateDef, StorySnapshot, SuperState};
+use crate::domain::{self, StateDef, StorySnapshot, SuperState};
 use crate::error::AppError;
 use crate::invoke::{InvokeRequest, Invoker};
 use crate::output::{ProjectSnapshotView, Response};
@@ -31,7 +31,6 @@ pub struct DataStore {
     /// blocked — the same disagreement SH-240 is about, one indirection out.
     pub drafts: Vec<StorySnapshot>,
     pub prefix: String,
-    pub members: Vec<Member>,
     /// Each story's `head_global_seq` (SH-336), keyed by id, covering
     /// `stories` and `drafts` alike — the exact recency tiebreak
     /// `recent_stories` needs. Not on `StorySnapshot` itself: that type is
@@ -107,7 +106,6 @@ impl DataStore {
             stories: view.stories,
             drafts: view.drafts,
             prefix: view.prefix,
-            members: view.members,
             head_global_seqs: view.head_global_seqs,
         }
     }
@@ -124,7 +122,6 @@ impl DataStore {
         states: Vec<StateDef>,
         stories: Vec<StorySnapshot>,
         prefix: String,
-        members: Vec<Member>,
     ) -> Self {
         let state_map = states.iter().map(|s| (s.slug.clone(), s.clone())).collect();
         Self {
@@ -133,7 +130,6 @@ impl DataStore {
             stories,
             drafts: Vec::new(),
             prefix,
-            members,
             head_global_seqs: BTreeMap::new(),
         }
     }
@@ -175,18 +171,6 @@ impl DataStore {
     /// Find a story by ID.
     pub fn find_story(&self, id: &str) -> Option<&StorySnapshot> {
         self.stories.iter().find(|story| story.id == id)
-    }
-
-    /// Resolve a typed assignee (member id or GitHub handle) against the
-    /// loaded members, mirroring the matching rule the assignment invocations
-    /// use.
-    ///
-    /// Operates entirely in memory so TUI components can validate user input
-    /// before dispatching a mutation, without touching the filesystem.
-    pub fn find_member(&self, lookup: &str) -> Option<&Member> {
-        self.members
-            .iter()
-            .find(|member| member.id == lookup || member.github.as_deref() == Some(lookup))
     }
 
     /// Total number of open stories.
@@ -259,14 +243,6 @@ fn matches_filter(filter: &FilterSpec, story: &StorySnapshot, readiness: &Readin
         return false;
     }
 
-    // Assignee filter: exact match
-    if let Some(ref assignee) = filter.assignee {
-        match &story.assignee {
-            Some(a) if a == assignee => {}
-            _ => return false,
-        }
-    }
-
     // Priority filter: exact match
     if let Some(ref priority) = filter.priority
         && story.priority != *priority
@@ -334,7 +310,7 @@ mod tests {
     /// filter question has to be asked of, since `ready` and `blocked` are
     /// questions about a story's place in a project.
     fn project(stories: Vec<StorySnapshot>) -> DataStore {
-        DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![])
+        DataStore::from_test_data(test_states(), stories, "SH".to_string())
     }
 
     fn test_snapshot(id: &str, state: &str) -> StorySnapshot {
@@ -350,7 +326,6 @@ mod tests {
             } else {
                 SuperState::Open
             },
-            assignee: None,
             awaiting: None,
             comments: vec![],
             referenced_by_commits: vec![],
@@ -378,7 +353,6 @@ mod tests {
                 test_snapshot("SH-3", "todo"),
             ],
             "SH".to_string(),
-            vec![],
         );
 
         let grouped = store.stories_by_state();
@@ -396,7 +370,6 @@ mod tests {
             test_states(),
             vec![test_snapshot("SH-1", "done"), test_snapshot("SH-2", "todo")],
             "SH".to_string(),
-            vec![],
         );
 
         let grouped = store.stories_by_state();
@@ -416,62 +389,11 @@ mod tests {
                 test_snapshot("SH-2", "in-progress"),
             ],
             "SH".to_string(),
-            vec![],
         );
 
         assert!(store.find_story("SH-1").is_some());
         assert_eq!(store.find_story("SH-1").unwrap().state, "todo");
         assert!(store.find_story("SH-99").is_none());
-    }
-
-    fn test_member(id: &str, github: Option<&str>) -> Member {
-        Member {
-            id: id.to_string(),
-            display_name: id.to_string(),
-            email: None,
-            github: github.map(|g| g.to_string()),
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-        }
-    }
-
-    #[test]
-    fn find_member_by_id() {
-        let store = DataStore::from_test_data(
-            test_states(),
-            vec![],
-            "SH".to_string(),
-            vec![test_member("mikey", Some("mikeyward"))],
-        );
-
-        let found = store.find_member("mikey").expect("should find by id");
-        assert_eq!(found.id, "mikey");
-    }
-
-    #[test]
-    fn find_member_by_github_handle() {
-        let store = DataStore::from_test_data(
-            test_states(),
-            vec![],
-            "SH".to_string(),
-            vec![test_member("mikey", Some("mikeyward"))],
-        );
-
-        let found = store
-            .find_member("mikeyward")
-            .expect("should find by github handle");
-        assert_eq!(found.id, "mikey");
-    }
-
-    #[test]
-    fn find_member_unknown_lookup_returns_none() {
-        let store = DataStore::from_test_data(
-            test_states(),
-            vec![],
-            "SH".to_string(),
-            vec![test_member("mikey", Some("mikeyward"))],
-        );
-
-        assert!(store.find_member("nobody").is_none());
     }
 
     #[test]
@@ -484,7 +406,6 @@ mod tests {
                 test_snapshot("SH-3", "in-progress"),
             ],
             "SH".to_string(),
-            vec![],
         );
 
         assert_eq!(store.story_count(), 3);
@@ -546,7 +467,6 @@ mod tests {
                     description: None,
                     priority: None,
                     labels: None,
-                    assignee: None,
                     draft: false,
                 }))
                 .unwrap();
@@ -591,7 +511,6 @@ mod tests {
         title: &str,
         priority: Priority,
         labels: Vec<&str>,
-        assignee: Option<&str>,
         awaiting: Option<&str>,
     ) -> StorySnapshot {
         StorySnapshot {
@@ -602,7 +521,6 @@ mod tests {
             state: state.to_string(),
             state_computed: false,
             superstate: SuperState::Open,
-            assignee: assignee.map(|s| s.to_string()),
             awaiting: awaiting.map(|s| s.to_string()),
             comments: vec![],
             referenced_by_commits: vec![],
@@ -630,17 +548,8 @@ mod tests {
                 Priority::None,
                 vec![],
                 None,
-                None,
             ),
-            make_rich_snapshot(
-                "SH-2",
-                "todo",
-                "Add search",
-                Priority::None,
-                vec![],
-                None,
-                None,
-            ),
+            make_rich_snapshot("SH-2", "todo", "Add search", Priority::None, vec![], None),
         ];
         let filters = vec![FilterSpec {
             text: Some("login".to_string()),
@@ -655,8 +564,8 @@ mod tests {
     #[test]
     fn filter_by_text_matches_id() {
         let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, None),
-            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None),
         ];
         let filters = vec![FilterSpec {
             text: Some("SH-2".to_string()),
@@ -677,7 +586,6 @@ mod tests {
             Priority::None,
             vec![],
             None,
-            None,
         )];
         let filters = vec![FilterSpec {
             text: Some("fix login".to_string()),
@@ -691,14 +599,13 @@ mod tests {
     #[test]
     fn filter_by_state() {
         let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None),
             make_rich_snapshot(
                 "SH-2",
                 "in-progress",
                 "Second",
                 Priority::None,
                 vec![],
-                None,
                 None,
             ),
         ];
@@ -713,44 +620,11 @@ mod tests {
     }
 
     #[test]
-    fn filter_by_assignee() {
-        let stories = vec![
-            make_rich_snapshot(
-                "SH-1",
-                "todo",
-                "First",
-                Priority::None,
-                vec![],
-                Some("mikey"),
-                None,
-            ),
-            make_rich_snapshot(
-                "SH-2",
-                "todo",
-                "Second",
-                Priority::None,
-                vec![],
-                Some("bob"),
-                None,
-            ),
-            make_rich_snapshot("SH-3", "todo", "Third", Priority::None, vec![], None, None),
-        ];
-        let filters = vec![FilterSpec {
-            assignee: Some("mikey".to_string()),
-            ..Default::default()
-        }];
-        let store = project(stories.clone());
-        let result = store.filter(&filters);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, "SH-1");
-    }
-
-    #[test]
     fn filter_by_priority() {
         let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "First", Priority::High, vec![], None, None),
-            make_rich_snapshot("SH-2", "todo", "Second", Priority::Low, vec![], None, None),
-            make_rich_snapshot("SH-3", "todo", "Third", Priority::High, vec![], None, None),
+            make_rich_snapshot("SH-1", "todo", "First", Priority::High, vec![], None),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::Low, vec![], None),
+            make_rich_snapshot("SH-3", "todo", "Third", Priority::High, vec![], None),
         ];
         let filters = vec![FilterSpec {
             priority: Some(Priority::High),
@@ -773,7 +647,6 @@ mod tests {
                 Priority::None,
                 vec!["bug", "tui"],
                 None,
-                None,
             ),
             make_rich_snapshot(
                 "SH-2",
@@ -782,9 +655,8 @@ mod tests {
                 Priority::None,
                 vec!["feature"],
                 None,
-                None,
             ),
-            make_rich_snapshot("SH-3", "todo", "Third", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-3", "todo", "Third", Priority::None, vec![], None),
         ];
         let filters = vec![FilterSpec {
             label: Some("bug".to_string()),
@@ -805,7 +677,6 @@ mod tests {
             Priority::None,
             vec!["BUG"],
             None,
-            None,
         )];
         let filters = vec![FilterSpec {
             label: Some("bug".to_string()),
@@ -825,10 +696,9 @@ mod tests {
                 "First",
                 Priority::None,
                 vec![],
-                None,
                 Some("waiting for deploy"),
             ),
-            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None),
         ];
         let filters = vec![FilterSpec {
             blocked: true,
@@ -849,10 +719,9 @@ mod tests {
                 "First",
                 Priority::None,
                 vec![],
-                None,
                 Some("waiting"),
             ),
-            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None),
         ];
         let filters = vec![FilterSpec {
             ready: true,
@@ -877,9 +746,8 @@ mod tests {
                 Priority::None,
                 vec![],
                 None,
-                None,
             ),
-            make_rich_snapshot("SH-2", "todo", "Free", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-2", "todo", "Free", Priority::None, vec![], None),
         ];
         let filters = vec![FilterSpec {
             ready: true,
@@ -896,16 +764,8 @@ mod tests {
     #[test]
     fn ready_filter_excludes_a_story_in_the_blocked_state() {
         let stories = vec![
-            make_rich_snapshot(
-                "SH-1",
-                "blocked",
-                "Parked",
-                Priority::None,
-                vec![],
-                None,
-                None,
-            ),
-            make_rich_snapshot("SH-2", "todo", "Free", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-1", "blocked", "Parked", Priority::None, vec![], None),
+            make_rich_snapshot("SH-2", "todo", "Free", Priority::None, vec![], None),
         ];
         let filters = vec![FilterSpec {
             ready: true,
@@ -921,29 +781,14 @@ mod tests {
 
     #[test]
     fn ready_filter_excludes_a_story_blocked_by_an_open_dependency() {
-        let mut dependent = make_rich_snapshot(
-            "SH-2",
-            "todo",
-            "Dependent",
-            Priority::None,
-            vec![],
-            None,
-            None,
-        );
+        let mut dependent =
+            make_rich_snapshot("SH-2", "todo", "Dependent", Priority::None, vec![], None);
         dependent.relationships.push(StoryRelation {
             relation: "blocked-by".to_string(),
             other_id: "SH-1".to_string(),
         });
         let stories = vec![
-            make_rich_snapshot(
-                "SH-1",
-                "todo",
-                "Blocker",
-                Priority::None,
-                vec![],
-                None,
-                None,
-            ),
+            make_rich_snapshot("SH-1", "todo", "Blocker", Priority::None, vec![], None),
             dependent,
         ];
         let filters = vec![FilterSpec {
@@ -964,15 +809,8 @@ mod tests {
     /// which stories were blocked.
     #[test]
     fn blocked_filter_covers_every_way_a_story_is_stuck() {
-        let mut dependent = make_rich_snapshot(
-            "SH-3",
-            "todo",
-            "Dependent",
-            Priority::None,
-            vec![],
-            None,
-            None,
-        );
+        let mut dependent =
+            make_rich_snapshot("SH-3", "todo", "Dependent", Priority::None, vec![], None);
         dependent.relationships.push(StoryRelation {
             relation: "blocked-by".to_string(),
             other_id: "SH-4".to_string(),
@@ -984,28 +822,11 @@ mod tests {
                 "Awaiting",
                 Priority::None,
                 vec![],
-                None,
                 Some("waiting for deploy"),
             ),
-            make_rich_snapshot(
-                "SH-2",
-                "blocked",
-                "Parked",
-                Priority::None,
-                vec![],
-                None,
-                None,
-            ),
+            make_rich_snapshot("SH-2", "blocked", "Parked", Priority::None, vec![], None),
             dependent,
-            make_rich_snapshot(
-                "SH-4",
-                "todo",
-                "Blocker",
-                Priority::None,
-                vec![],
-                None,
-                None,
-            ),
+            make_rich_snapshot("SH-4", "todo", "Blocker", Priority::None, vec![], None),
         ];
         let filters = vec![FilterSpec {
             blocked: true,
@@ -1030,7 +851,6 @@ mod tests {
             "Finished",
             Priority::None,
             vec![],
-            None,
             Some("waiting for deploy"),
         );
         closed.superstate = SuperState::Closed;
@@ -1053,7 +873,6 @@ mod tests {
                 "Fix login",
                 Priority::High,
                 vec!["bug"],
-                Some("mikey"),
                 None,
             ),
             make_rich_snapshot(
@@ -1062,7 +881,6 @@ mod tests {
                 "Fix signup",
                 Priority::High,
                 vec!["bug"],
-                Some("bob"),
                 None,
             ),
             make_rich_snapshot(
@@ -1071,11 +889,10 @@ mod tests {
                 "Add search",
                 Priority::Low,
                 vec!["feature"],
-                Some("mikey"),
                 None,
             ),
         ];
-        // state:todo AND p:high AND @mikey
+        // state:todo AND p:high AND text:login
         let filters = vec![
             FilterSpec {
                 state: Some("todo".to_string()),
@@ -1086,7 +903,7 @@ mod tests {
                 ..Default::default()
             },
             FilterSpec {
-                assignee: Some("mikey".to_string()),
+                text: Some("login".to_string()),
                 ..Default::default()
             },
         ];
@@ -1099,8 +916,8 @@ mod tests {
     #[test]
     fn empty_filters_return_all() {
         let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, None),
-            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None),
         ];
         let store = project(stories.clone());
         let result = store.filter(&[]);
@@ -1116,10 +933,9 @@ mod tests {
             Priority::None,
             vec![],
             None,
-            None,
         )];
         let filters = vec![FilterSpec {
-            assignee: Some("nobody".to_string()),
+            text: Some("missing".to_string()),
             ..Default::default()
         }];
         let store = project(stories.clone());
@@ -1133,7 +949,7 @@ mod tests {
 
     #[test]
     fn filtered_stories_by_state_empty_project() {
-        let store = DataStore::from_test_data(test_states(), vec![], "SH".to_string(), vec![]);
+        let store = DataStore::from_test_data(test_states(), vec![], "SH".to_string());
         let result = store.filtered_stories_by_state(&[]);
         // Should still have 2 open state groups (todo, in-progress) with 0 stories each
         assert_eq!(result.len(), 2);
@@ -1150,7 +966,6 @@ mod tests {
                 test_snapshot("SH-2", "in-progress"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let filters = vec![FilterSpec {
             text: Some("ZZZZZ_NO_MATCH".to_string()),
@@ -1172,7 +987,6 @@ mod tests {
                 test_snapshot("SH-2", "todo"),
             ],
             "SH".to_string(),
-            vec![],
         );
         let result = store.filtered_stories_by_state(&[]);
         // Order is defined by states definition, not story insertion
@@ -1199,16 +1013,8 @@ mod tests {
         // ready", `ready` is "ready and unclaimed", so the two chips are
         // disjoint by construction for any project.
         let stories = vec![
-            make_rich_snapshot(
-                "SH-1",
-                "todo",
-                "A",
-                Priority::None,
-                vec![],
-                None,
-                Some("waiting"),
-            ),
-            make_rich_snapshot("SH-2", "todo", "B", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-1", "todo", "A", Priority::None, vec![], Some("waiting")),
+            make_rich_snapshot("SH-2", "todo", "B", Priority::None, vec![], None),
         ];
         let filters = vec![
             FilterSpec {

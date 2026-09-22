@@ -1306,6 +1306,11 @@ impl MergeRepo {
             .env("STORY_BIN", "/verifier/only/story")
             .env("STORYHOOK_GITHUB_AUTHORITY", "/verifier/only/checkout")
             .env("STORYHOOK_GITHUB_EXPECTED", "github.example/acme/widgets")
+            .env("STORYHOOK_REPAIR_ADMISSION", "1")
+            .env("STORYHOOK_REPAIR_PROJECT", "outer-project")
+            .env("STORYHOOK_REPAIR_STORY", "OUTER-1")
+            .env("STORYHOOK_REPAIR_GENERATION", "27")
+            .env("STORYHOOK_CERTIFY_ONLY", "1")
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
@@ -1714,6 +1719,12 @@ jq -e --arg fields "$5" '
                 "STORYHOOK_CERTIFY_ONLY",
                 if certify_only { "1" } else { "0" },
             )
+            // Fixtures own their admission context, including when an older
+            // installed verifier runs this suite without the gate scrub.
+            .env_remove("STORYHOOK_REPAIR_ADMISSION")
+            .env_remove("STORYHOOK_REPAIR_PROJECT")
+            .env_remove("STORYHOOK_REPAIR_STORY")
+            .env_remove("STORYHOOK_REPAIR_GENERATION")
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
             .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
             .envs(storyhook_test_support::daemon_containment())
@@ -2020,7 +2031,7 @@ fn speculative_run_uses_the_exact_tree_and_restores_after_success_or_failure() {
         &[
             "bash",
             "-c",
-            "test -z \"${STORYHOOK_STORE_PATH+x}\" && test -z \"${STORYHOOK_PROJECT+x}\" && test -z \"${GH_CONFIG_DIR+x}\" && test -z \"${GH_TOKEN+x}\" && test -z \"${GITHUB_TOKEN+x}\" && test -z \"${GH_ENTERPRISE_TOKEN+x}\" && test -z \"${GITHUB_ENTERPRISE_TOKEN+x}\" && test -z \"${STORY_BIN+x}\" && test -z \"${STORYHOOK_GITHUB_AUTHORITY+x}\" && test -z \"${STORYHOOK_GITHUB_EXPECTED+x}\"",
+            "test -z \"${STORYHOOK_STORE_PATH+x}\" && test -z \"${STORYHOOK_PROJECT+x}\" && test -z \"${GH_CONFIG_DIR+x}\" && test -z \"${GH_TOKEN+x}\" && test -z \"${GITHUB_TOKEN+x}\" && test -z \"${GH_ENTERPRISE_TOKEN+x}\" && test -z \"${GITHUB_ENTERPRISE_TOKEN+x}\" && test -z \"${STORY_BIN+x}\" && test -z \"${STORYHOOK_GITHUB_AUTHORITY+x}\" && test -z \"${STORYHOOK_GITHUB_EXPECTED+x}\" && test -z \"${STORYHOOK_REPAIR_ADMISSION+x}\" && test -z \"${STORYHOOK_REPAIR_PROJECT+x}\" && test -z \"${STORYHOOK_REPAIR_STORY+x}\" && test -z \"${STORYHOOK_REPAIR_GENERATION+x}\" && test -z \"${STORYHOOK_CERTIFY_ONLY+x}\"",
         ],
     );
     assert_ok(

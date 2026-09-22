@@ -87,7 +87,7 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::provenance::Provenance;
 use crate::domain::remote::RemoteUrl;
-use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
+use crate::domain::{StateDef, StoryEvent, StorySnapshot, TypeDef};
 
 pub use conformance::ConformanceFixture;
 mod verification_recovery;
@@ -420,9 +420,6 @@ pub trait ReadOps {
 
     /// A project's story types, in configured order.
     fn types(&self, project: ProjectId) -> Result<Vec<TypeDef>, StoreError>;
-
-    /// A project's members, ordered by member id.
-    fn members(&self, project: ProjectId) -> Result<Vec<Member>, StoreError>;
 
     /// A project's settings. A project that has never had settings written
     /// reads back as [`ProjectSettings::default`].
@@ -942,12 +939,6 @@ pub trait WriteOps: ReadOps {
 
     /// Replaces a project's type set, in the order given.
     fn put_types(&mut self, project: ProjectId, types: &[TypeDef]) -> Result<(), StoreError>;
-
-    /// Adds or updates one member.
-    fn put_member(&mut self, project: ProjectId, member: &Member) -> Result<(), StoreError>;
-
-    /// Removes a member, reporting whether there was one.
-    fn remove_member(&mut self, project: ProjectId, member_id: &str) -> Result<bool, StoreError>;
 
     /// Replaces a project's settings.
     ///

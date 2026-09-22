@@ -4,7 +4,7 @@
 //! own tracker, frozen at 61 stories and 486 events, with a history no
 //! synthetic fixture reaches by accident. The **synthetic** one is built here,
 //! and exists because the real tree's states and types are the *defaults* and
-//! its member list is empty — so it proves nothing about the configuration
+//! they prove nothing about the custom configuration
 //! surface. Neither fixture is sufficient alone; see
 //! `docs/rearch/baseline/README.md`.
 
@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use storyhook::domain::{Member, StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef};
+use storyhook::domain::{StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef};
 use storyhook::legacy;
 use storyhook::service::{MigrationPlan, MigrationReport};
 use storyhook::storage;
@@ -58,7 +58,7 @@ pub fn real_tree() -> (TempDir, PathBuf) {
 }
 
 /// A legacy tree covering everything the real one does not: a custom state with
-/// a role, a second CLOSED state, a custom type, and two members.
+/// a role, a second CLOSED state, a custom type.
 ///
 /// Built through `storage`'s own writers rather than by hand, so the bytes are
 /// the ones the legacy tool would have written — a fixture assembled with
@@ -126,25 +126,6 @@ pub fn custom_config_tree() -> (TempDir, PathBuf) {
     )
     .expect("types");
 
-    for member in [
-        Member {
-            id: "ada".to_string(),
-            display_name: "Ada Lovelace".to_string(),
-            email: Some("ada@example.com".to_string()),
-            github: Some("adalovelace".to_string()),
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-        },
-        Member {
-            id: "grace".to_string(),
-            display_name: "Grace Hopper".to_string(),
-            email: None,
-            github: None,
-            created_at: "2026-01-02T00:00:00Z".to_string(),
-        },
-    ] {
-        storage::store_member(&root, &member).expect("member");
-    }
-
     // One story per shape that matters: an open one carrying every enrichment
     // field, a closed one in the *second* CLOSED state (which the real tree has
     // no equivalent of), a deleted one, and a pair holding both ends of a
@@ -165,10 +146,6 @@ pub fn custom_config_tree() -> (TempDir, PathBuf) {
             StoryEvent::StoryLabelsSet {
                 at: "2026-01-03T00:03:00Z".to_string(),
                 labels: vec!["analytical".to_string(), "phase:1".to_string()],
-            },
-            StoryEvent::StoryAssigned {
-                at: "2026-01-03T00:04:00Z".to_string(),
-                member_id: "ada".to_string(),
             },
             StoryEvent::StoryDescriptionSet {
                 at: "2026-01-03T00:05:00Z".to_string(),

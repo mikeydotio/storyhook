@@ -528,7 +528,6 @@ fn a_commit_link_on_a_closed_story_moves_only_updated_at_and_the_commit_list() {
     assert_eq!(after.hidden_at, before.hidden_at);
     assert_eq!(after.draft, before.draft);
     assert_eq!(after.labels, before.labels);
-    assert_eq!(after.assignee, before.assignee);
     assert_eq!(after.priority, before.priority);
     assert_eq!(after.awaiting, before.awaiting);
     assert_eq!(after.relationships, before.relationships);

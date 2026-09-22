@@ -11,7 +11,7 @@ fn story(dir: &std::path::Path) -> Command {
 }
 
 // ============================================================
-// story new --description / --priority / --label(s) / --assignee
+// story new --description / --priority / --label(s)
 // ============================================================
 
 #[test]
@@ -184,30 +184,6 @@ fn new_with_a_comma_inside_a_single_label_flag_still_splits() {
 }
 
 #[test]
-fn new_with_assignee_sets_assignee() {
-    let dir = scratch_dir();
-    story(dir.path())
-        .args(["project", "new", "--prefix", "SH"])
-        .assert()
-        .success();
-    story(dir.path())
-        .args(["member", "add", "mikey <mw@mikey.io>"])
-        .assert()
-        .success();
-
-    story(dir.path())
-        .args(["new", "Assigned story", "--assignee", "mikey"])
-        .assert()
-        .success();
-
-    story(dir.path())
-        .args(["show", "SH-1"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("assignee: mikey"));
-}
-
-#[test]
 fn new_with_unknown_assignee_is_rejected_and_creates_no_story() {
     let dir = scratch_dir();
     story(dir.path())
@@ -219,7 +195,7 @@ fn new_with_unknown_assignee_is_rejected_and_creates_no_story() {
         .args(["new", "Bad assignee", "--assignee", "nobody"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("member `nobody` not found"));
+        .stderr(predicate::str::contains("unknown flag `--assignee`"));
 
     story(dir.path()).args(["show", "SH-1"]).assert().failure();
 }
@@ -229,10 +205,6 @@ fn new_with_all_fields_writes_single_enriched_story() {
     let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
-        .assert()
-        .success();
-    story(dir.path())
-        .args(["member", "add", "mikey <mw@mikey.io>"])
         .assert()
         .success();
 
@@ -246,8 +218,6 @@ fn new_with_all_fields_writes_single_enriched_story() {
             "Everything at once",
             "--priority",
             "high",
-            "--assignee",
-            "mikey",
             "--label",
             "web",
             "--label",
@@ -263,7 +233,6 @@ fn new_with_all_fields_writes_single_enriched_story() {
         .stdout(predicate::str::contains("type: bug"))
         .stdout(predicate::str::contains("description: Everything at once"))
         .stdout(predicate::str::contains("priority: high"))
-        .stdout(predicate::str::contains("assignee: mikey"))
         .stdout(predicate::str::contains("labels: urgent, web"));
 }
 

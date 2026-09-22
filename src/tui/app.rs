@@ -508,7 +508,6 @@ fn set_field(id: &str, title: Option<String>, description: Option<String>) -> In
         title,
         state: None,
         priority: None,
-        assignee: None,
         labels: None,
         blocked: None,
         unblocked: false,
@@ -551,9 +550,7 @@ fn push_undo(
 /// Create a story with the given enrichment fields, through the seam.
 ///
 /// One `story new` invocation, which is where the enrichment rules already
-/// live: an unknown assignee aborts the whole creation before anything is
-/// written, and the resolved member's canonical id — not the raw,
-/// possibly-a-GitHub-handle input — is what gets stored.
+/// live: invalid enrichment fields abort creation before anything is written.
 ///
 /// Extracted from the `Action::CreateStory` dispatch arm so it can be
 /// exercised by tests without a real terminal (`dispatch` takes one and
@@ -569,7 +566,6 @@ fn create_story_mutation(
     title: &str,
     priority: Option<crate::domain::Priority>,
     labels: &[String],
-    assignee: Option<&str>,
     description: Option<&str>,
 ) -> Result<(String, Vec<String>), AppError> {
     let response = invoke(
@@ -581,7 +577,6 @@ fn create_story_mutation(
             description: description.map(str::to_string),
             priority: priority.map(|p| p.as_str().to_string()),
             labels: (!labels.is_empty()).then(|| labels.to_vec()),
-            assignee: assignee.map(str::to_string),
             // SH-175's draft flag has no TUI surface — the story scoped it to
             // the CLI and web dashboard only.
             draft: false,
@@ -609,25 +604,6 @@ fn creation_notification(id: &str, warnings: &[String]) -> String {
         message.push_str(warning);
     }
     message
-}
-
-/// Assign an existing story to a member, through the seam.
-///
-/// `assignee` may be a member id or a GitHub handle; an unknown one aborts the
-/// mutation with nothing written, and a known one is normalized to its
-/// canonical member id.
-///
-/// Extracted from the `Action::AssignStory` dispatch arm for the same
-/// testability reason as [`create_story_mutation`].
-fn assign_story_mutation(invoker: &dyn Invoker, id: &str, assignee: &str) -> Result<(), AppError> {
-    invoke(
-        invoker,
-        Invocation::Assign {
-            id: id.to_string(),
-            member: assignee.to_string(),
-        },
-    )
-    .map(|_| ())
 }
 
 /// Dispatch a single action, mutating AppState.
@@ -860,17 +836,10 @@ fn dispatch(
             title,
             priority,
             labels,
-            assignee,
             description,
         } => {
-            let result = create_story_mutation(
-                invoker,
-                &title,
-                priority,
-                &labels,
-                assignee.as_deref(),
-                description.as_deref(),
-            );
+            let result =
+                create_story_mutation(invoker, &title, priority, &labels, description.as_deref());
             match result {
                 Ok((id, warnings)) => {
                     // Creation is not placed on the undo stack: undoing it
@@ -1061,30 +1030,6 @@ fn dispatch(
                 Err(e) => {
                     state.notification =
                         Some((format!("Labels update failed: {e}"), Instant::now()));
-                }
-            }
-        }
-
-        Action::AssignStory { id, assignee } => {
-            let events_before = snapshot_for_undo(invoker, &id);
-            let result = assign_story_mutation(invoker, &id, &assignee);
-            match result {
-                Ok(()) => {
-                    push_undo(
-                        state,
-                        format!("{id} assigned to {assignee}"),
-                        id.clone(),
-                        events_before,
-                    );
-                    state.data =
-                        DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
-                    board.on_state_change(state);
-                    graph.on_state_change(state);
-                    state.notification =
-                        Some((format!("{id} assigned to {assignee}"), Instant::now()));
-                }
-                Err(e) => {
-                    state.notification = Some((format!("Assign failed: {e}"), Instant::now()));
                 }
             }
         }
@@ -1490,7 +1435,6 @@ impl Default for DataStore {
             stories: Vec::new(),
             drafts: Vec::new(),
             prefix: String::new(),
-            members: Vec::new(),
             head_global_seqs: std::collections::BTreeMap::new(),
         }
     }
@@ -1506,7 +1450,7 @@ mod tests {
     use crate::tui::state::AppState;
 
     fn make_state() -> AppState {
-        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string(), vec![]);
+        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string());
         AppState {
             data,
             focus: FocusStack::new(FocusTarget::Board),
@@ -1521,24 +1465,7 @@ mod tests {
         }
     }
 
-    // =======================================================================
-    // Regression: #39 — create/assign mutations must validate assignee
-    // against real members.
-    //
-    // Reconstructed onto the Invoker seam: the fixture is built with
-    // invocations instead of `storage::` calls, and the mutations are handed
-    // an `Invoker` instead of a project root. Every assertion is unchanged.
-    // =======================================================================
-
-    /// A project with one member whose canonical id differs from the GitHub
-    /// handle it was created from — `Mikey-Ward` slugifies to `mikey-ward` —
-    /// so "resolves the handle to the id" stays a real claim.
-    ///
-    /// Built on the store, because that is what the TUI runs against. The
-    /// store's directory is a fixture of its own rather than
-    /// `paths::store_path()`: these are in-process tests, and an in-process
-    /// test cannot redirect `STORYHOOK_DATA_DIR` for itself — a helper that
-    /// read the environment would open the developer's real database.
+    /// Isolated store-backed fixture for production TUI mutations.
     struct TuiFixture {
         store: crate::store::SqliteStore,
         root: std::path::PathBuf,
@@ -1602,18 +1529,8 @@ mod tests {
         }
     }
 
-    fn add_test_member(invoker: &dyn Invoker, handle: &str) {
-        invoke(
-            invoker,
-            Invocation::MemberAdd {
-                input: crate::cli::MemberInput::Github(handle.to_string()),
-            },
-        )
-        .unwrap();
-    }
-
     fn seed_story(invoker: &dyn Invoker, title: &str) -> String {
-        create_story_mutation(invoker, title, None, &[], None, None)
+        create_story_mutation(invoker, title, None, &[], None)
             .unwrap()
             .0
     }
@@ -1651,55 +1568,12 @@ mod tests {
     }
 
     #[test]
-    fn create_story_mutation_rejects_unknown_assignee_and_creates_no_story() {
-        let fixture = TuiFixture::new();
-        let invoker = fixture.invoker();
-
-        let result =
-            create_story_mutation(&invoker, "Bad assignee", None, &[], Some("nobody"), None);
-
-        assert!(result.is_err(), "unknown assignee should be rejected");
-        let store = DataStore::load(&invoker).unwrap();
-        assert_eq!(
-            store.story_count(),
-            0,
-            "no story should be written when the assignee is invalid"
-        );
-    }
-
-    #[test]
-    fn create_story_mutation_resolves_github_handle_to_member_id() {
-        let fixture = TuiFixture::new();
-        let invoker = fixture.invoker();
-        add_test_member(&invoker, "Mikey-Ward");
-
-        let (id, _warnings) = create_story_mutation(
-            &invoker,
-            "Assigned story",
-            None,
-            &[],
-            Some("Mikey-Ward"),
-            None,
-        )
-        .expect("valid github handle should be accepted");
-
-        let store = DataStore::load(&invoker).unwrap();
-        let story = store.find_story(&id).expect("story should exist");
-        assert_eq!(
-            story.assignee.as_deref(),
-            Some("mikey-ward"),
-            "github handle should normalize to the canonical member id"
-        );
-    }
-
-    #[test]
     fn creating_a_story_with_no_priority_uses_low_without_a_warning() {
         let fixture = TuiFixture::new();
         let invoker = fixture.invoker();
 
-        let (id, warnings) =
-            create_story_mutation(&invoker, "Defaulted story", None, &[], None, None)
-                .expect("creating with the default priority succeeds");
+        let (id, warnings) = create_story_mutation(&invoker, "Defaulted story", None, &[], None)
+            .expect("creating with the default priority succeeds");
 
         assert!(warnings.is_empty(), "no warning expected: {warnings:?}");
         let store = DataStore::load(&invoker).expect("reloading the story");
@@ -1725,7 +1599,6 @@ mod tests {
             Some(crate::domain::Priority::High),
             &[],
             None,
-            None,
         )
         .expect("creating with a stated priority succeeds");
 
@@ -1733,36 +1606,6 @@ mod tests {
         assert_eq!(
             creation_notification(&id, &warnings),
             format!("Created {id}")
-        );
-    }
-
-    #[test]
-    fn assign_story_mutation_rejects_unknown_member_and_leaves_story_unassigned() {
-        let fixture = TuiFixture::new();
-        let invoker = fixture.invoker();
-        let id = seed_story(&invoker, "Unassigned story");
-
-        let result = assign_story_mutation(&invoker, &id, "nobody");
-
-        assert!(result.is_err(), "unknown assignee should be rejected");
-        let store = DataStore::load(&invoker).unwrap();
-        assert!(store.find_story(&id).unwrap().assignee.is_none());
-    }
-
-    #[test]
-    fn assign_story_mutation_resolves_valid_handle_to_member_id() {
-        let fixture = TuiFixture::new();
-        let invoker = fixture.invoker();
-        add_test_member(&invoker, "Mikey-Ward");
-        let id = seed_story(&invoker, "Story to assign");
-
-        assign_story_mutation(&invoker, &id, "Mikey-Ward")
-            .expect("valid handle should be accepted");
-
-        let store = DataStore::load(&invoker).unwrap();
-        assert_eq!(
-            store.find_story(&id).unwrap().assignee.as_deref(),
-            Some("mikey-ward")
         );
     }
 

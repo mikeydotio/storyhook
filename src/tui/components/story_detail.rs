@@ -20,7 +20,6 @@ pub enum DetailField {
     Title,
     State,
     Priority,
-    Assignee,
     Labels,
     Awaiting,
     Relationships,
@@ -32,7 +31,6 @@ const FIELDS: &[DetailField] = &[
     DetailField::Title,
     DetailField::State,
     DetailField::Priority,
-    DetailField::Assignee,
     DetailField::Labels,
     DetailField::Awaiting,
     DetailField::Relationships,
@@ -47,7 +45,6 @@ pub enum DetailMode {
     EditingTitle,
     EditingPriority,
     EditingLabels,
-    EditingAssignee,
     EditingAwaiting,
     AddingComment,
     EditingDescription,
@@ -60,7 +57,6 @@ pub struct StoryDetail {
     pub selected_field: usize,
     pub title_input: tui_input::Input,
     pub label_input: tui_input::Input,
-    pub assignee_input: tui_input::Input,
     pub awaiting_input: tui_input::Input,
     pub comment_input: tui_input::Input,
     pub description_input: tui_input::Input,
@@ -101,7 +97,6 @@ impl StoryDetail {
             selected_field: 0,
             title_input: tui_input::Input::default(),
             label_input: tui_input::Input::default(),
-            assignee_input: tui_input::Input::default(),
             awaiting_input: tui_input::Input::default(),
             comment_input: tui_input::Input::default(),
             description_input: tui_input::Input::default(),
@@ -194,11 +189,6 @@ impl StoryDetail {
                         self.label_input = tui_input::Input::new(story.labels.join(", "));
                         self.mode = DetailMode::EditingLabels;
                     }
-                    DetailField::Assignee => {
-                        self.assignee_input =
-                            tui_input::Input::new(story.assignee.clone().unwrap_or_default());
-                        self.mode = DetailMode::EditingAssignee;
-                    }
                     DetailField::Awaiting => {
                         if story.awaiting.is_some() {
                             // Clear awaiting
@@ -249,7 +239,7 @@ impl StoryDetail {
         }
     }
 
-    fn handle_editing_key(&mut self, key: KeyEvent, state: &AppState) -> Vec<Action> {
+    fn handle_editing_key(&mut self, key: KeyEvent, _state: &AppState) -> Vec<Action> {
         match &self.mode {
             DetailMode::EditingTitle => match key.code {
                 KeyCode::Enter => {
@@ -320,31 +310,6 @@ impl StoryDetail {
                 }
                 _ => {
                     self.label_input
-                        .handle_event(&crossterm::event::Event::Key(key));
-                    vec![]
-                }
-            },
-            DetailMode::EditingAssignee => match key.code {
-                KeyCode::Enter => {
-                    let assignee_raw = self.assignee_input.value().trim().to_string();
-                    self.mode = DetailMode::Viewing;
-                    if assignee_raw.is_empty() {
-                        return vec![];
-                    }
-                    match state.data.find_member(&assignee_raw) {
-                        Some(member) => vec![Action::AssignStory {
-                            id: self.story_id.clone(),
-                            assignee: member.id.clone(),
-                        }],
-                        None => vec![Action::Notify(format!("member `{assignee_raw}` not found"))],
-                    }
-                }
-                KeyCode::Esc => {
-                    self.mode = DetailMode::Viewing;
-                    vec![]
-                }
-                _ => {
-                    self.assignee_input
                         .handle_event(&crossterm::event::Event::Key(key));
                     vec![]
                 }
@@ -503,32 +468,13 @@ impl Component for StoryDetail {
             ));
         }
 
-        // Assignee
-        let assignee_val = story.assignee.as_deref().unwrap_or("(none)");
-        if self.mode == DetailMode::EditingAssignee && self.selected_field == 3 {
-            lines.push(render_editing_field(
-                "Assignee",
-                self.assignee_input.value(),
-                label_width,
-                &theme,
-            ));
-        } else {
-            lines.push(render_field(
-                "Assignee",
-                assignee_val,
-                self.selected_field == 3,
-                label_width,
-                &theme,
-            ));
-        }
-
         // Labels
         let labels_val = if story.labels.is_empty() {
             "(none)".to_string()
         } else {
             story.labels.join(", ")
         };
-        if self.mode == DetailMode::EditingLabels && self.selected_field == 4 {
+        if self.mode == DetailMode::EditingLabels && self.selected_field == 3 {
             lines.push(render_editing_field(
                 "Labels",
                 self.label_input.value(),
@@ -539,7 +485,7 @@ impl Component for StoryDetail {
             lines.push(render_field(
                 "Labels",
                 &labels_val,
-                self.selected_field == 4,
+                self.selected_field == 3,
                 label_width,
                 &theme,
             ));
@@ -547,7 +493,7 @@ impl Component for StoryDetail {
 
         // Awaiting
         let awaiting_val = story.awaiting.as_deref().unwrap_or("(none)");
-        if self.mode == DetailMode::EditingAwaiting && self.selected_field == 5 {
+        if self.mode == DetailMode::EditingAwaiting && self.selected_field == 4 {
             lines.push(render_editing_field(
                 "Awaiting",
                 self.awaiting_input.value(),
@@ -558,7 +504,7 @@ impl Component for StoryDetail {
             lines.push(render_field(
                 "Awaiting",
                 awaiting_val,
-                self.selected_field == 5,
+                self.selected_field == 4,
                 label_width,
                 &theme,
             ));
@@ -578,13 +524,13 @@ impl Component for StoryDetail {
         lines.push(render_field(
             "Relations",
             &rels_val,
-            self.selected_field == 6,
+            self.selected_field == 5,
             label_width,
             &theme,
         ));
 
         // Comments
-        let is_comments_selected = self.selected_field == 7;
+        let is_comments_selected = self.selected_field == 6;
         lines.push(render_label_span(
             "Comments",
             is_comments_selected,
@@ -645,7 +591,7 @@ impl Component for StoryDetail {
 
         // Description
         let description_val = story.description.as_deref().unwrap_or("(none)");
-        if self.mode == DetailMode::EditingDescription && self.selected_field == 8 {
+        if self.mode == DetailMode::EditingDescription && self.selected_field == 7 {
             lines.push(render_editing_field(
                 "Description",
                 self.description_input.value(),
@@ -656,7 +602,7 @@ impl Component for StoryDetail {
             lines.push(render_field(
                 "Description",
                 description_val,
-                self.selected_field == 8,
+                self.selected_field == 7,
                 label_width,
                 &theme,
             ));
@@ -833,8 +779,8 @@ fn render_editing_field<'a>(
 mod tests {
     use super::*;
     use crate::domain::{
-        COMPLETION_STATE_SLUG, CommentMention, CommitReference, Member, Priority, StateDef,
-        StoryComment, StorySnapshot, SuperState,
+        COMPLETION_STATE_SLUG, CommentMention, CommitReference, Priority, StateDef, StoryComment,
+        StorySnapshot, SuperState,
     };
     use crate::store::PrLink;
     use crate::tui::action::View;
@@ -875,7 +821,6 @@ mod tests {
             state: "todo".to_string(),
             state_computed: false,
             superstate: SuperState::Open,
-            assignee: Some("mikey".to_string()),
             awaiting: None,
             comments: vec![StoryComment {
                 at: "2026-01-02T00:00:00Z".to_string(),
@@ -900,22 +845,8 @@ mod tests {
         }
     }
 
-    fn test_member(id: &str, github: Option<&str>) -> Member {
-        Member {
-            id: id.to_string(),
-            display_name: id.to_string(),
-            email: None,
-            github: github.map(|g| g.to_string()),
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-        }
-    }
-
     fn make_state(stories: Vec<StorySnapshot>) -> AppState {
-        make_state_with_members(stories, vec![])
-    }
-
-    fn make_state_with_members(stories: Vec<StorySnapshot>, members: Vec<Member>) -> AppState {
-        let data = DataStore::from_test_data(test_states(), stories, "SH".to_string(), members);
+        let data = DataStore::from_test_data(test_states(), stories, "SH".to_string());
         AppState {
             data,
             focus: FocusStack::new(FocusTarget::Board),
@@ -1027,7 +958,7 @@ mod tests {
         snapshot.description = Some("Existing description".to_string());
         let state = make_state(vec![snapshot]);
         let mut detail = StoryDetail::new("SH-1".to_string());
-        detail.selected_field = 8; // Description
+        detail.selected_field = 7; // Description
 
         detail.handle_key(key(KeyCode::Char('e')), &state);
         assert_eq!(detail.mode, DetailMode::EditingDescription);
@@ -1038,7 +969,7 @@ mod tests {
     fn e_on_description_with_no_existing_value_starts_empty() {
         let state = make_state(vec![test_snapshot()]);
         let mut detail = StoryDetail::new("SH-1".to_string());
-        detail.selected_field = 8; // Description
+        detail.selected_field = 7; // Description
 
         detail.handle_key(key(KeyCode::Char('e')), &state);
         assert_eq!(detail.mode, DetailMode::EditingDescription);
@@ -1049,7 +980,7 @@ mod tests {
     fn enter_confirms_description_edit() {
         let state = make_state(vec![test_snapshot()]);
         let mut detail = StoryDetail::new("SH-1".to_string());
-        detail.selected_field = 8;
+        detail.selected_field = 7;
 
         detail.handle_key(key(KeyCode::Char('e')), &state);
         for ch in "New description".chars() {
@@ -1066,14 +997,14 @@ mod tests {
 
     #[test]
     fn enter_on_empty_description_still_emits_set_description() {
-        // Unlike Title/Assignee/Awaiting, an empty description is a legitimate
+        // Unlike Title/Awaiting, an empty description is a legitimate
         // value (there's no dedicated "clear description" action), so Enter
         // on an empty input must still dispatch — not silently no-op.
         let mut snapshot = test_snapshot();
         snapshot.description = Some("Will be cleared".to_string());
         let state = make_state(vec![snapshot]);
         let mut detail = StoryDetail::new("SH-1".to_string());
-        detail.selected_field = 8;
+        detail.selected_field = 7;
 
         detail.handle_key(key(KeyCode::Char('e')), &state);
         // Clear the pre-filled input.
@@ -1147,7 +1078,7 @@ mod tests {
         snap.awaiting = Some("blocked by API".to_string());
         let state = make_state(vec![snap]);
         let mut detail = StoryDetail::new("SH-1".to_string());
-        detail.selected_field = 5; // Awaiting
+        detail.selected_field = 4; // Awaiting
 
         let actions = detail.handle_key(key(KeyCode::Char('e')), &state);
         assert_eq!(actions.len(), 1);
@@ -1230,95 +1161,6 @@ mod tests {
     }
 
     // =======================================================================
-    // QA: Empty assignee rejection
-    // =======================================================================
-
-    #[test]
-    fn enter_on_empty_assignee_does_not_emit_assign() {
-        let state = make_state(vec![test_snapshot()]);
-        let mut detail = StoryDetail::new("SH-1".to_string());
-        detail.selected_field = 3; // Assignee
-
-        detail.handle_key(key(KeyCode::Char('e')), &state);
-        assert_eq!(detail.mode, DetailMode::EditingAssignee);
-
-        // Clear the pre-filled input ("mikey")
-        for _ in 0..10 {
-            detail.handle_key(key(KeyCode::Backspace), &state);
-        }
-
-        let actions = detail.handle_key(key(KeyCode::Enter), &state);
-        assert!(actions.is_empty(), "Empty assignee should be rejected");
-    }
-
-    // =======================================================================
-    // Regression: #39 — assignee edit must be validated against real members
-    // =======================================================================
-
-    #[test]
-    fn enter_on_unknown_assignee_notifies_and_does_not_emit_assign() {
-        let state = make_state_with_members(
-            vec![test_snapshot()],
-            vec![test_member("mikey", Some("mikeyward"))],
-        );
-        let mut detail = StoryDetail::new("SH-1".to_string());
-        detail.selected_field = 3; // Assignee
-
-        detail.handle_key(key(KeyCode::Char('e')), &state);
-        assert_eq!(detail.mode, DetailMode::EditingAssignee);
-
-        // Clear the pre-filled input ("mikey") and type an unknown handle
-        for _ in 0..10 {
-            detail.handle_key(key(KeyCode::Backspace), &state);
-        }
-        for ch in "nobody".chars() {
-            detail.handle_key(key(KeyCode::Char(ch)), &state);
-        }
-
-        let actions = detail.handle_key(key(KeyCode::Enter), &state);
-        assert_eq!(actions.len(), 1);
-        assert!(
-            matches!(&actions[0], Action::Notify(msg) if msg.contains("nobody") && msg.contains("not found")),
-            "expected a not-found Notify, got {:?}",
-            actions[0]
-        );
-    }
-
-    #[test]
-    fn enter_on_github_handle_normalizes_to_member_id() {
-        let state = make_state_with_members(
-            vec![test_snapshot()],
-            vec![test_member("mikey", Some("mikeyward"))],
-        );
-        let mut detail = StoryDetail::new("SH-1".to_string());
-        detail.selected_field = 3; // Assignee
-
-        detail.handle_key(key(KeyCode::Char('e')), &state);
-        assert_eq!(detail.mode, DetailMode::EditingAssignee);
-
-        // Clear the pre-filled input ("mikey") and type the GitHub handle
-        for _ in 0..10 {
-            detail.handle_key(key(KeyCode::Backspace), &state);
-        }
-        for ch in "mikeyward".chars() {
-            detail.handle_key(key(KeyCode::Char(ch)), &state);
-        }
-
-        let actions = detail.handle_key(key(KeyCode::Enter), &state);
-        assert_eq!(actions.len(), 1);
-        match &actions[0] {
-            Action::AssignStory { id, assignee } => {
-                assert_eq!(id, "SH-1");
-                assert_eq!(
-                    assignee, "mikey",
-                    "github handle should normalize to the canonical member id"
-                );
-            }
-            other => panic!("Expected AssignStory, got {other:?}"),
-        }
-    }
-
-    // =======================================================================
     // QA: Empty awaiting rejection
     // =======================================================================
 
@@ -1328,7 +1170,7 @@ mod tests {
         snap.awaiting = None; // not awaiting
         let state = make_state(vec![snap]);
         let mut detail = StoryDetail::new("SH-1".to_string());
-        detail.selected_field = 5; // Awaiting
+        detail.selected_field = 4; // Awaiting
 
         detail.handle_key(key(KeyCode::Char('e')), &state);
         assert_eq!(detail.mode, DetailMode::EditingAwaiting);
@@ -1390,7 +1232,7 @@ mod tests {
                 description: None,
             },
         );
-        let data = DataStore::from_test_data(states, vec![snap], "SH".to_string(), vec![]);
+        let data = DataStore::from_test_data(states, vec![snap], "SH".to_string());
         let state = AppState {
             data,
             focus: FocusStack::new(FocusTarget::Board),
@@ -1465,21 +1307,14 @@ mod tests {
         assert_eq!(detail.mode, DetailMode::Viewing);
 
         // EditingLabels
-        detail.selected_field = 4;
+        detail.selected_field = 3;
         detail.handle_key(key(KeyCode::Char('e')), &state);
         assert_eq!(detail.mode, DetailMode::EditingLabels);
         detail.handle_key(key(KeyCode::Esc), &state);
         assert_eq!(detail.mode, DetailMode::Viewing);
 
-        // EditingAssignee
-        detail.selected_field = 3;
-        detail.handle_key(key(KeyCode::Char('e')), &state);
-        assert_eq!(detail.mode, DetailMode::EditingAssignee);
-        detail.handle_key(key(KeyCode::Esc), &state);
-        assert_eq!(detail.mode, DetailMode::Viewing);
-
         // EditingAwaiting
-        detail.selected_field = 5;
+        detail.selected_field = 4;
         detail.handle_key(key(KeyCode::Char('e')), &state);
         assert_eq!(detail.mode, DetailMode::EditingAwaiting);
         detail.handle_key(key(KeyCode::Esc), &state);
@@ -1492,7 +1327,7 @@ mod tests {
         assert_eq!(detail.mode, DetailMode::Viewing);
 
         // EditingDescription
-        detail.selected_field = 8;
+        detail.selected_field = 7;
         detail.handle_key(key(KeyCode::Char('e')), &state);
         assert_eq!(detail.mode, DetailMode::EditingDescription);
         detail.handle_key(key(KeyCode::Esc), &state);
@@ -1518,7 +1353,7 @@ mod tests {
     fn e_on_relationships_does_nothing() {
         let state = make_state(vec![test_snapshot()]);
         let mut detail = StoryDetail::new("SH-1".to_string());
-        detail.selected_field = 6; // Relationships
+        detail.selected_field = 5; // Relationships
 
         detail.handle_key(key(KeyCode::Char('e')), &state);
         assert_eq!(detail.mode, DetailMode::Viewing);
@@ -1528,7 +1363,7 @@ mod tests {
     fn e_on_comments_does_nothing() {
         let state = make_state(vec![test_snapshot()]);
         let mut detail = StoryDetail::new("SH-1".to_string());
-        detail.selected_field = 7; // Comments
+        detail.selected_field = 6; // Comments
 
         detail.handle_key(key(KeyCode::Char('e')), &state);
         assert_eq!(detail.mode, DetailMode::Viewing);

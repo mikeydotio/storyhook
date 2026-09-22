@@ -370,7 +370,7 @@ mod tests {
         use crate::tui::data::DataStore;
         use crate::tui::focus::{FocusStack, FocusTarget};
         AppState {
-            data: DataStore::from_test_data(vec![], vec![], "SH".to_string(), vec![]),
+            data: DataStore::from_test_data(vec![], vec![], "SH".to_string()),
             focus: FocusStack::new(FocusTarget::Board),
             view: View::Board,
             filters: Vec::new(),

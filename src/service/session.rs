@@ -631,8 +631,6 @@ fn event_detail(event: &crate::domain::StoryEvent) -> String {
         E::StoryCommentRetracted { text, .. } => {
             format!("comment retracted — {}", first_line(text))
         }
-        E::StoryAssigned { member_id, .. } => format!("assigned to {member_id}"),
-        E::StoryAssigneeCleared { .. } => "assignee cleared".to_string(),
         E::StoryAwaitingSet { awaiting, .. } => format!("awaiting — {}", first_line(awaiting)),
         E::StoryAwaitingCleared { .. } => "awaiting cleared".to_string(),
         E::StoryRelationshipAdded {

@@ -434,7 +434,7 @@ fn export_and_import_roundtrip_with_types() {
 /// The fixture carries the things a round-trip most easily drops: a custom id
 /// prefix, a custom state and type (which live in separate config files, not in
 /// the story records), a member, relations in both directions, a comment, an
-/// assignee and archived stories.
+/// archived stories.
 ///
 /// Byte equality is asserted directly, with no redaction. That is not an
 /// accident of the fixture: every timestamp in the document comes from the
@@ -446,10 +446,6 @@ fn export_import_export_is_byte_identical() {
     let env = TestEnv::shared();
     let source = env.project().prefix("API").build();
 
-    story(source.path())
-        .args(["member", "add", "Ada Lovelace <ada@example.com>"])
-        .assert()
-        .success();
     story(source.path())
         .args([
             "type",
@@ -515,10 +511,6 @@ fn export_import_export_is_byte_identical() {
         .success();
     story(source.path())
         .args(["comment", "API-1", "Settled the shape of the trait."])
-        .assert()
-        .success();
-    story(source.path())
-        .args(["assign", "API-1", "ada-lovelace"])
         .assert()
         .success();
     story(source.path())

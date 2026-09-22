@@ -33,7 +33,6 @@ fn id_verbs() -> Vec<Vec<&'static str>> {
     vec![
         vec!["show", "1"],
         vec!["comment", "1", "a comment"],
-        vec!["assign", "1", "tester"],
         vec!["move", "1", "in-progress"],
         vec!["prioritize", "1", "high"],
         vec!["label", "1", "alpha"],
@@ -58,9 +57,6 @@ fn every_id_verb_accepts_a_bare_integer() {
     let env = TestEnv::isolated();
     let project = env.project().seed_story("first").build();
     project.new_story("second");
-    project
-        .run(&["member", "add", "Tester <tester@example.com>"])
-        .success();
 
     for argv in id_verbs() {
         let out = project

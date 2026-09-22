@@ -44,8 +44,8 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    Member, StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef, fold_story,
-    validate_state_defs, validate_state_defs_for_write,
+    StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef, fold_story, validate_state_defs,
+    validate_state_defs_for_write,
 };
 use crate::error::AppError;
 use crate::service::transfer::{ExportedEvent, ExportedSettings, ExportedStory, ProjectExport};
@@ -110,10 +110,6 @@ impl ProjectPaths {
 
     pub fn types_file(&self) -> PathBuf {
         self.storyhook_dir().join("types.toml")
-    }
-
-    pub fn members_file(&self) -> PathBuf {
-        self.storyhook_dir().join("members.jsonl")
     }
 
     pub fn next_id_file(&self) -> PathBuf {
@@ -187,10 +183,6 @@ pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
     }
 
     ensure_types_file(root)?;
-
-    if !paths.members_file().exists() {
-        fs::write(paths.members_file(), "")?;
-    }
 
     if !paths.next_id_file().exists() {
         fs::write(paths.next_id_file(), "1\n")?;
@@ -334,7 +326,6 @@ story prioritize {prefix}-6 medium
 | Add a comment | `story comment {prefix}-<n> "comment text"` |
 | Move to state | `story move {prefix}-<n> <state>` |
 | Set priority | `story prioritize {prefix}-<n> high` |
-| Assign a story | `story assign {prefix}-<n> <member>` |
 | Add a label | `story label {prefix}-<n> <label>` |
 | Set multiple fields | `story set {prefix}-<n> --priority high --state in-progress` |
 | Add relationship | `story relate {prefix}-1 blocks {prefix}-2` |
@@ -473,35 +464,6 @@ pub fn default_open_state(root: &Path) -> Result<StateDef, AppError> {
         .ok_or_else(|| AppError::Validation("project has no OPEN-mapped default state".to_string()))
 }
 
-pub fn load_members(root: &Path) -> Result<Vec<Member>, AppError> {
-    ensure_project(root)?;
-    let paths = ProjectPaths::new(root);
-    let file = OpenOptions::new().read(true).open(paths.members_file())?;
-    let reader = BufReader::new(file);
-    let mut members = Vec::new();
-
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        members.push(serde_json::from_str(&line)?);
-    }
-
-    Ok(members)
-}
-
-pub fn store_member(root: &Path, member: &Member) -> Result<(), AppError> {
-    ensure_project(root)?;
-    let paths = ProjectPaths::new(root);
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.members_file())?;
-    writeln!(file, "{}", serde_json::to_string(member)?)?;
-    Ok(())
-}
-
 pub fn next_story_id(root: &Path) -> Result<String, AppError> {
     ensure_project(root)?;
     let paths = ProjectPaths::new(root);
@@ -531,7 +493,7 @@ pub fn create_story(
 }
 
 /// Create a story and, in the same append to its event log, write additional
-/// enrichment events (priority, labels, description, assignee, type, ...).
+/// enrichment events (priority, labels, description, type, ...).
 ///
 /// Writing `StoryCreated` and `extra` as a single batch (rather than two
 /// separate [`write_story_events`] calls) means a new story is never left
@@ -620,7 +582,14 @@ fn read_story_events(path: &Path) -> Result<Vec<StoryEvent>, AppError> {
         if line.trim().is_empty() {
             continue;
         }
-        events.push(serde_json::from_str(&line)?);
+        let value: serde_json::Value = serde_json::from_str(&line)?;
+        if !value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(crate::domain::is_retired_assignment)
+        {
+            events.push(serde_json::from_value(value)?);
+        }
     }
     Ok(events)
 }
@@ -716,7 +685,6 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
 
     let states = load_states(root)?;
     let types = load_types(root)?;
-    let members = load_members(root)?;
     let mut stories = Vec::new();
 
     // Export open stories
@@ -760,7 +728,17 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
     })?;
     for row in rows {
         let (id, events_json) = row?;
-        let events: Vec<StoryEvent> = serde_json::from_str(&events_json)?;
+        let values: Vec<serde_json::Value> = serde_json::from_str(&events_json)?;
+        let events = values
+            .into_iter()
+            .filter(|value| {
+                !value
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(crate::domain::is_retired_assignment)
+            })
+            .map(serde_json::from_value)
+            .collect::<Result<Vec<StoryEvent>, _>>()?;
         stories.push(ExportedStory {
             id,
             events: events.into_iter().map(ExportedEvent::Known).collect(),
@@ -796,7 +774,6 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
         github_bases: BTreeMap::new(),
         states,
         types,
-        members,
         stories,
     })
 }
@@ -842,6 +819,7 @@ pub fn import_project(
         for (index, event) in story.events.iter().enumerate() {
             match event {
                 ExportedEvent::Known(decoded) => events.push(decoded.clone()),
+                ExportedEvent::Unknown(raw) if crate::domain::is_retired_assignment(&raw.kind) => {}
                 ExportedEvent::Unknown(raw) => uncarried.push(UncarriedEvent {
                     story: story.id.clone(),
                     position: index + 1,
@@ -889,12 +867,6 @@ pub fn import_project(
 
     if !export.types.is_empty() {
         save_types(root, &export.types)?;
-    }
-
-    // Write members
-    fs::write(paths.members_file(), "")?;
-    for member in &export.members {
-        store_member(root, member)?;
     }
 
     // Write stories
@@ -994,7 +966,6 @@ mod tests {
             state: "todo".to_string(),
             state_computed: false,
             superstate: SuperState::Open,
-            assignee: None,
             awaiting: None,
             comments: Vec::new(),
             referenced_by_commits: Vec::new(),
@@ -1277,7 +1248,6 @@ mod tests {
             prefix: None,
             states: sample_states(),
             types: Vec::new(),
-            members: Vec::new(),
             settings: None,
             remotes: Vec::new(),
             // A pre-SH-408 document could still carry these; a current one

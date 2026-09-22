@@ -352,7 +352,6 @@ fn dispatch_inner<S: Store>(
             description,
             priority,
             labels,
-            assignee,
             draft,
         } => {
             let input = NewStoryInput {
@@ -362,7 +361,6 @@ fn dispatch_inner<S: Store>(
                 description,
                 priority,
                 labels,
-                assignee,
                 draft,
             };
             let story = StoryService::new(ctx).create(&input)?;
@@ -374,10 +372,6 @@ fn dispatch_inner<S: Store>(
         }
         Invocation::Comment { id, text } => {
             StoryService::new(ctx).comment(&id, &text)?;
-            ctx.story_view(&id)
-        }
-        Invocation::Assign { id, member } => {
-            StoryService::new(ctx).assign(&id, &member)?;
             ctx.story_view(&id)
         }
         Invocation::SetPriority { id, priority } => {
@@ -447,7 +441,6 @@ fn dispatch_inner<S: Store>(
             title,
             state,
             priority,
-            assignee,
             labels,
             blocked,
             unblocked,
@@ -459,7 +452,6 @@ fn dispatch_inner<S: Store>(
                 title,
                 state,
                 priority,
-                assignee,
                 labels,
                 blocked,
                 unblocked,
@@ -556,9 +548,6 @@ fn dispatch_inner<S: Store>(
         },
         Invocation::State { action } => dispatch_state(ctx, action),
         Invocation::Type { action } => dispatch_type(ctx, action),
-        Invocation::MemberAdd { input } => ConfigService::new(ctx)
-            .add_member(&input)
-            .map(|member| Response::Message(format!("added member {}", member.id))),
         Invocation::Scaffold { kind } => SystemService::new(ctx)
             .scaffold(&kind)
             .map(Response::Message),
@@ -584,7 +573,6 @@ fn dispatch_inner<S: Store>(
         Invocation::Epic { action } => dispatch_epic(ctx, action),
         Invocation::List {
             state,
-            assignee,
             flagged,
             priority,
             label,
@@ -602,7 +590,6 @@ fn dispatch_inner<S: Store>(
         } => {
             let filters = ListFilters {
                 state,
-                assignee,
                 flagged,
                 priority,
                 label,
@@ -3089,7 +3076,6 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Help => "help",
         Invocation::Project { .. } => "project",
         Invocation::New { .. } => "new",
-        Invocation::MemberAdd { .. } => "member-add",
         Invocation::State { .. } => "state",
         Invocation::List { .. } => "list",
         Invocation::Search { .. } => "search",
@@ -3108,7 +3094,6 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Show { .. } => "show",
         Invocation::Log { .. } => "log",
         Invocation::Comment { .. } => "comment",
-        Invocation::Assign { .. } => "assign",
         Invocation::SetState { .. } => "set-state",
         Invocation::SetAwaiting { .. } => "set-awaiting",
         Invocation::ClearAwaiting { .. } => "clear-awaiting",
@@ -4228,7 +4213,6 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         Invocation::Help
         | Invocation::New { .. }
         | Invocation::Publish { .. }
-        | Invocation::MemberAdd { .. }
         | Invocation::State { .. }
         | Invocation::List { .. }
         | Invocation::Search { .. }
@@ -4251,7 +4235,6 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Show { .. }
         | Invocation::Log { .. }
         | Invocation::Comment { .. }
-        | Invocation::Assign { .. }
         | Invocation::SetState { .. }
         | Invocation::SetAwaiting { .. }
         | Invocation::ClearAwaiting { .. }
@@ -5312,7 +5295,7 @@ mod creates_a_project_tests {
 #[cfg(test)]
 mod project_creation_target_tests {
     use super::*;
-    use crate::cli::{MemberInput, NewProjectSpec};
+    use crate::cli::NewProjectSpec;
 
     /// The three named creating routes still resolve to a path — pinned
     /// separately from the exhaustive match below, because this half is
@@ -5416,9 +5399,6 @@ mod project_creation_target_tests {
             },
             Invocation::Publish {
                 id: "SH-1".to_string(),
-            },
-            Invocation::MemberAdd {
-                input: MemberInput::Identity("alice".to_string()),
             },
             Invocation::State {
                 action: StateAction::List,

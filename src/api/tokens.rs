@@ -350,7 +350,7 @@ impl TokenRegistry {
     /// whatever the real system clock reads when the test happens to run.
     /// The real daemon only ever calls [`Self::load`].
     fn load_anchored(env: &Environment, start_wall: DateTime<Utc>, start_instant: Instant) -> Self {
-        let persisted = match std::fs::read_to_string(tokens_path(env)) {
+        let mut persisted = match std::fs::read_to_string(tokens_path(env)) {
             Ok(raw) => match serde_json::from_str::<Persisted>(&raw) {
                 Ok(persisted) => persisted,
                 Err(err) => {
@@ -363,6 +363,31 @@ impl TokenRegistry {
             },
             Err(_) => Persisted::default(),
         };
+        let mut changed = false;
+        for record in &mut persisted.records {
+            let normalized = effective_preferences(&record.preferences);
+            let normalized = normalized.as_object().expect("preferences object");
+            if record
+                .preferences
+                .get("filter")
+                .and_then(|filter| filter.get("assignees"))
+                .is_some()
+                || record
+                    .preferences
+                    .get("sort")
+                    .and_then(|sort| sort.get("col"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("assignee")
+            {
+                record.preferences = normalized.clone();
+                changed = true;
+            }
+        }
+        if changed && let Err(error) = write_tokens_file(env, &persisted) {
+            eprintln!(
+                "storyhook daemon: cannot persist retired assignment preference removal: {error}"
+            );
+        }
         let mut inner = Inner {
             persisted,
             by_hash: HashMap::new(),
@@ -622,6 +647,11 @@ impl TokenRegistry {
                 .preferences
                 .insert(key.clone(), value.clone());
         }
+        next.persisted.records[index].preferences =
+            effective_preferences(&next.persisted.records[index].preferences)
+                .as_object()
+                .expect("preferences object")
+                .clone();
         touch_high_water(&mut next, now);
         self.persist(&next.persisted).map_err(|err| match err {
             TokenError::Persistence(detail) => PreferenceError::Storage(detail),
@@ -643,7 +673,7 @@ impl TokenRegistry {
 
 fn preference_defaults() -> serde_json::Value {
     serde_json::json!({
-        "filter": {"text":"", "priorities":null, "assignees":[], "types":null, "states":null},
+        "filter": {"text":"", "priorities":null, "types":null, "states":null},
         "sort": {"col":"updated", "dir":-1},
         "columnSort": {}, "hiddenColumns": [], "view":"board",
         "showArchived":false, "hideEmptyColumns":false, "keepNotices":false,
@@ -660,6 +690,11 @@ fn effective_preferences(saved: &serde_json::Map<String, serde_json::Value>) -> 
     for (key, value) in saved {
         if fields.contains_key(key) {
             let mut value = value.clone();
+            if key == "sort"
+                && value.get("col").and_then(serde_json::Value::as_str) == Some("assignee")
+            {
+                value = serde_json::json!({"col":"updated", "dir":-1});
+            }
             if key == "filter"
                 && let Some(filter) = value.as_object_mut()
             {
@@ -668,6 +703,7 @@ fn effective_preferences(saved: &serde_json::Map<String, serde_json::Value>) -> 
                 // inclusive facets now use null for that state so a new
                 // [] can mean the exact, empty selection.
                 let legacy = filter.remove("showEpics").is_some();
+                filter.remove("assignees");
                 filter.remove("showClosed");
                 if legacy {
                     for key in ["priorities", "types", "states"] {
@@ -745,10 +781,11 @@ fn valid_preference_field(key: &str, value: &serde_json::Value) -> bool {
             let legacy_show_closed = map.get("showClosed");
             let legacy = legacy_show_epics.is_some();
             map.len()
-                == 5 + usize::from(legacy_show_epics.is_some())
+                == 4 + usize::from(map.contains_key("assignees"))
+                    + usize::from(legacy_show_epics.is_some())
                     + usize::from(legacy_show_closed.is_some())
                 && map.get("text").is_some_and(|v| short_string(v, 2048))
-                && map.get("assignees").is_some_and(string_array)
+                && map.get("assignees").is_none_or(string_array)
                 && ["priorities", "types", "states"].iter().all(|key| {
                     map.get(*key).is_some_and(|selection| {
                         if legacy {
@@ -1683,7 +1720,6 @@ mod tests {
         let current = serde_json::json!({
             "text": "",
             "priorities": null,
-            "assignees": [],
             "types": null,
             "states": null
         });
@@ -1708,7 +1744,6 @@ mod tests {
         let none_selected = serde_json::json!({
             "text": "",
             "priorities": [],
-            "assignees": [],
             "types": [],
             "states": []
         });
@@ -1727,7 +1762,6 @@ mod tests {
         let selected = serde_json::json!({
             "text": "search",
             "priorities": ["high"],
-            "assignees": ["mikey"],
             "types": ["bug"],
             "states": ["todo"]
         });
@@ -1777,6 +1811,44 @@ mod tests {
                 .unwrap()["filter"],
             current
         );
+    }
+
+    #[test]
+    fn retired_assignment_preferences_are_purged_on_restart() {
+        let dir = tempdir();
+        let env = env_at(&dir);
+        let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+        let token = registry
+            .mint("one".into(), epoch(), Instant::now(), DEFAULT_TTL)
+            .unwrap()
+            .secret;
+        let mut persisted: Persisted =
+            serde_json::from_str(&std::fs::read_to_string(tokens_path(&env)).unwrap()).unwrap();
+        persisted.records[0].preferences = serde_json::json!({
+            "filter": {"text":"kept", "priorities":[], "types":["bug"], "states":null, "assignees":["ada"]},
+            "sort": {"col":"assignee", "dir":1}, "view":"list"
+        }).as_object().unwrap().clone();
+        write_tokens_file(&env, &persisted).unwrap();
+        for _ in 0..2 {
+            let registry = TokenRegistry::load_anchored(&env, epoch(), Instant::now());
+            let saved = registry
+                .preferences(&token, epoch(), Instant::now())
+                .unwrap();
+            assert_eq!(
+                saved["filter"],
+                serde_json::json!({"text":"kept", "priorities":[], "types":["bug"], "states":null})
+            );
+            assert_eq!(
+                saved["sort"],
+                serde_json::json!({"col":"updated", "dir":-1})
+            );
+            assert_eq!(saved["view"], "list");
+            assert!(
+                !std::fs::read_to_string(tokens_path(&env))
+                    .unwrap()
+                    .contains("assignee")
+            );
+        }
     }
 
     #[test]

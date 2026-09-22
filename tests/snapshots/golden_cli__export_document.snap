@@ -1,22 +1,7 @@
 ---
 source: tests/golden_cli.rs
-assertion_line: 775
 ---
 {
-  "members": [
-    {
-      "created_at": "[timestamp]",
-      "display_name": "Ada Lovelace",
-      "email": "ada@example.com",
-      "id": "ada-lovelace"
-    },
-    {
-      "created_at": "[timestamp]",
-      "display_name": "grace-hopper",
-      "github": "grace-hopper",
-      "id": "grace-hopper"
-    }
-  ],
   "prefix": null,
   "schema": 1,
   "states": [
@@ -270,11 +255,6 @@ assertion_line: 775
         },
         {
           "at": "[timestamp]",
-          "kind": "StoryAssigned",
-          "member_id": "ada-lovelace"
-        },
-        {
-          "at": "[timestamp]",
           "kind": "StoryCommentAdded",
           "text": "Trait shape settled: one method per verb."
         },
@@ -420,11 +400,6 @@ assertion_line: 775
           "kind": "StoryRelationshipAdded",
           "other_id": "SH-9",
           "relation": "blocks"
-        },
-        {
-          "at": "[timestamp]",
-          "kind": "StoryAssigned",
-          "member_id": "grace-hopper"
         },
         {
           "at": "[timestamp]",

@@ -2,7 +2,7 @@
 //!
 //! `story project new` used to be a sequence of independent filesystem writes: make
 //! the directories, write `project.toml`, write `states.toml`, write
-//! `types.toml`, write `members.jsonl`, write the id counter, open the archive
+//! `types.toml`, write the id counter, open the archive
 //! database. Any failure between two of them left a project that existed
 //! enough to be found and not enough to be used — a half-initialised tracker
 //! whose repair story was "delete the directory and start again".
@@ -296,7 +296,7 @@ fn refuse_project_burst(
 ///   pointer means the directory can die without taking a shipped feature
 ///   with it.
 ///
-/// It deliberately does not carry states, types, members or stories. Those
+/// It deliberately does not carry states, types or stories. Those
 /// live in the store; a repository that carried its own copy would be a second
 /// source of truth, which is the thing this whole rearchitecture exists to
 /// delete.

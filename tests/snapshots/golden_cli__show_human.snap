@@ -1,12 +1,10 @@
 ---
 source: tests/golden_cli.rs
-assertion_line: 463
 ---
 $ story show SH-1
 SH-1 Design the storage engine
 state: in-progress (OPEN)
 draft: no
-assignee: -
 priority: critical
 type: epic
 labels: -
@@ -21,7 +19,6 @@ $ story show SH-5
 SH-5 Fix the id collision across worktrees
 state: todo (OPEN)
 draft: no
-assignee: grace-hopper
 priority: critical
 type: bug
 labels: defect
@@ -36,7 +33,6 @@ $ story show SH-6
 SH-6 Benchmark the rebuild path
 state: todo (OPEN)
 draft: no
-assignee: -
 priority: low
 type: spike
 labels: -
@@ -47,7 +43,6 @@ $ story show SH-7
 SH-7 Document the data layer
 state: todo (OPEN)
 draft: no
-assignee: -
 priority: low
 type: chore
 labels: -
@@ -57,7 +52,6 @@ $ story show SH-3
 SH-3 Implement the SQLite engine
 state: in-progress (OPEN)
 draft: no
-assignee: -
 priority: high
 type: normal
 labels: backend, phase:1
@@ -74,7 +68,6 @@ $ story show SH-8
 SH-8 Retire the JSONL reader
 state: done (CLOSED)
 draft: no
-assignee: -
 priority: low
 type: chore
 labels: -
@@ -85,7 +78,6 @@ $ story show SH-13
 SH-13 Old approach: file-per-story
 state: dropped (CLOSED)
 draft: no
-assignee: -
 priority: low
 type: chore
 labels: -

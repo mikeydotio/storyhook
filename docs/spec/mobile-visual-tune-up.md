@@ -71,7 +71,7 @@ Filters opens over that shell; it does not push the story region down:
 ┌─────────────────────────────────────┐
 │ Filters                        Done │  Labeled modal, explicit close action
 │ Stories                             │
-│ Priority · Assignee · Type · State   │  Scrollable controls; live changes
+│ Priority · Type · State   │  Scrollable controls; live changes
 │ Show archived                       │
 │ Board display                       │  Only relevant in Board view
 │ Columns · Hide empty columns        │
@@ -85,7 +85,7 @@ Filters opens over that shell; it does not push the story region down:
 | Results | Keep the existing visible/total meaning, including its empty-state behavior. Keep active filtering recognizable while the sheet is closed. Clear moves into the mobile sheet; desktop retains its always-visible Clear control. Do not represent filter activity using color alone. |
 | Automation | Give Full Auto a separate group in the third row. Run uses a quieter outlined treatment and the full accessible name “Run Full Auto”. Preserve its confirmation dialog. Running/paused states keep status and Pause/Resume/Stop available, with one additional status row if needed. Lane details may open the existing operational surface; alerts and acknowledgement are never buried in More. |
 | Filter sheet | Fixed, bottom-aligned, at most 85dvh with the existing vh fallback and safe-area padding. Header/Done stays visible; body scrolls. At most one live set of filter controls is mounted. Reuse current dropdown options, selection logic, and persistence. Changes apply immediately; Done, Escape and backdrop dismissal close without rollback. |
-| Grouping | Stories contains Priority, Assignee, Type, State and Show archived. Priority, Type and State start fully selected; an empty selection matches no stories. Type owns epic visibility. Board display contains Columns and Hide empty columns, hidden in List without resetting them. Do not add an Apply transaction or alter Clear's existing treatment of display preferences. |
+| Grouping | Stories contains Priority, Type, State and Show archived. Priority, Type and State start fully selected; an empty selection matches no stories. Type owns epic visibility. Board display contains Columns and Hide empty columns, hidden in List without resetting them. Do not add an Apply transaction or alter Clear's existing treatment of display preferences. |
 | Focus | Register the sheet with the existing overlay stack, backdrop, inertness and return-focus system outside the covered app shell. Initial focus goes to its heading; Done is tabbable. Preserve the existing notice-layer exception and nested authorization dialog behavior. A closed sheet has no reachable controls. |
 | Persistence / resize | Filter values persist exactly as today. Mobile sheet-open state is transient and starts closed even if the old desktop disclosure preference was true. Crossing the breakpoint closes the mobile sheet and any filter popover, preserves values, restores desktop disclosure preference, and transfers focus to the equivalent visible filter trigger when necessary. |
 | Desktop | Above 768px retain the inline disclosure and exposed secondary navigation. Share filter grouping, labels, active-summary semantics, and automation separation. The desktop header may wrap under content pressure; it must not create page overflow. |
@@ -117,7 +117,7 @@ Sort: [Order ▾] [Ascending ▾]         Mobile list controls, within content s
 │ Attachments: drawer thumbnail strip │  Full-width, complete title / open detail
 │ + modal viewer                      │
 │ SH-390   [in-progress]   ● low   ⋯  │  Identity / state / priority / actions
-│ Details ▸                           │  Order, Labels, Assignee, Updated, type name
+│ Details ▸                           │  Order, Labels, Updated, type name
 └─────────────────────────────────────┘
 ```
 
@@ -125,8 +125,8 @@ Sort: [Order ▾] [Ascending ▾]         Mobile list controls, within content s
 |---|---|
 | Readability | Title uses the row's entire inner width at 16px/1.4 on mobile, with natural word wrapping and overflow wrapping for uninterrupted tokens. No line clamp or ellipsis on story titles. Metadata may wrap between complete items, never squeeze the title beside it. |
 | Semantics | Use list/listitem structure with a native title button that opens story detail. Actions and Details are sibling buttons, not descendants of the title button. Preserve current arrow navigation, Enter, Shift+F10/Menu-key actions and roving focus behavior against the active presentation. |
-| Metadata | ID/type, displayed state and priority are visible. Details reveals labeled Order, Labels, Assignee, Updated and the type's text name inline, without entering edit mode. Preserve empty values, computed/displayed state explanations, blocked indication and Full Auto lane information. |
-| Sort | Offer ID, Order, Title, State, Priority, Assignee and Updated, with ascending/descending direction using existing `state.sort`. Labels remains unsortable. Defaults, stable tie behavior and carried preferences stay unchanged. Desktop header sorting updates the same state. |
+| Metadata | ID/type, displayed state and priority are visible. Details reveals labeled Order, Labels, Updated and the type's text name inline, without entering edit mode. Preserve empty values, computed/displayed state explanations, blocked indication and Full Auto lane information. |
+| Sort | Offer ID, Order, Title, State, Priority and Updated, with ascending/descending direction using existing `state.sort`. Labels remains unsortable. Defaults, stable tie behavior and carried preferences stay unchanged. Desktop header sorting updates the same state. |
 | Actions / polling | Use `openStoryMenu` and look up current data by ID on activation. Reconcile by story identity; unrelated updates retain the focused element and open metadata disclosure. Keep disclosure state per project/story for the current session, clear it when leaving the project, and do not persist it across reloads. |
 | Resize | Preserve selected story, filter/sort state and any open detail peer across the breakpoint. Transfer focus to the matching story/control in the new presentation; if the story disappears, use the existing nearest-row fallback. Do not retain focus inside a hidden representation. |
 | Desktop table | Give `.col-title` a 20ch minimum inline size, retain complete wrapped prose and the scrollable table container. Keep every current column. Never apply the title width floor to the mobile stacked layout. |
@@ -155,7 +155,7 @@ do not scatter another set of per-component literals.
 | Spacing | 4px label/value gap, 8px related controls, 12px card/row padding, 16px between sections. Keep larger spacing only for distinct destructive/confirmation groups. |
 | Titles | Mobile story titles 16px, weight 600, line-height 1.4. Preserve the drawer's existing larger title. Keep desktop story-title sizing unless it fails the readable-width contract. |
 | Functional labels | 13px, weight 600, sentence case; use readable foreground rather than faint decoration. Mobile editable controls retain their existing >=16px tokens. |
-| Metadata | 13px/1.4 for state, priority, assignee, labels and result counts. Keep identifiers monospaced. Do not raise a whole form's weight merely to improve contrast. |
+| Metadata | 13px/1.4 for state, priority, labels and result counts. Keep identifiers monospaced. Do not raise a whole form's weight merely to improve contrast. |
 | Emphasis | Title first, operational exception second, ordinary metadata third. New is the primary filled creation action; navigation and disclosures are neutral. Retain colored state/priority meaning and warning/error treatments. |
 | Borders / surfaces | One raised surface per row/card; avoid adding extra containers around every metadata item. Preserve state pills where they encode status. Keep focus outlines distinct from selected/hover decoration. |
 | Contrast | Changed ordinary text must meet 4.5:1; identifying control graphics/boundaries and focus indicators must meet their applicable 3:1 contract. Measure explicit light/dark plus both system-resolved themes, including hover/focus/active/error states. Prefer a semantic functional-text role over globally darkening `--fg-faint` and changing unrelated decoration. |
@@ -186,7 +186,7 @@ do not exercise production tracker data. The central verifier owns the full suit
 | Dimension | Required cases and assertions |
 |---|---|
 | Geometry | 320×568, 375×667, 390×844, 768×1024, 1280×800; 390×400 short viewport; 768/769 breakpoint transitions. Assert shell budgets, story-region bounds, target sizes, full title visibility, and document overflow. |
-| Content | Screenshot title; long unbroken title; long ID/project name; custom long state; many labels; missing assignee; no Order rank; empty/filtered-empty/loading/error. Measure text/element containment, not screenshot pixels alone. |
+| Content | Screenshot title; long unbroken title; long ID/project name; custom long state; many labels; no Order rank; empty/filtered-empty/loading/error. Measure text/element containment, not screenshot pixels alone. |
 | Filters | Closed/open, no predicates, multiple predicates, all results/zero results, Clear, reload, project switch and Board/List switch. Prove that board preferences retain their current reset/persistence semantics. |
 | Automation | Idle, running, paused, draining, halted/error and acknowledgement-required. Long lane/error content stays reachable; Pause/Resume/Stop/confirmation and state updates remain functional. |
 | Interaction | Tap/click menus, keyboard navigation, focus return, nested token dialog, disclosure state, polling during focus, updated story actions, project change with detail open, and resize with an overlay open. |

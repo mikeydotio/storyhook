@@ -105,8 +105,6 @@ fn arb_event() -> impl Strategy<Value = StoryEvent> {
         (arb_timestamp(), arb_text())
             .prop_map(|(at, text)| StoryEvent::StoryCommentAdded { at, text }),
         (arb_timestamp(), arb_text())
-            .prop_map(|(at, member_id)| StoryEvent::StoryAssigned { at, member_id }),
-        (arb_timestamp(), arb_text())
             .prop_map(|(at, awaiting)| StoryEvent::StoryAwaitingSet { at, awaiting }),
         arb_timestamp().prop_map(|at| StoryEvent::StoryAwaitingCleared { at }),
         (arb_timestamp(), states.clone()).prop_map(|(at, state)| StoryEvent::StoryStateChanged {
@@ -159,7 +157,6 @@ enum Op {
     SetLabels(Vec<String>),
     SetType(String),
     SetDescription(String),
-    Assign(String),
     Await(String),
     ClearAwait,
     Comment(String),
@@ -187,7 +184,6 @@ fn arb_op() -> impl Strategy<Value = Op> {
         2 => prop::collection::vec(arb_text(), 0..3).prop_map(Op::SetLabels),
         1 => arb_text().prop_map(Op::SetType),
         1 => arb_text().prop_map(Op::SetDescription),
-        1 => arb_text().prop_map(Op::Assign),
         1 => arb_text().prop_map(Op::Await),
         1 => Just(Op::ClearAwait),
         1 => arb_text().prop_map(Op::Comment),
@@ -287,10 +283,6 @@ fn run_script(store: &SqliteStore, project: ProjectId, ops: &[(usize, Op)]) -> V
             Op::SetDescription(description) => StoryEvent::StoryDescriptionSet {
                 at: at(),
                 description: description.clone(),
-            },
-            Op::Assign(member_id) => StoryEvent::StoryAssigned {
-                at: at(),
-                member_id: member_id.clone(),
             },
             Op::Await(awaiting) => StoryEvent::StoryAwaitingSet {
                 at: at(),

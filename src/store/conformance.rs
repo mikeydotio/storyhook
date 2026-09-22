@@ -71,7 +71,7 @@ macro_rules! store_conformance_suite {
             use super::*;
 
             use $crate::domain::{
-                CLEANUP_LEASE_VERSION, Member, Priority, StateDef, StoryCleanupLease, StoryEvent,
+                CLEANUP_LEASE_VERSION, Priority, StateDef, StoryCleanupLease, StoryEvent,
                 StorySnapshot, SuperState, TmuxCleanupTarget, TypeDef, fold_story,
             };
             use $crate::domain::remote::RemoteUrl;
@@ -123,16 +123,6 @@ macro_rules! store_conformance_suite {
                         emoji: Some("🐞".into()),
                     },
                 ]
-            }
-
-            fn member() -> Member {
-                Member {
-                    id: "ada".into(),
-                    display_name: "Ada Lovelace".into(),
-                    email: Some("ada@example.com".into()),
-                    github: Some("ada".into()),
-                    created_at: "2026-01-01T00:00:00Z".into(),
-                }
             }
 
             fn seed(store: &Subject, slug: &str, prefix: &str) -> ProjectId {
@@ -1751,10 +1741,6 @@ macro_rules! store_conformance_suite {
                         at: "2026-01-01T00:01:00Z".into(),
                         text: "a comment".into(),
                     },
-                    StoryEvent::StoryAssigned {
-                        at: "2026-01-01T00:02:00Z".into(),
-                        member_id: "ada".into(),
-                    },
                     StoryEvent::StoryAwaitingSet {
                         at: "2026-01-01T00:03:00Z".into(),
                         awaiting: "review".into(),
@@ -2262,10 +2248,6 @@ macro_rules! store_conformance_suite {
                             at: "2026-01-01T00:01:00Z".into(),
                             description: "A description\nwith newlines".into(),
                         },
-                        StoryEvent::StoryAssigned {
-                            at: "2026-01-01T00:02:00Z".into(),
-                            member_id: "ada".into(),
-                        },
                         StoryEvent::StoryAwaitingSet {
                             at: "2026-01-01T00:03:00Z".into(),
                             awaiting: "review".into(),
@@ -2295,7 +2277,6 @@ macro_rules! store_conformance_suite {
                     row.description.as_deref(),
                     Some("A description\nwith newlines")
                 );
-                assert_eq!(row.assignee.as_deref(), Some("ada"));
                 assert_eq!(row.awaiting.as_deref(), Some("review"));
                 assert_eq!(row.story_type.as_deref(), Some("bug"));
                 assert_eq!(row.priority, Priority::Critical);
@@ -2621,12 +2602,11 @@ macro_rules! store_conformance_suite {
             /// Six stories spanning every filterable field.
             fn query_fixture(store: &Subject) -> ProjectId {
                 let project = seed(store, "alpha", "SH");
-                let specs: [(&str, &str, Priority, Option<&str>, Option<&str>, &[&str]); 6] = [
+                let specs: [(&str, &str, Priority, Option<&str>, &[&str]); 6] = [
                     (
                         "Alpha",
                         "todo",
                         Priority::Low,
-                        Some("ada"),
                         Some("bug"),
                         &["red"],
                     ),
@@ -2634,7 +2614,6 @@ macro_rules! store_conformance_suite {
                         "Bravo",
                         "todo",
                         Priority::Critical,
-                        None,
                         Some("feature"),
                         &["red", "blue"],
                     ),
@@ -2642,7 +2621,6 @@ macro_rules! store_conformance_suite {
                         "Charlie",
                         "in-progress",
                         Priority::Medium,
-                        Some("ada"),
                         None,
                         &[],
                     ),
@@ -2650,21 +2628,19 @@ macro_rules! store_conformance_suite {
                         "Delta",
                         "in-progress",
                         Priority::High,
-                        Some("bob"),
                         Some("bug"),
                         &["blue"],
                     ),
-                    ("Echo", "done", Priority::Low, None, None, &[]),
+                    ("Echo", "done", Priority::Low, None, &[]),
                     (
                         "Foxtrot",
                         "done",
                         Priority::High,
-                        Some("bob"),
                         Some("feature"),
                         &["red"],
                     ),
                 ];
-                for (index, (title, state, priority, assignee, story_type, labels)) in
+                for (index, (title, state, priority, story_type, labels)) in
                     specs.into_iter().enumerate()
                 {
                     let story = new_story(store, project, title);
@@ -2683,12 +2659,6 @@ macro_rules! store_conformance_suite {
                             labels: labels.iter().map(|l| (*l).to_string()).collect(),
                         },
                     ];
-                    if let Some(assignee) = assignee {
-                        events.push(StoryEvent::StoryAssigned {
-                            at: format!("2026-01-01T00:0{minute}:03Z"),
-                            member_id: assignee.to_string(),
-                        });
-                    }
                     if let Some(story_type) = story_type {
                         events.push(StoryEvent::StoryTypeSet {
                             at: format!("2026-01-01T00:0{minute}:04Z"),
@@ -2759,16 +2729,6 @@ macro_rules! store_conformance_suite {
                         &StoryQuery::all().priority(Priority::High)
                     ),
                     [4, 6]
-                );
-            }
-
-            #[test]
-            fn stories_can_be_filtered_by_assignee() {
-                let f = <$fixture>::create();
-                let project = query_fixture(f.store());
-                assert_eq!(
-                    story_numbers(f.store(), project, &StoryQuery::all().assignee("ada")),
-                    [1, 3]
                 );
             }
 
@@ -2848,7 +2808,7 @@ macro_rules! store_conformance_suite {
                         project,
                         &StoryQuery::all()
                             .superstate(SuperState::Open)
-                            .assignee("ada")
+                            .priority(Priority::Low)
                             .label("red")
                     ),
                     [1]
@@ -2860,7 +2820,7 @@ macro_rules! store_conformance_suite {
                 let f = <$fixture>::create();
                 let project = query_fixture(f.store());
                 assert!(
-                    story_numbers(f.store(), project, &StoryQuery::all().assignee("nobody"))
+                    story_numbers(f.store(), project, &StoryQuery::all().state("missing"))
                         .is_empty()
                 );
             }
@@ -3499,107 +3459,6 @@ macro_rules! store_conformance_suite {
             }
 
             #[test]
-            fn a_project_starts_with_no_members() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                assert!(f.store().read(|tx| tx.members(project)).unwrap().is_empty());
-            }
-
-            #[test]
-            fn a_member_round_trips_field_for_field() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                f.store()
-                    .write(|tx| tx.put_member(project, &member()))
-                    .unwrap();
-                let read = f.store().read(|tx| tx.members(project)).unwrap();
-                assert_eq!(read, vec![member()]);
-                assert_eq!(read[0].id, "ada");
-                assert_eq!(read[0].display_name, "Ada Lovelace");
-                assert_eq!(read[0].email.as_deref(), Some("ada@example.com"));
-                assert_eq!(read[0].github.as_deref(), Some("ada"));
-                assert_eq!(read[0].created_at, "2026-01-01T00:00:00Z");
-            }
-
-            #[test]
-            fn a_members_optional_fields_round_trip_when_absent() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                let sparse = Member {
-                    id: "bob".into(),
-                    display_name: "Bob".into(),
-                    email: None,
-                    github: None,
-                    created_at: "2026-01-01T00:00:00Z".into(),
-                };
-                f.store()
-                    .write(|tx| tx.put_member(project, &sparse))
-                    .unwrap();
-                assert_eq!(
-                    f.store().read(|tx| tx.members(project)).unwrap(),
-                    vec![sparse]
-                );
-            }
-
-            #[test]
-            fn writing_a_member_twice_updates_rather_than_duplicates() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                f.store()
-                    .write(|tx| tx.put_member(project, &member()))
-                    .unwrap();
-                let mut renamed = member();
-                renamed.display_name = "Augusta Ada King".into();
-                f.store()
-                    .write(|tx| tx.put_member(project, &renamed))
-                    .unwrap();
-                let read = f.store().read(|tx| tx.members(project)).unwrap();
-                assert_eq!(read.len(), 1);
-                assert_eq!(read[0].display_name, "Augusta Ada King");
-            }
-
-            #[test]
-            fn members_are_listed_in_id_order() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                for id in ["zoe", "ada", "mike"] {
-                    let mut m = member();
-                    m.id = id.into();
-                    f.store().write(|tx| tx.put_member(project, &m)).unwrap();
-                }
-                let ids: Vec<String> = f
-                    .store()
-                    .read(|tx| tx.members(project))
-                    .unwrap()
-                    .into_iter()
-                    .map(|m| m.id)
-                    .collect();
-                assert_eq!(ids, ["ada", "mike", "zoe"]);
-            }
-
-            #[test]
-            fn removing_a_member_reports_whether_there_was_one() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                f.store()
-                    .write(|tx| tx.put_member(project, &member()))
-                    .unwrap();
-                assert_eq!(
-                    f.store()
-                        .write(|tx| tx.remove_member(project, "ada"))
-                        .unwrap(),
-                    true
-                );
-                assert_eq!(
-                    f.store()
-                        .write(|tx| tx.remove_member(project, "ada"))
-                        .unwrap(),
-                    false
-                );
-                assert!(f.store().read(|tx| tx.members(project)).unwrap().is_empty());
-            }
-
-            #[test]
             fn a_project_with_no_settings_reads_back_as_defaults() {
                 let f = <$fixture>::create();
                 let project = seed(f.store(), "alpha", "SH");
@@ -3965,15 +3824,6 @@ macro_rules! store_conformance_suite {
                     .unwrap();
                 assert_eq!(f.store().read(|tx| tx.types(alpha)).unwrap(), types());
                 assert_eq!(f.store().read(|tx| tx.types(beta)).unwrap(), replacement);
-            }
-
-            #[test]
-            fn isolation_members() {
-                let f = <$fixture>::create();
-                let (alpha, beta) = twin_projects(f.store());
-                f.store().write(|tx| tx.put_member(beta, &member())).unwrap();
-                assert!(f.store().read(|tx| tx.members(alpha)).unwrap().is_empty());
-                assert_eq!(f.store().read(|tx| tx.members(beta)).unwrap().len(), 1);
             }
 
             #[test]
@@ -4465,9 +4315,6 @@ macro_rules! store_conformance_suite {
             fn the_catalog_survives_a_reopen() {
                 let f = <$fixture>::create();
                 let project = seed(f.store(), "alpha", "SH");
-                f.store()
-                    .write(|tx| tx.put_member(project, &member()))
-                    .unwrap();
                 let settings = ProjectSettings {
                     sync_auto_transition: Some(true),
                     doctor_stale_threshold: Some("14d".into()),
@@ -4481,10 +4328,6 @@ macro_rules! store_conformance_suite {
                 let f = f.reopen();
                 assert_eq!(f.store().read(|tx| tx.states(project)).unwrap(), states());
                 assert_eq!(f.store().read(|tx| tx.types(project)).unwrap(), types());
-                assert_eq!(
-                    f.store().read(|tx| tx.members(project)).unwrap(),
-                    vec![member()]
-                );
                 assert_eq!(f.store().read(|tx| tx.settings(project)).unwrap(), settings);
             }
 

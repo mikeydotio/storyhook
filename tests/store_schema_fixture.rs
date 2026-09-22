@@ -98,16 +98,6 @@ fn build(path: &Path) {
             // migration 9, and this fixture is pinned at v1, where
             // `project_types` doesn't have it yet — the same reason
             // `project_paths` is seeded in raw SQL further down.
-            tx.put_member(
-                project,
-                &storyhook::domain::Member {
-                    id: "ada".into(),
-                    display_name: "Ada Lovelace".into(),
-                    email: Some("ada@example.com".into()),
-                    github: Some("ada".into()),
-                    created_at: "2026-01-01T00:00:00Z".into(),
-                },
-            )?;
             let state_map = tx.state_map(project)?;
             for (no, events) in [
                 (
@@ -170,6 +160,9 @@ fn build(path: &Path) {
         .unwrap();
 
     let conn = Connection::open(path).unwrap();
+
+    // Retired member storage remains part of the immutable v1 fixture.
+    conn.execute_batch("INSERT INTO project_members (project_id,member_id,display_name,email,github,created_at) VALUES ((SELECT id FROM projects WHERE slug='fixture'),'ada','Ada Lovelace','ada@example.com','ada','2026-01-01T00:00:00Z');").unwrap();
 
     // Settings in raw SQL: the current writer names columns added after v1,
     // while this fixture deliberately exercises the original table shape.

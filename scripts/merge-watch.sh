@@ -246,12 +246,19 @@ if [ "${1:-}" = "--speculative-run" ]; then
         # statement of record. The names below are scrubbed because each
         # would make the gate answer about the wrong object store, the wrong
         # daemon store, the wrong project, or with a token it must not hold.
+        # Admission and phase belong to the outer verifier. A nested verifier
+        # in the gate must not call its repair callback or inherit its phase.
         # The gate chooses when it certifies; the bundle supplies the writer.
         # Set it here rather than trusting an inherited path from another run.
         exec env -u GIT_OBJECT_DIRECTORY \
             -u STORYHOOK_GATE_RESULT_FILE \
             -u STORYHOOK_STORE_PATH \
             -u STORYHOOK_PROJECT \
+            -u STORYHOOK_REPAIR_ADMISSION \
+            -u STORYHOOK_REPAIR_PROJECT \
+            -u STORYHOOK_REPAIR_STORY \
+            -u STORYHOOK_REPAIR_GENERATION \
+            -u STORYHOOK_CERTIFY_ONLY \
             -u STORY_BIN \
             -u STORYHOOK_GITHUB_AUTHORITY \
             -u STORYHOOK_GITHUB_EXPECTED \

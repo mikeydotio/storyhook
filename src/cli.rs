@@ -244,7 +244,7 @@ Usage:
   story project list                               (every project storyhook knows)
   story project settings list|get|set|unset        (this project's settings)
   story new <title> [--state <slug>] [--type <slug>] [--description <text>]
-                    [--priority <level>] [--assignee <member>] [--label <name> ...]
+                    [--priority <level>] [--label <name> ...]
                     [--draft]                        (claims an id; not yet live)
   story tui                                           (interactive terminal UI)
   story web start [--port <PORT>]                  (start web dashboard)
@@ -262,8 +262,6 @@ Usage:
   story token new <name>                           (mint a named dashboard token)
   story token list                                 (show every live token)
   story token revoke <name>                        (end one token immediately)
-  story member add "<name <email>>"
-  story member add -g <github-handle>
   story state list
   story state add <state-slug> --super OPEN|CLOSED [--role active]
                                [--description "<text>"]
@@ -272,7 +270,7 @@ Usage:
                                [--move-stories-to <state-slug>]
   story state remove <state-slug> [--move-stories-to <state-slug>]
   story state reorder <state-slug,state-slug,...>   (board column order)
-  story list [--state <slug>] [--assignee <id|handle>] [--flagged] [--priority <levels>]
+  story list [--state <slug>] [--flagged] [--priority <levels>]
              [--label <labels>] [--created-after <date>] [--updated-after <date>]
              [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]
              [--drafts]                                (narrows to drafts only)
@@ -344,7 +342,6 @@ Usage:
   story show <id>
   story log <id>
   story comment <id> "<text>"
-  story assign <id> <member-id|handle>
   story move <id> <state-slug> [--if-state <expected>] ["<comment>"]
   story block <id> --on <blocker> [--on <blocker>]... ["<reason>"]
   story block <id> "<reason>"
@@ -360,7 +357,7 @@ Usage:
   story publish <id>                               (make a draft live; one-way)
   story delete <id> [--force]                      (permanently remove a story)
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
-                  [--assignee <member>] [--labels "<csv>"] [--blocked "<reason>"]
+                  [--labels "<csv>"] [--blocked "<reason>"]
                   [--unblocked] [--json "<json>"] [--type <slug>]
                   [--description "<text>"]
   story relate <a> <relationship-type> <b>
@@ -410,12 +407,6 @@ Global options:
   -h, --help
   -V, --version   Print the installed story version
 "#;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MemberInput {
-    Identity(String),
-    Github(String),
-}
 
 /// Which story `story claim` (SH-476) is about.
 ///
@@ -544,7 +535,6 @@ pub enum Invocation {
         description: Option<String>,
         priority: Option<String>,
         labels: Option<Vec<String>>,
-        assignee: Option<String>,
         /// Creates the story as a draft (SH-175) — `story new --draft`.
         draft: bool,
     },
@@ -553,15 +543,11 @@ pub enum Invocation {
     Publish {
         id: String,
     },
-    MemberAdd {
-        input: MemberInput,
-    },
     State {
         action: StateAction,
     },
     List {
         state: Option<String>,
-        assignee: Option<String>,
         flagged: bool,
         priority: Option<String>,
         label: Option<String>,
@@ -732,10 +718,6 @@ pub enum Invocation {
         id: String,
         text: String,
     },
-    Assign {
-        id: String,
-        member: String,
-    },
     SetState {
         id: String,
         state: String,
@@ -863,7 +845,6 @@ pub enum Invocation {
         title: Option<String>,
         state: Option<String>,
         priority: Option<String>,
-        assignee: Option<String>,
         labels: Option<String>,
         blocked: Option<String>,
         unblocked: bool,
@@ -1037,7 +1018,6 @@ impl Invocation {
             Self::Help
             | Self::New { .. }
             | Self::Publish { .. }
-            | Self::MemberAdd { .. }
             | Self::State { .. }
             | Self::List { .. }
             | Self::Search { .. }
@@ -1059,7 +1039,6 @@ impl Invocation {
             | Self::Show { .. }
             | Self::Log { .. }
             | Self::Comment { .. }
-            | Self::Assign { .. }
             | Self::SetState { .. }
             | Self::SetAwaiting { .. }
             | Self::ClearAwaiting { .. }
@@ -1890,7 +1869,6 @@ static VERB_FLAGS: &[VerbFlags] = &[
             value("type"),
             value("description"),
             value("priority"),
-            value("assignee"),
             value("label"),
             value("labels"),
             bare("draft"),
@@ -1901,7 +1879,6 @@ static VERB_FLAGS: &[VerbFlags] = &[
         subcommand: None,
         flags: &[
             value("state"),
-            value("assignee"),
             value("priority"),
             value("label"),
             value("created-after"),
@@ -2048,7 +2025,6 @@ static VERB_FLAGS: &[VerbFlags] = &[
             value("title"),
             value("state"),
             value("priority"),
-            value("assignee"),
             value("labels"),
             value("blocked"),
             value("json"),
@@ -2282,11 +2258,6 @@ static VERB_FLAGS: &[VerbFlags] = &[
         verb: "project",
         subcommand: Some("show"),
         flags: &[],
-    },
-    VerbFlags {
-        verb: "member",
-        subcommand: Some("add"),
-        flags: &[value("github")],
     },
     VerbFlags {
         verb: "type",
@@ -2527,7 +2498,6 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         )),
         "project" => parse_project(args),
         "new" => parse_new(args),
-        "member" => parse_member(args),
         "state" => parse_state(args),
         "list" => parse_list(args),
         "next" => parse_next(args),
@@ -2618,7 +2588,6 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "show" => parse_show(args),
         "log" => parse_log(args),
         "comment" => parse_comment(args),
-        "assign" => parse_assign(args),
         "move" => parse_move(args),
         "close" => parse_close(args),
         "block" => parse_block(args),
@@ -3040,12 +3009,11 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
     let mut story_type = None;
     let mut description = None;
     let mut priority = None;
-    let mut assignee = None;
     let mut labels: Vec<String> = Vec::new();
     let mut title_parts = Vec::new();
     let mut draft = false;
     let mut index = 1;
-    let usage = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--assignee <member>] [--label <name> ...] [--labels <csv>] [--draft]";
+    let usage = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--label <name> ...] [--labels <csv>] [--draft]";
     while index < args.len() {
         match args[index].as_str() {
             "--state" => {
@@ -3074,13 +3042,6 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
                     .get(index + 1)
                     .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 priority = Some(value.clone());
-                index += 2;
-            }
-            "--assignee" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
-                assignee = Some(value.clone());
                 index += 2;
             }
             "--label" => {
@@ -3127,7 +3088,6 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
         } else {
             Some(labels)
         },
-        assignee,
         draft,
     })
 }
@@ -3138,31 +3098,6 @@ fn parse_publish(args: &[String]) -> Result<Invocation, AppError> {
     }
     Ok(Invocation::Publish {
         id: args[1].clone(),
-    })
-}
-
-fn parse_member(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() < 3 || args[1] != "add" {
-        return Err(AppError::Usage(
-            "usage: story member add \"<name <email>>\" | story member add -g <github-handle>"
-                .to_string(),
-        ));
-    }
-
-    if args[2] == "-g" || args[2] == "--github" {
-        let handle = args
-            .get(3)
-            .ok_or_else(|| {
-                AppError::Usage("usage: story member add -g <github-handle>".to_string())
-            })?
-            .clone();
-        return Ok(Invocation::MemberAdd {
-            input: MemberInput::Github(handle),
-        });
-    }
-
-    Ok(Invocation::MemberAdd {
-        input: MemberInput::Identity(join_tokens(&args[2..])),
     })
 }
 
@@ -3338,7 +3273,6 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut state = None;
-    let mut assignee = None;
     let mut flagged = false;
     let mut priority = None;
     let mut label = None;
@@ -3354,7 +3288,7 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut include_closed = false;
     let mut include_archived = false;
     let mut index = 1;
-    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]";
+    let usage = "usage: story list [--state <slug>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts] [--unassessed] [--include-closed] [--include-archived] [--all]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -3363,13 +3297,6 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
                     .get(index + 1)
                     .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 state = Some(value.clone());
-                index += 2;
-            }
-            "--assignee" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
-                assignee = Some(value.clone());
                 index += 2;
             }
             "--priority" => {
@@ -3467,7 +3394,6 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
 
     Ok(Invocation::List {
         state,
-        assignee,
         flagged,
         priority,
         label,
@@ -5313,18 +5239,6 @@ fn parse_comment(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-fn parse_assign(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() < 3 {
-        return Err(AppError::Usage(
-            "usage: story assign <id> <member>".to_string(),
-        ));
-    }
-    Ok(Invocation::Assign {
-        id: args[1].clone(),
-        member: join_tokens(&args[2..]),
-    })
-}
-
 fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
     let usage =
         "usage: story move <id> <state> [--if-state <expected>] [--reason <text>] [\"<comment>\"]";
@@ -5641,7 +5555,6 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     let mut title = None;
     let mut state = None;
     let mut priority = None;
-    let mut assignee = None;
     let mut labels = None;
     let mut blocked = None;
     let mut unblocked = false;
@@ -5649,7 +5562,7 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     let mut story_type = None;
     let mut description = None;
     let mut index = 2;
-    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--assignee <member>] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>] [--description \"<text>\"]";
+    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>] [--description \"<text>\"]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -5672,13 +5585,6 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
                     .get(index + 1)
                     .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 priority = Some(value.clone());
-                index += 2;
-            }
-            "--assignee" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
-                assignee = Some(value.clone());
                 index += 2;
             }
             "--labels" => {
@@ -5727,7 +5633,6 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     if title.is_none()
         && state.is_none()
         && priority.is_none()
-        && assignee.is_none()
         && labels.is_none()
         && blocked.is_none()
         && !unblocked
@@ -5745,7 +5650,6 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
         title,
         state,
         priority,
-        assignee,
         labels,
         blocked,
         unblocked,
@@ -6792,7 +6696,6 @@ mod tests {
                 vec!["project", "deinit", "--force"],
                 vec!["project", "new", "--prefix", "AB", "--no-agents-md"],
                 vec!["project", "delete", "--force"],
-                vec!["member", "add", "--github", "someone"],
                 vec!["type", "add", "spike", "--description", "text"],
                 vec!["graph", "--blocked-by", "SH-1"],
                 vec!["help", "--compact"],

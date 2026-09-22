@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::domain::{Member, StateDef, TypeDef};
+use crate::domain::{StateDef, TypeDef};
 use crate::error::AppError;
 
 pub use events::LegacyEvent;
@@ -105,7 +105,7 @@ pub struct LegacyStory {
 /// Everything one legacy `.storyhook` tree holds.
 ///
 /// Deliberately wider than [`crate::service::transfer::ProjectExport`]: an export
-/// document carries states, types, members, stories and the project's
+/// document carries states, types, stories and the project's
 /// settings (SH-133), and a *tree* also carries the project's creation time
 /// and its story-number counter. A migration that went through the export
 /// document alone would drop those two without saying so.
@@ -128,8 +128,6 @@ pub struct LegacyProject {
     pub states: Vec<StateDef>,
     /// The configured story types, in order.
     pub types: Vec<TypeDef>,
-    /// The project's members.
-    pub members: Vec<Member>,
     /// Whether `github-sync.toml` exists in this tree — the story↔GitHub-
     /// Issues sync engine's own configuration, from before it was retired
     /// (SH-408).
@@ -204,7 +202,6 @@ pub fn read_project(root: &Path) -> Result<LegacyProject, LegacyError> {
     let project = read_project_file(&paths)?;
     let states = read_states(&paths)?;
     let types = read_types(&paths)?;
-    let members = read_members(&paths)?;
     let github_sync_file_present = paths.github_sync_file().is_file();
     let github_bases_count = count_github_bases(&paths)?;
     let next_id = read_next_id(&paths)?;
@@ -225,7 +222,6 @@ pub fn read_project(root: &Path) -> Result<LegacyProject, LegacyError> {
         doctor_stale_threshold: doctor.stale_threshold,
         states,
         types,
-        members,
         github_sync_file_present,
         github_bases_count,
         next_id,
@@ -311,29 +307,6 @@ fn read_types(paths: &LegacyPaths) -> Result<Vec<TypeDef>, LegacyError> {
             detail: error.to_string(),
         })?
         .types)
-}
-
-/// The project's members. A missing file means none, matching `init`'s empty
-/// one.
-fn read_members(paths: &LegacyPaths) -> Result<Vec<Member>, LegacyError> {
-    let path = paths.members_file();
-    if !path.is_file() {
-        return Ok(Vec::new());
-    }
-    let text = read_to_string(&path)?;
-    let mut members = Vec::new();
-    for (index, line) in text.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        members.push(
-            serde_json::from_str(line).map_err(|error| LegacyError::Malformed {
-                path: path.clone(),
-                detail: format!("member {}: {error}", index + 1),
-            })?,
-        );
-    }
-    Ok(members)
 }
 
 /// How many `*.json` files sit under `github-sync/bases/` — the story↔GitHub-

@@ -451,6 +451,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0047_project_recovery.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 48,
+        name: "remove_assignees",
+        sql: include_str!("schema/0048_remove_assignees.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 mod lineage;
@@ -591,6 +597,38 @@ pub fn run(
 /// as `ÄPPLE` noncanonical. The function is scoped to migration connections;
 /// no stored schema object depends on it after the transaction commits.
 fn register_migration_functions(conn: &Connection) -> Result<(), StoreError> {
+    conn.create_scalar_function(
+        "storyhook_assignment_purge_activity",
+        3,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_INNOCUOUS,
+        |ctx| {
+            let id = ctx.get::<String>(0)?;
+            let raw = ctx.get::<String>(1)?;
+            let states = ctx.get::<String>(2)?;
+            let result = (|| -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+                let raw: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
+                let events = raw
+                    .into_iter()
+                    .filter(|event| {
+                        event
+                            .get("kind")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(crate::domain::is_known_event_kind)
+                    })
+                    .map(serde_json::from_value)
+                    .collect::<Result<Vec<crate::domain::StoryEvent>, _>>()?;
+                let states: Vec<crate::domain::StateDef> = serde_json::from_str(&states)?;
+                let states = states
+                    .into_iter()
+                    .map(|state| (state.slug.clone(), state))
+                    .collect();
+                Ok(crate::domain::fold_story(&id, &events, &states)?.updated_at)
+            })();
+            result.map_err(SqlError::UserFunctionError)
+        },
+    )?;
     conn.create_scalar_function(
         "storyhook_validate_dropped_catalog",
         2,
