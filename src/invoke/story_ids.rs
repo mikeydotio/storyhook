@@ -192,6 +192,8 @@ fn foreign_prefix_refusal<S: Store>(
 /// beside it.
 fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
     match invocation {
+        Invocation::DispatchPolicy { action: crate::cli::dispatch_policy::PolicyAction::Resolve {id, ..}, .. } => vec![id],
+        Invocation::DispatchPolicy { .. } => vec![],
         Invocation::Continuation { id, .. }
         | Invocation::SessionEligibility { id }
         | Invocation::Show { id }
@@ -497,6 +499,7 @@ mod tests {
             Invocation::SessionStart,
             Invocation::Search { query: "1".into() },
             Invocation::New {
+                complexity: None,
                 title: "1".into(),
                 state: None,
                 story_type: None,

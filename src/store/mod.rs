@@ -59,6 +59,8 @@
 //! and disagree.
 
 pub mod block_delivery;
+mod dispatch_policy;
+pub use dispatch_policy::DispatchPolicyOverride;
 pub mod continuation;
 pub mod project_recovery;
 pub use block_delivery::{BlockAction, BlockDelivery, DeliveryStatus};
@@ -425,6 +427,14 @@ pub trait ReadOps {
     /// reads back as [`ProjectSettings::default`].
     fn settings(&self, project: ProjectId) -> Result<ProjectSettings, StoreError>;
 
+    /// Reads one policy row; None selects installation scope.
+    fn dispatch_policy(
+        &self,
+        project: Option<ProjectId>,
+        agent: EngineAgent,
+        complexity: crate::domain::Complexity,
+    ) -> Result<DispatchPolicyOverride, StoreError>;
+
     /// A story's events, in order.
     ///
     /// Events whose kind this binary does not recognise come back as
@@ -608,6 +618,15 @@ pub trait WriteOps: ReadOps {
         delivery: &BlockDelivery,
         expected: DeliveryStatus,
     ) -> Result<bool, StoreError>;
+
+    /// Stores one policy row in the current write transaction.
+    fn put_dispatch_policy(
+        &mut self,
+        project: Option<ProjectId>,
+        agent: EngineAgent,
+        complexity: crate::domain::Complexity,
+        value: &DispatchPolicyOverride,
+    ) -> Result<(), StoreError>;
 
     /// Creates a project and returns its id.
     fn create_project(&mut self, project: &NewProject) -> Result<ProjectId, StoreError>;

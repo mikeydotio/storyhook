@@ -345,12 +345,16 @@ fn dispatch_inner<S: Store>(
 ) -> Result<Response, AppError> {
     story_ids::canonicalize(ctx, &mut invocation)?;
     match invocation {
+        Invocation::DispatchPolicy { global, action } => {
+            dispatch_policy(ctx.store(), (!global).then_some(ctx.project()), action)
+        }
         Invocation::New {
             title,
             state,
             story_type,
             description,
             priority,
+            complexity,
             labels,
             draft,
         } => {
@@ -360,6 +364,7 @@ fn dispatch_inner<S: Store>(
                 story_type,
                 description,
                 priority,
+                complexity,
                 labels,
                 draft,
             };
@@ -441,6 +446,7 @@ fn dispatch_inner<S: Store>(
             title,
             state,
             priority,
+            complexity,
             labels,
             blocked,
             unblocked,
@@ -452,6 +458,7 @@ fn dispatch_inner<S: Store>(
                 title,
                 state,
                 priority,
+                complexity,
                 labels,
                 blocked,
                 unblocked,
@@ -2669,6 +2676,10 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
         return dispatch_without_store(invocation);
     }
     match invocation {
+        Invocation::DispatchPolicy {
+            global: true,
+            action,
+        } => dispatch_policy(store, None, action),
         Invocation::Project { action } => dispatch_project(store, root, now, action),
         // `story store new` is intercepted before a store is even opened (see
         // [`create_store`]) and never reaches here; `Backup` is the only
@@ -3075,6 +3086,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "help",
         Invocation::Project { .. } => "project",
+        Invocation::DispatchPolicy { .. } => "dispatch-policy",
         Invocation::New { .. } => "new",
         Invocation::State { .. } => "state",
         Invocation::List { .. } => "list",
@@ -4211,6 +4223,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         Invocation::Migrate { dry_run: true, .. } => None,
         // Everything else, listed rather than defaulted. See above.
         Invocation::Help
+        | Invocation::DispatchPolicy { .. }
         | Invocation::New { .. }
         | Invocation::Publish { .. }
         | Invocation::State { .. }
@@ -4534,6 +4547,7 @@ fn is_project_less(invocation: &Invocation) -> bool {
         return true;
     }
     match invocation {
+        Invocation::DispatchPolicy { global, .. } => *global,
         // `new`, `init` and `list` are about projects in general; the other four
         // are about *this* one and cannot be answered without resolving it.
         // Stated positively, so a variant added later is project-less only
@@ -5471,4 +5485,26 @@ pub fn lane_budget_with_verifier_notices(
             )),
         },
     }
+}
+
+/// Executes a policy command against an explicit store scope.
+fn dispatch_policy<S: Store>(
+    store: &S,
+    project: Option<crate::store::ProjectId>,
+    action: crate::cli::dispatch_policy::PolicyAction,
+) -> Result<Response, AppError> {
+    use crate::cli::dispatch_policy::PolicyAction;
+    use crate::service::dispatch_policy;
+    let view = match action {
+        PolicyAction::Show => dispatch_policy::show(store, project, None)?,
+        PolicyAction::Resolve { id, agent } => {
+            dispatch_policy::show(store, project, Some((&id, agent)))?
+        }
+        PolicyAction::Patch {
+            agent,
+            complexity,
+            fields,
+        } => dispatch_policy::patch(store, project, agent, complexity, &fields)?,
+    };
+    Ok(Response::DispatchPolicy(view))
 }

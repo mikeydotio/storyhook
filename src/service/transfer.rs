@@ -1294,6 +1294,12 @@ fn import_events(
         title: story.title.clone(),
         state: state_slug,
     }];
+    if let Some(raw) = &story.complexity {
+        events.push(StoryEvent::StoryComplexitySet {
+            at: now.to_string(),
+            complexity: crate::domain::Complexity::parse(raw)?,
+        });
+    }
     let priority = story
         .priority
         .as_deref()

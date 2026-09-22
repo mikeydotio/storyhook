@@ -1877,6 +1877,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     <div class="field-grid">
       <div class="field"><label for="create-state">State</label><select id="create-state"></select></div>
       <div class="field"><label for="create-type">Type</label><select id="create-type"></select></div>
+      <div class="field"><label for="create-complexity">Complexity</label><select id="create-complexity"><option value="">Medium · unassessed</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></div>
       <div class="field"><label for="create-priority">Priority</label><select id="create-priority"></select></div>
     </div>
     <div class="field" id="create-labels-field"><label>Labels</label></div>
@@ -1971,6 +1972,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <div class="field"><label for="dispatch-speed">Speed</label>
         <select id="dispatch-speed"><option value="">Default</option></select></div>
     </div>
+    <p id="dispatch-policy-preview" role="status" aria-live="polite"></p>
     <div class="modal-error" id="dispatch-options-notice" role="status" aria-live="polite"></div>
     <label class="dispatch-auto-option" for="dispatch-auto">
       <input type="checkbox" id="dispatch-auto">
@@ -6074,7 +6076,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return dispatchOptionsPromise;
   }
 
-  var OPTIONS_NOTICE_TAIL = " Model, Effort and Speed will use the provider's defaults.";
+  var OPTIONS_NOTICE_TAIL = " Model and Effort use complexity defaults; Speed uses standard.";
 
   /** `text` as a sentence: the resolver's reason ends without a period,
    * `describeFailure`'s unprovable-outcome sentence already carries one. */
@@ -6121,7 +6123,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function populateDispatchSelector(selectId, entries, preferred) {
     var select = $(selectId);
     clear(select);
-    select.appendChild(el("option", { value: "" }, ["Default"]));
+    select.appendChild(el("option", { value: "" }, [/-(model|effort)$/.test(selectId) ? "Default (complexity)" : "Default"]));
     (entries || []).forEach(function(entry) {
       select.appendChild(el("option", { value: entry.id }, [entry.label || entry.id]));
     });
@@ -6207,6 +6209,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     populateDispatchSelector(prefix + "-effort", providerCaps.efforts, remembered.effort);
     populateDispatchSelector(prefix + "-speed", providerCaps.speeds, remembered.speed);
     renderProviderOptionsNotice(prefix, agent, caps);
+    if (prefix === "dispatch") refreshDispatchPolicyPreview();
   }
 
   /** Opens with the last submitted configuration. Localhost remains the only
@@ -6220,6 +6223,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function openDispatchModal(storyId, returnFocus) {
     if (state.dispatches[storyId]) return;
     dispatchModalStoryId = storyId;
+    $("dispatch-policy-preview").textContent = "Default model and effort follow story complexity.";
     $("dispatch-client").value = "localhost";
     $("dispatch-agent").value = dispatchDefaults.agent;
     $("dispatch-auto").checked = dispatchDefaults.auto;
@@ -6535,7 +6539,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Starts a dispatch for `storyId`. `auto` requests the autonomous
    * charter via `?auto=1` (SH-208); `model`/`effort`/`speed` (SH-517) are
-   * each "" for "the provider's own default" and otherwise appended as
+   * each "" for complexity policy (speed uses standard) and otherwise appended as
    * their own query parameter, so an unconfigured dispatch's request is
    * byte-identical to before SH-517. Keyed per-story in `state.dispatches`
    * rather than one global slot, so dispatching a second story while the
@@ -6584,6 +6588,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       });
   }
 
+  /** Report the actual helper selection, shared by notices and retained logs. */
+  function dispatchResultDetail(record) {
+    var payload = record.payload || {};
+    var parts = [payload.display || record.error || ""];
+    if (payload.policy_note) parts.push(payload.policy_note);
+    if (payload.model) parts.push("Model: " + payload.model + (payload.model_source ? " (" + payload.model_source + ")" : ""));
+    if (payload.effort) parts.push("Effort: " + payload.effort + (payload.effort_source ? " (" + payload.effort_source + ")" : ""));
+    return parts.filter(Boolean).join("\n") || null;
+  }
+
   /** One poll of `handle`'s outcome. Guards every step on `state.dispatches`
    * still holding the same handle for `storyId`, so a stray in-flight
    * response from a poll this function itself superseded (there is none
@@ -6617,7 +6631,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // 3px border color; before SH-304 they shared a hand-built sentence
         // assembled here, which is where `story.sh`'s own paragraph leaked
         // into the UI. The state and the detail travel separately now.
-        var display = (record.payload && record.payload.display) || record.error || null;
+        var display = dispatchResultDetail(record);
         finishDispatch(storyId, record.state, current.auto, display, record.reason);
       })
       .catch(function(err) {
@@ -7667,6 +7681,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var aSlug = was.display_state || a.state, bSlug = newById[id].display_state || b.state;
       if (aSlug !== bSlug) { result.moved.push({ id: id, from: aSlug, to: bSlug }); fields.push("state"); }
       if (a.priority !== b.priority) fields.push("priority");
+      if (a.complexity !== b.complexity || a.complexity_assessed !== b.complexity_assessed) fields.push("complexity");
       if (a.title !== b.title) fields.push("title");
       if (a.story_type !== b.story_type) fields.push("type");
       if ((a.labels || []).join(",") !== (b.labels || []).join(",")) fields.push("labels");
@@ -9769,6 +9784,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
 
     var metaRow = el("div", { class: "card-meta" }, []);
+    metaRow.appendChild(el("span", {class: "story-complexity"}, [(st.complexity || "medium") + (st.complexity_assessed ? "" : " · unassessed")]));
     if ((st.labels || []).length) {
       var labelWrap = el("div", { class: "card-labels" }, []);
       // A card shows three labels and collapses the rest into "+N", so a
@@ -12065,6 +12081,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     });
     grid.appendChild(el("div", { class: "field" }, [el("label", {}, ["Priority"]), prioritySelect]));
 
+    var complexitySelect = el("select", { "aria-label": "Complexity" }, []);
+    if (!st.complexity_assessed) complexitySelect.appendChild(el("option", {value: "", disabled: true}, ["Medium · unassessed"]));
+    ["low", "medium", "high"].forEach(function(level) { complexitySelect.appendChild(el("option", {value: level}, [level])); });
+    complexitySelect.value = st.complexity_assessed ? st.complexity : "";
+    complexitySelect.addEventListener("change", function() { runFieldMutation(st.id, "PATCH", "", {complexity: complexitySelect.value}); });
+    grid.appendChild(el("div", {class: "field"}, [el("label", {}, ["Complexity"]), complexitySelect]));
+
     var typeSelect = el("select", {}, m.types.map(function(t) {
       var o = el("option", { value: t.slug }, [typeLabel(t.slug)]);
       if (t.slug === st.story_type) o.selected = true;
@@ -13233,6 +13256,99 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     ]);
   }
 
+
+  var policyPreviewTicket = 0;
+  function refreshDispatchPolicyPreview() {
+    var id = dispatchModalStoryId, project = state.repoId, agent = $("dispatch-agent").value;
+    if (!id || !agent) return;
+    var ticket = ++policyPreviewTicket;
+    api("GET", repoApiBase(project) + "/story/" + encodeURIComponent(id) + "/dispatch-policy/" + agent).then(function(response) {
+      if (ticket !== policyPreviewTicket || id !== dispatchModalStoryId || project !== state.repoId || agent !== $("dispatch-agent").value) return;
+      var row = response.dispatch_policy.resolved;
+      var model = $("dispatch-model").value, effort = $("dispatch-effort").value;
+      $("dispatch-policy-preview").textContent = "Complexity: " + row.complexity + (row.complexity_assessed ? "" : " (unassessed)") +
+        ". Model: " + (model || row.model) + " (" + (model ? "selected" : row.model_source) + "). Effort: " +
+        (effort || row.effort) + " (" + (effort ? "selected" : row.effort_source) + ").";
+    }).catch(function(error) {
+      if (ticket === policyPreviewTicket && id === dispatchModalStoryId) $("dispatch-policy-preview").textContent = "Could not preview dispatch policy: " + describeFailure(error);
+    });
+  }
+
+  function buildDispatchPolicySettings() {
+    var panel = el("section", {id: "dispatch-policy-panel"}, []);
+    panel.appendChild(el("h2", {class: "settings-section-head"}, ["Automatic model and effort"]));
+    panel.appendChild(el("p", {}, ["Default dispatch choices follow story complexity. Project overrides take precedence over installation settings."]));
+    var scope = el("select", {id: "policy-scope", "aria-label": "Policy scope"}, [el("option", {value: ""}, ["Installation"])]);
+    var status = el("p", {id: "policy-status", role: "status", "aria-live": "polite"}, []);
+    var content = el("div", {id: "policy-rows", style: "overflow-x:auto"}, []);
+    var refresh = el("button", {class: "btn btn-ghost", type: "button"}, ["Refresh policy"]);
+    panel.appendChild(scope); panel.appendChild(refresh); panel.appendChild(status); panel.appendChild(content);
+    var ticket = 0;
+    function base() { return scope.value ? repoApiBase(scope.value) + "/dispatch-policy" : "/api/dispatch-policy"; }
+    function render(document, url, generation) {
+      clear(content);
+      var rows = el("tbody", {}, []);
+      document.entries.forEach(function(row) {
+        var cells = [el("td", {}, [row.agent]), el("td", {}, [row.complexity])];
+        ["model", "effort"].forEach(function(field) {
+          var values = field === "model" ? (row.agent === "codex" ? ["gpt-6-astra", "gpt-5.6-sol"] : ["opus", "fable"]) :
+            (row.agent === "codex" ? ["none", "low", "medium", "high", "xhigh", "max", "ultra"] : ["low", "medium", "high", "xhigh", "max"]);
+          var label = row.agent + " " + row.complexity + " " + field;
+          var select = el("select", {"aria-label": label}, [el("option", {value: ""}, ["Inherit"])]);
+          values.forEach(function(value) { select.appendChild(el("option", {value: value}, [value])); });
+          select.value = row.overrides[field] || "";
+          var note = el("span", {}, [" " + row[field] + " (" + row[field + "_source"] + ")"]);
+          select.addEventListener("change", function() {
+            var patch = {agent: row.agent, complexity: row.complexity};
+            patch[field] = select.value || null;
+            scope.disabled = true; refresh.disabled = true;
+            content.querySelectorAll("select").forEach(function(control) { control.disabled = true; });
+            status.textContent = "Saving policy…";
+            api("PATCH", url, patch, {noAuthRetry: true}).then(function(saved) {
+              if (generation !== ticket) return;
+              render(saved.dispatch_policy, url, generation);
+              status.textContent = "Policy saved.";
+            }).catch(function(error) {
+              if (generation !== ticket) return;
+              select.value = row.overrides[field] || "";
+              status.textContent = "Could not save policy: " + describeFailure(error) + " Refresh to check the saved value.";
+              content.querySelectorAll("select").forEach(function(control) { control.disabled = false; });
+            }).finally(function() { if (generation === ticket) { scope.disabled = false; refresh.disabled = false; } });
+          });
+          cells.push(el("td", {}, [select, note]));
+        });
+        rows.appendChild(el("tr", {}, cells));
+      });
+      content.appendChild(el("table", {class: "settings-table"}, [el("thead", {}, [el("tr", {}, ["Provider", "Complexity", "Model", "Effort"].map(function(label) { return el("th", {scope: "col"}, [label]); }))]), rows]));
+    }
+    function load() {
+      var generation = ++ticket, url = base();
+      clear(content); status.textContent = "Reading policy…";
+      api("GET", url).then(function(response) {
+        if (generation !== ticket) return;
+        render(response.dispatch_policy, url, generation); status.textContent = "";
+      }).catch(function(error) { if (generation === ticket) status.textContent = "Could not read policy: " + describeFailure(error); });
+    }
+    scope.addEventListener("change", load); refresh.addEventListener("click", load); load();
+    return panel;
+  }
+
+  /** Catalog loading must not leave a settings panel with an empty project list. */
+  function syncDispatchPolicyScopes() {
+    var scope = $("policy-scope");
+    if (!scope || scope.disabled) return;
+    var repos = state.repos.filter(function(repo) { return repo.available && repo.path; });
+    var fingerprint = JSON.stringify(repos.map(function(repo) { return [repo.id, repo.name]; }));
+    if (scope.dataset.repos === fingerprint) return;
+    scope.dataset.repos = fingerprint;
+    var selected = scope.value;
+    clear(scope);
+    scope.appendChild(el("option", {value: ""}, ["Installation"]));
+    repos.forEach(function(repo) { scope.appendChild(el("option", {value: repo.id}, [repo.name])); });
+    scope.value = repos.some(function(repo) { return repo.id === selected; }) ? selected : "";
+    if (scope.value !== selected) scope.dispatchEvent(new Event("change"));
+  }
+
   function renderSettings() {
     if (pressDefer("settings", renderSettings)) return;
     // Guarded: this also runs on every repo-list refresh, and rebuilding
@@ -13242,6 +13358,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!container.dataset.built) {
       clear(container);
       container.appendChild(buildNoticePrefs());
+      container.appendChild(buildDispatchPolicySettings());
       // This screen had no heading at any level until SH-322 added one above,
       // which would have left that one an orphan (SC 1.3.1). Two siblings also
       // give heading navigation a route to the preference.
@@ -13272,6 +13389,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // user's own pull is the Refresh control.
       fetchDispatchLog();
     }
+    syncDispatchPolicyScopes();
     renderSettingsTable();
   }
 
@@ -13448,7 +13566,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
     var list = el("div", { class: "dispatch-log-list" }, []);
     dispatchLog.dispatches.forEach(function(record) {
-      var detail = (record.payload && record.payload.display) || record.error || null;
+      var detail = dispatchResultDetail(record);
       list.appendChild(el("div", {
         class: "dispatch-log-row " + (record.state === "ok" ? "ok" : "error"),
         dataset: { story: record.story, state: record.state }
@@ -14697,6 +14815,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // identical in every project, so unlike state/type/labels below it is
     // built once here and never needs rebuilding on a project switch
     // (SH-439's `populateCreateVocabulary` deliberately doesn't touch it).
+    $("create-complexity").value = story && story.complexity_assessed ? story.complexity : "";
     clear($("create-priority"));
     m.priorities.forEach(function(p) { $("create-priority").appendChild(el("option", { value: p }, [p])); });
     $("create-priority").value = (story && m.priorities.indexOf(story.priority) !== -1)
@@ -14877,6 +14996,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (description) body.description = description;
     if ($("create-state").value) body.state = $("create-state").value;
     if ($("create-type").value) body.type = $("create-type").value;
+    if ($("create-complexity").value) body.complexity = $("create-complexity").value;
     if ($("create-priority").value) body.priority = $("create-priority").value;
     return body;
   }
@@ -15863,6 +15983,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("dispatch-modal-backdrop").addEventListener("click", closeDispatchModal);
     $("dispatch-modal-submit").addEventListener("click", submitDispatchModal);
     $("dispatch-agent").addEventListener("change", onDispatchAgentChange);
+    $("dispatch-model").addEventListener("change", refreshDispatchPolicyPreview);
+    $("dispatch-effort").addEventListener("change", refreshDispatchPolicyPreview);
     $("engine-modal-cancel").addEventListener("click", closeEngineModal);
     $("engine-modal-backdrop").addEventListener("click", closeEngineModal);
     $("engine-modal-submit").addEventListener("click", submitEngineModal);

@@ -69,6 +69,9 @@ story prioritize {prefix}-4 high
 story prioritize {prefix}-6 medium
 ```
 
+Read `story help complexity-rubric` before setting `--complexity low|medium|high`.
+Complexity selects default dispatch model and effort; it does not change priority.
+
 **Read `story help priority-rubric` before choosing a level.** Priority is
 `story next`'s sort key, not a label — it decides what the next session picks
 up, ties break toward the older story, and every inflated level costs the
@@ -263,6 +266,8 @@ to manage tasks.
 - `story move <id> <state>` — change story state
 - `story prioritize <id> <level>` — set priority (critical, high, medium, low);
   run `story help priority-rubric` for what each level means before choosing one
+- `story set <id> --complexity <level>` — assess complexity;
+  read `story help complexity-rubric` before choosing a level
 - `story label <id> <label>` — add a label. Two names are reserved:
   `no-auto` (needs a person in the loop; still offered by `story next`) and
   `human-only` (only a person may do it; `story next` never returns it, though

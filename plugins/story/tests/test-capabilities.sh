@@ -13,8 +13,7 @@ run_capabilities() {
 
 # Claude's catalog: the exact set the story asks for -- Fable, Opus,
 # Opus+Sonnet (mapped to the real `opusplan` alias), Sonnet, Haiku -- with
-# opusplan marked as the default model, since that is what an unconfigured
-# dispatch already launches.
+# automatic defaults resolved by the separate complexity policy.
 out=$(run_capabilities --agent=claude)
 assert_eq "$(jqf "$out" .ok)" "true" "claude: ok"
 assert_eq "$(jqf "$out" .agent)" "claude" "claude: agent echoed"
@@ -22,17 +21,17 @@ assert_eq "$(jqf "$out" '.models | map(.id) | sort | join(",")')" \
   "fable,haiku,opus,opusplan,sonnet" "claude: model id set"
 assert_eq "$(jqf "$out" '.models[] | select(.id=="opusplan") | .label')" \
   "Opus+Sonnet" "claude: opusplan labelled Opus+Sonnet"
-assert_eq "$(jqf "$out" '.models[] | select(.id=="opusplan") | .default')" \
-  "true" "claude: opusplan is the default model"
+assert_eq "$(jqf "$out" '.models[] | select(.id=="opusplan") | .default // false')" \
+  "false" "claude: opusplan is explicit only"
 assert_eq "$(jqf "$out" '[.models[] | select(.default==true)] | length')" \
-  "1" "claude: exactly one default model"
+  "0" "claude: complexity policy chooses defaults"
 assert_eq "$(jqf "$out" '.efforts | map(.id) | sort | join(",")')" \
   "high,low,max,medium,xhigh" "claude: effort id set"
 assert_eq "$(jqf "$out" '.speeds | map(.id) | join(",")')" \
   "fast" "claude: speed offers only the one alternative to Default -- no redundant standard entry"
 
 # Codex's catalog: Astra plus the GPT-5.6 trio, no forced default model (its
-# own config.toml decides, matching dispatch's existing no-flag behavior),
+# complexity policy decides),
 # and the provider's full effort range from "none" through "ultra".
 out=$(run_capabilities --agent=codex)
 assert_eq "$(jqf "$out" .ok)" "true" "codex: ok"

@@ -90,6 +90,8 @@ fn snapshot(id: &str, title: &str) -> StorySnapshot {
         relationships: Vec::new(),
         priority: Priority::None,
         priority_assessed: false,
+        complexity: Default::default(),
+        complexity_assessed: false,
         labels: Vec::new(),
         story_type: None,
         description: None,
@@ -664,6 +666,14 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         // One of each `SettingSource`, and both sides of `settable` — the four
         // combinations the renderer branches on.
         (
+            "dispatch_policy",
+            Response::DispatchPolicy(storyhook::service::dispatch_policy::PolicyView {
+                scope: "installation".into(),
+                entries: vec![],
+                resolved: None,
+            }),
+        ),
+        (
             "project_settings",
             Response::ProjectSettings(vec![
                 SettingView {
@@ -1055,6 +1065,7 @@ fn the_response_corpus_covers_every_variant() {
             Response::Graph(_) => "graph",
             Response::Issues(_) => "issues",
             Response::PhaseList(_) => "phase_list",
+            Response::DispatchPolicy(_) => "dispatch_policy",
             Response::ProjectSettings(_) => "project_settings",
             Response::RawJson(_) => "raw_json",
             Response::ProjectSnapshot(_) => "project_snapshot",
@@ -1066,7 +1077,8 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 26] = [
+    const EVERY_VARIANT: [&str; 27] = [
+        "dispatch_policy",
         "project_recovery",
         "verifier_status",
         "with_verifier",
@@ -1409,6 +1421,10 @@ fn error_variants_travel_under_a_kind_tag() {
 /// can assert on values directly.
 fn invocation_corpus() -> Vec<Invocation> {
     vec![
+        Invocation::DispatchPolicy {
+            global: true,
+            action: storyhook::cli::dispatch_policy::PolicyAction::Show,
+        },
         Invocation::Help,
         Invocation::Continuation {
             id: String::new(),
@@ -1515,6 +1531,7 @@ fn invocation_corpus() -> Vec<Invocation> {
             }),
         },
         Invocation::New {
+            complexity: None,
             title: "A story — with ünïcödé and \"quotes\"".to_string(),
             state: Some("todo".to_string()),
             story_type: Some("spike".to_string()),
@@ -1764,6 +1781,7 @@ fn invocation_corpus() -> Vec<Invocation> {
             mode: GraphMode::ParallelGroups,
         },
         Invocation::SetFields {
+            complexity: None,
             id: "SH-1".to_string(),
             title: Some("New title".to_string()),
             state: Some("done".to_string()),
@@ -2140,6 +2158,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Continuation { .. } => "Continuation",
         Invocation::Help => "Help",
+        Invocation::DispatchPolicy { .. } => "DispatchPolicy",
         Invocation::Project { .. } => "Project",
         Invocation::New { .. } => "New",
         Invocation::State { .. } => "State",
@@ -2223,7 +2242,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        72,
+        73,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

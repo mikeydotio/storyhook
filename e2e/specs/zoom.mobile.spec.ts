@@ -285,7 +285,7 @@ test("the story drawer's controls are at least 16px", async ({ page }) => {
   // split existed.
   await page.locator(".description-view").click();
 
-  // .drawer-title, 3 .field selects (State/Type/Priority),
+  // .drawer-title, 4 .field selects (State/Type/Priority/Complexity),
   // .description-field, the block-reason input, the label-add input, the
   // relation select + id input, and the comment textarea. Relationships
   // and Comments default open, and a freshly created story is unblocked,
@@ -293,7 +293,7 @@ test("the story drawer's controls are at least 16px", async ({ page }) => {
   await expectNoZoomingControls(
     page.locator("#drawer-body"),
     "the story drawer",
-    10,
+    11,
   );
 
   await page.locator("#drawer-close").click();

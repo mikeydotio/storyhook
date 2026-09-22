@@ -16,6 +16,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-1",
             "priority": "critical",
@@ -51,6 +53,8 @@ source: tests/golden_cli.rs
           "story": {
             "awaiting": null,
             "comments": [],
+            "complexity": "medium",
+            "complexity_assessed": false,
             "created_at": "[timestamp]",
             "id": "SH-15",
             "priority": "low",
@@ -85,6 +89,8 @@ source: tests/golden_cli.rs
         "story": {
           "awaiting": null,
           "comments": [],
+          "complexity": "medium",
+          "complexity_assessed": false,
           "created_at": "[timestamp]",
           "id": "SH-1",
           "priority": "critical",

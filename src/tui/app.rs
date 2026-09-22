@@ -508,6 +508,7 @@ fn set_field(id: &str, title: Option<String>, description: Option<String>) -> In
         title,
         state: None,
         priority: None,
+        complexity: None,
         labels: None,
         blocked: None,
         unblocked: false,
@@ -567,6 +568,7 @@ fn create_story_mutation(
     priority: Option<crate::domain::Priority>,
     labels: &[String],
     description: Option<&str>,
+    complexity: Option<crate::domain::Complexity>,
 ) -> Result<(String, Vec<String>), AppError> {
     let response = invoke(
         invoker,
@@ -576,6 +578,7 @@ fn create_story_mutation(
             story_type: None,
             description: description.map(str::to_string),
             priority: priority.map(|p| p.as_str().to_string()),
+            complexity: complexity.map(|level| level.as_str().to_string()),
             labels: (!labels.is_empty()).then(|| labels.to_vec()),
             // SH-175's draft flag has no TUI surface — the story scoped it to
             // the CLI and web dashboard only.
@@ -834,12 +837,19 @@ fn dispatch(
         // Data mutations: acquire lock, perform mutation, refresh
         Action::CreateStory {
             title,
+            complexity,
             priority,
             labels,
             description,
         } => {
-            let result =
-                create_story_mutation(invoker, &title, priority, &labels, description.as_deref());
+            let result = create_story_mutation(
+                invoker,
+                &title,
+                priority,
+                &labels,
+                description.as_deref(),
+                complexity,
+            );
             match result {
                 Ok((id, warnings)) => {
                     // Creation is not placed on the undo stack: undoing it
@@ -985,6 +995,43 @@ fn dispatch(
                 Err(e) => {
                     state.notification =
                         Some((format!("Priority update failed: {e}"), Instant::now()));
+                }
+            }
+        }
+
+        Action::SetComplexity { id, complexity } => {
+            let events_before = snapshot_for_undo(invoker, &id);
+            let result = invoke(
+                invoker,
+                Invocation::SetFields {
+                    id: id.clone(),
+                    complexity: Some(complexity.as_str().to_string()),
+                    title: None,
+                    state: None,
+                    priority: None,
+                    labels: None,
+                    blocked: None,
+                    unblocked: false,
+                    json: None,
+                    story_type: None,
+                    description: None,
+                },
+            )
+            .map(|_| ());
+            match result {
+                Ok(()) => {
+                    push_undo(
+                        state,
+                        format!("{id} complexity set to {}", complexity.as_str()),
+                        id.clone(),
+                        events_before,
+                    );
+                    state.notification = Some((format!("{id} complexity set"), Instant::now()));
+                    refresh_data(state, invoker, board, graph, modal_components);
+                }
+                Err(e) => {
+                    state.notification =
+                        Some((format!("Complexity update failed: {e}"), Instant::now()));
                 }
             }
         }
@@ -1530,7 +1577,7 @@ mod tests {
     }
 
     fn seed_story(invoker: &dyn Invoker, title: &str) -> String {
-        create_story_mutation(invoker, title, None, &[], None)
+        create_story_mutation(invoker, title, None, &[], None, None)
             .unwrap()
             .0
     }
@@ -1572,8 +1619,9 @@ mod tests {
         let fixture = TuiFixture::new();
         let invoker = fixture.invoker();
 
-        let (id, warnings) = create_story_mutation(&invoker, "Defaulted story", None, &[], None)
-            .expect("creating with the default priority succeeds");
+        let (id, warnings) =
+            create_story_mutation(&invoker, "Defaulted story", None, &[], None, None)
+                .expect("creating with the default priority succeeds");
 
         assert!(warnings.is_empty(), "no warning expected: {warnings:?}");
         let store = DataStore::load(&invoker).expect("reloading the story");
@@ -1599,6 +1647,7 @@ mod tests {
             Some(crate::domain::Priority::High),
             &[],
             None,
+            None,
         )
         .expect("creating with a stated priority succeeds");
 
@@ -1607,6 +1656,21 @@ mod tests {
             creation_notification(&id, &warnings),
             format!("Created {id}")
         );
+    }
+
+    #[test]
+    fn creating_a_story_with_complexity_uses_the_same_mutation_as_the_form() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+        for level in crate::domain::Complexity::ALL {
+            let (id, _) =
+                create_story_mutation(&invoker, "Complexity", None, &[], None, Some(level))
+                    .unwrap();
+            let data = DataStore::load(&invoker).unwrap();
+            let story = data.find_story(&id).unwrap();
+            assert_eq!(story.complexity, level);
+            assert!(story.complexity_assessed);
+        }
     }
 
     // =======================================================================

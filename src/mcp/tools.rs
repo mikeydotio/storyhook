@@ -943,6 +943,7 @@ pub fn list() -> Value {
 #[must_use]
 pub fn tool_for_variant(invocation: &Invocation) -> Option<&'static str> {
     match invocation {
+        Invocation::DispatchPolicy { .. } => None,
         Invocation::List { .. } => Some("story_list"),
         Invocation::Next { .. } => Some("story_next"),
         Invocation::Show { .. } => Some("story_show"),

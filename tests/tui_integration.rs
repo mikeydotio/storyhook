@@ -152,6 +152,7 @@ fn create_story(fixture: &Fixture, title: &str) -> String {
     match run(
         fixture,
         Invocation::New {
+            complexity: None,
             title: title.to_string(),
             state: None,
             story_type: None,
@@ -1293,6 +1294,7 @@ fn create_draft(fixture: &Fixture, title: &str) -> String {
     match run(
         fixture,
         Invocation::New {
+            complexity: None,
             title: title.to_string(),
             state: None,
             story_type: None,

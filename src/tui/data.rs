@@ -332,6 +332,8 @@ mod tests {
             relationships: vec![],
             priority: Priority::None,
             priority_assessed: false,
+            complexity: Default::default(),
+            complexity_assessed: false,
             labels: vec![],
             story_type: None,
             description: None,
@@ -461,6 +463,7 @@ mod tests {
         for title in titles {
             invoker
                 .invoke(InvokeRequest::new(Invocation::New {
+                    complexity: None,
                     title: (*title).to_string(),
                     state: None,
                     story_type: None,
@@ -526,6 +529,8 @@ mod tests {
             referenced_by_commits: vec![],
             relationships: vec![],
             priority_assessed: priority != Priority::None,
+            complexity: Default::default(),
+            complexity_assessed: false,
             priority,
             labels: labels.into_iter().map(|s| s.to_string()).collect(),
             story_type: None,

@@ -1,0 +1,41 @@
+story dispatch-policy show|set|reset|resolve
+
+Inspect or change automatic model and effort settings. Commands use the current
+project unless --global selects installation settings. Installation settings
+need no project. All checkouts of a project share its overrides.
+
+  story dispatch-policy show [--global]
+  story dispatch-policy set [--global] --agent codex|claude
+      --complexity low|medium|high [--model <id>] [--effort <id>]
+  story dispatch-policy reset [--global] --agent codex|claude
+      --complexity low|medium|high [--model] [--effort]
+  story dispatch-policy resolve <id> --agent codex|claude
+
+Set changes only supplied fields. Reset without field flags removes both
+overrides. Reset with --model or --effort removes only that override; these
+reset flags take no values. Changes apply atomically. Invalid values fail
+without changing any field. Speed remains a separate dispatch choice.
+
+Automatic model choices:
+  codex   gpt-6-astra, gpt-5.6-sol
+  claude  opus, fable
+
+Effort choices:
+  codex   none, low, medium, high, xhigh, max, ultra
+  claude  low, medium, high, xhigh, max
+
+Read story help complexity-rubric before assessing complexity or changing its
+mapping. Explicit dispatch flags and environment values override policy.
+Project overrides inherit missing fields from installation settings, which
+inherit from built-in values. Web Settings provides the same controls.
+
+With --json, responses contain result and dispatch_policy. entries contains
+effective model, effort, model_source, effort_source, and saved overrides for
+each provider/complexity row. resolve also returns resolved, with the story ID
+and complexity_assessed. Sources are project, installation, or builtin.
+
+Examples:
+  story dispatch-policy set --global --agent codex --complexity low --model gpt-5.6-sol
+  story dispatch-policy set --agent claude --complexity high --effort max
+  story dispatch-policy reset --agent claude --complexity high --effort
+  story dispatch-policy resolve SH-1 --agent codex --json

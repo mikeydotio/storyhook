@@ -1,3 +1,5 @@
+/// Automatic dispatch policy commands.
+pub mod dispatch_policy;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -243,8 +245,9 @@ Usage:
   story project delete [--force]                   (delete a project and its stories)
   story project list                               (every project storyhook knows)
   story project settings list|get|set|unset        (this project's settings)
+  story dispatch-policy show|set|reset|resolve      (complexity-based model and effort)
   story new <title> [--state <slug>] [--type <slug>] [--description <text>]
-                    [--priority <level>] [--label <name> ...]
+                    [--priority <level>] [--complexity low|medium|high] [--label <name> ...]
                     [--draft]                        (claims an id; not yet live)
   story tui                                           (interactive terminal UI)
   story web start [--port <PORT>]                  (start web dashboard)
@@ -300,6 +303,7 @@ Usage:
   story verifier gate-config <checkout> <base> <head> <tree> --json
   story resources <id> [--json]                    (inspect existing resource identity)
   story cleanup [--dry-run]                         (retry the verifier's reap of finished story workspaces)
+  story dispatch-policy show|set|reset|resolve      (automatic model and effort settings)
   story summary
   story report [--html]
   story search <query>
@@ -357,6 +361,7 @@ Usage:
   story publish <id>                               (make a draft live; one-way)
   story delete <id> [--force]                      (permanently remove a story)
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
+                 [--complexity low|medium|high]
                   [--labels "<csv>"] [--blocked "<reason>"]
                   [--unblocked] [--json "<json>"] [--type <slug>]
                   [--description "<text>"]
@@ -528,12 +533,21 @@ pub enum Invocation {
     Project {
         action: ProjectAction,
     },
+    /// Installation or project automatic dispatch settings.
+    DispatchPolicy {
+        /// Select installation scope instead of the current project.
+        global: bool,
+        /// Read, preview, set, or reset policy.
+        action: dispatch_policy::PolicyAction,
+    },
     New {
         title: String,
         state: Option<String>,
         story_type: Option<String>,
         description: Option<String>,
         priority: Option<String>,
+        /// Explicit story complexity.
+        complexity: Option<String>,
         labels: Option<Vec<String>>,
         /// Creates the story as a draft (SH-175) — `story new --draft`.
         draft: bool,
@@ -845,6 +859,8 @@ pub enum Invocation {
         title: Option<String>,
         state: Option<String>,
         priority: Option<String>,
+        /// Explicit story complexity.
+        complexity: Option<String>,
         labels: Option<String>,
         blocked: Option<String>,
         unblocked: bool,
@@ -987,6 +1003,7 @@ impl Invocation {
     #[must_use]
     pub fn forced(mut self) -> Self {
         match &mut self {
+            Self::DispatchPolicy { .. } => {}
             Self::Project { action } => match action {
                 ProjectAction::Delete { force } => *force = true,
                 ProjectAction::SetPrefix { force, .. } => *force = true,
@@ -1862,6 +1879,33 @@ static VERB_FLAGS: &[VerbFlags] = &[
         ],
     },
     VerbFlags {
+        verb: "dispatch-policy",
+        subcommand: Some("set"),
+        flags: &[
+            bare("global"),
+            value("agent"),
+            value("complexity"),
+            value("model"),
+            value("effort"),
+        ],
+    },
+    VerbFlags {
+        verb: "dispatch-policy",
+        subcommand: Some("reset"),
+        flags: &[
+            bare("global"),
+            value("agent"),
+            value("complexity"),
+            bare("model"),
+            bare("effort"),
+        ],
+    },
+    VerbFlags {
+        verb: "dispatch-policy",
+        subcommand: None,
+        flags: &[bare("global"), value("agent")],
+    },
+    VerbFlags {
         verb: "new",
         subcommand: None,
         flags: &[
@@ -1869,6 +1913,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
             value("type"),
             value("description"),
             value("priority"),
+            value("complexity"),
             value("label"),
             value("labels"),
             bare("draft"),
@@ -2025,6 +2070,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
             value("title"),
             value("state"),
             value("priority"),
+            value("complexity"),
             value("labels"),
             value("blocked"),
             value("json"),
@@ -2497,6 +2543,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
                 .to_string(),
         )),
         "project" => parse_project(args),
+        "dispatch-policy" => dispatch_policy::parse(args),
         "new" => parse_new(args),
         "state" => parse_state(args),
         "list" => parse_list(args),
@@ -3009,11 +3056,12 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
     let mut story_type = None;
     let mut description = None;
     let mut priority = None;
+    let mut complexity = None;
     let mut labels: Vec<String> = Vec::new();
     let mut title_parts = Vec::new();
     let mut draft = false;
     let mut index = 1;
-    let usage = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--label <name> ...] [--labels <csv>] [--draft]";
+    let usage = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--complexity low|medium|high] [--label <name> ...] [--labels <csv>] [--draft]";
     while index < args.len() {
         match args[index].as_str() {
             "--state" => {
@@ -3035,6 +3083,14 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
                     .get(index + 1)
                     .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 description = Some(value.clone());
+                index += 2;
+            }
+            "--complexity" => {
+                complexity = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| AppError::Usage(usage.to_string()))?
+                        .clone(),
+                );
                 index += 2;
             }
             "--priority" => {
@@ -3083,6 +3139,7 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
         story_type,
         description,
         priority,
+        complexity,
         labels: if labels.is_empty() {
             None
         } else {
@@ -5555,6 +5612,7 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     let mut title = None;
     let mut state = None;
     let mut priority = None;
+    let mut complexity = None;
     let mut labels = None;
     let mut blocked = None;
     let mut unblocked = false;
@@ -5562,7 +5620,7 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     let mut story_type = None;
     let mut description = None;
     let mut index = 2;
-    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>] [--description \"<text>\"]";
+    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--complexity low|medium|high] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>] [--description \"<text>\"]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -5578,6 +5636,14 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
                     .get(index + 1)
                     .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 state = Some(value.clone());
+                index += 2;
+            }
+            "--complexity" => {
+                complexity = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| AppError::Usage(usage.to_string()))?
+                        .clone(),
+                );
                 index += 2;
             }
             "--priority" => {
@@ -5633,6 +5699,7 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     if title.is_none()
         && state.is_none()
         && priority.is_none()
+        && complexity.is_none()
         && labels.is_none()
         && blocked.is_none()
         && !unblocked
@@ -5650,6 +5717,7 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
         title,
         state,
         priority,
+        complexity,
         labels,
         blocked,
         unblocked,

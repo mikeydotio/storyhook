@@ -6,6 +6,8 @@ $ story context
 
 Stories: 16 (13 open, 3 closed)
 
+Read `story help complexity-rubric` before assessing complexity. `story dispatch-policy show` lists automatic launch settings.
+
 ## State Distribution
 
 - done: 2
@@ -24,11 +26,11 @@ Stories: 16 (13 open, 3 closed)
 
 ## Ready to Work (8 total)
 
-- SH-5 Fix the id collision across worktrees (critical)
-- SH-2 Define the Store trait (high)
-- SH-12 Harden concurrent writes (high)
-- SH-4 Write the migration runner (medium)
-- SH-10 Ship the CLI shim (medium)
+- SH-5 Fix the id collision across worktrees (critical); complexity: medium (unassessed)
+- SH-2 Define the Store trait (high); complexity: medium (unassessed)
+- SH-12 Harden concurrent writes (high); complexity: medium (unassessed)
+- SH-4 Write the migration runner (medium); complexity: medium (unassessed)
+- SH-10 Ship the CLI shim (medium); complexity: medium (unassessed)
 
 ## Blocked (3)
 
@@ -64,30 +66,40 @@ $ story context --format json
   "ready_count": 8,
   "ready_stories": [
     {
+      "complexity": "medium",
+      "complexity_assessed": false,
       "id": "SH-5",
       "priority": "critical",
       "state": "todo",
       "title": "Fix the id collision across worktrees"
     },
     {
+      "complexity": "medium",
+      "complexity_assessed": false,
       "id": "SH-2",
       "priority": "high",
       "state": "todo",
       "title": "Define the Store trait"
     },
     {
+      "complexity": "medium",
+      "complexity_assessed": false,
       "id": "SH-12",
       "priority": "high",
       "state": "todo",
       "title": "Harden concurrent writes"
     },
     {
+      "complexity": "medium",
+      "complexity_assessed": false,
       "id": "SH-4",
       "priority": "medium",
       "state": "review",
       "title": "Write the migration runner"
     },
     {
+      "complexity": "medium",
+      "complexity_assessed": false,
       "id": "SH-10",
       "priority": "medium",
       "state": "todo",
@@ -123,6 +135,8 @@ $ story load-context
 
 Stories: 16 (13 open, 3 closed)
 
+Read `story help complexity-rubric` before assessing complexity. `story dispatch-policy show` lists automatic launch settings.
+
 ## State Distribution
 
 - done: 2
@@ -141,11 +155,11 @@ Stories: 16 (13 open, 3 closed)
 
 ## Ready to Work (8 total)
 
-- SH-5 Fix the id collision across worktrees (critical)
-- SH-2 Define the Store trait (high)
-- SH-12 Harden concurrent writes (high)
-- SH-4 Write the migration runner (medium)
-- SH-10 Ship the CLI shim (medium)
+- SH-5 Fix the id collision across worktrees (critical); complexity: medium (unassessed)
+- SH-2 Define the Store trait (high); complexity: medium (unassessed)
+- SH-12 Harden concurrent writes (high); complexity: medium (unassessed)
+- SH-4 Write the migration runner (medium); complexity: medium (unassessed)
+- SH-10 Ship the CLI shim (medium); complexity: medium (unassessed)
 
 ## Blocked (3)
 

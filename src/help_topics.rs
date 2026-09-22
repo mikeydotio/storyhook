@@ -14,6 +14,11 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> = std::
     || {
         let mut m = BTreeMap::new();
 
+        m.insert(
+            "complexity-rubric",
+            include_str!("help/complexity-rubric.txt"),
+        );
+        m.insert("dispatch-policy", include_str!("help/dispatch-policy.txt"));
         m.insert("ste", include_str!("help/ste.txt"));
         m.insert("continuation", r#"story continuation capabilities --json
 story continuation request <id> --stdin --json
@@ -491,7 +496,7 @@ step and a later explicit or scheduled pass can retry idempotently.
         m.insert(
             "new",
             r#"story new <title> [--state <slug>] [--type <slug>] [--description <text>]
-              [--priority <level>] [--label <name> ...]
+              [--priority <level>] [--complexity <level>] [--label <name> ...]
               [--labels <csv>] [--draft]
 
 Create a new story with the given title. Returns the assigned ID.
@@ -522,6 +527,7 @@ Examples:
   story new "Sketch: notification preferences" --draft
 
 Related:
+  story help complexity-rubric — Choose low, medium, or high complexity.
   story help priority-rubric — What critical/high/medium/low mean.
                                --priority is a scheduling decision,
                                not a label; omit it to use low.
@@ -588,6 +594,7 @@ Examples:
   story list --drafts                 # Only drafts, to pick one to edit
 
 Related:
+  story help complexity-rubric — Choose low, medium, or high complexity.
   story help priority-rubric — What the four --priority levels mean
   story help archive — What "archived" means here
   story next     — Get the highest-priority ready story
@@ -1485,6 +1492,7 @@ posted as usual. Neither tool exposes --dry-run.
 
 Related:
   story help claim  — the verb story_claim and story_unclaim drive
+  story help complexity-rubric — Choose low, medium, or high complexity.
   story help priority-rubric — what story_new's and story_prioritize's
                                level argument means
   story help --compact — a CLI reference for a host without MCP support
@@ -1888,6 +1896,7 @@ Error:
   }
 
 Related:
+  story help complexity-rubric — Choose low, medium, or high complexity.
   story help priority-rubric — what the "priority" field's four
                                values mean, for a caller choosing
                                one rather than reading one
@@ -2123,6 +2132,7 @@ Related:
         m.insert(
             "set",
             r#"story set <id> (--title "<title>" | --state <slug> | --priority <level>
+              | --complexity low|medium|high
               | --labels "<csv>" | --blocked "<reason>"
               | --unblocked | --json "<json>" | --type <slug>
               | --description "<text>")
@@ -2148,6 +2158,7 @@ Examples:
   story set SH-1 --description "Root cause: race condition in cache invalidation"
 
 Related:
+  story help complexity-rubric — Choose low, medium, or high complexity.
   story help priority-rubric — What the --priority levels mean
   story move <id>        — Change state only
   story prioritize <id>  — Set priority only
@@ -2209,6 +2220,7 @@ Examples:
   story prioritize SH-8 low
 
 Related:
+  story help complexity-rubric — Choose complexity before story new or set.
   story help priority-rubric   — What each level MEANS. Read before
                                  choosing one: a level is a
                                  scheduling decision, not a label.
@@ -2522,6 +2534,7 @@ Related:
   story close <id> "<why>"  — Retain a collapsed duplicate as history
   story delete <id>          — Permanently remove a mistaken duplicate
   story decompose            — Planning-time decomposition, not this
+  story help complexity-rubric — Choose low, medium, or high complexity.
   story help priority-rubric — The sibling doctrine, for priority
 "#,
         );
@@ -3567,22 +3580,24 @@ LIFECYCLE
   story project new --prefix P  Create a project (asks if given no flags)
   story project show|list|delete Show this one; list all; delete one
   story new "<title>"             Create a story, returns assigned ID
-  story show <id>                 Full details for a single story
-  story move <id> <state>         Transition state (e.g., todo → in-progress → done)
+  story show <id>                 Story details
+  story move <id> <state>         Change state
   story reopen <id>               Reopen a closed story
   story close <id> "<reason>"     Retire, keeping the record
   story delete <id> [--force]     Permanently remove a story (no undo)
 
 QUERY & NAVIGATION
-  story list [filters]            List open stories (--ready, --blocked, --state, --priority, etc.)
+  story list [filters]            List stories (--ready, --state, --priority, etc.)
   story next [queue filters]      Highest-priority ready story/stories
-  story search "<query>"          Full-text search across all stories
+  story search "<query>"          Full-text search
   story summary                   Counts by state and priority
   story load-context              Session-start context document
   story graph [--critical-path]   Dependency graph analysis
 
 STORY METADATA
   story comment <id> "<text>"     Add timestamped comment
+  story dispatch-policy show     Model and effort defaults
+  story set <id> --complexity high Assess complexity: story help complexity-rubric
   story prioritize <id> <level>   Set priority: story help priority-rubric
   story label <id> <csv>          Add comma-separated labels
   story unlabel <id> <csv>        Remove labels

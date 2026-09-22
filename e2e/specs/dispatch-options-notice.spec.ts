@@ -20,7 +20,7 @@ const RESOLVER_REASON =
   "could not find plugins/story/bin/story.sh for agent `claude` -- install it with " +
   "`story plugin install claude` or set STORYHOOK_DISPATCH_SCRIPT";
 
-const TAIL = " Model, Effort and Speed will use the provider's defaults.";
+const TAIL = " Model and Effort use complexity defaults; Speed uses standard.";
 
 const BOTH_INSTALLED = [
   { id: "claude", label: "Claude", installed: true },
@@ -101,8 +101,8 @@ test("a provider whose helper the daemon could not resolve says so, in both laun
   const dispatch = selectors(page, "dispatch");
   await expect(dispatch.agent).toHaveValue("claude");
   await expect(dispatch.notice).toHaveText("Claude options unavailable: " + RESOLVER_REASON + "." + TAIL);
-  await expect(dispatch.model).toHaveText(["Default"]);
-  await expect(dispatch.effort).toHaveText(["Default"]);
+  await expect(dispatch.model).toHaveText(["Default (complexity)"]);
+  await expect(dispatch.effort).toHaveText(["Default (complexity)"]);
   await expect(dispatch.speed).toHaveText(["Default"]);
   await expect(dispatch.submit).toBeEnabled();
   await expect(page.locator("#dispatch-model")).toBeEnabled();
@@ -113,11 +113,11 @@ test("a provider whose helper the daemon could not resolve says so, in both laun
   // selects; switching back brings the sentence back.
   await dispatch.agent.selectOption("codex");
   await expect(dispatch.notice).toHaveText("");
-  await expect(dispatch.model).toHaveText(["Default", "GPT-6 Astra", "GPT-5.6 Sol"]);
-  await expect(dispatch.effort).toHaveText(["Default", "none", "low", "ultra"]);
+  await expect(dispatch.model).toHaveText(["Default (complexity)", "GPT-6 Astra", "GPT-5.6 Sol"]);
+  await expect(dispatch.effort).toHaveText(["Default (complexity)", "none", "low", "ultra"]);
   await dispatch.agent.selectOption("claude");
   await expect(dispatch.notice).toHaveText("Claude options unavailable: " + RESOLVER_REASON + "." + TAIL);
-  await expect(dispatch.model).toHaveText(["Default"]);
+  await expect(dispatch.model).toHaveText(["Default (complexity)"]);
 
   // Cancel clears it, so a later open never shows a stale sentence before
   // the catalog has been (re)applied.
@@ -128,12 +128,12 @@ test("a provider whose helper the daemon could not resolve says so, in both laun
   const engine = selectors(page, "engine");
   await expect(engine.agent).toHaveValue("claude");
   await expect(engine.notice).toHaveText("Claude options unavailable: " + RESOLVER_REASON + "." + TAIL);
-  await expect(engine.model).toHaveText(["Default"]);
-  await expect(engine.effort).toHaveText(["Default"]);
+  await expect(engine.model).toHaveText(["Default (complexity)"]);
+  await expect(engine.effort).toHaveText(["Default (complexity)"]);
   await expect(engine.submit).toBeEnabled();
   await engine.agent.selectOption("codex");
   await expect(engine.notice).toHaveText("");
-  await expect(engine.model).toHaveText(["Default", "GPT-6 Astra", "GPT-5.6 Sol"]);
+  await expect(engine.model).toHaveText(["Default (complexity)", "GPT-6 Astra", "GPT-5.6 Sol"]);
   // A catalog note and a submit error are different facts on different
   // surfaces; opening never wrote one over the other.
   await expect(page.locator("#engine-modal-error")).toHaveText("");
@@ -149,11 +149,11 @@ test("a healthy catalog shows no notice, before or after a provider switch", asy
 
   await openDispatchModal(page);
   const dispatch = selectors(page, "dispatch");
-  await expect(dispatch.model).toHaveText(["Default", "Opus+Sonnet", "Opus"]);
-  await expect(dispatch.effort).toHaveText(["Default", "low", "high"]);
+  await expect(dispatch.model).toHaveText(["Default (complexity)", "Opus+Sonnet", "Opus"]);
+  await expect(dispatch.effort).toHaveText(["Default (complexity)", "low", "high"]);
   await expect(dispatch.notice).toHaveText("");
   await dispatch.agent.selectOption("codex");
-  await expect(dispatch.model).toHaveText(["Default", "GPT-6 Astra", "GPT-5.6 Sol"]);
+  await expect(dispatch.model).toHaveText(["Default (complexity)", "GPT-6 Astra", "GPT-5.6 Sol"]);
   await expect(dispatch.notice).toHaveText("");
   await dispatch.agent.selectOption("claude");
   await expect(dispatch.notice).toHaveText("");
@@ -161,7 +161,7 @@ test("a healthy catalog shows no notice, before or after a provider switch", asy
 
   await closeDrawerAndOpenEngineModal(page);
   const engine = selectors(page, "engine");
-  await expect(engine.model).toHaveText(["Default", "Opus+Sonnet", "Opus"]);
+  await expect(engine.model).toHaveText(["Default (complexity)", "Opus+Sonnet", "Opus"]);
   await expect(engine.notice).toHaveText("");
   await engine.agent.selectOption("codex");
   await expect(engine.notice).toHaveText("");
@@ -212,7 +212,7 @@ test("a failed catalog fetch is named, keeps the compatible fallback, and clears
   // bare.
   await expect(dispatch.agent.locator("option:disabled")).toHaveCount(0);
   await expect(dispatch.submit).toBeEnabled();
-  await expect(dispatch.model).toHaveText(["Default"]);
+  await expect(dispatch.model).toHaveText(["Default (complexity)"]);
   await expect(dispatch.notice).toContainText("Provider options could not be loaded: ");
   await expect(dispatch.notice).toContainText(TAIL);
   // The sentence survives a provider switch: the failure was the fetch, not
@@ -227,6 +227,6 @@ test("a failed catalog fetch is named, keeps the compatible fallback, and clears
   fail = false;
   await page.locator("#dispatch-btn").click();
   await expect(page.locator("#dispatch-modal")).toHaveClass(/open/);
-  await expect(dispatch.model).toHaveText(["Default", "Opus+Sonnet", "Opus"]);
+  await expect(dispatch.model).toHaveText(["Default (complexity)", "Opus+Sonnet", "Opus"]);
   await expect(dispatch.notice).toHaveText("");
 });

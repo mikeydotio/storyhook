@@ -753,6 +753,8 @@ mod tests {
             relationships: rels,
             priority: Priority::None,
             priority_assessed: false,
+            complexity: Default::default(),
+            complexity_assessed: false,
             labels: vec![],
             story_type: None,
             description: None,

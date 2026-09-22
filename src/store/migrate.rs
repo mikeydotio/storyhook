@@ -457,6 +457,18 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0048_remove_assignees.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 49,
+        name: "story_complexity",
+        sql: include_str!("schema/0049_story_complexity.sql"),
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 50,
+        name: "dispatch_policy",
+        sql: include_str!("schema/0050_dispatch_policy.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 mod lineage;

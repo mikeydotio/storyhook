@@ -639,6 +639,8 @@ fn event_detail(event: &crate::domain::StoryEvent) -> String {
         E::StoryRelationshipRemoved {
             other_id, relation, ..
         } => format!("no longer {relation} {other_id}"),
+        E::StoryComplexitySet { complexity, .. } => format!("complexity → {}", complexity.as_str()),
+        E::StoryComplexityCleared { .. } => "complexity cleared (unassessed)".into(),
         E::StoryPrioritySet { priority, .. } => format!("priority → {}", priority.as_str()),
         E::StoryPriorityCleared { .. } => "priority cleared".to_string(),
         E::StoryTypeSet { story_type, .. } => format!("type → {story_type}"),

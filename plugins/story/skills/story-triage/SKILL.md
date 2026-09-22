@@ -3,6 +3,10 @@ name: story-triage
 description: "Use when the project backlog needs review -- stories need prioritization, stale items need attention, or work needs reorganization. Reviews all open stories, identifies issues, and guides reprioritization."
 ---
 
+Read `story help complexity-rubric` before creating or assessing a story.
+Choose `--complexity low|medium|high` from the evidence. An omission remains
+medium, unassessed. Use `story dispatch-policy show` to inspect launch defaults.
+
 # Storyhook Triage
 
 You are a **thin router** for gathering and presenting findings. Deterministic work — the

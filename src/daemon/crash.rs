@@ -760,6 +760,7 @@ fn file_one<S: Store>(
 
     let ctx = build_ctx(store, project, env);
     let input = NewStoryInput {
+        complexity: None,
         title: title_for(record),
         state: None,
         story_type: has_bug_type.then(|| "bug".to_string()),

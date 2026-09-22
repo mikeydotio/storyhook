@@ -1,0 +1,40 @@
+story help complexity-rubric
+
+Complexity measures the reasoning and coordination a story needs. It does not
+set urgency or queue order. Read story help priority-rubric to choose priority.
+
+Choose the highest applicable level:
+
+  low     A known approach changes local behavior. Few cases interact. A
+          direct test can establish the result.
+  medium  Several components or meaningful edge cases interact. The design is
+          established and uncertainty is bounded.
+  high    Design or diagnosis is uncertain, or concurrency, migrations, broad
+          compatibility, or interacting invariants need careful reasoning.
+
+Do not use line count, test count, or urgency as a substitute. Inspect the
+requirements and code before assessing. Reassess when the scope changes.
+An omitted value means medium, unassessed. An explicit medium is assessed.
+
+Set complexity with story new --complexity <level> or
+story set <id> --complexity <level>. JSON uses the key "complexity".
+YAML decomposition accepts complexity: <level>. Markdown accepts a heading
+or task suffix [complexity: <level>].
+
+Dispatch fills a missing model and effort independently. The order is an
+explicit flag, environment value, project policy, installation policy, then
+the built-in policy. Automatic models are limited to Codex Sol/Astra and
+Claude Opus/Fable. Explicit selections can use the full provider catalog.
+
+Built-in policy (a product default, not a performance benchmark):
+  low     Astra / Fable, medium effort
+  medium  Astra / Fable, high effort
+  high    Astra / Fable, xhigh effort
+
+Engine lanes use the executable child's complexity. A custom launch command
+controls its own model and effort. Guarded continuation retains captured
+choices. Fresh dispatch uses current policy.
+
+Use story dispatch-policy show to inspect inheritance and
+story dispatch-policy resolve <id> --agent codex to preview a choice.
+Read story help dispatch-policy for settings and reset commands.

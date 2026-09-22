@@ -972,6 +972,8 @@ mod tests {
             relationships: Vec::new(),
             priority: Priority::None,
             priority_assessed: false,
+            complexity: Default::default(),
+            complexity_assessed: false,
             labels: Vec::new(),
             story_type: None,
             description: None,

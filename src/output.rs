@@ -946,6 +946,8 @@ pub enum Response {
     /// through the same arm and a script does not have to branch on which one
     /// it asked for.
     ProjectSettings(Vec<SettingView>),
+    /// Effective automatic dispatch settings and an optional story preview.
+    DispatchPolicy(crate::service::dispatch_policy::PolicyView),
     /// Raw JSON output — bypasses normal envelope wrapping.
     /// Used by session-start and similar commands that need exact JSON control.
     RawJson(String),
@@ -1384,6 +1386,9 @@ fn render_json(response: &Response) -> String {
             warnings: &[],
             flagged_reasons: &[],
         }),
+        Response::DispatchPolicy(view) => serde_json::to_string_pretty(
+            &serde_json::json!({"result":"ok", "dispatch_policy":view}),
+        ),
         Response::ProjectSettings(settings) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             claimed_from: None,
@@ -1728,6 +1733,40 @@ fn render_human(response: &Response) -> String {
             body
         }
         Response::ProjectSettings(settings) => render_project_settings(settings),
+        Response::DispatchPolicy(view) => {
+            let mut text = format!(
+                "Dispatch policy ({})\nAgent | Complexity | Model (source) | Effort (source)\n",
+                view.scope
+            );
+            let entries = view
+                .resolved
+                .as_ref()
+                .map(|r| vec![&r.selection])
+                .unwrap_or_else(|| view.entries.iter().collect());
+            for row in entries {
+                text.push_str(&format!(
+                    "{} | {} | {} ({}) | {} ({})\n",
+                    row.agent.as_str(),
+                    row.complexity.as_str(),
+                    row.model,
+                    row.model_source,
+                    row.effort,
+                    row.effort_source
+                ));
+            }
+            if let Some(resolved) = &view.resolved {
+                text.push_str(&format!(
+                    "{}: complexity {}\n",
+                    resolved.story_id,
+                    if resolved.complexity_assessed {
+                        "assessed"
+                    } else {
+                        "unassessed"
+                    }
+                ));
+            }
+            text
+        }
         Response::RawJson(raw) => {
             // Should not reach here — render_response handles RawJson before calling render_human.
             format!("{raw}\n")
@@ -2153,6 +2192,15 @@ fn render_story(view: &StoryView) -> String {
     body.push_str(&format!(
         "priority: {}{assessment}\n",
         story.priority.as_str()
+    ));
+    body.push_str(&format!(
+        "complexity: {}{}\n",
+        story.complexity.as_str(),
+        if story.complexity_assessed {
+            ""
+        } else {
+            " (unassessed)"
+        }
     ));
     let type_display = story.story_type.as_deref().unwrap_or("Default");
     body.push_str(&format!("type: {type_display}\n"));
