@@ -2585,6 +2585,10 @@ fn the_shell_actuator_times_out_the_whole_group_after_allowing_cleanup() {
         r#"#!/bin/bash
 trap 'printf cleanup > cleanup-started; wait; exit 143' TERM
 sh -c 'trap "" TERM; printf "%s" "$$" > stubborn-child-pid; while :; do sleep 30; done' &
+while [ ! -f allow-timeout ]; do
+    printf '{}\n' >> "$STORYHOOK_GATE_PROGRESS"
+    sleep 0.02
+done
 wait
 "#,
     )
@@ -2629,24 +2633,47 @@ wait
     )
     .with_verifier_script(tools.path().join("verify-pr.sh"));
 
-    let outcome = thread::scope(|scope| {
-        let running = scope.spawn(|| actuator.verify(&candidate, &pull_request));
-        let ready_by = Instant::now() + Duration::from_millis(250);
-        let active = loop {
+    let (outcome, active, child_ready) = thread::scope(|scope| {
+        let running = scope.spawn(|| {
+            // Scheduling and checkout checks can exceed the old 250 ms probe.
+            thread::sleep(Duration::from_millis(500));
+            actuator.verify(&candidate, &pull_request)
+        });
+        // The observer can also be delayed beyond the verifier's idle window.
+        // Keep progress live until both registration and child setup are seen.
+        thread::sleep(Duration::from_millis(1500));
+        let ready_by = Instant::now() + storyhook_test_support::STORY_COMMAND_DEADLINE;
+        let (active, child_ready) = loop {
             let active = lifecycle::read_owned_processes(&daemon_env);
-            if !active.is_empty() || Instant::now() >= ready_by {
-                break active;
+            let child_ready = checkout.path().join("stubborn-child-pid").is_file();
+            if (!active.is_empty() && child_ready)
+                || running.is_finished()
+                || Instant::now() >= ready_by
+            {
+                break (active, child_ready);
             }
             thread::sleep(Duration::from_millis(10));
         };
-        assert_eq!(active.len(), 1, "the verifier group was never registered");
-        assert_eq!(active[0].role, "verifier");
-        assert_eq!(
-            active[0].request_id.as_deref(),
-            Some("verify:fixture:SH-1:legacy")
-        );
-        running.join().expect("the verifier thread must not panic")
+        // Release before assertions so a missing readiness witness cannot
+        // leave the scoped worker waiting on fixture progress indefinitely.
+        std::fs::write(checkout.path().join("allow-timeout"), "").unwrap();
+        let outcome = running.join().expect("the verifier thread must not panic");
+        (outcome, active, child_ready)
     });
+    assert_eq!(
+        active.len(),
+        1,
+        "the verifier group was never registered: {outcome:?}"
+    );
+    assert!(
+        child_ready,
+        "the stubborn child never became ready: {outcome:?}"
+    );
+    assert_eq!(active[0].role, "verifier");
+    assert_eq!(
+        active[0].request_id.as_deref(),
+        Some("verify:fixture:SH-1:legacy")
+    );
     assert!(
         lifecycle::read_owned_processes(&daemon_env).is_empty(),
         "the reaped verifier must retract its process-group registration"
