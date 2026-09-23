@@ -1,10 +1,10 @@
 //! SH-651: verification age follows the latest submission, not story creation.
 
-use storyhook::domain::Priority;
+use storyhook::domain::{CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, TmuxCleanupTarget};
 use storyhook::service::{
     Clock, NewStoryInput, PrLinkService, StoryService, VERIFICATION_GREEN_PREFIX, VerificationQueue,
 };
-use storyhook_test_support::ServiceFixture;
+use storyhook_test_support::{ServiceFixture, scratch_dir};
 
 const ORIGIN: &str = "https://github.com/acme/widgets";
 const PR_ONE: &str = "https://github.com/acme/widgets/pull/1";
@@ -29,6 +29,23 @@ fn move_at(fixture: &mut ServiceFixture, id: &str, state: &str, at: &str) {
     StoryService::new(&fixture.ctx())
         .set_state(id, state, None, None, None)
         .unwrap();
+}
+
+/// The lease `story move verifying` records from a dispatched worktree. The
+/// cleanup pass admits only a leased generation (SH-761), so a landed story
+/// without one is not a cleanup candidate at all, whatever its order.
+fn lease_for(root: &std::path::Path, story_id: &str) -> StoryCleanupLease {
+    StoryCleanupLease {
+        version: CLEANUP_LEASE_VERSION,
+        project_slug: "fixture".into(),
+        story_id: story_id.into(),
+        repository_path: root.to_path_buf(),
+        worktree_path: root.join(".claude/worktrees").join(story_id),
+        branch: format!("worktree-{story_id}"),
+        tmux: TmuxCleanupTarget {
+            socket_path: root.join("tmux.sock"),
+        },
+    }
 }
 
 fn assert_order(fixture: &ServiceFixture, expected: &[&str]) {
@@ -119,8 +136,11 @@ fn cleanup_keeps_creation_order_when_identity_and_submission_order_disagree() {
     let first = create(&fixture, "first identity", Priority::Medium, PR_ONE);
     fixture.set_clock(Clock::Fixed("2025-12-31T23:59:00Z".into()));
     let older = create(&fixture, "older timestamp", Priority::Medium, PR_TWO);
+    let root = scratch_dir();
     move_at(&mut fixture, &first, "verifying", "2026-01-01T00:01:00Z");
+    fixture.append_cleanup_lease(&first, lease_for(root.path(), &first));
     move_at(&mut fixture, &older, "verifying", "2026-01-01T00:02:00Z");
+    fixture.append_cleanup_lease(&older, lease_for(root.path(), &older));
     for (id, url) in [(&first, PR_ONE), (&older, PR_TWO)] {
         let ctx = fixture.ctx();
         StoryService::new(&ctx)
