@@ -35,6 +35,9 @@ The store journal no longer opens a separate activity window.
   stderr, exit status, stdin, working directory and the inherited process group.
   Nested gate output identifies its producing step. The existing per-attempt
   verification log and machine JSON results continue to work.
+- A supervisory child whose success is the steady state — the project reader
+  reconcile (`verifier-windows.md`) — is journaled only when it fails: no start
+  record, no mirrored output, one ERROR on a non-zero exit or timeout (SH-761).
 - Logging errors are reported and never change the work's outcome. Known token
   shapes are redacted and terminal control characters are escaped. No logger
   records command arguments wholesale.
