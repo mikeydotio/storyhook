@@ -2758,16 +2758,23 @@ fn record_cleanup_complete(
     )
 }
 
+/// A generation without a lease is not retried: `next_cleanup` never queues
+/// it (SH-761), so the comment must say that the operator owns the reap.
 fn record_cleanup_required(
     ctx: &Ctx<'_, impl Store>,
     candidate: &VerificationCandidate,
     error: &AppError,
 ) -> Result<(), AppError> {
+    let retry = if candidate.cleanup_lease.is_some() {
+        "Automatic reap failed and will be retried."
+    } else {
+        "Automatic reap failed. This generation has no cleanup lease, so no automatic retry is possible: remove the worktree, branch, and agent window by hand."
+    };
     comment_once(
         ctx,
         candidate,
         &format!(
-            "{VERIFICATION_CLEANUP_REQUIRED_PREFIX} the PR landed and the story is done. Automatic reap failed.\n\n{}",
+            "{VERIFICATION_CLEANUP_REQUIRED_PREFIX} the PR landed and the story is done. {retry}\n\n{}",
             crate::text_lint::quote_evidence(&error.to_string())
         ),
     )

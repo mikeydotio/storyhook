@@ -616,6 +616,40 @@ repair returns, whether this generation can actually push — unchanged
 wording when leased, an honest "no cleanup lease, so nothing will push it"
 when not. Regression in `tests/verification_queue.rs`.
 
+
+### SH-761 — a generation without a lease is not queued for reap
+
+SH-653's third limit — "a story whose latest generation carries no history
+lease is reachable only through the on-disk marker; if that marker is gone
+too, nothing reaps it" — was stated for `story cleanup` but not enforced on
+the verifier's own retry. `next_cleanup` offered every landed, unreaped
+generation, lease or not; `reap_leased` refused the lease-less one at once;
+the tick returned `RetryLater`; and the worker woke every `RECOVERY_WAKE` to
+do it again. SH-675, landed on 2026-09-11 from an agent-pushed branch with no
+lease, was selected every 30 seconds for twelve days — a fresh attempt ID, a
+workspace lock, a view reconcile and four git probes each time — and was the
+only thing the `storyhook:verification` window ever showed.
+
+**`cleanup_candidates_for` now skips a generation whose lease is `None`.**
+The lease is the reap's only authority, for the verifier and for `story
+cleanup` alike, and `latest_generation` reads it from the event adjacent to
+the transition, so it cannot appear later: a lease-less generation is not
+"owed a retry", it is unreapable by construction, and the queue must not
+represent it. The green path still calls `reap` once directly after landing,
+so the one CLEANUP REQUIRED comment is still written — and now says, for a
+lease-less generation, that no automatic retry is possible and the worktree,
+branch and window are the operator's to remove. `ReapMarker::Required`'s
+doc says the same. Fixed at the queue rather than in the tick because a
+tick-side early return would still select the candidate on every wake and
+would leave `next_cleanup` answering differently from what the verifier can
+do.
+
+Tests: `tests/verification_queue.rs`
+(`a_landed_generation_without_a_lease_is_never_a_cleanup_candidate`,
+`a_lease_less_green_landing_records_that_no_retry_is_possible`); the
+existing cleanup fixtures now record the lease `story move verifying` would
+have, so they model a state production can reach.
+
 ### SH-691 — the base is asked of origin, and landing checks it
 
 Five story pull requests (#734, #775, #776, #772, #782) were opened against

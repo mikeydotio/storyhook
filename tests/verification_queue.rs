@@ -31,8 +31,9 @@ use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
 use storyhook::service::verification_control::VerificationAction;
 use storyhook::service::{
     Clock, ConfigService, Ctx, NewStoryInput, PrLinkService, StoryService,
-    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_GREEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX,
-    VERIFICATION_WITHDRAWN_PREFIX, VerificationCandidate, VerificationProblem, VerificationQueue,
+    VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_CLEANUP_REQUIRED_PREFIX,
+    VERIFICATION_GREEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX, VERIFICATION_WITHDRAWN_PREFIX,
+    VerificationCandidate, VerificationProblem, VerificationQueue,
     acknowledge_verification_incident,
 };
 use storyhook::store::{
@@ -2814,6 +2815,8 @@ fn a_stale_cleanup_complete_from_an_earlier_generation_does_not_hide_a_failed_re
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "reopened after reap", Priority::High, PR_ONE);
+    let root = scratch_dir();
+    fixture.append_cleanup_lease(&id, lease_for(root.path(), &id));
     let ctx = fixture.ctx();
     let green = format!(
         "{VERIFICATION_GREEN_PREFIX} merge tree `abc123` passed `make test` and pull request {PR_ONE} landed."
@@ -2843,6 +2846,7 @@ fn a_stale_cleanup_complete_from_an_earlier_generation_does_not_hide_a_failed_re
     StoryService::new(&ctx)
         .set_state(&id, "verifying", None, None, None)
         .unwrap();
+    fixture.append_cleanup_lease(&id, lease_for(root.path(), &id));
     StoryService::new(&ctx).comment(&id, &green).unwrap();
     VerificationQueue::new(fixture.store())
         .record_merged(&ctx, &id, PR_TWO)
@@ -2853,6 +2857,159 @@ fn a_stale_cleanup_complete_from_an_earlier_generation_does_not_hide_a_failed_re
         .unwrap()
         .expect("the second generation's reap is still owed");
     assert_eq!(owed.story_id, id);
+}
+
+/// SH-761: the verifier's reap authority is the lease. A landed generation
+/// that never recorded one cannot be reaped by `reap_leased` or by
+/// `story cleanup`, so queuing it is a retry that fails identically every
+/// `RECOVERY_WAKE` forever — SH-675 was selected every 30 s for twelve days,
+/// spawning a view reconcile and four git probes each time. The queue must
+/// not offer it, the tick must go idle, and a leased sibling must still be
+/// served.
+#[test]
+fn a_landed_generation_without_a_lease_is_never_a_cleanup_candidate() {
+    let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
+    let ctx = fixture.ctx();
+    let unleased = submitted(&fixture, "landed without a lease", Priority::High, PR_ONE);
+    StoryService::new(&ctx)
+        .comment(
+            &unleased,
+            &format!(
+                "{VERIFICATION_GREEN_PREFIX} merge tree `abc123` passed `make test` and pull request {PR_ONE} landed."
+            ),
+        )
+        .unwrap();
+    VerificationQueue::new(fixture.store())
+        .record_merged(&ctx, &unleased, PR_ONE)
+        .unwrap();
+    StoryService::new(&ctx)
+        .comment(
+            &unleased,
+            &format!(
+                "{VERIFICATION_CLEANUP_REQUIRED_PREFIX} the PR landed and the story is done. Automatic reap failed."
+            ),
+        )
+        .unwrap();
+
+    let queue = VerificationQueue::new(fixture.store());
+    assert!(
+        queue.next_cleanup().unwrap().is_none(),
+        "a generation with no lease has nothing the verifier can reap"
+    );
+    assert!(queue.next_cleanup_for(fixture.project()).unwrap().is_none());
+    let root = scratch_dir();
+    let env = Environment::at(root.path());
+    let actuator = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
+        detail: "verification must not run for cleanup".into(),
+        disposition: storyhook::store::VerificationFailureDisposition::Retryable,
+    });
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
+        TickResult::Idle,
+        "an idle tick waits for a store event instead of retrying every RECOVERY_WAKE"
+    );
+    assert!(actuator.reaped.lock().unwrap().is_empty());
+
+    // The filter is about the lease, not about landed-but-unreaped stories.
+    let leased = submitted(&fixture, "landed with a lease", Priority::Low, PR_TWO);
+    fixture.append_cleanup_lease(&leased, lease_for(root.path(), &leased));
+    StoryService::new(&ctx)
+        .comment(
+            &leased,
+            &format!(
+                "{VERIFICATION_GREEN_PREFIX} merge tree `def456` passed `make test` and pull request {PR_TWO} landed."
+            ),
+        )
+        .unwrap();
+    VerificationQueue::new(fixture.store())
+        .record_merged(&ctx, &leased, PR_TWO)
+        .unwrap();
+    assert_eq!(
+        queue.next_cleanup().unwrap().map(|c| c.story_id),
+        Some(leased.clone())
+    );
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
+        TickResult::Completed
+    );
+    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [leased]);
+}
+
+/// SH-761: the green path still asks for one reap, and its CLEANUP REQUIRED
+/// comment must tell the operator that no retry will follow, because the
+/// queue will never select this generation again.
+#[test]
+fn a_lease_less_green_landing_records_that_no_retry_is_possible() {
+    struct RefusingReap(FakeActuator);
+    impl VerificationActuator for RefusingReap {
+        fn submit(
+            &self,
+            c: &VerificationCandidate,
+        ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+            self.0.submit(c)
+        }
+        fn verify(&self, c: &VerificationCandidate, p: &PrLink) -> VerificationOutcome {
+            self.0.verify(c, p)
+        }
+        fn land(
+            &self,
+            c: &VerificationCandidate,
+            i: &storyhook::store::LandingIntent,
+        ) -> storyhook::daemon::verification::LandingOutcome {
+            self.0.land(c, i)
+        }
+        fn recover_landing(
+            &self,
+            c: &VerificationCandidate,
+            i: &storyhook::store::LandingIntent,
+        ) -> storyhook::daemon::verification::LandingOutcome {
+            self.0.recover_landing(c, i)
+        }
+        fn notify(&self, c: &VerificationCandidate, m: &str) -> Result<NotifyDelivery, AppError> {
+            self.0.notify(c, m)
+        }
+        fn redispatch(&self, c: &VerificationCandidate, p: &ResumePlan) -> Result<(), AppError> {
+            self.0.redispatch(c, p)
+        }
+        fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
+            Err(AppError::Storage(format!(
+                "story {} has no cleanup lease for its latest verification generation",
+                candidate.story_id
+            )))
+        }
+    }
+    let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "green without a lease", Priority::High, PR_ONE);
+    let root = scratch_dir();
+    let env = Environment::at(root.path());
+    let actuator = RefusingReap(FakeActuator::new(VerificationOutcome::Certified {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
+        detail: "landed".into(),
+        gate: GateCommand::DEFAULT.into(),
+    }));
+
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
+        TickResult::Completed
+    );
+    let comment = last_comment(&fixture, &id);
+    assert!(
+        comment.starts_with(VERIFICATION_CLEANUP_REQUIRED_PREFIX),
+        "{comment}"
+    );
+    assert!(
+        comment.contains("no automatic retry is possible"),
+        "{comment}"
+    );
+    assert!(comment.contains("no cleanup lease"), "{comment}");
+    assert_eq!(
+        tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
+        TickResult::Idle,
+        "the lease-less generation is never queued for the retry it cannot get"
+    );
 }
 
 fn git_ok(dir: &std::path::Path, args: &[&str]) -> String {
@@ -5014,6 +5171,7 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
     // constant and not by whichever CLOSED state sorts first.
     let ctx = fixture.ctx();
     let unreaped = submitted(&fixture, "green, reap still owed", Priority::High, PR_TWO);
+    fixture.append_cleanup_lease(&unreaped, lease_for(root.path(), &unreaped));
     StoryService::new(&ctx)
         .comment(
             &unreaped,
@@ -5037,6 +5195,8 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "landed before crash", Priority::High, PR_ONE);
+    let root = scratch_dir();
+    fixture.append_cleanup_lease(&id, lease_for(root.path(), &id));
     let ctx = fixture.ctx();
     StoryService::new(&ctx)
         .comment(
@@ -5049,7 +5209,6 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
     VerificationQueue::new(fixture.store())
         .record_merged(&ctx, &id, PR_ONE)
         .unwrap();
-    let root = scratch_dir();
     let env = Environment::at(root.path());
     let actuator = FakeActuator::new(VerificationOutcome::InfrastructureFailure {
         detail: "verification must not run for cleanup".into(),

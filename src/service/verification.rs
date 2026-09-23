@@ -898,8 +898,9 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
 
 /// One project's `done` stories that passed central verification — or were
 /// completed over it by an operator's recorded override AND whose pull request
-/// is recorded merged (SH-692) — and have not yet been reaped (SH-648: the
-/// cleanup pass is per project, like the queue it follows).
+/// is recorded merged (SH-692) — whose latest generation carries a cleanup
+/// lease, and have not yet been reaped (SH-648: the cleanup pass is per
+/// project, like the queue it follows).
 ///
 /// The override alone is not enough: a reap deletes the branch and the
 /// worktree, and an overridden story whose pull request never merged may
@@ -935,6 +936,16 @@ fn cleanup_candidates_for(
             if !(generation.landed || landed_by_override)
                 || generation.reap_marker == Some(ReapMarker::Complete)
             {
+                continue;
+            }
+            // Reap authority is the lease and nothing else: `reap_leased` and
+            // `story cleanup` both refuse without one, and the lease is read
+            // from the event adjacent to this generation's transition, so it
+            // cannot appear later. Queuing a lease-less generation is a retry
+            // that fails the same way every RECOVERY_WAKE forever (SH-761:
+            // SH-675 was selected every 30 s for twelve days). The green path
+            // already asked for the one reap that writes CLEANUP REQUIRED.
+            if generation.lease.is_none() {
                 continue;
             }
             candidates.push(VerificationCandidate {
@@ -1295,7 +1306,8 @@ pub enum ReapMarker {
     /// verified absent.
     Complete,
     /// `CENTRAL VERIFICATION CLEANUP REQUIRED —`: the PR landed and the story
-    /// closed, but the reap failed and is owed a retry.
+    /// closed, but the reap failed. It is owed a retry only while the
+    /// generation carries a lease; without one nothing can reap it (SH-761).
     Required,
 }
 
