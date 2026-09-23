@@ -31,14 +31,16 @@
 
 use storyhook::domain::StoryEvent;
 use storyhook::domain::provenance::Provenance;
-use storyhook::domain::{Priority, fold_story};
+use storyhook::domain::{
+    CLEANUP_LEASE_VERSION, Priority, StoryCleanupLease, TmuxCleanupTarget, fold_story,
+};
 use storyhook::error::AppError;
 use storyhook::service::{
     Clock, FieldEdits, NewStoryInput, PrLinkService, StoryService, VERIFICATION_GREEN_PREFIX,
     VERIFICATION_OVERRIDDEN_PREFIX, VerificationQueue,
 };
 use storyhook::store::{ExpectedSeq, ReadOps, Store, StoryNo, WriteOps, partition_known};
-use storyhook_test_support::{FIXTURE_NOW, ServiceFixture};
+use storyhook_test_support::{FIXTURE_NOW, ServiceFixture, scratch_dir};
 
 const PR: &str = "https://github.com/acme/widgets/pull/1";
 
@@ -63,6 +65,22 @@ fn submitted(fixture: &ServiceFixture, title: &str) -> String {
         .set_state(&id, "verifying", None, None, None)
         .unwrap();
     id
+}
+
+/// The lease `story move verifying` records from a dispatched worktree; the
+/// verifier's reap authority, and since SH-761 the cleanup queue's admission.
+fn lease_for(root: &std::path::Path, story_id: &str) -> StoryCleanupLease {
+    StoryCleanupLease {
+        version: CLEANUP_LEASE_VERSION,
+        project_slug: "fixture".into(),
+        story_id: story_id.into(),
+        repository_path: root.to_path_buf(),
+        worktree_path: root.join(".claude/worktrees").join(story_id),
+        branch: format!("worktree-{story_id}"),
+        tmux: TmuxCleanupTarget {
+            socket_path: root.join("tmux.sock"),
+        },
+    }
 }
 
 fn row(fixture: &ServiceFixture, id: &str) -> storyhook::store::StoryRow {
@@ -336,6 +354,8 @@ fn an_overridden_story_whose_pull_request_merged_is_reap_eligible() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "merged by hand");
+    let root = scratch_dir();
+    fixture.append_cleanup_lease(&id, lease_for(root.path(), &id));
     StoryService::new(&fixture.ctx())
         .set_state(&id, "done", Some("merged by hand"), Some("verifying"), None)
         .unwrap();
@@ -361,6 +381,8 @@ fn a_second_overridden_generation_is_not_hidden_by_earlier_cleanup() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "override, reap, reopen, override");
+    let root = scratch_dir();
+    fixture.append_cleanup_lease(&id, lease_for(root.path(), &id));
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     service
@@ -387,6 +409,7 @@ fn a_second_overridden_generation_is_not_hidden_by_earlier_cleanup() {
     service
         .set_state(&id, "verifying", None, None, None)
         .unwrap();
+    fixture.append_cleanup_lease(&id, lease_for(root.path(), &id));
     service
         .set_state(
             &id,

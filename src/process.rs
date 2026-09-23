@@ -125,6 +125,32 @@ pub(crate) fn run_captured_private(
     .map_err(|failure| failure.error)
 }
 
+/// Journals a supervisory child only when it fails (SH-761): no start
+/// record, no output mirroring, and a finish record only for a non-zero
+/// exit. A periodic reconcile whose success is the steady state would
+/// otherwise fill the very window it keeps alive. Timeouts still record an
+/// ERROR, and the caller keeps the captured stderr for its own report.
+pub(crate) fn run_captured_quiet(
+    command: Command,
+    timeout: Duration,
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        None,
+        CaptureWait {
+            private_output: true,
+            failures_only: true,
+            ..CaptureWait::default()
+        },
+        None,
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
 /// Runs a command with file-backed capture and caller-selected termination.
 pub(crate) fn run_captured_with_termination(
     command: Command,
@@ -262,6 +288,8 @@ struct CaptureWait {
     poll: Option<Duration>,
     quiescent: bool,
     private_output: bool,
+    /// Journal the child's lifecycle only when it fails (SH-761).
+    failures_only: bool,
 }
 
 fn run_captured_until<G>(
@@ -300,7 +328,9 @@ fn run_captured_until<G>(
     let mut child = command.spawn().map_err(CaptureError::Spawn)?;
     let pid = child.id();
     let context = format!("child={pid}");
-    crate::daemon::activity::emit("INFO", &source, "event", &context, "process started");
+    if !wait.failures_only {
+        crate::daemon::activity::emit("INFO", &source, "event", &context, "process started");
+    }
     let observer = if wait.private_output {
         None
     } else {
@@ -396,13 +426,15 @@ fn run_captured_until<G>(
         }
     };
     drop(observer);
-    crate::daemon::activity::emit(
-        if status.success() { "INFO" } else { "ERROR" },
-        &source,
-        "event",
-        &context,
-        &format!("process finished: {status}"),
-    );
+    if !(wait.failures_only && status.success()) {
+        crate::daemon::activity::emit(
+            if status.success() { "INFO" } else { "ERROR" },
+            &source,
+            "event",
+            &context,
+            &format!("process finished: {status}"),
+        );
+    }
     Ok(Captured {
         status,
         stdout: read_capture(stdout_file),

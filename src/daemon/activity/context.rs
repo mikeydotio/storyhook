@@ -167,6 +167,53 @@ mod tests {
         assert!(current().is_none());
     }
 
+    /// SH-761: a supervisor that runs every five seconds under the project
+    /// scope must not narrate its own success into the window it keeps
+    /// alive. Failure is the only record, and it is one record, with the
+    /// child's stderr left to the caller's own report.
+    #[test]
+    fn a_quiet_capture_journals_one_record_and_only_on_failure() {
+        let root = storyhook_test_support::scratch_dir();
+        let directory = root.path().join("logs");
+        let _scope = enter(Some(LogContext {
+            directory: directory.clone(),
+            label: "project=quiet reader".into(),
+        }));
+        let mut healthy = Command::new("sh");
+        healthy.args(["-c", "printf reconciled; exit 0"]);
+        let output = crate::process::run_captured_quiet(healthy, std::time::Duration::from_secs(5))
+            .unwrap_or_else(|error| panic!("{}", error.detail()));
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"reconciled", "capture itself is unchanged");
+        assert!(
+            !directory.exists(),
+            "a successful supervisor leaves no journal record"
+        );
+
+        let mut failing = Command::new("sh");
+        failing.args(["-c", "printf broken >&2; exit 3"]);
+        let output = crate::process::run_captured_quiet(failing, std::time::Duration::from_secs(5))
+            .unwrap_or_else(|error| panic!("{}", error.detail()));
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(output.stderr, b"broken", "the caller still gets stderr");
+        let text = std::fs::read_to_string(super::super::day_path(&directory, chrono::Utc::now()))
+            .unwrap();
+        let records: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 1, "one failure, one record: {text}");
+        assert_eq!(records[0]["level"], "ERROR");
+        assert_eq!(records[0]["stream"], "event");
+        assert_eq!(records[0]["message"], "process finished: exit status: 3");
+        assert!(
+            records[0]["context"]
+                .as_str()
+                .unwrap()
+                .starts_with("project=quiet reader child=")
+        );
+    }
+
     #[test]
     fn configure_preserves_an_explicit_destination_and_scopes_restore_on_panic() {
         let _scope = enter(Some(LogContext {

@@ -21,7 +21,13 @@ command. An unrelated occupant or multiple panes named `verification` is a
 visible ownership conflict. Missing windows are created; dead or changed owned
 readers are replaced. A replacement is allocated and marked before retirement
 of the old exact window ID, whose evidence is checked again before removal.
-Failures are logged and retried on a later reconciliation tick.
+Failures are logged and retried on a later reconciliation tick. A successful
+reconcile is not journaled at all (SH-761): the helper runs under the
+project's own journal scope every five seconds, and announcing each child's
+start and exit at INFO filled the window it exists to keep alive with two
+lines about itself every tick. `run_captured_quiet` records a non-zero exit
+or a timeout as one ERROR and mirrors no output; the daemon's WARN still
+carries the helper's stderr.
 
 SH-737’s native macOS `forkpty` failure regression remains required. Never use
 `respawn-pane`: a failed respawn can corrupt tmux 3.7c and crash unrelated

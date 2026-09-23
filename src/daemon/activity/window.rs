@@ -2,7 +2,7 @@
 
 use crate::{
     env::Environment,
-    process::run_captured,
+    process::run_captured_quiet,
     store::{ReadOps, Store},
 };
 use std::{
@@ -16,6 +16,10 @@ use std::{
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Opens or repairs only the explicitly owned project view.
+///
+/// The reconcile child is journaled only when it fails (SH-761): it runs
+/// every [`RECONCILE_INTERVAL`] under the project's own journal scope, so
+/// announcing each success would fill the window it exists to keep alive.
 pub(crate) fn open(env: &Environment, project: &str, directory: &Path) {
     if !env.verifier_mirror_enabled() {
         return;
@@ -33,7 +37,7 @@ pub(crate) fn open(env: &Environment, project: &str, directory: &Path) {
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
         let captured =
-            run_captured(command, Duration::from_secs(5)).map_err(|error| error.detail())?;
+            run_captured_quiet(command, Duration::from_secs(5)).map_err(|error| error.detail())?;
         if !captured.status.success() {
             return Err(format!(
                 "project {project} verification view unavailable ({}): {}",

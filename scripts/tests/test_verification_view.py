@@ -229,6 +229,14 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         second = wait_for_view(first)
         self.assertNotEqual(first, second)
         self.stop_daemon(daemon)
+        # SH-761: at least two successful reconciles ran (startup and the
+        # repair). The supervisor must not narrate them into the journal it
+        # keeps a window on. A reconcile that loses a race with the kill above
+        # may still fail once; that is journaled at ERROR/WARN by design.
+        records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        narration = [row for row in records
+                     if " reader" in row["context"] and row["level"] == "INFO"]
+        self.assertEqual(narration, [], "a healthy reconcile journals nothing")
 
     def stop_daemon(self, daemon):
         """Bound shutdown of the foreground fixture daemon before its tmux server."""
