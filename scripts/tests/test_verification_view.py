@@ -10,6 +10,10 @@ import time
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "verification-view.py"
+# The daemon runs the reconciler composed after the tmux server policy
+# (src/daemon/activity/window.rs); exercise exactly that program.
+POLICY = Path(__file__).resolve().parents[2] / "plugins/story/lib/tmux_server_env.py"
+PROGRAM = POLICY.read_text() + "\n" + SCRIPT.read_text()
 DEADLINE = 15  # Includes private server startup and loaded macOS PTY allocation.
 
 
@@ -99,7 +103,7 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
     def reconcile(self, project="one", check=True):
         """Run the production helper with literal hostile-path arguments."""
         directory = self.root / project / "logs with spaces ' $(inert)"
-        return subprocess.run(["python3", str(SCRIPT), project, str(directory), str(self.reader)],
+        return subprocess.run(["python3", "-c", PROGRAM, project, str(directory), str(self.reader)],
                               env=self.env, capture_output=True, text=True,
                               timeout=DEADLINE, check=check)
 

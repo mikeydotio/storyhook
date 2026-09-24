@@ -15,6 +15,18 @@ use std::{
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 
+/// The reconciler as the daemon runs it: the tmux server environment policy,
+/// then the view program that calls it (SH-758). Composed rather than
+/// imported because an installed binary carries no plugin files it could
+/// rely on, and composed rather than copied so both launchers that can start
+/// a tmux server apply one policy. The module defines names only, so its
+/// position ahead of the view's own `__main__` block runs nothing extra.
+const VIEW_PROGRAM: &str = concat!(
+    include_str!("../../../plugins/story/lib/tmux_server_env.py"),
+    "\n",
+    include_str!("../../../scripts/verification-view.py")
+);
+
 /// Opens or repairs only the explicitly owned project view.
 ///
 /// The reconcile child is journaled only when it fails (SH-761): it runs
@@ -28,7 +40,7 @@ pub(crate) fn open(env: &Environment, project: &str, directory: &Path) {
         let binary = std::env::current_exe().map_err(|error| error.to_string())?;
         let mut command = Command::new("python3");
         command
-            .args(["-c", include_str!("../../../scripts/verification-view.py")])
+            .args(["-c", VIEW_PROGRAM])
             .arg(project)
             .arg(directory)
             .arg(binary)
