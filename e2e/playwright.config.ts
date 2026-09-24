@@ -42,10 +42,12 @@ if (loadGraceEnabled()) {
  * `hasTouch` — rather than the dashboard's behavior in general. One
  * pattern, referenced by both pairs below, so ordinary specs stay exhaustive
  * and disjoint by construction: every ordinary spec file matches it or it
- * doesn't. SH-321's untrusted-origin spec is the one second partition: it
- * needs daemon and browser configuration that would invalidate every ordinary
- * project's fixture, so both desktop projects exclude it and one dedicated
- * Chromium project selects it.
+ * doesn't. Two further partitions each belong to one dedicated project, and
+ * both desktop projects exclude them. SH-321's untrusted-origin spec needs
+ * daemon and browser configuration that would invalidate every ordinary
+ * project's fixture. SH-762's `*.fractional.spec.ts` specs need a layout
+ * width that is not a whole CSS pixel, which only the Gecko project below
+ * produces; their preconditions fail on any engine that lays out integers.
  * Full Auto close-out, the open-PR chip, and verification text layout span
  * desktop and phone layouts. The mobile pair adds those exact filenames to
  * this same base set instead of maintaining independent per-engine globs.
@@ -55,7 +57,8 @@ const ENGINE_SPECS = /engine\.spec\.ts$/;
 const OPEN_PR_CHIP_SPECS = /open-pr-chip\.spec\.ts$/;
 const VERIFICATION_LAYOUT_SPECS = /verification-layout\.spec\.ts$/;
 const UNTRUSTED_ORIGIN_SPECS = /untrusted-origin-cookie\.spec\.ts$/;
-const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS];
+const FRACTIONAL_SPECS = /\.fractional\.spec\.ts$/;
+const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS, FRACTIONAL_SPECS];
 const UNTRUSTED_ORIGIN_HOST = "storyhook.e2e.test";
 const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS, OPEN_PR_CHIP_SPECS, VERIFICATION_LAYOUT_SPECS];
 
@@ -178,10 +181,10 @@ export default defineConfig({
       // harmless and recorded so the next reader doesn't re-derive it:
       // `navigator.maxTouchPoints` reports 0 under this build, where
       // Blink's emulation reports 1+. Nothing branches on it --
-      // `web_dashboard.html`'s only `matchMedia` call is
-      // `prefers-reduced-motion`, and `zoom.mobile.spec.ts`'s own first
-      // test reports that field for diagnostics while asserting only
-      // `pointerCoarse`.
+      // `web_dashboard.html`'s `matchMedia` calls read only
+      // `prefers-reduced-motion` and the 768px width, and
+      // `zoom.mobile.spec.ts`'s own first test reports that field for
+      // diagnostics while asserting only `pointerCoarse`.
       //
       // Keyed off the same `MOBILE_OR_ENGINE_SPECS` constant as
       // `mobile-chromium`,
@@ -203,6 +206,22 @@ export default defineConfig({
       name: "untrusted-origin-chromium",
       use: { ...devices["Desktop Chrome"], launchOptions: { args: [`--host-resolver-rules=MAP ${UNTRUSTED_ORIGIN_HOST} 127.0.0.1`] } },
       testMatch: UNTRUSTED_ORIGIN_SPECS,
+    },
+    {
+      // Gecko at `layout.css.devPixelsPerPx` 1.1 -- the preference SH-745's
+      // real-Zen reproduction used, and the only way this suite reaches a
+      // layout width that is not a whole CSS pixel (SH-762). Measured with Playwright 1.63
+      // (`firefox-1543`): `setViewportSize` 767, 768 and 769 lay out at
+      // 767.25, 768.167 and 769.083 CSS px, while `innerWidth` still reports
+      // the integer. Chromium and WebKit under `deviceScaleFactor` 1.1 lay
+      // out whole pixels, and a srcdoc iframe snaps to them in all three
+      // engines (SH-745), so neither can see a gap between a `max-width`
+      // and a `min-width` query one pixel apart. The spec asserts that
+      // precondition itself, so a Gecko that stops producing the band fails
+      // loudly instead of passing vacuously.
+      name: "fractional-firefox",
+      use: { ...devices["Desktop Firefox"], launchOptions: { firefoxUserPrefs: { "layout.css.devPixelsPerPx": "1.1" } } },
+      testMatch: FRACTIONAL_SPECS,
     },
   ],
 });

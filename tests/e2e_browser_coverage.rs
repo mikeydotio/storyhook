@@ -1,8 +1,9 @@
 //! Fences the browser-coverage invariants SH-335 and SH-348 introduce.
 //!
-//! `e2e/playwright.config.ts` now names five projects -- two engine pairs,
+//! `e2e/playwright.config.ts` now names six projects -- two engine pairs,
 //! `chromium`/`webkit` (desktop) and `mobile-chromium`/`mobile-webkit`
-//! (mobile, SH-348), plus SH-321's isolated untrusted-origin Chromium leg --
+//! (mobile, SH-348), plus SH-321's isolated untrusted-origin Chromium leg and
+//! SH-762's fractional-width Gecko leg --
 //! `Makefile`'s `e2e-install` installs the browsers those projects need, and a
 //! handful of specs quarantine an assertion WebKit
 //! cannot satisfy on an unconfigured machine
@@ -23,6 +24,9 @@
 //!    four -- `the_two_projects_in_each_engine_pair_select_their_specs_the_same_way`.
 //!    SH-321's special spec is excluded from both pairs and selected only by
 //!    its own Chromium project -- `the_untrusted_origin_spec_has_one_project`.
+//!    SH-762's `*.fractional.spec.ts` specs are likewise selected only by the
+//!    Gecko project that lays out fractional widths --
+//!    `the_fractional_width_specs_have_one_project`.
 //! 4. A failed project stops the matrix or a later project's Playwright
 //!    invocation erases its failure artifacts --
 //!    `the_matrix_records_failures_continues_and_keeps_each_projects_artifacts`.
@@ -93,6 +97,8 @@ fn engine_for_device(device: &str) -> &'static str {
         // `Desktop Safari` drives, which is why SH-348 needed no Makefile
         // change to add this device.
         "iPhone 15" => "webkit",
+        // Gecko, driven only by SH-762's fractional-width project.
+        "Desktop Firefox" => "firefox",
         other => panic!(
             "e2e/playwright.config.ts uses devices[\"{other}\"], which engine_for_device() has \
              not been taught to map to a browser engine -- teach it what engine that device \
@@ -202,6 +208,7 @@ fn engine_for_device_recognises_this_configs_own_devices_and_panics_on_an_unknow
     assert_eq!(engine_for_device("Desktop Safari"), "webkit");
     assert_eq!(engine_for_device("Pixel 7"), "chromium");
     assert_eq!(engine_for_device("iPhone 15"), "webkit");
+    assert_eq!(engine_for_device("Desktop Firefox"), "firefox");
 
     // Deliberately NOT a device Playwright ships -- this probe used to name
     // "iPhone 15", a real descriptor the config had not yet adopted, and
@@ -235,8 +242,8 @@ fn dashboard_source_does_not_repeat_obsolete_chromium_only_claims() {
     assert!(
         offenders.is_empty(),
         "src/web_dashboard.html repeats obsolete Chromium-only browser coverage claims: \
-         {offenders:?}. The Playwright matrix drives Chromium and WebKit, and `make \
-         e2e-install` installs both (SH-335/SH-374)."
+         {offenders:?}. The Playwright matrix drives Chromium and WebKit, plus one Gecko \
+         fractional-width leg, and `make e2e-install` installs all three (SH-335/SH-374/SH-762)."
     );
 }
 
@@ -542,7 +549,7 @@ fn the_two_projects_in_each_engine_pair_select_their_specs_the_same_way() {
     assert_eq!(
         pair_selectors[0].1.1.as_str(),
         "DESKTOP_EXCLUDED_SPECS",
-        "the desktop pair must exclude phone-subject specs and the isolated untrusted-origin spec"
+        "the desktop pair must exclude phone-subject specs and both dedicated-project partitions"
     );
     assert_eq!(
         pair_selectors[1].1.1.as_str(),
@@ -574,6 +581,7 @@ fn project_blocks_and_selector_read_this_configs_own_shape() {
             "mobile-chromium",
             "mobile-webkit",
             "untrusted-origin-chromium",
+            "fractional-firefox",
         ],
         "project_blocks() parsed {names:?} out of the live config -- either a project was \
          added/removed/reordered, or the parser's anchor no longer matches the file's shape"
@@ -618,7 +626,7 @@ fn the_untrusted_origin_spec_has_one_project() {
         config_text
             .contains("const UNTRUSTED_ORIGIN_SPECS = /untrusted-origin-cookie\\.spec\\.ts$/;")
             && config_text
-                .contains("const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS];"),
+                .contains(DESKTOP_EXCLUDED_SPECS_LINE),
         "the dedicated spec must be excluded from the ordinary desktop pair and selected from \
          one shared expression"
     );
@@ -627,6 +635,58 @@ fn the_untrusted_origin_spec_has_one_project() {
             .1
             .contains("--host-resolver-rules=MAP ${UNTRUSTED_ORIGIN_HOST} 127.0.0.1"),
         "the special Chromium project must map the fake hostname to loopback in the browser"
+    );
+}
+
+/// The desktop pair's one exclusion list: phone-subject specs plus the two
+/// partitions that each belong to a single dedicated project.
+const DESKTOP_EXCLUDED_SPECS_LINE: &str =
+    "const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS, FRACTIONAL_SPECS];";
+
+/// SH-762: a layout width strictly between two whole CSS pixels is what
+/// exposed the gap between `(min-width: 769px)` and `(max-width: 768px)`, and
+/// only Gecko at `layout.css.devPixelsPerPx` 1.1 produces one in this suite.
+/// The `*.fractional.spec.ts` specs assert that precondition, so any other
+/// project selecting them would fail every run; the Gecko project must carry
+/// the preference, or the specs lose the band they exist to measure.
+#[test]
+fn the_fractional_width_specs_have_one_project() {
+    let config_text = read("e2e/playwright.config.ts");
+    let blocks = project_blocks(&config_text);
+    assert!(
+        config_text.contains("const FRACTIONAL_SPECS = /\\.fractional\\.spec\\.ts$/;")
+            && config_text.contains(DESKTOP_EXCLUDED_SPECS_LINE),
+        "the fractional-width specs must be one named pattern that the desktop pair excludes"
+    );
+
+    let selecting: Vec<&str> = blocks
+        .iter()
+        .filter(|(_, body)| body.contains("FRACTIONAL_SPECS"))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        selecting,
+        vec!["fractional-firefox"],
+        "only the fractional-firefox project may name the fractional-width pattern (the desktop \
+         pair reaches it through DESKTOP_EXCLUDED_SPECS, pinned above); found {selecting:?}"
+    );
+
+    let gecko = &blocks
+        .iter()
+        .find(|(name, _)| name == "fractional-firefox")
+        .unwrap_or_else(|| panic!("the config names no fractional-firefox project"))
+        .1;
+    assert_eq!(
+        selector(gecko),
+        Some(("testMatch", "FRACTIONAL_SPECS".to_string())),
+        "the fractional-firefox project must select only the fractional-width specs"
+    );
+    assert!(
+        gecko.contains(
+            "use: { ...devices[\"Desktop Firefox\"], launchOptions: { firefoxUserPrefs: { \"layout.css.devPixelsPerPx\": \"1.1\" } } },"
+        ),
+        "the fractional-firefox project must drive Gecko at layout.css.devPixelsPerPx 1.1, the \
+         preference that makes its viewport widths fractional"
     );
 }
 
