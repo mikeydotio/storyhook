@@ -54,7 +54,8 @@
 #                        $STATE/show_environment_args.log, so a test can assert
 #                        which session storyhook scrubbed (SH-758). Fails with
 #                        tmux's own "can't find session" when
-#                        $FAKE_TMUX_FAIL_SHOW_ENVIRONMENT=1.
+#                        $FAKE_TMUX_FAIL_SHOW_ENVIRONMENT=1. `-g` prints
+#                        $FAKE_TMUX_GLOBAL_ENVIRONMENT (printf %b) when set.
 #
 # SESSION MODEL (SH-50) — a virtual set of "existing" session names lives in
 # $STATE/sessions, one per line. Seed it with $FAKE_TMUX_SESSIONS
@@ -692,6 +693,10 @@ case "${1:-}" in
     if [ "${FAKE_TMUX_FAIL_SHOW_ENVIRONMENT:-}" = "1" ]; then
       printf "can't find session: %s\n" "${2:-}" >&2
       exit 1
+    fi
+    # A polluted server's global table, for the doctor detector (SH-758).
+    if [ "${1:-}" = -g ] && [ -n "${FAKE_TMUX_GLOBAL_ENVIRONMENT:-}" ]; then
+      printf '%b\n' "$FAKE_TMUX_GLOBAL_ENVIRONMENT"
     fi
     exit 0
     ;;

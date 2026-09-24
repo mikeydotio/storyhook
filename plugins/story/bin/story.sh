@@ -3854,6 +3854,19 @@ cmd_doctor() (
 
   doctor_cleanup
 
+  # SH-758: a server storyhook did not start may retain another process's
+  # session state (a host's plugin roots, CODEX_*, per-call storyhook context)
+  # and hand it to every new pane, the user's own included. Storyhook never
+  # rewrites that environment, so doctor reports it; readiness is unaffected.
+  local retained_report retained_checked=true retained_names="" retained_list='[]' retained_detail=""
+  if retained_report=$(python3 "$STORY_PLUGIN_ROOT/lib/tmux-env.py" retained 2>&1); then
+    retained_list=$(printf '%s' "$retained_report" | jq -c '.names')
+    retained_names=$(printf '%s' "$retained_report" | jq -r '.names | join(" ")')
+  else
+    retained_checked=false
+    retained_detail="$retained_report"
+  fi
+
   local display
   if [ "$readiness_confirmed" = true ]; then
     display="[story] doctor: $AGENT_LABEL readiness OK via the '$tier' tier."
@@ -3879,6 +3892,11 @@ cmd_doctor() (
     fi
   fi
   display="$display Context: $context_status. $integrity_summary${cleanup_note:+ $cleanup_note}"
+  if [ "$retained_checked" != true ]; then
+    display="$display tmux server environment: NOT checked ($retained_detail)."
+  elif [ -n "$retained_names" ]; then
+    display="$display tmux server environment: retains another process's session state ($retained_names); every new pane on this server inherits it. Restart the tmux server, or run \`tmux set-environment -gu <name>\` for each."
+  fi
   if [ "$context_status" != loaded ]; then
     display="$display Run story load-context and inspect SessionStart stderr for the context-loading failure."
   fi
@@ -3896,7 +3914,9 @@ cmd_doctor() (
     --argjson integrity_ok "$_INTEGRITY_OK" --arg integrity "$integrity_summary" \
     --arg occupant "$occupant" --arg rule "$occupant_rule" \
     --arg launch_bin "$doctor_bin" --arg launch_resolved "$launch_resolved" \
-    --arg pattern "$READY_PROCESS_PATTERN" '
+    --arg pattern "$READY_PROCESS_PATTERN" \
+    --argjson retained_checked "$retained_checked" --argjson retained "$retained_list" \
+    --arg retained_detail "$retained_detail" '
     {
       ok: ($ready and $terminal and $plan and $integrity_ok and $cleanup and ($context == "loaded") and $probe_ran and $probe_first and ($probe_seen == $probe_total)),
       agent: $agent,
@@ -3918,7 +3938,8 @@ cmd_doctor() (
         launch_binary: $launch_bin,
         launch_binary_resolved: $launch_resolved
       },
-      project_integrity: { ok: $integrity_ok, summary: $integrity }
+      project_integrity: { ok: $integrity_ok, summary: $integrity },
+      server_environment: { checked: $retained_checked, retained: $retained, detail: $retained_detail }
     }
     + (if $probe_ran then {multiline_probe: {first_line_held: $probe_first, lines_seen: $probe_seen, lines_total: $probe_total}} else {} end)
     + (if $tail == "" then {} else {pane_tail: $tail} end)
