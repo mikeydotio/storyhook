@@ -625,8 +625,7 @@ fn the_untrusted_origin_spec_has_one_project() {
     assert!(
         config_text
             .contains("const UNTRUSTED_ORIGIN_SPECS = /untrusted-origin-cookie\\.spec\\.ts$/;")
-            && config_text
-                .contains(DESKTOP_EXCLUDED_SPECS_LINE),
+            && config_text.contains(DESKTOP_EXCLUDED_SPECS_LINE),
         "the dedicated spec must be excluded from the ordinary desktop pair and selected from \
          one shared expression"
     );

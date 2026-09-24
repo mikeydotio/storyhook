@@ -3778,7 +3778,9 @@ fn width_media_conditions(css: &str, script: &str) -> Vec<String> {
     });
     let queries = script.match_indices("matchMedia(\"").map(|(at, marker)| {
         let rest = &script[at + marker.len()..];
-        &rest[..rest.find('"').expect("every matchMedia argument closes its quote")]
+        &rest[..rest
+            .find('"')
+            .expect("every matchMedia argument closes its quote")]
     });
     preludes
         .chain(queries)
@@ -3877,13 +3879,17 @@ fn the_width_condition_rule_rejects_every_gap_shape() {
         "(max-width: px)",
         "(min-width: 481px) and (max-width: 768px)",
     ] {
-        assert!(!partitions_the_width(rejected), "{rejected:?} must be rejected");
+        assert!(
+            !partitions_the_width(rejected),
+            "{rejected:?} must be rejected"
+        );
     }
 
     let css = "@media (prefers-color-scheme: dark) { a { b: c; } }\n\
                /* @media (min-width: 1px) { } */\n\
                @media (min-width: 769px) {\n  .x { y: z; }\n}\n";
-    let script = "matchMedia(\"(max-width: 768px)\"); matchMedia(\"(prefers-reduced-motion: reduce)\");";
+    let script =
+        "matchMedia(\"(max-width: 768px)\"); matchMedia(\"(prefers-reduced-motion: reduce)\");";
     assert_eq!(
         width_media_conditions(css, script),
         vec!["(min-width: 769px)", "(max-width: 768px)"],
