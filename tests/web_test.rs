@@ -2478,6 +2478,7 @@ fn web_serve_root_html_uses_shared_visual_hierarchy_roles() {
         ".filter-count",
         ".card-id",
         ".story-complexity",
+        ".card-blockers",
         ".chip",
         ".flag",
         ".col-order",
