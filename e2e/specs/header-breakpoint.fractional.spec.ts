@@ -80,7 +80,9 @@ for (const [width, compact] of [[767, true], [768, false], [769, false]] as cons
     if (width === 768) await expectFractionalBand(page);
     await page.setViewportSize({ width, height: 1100 });
     expect((await mediaWidthBand(page)).atMost768).toBe(compact);
-    expect(await headerLayout(page)).toEqual({
+    // Polled: the script's side follows compactHeaderQuery's change event,
+    // which the engine dispatches on its next rendering update.
+    await expect.poll(() => headerLayout(page)).toEqual({
       compactGrid: compact,
       desktopContainment: !compact,
       scriptCompact: compact,
