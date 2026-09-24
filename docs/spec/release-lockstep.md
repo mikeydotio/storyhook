@@ -379,11 +379,31 @@ registered`, and the report closed `every component agrees` over a machine
 whose dashboard dispatch was broken. `story plugin install <target>` now
 leaves a receipt at `<data dir>/provider-installs/<target>` — written only
 after the provider's own registration succeeded, never on a failed reinstall
-(an earlier install keeps being one), removed by `story plugin uninstall
-<target>` — and `unregistered` flags on residue *or* receipt. The receipt is
-per target, which the managed-path manifest is not, and lives in storyhook's
-own directory, which no provider rewrites. A machine that never installed the
-provider has neither and stays quiet.
+(an earlier install keeps being one) — and `unregistered` flags on residue
+*or* receipt. The receipt is per target, which the managed-path manifest is
+not, and lives in storyhook's own directory, which no provider rewrites. A
+machine that never installed the provider has neither and stays quiet.
+
+**The receipt is never removed; an uninstall tombstones it (SH-760).** The
+receipt was first designed to be removed by `story plugin uninstall <target>`,
+so that a deliberate uninstall left the doctor quiet. That is the one thing
+that could still defeat the doctor, and something did: the losses attributed
+above to Claude Code were `tests/invoker_seam.rs` running `plugin uninstall
+claude` in-process against the developer's real home on every gate run, and a
+bare `cargo test` with no data directory took the receipt too, after which the
+row read `not registered` and the report closed `every component agrees`
+(`docs/rca/sh-760-test-suite-uninstalls-the-real-plugin.md`). `story plugin
+uninstall` now rewrites the receipt as a tombstone — `state uninstalled`,
+`uninstalled_at`, `by <executable>`, `build installed|checkout|test`,
+`override yes|no` — and the install receipt records the same actor lines.
+`unregistered` reads a tombstone from an installed binary, or from any binary
+run under `STORYHOOK_ALLOW_UNINSTALLED_PLUGIN_INSTALL`, as the operator's own
+uninstall: a quiet row that still quotes when and by what. A tombstone from a
+test or checkout build with no override is the plugin guard
+(`src/plugin/guard.rs`, `docs/spec/test-environments.md`) being bypassed, and
+is flagged `UNINSTALLED BY AN UNINSTALLED BUILD` naming the executable and
+`story plugin install <target>`. Receipts written before the tombstone existed
+carry no `state` line and keep reading as installed.
 
 **What caused the loss is recorded as evidence, not settled.** The candidate
 the story named — `install_claude`'s remove-then-add with no rollback — did

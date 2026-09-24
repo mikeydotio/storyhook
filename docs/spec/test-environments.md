@@ -254,8 +254,10 @@ the call is spelled.
   PAT — meaning what those suites did depended on whose shell ran them. Three
   more variables had the same shape and had never been considered:
   `STORYHOOK_PROJECT` (a selection made outside the run), `STORYHOOK_ACTOR` (the
-  identity writes are attributed to), and the three `STORYHOOK_ALLOW_*`
-  overrides, which **disarm the very guards a run may be testing** — a suite
+  identity writes are attributed to), and the `STORYHOOK_ALLOW_*`
+  overrides (temp project, project burst, uninstalled migration, uninstalled
+  daemon, and since SH-760 uninstalled plugin install), which **disarm the very
+  guards a run may be testing** — a suite
   that inherits one cannot observe the refusal it is asserting, and passes.
 - **The plugin suite ran the installed binary.** It resolves `story` by name;
   `make test` prepends `target/debug` and a standalone run — which is what a
@@ -351,6 +353,43 @@ and the next command would meet the first clause. Proven end to end in
 `tests/migration_guard.rs` uses (`storyhook_test_support::installed_copy`, shared
 now rather than copied): the control for "an installed binary replaces a stale
 daemon" is what `make install` produces, never the incident.
+
+## As built — the plugin guard (SH-760)
+
+The scope on `HOME` above has a consequence the table cannot express: a test
+that calls the library **in-process** is not a `story` child, so it keeps the
+developer's own `HOME` and `PATH` under every harness, `make test` included.
+`tests/invoker_seam.rs` did exactly that with `plugin uninstall claude`, and so
+ran the real `claude plugin uninstall story@storyhook`, swept the real plugin
+cache and — under a bare `cargo test`, with no `STORYHOOK_DATA_DIR` — removed
+storyhook's own install receipt, on every run from 2026-07-28 until it was found.
+`docs/rca/sh-760-test-suite-uninstalls-the-real-plugin.md` has the evidence.
+
+The rule: **an uninstalled build never manages a provider's plugin
+registration.** `src/plugin/guard.rs` refuses `story plugin
+install|uninstall|reinstall` to a test build (the `fault-injection` feature,
+`storyhook::env::is_test_build`) and to a binary still inside the directory
+`build.rs` stamped, before a provider is invoked or a file is written, and
+permits under `STORYHOOK_ALLOW_UNINSTALLED_PLUGIN_INSTALL=1`. The test-build
+clause is the one the incident needed: the binary is the incident whatever
+directory it was copied to, and `installed_copy()` is refused by it alone.
+
+The parameter table clears the override beside its siblings, and
+`--uninstalled-build` does **not** re-arm it: `make scratch` keeps the real
+`$HOME` unless `--isolate-home` is passed, so an armed scratch shell's `story
+plugin install claude` would reach the developer's own Claude Code. A person
+who means it exports the variable; a tracked script may not (the stray-setting
+scan above). Harnesses that own an isolated home — `tests/plugin_install.rs`,
+`tests/plugin_reinstall_cwd.rs`, `tests/plugin_install_freshness.rs` — set it
+on every `story` child, so the daemon the first child spawns inherits it.
+
+The receipt half is in `docs/spec/release-lockstep.md`: `story plugin
+uninstall` no longer removes the receipt but rewrites it as a tombstone naming
+its actor, so `story doctor install` can flag an uninstall that bypassed the
+guard while staying quiet over one the operator ran. Proven end to end in
+`tests/plugin_guard.rs`, on the same installed-copy fixture the migration and
+seat guards use; `tests/invoker_seam.rs` pins that the roster case is now
+answered by the refusal.
 
 ## Deliberately out of scope
 

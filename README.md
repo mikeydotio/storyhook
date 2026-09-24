@@ -1122,7 +1122,9 @@ to resolve a real store — but it is not the gate.
 in a checkout, resolves your **real** store — and is refused a daemon there: a
 binary still in its build directory may neither replace the installed daemon
 nor start one for the default store (`STORYHOOK_ALLOW_UNINSTALLED_DAEMON=1` says
-you meant it). The scratch environment gives it a disposable store instead,
+you meant it), and may not register, remove or replace the provider plugins
+under your `HOME` (`STORYHOOK_ALLOW_UNINSTALLED_PLUGIN_INSTALL=1` says you
+meant that). The scratch environment gives it a disposable store instead,
 under the same isolation the test suite uses. `make scratch ARGS="--test-build"` runs a build carrying the
 store's crash points. `story help test-environment` documents the parameters
 both of them apply.
