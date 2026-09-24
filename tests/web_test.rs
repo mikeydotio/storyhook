@@ -3752,6 +3752,145 @@ fn web_serve_root_html_caps_the_project_selector_width_on_narrow_phones() {
     );
 }
 
+/// The media condition the script's `compactHeaderQuery` evaluates -- the one
+/// owner of the dashboard's 768px breakpoint (SH-613).
+fn compact_header_condition(script: &str) -> &str {
+    const OPEN: &str = "var compactHeaderQuery = window.matchMedia(\"";
+    assert_eq!(
+        script.matches(OPEN).count(),
+        1,
+        "the script must declare compactHeaderQuery exactly once"
+    );
+    let start = script.find(OPEN).expect("counted above") + OPEN.len();
+    let end = script[start..]
+        .find("\");")
+        .expect("the compactHeaderQuery declaration closes");
+    &script[start..start + end]
+}
+
+/// Every media condition in `css` (`@media` preludes, comments removed) and
+/// `script` (`matchMedia("...")` arguments) that tests the viewport width.
+fn width_media_conditions(css: &str, script: &str) -> Vec<String> {
+    let css = strip_css_comments(css);
+    let preludes = css.match_indices("@media").map(|(at, marker)| {
+        let rest = &css[at + marker.len()..];
+        rest[..rest.find('{').expect("every @media prelude opens a block")].trim()
+    });
+    let queries = script.match_indices("matchMedia(\"").map(|(at, marker)| {
+        let rest = &script[at + marker.len()..];
+        &rest[..rest.find('"').expect("every matchMedia argument closes its quote")]
+    });
+    preludes
+        .chain(queries)
+        .filter(|condition| condition.contains("width"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether `condition` is the narrow side of a breakpoint, `(max-width: Npx)`,
+/// or its exact complement, `not all and (max-width: Npx)`. A `min-width`
+/// query one pixel above a `max-width` one leaves every fractional width in
+/// between matched by neither (SH-762); range syntax (`width > Npx`) would
+/// complement exactly but needs Safari 16.4.
+fn partitions_the_width(condition: &str) -> bool {
+    let narrow = condition.strip_prefix("not all and ").unwrap_or(condition);
+    narrow
+        .strip_prefix("(max-width: ")
+        .and_then(|rest| rest.strip_suffix("px)"))
+        .is_some_and(|pixels| !pixels.is_empty() && pixels.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// SH-762: the desktop-only header rules (SH-741's containment) must apply at
+/// exactly the widths the compact grid (SH-613) does not. They were gated on
+/// `(min-width: 769px)` beside the grid's `(max-width: 768px)`, so a layout
+/// width of 768.167px -- Zen at `layout.css.devPixelsPerPx` 1.1 in a 1104px
+/// window -- matched neither, fell back to the uncontained base rules, and
+/// pushed the toolbar past the viewport. `not all and <compact>` is the
+/// compact condition's exact complement at every width.
+///
+/// This pins the class, not the instance: no width condition anywhere in the
+/// dashboard may be written as a `min-width` (or range) query, so a future
+/// breakpoint cannot open the same gap. The browser proof, at a real
+/// fractional width, is `e2e/specs/header-breakpoint.fractional.spec.ts`.
+#[test]
+fn the_desktop_header_rules_are_the_exact_complement_of_the_compact_query() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+    let script = script(&html);
+    let css = strip_css_comments(stylesheet(&html));
+    let compact = compact_header_condition(script);
+
+    let conditions = width_media_conditions(&css, script);
+    assert!(
+        conditions.len() >= 3,
+        "expected the compact block, its complement and compactHeaderQuery; found {conditions:?}"
+    );
+    let offenders: Vec<&String> = conditions
+        .iter()
+        .filter(|condition| !partitions_the_width(condition))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "{offenders:?} test the width some other way than `(max-width: Npx)` or its exact \
+         complement `not all and (max-width: Npx)`. A `min-width` one pixel above a \
+         `max-width` matches no fractional width between them (SH-762)."
+    );
+
+    assert!(
+        css.contains(&format!("@media {compact} {{")),
+        "the compact grid must be gated on compactHeaderQuery's own condition, {compact:?}"
+    );
+    let desktop = format!("@media not all and {compact} {{");
+    let start = css
+        .find(&desktop)
+        .unwrap_or_else(|| panic!("the desktop header rules must be gated on `{desktop}`"));
+    let block = &css[start..];
+    let block = &block[..block.find("\n}").expect("the desktop header block closes")];
+    for rule in [
+        ".topbar-right { flex-shrink: 1; flex-wrap: wrap;",
+        ".filter-summary { flex-wrap: wrap; }",
+    ] {
+        assert!(
+            block.contains(rule),
+            "the complement block must hold SH-741's containment rule `{rule}`"
+        );
+    }
+}
+
+/// Controls for the SH-762 scan, on text written for them rather than on
+/// the live dashboard, so the rule is proved to reject what it exists to.
+#[test]
+fn the_width_condition_rule_rejects_every_gap_shape() {
+    for allowed in ["(max-width: 768px)", "not all and (max-width: 768px)"] {
+        assert!(partitions_the_width(allowed), "{allowed:?} must be allowed");
+    }
+    for rejected in [
+        "(min-width: 769px)",
+        "(width > 768px)",
+        "(width <= 768px)",
+        "not (max-width: 768px)",
+        "screen and (max-width: 768px)",
+        "(max-width: 48em)",
+        "(max-width: 768.5px)",
+        "(max-width: px)",
+        "(min-width: 481px) and (max-width: 768px)",
+    ] {
+        assert!(!partitions_the_width(rejected), "{rejected:?} must be rejected");
+    }
+
+    let css = "@media (prefers-color-scheme: dark) { a { b: c; } }\n\
+               /* @media (min-width: 1px) { } */\n\
+               @media (min-width: 769px) {\n  .x { y: z; }\n}\n";
+    let script = "matchMedia(\"(max-width: 768px)\"); matchMedia(\"(prefers-reduced-motion: reduce)\");";
+    assert_eq!(
+        width_media_conditions(css, script),
+        vec!["(min-width: 769px)", "(max-width: 768px)"],
+        "the scan must read every width prelude and query, and nothing inside a comment"
+    );
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let fixture = served();

@@ -37,6 +37,9 @@ export async function headerGeometry(page: Page) {
     }));
     return {
       viewport: innerWidth, scroll: scrollX, extent: document.documentElement.scrollWidth,
+      // The layout the stylesheet applied, not `innerWidth <= 768`: an
+      // integer innerWidth of 768 can be a 768.167px desktop layout (SH-762).
+      compact: getComputedStyle(header).display === "grid",
       header: rect(header), controls,
     };
   });
@@ -52,7 +55,7 @@ export async function expectHeaderContained(page: Page) {
     expect(control.left, diagnostic).toBeGreaterThanOrEqual(-1);
     expect(control.right, diagnostic).toBeLessThanOrEqual(geometry.viewport + 1);
     // The compact header uses display:contents instead of desktop row boxes.
-    const row = geometry.viewport <= 768 ? geometry.header : control.row;
+    const row = geometry.compact ? geometry.header : control.row;
     expect(control.left, diagnostic).toBeGreaterThanOrEqual(row.left - 1);
     expect(control.right, diagnostic).toBeLessThanOrEqual(row.right + 1);
     expect(control.top, diagnostic).toBeGreaterThanOrEqual(row.top - 1);
