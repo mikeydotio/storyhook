@@ -54,6 +54,8 @@ assert_eq "$(cat "$FAKE_TMUX_STATE/new_session_calls" 2>/dev/null || echo 0)" "1
 grep -q -- '-t dash-alpha:' "$FAKE_TMUX_STATE/new_window_args.log" \
   || fail_test "create-session/absent: the window opened into the new session"
 [ -d "$repo1/.claude/worktrees/$id1" ] || fail_test "create-session/absent: worktree directory missing"
+grep -qxF -- '-t =dash-alpha' "$FAKE_TMUX_STATE/show_environment_args.log" \
+  || fail_test "create-session/absent: the new owned session was scrubbed of retained host state (SH-758)"
 
 # --- Case 2: session present -> not recreated -------------------------------
 export FAKE_TMUX_STATE
@@ -69,6 +71,10 @@ assert_eq "$(jqf "$out2" .ok)" "true" "create-session/present: ok:true"
 assert_eq "$(jqf "$out2" .session_created)" "false" "create-session/present: session_created:false"
 [ -f "$FAKE_TMUX_STATE/new_session_calls" ] \
   && fail_test "create-session/present: tmux new-session ran even though the session already existed"
+# A session that predates this dispatch is exactly the one a polluted server
+# may have seeded, so the scrub runs whether or not the session was created.
+grep -qxF -- '-t =dash-beta' "$FAKE_TMUX_STATE/show_environment_args.log" \
+  || fail_test "create-session/present: the existing owned session was scrubbed (SH-758)"
 
 # --- Case 3: creation fails -> rollback -------------------------------------
 export FAKE_TMUX_STATE
@@ -101,5 +107,29 @@ assert_contains "$(printf '%s' "$comments" | jq -r '.[1]')" "Unclaimed from" \
   && fail_test "create-session/fails: worktree directory was left behind"
 (cd "$repo3" && git show-ref --verify --quiet "refs/heads/worktree-$id3") \
   && fail_test "create-session/fails: worktree branch was left behind"
+
+# --- Case 4: owned-session scrub fails -> rollback (SH-758) ------------------
+export FAKE_TMUX_STATE
+FAKE_TMUX_STATE="$(mktemp -d /tmp/story-test-tmux.XXXXXX)"
+_TMP_REPOS+=("$FAKE_TMUX_STATE")
+export FAKE_TMUX_SESSIONS="dash-delta"
+unset FAKE_TMUX_FAIL_NEW_SESSION
+export FAKE_TMUX_FAIL_SHOW_ENVIRONMENT=1
+repo4=$(mk_story_repo)
+id4=$(new_story "$repo4" "Dispatch whose owned-session scrub fails")
+
+out4=$(dispatch_into "$repo4" "$id4" "dash-delta")
+unset FAKE_TMUX_FAIL_SHOW_ENVIRONMENT
+assert_eq "$(jqf "$out4" .ok)" "false" "create-session/scrub-fails: ok:false"
+assert_contains "$(jqf "$out4" .display)" "retained host environment" \
+  "create-session/scrub-fails: names the scrub failure"
+assert_contains "$(jqf "$out4" .display)" "can't find session" \
+  "create-session/scrub-fails: carries tmux's own diagnostic"
+assert_contains "$(jqf "$out4" .display)" "Rolled the claim back" \
+  "create-session/scrub-fails: claim was rolled back"
+[ -f "$FAKE_TMUX_STATE/new_window_args.log" ] \
+  && fail_test "create-session/scrub-fails: a lane window opened in an unscrubbed session"
+[ -d "$repo4/.claude/worktrees/$id4" ] \
+  && fail_test "create-session/scrub-fails: worktree directory was left behind"
 
 finish

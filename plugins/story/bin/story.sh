@@ -2487,6 +2487,18 @@ cmd_dispatch() {
     fi
     session_created=true
   fi
+  # Step 9c (SH-758): a server this dispatch did not start may retain another
+  # process's session state (a host's plugin roots, CODEX_*, per-call storyhook
+  # context) in its global environment, and every new window inherits it. The
+  # target session is storyhook's own, so remove that state from it before any
+  # lane starts; the user's global environment and sessions are never touched.
+  if [ -n "$TARGET_SESSION" ] && [ -n "$CREATE_SESSION" ]; then
+    local scrub_err
+    if ! scrub_err=$(python3 "$STORY_PLUGIN_ROOT/lib/tmux-env.py" scrub-session "$TARGET_SESSION" 2>&1 >/dev/null); then
+      cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
+      fail "failed to remove retained host environment from tmux session \`$TARGET_SESSION\`: ${scrub_err:-no diagnostic}. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+    fi
+  fi
 
   # Step 10: open the window running the launch command directly (rooted IN
   # the new worktree). A failure here rolls back the just-created
