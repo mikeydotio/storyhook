@@ -221,8 +221,15 @@ impl TestEnv {
     /// A removed parameter is `env_remove`d rather than set to `""`: an empty
     /// credential is still a credential the child was handed, and the two are
     /// only the same thing for the parameters that happen to be paths.
+    ///
+    /// `STORY_BIN` is removed beside `PATH` because the plugin helper runs
+    /// `${STORY_BIN:-story}`: an inherited one — a dispatched agent session
+    /// exports the installed release — would outrank the leased binary on
+    /// `PATH` (SH-764). A test that wants a fake helper binary sets it after
+    /// this call.
     pub fn apply(&self, cmd: &mut std::process::Command) {
         cmd.env("PATH", self.path_with_binary());
+        cmd.env_remove("STORY_BIN");
         for setting in &self.settings {
             match &setting.value {
                 Some(value) => cmd.env(setting.name, value),
@@ -872,6 +879,43 @@ mod tests {
         assert!(
             seen.contains("ghp_supplied_by_the_test"),
             "a deliberate credential must survive the clearing:\n{seen}"
+        );
+    }
+
+    /// **The binary under test is the one on `PATH`, not an inherited
+    /// `STORY_BIN`.** The plugin helper runs `${STORY_BIN:-story}`, and a
+    /// dispatched agent session exports the installed release as `STORY_BIN`,
+    /// so a fixture child that kept it ran that release in place of the lease
+    /// `apply` puts first on `PATH` (SH-764). Set on the command before
+    /// `apply`, which is where an inherited value sits.
+    #[test]
+    fn an_inherited_story_bin_does_not_reach_a_fixture_child() {
+        let env = TestEnv::isolated();
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        cmd.env("STORY_BIN", "/the/developers/installed/story");
+        env.apply(&mut cmd);
+        let out = cmd.output().expect("running env(1)");
+        let seen = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            !seen.lines().any(|line| line.starts_with("STORY_BIN=")),
+            "a fixture child must resolve `story` through the leased PATH; it saw:\n{seen}"
+        );
+    }
+
+    /// A test that installs a fake helper binary on purpose sets it after
+    /// `apply` (`tests/block_delivery.rs` does), and keeps it.
+    #[test]
+    fn a_test_can_still_supply_a_story_bin_on_purpose() {
+        let env = TestEnv::isolated();
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        env.apply(&mut cmd);
+        cmd.env("STORY_BIN", "/a/fake/the/test/chose");
+        let out = cmd.output().expect("running env(1)");
+        let seen = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            seen.lines()
+                .any(|line| line == "STORY_BIN=/a/fake/the/test/chose"),
+            "a deliberate STORY_BIN must survive the removal:\n{seen}"
         );
     }
 

@@ -893,6 +893,26 @@ fn provider_transport_passes_literal_json_on_stdin_and_reports_invalid_replies()
     );
 }
 
+// The helper's `story.sh dispatch --resume` runs `${STORY_BIN:-story}`. Every
+// other helper spawn hands it the spawning process's own executable; an
+// inherited value would otherwise choose the binary (SH-764).
+#[test]
+fn provider_transport_hands_the_helper_this_process_own_binary() {
+    use storyhook::service::continuation::PythonRuntime;
+    let f = ServiceFixture::new();
+    let helper = f.cwd().join("runtime.py");
+    std::fs::write(
+        &helper,
+        "import json,os\nprint(json.dumps({'ok':True,'story_bin':os.environ.get('STORY_BIN')}))\n",
+    )
+    .unwrap();
+    let answer = PythonRuntime::at(&helper, f.env().clone())
+        .call("observe", &json!({"capture":{"provider":"codex"}}))
+        .unwrap();
+    let own = std::env::current_exe().unwrap();
+    assert_eq!(answer["story_bin"], json!(own.to_str().unwrap()));
+}
+
 #[test]
 fn explicitly_closed_story_supersedes_delivery_without_observing_provider() {
     use storyhook::store::ContinuationStatus;

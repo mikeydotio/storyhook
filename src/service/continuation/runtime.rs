@@ -62,8 +62,15 @@ impl ContinuationRuntime for PythonRuntime {
         file.seek(SeekFrom::Start(0))?;
         let mut command = Command::new("python3");
         apply_dispatch_allowlist(&mut command);
+        // The helper resumes through `story.sh`, which runs `${STORY_BIN:-story}`.
+        // The allowlist admits every `STORY_*` name, so without this pin an
+        // inherited value, not this process, would choose that binary.
         command
             .envs(self.env.child_vars())
+            .env(
+                "STORY_BIN",
+                std::env::current_exe().map_err(|e| AppError::Storage(e.to_string()))?,
+            )
             .arg(script)
             .arg(operation);
         let result = crate::process::run_captured_with_input(
