@@ -128,6 +128,10 @@ impl ReinstallFixture {
     fn story(&self, cwd: &Path) -> Command {
         let mut command = self.env.raw_story(cwd);
         command.env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()));
+        // The fixture owns its home and the binary is a test build, which the
+        // plugin guard refuses the verbs; on every child, because the daemon
+        // is spawned by `project list` and inherits that child's environment.
+        command.env(storyhook::plugin::guard::OVERRIDE_VAR, "1");
         command
     }
 
