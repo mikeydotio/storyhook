@@ -913,7 +913,8 @@ mod tests {
         let out = cmd.output().expect("running env(1)");
         let seen = String::from_utf8_lossy(&out.stdout).into_owned();
         assert!(
-            seen.lines().any(|line| line == "STORY_BIN=/a/fake/the/test/chose"),
+            seen.lines()
+                .any(|line| line == "STORY_BIN=/a/fake/the/test/chose"),
             "a deliberate STORY_BIN must survive the removal:\n{seen}"
         );
     }
