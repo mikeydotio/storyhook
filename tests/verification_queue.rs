@@ -3401,29 +3401,106 @@ fn shell_redispatch_asks_the_helper_for_a_resume_of_the_same_story() {
     assert!(error.contains("registered on another branch"), "{error}");
 }
 
-fn write_hanging_helper(root: &std::path::Path) -> PathBuf {
+/// A `story.sh` stand-in that never answers. It forks a child that ignores
+/// TERM, publishes that child's pid to `<verb>-child-pid` in its working
+/// directory by rename (so the file never exists without its content), and
+/// waits until its group is killed. `startup_delay` holds the fork back, the
+/// way a loaded machine does.
+fn write_hanging_helper(root: &std::path::Path, startup_delay: Duration) -> PathBuf {
     let helper = root.join("hanging-helper.sh");
+    let pause = if startup_delay.is_zero() {
+        String::new()
+    } else {
+        format!("sleep {}\n", startup_delay.as_secs_f64())
+    };
     std::fs::write(
         &helper,
-        r#"#!/bin/bash
+        format!(
+            r#"#!/bin/bash
 verb="$3"
-sh -c 'trap "" TERM; printf "%s" "$$" > "$1"; while :; do sleep 30; done' helper-child "$PWD/$verb-child-pid" &
+{pause}sh -c 'trap "" TERM; printf "%s" "$$" > "$1.tmp" && mv "$1.tmp" "$1"; while :; do sleep 30; done' helper-child "$PWD/$verb-child-pid" &
 wait
-"#,
+"#
+        ),
     )
     .unwrap();
     helper
 }
 
-fn assert_recorded_process_stopped(pid_path: &std::path::Path) {
+/// The control timeouts a hanging-helper probe runs under, shortest first.
+const CONTROL_TIMEOUT_LADDER: [Duration; 6] = [
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+    Duration::from_millis(400),
+    Duration::from_millis(800),
+    Duration::from_millis(1600),
+    Duration::from_millis(3200),
+];
+
+/// Runs `probe` against a hanging helper for `verb` until one run's
+/// TERM-ignoring descendant recorded its pid before the group was killed,
+/// proves that descendant is gone, and returns the probe's result with the
+/// control timeout it ran under.
+///
+/// The control clock starts before the spawn, so a loaded machine can kill
+/// the group before bash forks the descendant at all -- the gate once failed
+/// `shell_submission_timeout_terminates_the_helper_process_group` on a pid
+/// file that could never exist (SH-763). Such a run is empty: nothing existed
+/// that could survive. It is the only run repeated, under the next timeout
+/// on the ladder. A descendant that recorded its pid and survived fails at
+/// once.
+fn time_out_hanging_helper<T>(
+    fixture: &ServiceFixture,
+    verb: &str,
+    startup_delay: Duration,
+    probe: impl Fn(&ShellVerificationActuator, &VerificationCandidate) -> T,
+) -> (T, Duration) {
+    let root = scratch_dir();
+    let candidate = cleanup_candidate(fixture, root.path());
+    let helper = write_hanging_helper(root.path(), startup_delay);
+    let pid_path = root.path().join(format!("{verb}-child-pid"));
+    for timeout in CONTROL_TIMEOUT_LADDER {
+        let actuator = ShellVerificationActuator::with_paths_and_timing(
+            Environment::at(root.path()),
+            helper.clone(),
+            PathBuf::from("/usr/bin/true"),
+            Duration::from_secs(1),
+            timeout,
+            Duration::from_millis(100),
+        );
+        let outcome = probe(&actuator, &candidate);
+        if let Some(pid) = recorded_pid(&pid_path) {
+            assert_process_stopped(pid);
+            return (outcome, timeout);
+        }
+    }
+    panic!(
+        "the hanging `{verb}` helper's descendant never recorded {} before its group was killed, \
+         even under a {:?} control timeout",
+        pid_path.display(),
+        CONTROL_TIMEOUT_LADDER[CONTROL_TIMEOUT_LADDER.len() - 1]
+    );
+}
+
+/// The pid a hanging helper's descendant published, or `None` when its
+/// group was killed before it did. Waits out a publish still in flight, so a
+/// descendant that outlived the kill is seen rather than read as absent.
+fn recorded_pid(pid_path: &std::path::Path) -> Option<i32> {
     let ready_by = Instant::now() + Duration::from_secs(2);
     while !pid_path.is_file() && Instant::now() < ready_by {
         thread::sleep(Duration::from_millis(10));
     }
-    let pid: i32 = std::fs::read_to_string(pid_path)
-        .unwrap_or_else(|error| panic!("helper did not record {}: {error}", pid_path.display()))
-        .parse()
-        .unwrap();
+    let text = match std::fs::read_to_string(pid_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => panic!("could not read {}: {error}", pid_path.display()),
+    };
+    Some(text.parse().unwrap_or_else(|error| {
+        panic!("{} holds {text:?}, not a pid: {error}", pid_path.display())
+    }))
+}
+
+fn assert_process_stopped(pid: i32) {
     let stopped_by = Instant::now() + Duration::from_secs(2);
     while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < stopped_by {
         thread::sleep(Duration::from_millis(10));
@@ -3438,25 +3515,46 @@ fn assert_recorded_process_stopped(pid_path: &std::path::Path) {
 #[test]
 fn shell_notification_timeout_terminates_the_helper_process_group() {
     let fixture = ServiceFixture::new();
-    let root = scratch_dir();
-    let candidate = cleanup_candidate(&fixture, root.path());
-    let actuator = ShellVerificationActuator::with_paths_and_timing(
-        Environment::at(root.path()),
-        write_hanging_helper(root.path()),
-        PathBuf::from("/usr/bin/true"),
-        Duration::from_secs(1),
-        Duration::from_millis(100),
-        Duration::from_millis(100),
-    );
 
-    let error = actuator
-        .notify(&candidate, "timeout probe")
-        .unwrap_err()
-        .to_string();
+    let (error, timeout) =
+        time_out_hanging_helper(&fixture, "notify", Duration::ZERO, |actuator, candidate| {
+            actuator
+                .notify(candidate, "timeout probe")
+                .unwrap_err()
+                .to_string()
+        });
 
     assert!(error.contains("`notify`"), "{error}");
-    assert!(error.contains("100ms"), "{error}");
-    assert_recorded_process_stopped(&root.path().join("notify-child-pid"));
+    assert!(error.contains(&format!("{timeout:?}")), "{error}");
+}
+
+/// SH-763: a startup delay past the first control timeout makes that run
+/// certain to kill the group before the descendant exists -- the gate's
+/// loaded-machine failure, on purpose. The probe must repeat it under a longer
+/// timeout and still prove the descendant was killed, not fail on a pid file
+/// that could never be written.
+#[test]
+fn a_timeout_probe_repeats_a_run_killed_before_its_descendant_recorded() {
+    let fixture = ServiceFixture::new();
+    let first = CONTROL_TIMEOUT_LADDER[0];
+
+    let (error, timeout) = time_out_hanging_helper(
+        &fixture,
+        "notify",
+        first + Duration::from_millis(50),
+        |actuator, candidate| {
+            actuator
+                .notify(candidate, "timeout probe")
+                .unwrap_err()
+                .to_string()
+        },
+    );
+
+    assert!(
+        timeout > first,
+        "a fork delayed past {first:?} cannot record under it, so that run must have been repeated"
+    );
+    assert!(error.contains(&format!("{timeout:?}")), "{error}");
 }
 
 const FIXTURE_SUBMIT_URL: &str = "https://github.com/acme/widgets/pull/7";
@@ -3640,46 +3738,30 @@ fn shell_submission_rejects_untrustworthy_receipts_as_infrastructure() {
 #[test]
 fn shell_submission_timeout_terminates_the_helper_process_group() {
     let fixture = ServiceFixture::new();
-    let root = scratch_dir();
-    let candidate = cleanup_candidate(&fixture, root.path());
-    let actuator = ShellVerificationActuator::with_paths_and_timing(
-        Environment::at(root.path()),
-        write_hanging_helper(root.path()),
-        PathBuf::from("/usr/bin/true"),
-        Duration::from_secs(1),
-        Duration::from_millis(100),
-        Duration::from_millis(100),
-    );
 
-    let failure = actuator.submit(&candidate).unwrap_err();
+    let (failure, timeout) =
+        time_out_hanging_helper(&fixture, "submit", Duration::ZERO, |actuator, candidate| {
+            actuator.submit(candidate).unwrap_err()
+        });
 
     let SubmissionFailure::Infrastructure { detail } = failure else {
         panic!("a timeout is the verifier's problem: {failure:?}");
     };
     assert!(detail.contains("`submit`"), "{detail}");
-    assert!(detail.contains("100ms"), "{detail}");
-    assert_recorded_process_stopped(&root.path().join("submit-child-pid"));
+    assert!(detail.contains(&format!("{timeout:?}")), "{detail}");
 }
 
 #[test]
 fn shell_cleanup_timeout_terminates_the_helper_process_group() {
     let fixture = ServiceFixture::new();
-    let root = scratch_dir();
-    let candidate = cleanup_candidate(&fixture, root.path());
-    let actuator = ShellVerificationActuator::with_paths_and_timing(
-        Environment::at(root.path()),
-        write_hanging_helper(root.path()),
-        PathBuf::from("/usr/bin/true"),
-        Duration::from_secs(1),
-        Duration::from_millis(100),
-        Duration::from_millis(100),
-    );
 
-    let error = actuator.reap(&candidate).unwrap_err().to_string();
+    let (error, timeout) =
+        time_out_hanging_helper(&fixture, "reap", Duration::ZERO, |actuator, candidate| {
+            actuator.reap(candidate).unwrap_err().to_string()
+        });
 
     assert!(error.contains("`reap`"), "{error}");
-    assert!(error.contains("100ms"), "{error}");
-    assert_recorded_process_stopped(&root.path().join("reap-child-pid"));
+    assert!(error.contains(&format!("{timeout:?}")), "{error}");
 }
 
 #[test]
