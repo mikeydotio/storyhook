@@ -1569,7 +1569,67 @@ control then calls the replaced bare artifact directly and requires the pid to
 *change*, so the assertion is proven able to see the restart it forbids; the
 parent proves the lease and the home are gone after the child's teardown.
 `test-binary-under-test.sh`'s "this checkout's own build" is now an inode claim
-(`-ef`) plus a leased location, not a path string.
+(`-ef`) plus a leased location, not a path string. Since SH-764 it also asks
+the helper what it runs, because `command -v` alone does not answer that (next
+section).
+
+### The lease is the only selector (SH-764)
+
+The lease decided what `story` resolves to on `PATH`, but not what the plugin
+helper runs. `plugins/story/bin/story.sh` runs `${STORY_BIN:-story}`, and
+`lib/github-access.sh` does the same, so a `STORY_BIN` in the environment
+outranks the lease. The daemon sets `STORY_BIN` to its own executable for every
+helper it spawns, and a dispatched agent session keeps it (see
+`provider-pane-routing.md`). Every plugin test run from an agent session, and
+every Rust test that spawns one, therefore ran the installed release through the
+helper. When the release and the build disagreed, the failure looked like a
+product bug: `real_submission_receipts_report_verified_heads_in_central_comments`
+reported "the storyhook daemon could not start" for a fixture home. The central
+gate has no `STORY_BIN`, so it stayed green.
+
+**What ships.** Each harness removes the inherited value in the place where it
+puts the build first on `PATH`:
+
+- `lib.sh`, owning instance: `unset STORY_BIN` beside the lease. The value is
+  removed, not pinned to the lease, because several tests put a proxy `story`
+  first on `PATH` (`fakes/story-verifying`, `story-conflict`, `story-state-list`,
+  `story-integrity`) and depend on the helper's fallback to `PATH`. A test that
+  wants a fake sets `STORY_BIN` after it sources `lib.sh`.
+- `lib.sh`, nested instance: it keeps an inherited `STORY_BIN` only when
+  `command -v "$STORY_BIN"` is the same path string as `command -v story`, and
+  refuses by name otherwise. The instance shares its caller's daemon, and daemon
+  identity compares the executable path, so two paths to one inode (the bare
+  artifact and its lease) restart that daemon.
+- `TestEnv::apply` (`storyhook-test-support`): `env_remove("STORY_BIN")` right
+  after it sets `PATH`. `tests/block_interrupt.rs` reached `story.sh notify`
+  through this door with the inherited value. A test that wants a fake sets it
+  after `apply`, as `tests/block_delivery.rs` does.
+- `scripts/run-e2e.sh` already pins `STORY_BIN` to its own lease, because its
+  daemon's children keep `STORY_BIN` in their allowlist.
+
+The same review found one production spawn that did not pin the value: the
+continuation runtime handed `continuation_runtime.py` (and so `story.sh dispatch
+--resume`) the daemon's inherited `STORY_BIN`. It now passes the spawning
+process's own executable, as every other helper spawn does.
+
+**Why not the test-environment table.** `STORY_BIN` selects a binary, not a
+store, and `scripts/run-e2e.sh` must set it after it calls `storyhook_isolate`.
+The table excludes variables that a harness sets, and
+`no_script_that_uses_the_shared_isolation_also_sets_a_parameter` enforces that
+exclusion.
+
+**The tests.** `test-binary-lease.sh` section 4 runs an owning child with an
+inherited decoy `STORY_BIN` (and with an empty one). It proves that the variable
+is removed, that `story.sh ensure-cli` reports the lease's version, and that the
+decoy never ran. A positive control sets the decoy after sourcing and requires
+that it runs. The nested cases refuse a decoy, a path that does not resolve, and
+the bare artifact, and keep the lease by path or by name, an empty value, and a
+caller-installed copy. `storyhook-test-support` has the Rust pair, and
+`tests/continuation.rs` pins the runtime.
+
+**The gotcha.** A new variable that selects the `story` binary for a helper must
+be removed where each harness puts the build on `PATH`. If it is not, a
+developer's or agent's environment decides which binary is tested.
 
 ### Filed, not fixed
 
