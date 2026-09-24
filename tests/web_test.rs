@@ -2455,6 +2455,7 @@ fn web_serve_root_html_uses_shared_visual_hierarchy_roles() {
         (".card-id", "font-size: var(--type-metadata)"),
         (".state-pill", "font-size: var(--type-metadata)"),
         (".modal-error", "color: var(--danger-text)"),
+        (".story-complexity", "color: var(--fg-metadata)"),
     ] {
         let rule = declarations(css, selector);
         assert!(
@@ -2476,6 +2477,7 @@ fn web_serve_root_html_uses_shared_visual_hierarchy_roles() {
         ".status-counts",
         ".filter-count",
         ".card-id",
+        ".story-complexity",
         ".chip",
         ".flag",
         ".col-order",
