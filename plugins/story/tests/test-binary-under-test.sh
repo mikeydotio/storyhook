@@ -19,8 +19,11 @@
 # something else is the SH-306 shape: the verdict came from state nobody
 # checked.
 #
-# Asserted by resolving the name the way the suite itself does, rather than by
-# reading `$PATH`: `command -v` is the question every fixture actually asks.
+# Asserted twice: by resolving the name the way a fixture's own `story` call
+# does (`command -v`), and by asking the helper what IT runs. The two differ:
+# story.sh runs `${STORY_BIN:-story}`, and a STORY_BIN inherited from a
+# dispatched agent session outranked `$PATH` where `command -v` could not see
+# it (SH-764).
 #
 # "This checkout's own build" is a claim about an INODE, not a path (SH-639):
 # what lib.sh puts on `$PATH` is a hard-link lease of the artifact under
@@ -59,6 +62,12 @@ case "$version_line" in
 *story*) : ;;
 *) fail_test "\`story --version\` did not identify itself: [$version_line]" ;;
 esac
+
+# …and it must be what the helper runs. `ensure-cli` reports the first line of
+# the helper's own `"$STORY" --version`.
+helper_version="$(bash "$SCRIPT" ensure-cli | jq -r .version)"
+assert_eq "$helper_version" "$(printf '%s\n' "$version_line" | head -1)" \
+  "story.sh must run this checkout's build, not an inherited \$STORY_BIN"
 
 # The inverse, which is the property that actually failed: an installed binary
 # must not be what answers. Skipped rather than faked when there is no

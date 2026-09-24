@@ -257,6 +257,19 @@ fi
 # Prepended rather than replacing `$PATH`: the suite needs `git`, `jq` and the
 # fake tmux, and a test file's own `PATH="$TESTS_DIR/fakes:$PATH"` still wins
 # over this for the names it provides.
+#
+# `$PATH` IS THE ONLY SELECTOR (SH-764). story.sh and github-access.sh run
+# `${STORY_BIN:-story}`, so an inherited STORY_BIN outranks the lease -- and a
+# dispatched agent session exports the installed release as STORY_BIN, which
+# made every plugin test run from one exercise that release through the helper.
+# The owning instance therefore REMOVES it rather than pinning it to the lease:
+# several tests put a proxy `story` first on `$PATH` (fakes/story-verifying and
+# its siblings) and depend on the helper's fallback reaching it. A test that
+# wants a fake STORY_BIN sets it after sourcing this file. A nested instance
+# keeps an inherited STORY_BIN only when it names exactly the `story` its caller
+# put on `$PATH`: the daemon they share identifies its binary by path string, so
+# a second spelling -- the bare artifact beside its lease, a relative name --
+# would restart it, and a foreign binary would be tested in its place.
 _STORY_TARGET_DIR="${CARGO_TARGET_DIR:-$(cd "$TESTS_DIR/../../.." && pwd)/target}"
 if [ ! -x "$_STORY_TARGET_DIR/debug/story" ]; then
   echo "refusing to run: $_STORY_TARGET_DIR/debug/story does not exist." >&2
@@ -273,6 +286,7 @@ if [ "${_STORYHOOK_OWNS_TEST_HOME:-0}" = 1 ]; then
   _STORY_LEASE_DIR="$(dirname "$_STORY_LEASE")"
   _TMP_REPOS+=("$_STORY_LEASE_DIR")
   export PATH="$_STORY_LEASE_DIR:$PATH"
+  unset STORY_BIN
   unset _STORY_LEASE _STORY_LEASE_DIR
 else
   _STORY_INHERITED="$(command -v story || true)"
@@ -294,6 +308,26 @@ else
         exit 1
         ;;
     esac
+  fi
+  if [ -n "${STORY_BIN:-}" ]; then
+    _STORY_SELECTED="$(command -v "$STORY_BIN" || true)"
+    if [ -z "$_STORY_SELECTED" ]; then
+      echo "refusing to run: this lib.sh instance inherited \$STORYHOOK_TEST_HOME and" >&2
+      echo "  STORY_BIN [$STORY_BIN], which the helper runs in place of \`story\`" >&2
+      echo "  (\${STORY_BIN:-story}), but STORY_BIN does not resolve to a program." >&2
+      echo "  Unset it, or name the caller's \`story\` [$_STORY_INHERITED] (SH-764)." >&2
+      exit 1
+    fi
+    if [ "$_STORY_SELECTED" != "$_STORY_INHERITED" ]; then
+      echo "refusing to run: this lib.sh instance inherited \$STORYHOOK_TEST_HOME, so it" >&2
+      echo "  shares its caller's daemon and runs the \`story\` on \$PATH [$_STORY_INHERITED]," >&2
+      echo "  but it also inherited STORY_BIN, which the helper runs in its place" >&2
+      echo "  (\${STORY_BIN:-story}), and that resolves to [$_STORY_SELECTED]. The daemon" >&2
+      echo "  identifies its binary by path, so both must name the same one. Unset" >&2
+      echo "  STORY_BIN, or set it to exactly [$_STORY_INHERITED] (SH-764)." >&2
+      exit 1
+    fi
+    unset _STORY_SELECTED
   fi
   unset _STORY_INHERITED
 fi

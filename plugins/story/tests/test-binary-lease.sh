@@ -13,8 +13,8 @@
 # the link exists, so `command -v story` keeps resolving the build the test
 # started with and the daemon keeps its identity.
 #
-# Three invariants, each measured against a REAL daemon rather than inferred
-# from lib.sh's text:
+# Four invariants, each measured -- against a REAL daemon, or against what the
+# helper actually executes -- rather than inferred from lib.sh's text:
 #
 #   1. `story` resolves to a lease owned by this test (`<pid>-<nonce>` under
 #      `.storyhook-test-binaries/` beside the artifact), sharing the artifact's
@@ -26,9 +26,16 @@
 #      caller's lease rather than minting a second one: identity is a path
 #      compare, so a second lease path would itself trigger the restart this
 #      story removes (test-temp-cleanup.sh is the live example).
+#   4. An inherited STORY_BIN never outranks the lease (SH-764). story.sh and
+#      github-access.sh run `${STORY_BIN:-story}`, and a dispatched agent
+#      session exports the installed release as STORY_BIN, so `command -v
+#      story` alone says nothing about what the helper runs. The owning
+#      instance removes it; a nested instance refuses one that is not the
+#      `story` its caller put on PATH.
 #
 # The fixture artifact is a COPY of the real one under a private
-# CARGO_TARGET_DIR. The real artifact is never touched: three or four
+# CARGO_TARGET_DIR. The real artifact is never replaced or renamed -- only
+# leased, which is a hard link every owning instance takes: three or four
 # concurrent worktree suites share it, and renaming it away would be exactly
 # the interference this test exists to prove harmless.
 source "$(dirname "$0")/lib.sh"
@@ -190,5 +197,90 @@ if [ "$child_status" -eq 0 ]; then
   [ ! -e "$child_home" ] \
     || fail_test "lease: child's home survived its EXIT trap at $child_home"
 fi
+
+# --- 4. an inherited STORY_BIN never outranks the lease (SH-764) ------------
+# The decoy records every run in `ran`, so "the decoy never ran" is observed
+# rather than inferred from what the helper printed.
+decoy="$(mktemp -d /tmp/story-test-lease-decoy.XXXXXX)"
+_TMP_REPOS+=("$decoy")
+cat >"$decoy/story" <<'DECOY'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$(dirname "$0")/ran"
+printf 'story-decoy 0.0.0\n'
+DECOY
+chmod +x "$decoy/story"
+
+# An owning instance, in the shape of a Rust wrapper that spawns a plugin test
+# with STORYHOOK_TEST_HOME removed and everything else inherited
+# (`src/service/verification.rs` does exactly this). `ensure-cli` is the
+# helper's own `"$STORY" --version`, so its answer is what the helper runs.
+# Lines: whether STORY_BIN is set at all, `.installed`, the helper's version,
+# the lease's version. An optional second argument is exported AFTER sourcing:
+# the shape of the tests that install a fake on purpose.
+owner_probe='
+  source "$1"
+  printf "%s\n" "${STORY_BIN+set}"
+  [ -z "${2:-}" ] || export STORY_BIN="$2"
+  answer="$(bash "$SCRIPT" ensure-cli)" || exit 71
+  printf "%s\n" "$(printf "%s" "$answer" | jq -r .installed)"
+  printf "%s\n" "$(printf "%s" "$answer" | jq -r .version)"
+  story --version
+'
+# Empty is the value tmux-launch.py hands a pane that has no binary of its own.
+for inherited in "$decoy/story" ""; do
+  label="an inherited STORY_BIN=[$inherited]"
+  seen="$(env -u STORYHOOK_TEST_HOME -u STORYHOOK_REAL_HOME STORY_BIN="$inherited" \
+    bash -c "$owner_probe" _ "$TESTS_DIR/lib.sh")"
+  rc=$?
+  assert_eq "$rc" "0" "story-bin: an owning instance under $label runs the helper"
+  assert_eq "$(sed -n 1p <<<"$seen")" "" \
+    "story-bin: an owning instance removes $label rather than leaving it set"
+  assert_eq "$(sed -n 2p <<<"$seen")" "true" \
+    "story-bin: under $label the helper finds a binary to run"
+  assert_eq "$(sed -n 3p <<<"$seen")" "$(sed -n 4p <<<"$seen")" \
+    "story-bin: under $label the helper runs the lease, not the inherited binary"
+done
+[ ! -e "$decoy/ran" ] \
+  || fail_test "story-bin: the inherited decoy ran in place of the lease: $(cat "$decoy/ran")"
+
+# Positive control: a STORY_BIN the test itself sets after sourcing lib.sh IS
+# what the helper runs. This proves the probe above can see a decoy run, and
+# that the tests which install a fake on purpose still get it.
+seen="$(env -u STORYHOOK_TEST_HOME -u STORYHOOK_REAL_HOME \
+  bash -c "$owner_probe" _ "$TESTS_DIR/lib.sh" "$decoy/story")"
+assert_eq "$(sed -n 3p <<<"$seen")" "story-decoy 0.0.0" \
+  "story-bin: positive control -- a STORY_BIN set after sourcing is what the helper runs"
+[ -e "$decoy/ran" ] \
+  || fail_test "story-bin: positive control -- the decoy never ran, so its absence above proves nothing"
+
+# A nested instance shares its caller's daemon, and daemon identity is the
+# exe PATH string, so STORY_BIN must name exactly the `story` its caller put
+# on PATH. The bare artifact is the same inode as the lease at a second path:
+# refused by the STORY_BIN rule, not by the PATH rule's BARE message.
+for bad in "$decoy/story" /nonexistent/story "$real_artifact"; do
+  if STORY_BIN="$bad" bash -c 'source "$1"' _ "$TESTS_DIR/lib.sh" >/dev/null 2>"$decoy/refusal"; then
+    fail_test "story-bin: a nested instance ran with STORY_BIN=[$bad], which is not the \`story\` on its PATH"
+  fi
+  refusal="$(cat "$decoy/refusal")"
+  assert_contains "$refusal" "STORY_BIN" "story-bin: the nested refusal of STORY_BIN=[$bad] names the variable"
+  case "$refusal" in
+    *BARE*) fail_test "story-bin: STORY_BIN=[$bad] was refused by the PATH rule, not the STORY_BIN rule: $refusal" ;;
+  esac
+done
+
+# What a nested instance keeps: a STORY_BIN that names the caller's own
+# `story`, by path or by name, an empty one, and a caller-installed copy that
+# PATH and STORY_BIN both name. Printed back to prove it was kept, not dropped.
+nested_probe='source "$1"; printf "%s" "${STORY_BIN-<unset>}"'
+for good in "$outer_resolved" story ""; do
+  kept="$(STORY_BIN="$good" bash -c "$nested_probe" _ "$TESTS_DIR/lib.sh" 2>"$decoy/refusal")" \
+    || fail_test "story-bin: a nested instance refused STORY_BIN=[$good], which names its caller's \`story\`: $(cat "$decoy/refusal")"
+  assert_eq "$kept" "$good" "story-bin: a nested instance keeps its caller's STORY_BIN=[$good]"
+done
+kept="$(PATH="$installed:$PATH" STORY_BIN="$installed/story" \
+  bash -c "$nested_probe" _ "$TESTS_DIR/lib.sh" 2>"$decoy/refusal")" \
+  || fail_test "story-bin: a nested instance refused a caller-installed copy named by both PATH and STORY_BIN: $(cat "$decoy/refusal")"
+assert_eq "$kept" "$installed/story" \
+  "story-bin: a nested instance keeps a caller-installed STORY_BIN that matches its PATH"
 
 finish
