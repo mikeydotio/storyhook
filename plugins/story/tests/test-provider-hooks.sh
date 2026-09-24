@@ -99,4 +99,50 @@ out=$(cd "$repo" && printf '%s' "$session_payload" | env -u PLUGIN_ROOT -u STORY
 assert_eq "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" "SessionStart" \
   "Claude root fallback: same manifest command works"
 
+# SH-758: Claude sets CLAUDE_PLUGIN_ROOT for every hook but never PLUGIN_ROOT,
+# so a PLUGIN_ROOT the session inherited (a tmux server started from Codex) is
+# ambient and names another host's copy. Codex sets both. Every manifest
+# command must therefore run the copy under CLAUDE_PLUGIN_ROOT, and a host that
+# sets only Codex's documented PLUGIN_ROOT must still resolve. Marker copies
+# stand in for both installs; their paths contain spaces on purpose.
+claude_root="$FAKE_BIN/claude root"
+codex_root="$FAKE_BIN/codex root"
+export ROOT_LOG="$FAKE_BIN/roots"
+manifest_commands=$(jq -r '.hooks[][] | .hooks[] | select(.type == "command") | .command' \
+  "$PLUGIN_ROOT/hooks/hooks.json")
+assert_eq "$(printf '%s\n' "$manifest_commands" | grep -c .)" "10" "every manifest hook command is covered"
+while IFS= read -r script; do
+  for root in "$claude_root" "$codex_root"; do
+    mkdir -p "$root/hooks"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q >>"$ROOT_LOG"\n' "$root" >"$root/hooks/$script"
+  done
+done < <(printf '%s\n' "$manifest_commands" | sed -E 's|.*/hooks/([^"]+)".*|\1|' | sort -u)
+
+ran_root() {
+  : >"$ROOT_LOG"
+  (cd "$repo" && env -u PLUGIN_ROOT -u CLAUDE_PLUGIN_ROOT "$@" bash -c "$command" </dev/null >/dev/null 2>&1)
+  cat "$ROOT_LOG"
+}
+while IFS= read -r command; do
+  assert_eq "$(ran_root PLUGIN_ROOT="$codex_root" CLAUDE_PLUGIN_ROOT="$claude_root")" "$claude_root" \
+    "root precedence: a host-set CLAUDE_PLUGIN_ROOT wins over an inherited PLUGIN_ROOT: $command"
+  assert_eq "$(ran_root PLUGIN_ROOT="$codex_root")" "$codex_root" \
+    "root precedence: a PLUGIN_ROOT-only host still resolves: $command"
+  assert_eq "$(ran_root CLAUDE_PLUGIN_ROOT="$claude_root")" "$claude_root" \
+    "root precedence: a CLAUDE_PLUGIN_ROOT-only host resolves: $command"
+done <<<"$manifest_commands"
+
+# The dispatch readiness gate compares the sentinel's recorded root with the
+# helper's own. Under an inherited foreign PLUGIN_ROOT, the real SessionStart
+# hook must record the Claude root, not the other host's copy.
+command=$(hook_command SessionStart '*' session-start.sh) || exit 1
+: >"$ROOT_LOG"
+out=$(cd "$repo" && printf '%s' "$session_payload" | env -u STORYHOOK_DISPATCH \
+  PLUGIN_ROOT="$codex_root" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" PATH="$FAKE_BIN:$PATH" bash -c "$command")
+assert_eq "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" "SessionStart" \
+  "inherited PLUGIN_ROOT: the real SessionStart hook ran"
+assert_eq "$(jq -r .storyhook_plugin_root "$STORY_HOOK_STDIN")" "$PLUGIN_ROOT" \
+  "inherited PLUGIN_ROOT: the sentinel records the Claude root"
+assert_eq "$(cat "$ROOT_LOG")" "" "inherited PLUGIN_ROOT: the other host's copy never ran"
+
 finish

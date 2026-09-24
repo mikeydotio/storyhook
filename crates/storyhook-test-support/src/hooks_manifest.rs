@@ -171,7 +171,7 @@ pub fn all_declared_hooks() -> Vec<DeclaredHook> {
 }
 
 /// The `<name>.sh` basename out of a `command` string shaped like
-/// `bash "${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/<name>.sh"`.
+/// `bash "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/hooks/<name>.sh"`.
 fn script_name_from_command(command: &str) -> Option<String> {
     let after = command.split("hooks/").nth(1)?;
     let name: String = after

@@ -34,6 +34,8 @@ SH-737’s native macOS `forkpty` failure regression remains required. Never use
 sessions. Literal argv, exact targets, stable reader cwd, and detached window
 creation remain required. A missing tmux or Python interpreter is nonfatal to
 the verifier. `STORYHOOK_VERIFIER_MIRROR=0` prohibits even a tmux probe.
+The reconciler may start the default server, so every client it runs passes
+only the server-start allowlist (SH-758, `docs/spec/provider-pane-routing.md`).
 
 ## Fixture lifetime and legacy cleanup
 

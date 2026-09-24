@@ -35,6 +35,23 @@ assert_eq "$(jqf "$out" .context_status)" loaded "context was loaded"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 0 "Claude doctor submits no prompt"
 probe_cwd=$(cat "$FAKE_TMUX_STATE/window_cwd")
 [ ! -e "$probe_cwd" ] || fail_test "doctor leaked its scratch checkout"
+assert_eq "$(jqf "$out" .server_environment.checked)" true "doctor checked the tmux server environment"
+assert_eq "$(jqf "$out" '.server_environment.retained | length')" 0 "a clean server retains no session state"
+
+# SH-758: storyhook never rewrites a server it did not start, so doctor names
+# the session state that server would hand every new pane, the user's too.
+doctor_case FAKE_TMUX_GLOBAL_ENVIRONMENT='PATH=/usr/bin\nPLUGIN_ROOT=/codex/story\nCODEX_SHELL=1\nCODEX_HOME=/c\n-CLAUDECODE'
+assert_eq "$(jqf "$out" .ok)" true "retained server state is reported, not a readiness failure"
+assert_eq "$(jqf "$out" '.server_environment.retained | join(",")')" "CODEX_SHELL,PLUGIN_ROOT" \
+  "doctor names only the retained session-scoped names"
+assert_contains "$(jqf "$out" .display)" "retains another process's session state (CODEX_SHELL PLUGIN_ROOT)" \
+  "doctor explains the retained state"
+assert_contains "$(jqf "$out" .display)" "tmux set-environment -gu" "doctor names the repair"
+
+doctor_case FAKE_TMUX_FAIL_SHOW_ENVIRONMENT=1
+assert_eq "$(jqf "$out" .server_environment.checked)" false "an unreadable server environment is explicit"
+assert_contains "$(jqf "$out" .server_environment.detail)" "can't find session" "the check keeps tmux's diagnostic"
+assert_contains "$(jqf "$out" .display)" "tmux server environment: NOT checked" "doctor says what it could not check"
 
 doctor_case FAKE_TMUX_CLAUDE_SENTINEL_ROOT="$bins"
 assert_eq "$(jqf "$out" .ok)" false "foreign package cannot certify dispatch"

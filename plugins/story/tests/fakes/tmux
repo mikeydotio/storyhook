@@ -49,6 +49,13 @@
 #                        test can assert whether creation actually ran (SH-50).
 #                        Fails (exit 1) when $FAKE_TMUX_FAIL_NEW_SESSION=1, to
 #                        drive story.sh's rollback-on-session-failure path.
+#   show-environment  -> models an environment with nothing retained: prints
+#                        nothing and appends its argv to
+#                        $STATE/show_environment_args.log, so a test can assert
+#                        which session storyhook scrubbed (SH-758). Fails with
+#                        tmux's own "can't find session" when
+#                        $FAKE_TMUX_FAIL_SHOW_ENVIRONMENT=1. `-g` prints
+#                        $FAKE_TMUX_GLOBAL_ENVIRONMENT (printf %b) when set.
 #
 # SESSION MODEL (SH-50) — a virtual set of "existing" session names lives in
 # $STATE/sessions, one per line. Seed it with $FAKE_TMUX_SESSIONS
@@ -675,6 +682,22 @@ case "${1:-}" in
     mv -f "$sessions_temp" "$STATE/sessions" \
       || { rm -f "$sessions_temp"; exit 1; }
     printf '%s\n' "$*" >> "$STATE/kill_session_args.log" 2>/dev/null || true
+    exit 0
+    ;;
+  show-environment)
+    # SH-758: the owned-session scrub reads the global and session tables
+    # before it removes anything. Bypasses the trailing `exit 0` so the
+    # failure knob can drive story.sh's rollback path.
+    shift || true
+    printf '%s\n' "$*" >> "$STATE/show_environment_args.log" 2>/dev/null || true
+    if [ "${FAKE_TMUX_FAIL_SHOW_ENVIRONMENT:-}" = "1" ]; then
+      printf "can't find session: %s\n" "${2:-}" >&2
+      exit 1
+    fi
+    # A polluted server's global table, for the doctor detector (SH-758).
+    if [ "${1:-}" = -g ] && [ -n "${FAKE_TMUX_GLOBAL_ENVIRONMENT:-}" ]; then
+      printf '%b\n' "$FAKE_TMUX_GLOBAL_ENVIRONMENT"
+    fi
     exit 0
     ;;
   new-session)

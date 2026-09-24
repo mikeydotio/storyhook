@@ -409,4 +409,76 @@ mod tests {
         assert!(!plugin_cli_permits("STORY_READY_ATTEMPTS"));
         assert!(!plugin_cli_permits("STORYHOOK_PROJECT"));
     }
+
+    /// The tmux server-start allowlist is this module's machine baseline, not
+    /// a second list that can drift from it (SH-758, SH-136).
+    ///
+    /// Both launchers that can start a tmux server are Python, so the policy
+    /// is stated once in `plugins/story/lib/tmux_server_env.py` and read here
+    /// from the real module rather than from a copy. Its pane selectors must be
+    /// exactly what [`crate::env::Environment::child_vars`] tells a child, or a
+    /// `story` run in a pane resolves a different store than its dispatcher;
+    /// its credential blanks must be exactly the names GitHub-capable spawns
+    /// admit, or a retained server's token survives into a provider pane.
+    #[test]
+    fn the_tmux_server_policy_is_derived_from_these_lists() {
+        let library = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/lib");
+        let probe = Command::new("python3")
+            .args(["-B", "-c"])
+            .arg(
+                "import json, sys; sys.path.insert(0, sys.argv[1]); import tmux_server_env as m; \
+                 print(json.dumps({'common': m.COMMON_MAY_SEE, 'routing': m.TMUX_ROUTING, \
+                 'server': sorted(m.SERVER_MAY_SEE), 'credentials': m.GITHUB_CREDENTIALS, \
+                 'selectors': m.PANE_SELECTORS}))",
+            )
+            .arg(&library)
+            .output()
+            .expect("running python3 against the tmux server policy");
+        assert!(
+            probe.status.success(),
+            "the policy module did not load: {}",
+            String::from_utf8_lossy(&probe.stderr)
+        );
+        let policy: serde_json::Value =
+            serde_json::from_slice(&probe.stdout).expect("the probe prints one JSON object");
+        let names = |key: &str| -> Vec<String> {
+            policy[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("`{key}` is a list"))
+                .iter()
+                .map(|name| name.as_str().expect("names are strings").to_string())
+                .collect()
+        };
+        assert_eq!(names("common"), COMMON_MAY_SEE, "server baseline drifted");
+        assert_eq!(
+            names("credentials"),
+            GITHUB_CREDENTIAL_MAY_SEE,
+            "credential blanks drifted"
+        );
+        let mut server: Vec<String> = COMMON_MAY_SEE.iter().map(ToString::to_string).collect();
+        server.extend(names("routing"));
+        server.sort();
+        assert_eq!(
+            names("server"),
+            server,
+            "a server may retain only baseline and routing"
+        );
+        for name in names("routing") {
+            assert!(
+                !dispatch_permits(&name) && !submission_permits(&name),
+                "`{name}` routes a tmux client only; daemon-owned helpers never inherit it"
+            );
+        }
+        let children: Vec<String> =
+            crate::env::Environment::at("/private/tmp/storyhook-tmux-policy-home")
+                .child_vars()
+                .into_iter()
+                .map(|(name, _)| name.to_string())
+                .collect();
+        assert_eq!(
+            names("selectors"),
+            children,
+            "pane selectors drifted from child_vars"
+        );
+    }
 }

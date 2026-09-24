@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Reconcile the single owned project verification reader (SH-748)."""
+"""Reconcile the single owned project verification reader (SH-748).
+
+Runs only as the daemon composes it: plugins/story/lib/tmux_server_env.py
+followed by this file (src/daemon/activity/window.rs), which supplies
+`client_environment` without a second copy of the policy.
+"""
 
 import fcntl
 import hashlib
@@ -14,8 +19,14 @@ FORMAT = "#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#
 
 
 def tmux(*args):
-    """Use literal argv and bounded clients on the default server."""
-    env = os.environ.copy()
+    """Use literal argv and bounded clients on the default server.
+
+    Any of these clients may start that server, so each passes only the
+    server-start allowlist from tmux_server_env, which the daemon prepends to
+    this program (SH-758): the daemon's inherited environment is not the
+    machine's, and a server keeps whatever its first client carried.
+    """
+    env = client_environment(os.environ)
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
     result = subprocess.run(["tmux", *args], env=env, capture_output=True,

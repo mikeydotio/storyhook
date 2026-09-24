@@ -204,6 +204,11 @@ story_update	src/update_source.rs
 tap_target_comparison	:(glob)**/*
 test_environment	:(glob)**/*
 timing_assertions	:(glob)**/*
+tmux_server_start_sites	:(glob)plugins/story/bin/*
+tmux_server_start_sites	:(glob)plugins/story/hooks/*
+tmux_server_start_sites	:(glob)plugins/story/lib/*
+tmux_server_start_sites	:(glob)scripts/*
+tmux_server_start_sites	:(glob)src/**/*
 tracked_tree_linked_worktree	:(glob)**/*
 trailing_arguments	:(glob)**/*
 type_slug_call_sites	:(glob)**/*
