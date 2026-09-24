@@ -34,9 +34,11 @@ launcher/rule lifecycle; use `story plugin install codex` for the supported inst
 
 The Codex manifest declares the shared skills and intentionally has no explicit `hooks`
 field because the current validator rejects it. Current installed-plugin discovery loads
-`hooks/hooks.json` from the plugin root by convention. Those hooks use Codex's `PLUGIN_ROOT`
-with Claude's compatibility variable as a fallback; a local non-managed plugin may require
-an explicit trust/review step before Codex runs them.
+`hooks/hooks.json` from the plugin root by convention. Those hooks prefer
+`CLAUDE_PLUGIN_ROOT`, which both hosts set for a hook, and fall back to Codex's `PLUGIN_ROOT`.
+Claude never sets `PLUGIN_ROOT`, so a value a Claude session inherited cannot redirect its
+hooks to another host's copy (SH-758). A local non-managed plugin may require an explicit
+trust/review step before Codex runs them.
 
 **Requires the store-backed `story` CLI (1.0+).** Since plugin 0.4.0, story data
 lives in storyhook's global store behind a local daemon — not in a `.storyhook/`

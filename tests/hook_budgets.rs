@@ -368,8 +368,11 @@ fn the_manifest_currently_declares_exactly_these_hooks() {
 
 /// Codex and Claude load the same default-discovered hook manifest. Pin the
 /// cross-provider protocol itself: exact events, Bash matcher, budgets, and a
-/// root expression that works with Codex's documented `PLUGIN_ROOT` while
-/// retaining Claude's compatibility variable.
+/// root expression that prefers the variable both hosts set for a hook.
+/// Claude sets only `CLAUDE_PLUGIN_ROOT`; Codex sets it as well as its
+/// documented `PLUGIN_ROOT`. A `PLUGIN_ROOT` seen by a Claude hook is
+/// therefore inherited, not host-set, and once named another host's copy for
+/// every plugin (SH-758); it remains the fallback for a PLUGIN_ROOT-only host.
 #[test]
 fn hook_manifest_has_the_shared_provider_contract() {
     let path = repo_root().join(storyhook_test_support::HOOKS_MANIFEST);
@@ -458,7 +461,7 @@ fn hook_manifest_has_the_shared_provider_contract() {
             ("Stop", "continuation.sh") => " stop",
             _ => "",
         };
-        format!("bash \"${{PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}/hooks/{script}\"{argument}")
+        format!("bash \"${{CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}}/hooks/{script}\"{argument}")
     };
     let mut expected_pairs: Vec<(String, String, String)> = expected
         .iter()
@@ -499,7 +502,7 @@ fn hook_manifest_has_the_shared_provider_contract() {
             .as_str()
             .expect("hook command should be a string");
         assert!(
-            command_text.contains("${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}"),
+            command_text.contains("${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}"),
             "{event} does not resolve either provider's installed plugin root: {command_text}"
         );
         assert_eq!(command_text, command_for(event, script));
