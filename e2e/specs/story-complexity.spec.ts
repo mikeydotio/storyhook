@@ -1,6 +1,42 @@
-import { test, expect, cleanUpCreatedStories, createStory, openProject, seedToken } from "./support";
+import {
+  test,
+  expect,
+  cleanUpCreatedStories,
+  createStory,
+  expectCardTextWithinTitle,
+  openProject,
+  seedToken,
+} from "./support";
 
 cleanUpCreatedStories("Alpha Project");
+
+// SH-763: the complexity span shipped with no rule, so it inherited the 16px
+// body size and outranked the 13px card title. `.card-id` is the oracle: the
+// same card's own metadata, on the same SH-615 role tokens, so a later token
+// change moves both together rather than breaking this test.
+test("complexity text is card metadata, never larger than the title", async ({ page }) => {
+  await seedToken(page);
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const id = await createStory(page, "SH-763 complexity metadata");
+  const card = page.locator(`#board-view .card[data-id="${id}"]`);
+  await expect(card.locator(".story-complexity")).toHaveText("medium · unassessed");
+
+  const cards = await page.locator("#board-view .card").all();
+  expect(cards.length, "the board renders cards to measure").toBeGreaterThan(0);
+  for (const each of cards) {
+    await expectCardTextWithinTitle(each, `card ${await each.getAttribute("data-id")}`);
+  }
+
+  const roles = await card.evaluate((node) => {
+    const role = (selector: string) => {
+      const style = getComputedStyle(node.querySelector(selector)!);
+      return { fontSize: style.fontSize, lineHeight: style.lineHeight, color: style.color };
+    };
+    return { complexity: role(".story-complexity"), metadata: role(".card-id") };
+  });
+  expect(roles.complexity, "complexity text uses the card metadata role").toEqual(roles.metadata);
+});
 
 test("complexity edit persists and default dispatch shows the resolved choice", async ({ page }) => {
   await seedToken(page);

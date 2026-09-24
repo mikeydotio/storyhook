@@ -785,6 +785,7 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 }
 .card-meta { display: flex; align-items: center; gap: var(--space-control); flex-wrap: wrap; }
 .card-labels { display: flex; gap: var(--space-label); flex-wrap: wrap; }
+.story-complexity { font-size: var(--type-metadata); line-height: var(--line-metadata); color: var(--fg-metadata); }
 .chip {
   font-size: var(--type-metadata); line-height: var(--line-metadata); padding: 0.0625rem 0.375rem; border-radius: 9999px; background: var(--bg-sunken);
   border: 1px solid var(--border); color: var(--fg-metadata); font-weight: 600; white-space: nowrap;
@@ -835,8 +836,11 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
    the badge disappears the instant the last blocker closes and the dwell
    chip needs somewhere to keep being visible. `.blocker-cleared`'s
    dwell/pulse are added in the cleared-blocker-dwell change alongside this
-   one. */
-.card-blockers { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; margin-top: 0.375rem; }
+   one. The metadata size is this row's to set: `.rel-id` inherits its
+   surface's (SH-451) and `.card` sets none, so without it the dwell id
+   rendered at body size, above the title and the badge it replaces
+   (SH-763). */
+.card-blockers { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; margin-top: 0.375rem; font-size: var(--type-metadata); line-height: var(--line-metadata); }
 
 /* ---- List ---- */
 .list { flex: 1; overflow: auto; padding: 0 var(--inset-main) var(--inset-main); }

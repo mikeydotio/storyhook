@@ -718,6 +718,38 @@ export async function resolvedTokenColor(
 }
 
 /**
+ * Asserts that no text a board card renders computes a larger font size than
+ * that card's own `.card-title` (SH-763).
+ *
+ * `.card` sets no type size of its own, so any card element that no rule
+ * names inherits the 16px body size and outranks the 13px title -- SH-756's
+ * complexity text and SH-203's cleared-blocker dwell row both shipped that
+ * way. Every rendered text node is measured, rather than a list of known
+ * selectors, so the next element nobody styled fails here too.
+ *
+ * `.card-actions-btn` is exempt: it is an icon control sized for its glyph
+ * and its tap target, not a line of the card's text.
+ */
+export async function expectCardTextWithinTitle(card: Locator, context: string): Promise<void> {
+  const measured = await card.evaluate((node) => {
+    const title = node.querySelector(".card-title");
+    if (!title) throw new Error(`card ${node.getAttribute("data-id")} renders no .card-title`);
+    const limit = parseFloat(getComputedStyle(title).fontSize);
+    const oversized: string[] = [];
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+      const owner = text.parentElement!;
+      const content = (text.textContent ?? "").trim();
+      if (!content || owner.closest(".card-actions-btn")) continue;
+      const size = parseFloat(getComputedStyle(owner).fontSize);
+      if (size > limit) oversized.push(`${owner.className || owner.localName} "${content}": ${size}px`);
+    }
+    return { limit, oversized };
+  });
+  expect(measured.oversized, `${context}: card text larger than its ${measured.limit}px title`).toEqual([]);
+}
+
+/**
  * Opens the filter bar's disclosure panel (SH-235) if it isn't already
  * open, and waits for it to actually render. The panel defaults collapsed
  * -- a fresh Playwright context has no localStorage, same reasoning as

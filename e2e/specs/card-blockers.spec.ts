@@ -1,6 +1,7 @@
 import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
+  expectCardTextWithinTitle,
   openProject,
   projectSlug,
   requiredEnv,
@@ -173,6 +174,16 @@ test("a card names its open blocker in the badge; closing the blocker turns the 
   await expect(blockersRow.locator(".story-light")).toHaveCSS(
     "background-color",
     await resolvedTokenColor(page, "--success"),
+  );
+  // SH-763: `.rel-id` inherits its surface's size (SH-451), and this row was
+  // the one card surface that set none -- the dwell chip rendered at the 16px
+  // body size, above the 13px title and the badge it replaces. Sized like the
+  // same card's `.card-id`, and asserted while the row is still on screen so
+  // neither check can pass on a card the dwell has already left.
+  await expectCardTextWithinTitle(workerCard, "cleared-blocker dwell");
+  await expect(blockersRow.locator(".rel-id")).toHaveCSS(
+    "font-size",
+    await workerCard.locator(".card-id").evaluate((id) => getComputedStyle(id).fontSize),
   );
 
   // After the dwell (BLOCKER_CLEARED_DWELL_MS, 4s) the whole blockers row
