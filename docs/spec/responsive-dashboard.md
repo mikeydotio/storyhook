@@ -520,3 +520,15 @@ expanded filters, failed Auto/connection status, and the compact breakpoint.
 It also checks non-overlap, row containment, unchanged header geometry while
 scrolling the board to both ends, and Drafts/Auto dialog access. Measurements
 wait for CSS transitions to settle. Both desktop browser engines run the spec.
+
+As built after SH-762: the desktop-only rules sit under
+`@media not all and (max-width: 768px)`, the exact complement of the compact
+grid's `(max-width: 768px)` and of the script's `compactHeaderQuery`. SH-741
+first gated them on `(min-width: 769px)`, and layout widths need not be whole
+CSS pixels: Zen at `layout.css.devPixelsPerPx` 1.1 in a 1104px window lays out
+768.167px, which matched neither block and restored the overflow above.
+`tests/web_test.rs` forbids any width media condition other than
+`(max-width: Npx)` or its `not all and` complement, so a later breakpoint cannot
+reopen the gap. `header-breakpoint.fractional.spec.ts` proves it in the
+`fractional-firefox` project, the one Playwright project that lays out
+fractional widths (Gecko at `devPixelsPerPx` 1.1).

@@ -251,10 +251,11 @@ _test-changed-body:
 	gate_finish
 
 # Installs the e2e/ Node toolchain and the browsers e2e/playwright.config.ts
-# names (chromium, webkit -- SH-335). Not part of either gate target itself --
-# it is a one-time (per-machine, per-Playwright-version) bootstrap step, not
-# something every run should repeat -- but `test-full`'s e2e leg fails loudly,
-# naming this target, if it was never run. `make test` never reaches it.
+# names (chromium, webkit -- SH-335; firefox -- SH-762). Not part of either
+# gate target itself -- it is a one-time (per-machine, per-Playwright-version)
+# bootstrap step, not something every run should repeat -- but `test-full`'s
+# e2e leg fails loudly, naming this target, if it was never run. `make test`
+# never reaches it.
 #
 # One further, OPTIONAL per-machine step this target documents rather than
 # performs: WebKit's Tab order skips buttons and links unless macOS's Full
@@ -266,14 +267,15 @@ _test-changed-body:
 #   defaults write -g AppleKeyboardUIMode -int 2
 e2e-install:
 	cd e2e && npm ci
-	cd e2e && npx playwright install --with-deps chromium webkit
+	cd e2e && npx playwright install --with-deps chromium webkit firefox
 
 # Runs just the dashboard's browser suite. Bare, this loops once per project
 # `e2e/playwright.config.ts` names (chromium, webkit, mobile-chromium,
-# mobile-webkit, untrusted-origin-chromium), each against its own isolated
-# daemon and seed (SH-321, SH-335, SH-348). Pass Playwright CLI
-# flags through, e.g. `make e2e ARGS=--headed` (applies to every project in
-# the loop) or `make e2e ARGS=--project=webkit` (runs that one project only).
+# mobile-webkit, untrusted-origin-chromium, fractional-firefox), each against
+# its own isolated daemon and seed (SH-321, SH-335, SH-348, SH-762). Pass
+# Playwright CLI flags through, e.g. `make e2e ARGS=--headed` (applies to
+# every project in the loop) or `make e2e ARGS=--project=webkit` (runs that
+# one project only).
 e2e:
 	bash scripts/run-e2e.sh $(ARGS)
 

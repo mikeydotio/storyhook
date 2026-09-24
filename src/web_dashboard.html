@@ -1591,8 +1591,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
 /* Outer wrapping cannot constrain a nested nowrap flex group (SH-741).
    Keep desktop controls inside their row even with enlarged text; the
-   compact grid below owns these same nodes through display:contents. */
-@media (min-width: 769px) {
+   compact grid below owns these same nodes through display:contents.
+   The condition is the compact query's exact complement, never
+   `min-width: 769px`: layout widths need not be whole pixels (768.167px
+   under Zen's devPixelsPerPx 1.1), and one between 768 and 769 matched
+   neither block and overflowed (SH-762). compactHeaderQuery owns it. */
+@media not all and (max-width: 768px) {
   .brand { flex-shrink: 1; flex-wrap: wrap; min-width: 0; max-width: 100%; }
   .brand .projsel { min-width: 0; max-width: 100%; }
   .brand .projsel-btn { max-width: min(14rem, 100%); }
