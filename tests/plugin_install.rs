@@ -265,6 +265,10 @@ impl Harness {
             .env("XDG_STATE_HOME", &state)
             .env("STORYHOOK_DATA_DIR", data.join("storyhook"))
             .envs(daemon_containment())
+            // This harness owns its home, and the binary under test is a test
+            // build: the plugin guard refuses it the verbs without this. Set
+            // on every child, so the daemon the first one spawns inherits it.
+            .env(storyhook::plugin::guard::OVERRIDE_VAR, "1")
             .envs(preset);
         command.output().expect("running story plugin command")
     }
@@ -1437,7 +1441,7 @@ fn claude_command_sequence_and_success_guidance_use_the_canonical_target() {
 
 /// The receipt `story doctor install` reads when a provider has swept every
 /// other trace of an install (SH-671): written only once the provider's own
-/// registration succeeded, and removed by `story plugin uninstall`.
+/// registration succeeded, and rewritten as a tombstone by `story plugin uninstall`.
 fn install_receipt(harness: &Harness, target: &str) -> PathBuf {
     harness
         .home
@@ -1445,8 +1449,12 @@ fn install_receipt(harness: &Harness, target: &str) -> PathBuf {
         .join(target)
 }
 
+/// A deliberate uninstall does not remove the receipt (SH-760): it rewrites
+/// it as a tombstone that keeps the install it replaced and names its actor
+/// — here a test build under the override, which is what makes it
+/// deliberate — so the doctor can tell this from an uninstall nobody ran.
 #[test]
-fn a_successful_install_writes_a_receipt_and_uninstall_removes_it() {
+fn a_successful_install_writes_a_receipt_and_uninstall_tombstones_it() {
     for provider in ["claude", "codex"] {
         let harness = Harness::new(false);
         match provider {
@@ -1466,22 +1474,69 @@ fn a_successful_install_writes_a_receipt_and_uninstall_removes_it() {
         assert!(output.status.success(), "{}", combined(&output));
         let body = fs::read_to_string(&receipt)
             .unwrap_or_else(|e| panic!("{provider}: receipt at {}: {e}", receipt.display()));
+        assert!(body.starts_with("state installed\n"), "{provider}:\n{body}");
         assert!(
             body.contains(&format!("version {}", env!("CARGO_PKG_VERSION"))),
             "{provider}: the receipt names the installing release:\n{body}"
         );
         assert!(body.contains("installed_at "), "{body}");
+        assert!(
+            body.contains("\nby /"),
+            "the receipt names the installer:\n{body}"
+        );
+        assert!(
+            body.contains("\nbuild test\n"),
+            "a test build says so:\n{body}"
+        );
+        assert!(body.contains("\noverride yes\n"), "{body}");
+        let installed_at = body
+            .lines()
+            .find_map(|line| line.strip_prefix("installed_at "))
+            .unwrap()
+            .to_string();
 
         let output = harness.run(&["plugin", "uninstall", provider]);
         assert!(output.status.success(), "{}", combined(&output));
+        let body = fs::read_to_string(&receipt)
+            .unwrap_or_else(|e| panic!("{provider}: the tombstone at {}: {e}", receipt.display()));
         assert!(
-            !receipt.exists(),
-            "{provider}: a deliberate uninstall leaves nothing for the doctor to read as a loss"
+            body.starts_with("state uninstalled\n"),
+            "{provider}:\n{body}"
         );
         assert!(
-            combined(&output).contains("receipt"),
-            "{provider}: the uninstall names what it removed:\n{}",
+            body.contains(&format!("\ninstalled_at {installed_at}\n")),
+            "the tombstone keeps the install it replaced:\n{body}"
+        );
+        assert!(body.contains("\nuninstalled_at "), "{body}");
+        assert!(body.contains("\nby /"), "{body}");
+        assert!(body.contains("\nbuild test\n"), "{body}");
+        assert!(body.contains("\noverride yes\n"), "{body}");
+        assert!(
+            combined(&output).contains("recorded the uninstall in the install receipt at"),
+            "{provider}: the uninstall names what it wrote:\n{}",
             combined(&output)
+        );
+
+        let output = harness.run(&["doctor", "install"]);
+        let report = combined(&output);
+        assert!(
+            !report.contains("DEREGISTERED") && !report.contains("UNINSTALLED BY"),
+            "{provider}: a deliberate uninstall leaves the doctor quiet:\n{report}"
+        );
+        assert!(
+            report.contains("[uninstalled "),
+            "{provider}: the quiet row still says when:\n{report}"
+        );
+
+        // A second uninstall with nothing registered rewrites the tombstone:
+        // the latest uninstall is the one whose actor matters.
+        let output = harness.run(&["plugin", "uninstall", provider]);
+        assert!(output.status.success(), "{}", combined(&output));
+        assert!(
+            fs::read_to_string(&receipt)
+                .unwrap()
+                .starts_with("state uninstalled\n"),
+            "{provider}"
         );
     }
 }

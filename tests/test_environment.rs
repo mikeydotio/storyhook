@@ -500,10 +500,26 @@ fn the_uninstalled_build_option_re_arms_only_the_uninstalled_build_overrides() {
         );
     }
 
+    // The plugin guard's override is cleared like its siblings but is NOT
+    // re-armed: `make scratch` keeps the real `$HOME` unless told otherwise,
+    // so an armed scratch shell's `story plugin install claude` would reach
+    // the developer's own Claude Code. A person who means it exports it.
+    let never_rearmed = storyhook::plugin::guard::OVERRIDE_VAR;
+    assert!(
+        TEST_ENVIRONMENT
+            .iter()
+            .any(|p| p.name == never_rearmed && matches!(p.disposition, Disposition::Clear)),
+        "the table must clear {never_rearmed}"
+    );
+
     let fixture = scratch_dir();
     let root = fixture.path();
     let (plain, _) = isolate_in_bash(root, &[]);
     let (armed, _) = isolate_in_bash(root, &["--uninstalled-build"]);
+    assert!(
+        !plain.contains_key(never_rearmed) && !armed.contains_key(never_rearmed),
+        "{never_rearmed} must be cleared by both forms and re-armed by neither"
+    );
 
     let mut expected = plain.clone();
     for override_var in override_vars {

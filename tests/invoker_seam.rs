@@ -382,6 +382,50 @@ fn the_project_less_verbs_all_answer_outside_a_project() {
     );
 }
 
+/// The roster above runs `plugin uninstall claude` **in this process**, with
+/// this process's own `HOME` and `PATH`. Until the plugin guard existed that
+/// executed the real `claude plugin uninstall story@storyhook`, swept the real
+/// plugin cache and removed the real install receipt on every run of this
+/// binary — under `make test` and under a bare `cargo test` alike — and the
+/// loss was attributed to the provider each time. The case stays in the
+/// roster, because the property it proves is about `is_project_less`; this
+/// test pins that it is now answered by the guard's refusal, before any
+/// provider is invoked, and never by success.
+#[test]
+fn the_plugin_verb_in_the_roster_is_refused_by_the_guard_not_executed() {
+    use storyhook::cli::PluginAction;
+    use storyhook::error::AppError;
+    use storyhook::invoke::{StoreInvoker, open_store};
+    use storyhook::plugin::guard::OVERRIDE_VAR;
+    use storyhook_test_support::scratch_dir;
+
+    assert!(
+        std::env::var_os(OVERRIDE_VAR).is_none(),
+        "{OVERRIDE_VAR} is exported into this test's environment, which would let the roster \
+         above uninstall the real plugin; unset it or run under `make test`"
+    );
+    let data = scratch_dir();
+    let cwd = scratch_dir();
+    let environment = Environment::at(data.path());
+    let store = open_store(&environment).expect("opening a fixture store");
+
+    let error = StoreInvoker::new(&store, cwd.path(), environment)
+        .invoke(InvokeRequest::new(Invocation::Plugin {
+            action: PluginAction::Uninstall {
+                target: "claude".to_string(),
+            },
+        }))
+        .expect_err("a test binary must be refused the verb");
+    assert!(matches!(error, AppError::Usage(_)), "{error:?}");
+    let text = error.to_string();
+    assert!(
+        text.starts_with("refusing `story plugin uninstall claude`"),
+        "{text}"
+    );
+    assert!(text.contains("test build"), "{text}");
+    assert!(text.contains(OVERRIDE_VAR), "{text}");
+}
+
 // ---------------------------------------------------------------------------
 // The unmigrated-repository guard
 // ---------------------------------------------------------------------------

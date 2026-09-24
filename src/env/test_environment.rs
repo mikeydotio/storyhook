@@ -280,6 +280,14 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  replacing the default store's daemon with itself",
     },
     Parameter {
+        name: "STORYHOOK_ALLOW_UNINSTALLED_PLUGIN_INSTALL",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "the same, for the guard that stops an uninstalled build \
+                 registering, removing or replacing the provider plugin \
+                 under this process's HOME",
+    },
+    Parameter {
         name: "STORYHOOK_VERIFIER_MIRROR",
         disposition: Disposition::Literal("0"),
         scope: Scope::Anywhere,

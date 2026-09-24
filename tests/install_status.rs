@@ -512,3 +512,171 @@ fn codex_residue_counts_a_managed_file_by_its_marker_not_its_name() {
         "an unmarked file at a managed path is the user's, not residue:\n{report}"
     );
 }
+
+/// A tombstone: what `story plugin uninstall <target>` leaves instead of
+/// removing the receipt (SH-760). `build` and `override` are the actor facts
+/// the doctor decides on.
+fn plant_tombstone(
+    env: &TestEnv,
+    target: &str,
+    build: &str,
+    override_set: bool,
+) -> std::path::PathBuf {
+    let receipt = env.data_dir().join("provider-installs").join(target);
+    std::fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+    std::fs::write(
+        &receipt,
+        format!(
+            "state uninstalled\nversion 3.0.3\ninstalled_at 2026-09-21T14:34:17Z\n\
+             uninstalled_at 2026-09-21T21:50:44Z\n\
+             by /home/dev/repo/target/debug/deps/invoker_seam-1a2b\nbuild {build}\n\
+             override {}\n",
+            if override_set { "yes" } else { "no" }
+        ),
+    )
+    .unwrap();
+    receipt
+}
+
+/// The operator's own uninstall — an installed binary — is quiet, and the
+/// quiet row still says when and by what, so the fact is visible without
+/// being a finding.
+#[test]
+fn a_tombstone_from_an_installed_binary_leaves_the_doctor_quiet_but_visible() {
+    let control = doctor_install(&TestEnv::isolated());
+    let env = TestEnv::isolated();
+    plant_tombstone(&env, "claude", "installed", false);
+    write_claude_config_without_storyhook(&env);
+    let report = doctor_install(&env);
+    assert!(
+        finding_for(&report, "claude plugin").is_none(),
+        "a deliberate uninstall is not a finding:\n{report}"
+    );
+    let row = report
+        .lines()
+        .find(|line| line.starts_with("claude plugin"))
+        .unwrap_or_else(|| panic!("{report}"));
+    assert!(row.contains("not registered"), "{row}");
+    assert!(
+        row.contains(
+            "uninstalled 2026-09-21T21:50:44Z by /home/dev/repo/target/debug/deps/invoker_seam-1a2b"
+        ),
+        "{row}"
+    );
+    assert_eq!(finding_count(&report), finding_count(&control), "{report}");
+}
+
+/// The override is the operator's word: an uninstalled build that carried
+/// it ran a deliberate uninstall, and the doctor stays quiet.
+#[test]
+fn a_tombstone_written_under_the_override_is_deliberate() {
+    for build in ["test", "checkout"] {
+        let env = TestEnv::isolated();
+        plant_tombstone(&env, "claude", build, true);
+        write_claude_config_without_storyhook(&env);
+        let report = doctor_install(&env);
+        assert!(
+            finding_for(&report, "claude plugin").is_none(),
+            "{build}: an overridden uninstall is deliberate:\n{report}"
+        );
+    }
+}
+
+/// The incident, as the tombstone now records it: a test binary removed the
+/// registration with no override. Not an uninstall anyone ran — a finding
+/// that names the actor and the remedy, where the removed receipt used to
+/// read `every component agrees`.
+#[test]
+fn a_tombstone_from_an_uninstalled_build_without_the_override_is_flagged() {
+    let control = doctor_install(&TestEnv::isolated());
+    for (build, what) in [
+        ("test", "a test build"),
+        ("checkout", "a binary still in its build directory"),
+        ("mystery", "a build the receipt does not vouch for"),
+    ] {
+        let env = TestEnv::isolated();
+        let receipt = plant_tombstone(&env, "claude", build, false);
+        write_claude_config_without_storyhook(&env);
+        let report = doctor_install(&env);
+        let finding = finding_for(&report, "claude plugin")
+            .unwrap_or_else(|| panic!("{build}: the claude row must carry a finding:\n{report}"));
+        assert!(
+            finding.starts_with("UNINSTALLED BY AN UNINSTALLED BUILD"),
+            "{finding}"
+        );
+        assert!(
+            finding.contains("/home/dev/repo/target/debug/deps/invoker_seam-1a2b"),
+            "{finding}"
+        );
+        assert!(finding.contains(what), "{build}: {finding}");
+        assert!(finding.contains("2026-09-21T21:50:44Z"), "{finding}");
+        assert!(
+            finding.contains(&receipt.display().to_string()),
+            "{finding}"
+        );
+        assert!(finding.contains("story plugin install claude"), "{finding}");
+        assert!(!finding.contains("DEREGISTERED"), "{finding}");
+        assert_eq!(
+            finding_count(&report),
+            finding_count(&control) + 1,
+            "{build}: the summary must count the flagged row:\n{report}"
+        );
+        assert!(
+            !report.contains("every component agrees"),
+            "{build}: the summary can no longer agree over this:\n{report}"
+        );
+    }
+}
+
+/// A tombstone whose actor lines are missing altogether vouches for nobody:
+/// silence is never a pass.
+#[test]
+fn a_tombstone_with_no_recorded_actor_is_flagged() {
+    let env = TestEnv::isolated();
+    let receipt = env.data_dir().join("provider-installs/claude");
+    std::fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+    std::fs::write(&receipt, "state uninstalled\n").unwrap();
+    write_claude_config_without_storyhook(&env);
+    let report = doctor_install(&env);
+    let finding = finding_for(&report, "claude plugin")
+        .unwrap_or_else(|| panic!("the claude row must carry a finding:\n{report}"));
+    assert!(
+        finding.starts_with("UNINSTALLED BY AN UNINSTALLED BUILD"),
+        "{finding}"
+    );
+    assert!(
+        finding.contains("an executable that could not name itself"),
+        "{finding}"
+    );
+    assert!(finding.contains("an unrecorded time"), "{finding}");
+}
+
+/// Copies that survived a deliberate uninstall are still copies a lost
+/// registration leaves: residue outranks the tombstone, as it outranks a
+/// receipt.
+#[test]
+fn residue_beside_a_deliberate_tombstone_is_still_deregistered() {
+    let env = TestEnv::isolated();
+    plant_tombstone(&env, "claude", "installed", false);
+    let residue = plant_claude_cache(&env);
+    write_claude_config_without_storyhook(&env);
+    let report = doctor_install(&env);
+    let finding = finding_for(&report, "claude plugin").unwrap_or_else(|| panic!("{report}"));
+    assert!(finding.contains("DEREGISTERED"), "{finding}");
+    assert!(
+        finding.contains(&residue.display().to_string()),
+        "{finding}"
+    );
+}
+
+/// The Codex row reads its own tombstone and says nothing about Claude's.
+#[test]
+fn a_codex_tombstone_flags_only_the_codex_row() {
+    let env = TestEnv::isolated();
+    plant_tombstone(&env, "codex", "test", false);
+    write_claude_config_without_storyhook(&env);
+    let report = doctor_install(&env);
+    let finding = finding_for(&report, "codex plugin").unwrap_or_else(|| panic!("{report}"));
+    assert!(finding.contains("story plugin install codex"), "{finding}");
+    assert!(finding_for(&report, "claude plugin").is_none(), "{report}");
+}

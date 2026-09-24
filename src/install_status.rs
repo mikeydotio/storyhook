@@ -56,6 +56,8 @@ use std::path::{Path, PathBuf};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::plugin::PluginTarget;
+use crate::plugin::guard::Build;
+use crate::plugin::receipt::Receipt;
 use crate::plugin::registration::{config_path, configured_source};
 
 /// One line of the report.
@@ -198,9 +200,14 @@ fn store_row(env: &Environment) -> Row {
 /// never an `ok`. Absence is resolved against evidence rather than promoted
 /// to "never" (the SH-372 rule), and there are two kinds: the provider's own
 /// surviving copies (SH-640), and storyhook's own install receipt (SH-671),
-/// which is the one that is still there after the provider sweeps its copies
-/// too — as Claude Code 2.1.268 did on 2026-09-10, when this row read a
-/// broken machine as a never-installed one.
+/// which is the one that is still there after the copies are swept too.
+///
+/// The receipt is never removed (SH-760): a deliberate uninstall rewrites it
+/// as a tombstone naming its actor, so this row can tell the operator's own
+/// `story plugin uninstall` (quiet) from one a test binary ran against the
+/// real home with no override (flagged) — the shape that, while the receipt
+/// was simply deleted, read here as a never-installed provider on every gate
+/// run.
 fn unregistered(label: &'static str, target: PluginTarget) -> Row {
     let residue = match crate::plugin::install_residue(target) {
         Ok(residue) => residue,
@@ -213,26 +220,50 @@ fn unregistered(label: &'static str, target: PluginTarget) -> Row {
             );
         }
     };
-    let receipt = match crate::plugin::install_receipt(target) {
+    let receipt = match crate::plugin::receipt::read(target) {
         Ok(receipt) => receipt,
         Err(error) => return Row::flagged(label, "unknown", error.to_string()),
     };
-    if residue.is_empty() && receipt.is_none() {
-        return Row::ok(label, "not registered");
-    }
+    let path = crate::plugin::receipt::path(target)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "its install receipt".to_string());
     let mut evidence = Vec::new();
-    if let Some(body) = receipt {
-        let path = crate::plugin::install_receipt_path(target)
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|_| "its install receipt".to_string());
-        let installed_at = body
-            .lines()
-            .find_map(|line| line.strip_prefix("installed_at "))
-            .unwrap_or("an unrecorded time");
-        evidence.push(format!(
+    match receipt {
+        None => {}
+        Some(Receipt::Installed { installed_at, .. }) => evidence.push(format!(
             "`story plugin install {}` recorded an install here at {installed_at} ({path})",
             target.install_token()
-        ));
+        )),
+        Some(Receipt::Uninstalled {
+            uninstalled_at,
+            actor,
+            ..
+        }) => {
+            if residue.is_empty() && actor.is_deliberate() {
+                return Row::ok(
+                    label,
+                    format!(
+                        "not registered  [uninstalled {uninstalled_at} by {}]",
+                        actor.exe_display()
+                    ),
+                );
+            }
+            if !actor.is_deliberate() {
+                return uninstalled_by_an_uninstalled_build(
+                    label,
+                    target,
+                    &uninstalled_at,
+                    &actor,
+                    &path,
+                );
+            }
+            // Deliberately uninstalled, but copies survived it: the sweep
+            // did not run to completion, and the copies are what a lost
+            // registration leaves. Named as residue below.
+        }
+    }
+    if residue.is_empty() && evidence.is_empty() {
+        return Row::ok(label, "not registered");
     }
     if !residue.is_empty() {
         let copies = residue
@@ -250,6 +281,37 @@ fn unregistered(label: &'static str, target: PluginTarget) -> Row {
              `story plugin install {}`",
             target.display_name(),
             evidence.join(", and "),
+            target.install_token()
+        ),
+    )
+}
+
+/// The tombstone the receipt keeps when `story plugin uninstall` ran from a
+/// build that is not the one the operator installed, with no override saying
+/// it was meant (SH-760). This is the guard in `plugin::guard` being
+/// bypassed — a test binary against the real home — and the one loss the
+/// receipt's removal used to hide.
+fn uninstalled_by_an_uninstalled_build(
+    label: &'static str,
+    target: PluginTarget,
+    uninstalled_at: &str,
+    actor: &crate::plugin::receipt::Actor,
+    path: &str,
+) -> Row {
+    let what = match actor.build {
+        Some(Build::TestBuild) => "a test build",
+        Some(Build::Checkout) => "a binary still in its build directory",
+        Some(Build::Installed) | None => "a build the receipt does not vouch for",
+    };
+    Row::flagged(
+        label,
+        "not registered",
+        format!(
+            "UNINSTALLED BY AN UNINSTALLED BUILD: `{}` ({what}) removed the {} registration at \
+             {uninstalled_at} without the override that marks an uninstall as deliberate ({path}) \
+             — not an uninstall you ran; run `story plugin install {}`",
+            actor.exe_display(),
+            target.display_name(),
             target.install_token()
         ),
     )

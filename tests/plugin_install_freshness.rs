@@ -72,7 +72,10 @@ fn successful_provider_response_cannot_hide_stale_enabled_helper() {
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("XDG_STATE_HOME", home.join("state"))
         .env("STORYHOOK_DATA_DIR", home.join("data/storyhook"))
-        .envs(daemon_containment());
+        .envs(daemon_containment())
+        // An isolated home, driven by a test build: the plugin guard needs
+        // the operator's word for it.
+        .env(storyhook::plugin::guard::OVERRIDE_VAR, "1");
     let output = ChildGuard::spawn_with_output(&mut command)
         .expect("running isolated production plugin installer")
         .wait_with_output_within(STORY_COMMAND_DEADLINE, || {

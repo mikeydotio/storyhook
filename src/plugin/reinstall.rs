@@ -176,6 +176,9 @@ pub(crate) fn execute(
 /// The verb: reinstall every registered provider through this binary's own
 /// installer.
 pub fn run(project_root: &Path) -> Result<Report, AppError> {
+    // Before `plan()` reads anything: one refusal for the verb, rather than
+    // one per provider folded into the report by `execute`.
+    super::guard::check(super::guard::Verb::Reinstall, None)?;
     execute(&plan(), |target| {
         super::install(target.install_token(), project_root)
     })
