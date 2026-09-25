@@ -1,8 +1,11 @@
 //! Effective transitions are derived once per complete service transaction.
 use super::Ctx;
+use super::continuation::SubmissionEvidence;
 use crate::domain::{SuperState, is_blocked};
+use crate::error::AppError;
 use crate::store::{
-    BlockAction, DeliveryStatus, ProjectId, ReadOps, Store, StoreError, StoryNo, WriteOps,
+    BlockAction, DeliveryStatus, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryQuery,
+    WriteOps,
 };
 use std::collections::BTreeMap;
 
@@ -17,24 +20,25 @@ struct State {
     sequence: i64,
 }
 
+/// Every story's delivery-relevant state, keyed by the row's own number.
+///
+/// Keyed by [`crate::store::StoryRow::story_no`] rather than by re-parsing the
+/// snapshot's id, so the key is the row's identity and not a field of the
+/// folded value it carries.
 fn snapshot(tx: &impl ReadOps, project: ProjectId) -> Result<BTreeMap<StoryNo, State>, StoreError> {
-    let prefix = super::project_prefix(tx, project)?;
     let stories = super::query::story_map(tx, project)?;
-    stories
-        .iter()
-        .map(|(id, story)| {
+    tx.stories(project, &StoryQuery::all())?
+        .into_iter()
+        .map(|row| {
+            let story = stories.get(&row.snapshot.id).ok_or_else(|| {
+                StoreError::Corrupt("story disappeared during mutation snapshot".into())
+            })?;
             Ok((
-                StoryNo::parse_id(&prefix, id)?,
+                row.story_no,
                 State {
                     blocked: is_blocked(story, &stories),
                     verifying: story.state == crate::domain::VERIFYING_STATE_SLUG,
-                    sequence: tx
-                        .story(project, StoryNo::parse_id(&prefix, id)?)?
-                        .ok_or_else(|| {
-                            StoreError::Corrupt("story disappeared during mutation snapshot".into())
-                        })?
-                        .head_global_seq
-                        .get(),
+                    sequence: row.head_global_seq.get(),
                     active: story.superstate == SuperState::Open && story.state == "in-progress",
                     interruptible: story.superstate == SuperState::Open
                         && matches!(
@@ -45,6 +49,74 @@ fn snapshot(tx: &impl ReadOps, project: ProjectId) -> Result<BTreeMap<StoryNo, S
             ))
         })
         .collect()
+}
+
+/// Runs `f` inside `tx` and records the block-delivery edges its complete
+/// effect implies: an Interrupt for every active story it newly blocks, a
+/// Resume for every active story it newly unblocks, and supersession of the
+/// pending effects of every block episode it ends.
+///
+/// The one place those edges are derived. [`Ctx::write_stories`] is the
+/// ordinary door; a transaction that is not opened through a [`Ctx`] — a
+/// verifier landing, a prefix rename, a read-model repair — calls this inside
+/// its own write instead. Intermediate states inside `f` are never delivered:
+/// only the project as it stood before `f` and as `f` leaves it are compared.
+/// No external operation may run here, because SQLite owns the write lock.
+///
+/// `submission` is the Git evidence a story newly entering `verifying` is
+/// checked against; it has to be read before the write opens.
+pub(crate) fn derive_block_edges<W: WriteOps, T>(
+    tx: &mut W,
+    project: ProjectId,
+    submission: Option<&Result<SubmissionEvidence, AppError>>,
+    f: impl FnOnce(&mut W) -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    let before = snapshot(tx, project)?;
+    let result = f(tx)?;
+    let after = snapshot(tx, project)?;
+    for (story, next) in after {
+        // Newly imported/created rows have no dispatched turn to interrupt.
+        let Some(previous) = before.get(&story) else {
+            continue;
+        };
+        if !previous.verifying && next.verifying {
+            super::continuation::check_submission(
+                tx,
+                project,
+                story,
+                previous.sequence,
+                submission,
+            )?;
+        }
+        // Pending authority belongs to one effective block episode. A
+        // replacement or retired execution cannot inherit an old prompt.
+        if previous.blocked != next.blocked || !next.interruptible {
+            supersede_pending(tx, project, story, "effective block episode ended")?;
+        }
+        let action = if !previous.blocked && next.blocked {
+            Some(BlockAction::Interrupt)
+        } else if previous.blocked
+            && !next.blocked
+            && next.active
+            && !super::project_recovery::owns_resume(tx, project, story)?
+        {
+            Some(BlockAction::Resume)
+        } else {
+            None
+        };
+        if let Some(action) = action {
+            tx.enqueue_block_delivery(project, story, action)?;
+            if !next.interruptible {
+                supersede_pending(
+                    tx,
+                    project,
+                    story,
+                    "story has no active execution to interrupt",
+                )?;
+            }
+        }
+    }
+    Ok(result)
 }
 
 impl<S: Store> Ctx<'_, S> {
@@ -61,54 +133,8 @@ impl<S: Store> Ctx<'_, S> {
         // failure matters only if this mutation actually submits managed work.
         let submission_head =
             has_continuations.then(|| super::continuation::current_submission(self.cwd()));
-        self.store().write(|tx| {
-            let before = snapshot(tx, self.project())?;
-            let result = f(tx)?;
-            let after = snapshot(tx, self.project())?;
-            for (story, next) in after {
-                // Newly imported/created rows have no dispatched turn to interrupt.
-                let Some(previous) = before.get(&story) else {
-                    continue;
-                };
-                if !previous.verifying && next.verifying {
-                    super::continuation::check_submission(
-                        tx,
-                        self.project(),
-                        story,
-                        previous.sequence,
-                        submission_head.as_ref(),
-                    )?;
-                }
-                // Pending authority belongs to one effective block episode. A
-                // replacement or retired execution cannot inherit an old prompt.
-                if previous.blocked != next.blocked || !next.interruptible {
-                    supersede_pending(tx, self.project(), story, "effective block episode ended")?;
-                }
-                let action = if !previous.blocked && next.blocked {
-                    Some(BlockAction::Interrupt)
-                } else if previous.blocked
-                    && !next.blocked
-                    && next.active
-                    && !super::project_recovery::owns_resume(tx, self.project(), story)?
-                {
-                    Some(BlockAction::Resume)
-                } else {
-                    None
-                };
-                if let Some(action) = action {
-                    tx.enqueue_block_delivery(self.project(), story, action)?;
-                    if !next.interruptible {
-                        supersede_pending(
-                            tx,
-                            self.project(),
-                            story,
-                            "story has no active execution to interrupt",
-                        )?;
-                    }
-                }
-            }
-            Ok(result)
-        })
+        self.store()
+            .write(|tx| derive_block_edges(tx, self.project(), submission_head.as_ref(), f))
     }
 }
 
