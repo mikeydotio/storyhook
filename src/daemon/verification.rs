@@ -14,6 +14,8 @@ mod cleanup;
 mod control;
 pub(crate) mod evidence;
 #[cfg(test)]
+mod reconcile_wait_tests;
+#[cfg(test)]
 mod workspace_tests;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
@@ -3117,7 +3119,9 @@ fn comment_once(
 /// Waits until the reserved story creates a newer verification generation.
 ///
 /// Other queue arrivals and coarse bus wakes only cause a fresh observation;
-/// they cannot transfer the reservation. A daemon stop ends the wait without
+/// they cannot transfer the reservation. An observation reads the store alone
+/// and starts no process; the checkout origin is validated once, for the
+/// resubmission this returns (SH-769). A daemon stop ends the wait without
 /// manufacturing a candidate. Public for shutdown and event-order integration
 /// tests.
 pub fn wait_for_reconciled_candidate(
@@ -3142,6 +3146,10 @@ fn wait_for_reconciled_candidate_cancellable(
     reserved: &VerificationCandidate,
     cancellation: &Cancellation,
 ) -> Result<Option<VerificationCandidate>, AppError> {
+    let queue = VerificationQueue::new(store);
+    let newer = |generation: Option<GlobalSeq>| {
+        generation.is_some() && generation != reserved.verifying_generation
+    };
     loop {
         if stop.load(Ordering::Relaxed)
             || cancellation.is_cancelled()
@@ -3149,14 +3157,13 @@ fn wait_for_reconciled_candidate_cancellable(
         {
             return Ok(None);
         }
-        if let Some(candidate) = VerificationQueue::new(store)
-            .ordered_for(reserved.project)?
-            .into_iter()
-            .find(|candidate| {
-                candidate.story_id == reserved.story_id
-                    && candidate.verifying_generation.is_some()
-                    && candidate.verifying_generation != reserved.verifying_generation
-            })
+        // A pass runs every 100 ms and on every bus wake, so it reads the store
+        // alone: validating origins starts `git` (SH-769). Only a resubmission
+        // is validated, and the second read may find it gone again.
+        if newer(queue.current_generation_for(reserved)?)
+            && let Some(candidate) = queue
+                .current_for(reserved)?
+                .filter(|candidate| newer(candidate.verifying_generation))
         {
             return Ok(Some(candidate));
         }
