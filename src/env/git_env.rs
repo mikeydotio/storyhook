@@ -204,10 +204,30 @@ pub fn scrub_this_process() {
 /// denylist is only as complete as the last person to read git's release notes,
 /// and this repository watched one go stale twice in a single afternoon.
 pub fn command(cwd: &Path) -> Command {
+    #[cfg(test)]
+    BUILT.with(|built| built.set(built.get() + 1));
     let mut command = Command::new("git");
     command.current_dir(cwd);
     apply_allowlist(&mut command);
     command
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many `git` commands [`command`] has built on this thread, in test
+    /// builds only. Every `git` passes through [`command`], including the
+    /// [`output`] calls that the daemon's activity journal never records, so
+    /// this is the one place a test can see all of them (SH-769).
+    static BUILT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many `git` commands [`command`] has built on the calling thread.
+///
+/// Per thread, because the unit tests share one process: a test that runs the
+/// code under test on its own thread sees that code's `git` and nobody else's.
+#[cfg(test)]
+pub(crate) fn built_on_this_thread() -> u64 {
+    BUILT.with(std::cell::Cell::get)
 }
 
 /// Clears `command`'s environment and gives back exactly [`GIT_MAY_SEE`].
@@ -460,5 +480,25 @@ mod tests {
             .canonicalize()
             .unwrap_or_else(|_| dir.path().to_path_buf());
         assert_eq!(answered, expected, "git answered about the wrong directory");
+    }
+
+    /// SH-769's pin that a reconcile wait starts no `git` reads this tally, so
+    /// a tally that never moved would let that pin pass vacuously. It counts
+    /// each command built on this thread, and none built on another.
+    #[test]
+    fn the_tally_counts_the_git_commands_this_thread_builds() {
+        let before = built_on_this_thread();
+        let _ = command(Path::new("."));
+        assert_eq!(built_on_this_thread(), before + 1);
+        std::thread::spawn(|| {
+            let _ = command(Path::new("."));
+        })
+        .join()
+        .expect("the other thread builds its command");
+        assert_eq!(
+            built_on_this_thread(),
+            before + 1,
+            "another thread's git is not this thread's"
+        );
     }
 }
