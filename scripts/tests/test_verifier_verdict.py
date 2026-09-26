@@ -206,6 +206,37 @@ os.kill = kill
         # reaches its census; both proofs correctly retain the same owner.
         self.assertIn("owner", admission["detail"])
 
+    def test_member_outliving_the_reaping_eighth_is_still_refused(self):
+        """Judging the kill from its delivery still ends in a refusal (SH-767).
+
+        The census keeps reporting a gate member that every signal reaches and
+        none removes, as an unkillable process would; supervision must refuse
+        after the reaping eighth rather than wait for a census that empties.
+        """
+        phantom = 2 ** 31 - 1
+        self.inject("verifier-owner.py", '''
+PHANTOM = PHANTOM_PID
+_members = session_members
+def session_members(sid):
+    import pathlib
+    for path in pathlib.Path(sys.argv[2]).glob('storyhook/verifier-lifecycle/*.owner'):
+        record = read(path)
+        if record.get('gate_leader_exit') is not None and record.get('gate_session') == sid:
+            return _members(sid) + [PHANTOM]
+    return _members(sid)
+_kill = os.kill
+def kill(pid, sig):
+    if pid == PHANTOM:
+        return None
+    return _kill(pid, sig)
+os.kill = kill
+'''.replace('PHANTOM_PID', str(phantom)))
+        result = self.gate(3)
+        self.assertEqual(result["result"], "tests-failed", result)
+        self.assertIn("sh702_named_failure", result["detail"])
+        self.assertIn("could not reap", result["cleanup_failure"]["detail"])
+        self.assertIn(str(phantom), result["cleanup_failure"]["detail"])
+
     def test_unlink_failure_preserves_red(self):
         """Removing the restoration marker is cleanup, not execution."""
         import shlex

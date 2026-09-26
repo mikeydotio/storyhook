@@ -46,6 +46,9 @@ MARGIN = 5
 # immediately, so this generosity costs time only for a live stalled fixture.
 MILESTONE_DEADLINE = 3 * int(CLEANUP_BUDGET_MS) / 1000 + MARGIN
 POLL_INTERVAL = 0.01
+# An injected census this many times the reaping eighth: the kill's own census
+# then spans the whole window, as a loaded ps did in the PR 857 gate (SH-767).
+CENSUS_OVERRUN = 1.25
 
 
 class VerifierLifecycle(unittest.TestCase):
@@ -1014,6 +1017,71 @@ while True:
         _, owner = self.owner_record()
         self.assertFalse(owner["gate_started"], owner)
         self.assertIsNone(owner["gate_leader_exit"], owner)
+
+    # -- SH-767: the reaping eighth runs from the delivered SIGKILL -----------
+
+    def slow_census(self, delay):
+        """Delay only the supervisors' session census, the way gate load does.
+
+        The real ps still answers and every other ps shape passes straight
+        through; only the census's timing changes (SH-767).
+        """
+        real_ps = self.command("sh", "-c", "command -v ps").stdout.strip()
+        wrapper = self.root / "slow-census"
+        wrapper.mkdir()
+        (wrapper / "ps").write_text(
+            '#!/bin/bash\n'
+            'if [ "$#" -eq 2 ] && [ "$1" = -axo ] && [ "$2" = pid=,stat= ]; then\n'
+            f'  sleep {delay:.3f}\nfi\n'
+            'exec ' + shlex.quote(real_ps) + ' "$@"\n')
+        (wrapper / "ps").chmod(0o755)
+        self.env["PATH"] = str(wrapper) + ":" + self.env["PATH"]
+
+    @property
+    def census_outlasting_the_reaping_eighth(self):
+        """One census longer than the whole post-KILL reaping window."""
+        return self.budget / 8 * CENSUS_OVERRUN
+
+    def test_slow_census_cannot_refuse_a_delivered_gate_kill(self):
+        """A kill is judged by a census begun after its reaping eighth closed.
+
+        Before SH-767 the gate supervisor refused in the same pass that sent
+        SIGKILL, from the scheduled deadline, naming members its pre-kill census
+        saw; the orphan was already dead and the record kept a started gate.
+        """
+        self.set_cleanup_budget("4000")
+        self.slow_census(self.census_outlasting_the_reaping_eighth)
+        orphan = self.root / "orphan-pid"
+        verdict = self.gate_verdict(
+            f"trap '' TERM; sleep 300 & echo $! > {shlex.quote(str(orphan))}; exit 5")
+        pid = int(orphan.read_text())
+        self.addCleanup(lambda: self.stop_pid(pid))
+        log = self.attempt_log().read_text()
+        self.assertEqual(verdict["result"], "tests-failed", verdict)
+        self.assertNotIn("cleanup_failure", verdict, log)
+        self.assertNotIn("could not reap", log)
+        self.assertGone(pid)
+        _, owner = self.owner_record()
+        self.assertFalse(owner["gate_started"], owner)
+        self.assertIsNone(owner["gate_leader_exit"], owner)
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+
+    def test_slow_census_cannot_refuse_a_delivered_lifecycle_kill(self):
+        """The lifecycle supervisor shares the same reaping eighth (SH-767)."""
+        self.set_cleanup_budget("4000")
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        self.slow_census(self.census_outlasting_the_reaping_eighth)
+        orphan = self.root / "orphan-pid"
+        result = self.owner("bash", "-c", f"trap '' TERM; sleep 300 & echo $! > {shlex.quote(str(orphan))}")
+        pid = int(orphan.read_text())
+        self.addCleanup(lambda: self.stop_pid(pid))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("leaving survivors", result.stderr)
+        self.assertNotIn("could not reap", result.stderr)
+        self.assertGone(pid)
+        _, owner = self.owner_record()
+        self.assertTrue(owner["completed"], owner)
+        self.assertIsNone(owner["session"], owner)
 
     def recorded_leader_exit(self, alive):
         """Rewrite the record as a gate supervisor that died mid-reap leaves it."""
