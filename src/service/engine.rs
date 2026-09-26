@@ -1962,16 +1962,16 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             debug_assert_eq!(working.story_id.as_deref(), Some(story.as_str()));
             debug_assert_eq!(working.outcome.as_deref(), Some(before.state.as_str()));
 
-            let outcome = self.dispatcher.dispatch(DispatchRequest {
+            let dispatched = self.dispatcher.dispatch(DispatchRequest {
                 project: slug.to_string(),
                 story: story.clone(),
                 agent,
                 model,
                 effort,
                 speed,
-            })?;
-            match outcome.state {
-                DispatchOutcomeState::Ok => {
+            });
+            let diagnosis = match dispatched {
+                Ok(outcome) if outcome.state == DispatchOutcomeState::Ok => {
                     let mut live = working.clone();
                     live.state = EngineLaneState::Working;
                     live.pane_id = outcome
@@ -1996,53 +1996,138 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     live.outcome_detail = None;
                     self.ctx.store().write(|tx| tx.put_engine_lane(&live))?;
                     report.filled.push((lane.lane_index, story));
+                    continue;
                 }
-                DispatchOutcomeState::Refused => {
-                    // The script's own refusal, relayed verbatim rather than
-                    // replaced by a list composed here (SH-120). The lane is
-                    // quarantined rather than freed, because the story is
-                    // claimed and something has to say why. The report's kind
-                    // and the lane's own stored `outcome` must spell the same
-                    // event: a refusal is not a dead window.
-                    let mut stuck = working.clone();
-                    stuck.state = EngineLaneState::Quarantined;
-                    stuck.outcome = Some(HardStopKind::DispatchRefused.as_str().to_string());
-                    let diagnosis = helper_diagnosis(&outcome.payload);
-                    super::StoryService::new(self.ctx).set_awaiting(&story, &diagnosis)?;
-                    stuck.outcome_detail = Some(story.clone());
-                    self.ctx.store().write(|tx| tx.put_engine_lane(&stuck))?;
-                    // This branch quarantines inline rather than calling
-                    // `quarantine_lane` (the story is freshly claimed here,
-                    // not yet observed by `observe_lanes`), so the
-                    // `engine_lane_quarantined` hook needs its own fire call
-                    // through the shared helper (SH-472).
-                    self.fire_lane_quarantined_hook(
-                        run_id,
-                        lane.lane_index,
-                        Some(story.as_str()),
-                        HardStopKind::DispatchRefused,
-                        Some(&diagnosis),
-                        None,
-                        None,
+                // The script's own refusal, relayed verbatim rather than
+                // replaced by a list composed here (SH-120).
+                Ok(outcome) => helper_diagnosis(&outcome.payload),
+                // A dispatch that failed outright (timeout, spawn failure, an
+                // invalid cleanup lease) still claimed the story. Propagating
+                // it left the lane dispatching forever, which a later Stop Now
+                // waited on for 180 s per attempt (SH-774).
+                Err(error) => {
+                    let diagnosis = format!("dispatch failed: {error}");
+                    crate::daemon::activity::emit(
+                        "ERROR",
+                        "engine",
+                        "event",
+                        &format!("run={run_id} lane={} story={story}", lane.lane_index),
+                        &diagnosis,
                     );
-                    report
-                        .quarantined
-                        .push((lane.lane_index, HardStopKind::DispatchRefused));
-                    hard_stops.push(EngineQuarantineRecord {
-                        lane_index: lane.lane_index,
-                        story_id: Some(story),
-                        kind: HardStopKind::DispatchRefused.as_str().to_string(),
-                        detail: Some(diagnosis),
-                        pane_id: None,
-                        window_name: None,
-                        worktree_path: None,
-                        observed_at: dispatched_at,
-                    });
-                    break;
+                    diagnosis
                 }
+            };
+            // The lane is quarantined rather than freed, because the story is
+            // claimed and something has to say why. The report's kind and the
+            // lane's own stored `outcome` must spell the same event: a
+            // refusal is not a dead window.
+            let mut stuck = working.clone();
+            stuck.state = EngineLaneState::Quarantined;
+            stuck.outcome = Some(HardStopKind::DispatchRefused.as_str().to_string());
+            stuck.outcome_detail = Some(story.clone());
+            if !self.quarantine_refused_dispatch(&working, &stuck, &diagnosis)? {
+                break;
             }
+            // This branch quarantines inline rather than calling
+            // `quarantine_lane` (the story is freshly claimed here,
+            // not yet observed by `observe_lanes`), so the
+            // `engine_lane_quarantined` hook needs its own fire call
+            // through the shared helper (SH-472).
+            self.fire_lane_quarantined_hook(
+                run_id,
+                lane.lane_index,
+                Some(story.as_str()),
+                HardStopKind::DispatchRefused,
+                Some(&diagnosis),
+                None,
+                None,
+            );
+            report
+                .quarantined
+                .push((lane.lane_index, HardStopKind::DispatchRefused));
+            hard_stops.push(EngineQuarantineRecord {
+                lane_index: lane.lane_index,
+                story_id: Some(story),
+                kind: HardStopKind::DispatchRefused.as_str().to_string(),
+                detail: Some(diagnosis),
+                pane_id: None,
+                window_name: None,
+                worktree_path: None,
+                observed_at: dispatched_at,
+            });
+            break;
         }
         Ok(hard_stops)
+    }
+
+    /// Records a dispatch that gave no working lane, in one transaction with
+    /// the story's awaiting reason, so no failure can leave the lane
+    /// dispatching (SH-774). Returns whether the lane was quarantined.
+    ///
+    /// The write applies only while the lane is still exactly as the claim
+    /// wrote it. A story that left the active state, closed, was purged or
+    /// is now owned by another cleanup has nothing to quarantine: its lane is
+    /// freed instead, which is the one write the store's card-reset guard
+    /// allows for a dispatching lane.
+    fn quarantine_refused_dispatch(
+        &self,
+        working: &EngineLaneRecord,
+        stuck: &EngineLaneRecord,
+        diagnosis: &str,
+    ) -> Result<bool, AppError> {
+        let now = self.ctx.now();
+        Ok(self.ctx.write_stories(|tx| {
+            let project = self.ctx.project();
+            if !tx
+                .engine_lanes(&working.run_id)?
+                .iter()
+                .any(|current| current == working)
+            {
+                return Ok(false);
+            }
+            let prefix = project_prefix(tx, project)?;
+            let story = working
+                .story_id
+                .as_deref()
+                .expect("a dispatching lane holds a story");
+            let row = optional_lane_story(tx, project, &prefix, story)?;
+            let active =
+                crate::domain::active_state(&tx.states(project)?).map(|state| state.slug.clone());
+            let released = match &row {
+                // Closure, an unclaim and another cleanup's reservation all
+                // took the story from this attempt while it dispatched.
+                Some(row) => {
+                    Some(&row.state) != active.as_ref()
+                        || row.snapshot.superstate == crate::domain::SuperState::Closed
+                        || super::story_reset::foreign_owner(tx, project, row.story_no)?.is_some()
+                }
+                None => true,
+            };
+            if released {
+                let mut idle = idle_lane(&working.run_id, working.lane_index, &now);
+                idle.outcome = Some(HardStopKind::DispatchRefused.as_str().to_string());
+                idle.outcome_detail = Some(diagnosis.to_string());
+                put_or_retire_idle_lane(tx, &idle)?;
+                return Ok(false);
+            }
+            let row = row.expect("a story that was not released resolved");
+            let states = tx.state_map(project)?;
+            super::append_and_fold(
+                tx,
+                project,
+                row.story_no,
+                &prefix,
+                &states,
+                crate::store::ExpectedSeq::Exact(row.head_seq),
+                &[crate::domain::StoryEvent::StoryAwaitingSet {
+                    at: now.clone(),
+                    awaiting: diagnosis.to_string(),
+                }],
+                self.ctx.provenance(),
+            )?;
+            tx.put_engine_lane(stuck)?;
+            Ok(true)
+        })?)
     }
 
     /// Ends a run whose lanes are all idle.
