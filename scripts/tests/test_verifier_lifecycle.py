@@ -54,6 +54,9 @@ CENSUS_OVERRUN = 1.25
 class VerifierLifecycle(unittest.TestCase):
     """Each case owns its repository, Git configuration, locks and evidence."""
 
+    # Set by setUp; an observation-only harness has no repository.
+    common = None
+
     def setUp(self):
         """Create two published commits in an isolated repository."""
         self.tmp = tempfile.TemporaryDirectory(prefix="sh683-", dir="/tmp")
@@ -192,7 +195,7 @@ class VerifierLifecycle(unittest.TestCase):
                                 sys.executable, "-c", code)
         pid = self.wait_pid(ready, child, log)
         self.addCleanup(lambda: self.stop_pid(pid))
-        self.assertEqual(child.wait(timeout=self.settle_timeout), 0)
+        self.assertEqual(self.wait_settled(child, log), 0)
         self.assertGone(pid)
         log.seek(0)
         output = log.read().decode()
@@ -338,21 +341,80 @@ class VerifierLifecycle(unittest.TestCase):
         """Allow the supplied cancellation ladder plus scheduling/reap margin."""
         return self.budget + MARGIN
 
-    def wait_cancelled(self, child, pid):
-        """Observe the cancelled wrapper and gate within one shared allowance."""
-        deadline = time.monotonic() + self.settle_timeout
+    def evidence(self, log):
+        """Collect the child's own log and every gate attempt log for a failure.
+
+        The gate supervisor's refusals reach only the attempt log, so a wrapper
+        log alone cannot tell which layer ended a cancellation (SH-767).
+        """
+        parts = []
+        if log is not None:
+            # pread leaves the child's shared log offset untouched.
+            parts.append(os.pread(log.fileno(), os.fstat(log.fileno()).st_size, 0).decode(errors="replace"))
+        logs = self.common / "storyhook/verification-logs" if self.common else None
+        if logs is not None and logs.is_dir():
+            for path in sorted(logs.glob("pr-1-*-attempt.*")):
+                if not path.name.endswith(".jsonl"):
+                    parts.append(f"--- {path}\n{path.read_text(errors='replace')}")
+        return "\n".join(parts)
+
+    def settle_failure(self, reason, log, started, allowance):
+        """Fail a settlement wait with its timing, load and explaining logs."""
+        elapsed = time.monotonic() - started
+        self.fail(f"{reason}: elapsed={elapsed:.3f}s allowance={allowance}s "
+                  f"load={os.getloadavg()}\n{self.evidence(log)}")
+
+    def session_pids(self, sid):
+        """List live members of one recorded session, independently of the owner."""
+        result = subprocess.run(["ps", "-axo", "pid=,stat="], capture_output=True, text=True, check=True)
+        members = []
+        for line in result.stdout.splitlines():
+            pid_text, state = line.split(maxsplit=1)
+            try:
+                if not state.startswith("Z") and os.getsid(int(pid_text)) == sid:
+                    members.append(int(pid_text))
+            except ProcessLookupError:
+                continue
+        return members
+
+    def wait_cancelled(self, child, pid, log=None, sessions=lambda: ()):
+        """Observe the wrapper, gate and recorded sessions within one shared allowance.
+
+        A wrapper that ended its lifecycle supervisor early leaves that session
+        running; the record is final only once every recorded session is quiet.
+        """
+        started = time.monotonic()
+        deadline = started + self.settle_timeout
         try:
             child.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
-            self.fail(f"verifier pid={child.pid} did not finish cancellation within {self.settle_timeout}s")
+            self.settle_failure(f"verifier pid={child.pid} did not finish cancellation",
+                                log, started, self.settle_timeout)
         while True:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
+                break
+            if time.monotonic() >= deadline:
+                self.settle_failure(f"gate session pid={pid} survived cancellation",
+                                    log, started, self.settle_timeout)
+            time.sleep(POLL_INTERVAL)
+        while True:
+            members = [member for sid in sessions() for member in self.session_pids(sid)]
+            if not members:
                 return
             if time.monotonic() >= deadline:
-                self.fail(f"gate session pid={pid} survived cancellation within {self.settle_timeout}s")
+                self.settle_failure(f"recorded sessions still have members {members}",
+                                    log, started, self.settle_timeout)
             time.sleep(POLL_INTERVAL)
+
+    def wait_settled(self, child, log):
+        """Wait one settlement allowance for a supervised child, failing with evidence."""
+        started = time.monotonic()
+        try:
+            return child.wait(timeout=self.settle_timeout)
+        except subprocess.TimeoutExpired:
+            self.settle_failure(f"child pid={child.pid} did not settle", log, started, self.settle_timeout)
 
     def spawn(self, *args):
         """Own a child and regular log files so survivors cannot hold pipes open."""
@@ -383,7 +445,7 @@ class VerifierLifecycle(unittest.TestCase):
         self.assertIn("live verifier owner", result["detail"])
         self.assertEqual((self.wt / ".git").read_bytes(), pointer)
         release.touch()
-        self.assertEqual(child.wait(timeout=self.settle_timeout), 0)
+        self.assertEqual(self.wait_settled(child, log), 0)
         self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
 
     def test_killed_supervisor_cannot_reclaim_descriptor_closing_child(self):
@@ -396,7 +458,7 @@ class VerifierLifecycle(unittest.TestCase):
         pid = self.wait_pid(ready, child, log)
         self.addCleanup(lambda: self.stop_pid(pid))
         child.kill()
-        child.wait(timeout=self.settle_timeout)
+        self.wait_settled(child, log)
         result = self.ensure()
         self.assertEqual(result["result"], "infrastructure-failure")
         self.assertIn("live owner session", result["detail"])
@@ -433,7 +495,7 @@ while True:
                 pid = self.wait_pid(ready, owner, log)
                 self.addCleanup(lambda pid=pid: self.stop_pid(pid))
                 owner.send_signal(signum)
-                status = owner.wait(timeout=self.settle_timeout)
+                status = self.wait_settled(owner, log)
                 log.seek(0)
                 self.assertEqual(status, 128 + signum, log.read().decode())
                 self.assertEqual(result.read_text(), "0", "cleanup worker was cancelled directly")
@@ -478,7 +540,7 @@ while True:
                 pid = self.wait_pid(ready, owner, log)
                 self.addCleanup(lambda pid=pid: self.stop_pid(pid))
                 owner.send_signal(signum)
-                status = owner.wait(timeout=self.settle_timeout)
+                status = self.wait_settled(owner, log)
                 log.seek(0)
                 self.assertEqual(status, 128 + signum, log.read().decode())
                 self.assertEqual(result.read_text(), str(int(signum)))
@@ -516,7 +578,7 @@ while True:
         owner_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
         owner = json.loads(owner_path.read_text())
         os.killpg(owner["session"], signal.SIGKILL)
-        child.wait(timeout=self.settle_timeout)
+        self.wait_settled(child, log)
         self.assertNotEqual(child.returncode, 0)
         self.env["PATH"] = self.env["PATH"].split(":", 1)[1]
         result = self.ensure()
@@ -848,25 +910,30 @@ while True:
         if descendant:
             descendant_pid = self.wait_pid(Path(str(ready) + ".child"), child, log)
         os.killpg(child.pid, signal.SIGTERM)
-        self.wait_cancelled(child, pid)
+
+        def recorded_sessions():
+            owner = json.loads(owner_path.read_text())
+            return {owner.get("session"), owner.get("gate_session")} - {None}
+        self.wait_cancelled(child, pid, log, recorded_sessions)
+        evidence = self.evidence(log)
         if not resistant:
-            self.assertTrue(terminated.exists(), "TERM never reached the supervised gate")
+            self.assertTrue(terminated.exists(), "TERM never reached the supervised gate\n" + evidence)
         owner = json.loads(owner_path.read_text())
-        self.assertFalse(owner["gate_started"], owner)
-        self.assertIsNone(owner["gate_session"], owner)
+        self.assertFalse(owner["gate_started"], f"{owner}\n{evidence}")
+        self.assertIsNone(owner["gate_session"], f"{owner}\n{evidence}")
         if descendant:
-            with self.assertRaises(ProcessLookupError):
-                os.kill(descendant_pid, 0)
+            # A killed descendant may still await its reaper as a zombie.
+            self.assertGone(descendant_pid)
         if damage:
             # Tracked evidence must survive even when restoration cannot succeed.
             retained = list(self.wt.parent.glob("verification-recovery-*/worktree/f"))
-            self.assertEqual(len(retained), 1)
+            self.assertEqual(len(retained), 1, evidence)
             self.assertEqual(retained[0].read_text(), "gate evidence")
             self.assertTrue((retained[0].parent.parent / "lease").is_dir())
         else:
-            self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), self.base)
-            self.assertEqual(self.git("status", "--porcelain", cwd=self.wt), "")
-            self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+            self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), self.base, evidence)
+            self.assertEqual(self.git("status", "--porcelain", cwd=self.wt), "", evidence)
+            self.assertEqual(self.ensure()["result"], "verifier-worktree-ready", evidence)
 
     def test_outer_cancellation_reaches_cooperative_gate_and_restores(self):
         """The same process-group signal Rust sends reaches nested sessions."""
@@ -945,7 +1012,7 @@ while True:
         child, log = self.spawn("python3", str(bootstrap))
         pid = self.wait_pid(ready, child, log)
         self.addCleanup(lambda: self.stop_pid(pid))
-        child.wait(timeout=self.settle_timeout)
+        self.wait_settled(child, log)
         log.seek(0)
         self.assertTrue(terminated.exists(), log.read().decode())
         owner_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
@@ -1160,32 +1227,38 @@ while True:
         orphan = self.root / "orphan-pid"
         leader = self.root / "leader-pid"
         tree = self.git("merge-tree", "--write-tree", self.base, self.head)
-        # The verdict is read apart from the gate's own noise; the orphan's
-        # stdio goes to the attempt log, so a regular file is enough here.
+        # The verdict is read apart from the gate's own noise, which is kept
+        # as failure evidence; the orphan's stdio goes to the attempt log, so
+        # regular files are enough here.
         verdict_file = tempfile.TemporaryFile()
         self.addCleanup(verdict_file.close)
+        diagnostics = tempfile.TemporaryFile()
+        self.addCleanup(diagnostics.close)
         child = subprocess.Popen(
             ["bash", str(SCRIPTS / "verify-pr.sh"), "--run-gate", "1", tree, self.base,
              self.head, str(self.wt), "--", "bash", "-c",
              "trap '' TERM; echo $$ > " + shlex.quote(str(leader)) + "; sleep 300 & echo $! > "
              + shlex.quote(str(orphan)) + "; exit 5"],
-            cwd=self.repo, env=self.env, stdout=verdict_file, stderr=subprocess.DEVNULL)
+            cwd=self.repo, env=self.env, stdout=verdict_file, stderr=diagnostics)
         self.addCleanup(child.wait, timeout=MILESTONE_DEADLINE)
         self.addCleanup(lambda: child.poll() is None and child.kill())
-        orphan_pid = self.wait_pid(orphan, child, verdict_file)
+        orphan_pid = self.wait_pid(orphan, child, diagnostics)
         self.addCleanup(lambda: self.stop_pid(orphan_pid))
-        leader_pid = self.wait_pid(leader, child, verdict_file)
+        leader_pid = self.wait_pid(leader, child, diagnostics)
         # A reaping poll also shows a zombie for one tick; the pin is that
         # the zombie outlives the TERM-resistant orphan's whole grace, which
         # is a quarter of the budget for the gate session (SH-686).
         zombie_seen = []
-        deadline = time.monotonic() + self.settle_timeout
+        started = time.monotonic()
+        deadline = started + self.settle_timeout
         while child.poll() is None:
-            self.assertLess(time.monotonic(), deadline, "supervisor did not settle the exited leader")
+            if time.monotonic() >= deadline:
+                self.settle_failure("supervisor did not settle the exited leader",
+                                    diagnostics, started, self.settle_timeout)
             if self.process_state(leader_pid).startswith("Z"):
                 zombie_seen.append(time.monotonic())
             time.sleep(.01)
-        self.assertEqual(child.returncode, 0)
+        self.assertEqual(child.returncode, 0, self.evidence(diagnostics))
         self.assertTrue(zombie_seen, "the exited leader was never observed as a zombie")
         self.assertGreaterEqual(zombie_seen[-1] - zombie_seen[0], self.budget / 4 / 2,
                                 "the exited leader was reaped before its session settled")
@@ -1380,6 +1453,50 @@ class HarnessObservation(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "gate session pid=23456 survived"):
                 self.harness.wait_cancelled(child, 23456)
         self.assertEqual(now[0], self.harness.settle_timeout)
+
+    def test_settle_failure_carries_wrapper_and_attempt_logs(self):
+        """A settle timeout names every log that could explain it (SH-767)."""
+        self.harness.common = self.root / "common"
+        attempts = self.harness.common / "storyhook/verification-logs"
+        attempts.mkdir(parents=True)
+        (attempts / "pr-1-tree-attempt.abc").write_text("attempt evidence")
+        (attempts / "pr-1-tree-attempt.abc.compiler.jsonl").write_text("compiler noise")
+        child = mock.Mock(pid=12345)
+        child.wait.side_effect = subprocess.TimeoutExpired("fixture", self.harness.settle_timeout)
+        with tempfile.TemporaryFile() as log:
+            log.write(b"wrapper evidence")
+            log.flush()
+            with self.assertRaisesRegex(AssertionError, "did not settle") as failure:
+                self.harness.wait_settled(child, log)
+        for evidence in ("12345", "wrapper evidence", "attempt evidence",
+                         "allowance=" + str(self.harness.settle_timeout), "load="):
+            self.assertIn(evidence, str(failure.exception))
+        self.assertNotIn("compiler noise", str(failure.exception))
+
+    def test_cancellation_waits_for_recorded_sessions_on_the_same_deadline(self):
+        """A record is read only after its sessions are quiet, within one allowance."""
+        self.harness.set_cleanup_budget("8000")
+        for quiet_after in (2, None):
+            with self.subTest(quiet_after=quiet_after):
+                child = mock.Mock(pid=12345)
+                now = [0]
+                censuses = []
+
+                def census(sid):
+                    censuses.append(sid)
+                    return [] if quiet_after and len(censuses) >= quiet_after else [34567]
+
+                with mock.patch.object(time, "monotonic", side_effect=lambda: now[0]), \
+                     mock.patch.object(time, "sleep", side_effect=lambda period: now.__setitem__(0, now[0] + period)), \
+                     mock.patch.object(os, "kill", side_effect=ProcessLookupError), \
+                     mock.patch.object(self.harness, "session_pids", side_effect=census):
+                    if quiet_after:
+                        self.harness.wait_cancelled(child, 23456, sessions=lambda: {45678})
+                        self.assertEqual(censuses, [45678] * quiet_after)
+                    else:
+                        with self.assertRaisesRegex(AssertionError, r"recorded sessions still have members \[34567\]"):
+                            self.harness.wait_cancelled(child, 23456, sessions=lambda: {45678})
+                        self.assertGreaterEqual(now[0], self.harness.settle_timeout)
 
     def test_spawn_cleanup_keeps_the_budget_given_to_that_child(self):
         """Changing the next fixture input cannot tighten an existing cleanup."""
