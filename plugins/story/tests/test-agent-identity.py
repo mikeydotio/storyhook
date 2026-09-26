@@ -18,36 +18,14 @@ OPTION = "@storyhook-identity-v1"
 
 
 class AgentIdentityTests(unittest.TestCase):
-    """Native fixture providers only record bytes; all routing is production code."""
+    """Native fixture providers record bytes and draw a composer; all routing is production code."""
 
     @classmethod
     def setUpClass(cls):
-        """Compile a byte recorder with a real provider executable identity."""
+        """Compile the composer-drawing byte recorder as both provider executables."""
         cls.tools = tempfile.TemporaryDirectory(prefix="story-identity-tools-", dir="/tmp")
         cls.bin = Path(cls.tools.name)
-        source = cls.bin / "provider.c"
-        source.write_text(r'''
-#include <fcntl.h>
-#include <stdio.h>
-#include <termios.h>
-#include <unistd.h>
-int main(int argc, char **argv) {
-    if (argc != 2) return 2;
-    struct termios tty;
-    if (tcgetattr(0, &tty) != 0) return 3;
-    cfmakeraw(&tty);
-    if (tcsetattr(0, TCSANOW, &tty) != 0) return 4;
-    if (write(1, "\033[?2004h", 8) != 8) return 8;
-    int fd = open(argv[1], O_WRONLY | O_CREAT | O_APPEND, 0600);
-    if (fd < 0) return 5;
-    if (write(fd, "READY\n", 6) != 6) return 6;
-    char bytes[4096];
-    ssize_t n;
-    while ((n = read(0, bytes, sizeof(bytes))) > 0)
-        if (write(fd, bytes, (size_t)n) != n) return 7;
-    return 0;
-}
-''')
+        source = PLUGIN / "tests/fakes/composer-provider.c"
         subprocess.run(["cc", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(cls.bin / "codex")], check=True)
         shutil.copy2(cls.bin / "codex", cls.bin / "claude")
         repo = PLUGIN.parents[1]
@@ -138,10 +116,18 @@ int main(int argc, char **argv) {
                 self.fail(f"timeout waiting for {description}")
             time.sleep(0.01)
 
-    def launch(self, provider="codex", worktree=None, name="TST-1", split=False):
-        """Start a direct provider executable and wait for its input recorder."""
+    def launch(self, provider="codex", worktree=None, name="TST-1", split=False, screen=None):
+        """Start a direct provider executable and wait for its input recorder.
+
+        `screen` is drawn in place of the idle composer (a dialog or a ghost
+        suggestion); the recorder draws it before it signals readiness.
+        """
         output = self.root / f"input-{time.monotonic_ns()}"
         command = f"{shlex.quote(str(self.bin / provider))} {shlex.quote(str(output))}"
+        if screen is not None:
+            screen_file = self.root / f"screen-{time.monotonic_ns()}"
+            screen_file.write_bytes(screen)
+            command += f" {shlex.quote(str(screen_file))}"
         if split:
             args = ["split-window", "-d", "-t", self.pane]
         else:
@@ -276,12 +262,12 @@ int main(int argc, char **argv) {
         self.assertFalse(result["ok"], result)
         self.assertEqual(self.inputs[self.pane].read_bytes(), before)
 
-    def register(self, pane=None):
+    def register(self, pane=None, provider="codex"):
         """Call the production registration boundary used by managed dispatch."""
         pane = pane or self.pane
         pid = self.tmux("display-message", "-p", "-t", pane, "#{pane_pid}").strip()
         result = self.run_command(["python3", str(IDENTITY), "register", self.project, "TST-1",
-                                   "TST-1", str(self.worktree), pane, pid, "codex"])
+                                   "TST-1", str(self.worktree), pane, pid, provider])
         return json.loads(result.stdout)
 
     def test_managed_registration_binds_the_exact_pane(self):
