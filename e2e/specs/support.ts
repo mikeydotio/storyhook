@@ -1,7 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { expect as baseExpect, test as base } from "@playwright/test";
-import { BlockDeliveryBarrier, readBlockDeliverySnapshot } from "../block-delivery-barrier.cjs";
+import {
+  BlockDeliveryBarrier,
+  readBlockDeliverySnapshot,
+  SnapshotReadTimeout,
+} from "../block-delivery-barrier.cjs";
 import type {
   APIRequestContext,
   APIResponse,
@@ -13,7 +17,9 @@ import type {
   Route,
 } from "@playwright/test";
 import {
+  BASE_EXPECT_TIMEOUT_MS,
   contention,
+  gracedPatience,
   loadGraceEnabled,
   MAX_TEST_TIMEOUT_MS,
   resetTestBudget,
@@ -1410,13 +1416,64 @@ export async function storiesInProject(
 const fixtureBaselines = new Map<string, Set<string>>();
 
 /** Wait for every real delivery to settle before issuing a cleanup mutation.
- * A completed move is not a completed notification. The normal assertion
- * deadline bounds this read-only wait; DELETE is sent once, after the barrier. */
-export async function waitForStoryBlockDeliveries(project: string, id: string): Promise<void> {
+ * A completed move is not a completed notification. DELETE is sent once,
+ * after the barrier.
+ *
+ * One budget bounds the wait and every python3 read inside it (SH-765): each
+ * read gets only what remains of `patienceMs`, so a slow start can neither end
+ * the wait early nor outlive it. By default the patience is sampled when the
+ * wait begins ({@link gracedPatience}). A read that the bound kills ends the
+ * wait, because the bound was all the patience that remained. */
+export async function waitForStoryBlockDeliveries(
+  project: string,
+  id: string,
+  patienceMs?: number,
+): Promise<void> {
   const storePath = requiredEnv("STORYHOOK_STORE_PATH");
+  const ratio = contention();
+  const patience = patienceMs ?? gracedPatience(ratio);
+  if (patienceMs === undefined && patience > BASE_EXPECT_TIMEOUT_MS) {
+    // Grace nobody can see is the SH-306 shape (see the loadGrace watchdog).
+    const line =
+      `load-grace: cleanup barrier for ${project}/${id} waits up to ${patience}ms ` +
+      `(contention=${ratio.toFixed(2)}, base=${BASE_EXPECT_TIMEOUT_MS}ms)`;
+    process.stderr.write(`${line}\n`);
+    test.info().annotations.push({ type: "load-grace", description: line });
+  }
   const barrier = new BlockDeliveryBarrier(project, id);
-  await expect.poll(() => barrier.observe(readBlockDeliverySnapshot(storePath, project, id)), {
+  const deadline = performance.now() + patience;
+  let outstanding: string[] | null = null;
+  const outOfPatience = (detail: string, cause?: unknown) => new Error(
+    `cleanup barrier: the wait for ${project}/${id}'s block deliveries ran out of its ` +
+      `${patience}ms patience (contention=${ratio.toFixed(2)} when it began) ${detail}. ` +
+      "No DELETE was sent.",
+    { cause },
+  );
+  // The wait owns its deadline. `timeout: 0` leaves the poll bounded only by
+  // the test's own deadline (`deadlineForMatcher`, Playwright 1.63), so the
+  // error below, with its context, is what reports a spent patience -- not a
+  // generic poll timeout that races the killed read's rejection.
+  await expect.poll(async () => {
+    const remainingMs = Math.floor(deadline - performance.now());
+    if (remainingMs < 1) {
+      throw outOfPatience(
+        outstanding === null
+          ? "before any snapshot read finished"
+          : `with deliveries still outstanding: ${outstanding.join(", ")}`,
+      );
+    }
+    let snapshot;
+    try {
+      snapshot = await readBlockDeliverySnapshot(storePath, project, id, remainingMs);
+    } catch (error) {
+      if (!(error instanceof SnapshotReadTimeout)) throw error;
+      throw outOfPatience(`while a snapshot read was still running (its bound was ${error.boundMs}ms)`, error);
+    }
+    outstanding = barrier.observe(snapshot);
+    return outstanding;
+  }, {
     message: `cleanup waits for durable block-delivery completion for ${project}/${id}`,
+    timeout: 0,
   }).toEqual([]);
 }
 
@@ -1464,13 +1521,15 @@ export function cleanUpCreatedStories(projectName: string): void {
 /**
  * Deletes, through the API, every story in `projectName` that `baseline`
  * does not name, each one only after its block-delivery barrier opens
- * ({@link waitForStoryBlockDeliveries}). Throws, naming every refusal, when a
+ * ({@link waitForStoryBlockDeliveries}, with `patienceMs` for each barrier;
+ * sampled per barrier when omitted). Throws, naming every refusal, when a
  * full pass removes nothing while strays remain.
  */
 export async function removeStrays(
   request: APIRequestContext,
   projectName: string,
   baseline: ReadonlySet<string>,
+  patienceMs?: number,
 ): Promise<void> {
   const slug = await projectSlug(request, projectName);
   // `X-Storyhook` as well as the token: a mutation also has to clear
@@ -1507,7 +1566,7 @@ export async function removeStrays(
     const before = remaining.length;
     refusals = [];
     for (const story of remaining) {
-      await waitForStoryBlockDeliveries(slug, story.id);
+      await waitForStoryBlockDeliveries(slug, story.id, patienceMs);
       const deleted = await request.delete(storyUrl(story.id), {
         headers,
         data: { force: true },
