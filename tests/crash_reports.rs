@@ -10,10 +10,11 @@
 
 use std::path::Path;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook::daemon::crash::{self, CrashClassification, FiledOutcome};
 use storyhook::daemon::lifecycle;
+use storyhook_test_support::load_grace::{self, Patience};
 use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, scratch_dir};
 
 /// Stops whatever daemon `env` is running, even if the test panics first.
@@ -25,16 +26,21 @@ impl Drop for DaemonGuard<'_> {
     }
 }
 
+/// How long [`wait_for`] waits before contention grace.
+///
+/// Every condition it awaits is work a live daemon finishes in milliseconds
+/// (publishing its portfile, releasing its pidfile, filing crashes), so this
+/// tells "slow" from "never". It is patience, graced by contention (SH-806).
+const PATIENCE: Duration = Duration::from_secs(5);
+
 /// Blocks until `ready`, or fails the test.
 fn wait_for(what: &str, ready: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if ready() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    panic!("timed out waiting for {what}");
+    load_grace::wait_for(
+        Patience::new(PATIENCE),
+        Duration::from_millis(25),
+        || format!("timed out waiting for {what}"),
+        || ready().then_some(()),
+    );
 }
 
 /// Registers storyhook's own project — the one `crash::file_pending` targets

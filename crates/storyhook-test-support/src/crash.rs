@@ -253,8 +253,9 @@ pub fn crash_the_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint, args: &[&s
 /// than picked (SH-394); which phase was reached is still said on the way out.
 fn wait_until_serving(env: &TestEnv, armed: &mut ChildGuard, point: FaultPoint) {
     let pid = armed.pid();
-    let bound = PORTFILE_DEADLINE + ACCEPT_DEADLINE;
-    let give_up_at = Instant::now() + bound;
+    // Patience, graced by contention (SH-806); an early death is still
+    // reported at once, above every other outcome.
+    let mut patience = crate::load_grace::Patience::new(PORTFILE_DEADLINE + ACCEPT_DEADLINE);
     loop {
         if let Some(status) = armed.try_wait() {
             panic!("{}", died_before_serving(env, point, status));
@@ -267,8 +268,8 @@ fn wait_until_serving(env: &TestEnv, armed: &mut ChildGuard, point: FaultPoint) 
             return;
         }
         assert!(
-            Instant::now() < give_up_at,
-            "the daemon this test armed (pid {pid}) is alive but not serving after {bound:?}: \
+            !patience.expired(),
+            "the daemon this test armed (pid {pid}) is alive but not serving ({patience}): \
              {}. This is a 'never', not a 'slow' — `port_of` and `wait_for_addr` document \
              the two bounds this is the sum of, and what has ever tripped them.\narmed daemon \
              stderr (last {STDERR_TAIL_LINES} lines):\n{}",
