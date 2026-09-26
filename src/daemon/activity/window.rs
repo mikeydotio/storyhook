@@ -32,8 +32,25 @@ const VIEW_PROGRAM: &str = concat!(
 /// The reconcile child is journaled only when it fails (SH-761): it runs
 /// every [`RECONCILE_INTERVAL`] under the project's own journal scope, so
 /// announcing each success would fill the window it exists to keep alive.
+///
+/// The view only locks and reads the journal directory. This function
+/// prepares it first, ignore file included, so the daemon is its only
+/// creator on this path (SH-771).
 pub(crate) fn open(env: &Environment, project: &str, directory: &Path) {
     if !env.verifier_mirror_enabled() {
+        return;
+    }
+    if let Err(error) = super::ignore::prepare(directory) {
+        super::emit(
+            "WARN",
+            "tmux",
+            "event",
+            "",
+            &format!(
+                "project {project} verification view unavailable: journal {} cannot be prepared: {error}",
+                directory.display()
+            ),
+        );
         return;
     }
     let result = (|| -> Result<(), String> {

@@ -73,7 +73,11 @@ def reconcile(session, directory, binary):
     if os.environ.get("STORYHOOK_VERIFIER_MIRROR") == "0":
         return
     directory = Path(directory).resolve()
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # SH-771: the daemon owns the journal directory and prepares it, ignore
+    # file first, before it runs this view (src/daemon/activity/window.rs).
+    # A directory created here would hold .view.lock where git can see it.
+    if not directory.is_dir():
+        raise RuntimeError(f"journal directory {directory} is absent; the daemon prepares it first")
     owner = hashlib.sha256(os.fsencode(directory)).hexdigest()
     fd = os.open(directory / ".view.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "wb") as lock:
