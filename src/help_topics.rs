@@ -1769,12 +1769,18 @@ When to use:
   only for something that isn't a story — an external dependency, a
   pending decision, waiting on a person.
 
+  For a story you have not filed yet, do not file it and then block
+  it: that is two writes, and a Full Auto run can claim the story
+  between them. File it blocked instead:
+    story new "<title>" --blocked-by <blocker>
+
 Examples:
   story block SH-3 --on SH-9
   story block SH-3 --on SH-9 "needs SH-9's API before this can start"
   story block SH-7 "needs design review"
 
 Related:
+  story new --blocked-by <id>   — File a new story already blocked
   story unblock <id>            — Clear the blocked status
   story relate <a> blocked-by <b>
                                  — Add the edge without touching the reason

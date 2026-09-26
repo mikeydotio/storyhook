@@ -37,6 +37,8 @@ structured question mechanism when available. Useful dimensions:
 - **Acceptance** — for a bug: expected vs. actual, plus repro steps and the last
   known good state. For a feature: the observable outcome that means "done".
 - **Priority** — only if the user signalled urgency.
+- **Blockers** — whether it must wait on another story. A named blocker is
+  filed with the story (§7), never added afterwards.
 
 Read `story help complexity-rubric` and assess the reasoning the work needs.
 Omitted complexity is medium, unassessed. Pass an explicit value when assessed.
@@ -89,8 +91,14 @@ otherwise a temp file.
 bash "<story-helper>" create \
   --title "<title>" \
   --description-file <path> \
-  [--type <slug>] [--priority <level>] [--complexity low|medium|high] [--label <csv>]
+  [--type <slug>] [--priority <level>] [--complexity low|medium|high] [--label <csv>] \
+  [--blocked-by <id> ...]
 ```
+
+If the story must wait on another story, pass `--blocked-by <id>` (repeat it
+for each blocker). The helper then writes the `blocked-by` edge together with
+the story. Filing first and relating afterwards is two writes, and a Full Auto
+run can claim the story — and dispatch an agent to it — between them.
 
 `<csv>` means comma-separated: `--label backend,api` files two labels,
 `backend` and `api`. Comma is always the label delimiter — a single label can
@@ -112,6 +120,9 @@ duplicate story; there is no idempotency key to protect you.
 
 ## 9. Relate (only if asked)
 
-If the user described a dependency ("blocked by X", "part of epic Y"), say which
-relation you'd add and offer it as a follow-up. Relationship edits are
-the `story-triage` workflow's job, not this flow's.
+A blocker is never a follow-up: "blocked by X" goes into §7 as
+`--blocked-by X`. For any other relation the user described ("part of epic Y",
+"relates to Z"), say which relation you'd add and offer it as a follow-up.
+Those edges do not change whether the story is ready, so they may come after
+filing; relationship edits are the `story-triage` workflow's job, not this
+flow's.

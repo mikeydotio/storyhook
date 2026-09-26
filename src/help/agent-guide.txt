@@ -47,6 +47,10 @@ Write with care
   fields. Its --json <object> is input; a separate --json requests JSON output.
 - story block <id> --on <blocker-id> "reason" records a dependency. A reason
   without --on does not clear itself when another story closes.
+- To file a new story that must wait on another, name the blocker when you
+  file it: story new "<title>" --blocked-by <blocker-id>. The edge is written
+  with the story. Filing it and then running story relate or story block is
+  two writes, and a Full Auto run can claim the story between them.
 - Commands that need confirmation cannot prompt with --json or without a
   terminal. Inspect the target and use the documented explicit flags only
   when you intend the operation. --json is not permission to delete.
