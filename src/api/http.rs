@@ -718,6 +718,34 @@ pub fn get_str_array(obj: &serde_json::Map<String, serde_json::Value>, key: &str
         .unwrap_or_default()
 }
 
+/// Reads an optional array of strings, refusing any other shape.
+///
+/// Absent or `null` reads as an empty list. Unlike [`get_str_array`], a value
+/// of the wrong type — a bare string, a number, an array holding anything but
+/// strings — is a usage error rather than silently dropped. For a field whose
+/// omission changes what gets written (`blocked_by` on story creation,
+/// SH-779), dropping it would report success for a write the caller did not
+/// ask for.
+///
+/// # Errors
+///
+/// [`AppError::Usage`] naming `key` when the value is present, not `null`, and
+/// not an array of strings.
+pub fn get_strict_str_array(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<Vec<String>, AppError> {
+    let wrong_shape = || AppError::Usage(format!("`{key}` must be an array of strings"));
+    match obj.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|item| item.as_str().map(str::to_string).ok_or_else(wrong_shape))
+            .collect(),
+        Some(_) => Err(wrong_shape()),
+    }
+}
+
 /// Serializes `value` as the body of a JSON reply, turning a serialization
 /// failure into an application error rather than a panic.
 pub fn to_json(value: &impl serde::Serialize) -> Result<String, AppError> {
