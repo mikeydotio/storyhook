@@ -312,8 +312,16 @@ delete_merged_local_branch() {
 # no \x escapes (SH-694).
 COMPOSER_DECORATION_EXPR="s/$(printf '\342')[$(printf '\240')-$(printf '\243')][$(printf '\200')-$(printf '\277')]//g"
 
+# COMPOSER_PADDING_EXPR — a sed expression turning U+00A0 NO-BREAK SPACE (the
+# UTF-8 bytes C2 A0) into a plain space, under LC_ALL=C for the same reasons.
+# Claude Code pads its prompt glyph with NBSP (`❯` C2 A0, recorded 2026-09-26),
+# and [:space:] does not match those bytes in the C locale, so an idle composer
+# read as "text" wherever the daemon had no UTF-8 locale (SH-780).
+COMPOSER_PADDING_EXPR="s/$(printf '\302\240')/ /g"
+
 # strip_composer_decoration <text> — echo <text> with every Braille Patterns
-# character removed. Codex 0.154.0 animates the idle composer of an Astra model
+# character removed and every NBSP turned into a space (see the two
+# expressions above). Codex 0.154.0 animates the idle composer of an Astra model
 # with a Braille "sparkle" — dots before AND after the placeholder, redrawn every
 # 150ms for the whole idle period — and the row that carries it is the very row
 # input_state reads to confirm a submission cleared the box; undecorated, it is
@@ -326,7 +334,7 @@ COMPOSER_DECORATION_EXPR="s/$(printf '\342')[$(printf '\240')-$(printf '\243')][
 # widened to "contains the placeholder": a real draft can contain those words,
 # and reading it as empty would report a never-submitted prompt as submitted.
 strip_composer_decoration() {
-  printf '%s' "$1" | LC_ALL=C sed -E "$COMPOSER_DECORATION_EXPR"
+  printf '%s' "$1" | LC_ALL=C sed -E -e "$COMPOSER_DECORATION_EXPR" -e "$COMPOSER_PADDING_EXPR"
 }
 
 # input_box_text <content> — echo the trailing text of the ACTIVE input row (the
