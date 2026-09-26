@@ -66,11 +66,12 @@ repeated here so a reader does not have to open eight stories to see why.
 | D-B | **Per-project queue and locks; cross-project suites may overlap.** Lock key = the canonical git common dir, hashed into the lock name, so every worktree of one clone still serializes with that clone's verifier and a different repository does not. One verifier worker per project, each with its own ordering, incident halt and conflict hold. | User determination: "project-wide (not machine-wide)". Trade-off stated, not hidden: two projects' suites now contend for CPU on one machine; SH-627's quiesce rule still governs the release tier; no machine-wide cap (YAGNI — D14's lane budget bounds agents). | SH-648 | done — see "SH-648" under As built |
 | D-C | **The user-level push hook delegates** to repositories whose `core.hooksPath` names a tracked `pre-push`. | The PreToolUse hook `~/.claude/hooks/pre-push-tests.sh` ran `make test` on every agent push under an 840s budget and waited on the verifier's own `gate` lock (628s measured on SH-640, budget breached, `SKIP_PREPUSH_TESTS=1` reached for). Deleting the hook was rejected at that time: other projects had no gate of their own. | SH-681 corrected ownership: canonical source is Agentics `hooks/pre-push-tests.sh`; the original live delegation patch affected Claude only. See the evidence and subsequent retirement under As built. | superseded by SH-682 / AGE-102 retirement; SH-681 repair archived |
 | D-D | **The gate command lives in `.storyhook.toml` `[verify] gate`**, default `make test` when absent; a value that is not a plain argv is refused by name (the SH-357 rule). | A fact about the checkout, versioned with the Makefile it names, belongs in the repository rather than in store settings. E2E stays off the verification allowlist; a project that wants the browser tier names `make test-full` as its gate. | SH-649 | done — see "SH-649" under As built for the receipt contract this put on the value |
-| D-E | **A dead pane triggers a resume re-dispatch, never parking.** On a notify refusal the verifier dispatches the same story with the resume clause into the same window name and worktree, then delivers the diagnosis as the first turn; `awaiting` is set only if the re-dispatch itself is refused. The conflict hold applies unconditionally. | Step 4a says the same window. Parking classifies as `AgentBlocked` under Full Auto and strikes the breaker for what is ordinary remediation. | SH-650 | done — see "As built — SH-650" for what "a notify refusal" and "unconditionally" turned out to mean |
+| D-E | **A dead pane triggers a resume re-dispatch, never parking.** On a notify refusal the verifier dispatches the same story with the resume clause into the same window name and worktree, then delivers the diagnosis as the first turn; `awaiting` is set only if the re-dispatch itself is refused. The conflict hold applies unconditionally. | Step 4a says the same window. Parking classifies as `AgentBlocked` under Full Auto and strikes the breaker for what is ordinary remediation. | SH-650 | done — see "As built — SH-650" for what "a notify refusal" and "unconditionally" turned out to mean; "unconditionally" governs delivery only, and D-J bounds the hold that follows |
 | D-F | **Queue age is `verifying_since`**: priority → `verifying_since` → project slug → story id. | At equal priority an old story resubmitted repeatedly permanently outranks a newer one that has waited longer; `verifying_since` is already the documented honest queue-wait fact (SH-524) and is the only one that resets on resubmission. | SH-651 | done — see "SH-651" under As built |
 | D-G | **One completion-state resolver** in `src/service` (first CLOSED state, `STORY_DONE_STATE` override) used by the verifier, the template renderer and the helper. | Three spellings of one fact disagree by construction today; a project whose first CLOSED state is not `done` lands every green story, writes `done`, and then fails reap on every attempt, forever, loudly. | SH-652 | done — **built with different semantics**: the resolver is `domain::completion_state`, answering the required `done`, never the first CLOSED state, and `STORY_DONE_STATE` is refused rather than honoured; a council decision recorded on the story (`story show SH-652`) and under As built |
 | D-H | **`story cleanup` is subordinated to the verifier.** It may touch only a worktree whose story is CLOSED and carries the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED marker (the retry path, never an independent one); it never deletes a remote branch `land-pr.sh` has not already removed; `--dry-run` says what it declined and why. | Step 4b names one reaper. A second, state-blind one with wider authority and no lease is exactly the kind of "two answers from one fact" this project has paid for (SH-136, SH-263). | SH-653 | done — see "SH-653" under As built for the generation the marker is read from, and for the remote branch leaving cleanup's scope entirely |
 | D-I | **The base is asked of origin, and landing checks it.** The branch a story PR is opened against, dispatched from, reaped against and landed on is origin's own advertised default (`git ls-remote --symref origin HEAD`), never the local `origin/HEAD` cache alone and never a literal; an origin that cannot say is a refusal by name, not a guess. `verify-pr.sh` and `land-pr.sh` each check the PR's base against that answer, independently; `land-pr.sh --base <branch>` is the only way to land elsewhere and `release.sh` states it. | Five story PRs opened against `main` by a stale cache and a `main` literal were certified, merged and closed as green, and the divergence was found by hand (SH-306's shape one layer over: the check that never ran). SH-136: the cache is a copy of a fact with an authority. SH-372/SH-394: absence and a literal are not answers. Rejected: refreshing the cache with `set-head -a` (a second copy, and a race on a shared ref); a project setting (a copy that drifts); `gh repo view` (GitHub-only). | SH-691 | done — see "SH-691" under As built |
+| D-J | **A conflict hold lasts only while the reconcile can still end in a resubmission.** Each pass releases the queue when the returned story is blocked (`awaiting`, an open `blocked-by`, or the `blocked` state) or has left `in-progress` for a state other than `verifying`. Once per `RECOVERY_WAKE` it probes the story's agent pane on the tmux server its lease records, and releases after two `Gone` probes in a row, or when the story's change feed and the pane's output have both been silent past `STALL_CEILING_SECS` (the engine's own two-channel predicate). With no pane evidence — no lease, or no answer — store silence alone decides at the same ceiling. A release comments the cause and journals it; it never sets `awaiting` and never re-dispatches. | A false release costs one story its reservation: it rejoins the queue in priority order when it resubmits and may conflict again. A false hold blocks the project's whole queue until a person stops the verifier; the Full Auto watchdog's `awaiting` was ignored, and a manual dispatch had no watcher at all. Rejected: a fixed age T (no T can be derived: a live reconcile runs tests of any length, SH-394); liveness alone (a live pane idle at a prompt or a dialog is static for hours, SH-657); status only (a human-gated release of a whole queue). Setting `awaiting` would reclassify a cheap false release as `AgentBlocked` and strike the breaker; a second re-dispatch after D-E's one is a retry loop. Stated limits: a manual or Codex dispatch does not export the tool ceiling, and an agent whose turn ended while a background test runs is silent on both channels, so either can be released while it works — the cost is a requeue. Council decision D1 on SH-770 (unanimous). | SH-770 | done — see "SH-770" under As built |
 
 A child that lands updates its row's status and adds an entry under "As
 built" below. A child that deviates from its row records the deviation there
@@ -263,6 +264,25 @@ live Full Auto lane holds is re-dispatched as that lane (the run's provider
 options and `--full-auto`); see `resume_plan`. Remediation then counts as
 started, so the reservation is kept exactly as after a delivered paste
 (`a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue`).
+
+**The hold ends when the reconcile has stopped** (D-J, SH-770).
+`wait_for_reconciled_candidate` reads the story's queued generation and its
+own facts in one store transaction on every pass (`VerificationQueue::hold_view`).
+A newer generation always wins. Otherwise the hold releases when the story is
+blocked — the agent's `story block`, the Full Auto watchdog's quarantine, an
+open `blocked-by` (a deadlock when the blocker waits behind the hold) or the
+`blocked` state — or has left `in-progress` for any state but `verifying`.
+Once per `RECOVERY_WAKE`, and never on a pass or a wake, it asks the actuator
+whether the agent still runs (`probe_agent`: one `tmux list-panes` on the
+server the story's lease records, for the windows named for the story). Two
+`Gone` probes in a row release it; so does silence on both the story's change
+feed and the pane's output past `STALL_CEILING_SECS`, judged by the engine's
+`silent_on_both_channels`. With no pane evidence the store's silence alone
+decides at the same ceiling. A probe's verdict is judged on a fresh pass, so a
+resubmission that landed while tmux answered wins. On release the worker
+comments `CENTRAL VERIFICATION HOLD RELEASED —` with the cause and the returned
+generation, journals it, and serves the queue; when the story resubmits later
+it is an ordinary queue member.
 
 **Only a refusal that is not absence, or a refused re-dispatch, parks.**
 `return_for_repair` then falls back to `set_generation_awaiting` naming the
@@ -687,7 +707,8 @@ one other story with a PR in `verifying`, moshtail's MT-12 reservation
 (v3.0.3) journaled 302, 1553, 983 and 946 child records a minute, against
 about 8 with the queue empty, until the reservation transferred.
 
-**A pass now reads `VerificationQueue::current_generation_for`**: the same
+**A pass now reads `VerificationQueue::current_generation_for`** (since
+SH-770, `hold_view`, which adds the story's own facts to the same read): the same
 membership (`ordered_candidates_for`), no origin resolution, and a
 generation rather than a candidate, so a pull request nobody validated never
 leaves the queue. Only when it shows a newer generation does the waiter call
@@ -709,6 +730,57 @@ test-build `git` tally in `git_env::command` — and requires both to see the
 one validation on return, so their zeros are not vacuous
 (`a_reconcile_wait_starts_no_process_until_its_story_resubmits`,
 `the_store_only_generation_read_agrees_with_the_validated_queue`).
+
+### SH-770 — a conflict hold ends when its reconcile has stopped
+
+The hold (D-E) had no deadline and no liveness check. It ended only on a
+daemon stop, `story verifier stop`, or `human-only`, so one crashed, closed
+or stalled reconcile kept the project's whole queue until a person acted.
+Confirmed on 2026-09-26: the Full Auto watchdog quarantines a stalled lane by
+setting `awaiting` on its story, and the hold ignored it. Three siblings had
+the same cause: `story block` or the `blocked` state; an open `blocked-by`
+whose blocker waited in the queue behind the hold (a deadlock); and a person
+moving the story out of `in-progress`. Manual dispatches had no watcher.
+
+What was built (D-J), in `src/daemon/verification/reconcile_hold.rs`:
+
+- `ReconcileWait` is what a wait answers: `Resubmitted`, `Ended` (stop,
+  cancellation, `human-only`; the verifier writes nothing) or
+  `Released(HoldRelease)`. `HoldRelease` names the cause: `StoryBlocked`,
+  `StoryLeft`, `AgentGone`, `AgentSilent`.
+- `VerificationQueue::hold_view` replaces `current_generation_for`: one store
+  transaction, no process, the queued generation plus the story's permission,
+  `domain::is_blocked` reason, state and change-feed position.
+- `HoldWatch` carries the probe, the clock, the cadence (`RECOVERY_WAKE`) and
+  the ceiling (`STALL_CEILING_SECS`). The clock is injected so the tests move
+  time by hand and never wait on it.
+- `VerificationActuator::probe_agent` defaults to no evidence;
+  `ShellVerificationActuator` calls `resources::tmux::probe_story_panes`. A
+  story window can be split or linked into a second session, so any live
+  agent pane is Alive, and Gone needs the server or every matching pane to be
+  gone or dead. A pane running something else is no evidence, because the
+  identity pattern is the daemon's, not the pane's own record.
+- The engine's stall check moved into `engine::silent_on_both_channels` and
+  its per-pane verdict into `engine::pane_state`; the engine maps both as
+  before, and the hold calls the same functions.
+- A release never sets `awaiting` (the engine would read it as
+  `AgentBlocked`) and never re-dispatches (D-E already did, once).
+
+Stated limits, accepted by the council: a live reconcile is released when
+both channels stay silent past the ceiling — a manual or Codex dispatch does
+not export the tool ceiling, and an agent can end its turn while a background
+test run continues. The cost is a requeue and possibly one more conflict. A
+Full Auto lane is judged twice, by the engine and by the hold; either clock
+releases, and the other agrees.
+
+Tests: `tests/verification_queue/reconcile_hold.rs` drives the production
+wait through a real conflict return for each store cause and for a dead, a
+silent and an unprobeable agent, and proves a live agent holds across three
+ceilings while a Critical arrival waits
+(`a_live_agent_holds_past_several_ceilings_and_is_verified_first_on_resubmission`).
+Unit tables cover the store rule, the agent rule and the pane combination;
+one test reads a real private tmux server through the actuator. The SH-769
+test now also counts probes: none while the hold is idle.
 
 ### SH-691 — the base is asked of origin, and landing checks it
 

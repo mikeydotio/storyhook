@@ -2747,6 +2747,13 @@ Inspect and control this project's centralized verifier.
   admission while owned work finishes. stop also cancels owned work.
   Starting while stopped work still owns an attempt is refused.
 
+  A merge conflict returns the story and holds this project's queue until
+  the story resubmits. The hold releases itself when the reconcile stops:
+  the story is blocked or leaves in-progress, its agent pane is gone on two
+  probes, or the story and the pane show no activity past the stall ceiling.
+  The story gets a CENTRAL VERIFICATION HOLD RELEASED comment. A later
+  resubmission joins the queue in priority order.
+
   ack validates the exact halted incident and enables admission atomically.
   --leave-stopped clears the incident but disables admission; start resumes it.
   Fix the reported infrastructure cause before retrying. A stale id, an
