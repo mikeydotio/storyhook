@@ -6,6 +6,7 @@ pub(crate) mod context;
 mod observe;
 mod view;
 pub(crate) mod window;
+mod window_requests;
 
 pub(crate) use observe::OutputWatch;
 pub use view::{read_logs, read_logs_from};

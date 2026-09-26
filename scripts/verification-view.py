@@ -2,8 +2,8 @@
 """Reconcile the single owned project verification reader (SH-748).
 
 Runs only as the daemon composes it: plugins/story/lib/tmux_server_env.py
-followed by this file (src/daemon/activity/window.rs), which supplies
-`client_environment` without a second copy of the policy.
+and probe_budget.py followed by this file (src/daemon/activity/window.rs), which supplies
+`client_environment`, `probe_run` and `probe_operation` without copying policies.
 """
 
 import fcntl
@@ -14,7 +14,6 @@ import subprocess
 import sys
 import uuid
 
-TIMEOUT = 3
 FORMAT = "#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-journal}\t#{@storyhook-reader}\t#{pane_start_command}\t#{@storyhook-command}"
 
 
@@ -29,8 +28,7 @@ def tmux(*args):
     env = client_environment(os.environ)
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
-    result = subprocess.run(["tmux", *args], env=env, capture_output=True,
-                            text=True, timeout=TIMEOUT)
+    result = probe_run(["tmux", *args], env=env, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(f"tmux {args[0]}: {result.stderr.strip()} (exit {result.returncode})")
     return result.stdout.strip()
@@ -68,6 +66,7 @@ def allocate(session, name, owner, reader, new_session=False):
                 "=" + session + ":=" + name, "@storyhook-journal", owner)
 
 
+@probe_operation()
 def reconcile(session, directory, binary):
     """Keep an owned reader alive without disturbing other terminal work."""
     if os.environ.get("STORYHOOK_VERIFIER_MIRROR") == "0":
@@ -88,8 +87,8 @@ def reconcile(session, directory, binary):
             window = allocate(session, "verification", owner, reader, new_session=True)
             try:
                 mark(window, owner)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired):
-                tmux("kill-window", "-t", window)
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+                rollback(window, error)
                 raise
             return
         rows = inventory(session)
@@ -110,10 +109,19 @@ def reconcile(session, directory, binary):
                     raise RuntimeError("verification ownership changed during replacement")
                 tmux("kill-window", "-t", old[0])
             tmux("rename-window", "-t", window, "verification")
-        except (OSError, RuntimeError, subprocess.TimeoutExpired):
-            tmux("kill-window", "-t", window)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            rollback(window, error)
             raise
         reap_temporary(session, rows, owner)
+
+
+def rollback(window, original):
+    """Use only remaining time, keeping the original failure if cleanup also fails."""
+    try:
+        tmux("kill-window", "-t", window)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as cleanup:
+        raise RuntimeError(f"{original}; cleanup of owned window {window} failed: {cleanup}; "
+                           "a later reconcile will recover it") from original
 
 
 def reap_temporary(session, rows, owner):

@@ -17,16 +17,21 @@ SCRIPT = Path(__file__).resolve().parents[1] / "verification-view.py"
 # The daemon runs the reconciler composed after the tmux server policy
 # (src/daemon/activity/window.rs); exercise exactly that program.
 POLICY = Path(__file__).resolve().parents[2] / "plugins/story/lib/tmux_server_env.py"
-PROGRAM = POLICY.read_text() + "\n" + SCRIPT.read_text()
-# The reconciler's own bound on one tmux client, read from the shipped script.
-RECONCILER_TIMEOUT = int(re.search(r"^TIMEOUT = (\d+)$", SCRIPT.read_text(), re.M).group(1))
-DEADLINE = 15  # Includes private server startup and loaded macOS PTY allocation.
+BUDGET = POLICY.with_name("probe_budget.py")
+PROGRAM = (BUDGET.read_text() + "\nprobe_run = run\nprobe_operation = operation\n"
+           + POLICY.read_text() + "\n" + SCRIPT.read_text())
+# The shipping operation budget also bounds a single client if it is first.
+RECONCILER_TIMEOUT = int(re.search(r"^BUDGET_SECONDS = (\d+)$", BUDGET.read_text(), re.M).group(1))
+DEADLINE = RECONCILER_TIMEOUT * 3 / 2  # The daemon outer bound, including startup/exit margin.
 # SH-347's ceiling for any one graced wait, as a cap on the multiplier of the
 # largest base here (the SH-767 D5 shape).
 MAX_GRACE = load_grace.PATIENCE_CEILING / DEADLINE
 # One reconciler tick whose only failure was a tmux client outlasting the
 # reconciler's per-call bound: what the daemon's next tick retries.
-TIMED_OUT = re.compile(r"^verification view: Command '\['tmux', .*\]' timed out after (\d+) seconds$")
+TIMED_OUT = re.compile(
+    r"^verification view: probe 'tmux .*' did not finish in its [0-9.]+s allowance "
+    r"\([0-9.]+s of a (\d+)s operation budget spent; 1-minute load average "
+    r"(?:[0-9.]+|unavailable) on (?:\d+|None) cores\)$")
 # Long enough for several refused readiness probes; only ever spent on a socket
 # that is known never to answer.
 REFUSAL_PATIENCE = 0.5
@@ -252,7 +257,7 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.contention = lambda: None
         with self.assertRaises(self.failureException) as failed:
             self.reconcile()
-        self.assertIn(f"timed out after {RECONCILER_TIMEOUT} seconds", str(failed.exception))
+        self.assertIn(f"{RECONCILER_TIMEOUT}s operation budget spent", str(failed.exception))
 
     def test_disabled_mirror_does_not_even_probe_tmux(self):
         wrapper = self.root / "bin/tmux"
@@ -261,6 +266,17 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.reconcile()
         self.assertFalse((self.root / "called").exists())
         self.assertFalse((self.root / "one").exists())
+
+    def test_slow_tmux_call_succeeds_in_one_production_pass(self):
+        # SH-808: exceed the old 3 s per-client deadline without a harness retry.
+        wrapper = self.root / "bin/tmux"
+        held = self.root / "slow-call"
+        wrapper.write_text(wrapper.read_text().replace(
+            "exec ", f'if [ "$1" = list-sessions ] && [ ! -e "{held}" ]; then '
+            f': > "{held}"; sleep 4; fi\nexec ', 1))
+        result = self.reconcile(check=False)
+        self.assertEqual(result.returncode, 0, diagnosis("slow reconcile", result))
+        self.assertTrue(self.identity().startswith("@"))
 
     def test_interrupted_owned_allocation_is_reaped_without_replacing_healthy_view(self):
         self.reconcile()
@@ -347,6 +363,14 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         row = dict(at=now.isoformat(), level="INFO", source="fixture-helper", stream="stderr",
                    pid=1, context=f"project={slug} VIEW-1 attempt=live", message="LIVE_PROJECT_OUTPUT")
         path.write_text(json.dumps(row) + "\n")
+        # Hold one call past 3 s and a later call so the pass exceeds 5 s.
+        wrapper = self.root / "bin/tmux"
+        prefix = ""
+        for verb, delay in (("list-sessions", 4), ("set-option", 2)):
+            held = self.root / f"daemon-slow-{verb}"
+            prefix += (f'if [ "$1" = {verb} ] && [ ! -e "{held}" ]; then '
+                       f': > "{held}"; sleep {delay}; fi\n')
+        wrapper.write_text(wrapper.read_text().replace("exec ", prefix + "exec ", 1))
         diagnostics = self.root / "daemon.err"
         with diagnostics.open("wb") as error:
             daemon = subprocess.Popen([binary, "--store-path", os.environ["STORY_VIEW_TEST_STORE"],
@@ -369,6 +393,10 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
                 time.sleep(.05)
 
         first = wait_for_view()
+        # SH-808: the first real daemon pass exceeded both historical bounds.
+        startup_records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        self.assertFalse([row for row in startup_records if row["level"] in ("ERROR", "WARN")
+                          and "reader" in row["context"]], startup_records)
         self.tmux("kill-window", "-t", first.split("|")[0])
         second = wait_for_view(first)
         self.assertNotEqual(first, second)

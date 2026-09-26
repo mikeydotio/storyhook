@@ -52,6 +52,52 @@ mod tests {
     }
 
     #[test]
+    fn quiet_cancellation_before_spawn_starts_nothing() {
+        let root = storyhook_test_support::scratch_dir();
+        let marker = root.path().join("started");
+        let mut command = Command::new("touch");
+        command.arg(&marker);
+        let result = crate::process::run_captured_quiet_cancellable(
+            command,
+            storyhook_test_support::STORY_COMMAND_DEADLINE,
+            || true,
+        );
+        assert!(matches!(result, Err(CaptureError::Cancelled)));
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn quiet_cancellation_reaps_the_helper_and_its_descendant() {
+        let root = storyhook_test_support::scratch_dir();
+        let ready = root.path().join("ready");
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "sleep 600 & printf '%s %s' $$ $! > \"$1\"; wait",
+                "probe",
+            ])
+            .arg(&ready);
+        let result = crate::process::run_captured_quiet_cancellable(
+            command,
+            storyhook_test_support::STORY_COMMAND_DEADLINE,
+            || {
+                ready.exists()
+                    && std::fs::read_to_string(&ready)
+                        .is_ok_and(|s| s.split_whitespace().count() == 2)
+            },
+        );
+        assert!(matches!(result, Err(CaptureError::Cancelled)));
+        let pids = std::fs::read_to_string(ready).unwrap();
+        for pid in pids.split_whitespace() {
+            assert!(
+                crate::process::pid_disappears(pid.parse().unwrap()),
+                "survivor {pid}"
+            );
+        }
+    }
+
+    #[test]
     fn cancellation_during_registration_terminates_and_reaps_the_owned_group() {
         for ignore_term in [false, true] {
             let root = storyhook_test_support::scratch_dir();

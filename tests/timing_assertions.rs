@@ -675,10 +675,14 @@ const PLUGIN_BOUND_EXEMPTIONS: [(&str, &str); 1] = [(
 
 #[test]
 fn no_plugin_helper_bounds_a_probe_with_a_bare_literal() {
-    let corpus = tracked_test_files(
+    let mut corpus = tracked_test_files(
         Path::new(env!("CARGO_MANIFEST_DIR")),
         "plugins/story/lib/*.py",
     );
+    corpus.extend(tracked_test_files(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        "scripts/verification-view.py",
+    ));
     assert!(
         corpus.contains_key("plugins/story/lib/stop-dispatch-pane.py"),
         "the pane helper was not read; this scan proved nothing"
@@ -714,6 +718,39 @@ fn no_plugin_helper_bounds_a_probe_with_a_bare_literal() {
             exempted.contains(path),
             "{path} has no bare bound any more; remove its {story} exemption"
         );
+    }
+}
+
+/// The embedded reader must not regain an independent per-call clock, even by alias.
+fn view_bypasses_operation_budget(source: &str) -> bool {
+    let calls = regex::Regex::new(
+        r"subprocess\s*\.\s*(?:run|Popen|call|check_call|check_output)\s*\(|\btimeout\s*=|(?m)^\s*[A-Z_]*TIMEOUT[A-Z_]*\s*=\s*[0-9]",
+    ).unwrap();
+    let code = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    calls.is_match(&code) || !code.contains("@probe_operation()") || !code.contains("probe_run(")
+}
+
+#[test]
+fn the_view_uses_only_its_shared_operation_budget() {
+    let source = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/verification-view.py"),
+    )
+    .unwrap();
+    assert!(
+        !view_bypasses_operation_budget(&source),
+        "the view must use probe_run within probe_operation, with no per-call timeout"
+    );
+    for mutation in [
+        source.replace("probe_run(", "subprocess.run("),
+        source.replace("@probe_operation()", ""),
+        format!("{source}\nTIMEOUT = 3\n"),
+        format!("{source}\nsubprocess.run(argv, timeout=TIMEOUT)\n"),
+    ] {
+        assert!(view_bypasses_operation_budget(&mutation));
     }
 }
 

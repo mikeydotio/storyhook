@@ -8,7 +8,9 @@ invocation runs as one operation with one deadline, and each external probe
 The budget is two thirds of the tightest caller bound. The daemon runs
 `story.sh notify` for 45 s (NOTIFY_TIMEOUT, then SIGTERM) and
 `dropped-cleanup-pane.py` for 45 s (CLEANUP_HELPER_TIMEOUT, SIGKILL with no
-SIGTERM). The last third covers interpreter start and exit under load. Unit
+SIGTERM). The embedded verification reader uses the same 45 s outer bound
+(VIEW_RECONCILE_TIMEOUT) and observes daemon shutdown independently (SH-808).
+The last third covers interpreter start and exit under load. Unit
 tests beside those constants pin the relation.
 
 Machine load is deliberately not a multiplier here. Spawn latency under load
