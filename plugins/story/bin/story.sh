@@ -3712,24 +3712,33 @@ cmd_notify() {
   if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$identity"); then
     refuse "pane-changed" "agent identity changed before submission: $(printf '%s' "$identity_result" | jq -r '.display')"
   fi
+  local delivered=false
   while [ "$try" -le "$SEND_RETRIES" ]; do
+    # A key already sent whose clear the screen showed only after the
+    # confirmation window IS the submission: no further key follows it (SH-799).
+    if [ "$try" -gt 0 ] && composer_cleared "$pane" "$message"; then
+      delivered=true
+      break
+    fi
     composer_holds "$pane" "$message" \
       || refuse "delivery-failed" "the composer in window \`$wname\` no longer shows the $what, so no further submit key was sent; check that window."
-    if tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null && poll_input "$pane" empty; then
-      if [ -n "$expected" ] || [ -n "$registered" ]; then
-        jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" --arg target "$target" \
-          '{ok:true, id:$id, window_name:$window, pane:$pane, target:$target,
-            display:("[story] resumed " + $id + " in window `" + $window + "` (" + $pane + ").")}'
-      else
-        jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" \
-          '{ok:true, id:$id, window_name:$window, pane:$pane,
-            display:("[story] notified " + $id + " in window `" + $window + "` (" + $pane + ").")}'
-      fi
-      return 0
+    if tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null && poll_composer_cleared "$pane" "$message"; then
+      delivered=true
+      break
     fi
     try=$((try + 1))
   done
-  refuse "delivery-failed" "the $what reached pane \`$pane\`, but its submission was never confirmed; it may still be in the composer in window \`$wname\`."
+  [ "$delivered" = true ] \
+    || refuse "delivery-failed" "the $what reached pane \`$pane\`, but its submission was never confirmed; it may still be in the composer in window \`$wname\`."
+  if [ -n "$expected" ] || [ -n "$registered" ]; then
+    jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" --arg target "$target" \
+      '{ok:true, id:$id, window_name:$window, pane:$pane, target:$target,
+        display:("[story] resumed " + $id + " in window `" + $window + "` (" + $pane + ").")}'
+  else
+    jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" \
+      '{ok:true, id:$id, window_name:$window, pane:$pane,
+        display:("[story] notified " + $id + " in window `" + $window + "` (" + $pane + ").")}'
+  fi
 }
 
 # _project_integrity — run the CLI's own `story doctor` tolerantly.
