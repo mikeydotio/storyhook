@@ -245,7 +245,10 @@ resubmission it returns (SH-769). Other arrivals cannot take
 the slot; a daemon stop ends the wait without manufacturing a candidate. This
 is step 2's "wait, holding the queue", and it is pinned by
 `tests/verification_queue.rs` (the reservation, the generation check, and that
-a wrong candidate is an error rather than a transfer).
+a wrong candidate is an error rather than a transfer). The verifier declares
+the hold on its own slot before the return is written, so `story verifier
+status` and the dashboard show it as a `reconcile` reservation, as ordinary
+work and never as missing evidence (SH-768).
 
 **If the agent is absent, the verifier re-dispatches and still holds**
 (SH-650). A dispatched pane is **normally already dead** at the handoff — the
@@ -709,6 +712,70 @@ test-build `git` tally in `git_env::command` — and requires both to see the
 one validation on return, so their zeros are not vacuous
 (`a_reconcile_wait_starts_no_process_until_its_story_resubmits`,
 `the_store_only_generation_read_agrees_with_the_validated_queue`).
+
+### SH-768 — a held verifier says why
+
+`story verifier status` and the dashboard showed "verifier evidence
+unavailable: owned generation … is no longer in the verifying queue" for the
+whole of every conflict reconcile (moshtail MT-12 and MT-22, v3.0.3). The
+status projection looked for the owned generation in the verifying queue and
+reported its absence as a fault. The absence was the verifier's own act: its
+return had moved the story to `in-progress`, and it kept the slot on purpose.
+A sweep of `tick_with_bus` found the same false card in two more places:
+- after every other return, while the diagnosis is pasted or the agent is
+  re-dispatched, which is up to three control verbs;
+- after every landing while `reap` runs, and on every cleanup retry, whose
+  done story has no generation that any queue lookup can match.
+
+**The owner declares, status reads.** `VerificationSlot` carries a
+`Reservation` (`reconcile`, `remediation` or `cleanup`, the time, and whether
+the write committed). `VerificationGuard::reserve` declares it before the
+store write that takes the generation out of the queue. The returned
+`PendingReservation` is kept by `retire()` once that write applied, and
+dropping it withdraws the reservation. So no read sees the generation gone
+without the reason, and a superseded or failed write leaves nothing behind.
+`replace()` clears it. The cleanup tick's slot is admitted already reserved
+(`VerificationActivity::admit`). `ActiveVerification` does not change,
+because it is the identity that `if_current`, `observe_output` and the guard
+drop compare.
+
+**What status does with it** (`status::snapshot`, through `read_project`'s
+`SlotView`):
+- With no reservation, nothing changes, and an undeclared absence still
+  fails loud.
+- A pending reservation whose story is still queued is ignored, because its
+  write has not committed.
+- A reservation explains an absence. It is projected as
+  `VerifierStatus.reservation` (story, generation, reason, `reserved_at`,
+  age, and the stories queued behind it), with no `evidence_error` and no
+  silence clock.
+- A retired reservation whose story is still queued is a contradiction and
+  is reported as one.
+- `remediation` and `cleanup` have bounds, derived from the production
+  control-verb deadline (`DISPATCH_TIMEOUT` plus the `RECOVERY_WAKE` grace).
+  A reservation older than its bound warns, so a wedged helper stays visible.
+- `reconcile` has no bound: SH-770 decides whether to add one.
+
+The CLI prints `Attempt X: S reserved for … since …; N queued behind` in
+place of "gate on". The verifying column's status line shows
+"Held for S · reason · since T · N queued". The field is skipped when it is
+absent, so older payloads and the golden snapshots do not change. A
+`debug_assert` where `refresh_authority` returns `Current` pins that no
+reservation reaches a current generation. It cannot be at the top of the
+loop: a refused submission whose delivery fails after the agent resubmitted
+continues with the reservation still set, and the new generation replaces
+it before any refresh.
+
+Not included: SH-776, the stale per-story journal when a new attempt
+starts, which has its own evidence-policy decision. SH-815's
+helper-resolution deadline is also not in the bounds yet (decision D6 on
+SH-768).
+
+Tests: `src/daemon/verification/reservation.rs` covers the snapshot rule, the
+withdrawal, the contradiction, the bounds and `queued_behind`.
+`tests/verification_queue/reservation_status.rs` reads status during the real
+reconcile wait, inside `notify` for each return, and inside `reap` for
+certified, recovered and retried cleanup.
 
 ### SH-691 — the base is asked of origin, and landing checks it
 
