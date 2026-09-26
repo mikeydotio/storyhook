@@ -15,6 +15,9 @@ SCRIPT = Path(__file__).resolve().parents[1] / "verification-view.py"
 POLICY = Path(__file__).resolve().parents[2] / "plugins/story/lib/tmux_server_env.py"
 PROGRAM = POLICY.read_text() + "\n" + SCRIPT.read_text()
 DEADLINE = 15  # Includes private server startup and loaded macOS PTY allocation.
+# Long enough for several refused readiness probes; only ever spent on a socket
+# that is known never to answer.
+REFUSAL_PATIENCE = 0.5
 
 
 def diagnosis(what, result):
@@ -64,11 +67,7 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         server = subprocess.Popen(self.tmux_argv + ["-D"], env=self.env,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(self.stop_server, server)
-        end = time.monotonic() + DEADLINE
-        while not self.socket.exists():
-            self.assertIsNone(server.poll())
-            self.assertLess(time.monotonic(), end)
-            time.sleep(.02)
+        self.await_serving(server, self.socket, DEADLINE)
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
         import shlex
@@ -79,6 +78,33 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.reader = self.root / "reader with spaces"
         self.reader.write_text('#!/bin/sh\nprintf "READER %s\\n" "$*"\nexec sleep 2147483647\n')
         self.reader.chmod(0o700)
+
+    def await_serving(self, server, socket, patience):
+        """Wait until the fixture server answers a client as itself (SH-806).
+
+        tmux binds its socket before it listens and initialises before it
+        serves, so a socket file is not a ready server: the first reconcile
+        would pay for server startup inside the reconciler's per-call bound.
+        The answer must be this server's own pid, so a server some client
+        started in its place is never taken for the one this fixture owns.
+        display-message never starts a server, so asking cannot create one.
+        """
+        argv = [self.tmux_argv[0], "-S", str(socket), "-f", "/dev/null", "display-message", "-p", "#{pid}"]
+        end = time.monotonic() + patience
+        answer = None
+        while True:
+            self.assertIsNone(server.poll(), f"fixture server {server.pid} exited before it answered")
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                self.fail(f"fixture server {server.pid} did not answer at {socket} within {patience:g}s; "
+                          + ("no answer" if answer is None else diagnosis("the last probe", answer)))
+            try:
+                answer = subprocess.run(argv, env=self.env, capture_output=True, text=True, timeout=remaining)
+            except subprocess.TimeoutExpired:
+                continue
+            if answer.returncode == 0 and answer.stdout.strip() == str(server.pid):
+                return
+            time.sleep(.02)
 
     def stop_server(self, server):
         """Reap the owned server even when an assertion or client fails."""
@@ -141,6 +167,23 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         with self.assertRaises(self.failureException) as control:
             self.tmux("list-windows", "-t", "=absent")
         self.assertRegex(str(control.exception), r"tmux list-windows exited 1\nstderr: \S")
+
+    def test_a_bound_socket_is_not_a_serving_server(self):
+        # SH-806: tmux binds before it listens and initialises before it serves,
+        # so the first reconcile paid for server startup inside its 3 s bound.
+        path = self.root / "unlistening.sock"
+        holder = subprocess.Popen([sys.executable, "-c", "import socket, sys, time\n"
+                                   "s = socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])\ntime.sleep(600)",
+                                   str(path)])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        end = time.monotonic() + DEADLINE
+        while not path.exists():
+            self.assertLess(time.monotonic(), end, "the unlistening socket was never bound")
+            time.sleep(.02)
+        with self.assertRaises(self.failureException) as refused:
+            self.await_serving(holder, path, REFUSAL_PATIENCE)
+        self.assertIn("did not answer", str(refused.exception))
 
     def test_disabled_mirror_does_not_even_probe_tmux(self):
         wrapper = self.root / "bin/tmux"

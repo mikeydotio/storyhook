@@ -10,10 +10,18 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use storyhook::daemon::lifecycle::SPAWN_DEADLINE;
+use storyhook_test_support::load_grace::{self, Patience};
 use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, scratch_dir};
 
 // Let production startup report its own timeout before the harness does.
 const STARTUP_DEADLINE: Duration = SPAWN_DEADLINE.saturating_mul(2);
+
+/// How often a fixture wait looks again.
+const POLL: Duration = Duration::from_millis(25);
+
+/// Long enough for several refused readiness probes; only ever spent on a
+/// socket that is known never to answer.
+const REFUSAL_PATIENCE: Duration = Duration::from_millis(500);
 
 fn tmux(socket: &Path, args: &[&str]) -> String {
     let mut command = Command::new("tmux");
@@ -42,20 +50,89 @@ fn server(socket: &Path) -> ChildGuard {
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
     let mut guard = ChildGuard::spawn(&mut command).expect("start foreground fixture server");
-    let deadline = Instant::now() + STARTUP_DEADLINE;
-    while !socket.exists() {
-        assert!(
-            guard.try_wait().is_none(),
-            "fixture tmux server exited before creating its socket"
-        );
-        assert!(
-            Instant::now() < deadline,
-            "fixture tmux socket did not appear"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    await_answering(socket, &mut guard, Patience::new(STARTUP_DEADLINE));
     tmux(socket, &["new-session", "-d", "-s", "fixture", "/bin/sh"]);
     guard
+}
+
+/// Waits until the fixture server answers a client at `socket` as itself.
+///
+/// tmux binds its socket before it listens and initialises before it serves,
+/// so a socket file is not a ready server (SH-806). The answer must be this
+/// server's own pid: a `new-session` that meets a refused socket starts a
+/// server of its own, which this fixture would neither own nor clean up.
+/// `display-message` never starts a server, so asking cannot create one.
+fn await_answering(socket: &Path, server: &mut ChildGuard, patience: Patience) {
+    let pid = server.pid().to_string();
+    load_grace::wait_for(
+        patience,
+        POLL,
+        || {
+            format!(
+                "fixture tmux server {pid} did not answer at {}",
+                socket.display()
+            )
+        },
+        || {
+            assert!(
+                server.try_wait().is_none(),
+                "fixture tmux server {pid} exited before it answered"
+            );
+            (answering_pid(socket).as_deref() == Some(pid.as_str())).then_some(())
+        },
+    );
+}
+
+/// The pid of whichever server answers at `socket`, if one does.
+fn answering_pid(socket: &Path) -> Option<String> {
+    let mut command = Command::new("tmux");
+    command
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .arg("-S")
+        .arg(socket)
+        .args(["display-message", "-p", "#{pid}"]);
+    let output = ChildGuard::spawn_with_output(&mut command)
+        .expect("start fixture readiness probe")
+        .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "fixture readiness probe did not finish".into()
+        });
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[test]
+fn a_bound_socket_that_never_answers_is_not_a_ready_fixture_server() {
+    let scratch = scratch_dir();
+    let socket = scratch.path().join("unlistening");
+    let mut command = Command::new("python3");
+    command
+        .args([
+            "-c",
+            "import socket, sys, time\ns = socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])\ntime.sleep(600)",
+        ])
+        .arg(&socket);
+    let mut holder = ChildGuard::spawn(&mut command).expect("start a socket that never listens");
+    load_grace::wait_for(
+        Patience::new(STARTUP_DEADLINE),
+        POLL,
+        || "the unlistening socket was never bound".into(),
+        || socket.exists().then_some(()),
+    );
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        await_answering(
+            &socket,
+            &mut holder,
+            Patience::starting_at(REFUSAL_PATIENCE, Instant::now(), || None),
+        );
+    }))
+    .expect_err("tmux binds before it listens: a socket file is not a ready server (SH-806)");
+    let message = refused
+        .downcast_ref::<String>()
+        .expect("the readiness wait refuses with a formatted message");
+    assert!(message.contains("did not answer"), "{message}");
 }
 
 #[test]
