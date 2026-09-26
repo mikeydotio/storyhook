@@ -73,3 +73,13 @@ class BudgetTests(unittest.TestCase):
             with view.operation(0), self.assertRaises(view.ProbeTimeout):
                 view.reconcile("project", directory, "/bin/true")
         run.assert_not_called()
+
+    def test_inventory_preserves_empty_final_columns_and_command_whitespace(self):
+        view = program()
+        row = ["@1", ".verification-partial", "%1", "123", "0", "owner", "", "echo trailing ", ""]
+        other = ["@2", "verification", "%2", "456", "0", "owner", "%2:456", "reader", "reader"]
+        for rows in ([row], [row, other], [other, row]):
+            with self.subTest(rows=rows), patch.object(view.subprocess, "run", return_value=
+                    subprocess.CompletedProcess(["tmux"], 0,
+                        "\n".join("\t".join(fields) for fields in rows) + "\n", "")):
+                self.assertEqual(view.inventory("project"), rows)

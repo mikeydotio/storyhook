@@ -31,7 +31,8 @@ def tmux(*args):
     result = probe_run(["tmux", *args], env=env, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(f"tmux {args[0]}: {result.stderr.strip()} (exit {result.returncode})")
-    return result.stdout.strip()
+    # Empty tab-delimited fields are identity evidence, even on the last row.
+    return result.stdout.rstrip("\n")
 
 
 def inventory(session):
