@@ -123,6 +123,10 @@ Use --store-path to inspect a different store, or --directory to read a project 
 The daemon maintains one verification window in each project-slug tmux session
 on the default server. Project logs live in the registered checkout at
 .storyhook/logs/YYYY-MM-DD.jsonl. Closed or failed readers are repaired.
+That directory ignores itself: storyhook keeps a .gitignore with the rule *
+in it, so git never lists the journal. If a repository already tracks
+journal files, daemon status and verifier status name the command that
+untracks them; storyhook never changes the index.
 STORYHOOK_VERIFIER_MIRROR=0 disables these views without disabling the journal.
 A missing tmux or Python 3 activity helper is non-fatal.
 

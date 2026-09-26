@@ -43,6 +43,21 @@ The store journal no longer opens a separate activity window.
   records command arguments wholesale.
 - `STORYHOOK_VERIFIER_MIRROR=0` still prohibits all tmux calls. Test isolation
   clears inherited activity destinations before fixture processes run.
+- Every journal directory ignores itself (SH-771). Before a writer opens a
+  journal file, it makes sure the directory holds `.gitignore` with exactly one
+  comment line naming storyhook and `*`. Both writers do this: the daemon and
+  `scripts/activity-run.py`. The `*` also ignores the ignore file. Git gives the
+  deeper file precedence, so a repository's own rules cannot re-include the
+  journal, and other `.storyhook/` content stays trackable. Storyhook never
+  edits a repository's tracked `.gitignore`. A writer that cannot write the
+  ignore file writes no record. The verification view never creates the
+  directory: the daemon prepares it first.
+- The daemon's hygiene sweep runs at start and every minute. It repairs the
+  ignore file of every registered checkout that has a journal, and asks git
+  which journal files each index tracks. `story daemon status`, `story verifier
+  status` and the dashboard show each tracked case with its fix: `git rm -r
+  --cached .storyhook/logs` in that checkout, then a commit. Storyhook never
+  changes an index, commits or pushes.
 
 ## Verification
 
@@ -81,3 +96,30 @@ script output is not a safe place to print secrets.
 Daily journals are retained without expiry; UTC filenames are also the archive
 interface. No schema, release version, deployment or verifier ownership changes
 are part of this story.
+
+### Self-ignoring journals (SH-771)
+
+`activity/ignore.rs::prepare` creates the directory with mode 0700. It reads
+`.gitignore` without following a symlink or blocking on a FIFO, and returns if
+the bytes match `JOURNAL_IGNORE`. Otherwise it renames a complete temporary
+copy over the file. The directory is not staged and renamed as pytest's cache
+directory is. Git never shows an empty directory, and every writer prepares
+before its first open, so a staging directory only adds leftovers and a
+lost-race branch. Writers check on every record: the fast path is one small
+read. Readers (`story daemon logs`, `--directory`, the tmux reader) open only
+day files and never write. Tests that read a whole journal directory read only
+`*.jsonl` files. `tests/activity_script.rs` pins the Python and Rust bytes as
+identical.
+
+`activity/hygiene.rs` covers checkouts that nothing is writing to. The sweep
+skips a checkout without a journal directory, so it never creates one. It runs
+`git ls-files` only when a `.git` entry exists in the checkout or above it, so
+a checkout that is not a repository costs no process. Its git child follows the
+SH-761 rule: no record on success, one ERROR per failure, plus the sweep's WARN.
+It publishes findings to `journal-hygiene.json` in the daemon state directory.
+The daemon removes that file after it takes its lifetime lock and before it
+publishes its portfile. `story daemon status` therefore reads the file only
+while a daemon runs, and any file it reads is that daemon's own. The verifier
+snapshot reads the same file into `journal_warning`, which the JSON omits when
+it is absent. That field is separate from `warning` because a tracked journal
+is not a queue fault, and the dashboard shows it in its own banner.

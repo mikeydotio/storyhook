@@ -194,8 +194,9 @@ Run `story help <command>` for detailed usage on any command, or
 
 Stories are kept in storyhook's own store, outside this repository — so every
 branch, worktree and clone of this project sees one truth. Verifier diagnostics
-are local runtime files in `.storyhook/logs/`. Add `/.storyhook/logs/` to
-`.gitignore`; do not commit those logs.
+are local runtime files in `.storyhook/logs/`. That directory ignores itself
+through its own `.gitignore`, so this repository's `.gitignore` needs no entry
+for it. Do not commit those logs.
 
 The one file that does belong to the repository is `.storyhook.toml`: it names
 which project this checkout is, and it is where this repository's own storyhook
