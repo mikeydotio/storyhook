@@ -637,6 +637,7 @@ mod tests {
                     &stop,
                     &candidate,
                     &token,
+                    &HoldWatch::production(&super::super::reconcile_hold::unwatched),
                 );
                 finished.send(result).unwrap();
             });
@@ -647,7 +648,7 @@ mod tests {
                     .recv_timeout(Duration::from_secs(5))
                     .unwrap()
                     .unwrap()
-                    .is_none()
+                    == ReconcileWait::Ended
             );
         });
         assert_eq!(

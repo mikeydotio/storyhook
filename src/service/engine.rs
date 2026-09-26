@@ -435,28 +435,52 @@ pub fn classify(
     if pass == ReconcilePass::Restart {
         return LaneClassification::Progressing;
     }
-    // A seq that moved is progress regardless of the clock; only a lane that
-    // has BOTH failed to move and outrun the ceiling has stalled. `None` on
-    // either side states nothing and is seeded rather than punished (SH-372).
+    // `None` on either side states nothing and is seeded rather than punished
+    // (SH-372).
     let unmoved = match (observation.head_global_seq, observation.last_progress_seq) {
         (Some(head), Some(recorded)) => head == recorded,
         _ => false,
     };
-    let store_silent = unmoved
-        && observation
-            .seconds_since_progress
-            .is_some_and(|elapsed| elapsed > stall_ceiling_secs);
-    // The pty is the second channel (SH-657): a pane that wrote within the
-    // ceiling holds a live agent whatever the store says. Its absence
-    // (`None`) is no evidence, so the store verdict stands alone then —
-    // which is the SH-626 backstop for a dead-but-unobservable lane.
-    let pty_silent = observation
-        .seconds_since_output
-        .is_none_or(|elapsed| elapsed > stall_ceiling_secs);
-    if store_silent && pty_silent {
+    if silent_on_both_channels(
+        unmoved,
+        observation.seconds_since_progress,
+        observation.seconds_since_output,
+        stall_ceiling_secs,
+    ) {
         return LaneClassification::HardStop(HardStopKind::Stalled);
     }
     LaneClassification::Progressing
+}
+
+/// The two-channel stall predicate (SH-394, SH-657): whether an agent has
+/// shown no progress on the store AND no output on its pty for longer than
+/// `stall_ceiling_secs`.
+///
+/// The one definition of "stalled" for everything that judges an agent's
+/// liveness — a Full Auto lane here, a conflict-reconcile hold in the
+/// verifier (SH-770) — so the judges cannot drift apart.
+///
+/// `store_unmoved` is whether the story's change-feed position is the one
+/// recorded at the last observed progress; `seconds_since_progress` is the
+/// time since that observation. `seconds_since_output` is the time since the
+/// pane last wrote to its pty, `None` when it could not be read.
+#[must_use]
+pub(crate) fn silent_on_both_channels(
+    store_unmoved: bool,
+    seconds_since_progress: Option<u64>,
+    seconds_since_output: Option<u64>,
+    stall_ceiling_secs: u64,
+) -> bool {
+    // A seq that moved is progress regardless of the clock; only a worker
+    // that has BOTH failed to move and outrun the ceiling has stalled.
+    let store_silent =
+        store_unmoved && seconds_since_progress.is_some_and(|elapsed| elapsed > stall_ceiling_secs);
+    // The pty is the second channel (SH-657): a pane that wrote within the
+    // ceiling holds a live agent whatever the store says. Its absence
+    // (`None`) is no evidence, so the store verdict stands alone then —
+    // which is the SH-626 backstop for a dead-but-unobservable agent.
+    let pty_silent = seconds_since_output.is_none_or(|elapsed| elapsed > stall_ceiling_secs);
+    store_silent && pty_silent
 }
 
 /// A tmux client normally answers in milliseconds. The shared machine-probe
@@ -725,36 +749,74 @@ impl ShellDispatcher {
                 detail: format!("tmux finds no pane `{window}`"),
             };
         }
-        let Ok(pid) = pid.parse::<i32>() else {
-            return WindowProbe::Unanswered {
-                detail: format!(
-                    "tmux answered the liveness probe for `{window}` with pane pid {pid:?}, not a number"
-                ),
-            };
+        match pane_state(window, pid, command, dead, activity) {
+            PaneState::Live { last_output_at } => WindowProbe::Alive { last_output_at },
+            PaneState::Dead { detail } | PaneState::Foreign { detail } => {
+                WindowProbe::Gone { detail }
+            }
+            PaneState::Unreadable { detail } => WindowProbe::Unanswered { detail },
+        }
+    }
+}
+
+/// What one tmux pane's liveness fields say about the agent launched in it.
+///
+/// Finer than [`WindowProbe`] because its judges weigh a pane that runs
+/// something else differently: a Full Auto lane reads it as gone, while a
+/// conflict-reconcile hold (SH-770) reads it as no evidence, since the
+/// identity pattern is the daemon's, not the pane's own registration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PaneState {
+    /// The pane's process runs and is the agent it was launched with.
+    /// `last_output_at` is tmux's `#{window_activity}` (unix seconds).
+    Live { last_output_at: Option<i64> },
+    /// tmux reports the pane dead, or its process is not running.
+    Dead { detail: String },
+    /// The pane's process runs, but it is not an agent this daemon launches.
+    Foreign { detail: String },
+    /// A field could not be read.
+    Unreadable { detail: String },
+}
+
+/// Classifies one pane from the liveness fields tmux answered for it:
+/// `#{pane_pid}`, `#{pane_current_command}`, `#{pane_dead}` and
+/// `#{window_activity}`. `target` names the pane in each verdict's detail.
+pub(crate) fn pane_state(
+    target: &str,
+    pid: &str,
+    command: &str,
+    dead: &str,
+    activity: &str,
+) -> PaneState {
+    let Ok(pid) = pid.parse::<i32>() else {
+        return PaneState::Unreadable {
+            detail: format!(
+                "tmux answered the liveness probe for `{target}` with pane pid {pid:?}, not a number"
+            ),
         };
-        if dead != "0" {
-            return WindowProbe::Gone {
-                detail: format!("tmux reports pane `{window}` dead (pane_dead={dead})"),
-            };
-        }
-        if !pid_is_live(pid) {
-            return WindowProbe::Gone {
-                detail: format!("pane `{window}`'s process {pid} is not running"),
-            };
-        }
-        if !ProcessIdentity::from_process().matches(command) {
-            return WindowProbe::Gone {
-                detail: format!(
-                    "pane `{window}` runs `{command}` (pid {pid}), not the agent it was launched with"
-                ),
-            };
-        }
-        // An empty or non-numeric activity stamp is not a reason to doubt a
-        // pane whose pid and identity just checked out; it only means the
-        // pty channel has nothing to say this pass (SH-372).
-        WindowProbe::Alive {
-            last_output_at: activity.parse::<i64>().ok(),
-        }
+    };
+    if dead != "0" {
+        return PaneState::Dead {
+            detail: format!("tmux reports pane `{target}` dead (pane_dead={dead})"),
+        };
+    }
+    if !pid_is_live(pid) {
+        return PaneState::Dead {
+            detail: format!("pane `{target}`'s process {pid} is not running"),
+        };
+    }
+    if !ProcessIdentity::from_process().matches(command) {
+        return PaneState::Foreign {
+            detail: format!(
+                "pane `{target}` runs `{command}` (pid {pid}), not the agent it was launched with"
+            ),
+        };
+    }
+    // An empty or non-numeric activity stamp is not a reason to doubt a
+    // pane whose pid and identity just checked out; it only means the
+    // pty channel has nothing to say this pass (SH-372).
+    PaneState::Live {
+        last_output_at: activity.parse::<i64>().ok(),
     }
 }
 

@@ -20,6 +20,7 @@ mod workspace_tests;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
 mod observation;
+mod reconcile_hold;
 mod recovery_transport;
 mod repair_admission;
 pub(crate) use recovery_transport::ControlOwner;
@@ -27,6 +28,11 @@ pub mod status;
 use crate::process::Cancellation;
 pub use crate::process::Cancellation as VerificationCancellation;
 pub use control::VerificationControlState;
+use reconcile_hold::wait_for_reconciled_candidate_cancellable;
+pub use reconcile_hold::{
+    AgentProbe, GONE_CONFIRMATIONS, HoldRelease, HoldWatch, ReconcileWait,
+    wait_for_reconciled_candidate,
+};
 
 use super::bus::{Change, ChangeBus};
 use super::lifecycle::{CurrentRequest, InFlight};
@@ -47,7 +53,8 @@ use crate::process::{
     run_captured_with_progress_and_registration,
 };
 use crate::service::engine::{
-    DISPATCH_TIMEOUT, DispatchOptions, DispatchOutcomeState, run_shell_dispatch_cancellable,
+    DISPATCH_TIMEOUT, DispatchOptions, DispatchOutcomeState, WindowProbe,
+    run_shell_dispatch_cancellable,
 };
 use crate::service::gate_progress::GATE_PROGRESS_PREFIX;
 use crate::service::project_fault::ProjectFault;
@@ -566,6 +573,9 @@ pub struct ResumePlan {
 
 /// The prefix of the story comment written before a resume re-dispatch.
 pub const VERIFICATION_RESUME_PREFIX: &str = "CENTRAL VERIFICATION RESUME —";
+/// The prefix of the story comment written when a conflict-reconcile hold
+/// releases the project's queue before the story resubmitted (SH-770).
+pub const VERIFICATION_HOLD_RELEASED_PREFIX: &str = "CENTRAL VERIFICATION HOLD RELEASED —";
 /// Process boundary for repository verification and agent-session control.
 pub trait VerificationActuator: Send + Sync {
     /// Pushes the candidate's leased branch and leaves exactly one open pull
@@ -603,6 +613,26 @@ pub trait VerificationActuator: Send + Sync {
         _cancellation: &VerificationCancellation,
     ) -> VerificationOutcome {
         self.verify(candidate, pull_request)
+    }
+    /// Whether a returned story's agent still runs, without touching its pane
+    /// (SH-770). A conflict-reconcile hold asks once per probe interval.
+    /// `lease` is the cleanup lease the story's latest submission recorded,
+    /// read from the store at the probe.
+    ///
+    /// The default knows no agent panes, which a hold reads as no evidence:
+    /// the store's silence alone then decides at the stall ceiling.
+    fn probe_agent(
+        &self,
+        candidate: &VerificationCandidate,
+        _lease: Option<&crate::domain::StoryCleanupLease>,
+        _cancellation: &Cancellation,
+    ) -> WindowProbe {
+        WindowProbe::Unanswered {
+            detail: format!(
+                "this verifier cannot observe the agent pane of {}",
+                candidate.story_id
+            ),
+        }
     }
     /// Delivers remediation to the exact dispatched agent pane, or answers
     /// that no live agent is there to receive it.
@@ -1181,6 +1211,29 @@ impl ShellVerificationActuator {
 }
 
 impl VerificationActuator for ShellVerificationActuator {
+    /// Probes the windows named for the story on the tmux server its lease
+    /// records: the server `story.sh notify` delivers to, and the one a
+    /// `--resume` re-dispatch relaunches on. One `tmux list-panes`.
+    fn probe_agent(
+        &self,
+        candidate: &VerificationCandidate,
+        lease: Option<&crate::domain::StoryCleanupLease>,
+        cancellation: &Cancellation,
+    ) -> WindowProbe {
+        let Some(lease) = lease else {
+            return WindowProbe::Unanswered {
+                detail: format!(
+                    "no cleanup lease records the tmux server of {}'s agent",
+                    candidate.story_id
+                ),
+            };
+        };
+        crate::service::resources::tmux::probe_story_panes(
+            &lease.tmux.socket_path,
+            &crate::service::resources::lease_names(lease, &BTreeSet::new()),
+            cancellation,
+        )
+    }
     fn land(
         &self,
         candidate: &VerificationCandidate,
@@ -1774,7 +1827,7 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
     project: ProjectId,
 ) -> Result<TickResult, AppError> {
     tick_with_reconciliation(store, env, actuator, activity, inflight, project, |_| {
-        Ok(None)
+        Ok(ReconcileWait::Ended)
     })
 }
 
@@ -1802,7 +1855,7 @@ pub fn tick_with_reconciliation<S, A, W>(
 where
     S: Store,
     A: VerificationActuator,
-    W: FnMut(&VerificationCandidate) -> Result<Option<VerificationCandidate>, AppError>,
+    W: FnMut(&VerificationCandidate) -> Result<ReconcileWait, AppError>,
 {
     tick_with_bus(
         store,
@@ -1832,7 +1885,7 @@ fn tick_with_bus<S, A, W>(
 where
     S: Store,
     A: VerificationActuator,
-    W: FnMut(&VerificationCandidate) -> Result<Option<VerificationCandidate>, AppError>,
+    W: FnMut(&VerificationCandidate) -> Result<ReconcileWait, AppError>,
 {
     let queue = VerificationQueue::new(store);
     if store
@@ -2336,8 +2389,13 @@ where
                     if !remediation_started {
                         return Ok(TickResult::Returned);
                     }
-                    let Some(resubmitted) = wait_for_resubmission(&candidate)? else {
-                        return Ok(TickResult::Returned);
+                    let resubmitted = match wait_for_resubmission(&candidate)? {
+                        ReconcileWait::Resubmitted(resubmitted) => *resubmitted,
+                        ReconcileWait::Ended => return Ok(TickResult::Returned),
+                        ReconcileWait::Released(release) => {
+                            record_hold_released(&ctx, &candidate, &release)?;
+                            return Ok(TickResult::Returned);
+                        }
                     };
                     if resubmitted.project != candidate.project
                         || resubmitted.story_id != candidate.story_id
@@ -3113,67 +3171,48 @@ fn interruption_comment(now: &str, position: &str) -> String {
     )
 }
 
+/// Records why a conflict-reconcile hold released the project's queue
+/// (SH-770): an activity event, and a story comment that names the cause.
+///
+/// The comment names the returned generation, so a second release of the
+/// same story for the same cause is its own record rather than a duplicate
+/// that [`comment_once`] would drop.
+fn record_hold_released(
+    ctx: &Ctx<'_, impl Store>,
+    candidate: &VerificationCandidate,
+    release: &HoldRelease,
+) -> Result<(), AppError> {
+    let cause = release.describe();
+    super::activity::emit(
+        "WARN",
+        "verifier",
+        "event",
+        &format!("project={} {}", candidate.project_slug, candidate.story_id),
+        &format!("reconcile hold released: {cause}"),
+    );
+    comment_once(ctx, candidate, &hold_released_comment(candidate, release))
+}
+
+fn hold_released_comment(candidate: &VerificationCandidate, release: &HoldRelease) -> String {
+    let generation = candidate.verifying_generation.map_or_else(
+        || "unknown".to_string(),
+        |generation| generation.to_string(),
+    );
+    format!(
+        "{VERIFICATION_HOLD_RELEASED_PREFIX} the verifier no longer holds the {project} queue for {id} (returned generation {generation}). Other stories can now be verified. {next} If {id} moves back to verifying, it joins the queue in priority order.\n\nCause:\n{}",
+        crate::text_lint::quote_evidence(&release.describe()),
+        project = candidate.project_slug,
+        id = candidate.story_id,
+        next = release.next_step(),
+    )
+}
+
 fn comment_once(
     ctx: &Ctx<'_, impl Store>,
     candidate: &VerificationCandidate,
     text: &str,
 ) -> Result<(), AppError> {
     VerificationQueue::new(ctx.store()).comment_if_human_permitted(ctx, candidate, text)
-}
-
-/// Waits until the reserved story creates a newer verification generation.
-///
-/// Other queue arrivals and coarse bus wakes only cause a fresh observation;
-/// they cannot transfer the reservation. An observation reads the store alone
-/// and starts no process; the checkout origin is validated once, for the
-/// resubmission this returns (SH-769). A daemon stop ends the wait without
-/// manufacturing a candidate. Public for shutdown and event-order integration
-/// tests.
-pub fn wait_for_reconciled_candidate(
-    store: &impl Store,
-    subscription: &crate::daemon::bus::Subscription,
-    stop: &AtomicBool,
-    reserved: &VerificationCandidate,
-) -> Result<Option<VerificationCandidate>, AppError> {
-    wait_for_reconciled_candidate_cancellable(
-        store,
-        subscription,
-        stop,
-        reserved,
-        &Cancellation::default(),
-    )
-}
-
-fn wait_for_reconciled_candidate_cancellable(
-    store: &impl Store,
-    subscription: &crate::daemon::bus::Subscription,
-    stop: &AtomicBool,
-    reserved: &VerificationCandidate,
-    cancellation: &Cancellation,
-) -> Result<Option<VerificationCandidate>, AppError> {
-    let queue = VerificationQueue::new(store);
-    let newer = |generation: Option<GlobalSeq>| {
-        generation.is_some() && generation != reserved.verifying_generation
-    };
-    loop {
-        if stop.load(Ordering::Relaxed)
-            || cancellation.is_cancelled()
-            || !observation::human_permits(store, reserved)?
-        {
-            return Ok(None);
-        }
-        // A pass runs every 100 ms and on every bus wake, so it reads the store
-        // alone: validating origins starts `git` (SH-769). Only a resubmission
-        // is validated, and the second read may find it gone again.
-        if newer(queue.current_generation_for(reserved)?)
-            && let Some(candidate) = queue
-                .current_for(reserved)?
-                .filter(|candidate| newer(candidate.verifying_generation))
-        {
-            return Ok(Some(candidate));
-        }
-        let _ = subscription.recv(Duration::from_millis(100));
-    }
 }
 
 /// Runs the verifiers until daemon shutdown: one worker per registered
@@ -3348,12 +3387,18 @@ fn poll_project_verification(
             bus,
             Some(&mut request_id),
             |reserved| {
+                let probe = |candidate: &VerificationCandidate,
+                             lease: Option<&crate::domain::StoryCleanupLease>,
+                             cancellation: &Cancellation| {
+                    actuator.probe_agent(candidate, lease, cancellation)
+                };
                 wait_for_reconciled_candidate_cancellable(
                     store,
                     &subscription,
                     stop,
                     reserved,
                     &activity.cancellation_for(project),
+                    &HoldWatch::production(&probe),
                 )
             },
         );

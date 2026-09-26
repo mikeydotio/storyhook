@@ -8,9 +8,9 @@ use std::thread;
 use storyhook::daemon::bus::{Change, ChangeBus};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
-    NotifyDelivery, ResumePlan, SubmissionFailure, TickResult, VERIFICATION_IDLE_TIMEOUT,
-    VerificationActivity, VerificationActuator, VerificationOutcome, tick_with_activity,
-    wait_for_reconciled_candidate,
+    HoldWatch, NotifyDelivery, ReconcileWait, ResumePlan, SubmissionFailure, TickResult,
+    VERIFICATION_IDLE_TIMEOUT, VerificationActivity, VerificationActuator, VerificationOutcome,
+    tick_with_activity, wait_for_reconciled_candidate,
 };
 use storyhook::domain::Priority;
 use storyhook::error::AppError;
@@ -40,6 +40,21 @@ fn submitted(fixture: &ServiceFixture, title: &str, priority: Priority, url: &st
         .set_state(&id, "verifying", None, None, None)
         .expect("submitting the story for verification");
     id
+}
+
+/// An agent pane that wrote just now: the reconcile these tests hold for is
+/// live, so only a resubmission, a stop, or a store fact may end the hold.
+fn live_agent(
+    _candidate: &storyhook::service::VerificationCandidate,
+    _lease: Option<&storyhook::domain::StoryCleanupLease>,
+    _cancellation: &storyhook::daemon::verification::VerificationCancellation,
+) -> storyhook::service::engine::WindowProbe {
+    storyhook::service::engine::WindowProbe::Alive {
+        last_output_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|now| i64::try_from(now.as_secs()).ok()),
+    }
 }
 
 struct BlockingActuator {
@@ -339,6 +354,7 @@ fn reconciliation_wait_ignores_other_work_and_wakes_for_its_reserved_story() {
                     &subscription,
                     &stop,
                     &reserved,
+                    &HoldWatch::production(&live_agent),
                 ))
                 .unwrap();
         });
@@ -357,11 +373,13 @@ fn reconciliation_wait_ignores_other_work_and_wakes_for_its_reserved_story() {
             .set_state(&held, "verifying", None, Some("in-progress"), None)
             .unwrap();
         bus.publish(Change::Project("fixture".into()));
-        let resumed = result_rx
+        let ReconcileWait::Resubmitted(resumed) = result_rx
             .recv_timeout(lifecycle::CONTROL_DEADLINE)
             .unwrap()
             .unwrap()
-            .expect("the reserved story must wake its waiter");
+        else {
+            panic!("the reserved story must wake its waiter");
+        };
         assert_eq!(resumed.story_id, held);
         assert_ne!(resumed.verifying_generation, reserved.verifying_generation);
     });
@@ -392,6 +410,7 @@ fn reconciliation_wait_stops_without_a_resubmission() {
                     &subscription,
                     &stop,
                     &reserved,
+                    &HoldWatch::production(&live_agent),
                 ))
                 .unwrap();
         });
@@ -402,7 +421,7 @@ fn reconciliation_wait_stops_without_a_resubmission() {
                 .recv_timeout(lifecycle::CONTROL_DEADLINE)
                 .unwrap()
                 .unwrap()
-                .is_none(),
+                == ReconcileWait::Ended,
             "shutdown must cancel the reservation wait without a candidate"
         );
     });
