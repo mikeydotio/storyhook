@@ -40,7 +40,11 @@
 //!
 //! Every shim is spawned with the **exact argv shape**
 //! [`spawn_child`](../src/daemon/lifecycle.rs) builds for a real daemon:
-//! `--store-path <p> daemon --serve --port <n>`. That is deliberate — it
+//! `--store-path <p> daemon --serve --port <n> --owner <o>` (SH-784 added the
+//! trailing `--owner`; the detection script matches on the substring
+//! `" daemon --serve"` alone, so it is immune either way — this fixture keeps
+//! pace only so it stays a faithful positive control, not because the script
+//! needs it to). That is deliberate — it
 //! makes every case here double as the positive control the plan calls for:
 //! if the script's pattern ever stops matching production's actual shape
 //! (the SH-113 hazard), a refusal that should fire does not, and the test
@@ -303,7 +307,7 @@ fn write_executable(path: &Path, body: &str) {
 }
 
 /// The argv shape `spawn_child` (`src/daemon/lifecycle.rs`) actually builds:
-/// `<exe> --store-path <store> daemon --serve --port <port>`.
+/// `<exe> --store-path <store> daemon --serve --port <port> --owner <owner>`.
 ///
 /// `store` decides which of the script's two classes the process falls into,
 /// and every caller here has to mean one of them (SH-493). A store that
@@ -321,6 +325,8 @@ fn spawn_matching(exe: &Path, store: &Path) -> ChildGuard {
             "--serve",
             "--port",
             "0",
+            "--owner",
+            "fork-test-build",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())

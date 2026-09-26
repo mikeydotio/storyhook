@@ -1190,6 +1190,15 @@ pub enum DaemonAction {
     Serve {
         /// Bind this port instead of the environment's preferred one.
         port: Option<u16>,
+        /// What started this process — `launchd`, `fork-test-build`, or
+        /// `fork-no-agent` — self-reported into the portfile (SH-784).
+        /// Internal wiring: `spawn_child` and the installed plist always
+        /// pass it; a human typing `daemon --serve` by hand never does, and
+        /// that absence is itself meaningful (`ForkReason::Manual`). Not
+        /// documented in `--help` for the same reason `--serve` itself is
+        /// not.
+        #[serde(default)]
+        owner: Option<String>,
     },
     /// Start a daemon in the background, if one is not already running.
     Start {
@@ -2240,7 +2249,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "daemon",
         subcommand: None,
-        flags: &[bare("serve"), value("port"), bare("force")],
+        flags: &[bare("serve"), value("port"), bare("force"), value("owner")],
     },
     VerbFlags {
         verb: "web",
@@ -5029,9 +5038,10 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
         // Spelled as a flag rather than a subcommand because it is not one a
         // user runs: it is what the spawner execs, and what a launchd agent
         // runs, and both of those are storyhook talking to itself.
-        "--serve" => DaemonAction::Serve {
-            port: parse_port_flag(&args[2..], usage)?,
-        },
+        "--serve" => {
+            let (port, owner) = parse_serve_flags(&args[2..], usage)?;
+            DaemonAction::Serve { port, owner }
+        }
         "stop" => DaemonAction::Stop {
             force: match &args[2..] {
                 [] => false,
@@ -5120,6 +5130,57 @@ fn parse_port_flag(rest: &[String], usage: &str) -> Result<Option<u16>, AppError
         [flag] if flag == "--port" => Err(AppError::Usage("--port requires a value".to_string())),
         _ => Err(AppError::Usage(usage.to_string())),
     }
+}
+
+/// The literal `--owner` values `daemon --serve` accepts (SH-784). Kept next
+/// to [`parse_serve_flags`] rather than exported: nothing outside this
+/// process's own internal callers (`spawn_child`, the installed plist) is
+/// meant to type this flag, so there is no reason to name the values twice.
+const OWNER_VALUES: [&str; 3] = ["launchd", "fork-test-build", "fork-no-agent"];
+
+/// `--serve`'s own flags: an optional `--port <PORT>` and an optional
+/// `--owner <VALUE>`, in either order, each at most once.
+///
+/// Deliberately narrower than a general flag parser: `--serve` is internal
+/// wiring (see [`DaemonAction::Serve`]'s own doc), so unknown flags and
+/// repeats are refused rather than tolerated, the same as [`parse_port_flag`]
+/// already refuses anything but `--port`.
+fn parse_serve_flags(
+    rest: &[String],
+    usage: &str,
+) -> Result<(Option<u16>, Option<String>), AppError> {
+    let mut port = None;
+    let mut owner = None;
+    let mut index = 0;
+    while index < rest.len() {
+        match rest[index].as_str() {
+            "--port" if port.is_none() => {
+                let value = rest
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage("--port requires a value".to_string()))?;
+                port = Some(
+                    value
+                        .parse::<u16>()
+                        .map_err(|_| AppError::Usage(format!("invalid port: {value}")))?,
+                );
+                index += 2;
+            }
+            "--owner" if owner.is_none() => {
+                let value = rest
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage("--owner requires a value".to_string()))?;
+                if !OWNER_VALUES.contains(&value.as_str()) {
+                    return Err(AppError::Usage(format!(
+                        "invalid --owner value `{value}`; expected one of {OWNER_VALUES:?}"
+                    )));
+                }
+                owner = Some(value.clone());
+                index += 2;
+            }
+            _ => return Err(AppError::Usage(usage.to_string())),
+        }
+    }
+    Ok((port, owner))
 }
 
 fn parse_web(args: &[String]) -> Result<Invocation, AppError> {

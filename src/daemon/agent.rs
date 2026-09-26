@@ -102,6 +102,25 @@ pub fn path(env: &Environment) -> PathBuf {
 /// version-skew restart, and an agent that resurrected it immediately would race
 /// the client that just asked for a newer one. `RunAtLoad` is what this is for:
 /// the dashboard is there after a reboot without anybody running a command.
+///
+/// `ProcessType = Interactive` (SH-784, changed from `Background`) is what
+/// `launchd.plist(5)` permits "only if an app's ability to be responsive
+/// depends on it, and cannot be made Adaptive" — true since SH-114 made every
+/// `story` command depend on the daemon, and `Adaptive` needs XPC, which this
+/// daemon does not use. `Background` clamped the daemon's effective QoS below
+/// every default-priority process on the machine, including the tests it was
+/// meant to be serving (measured on SH-784: darwin-BG, priority 4). A launchd
+/// agent is the *only* thing that can give the daemon a class of its own at
+/// all — a spawn attribute cannot remove a clamp a service manager already
+/// applied — so getting this key right is the entire mechanism, not a tuning
+/// knob.
+///
+/// The trailing `--owner launchd` is fixed here rather than computed per
+/// launch, because this fact never varies for a given plist: whichever
+/// invocation this exact file produces is, definitionally, launchd's own.
+/// The daemon reads it back to self-report `DaemonOwner::Launchd` into its own
+/// portfile (`lifecycle::resolve_owner`), which is what lets `story daemon
+/// status` show the accidental case when there is one.
 pub fn plist(exe: &Path, env: &Environment) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -115,11 +134,13 @@ pub fn plist(exe: &Path, env: &Environment) -> String {
         <string>{exe}</string>
 {store}        <string>daemon</string>
         <string>--serve</string>
+        <string>--owner</string>
+        <string>launchd</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Interactive</string>
     <key>StandardErrorPath</key>
     <string>{log}</string>
 </dict>
@@ -629,6 +650,37 @@ mod tests {
              stand-down window on every command's path, and the surgical \
              `SuccessfulExit: false` variant turns a damaged store into a \
              respawn loop on launchd's ten-second throttle: {plist}"
+        );
+    }
+
+    /// SH-784: `Background` clamped the daemon below every default-priority
+    /// process on the machine (measured: darwin-BG, priority 4) — only
+    /// `Interactive` lets a serving thread's `QOS_CLASS_USER_INITIATED`
+    /// request actually raise its priority. The daemon self-reports this
+    /// exact plist as its own `DaemonOwner::Launchd` via the fixed trailing
+    /// `--owner launchd`.
+    #[test]
+    fn the_agent_requests_interactive_process_type_and_reports_its_own_ownership() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let plist = plist(Path::new("/usr/local/bin/story"), &env);
+        assert!(
+            plist.contains("<key>ProcessType</key>\n    <string>Interactive</string>"),
+            "a launchd-owned daemon needs Interactive to raise its serving \
+             threads above default; Standard is utility (20, below today's \
+             accidental 31) and Background is darwin-BG (4, below everything): {plist}"
+        );
+        assert!(
+            !plist.contains("Background"),
+            "the pre-SH-784 clamp must not survive alongside the fix: {plist}"
+        );
+        assert!(
+            registered_args(&plist)
+                .expect("a plist this build just wrote must parse")
+                .windows(2)
+                .any(|pair| pair == ["--owner", "launchd"]),
+            "the daemon must be able to self-report DaemonOwner::Launchd from \
+             its own argv: {plist}"
         );
     }
 

@@ -229,8 +229,9 @@ fn main() {
             Some(port) => environment.daemon_port(port),
             None => environment,
         };
+        let owner_flag = foreground_serve_owner(&invocation);
         let result = storyhook::invoke::open_store(&environment)
-            .and_then(|store| storyhook::daemon::lifecycle::run(&store, &environment));
+            .and_then(|store| storyhook::daemon::lifecycle::run(&store, &environment, owner_flag));
         if let Err(e) = result {
             // The client that started this process is waiting on a portfile it
             // is never going to get, and this is the only process that knows
@@ -746,11 +747,26 @@ fn read_stdin() -> Result<String, storyhook::error::AppError> {
 fn foreground_serve_port(invocation: &Invocation) -> Option<Option<u16>> {
     match invocation {
         Invocation::Daemon {
-            action: DaemonAction::Serve { port },
+            action: DaemonAction::Serve { port, .. },
         } => Some(*port),
         Invocation::Web {
             action: WebAction::Serve { port },
         } => Some(*port),
+        _ => None,
+    }
+}
+
+/// The `--owner` flag `daemon --serve` was invoked with, or `None` when
+/// absent — including every `story web --serve` invocation, which carries no
+/// such flag (SH-784). `None` resolves to
+/// [`storyhook::daemon::lifecycle::ForkReason::Manual`] inside `run`: nothing
+/// internal ever calls `web --serve` with `--owner`, so reaching this alias
+/// at all already means a human typed the command by hand.
+fn foreground_serve_owner(invocation: &Invocation) -> Option<&str> {
+    match invocation {
+        Invocation::Daemon {
+            action: DaemonAction::Serve { owner, .. },
+        } => owner.as_deref(),
         _ => None,
     }
 }
