@@ -459,6 +459,22 @@ fn answer_patience() -> Patience {
     }
 }
 
+/// The program the default server's `@1` finally runs, and so the identity
+/// the engine must recognize there.
+const OCCUPANT: &str = "sleep";
+
+/// The default `@1`'s command: the pane's shell runs a short delay, then
+/// becomes [`OCCUPANT`].
+///
+/// A tmux pane runs its command through the default shell, which may start
+/// further programs (`zsh` then `bash` for `/bin/sh` on macOS), so what the
+/// pane reports right after `new-window` is not what it will run. The delay
+/// makes that hand-off certain on every run rather than only under load
+/// (SH-806), so the fixture cannot pass by reading the pane early by luck.
+fn occupant_command() -> String {
+    format!("sleep 0.5; exec {OCCUPANT} 2147483647")
+}
+
 /// Probes the adapter holds past `TMUX_TIMEOUT` in the contention variant:
 /// together they outlast both the old fixed 10 s wait and the idle
 /// [`ANSWER_PATIENCE`], so only grace lets the next real probe answer.
@@ -561,7 +577,14 @@ fn engine_probe_case(name: &str, forced: u32, floor: Option<f64>) {
     let _unrelated_server = server(&unrelated_socket);
     let target = tmux(
         &default_socket,
-        &["new-window", "-d", "-P", "-F", "#{window_id}", "/bin/sh"],
+        &[
+            "new-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{window_id}",
+            &occupant_command(),
+        ],
     );
     let other_target = tmux(
         &unrelated_socket,
@@ -582,20 +605,29 @@ fn engine_probe_case(name: &str, forced: u32, floor: Option<f64>) {
     );
     let inherited_pane = tmux(&unrelated_socket, &["display-message", "-p", "#{pane_id}"]);
 
-    let default_process = tmux(
-        &default_socket,
-        &[
-            "display-message",
-            "-p",
-            "-t",
-            "@1",
-            "#{pane_current_command}",
-        ],
-    );
-    assert!(
-        !default_process.trim().is_empty(),
-        "default fixture process identity"
-    );
+    // The engine's identity check compares against what the pane runs once
+    // settled, so read it only after the hand-off (SH-806).
+    let mut patience = Patience::new(STARTUP_DEADLINE);
+    let default_process = loop {
+        let current = tmux(
+            &default_socket,
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                "@1",
+                "#{pane_current_command}",
+            ],
+        );
+        if current.trim() == OCCUPANT {
+            break current;
+        }
+        assert!(
+            !patience.expired(),
+            "default fixture @1 never settled into {OCCUPANT} ({patience}); it runs {current:?}"
+        );
+        std::thread::sleep(POLL);
+    };
     assert_ne!(
         default_process.trim(),
         "cat",
