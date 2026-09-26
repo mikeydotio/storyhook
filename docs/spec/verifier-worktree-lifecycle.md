@@ -146,7 +146,9 @@ Rust supplies its cleanup grace as `STORYHOOK_VERIFIER_CLEANUP_GRACE_MS`
 (normally 30 seconds). The gate session receives one quarter for TERM cleanup,
 the lifecycle session one half, the outer machine-lock wrapper three quarters,
 and Rust the full budget. Session owners reserve another eighth for bounded
-reaping after KILL. The wrapper's explicit `--termination-grace` leaves other
+reaping after KILL, measured from the delivered KILL and judged only by a census
+begun after it closes (SH-767). Deadlines are checked between censuses, so each
+layer's worst case also grows by its census latency. The wrapper's explicit `--termination-grace` leaves other
 callers' existing policy unchanged. The bundled shell entry requires at least
 four seconds so each layer has a positive whole-second wrapper budget.
 
@@ -203,7 +205,7 @@ The central verifier owns the full suite.
 The Python harness explicitly supplies a 30-second cleanup budget, retaining
 8- and 16-second overrides where cancellation cases exercise shorter ladders.
 Its settlement allowance is the budget supplied to that child plus a named
-5-second scheduling/reaping margin. Wrapper exit and gate disappearance share
+5-second scheduling/reaping margin, both graced by contention since SH-767. Wrapper exit and gate disappearance share
 one deadline; cleanup registrations retain the original child's allowance.
 Startup and synchronous commands receive three default cleanup budgets plus
 the margin (95 seconds). Startup has no production deadline: this is generous
@@ -225,6 +227,32 @@ child programs, for bare numeric process timeouts and monotonic deadlines.
 Named/derived bounds and comment lines are allowed; polling sleeps are not
 ceilings. Positive controls and a required lifecycle-harness corpus entry keep
 an empty or ineffective scan from passing silently.
+
+### Contention grace and settled observation — SH-767
+
+SH-698 assumed the ladder finishes inside the supplied budget. Under gate load
+it does not: each deadline check waits for a census (20 ms idle, more than 5 s
+at load 300 on 10 cores), and the observed interval also covers restoration,
+verdict emission and the outer census, which no budget covers.
+`scripts/tests/load_grace.py` ports the browser suite's SH-347 policy.
+Contention is the one-minute load average per core; the multiplier is exactly
+1 at or below one, otherwise the ratio, capped at 15 minutes divided by the
+95-second startup allowance. Each case samples it once in `setUp` and
+multiplies the budget it hands production, because production reads that
+budget once at launch. Settlement and startup allowances scale by the same
+multiplier, so startup > settlement > budget always holds. Harness waits
+sample again at expiry and extend in proportion, never shrink, and write one
+stderr line per extension. Leading zeros survive grace; one ungraced `08000`
+gate and one graced `032000` gate prove `verify-pr.sh` delivers the value in
+decimal. At idle every value is unchanged.
+
+Settlement failures report the child's log, every gate attempt log, timing
+and load. `cancel_gate` waits on the same allowance for every recorded session
+to be quiet before it reads the owner record. Slow-census cases delay only the
+supervisors' `ps -axo pid=,stat=` through a PATH wrapper and pin that a
+delivered KILL is not refused; the verdict suite pins that a member the census
+always reports is still refused. Diagnosis and sightings:
+[SH-767 RCA](../rca/sh-767-lifecycle-settle-under-load.md).
 
 ## Completed execution and failed cleanup — SH-702
 

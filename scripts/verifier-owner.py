@@ -132,10 +132,12 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
     os.close(release)
     grace = budget / (4 if field == "gate_session" else 2)
     deadline = None
-    killed = False
+    killed_at = None
     code = None
     try:
         while True:
+            # Everything this pass observes is at least as recent as this.
+            observed_at = time.monotonic()
             if cancellation.signum is not None and deadline is None:
                 deadline = time.monotonic() + grace
                 if field == "gate_session":
@@ -188,7 +190,7 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
                     gate = read(record_path).get("gate_session")
                     if gate and supervisor_gone(record_path, child):
                         signal_session(gate, signal.SIGTERM)
-            if deadline is not None and time.monotonic() >= deadline and not killed:
+            if deadline is not None and time.monotonic() >= deadline and killed_at is None:
                 signal_session(child, signal.SIGKILL)
                 # Escalation must also cover the recorded arbitrary execution
                 # session if its supervisor died before completing the record.
@@ -196,8 +198,13 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
                     gate = read(record_path).get("gate_session")
                     if gate:
                         signal_session(gate, signal.SIGKILL)
-                killed = True
-            if killed and time.monotonic() >= deadline + budget / 8:
+                killed_at = time.monotonic()
+            # The reaping eighth runs from the delivered SIGKILL, and only members
+            # found by a census begun after it closed prove survival. Under load
+            # one census can outlast the eighth, and a census taken before the
+            # kill, or empty because the leader has just exited, proves nothing
+            # about the kill (SH-767).
+            if killed_at is not None and remaining and observed_at >= killed_at + budget / 8:
                 raise Refusal(f"could not reap execution session {child} after SIGKILL; live writers={remaining}; retained {record_path}")
             time.sleep(.05)
         if PINNED:
