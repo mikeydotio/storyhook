@@ -61,14 +61,44 @@ out=$(cd "$repo" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX=fake TMUX_PANE=%0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" dispatch "$id")
 assert_eq "$(jqf "$out" .ok)" true "notify: Claude has its own managed registration"
 export FAKE_TMUX_PANES="$id	1	%1"
-out=$(
-  cd "$repo" \
-    && PATH="$FAKE_TMUX_DIR:$PATH" STORY_PASTE_SETTLE_DELAY=0 \
-      FAKE_TMUX_PANE_COMMAND=claude bash "$SCRIPT" notify "$id" "$message" 2>&1
-)
+remediate() {
+  (cd "$repo" && PATH="$FAKE_TMUX_DIR:$PATH" STORY_PASTE_SETTLE_DELAY=0 STORY_CONFIRM_DELAY=0 \
+    FAKE_TMUX_PANE_COMMAND=claude FAKE_TMUX_CAPTURE=marker "$@" bash "$SCRIPT" notify "$id" "$message" 2>&1)
+}
+pastes() { wc -l < "$FAKE_TMUX_STATE/pastes.log" 2>/dev/null | tr -d ' ' || printf 0; }
+submits() { wc -l < "$FAKE_TMUX_STATE/submit_keys.log" 2>/dev/null | tr -d ' ' || printf 0; }
+out=$(remediate env)
 assert_eq "$(jqf "$out" .ok)" "true" "notify: Claude remediation delivered"
 assert_eq "$(tail -n 1 "$FAKE_TMUX_STATE/submit_keys.log")" "Enter" \
   "notify: Claude remediation retains its configured submit key"
+
+# SH-780: the remediation types only into an idle composer and submits only
+# what it sees there. Before, it pasted and pressed Enter blind, and Enter on a
+# dialog's selector row ('❯ 1. Yes') approves the dialog for the person.
+printf '%s' "1. Yes" > "$FAKE_TMUX_STATE/input"
+pastes_before=$(pastes); submits_before=$(submits)
+out=$(remediate env)
+assert_eq "$(jqf "$out" .ok)" false "busy composer: refused"
+assert_eq "$(jqf "$out" .reason)" composer-busy "busy composer: named"
+assert_contains "$(jqf "$out" .display)" "window" "busy composer: the refusal names the window"
+assert_eq "$(pastes)" "$pastes_before" "busy composer: nothing pasted"
+assert_eq "$(submits)" "$submits_before" "busy composer: no submit key"
+: > "$FAKE_TMUX_STATE/input"
+
+# No composer row at all is no evidence of an idle one.
+pastes_before=$(pastes); submits_before=$(submits)
+out=$(remediate env FAKE_TMUX_CAPTURE=legacy)
+assert_eq "$(jqf "$out" .reason)" composer-busy "no composer row: refused as not idle"
+assert_eq "$(pastes)" "$pastes_before" "no composer row: nothing pasted"
+assert_eq "$(submits)" "$submits_before" "no composer row: no submit key"
+
+# A paste that never shows in the composer is never submitted.
+submits_before=$(submits)
+out=$(remediate env FAKE_TMUX_DROP_PASTE=1)
+assert_eq "$(jqf "$out" .ok)" false "dropped paste: refused"
+assert_eq "$(jqf "$out" .reason)" delivery-failed "dropped paste: named"
+assert_eq "$(submits)" "$submits_before" "dropped paste: no submit key was sent"
+: > "$FAKE_TMUX_STATE/input"
 
 # SH-650: a pane whose process has exited under remain-on-exit is a corpse, not
 # an occupant. tmux freezes #{pane_current_command} at its last live value, so

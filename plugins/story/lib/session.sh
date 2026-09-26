@@ -78,12 +78,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/plugin-identity.sh"
 #                            simply disables the identity half of pane_runs.
 #   READY_TAIL_LINES         pane_tail
 #   READY_ACCEPT_PATTERN     prompt_accepted
-#   CONFIRM_ATTEMPTS         poll_input
-#   CONFIRM_DELAY            poll_input
+#   CONFIRM_ATTEMPTS         poll_input, poll_composer_holds
+#   CONFIRM_DELAY            poll_input, poll_composer_holds
 #   SEND_RETRIES             send_prompt_confirmed
 #   SUBMIT_KEY               send_prompt_confirmed
 #   EMPTY_INPUT_PATTERN      input_state (provider-rendered empty placeholder)
-#   PASTE_SETTLE_DELAY       paste_text, paste_prompt
+#   PASTE_PLACEHOLDER_PATTERN composer_holds (provider's collapsed-paste input)
+#   PASTE_SETTLE_DELAY       paste_prompt
 #   CAPTURE_LINES            capture_pane_transcript (default only — callers
 #                            may pass an explicit override as its $2)
 #   WORKTREE_IGNORE_PATH     worktree_ignore_status, append_worktree_ignore
@@ -312,8 +313,16 @@ delete_merged_local_branch() {
 # no \x escapes (SH-694).
 COMPOSER_DECORATION_EXPR="s/$(printf '\342')[$(printf '\240')-$(printf '\243')][$(printf '\200')-$(printf '\277')]//g"
 
+# COMPOSER_PADDING_EXPR — a sed expression turning U+00A0 NO-BREAK SPACE (the
+# UTF-8 bytes C2 A0) into a plain space, under LC_ALL=C for the same reasons.
+# Claude Code pads its prompt glyph with NBSP (`❯` C2 A0, recorded 2026-09-26),
+# and [:space:] does not match those bytes in the C locale, so an idle composer
+# read as "text" wherever the daemon had no UTF-8 locale (SH-780).
+COMPOSER_PADDING_EXPR="s/$(printf '\302\240')/ /g"
+
 # strip_composer_decoration <text> — echo <text> with every Braille Patterns
-# character removed. Codex 0.154.0 animates the idle composer of an Astra model
+# character removed and every NBSP turned into a space (see the two
+# expressions above). Codex 0.154.0 animates the idle composer of an Astra model
 # with a Braille "sparkle" — dots before AND after the placeholder, redrawn every
 # 150ms for the whole idle period — and the row that carries it is the very row
 # input_state reads to confirm a submission cleared the box; undecorated, it is
@@ -326,31 +335,66 @@ COMPOSER_DECORATION_EXPR="s/$(printf '\342')[$(printf '\240')-$(printf '\243')][
 # widened to "contains the placeholder": a real draft can contain those words,
 # and reading it as empty would report a never-submitted prompt as submitted.
 strip_composer_decoration() {
-  printf '%s' "$1" | LC_ALL=C sed -E "$COMPOSER_DECORATION_EXPR"
+  printf '%s' "$1" | LC_ALL=C sed -E -e "$COMPOSER_DECORATION_EXPR" -e "$COMPOSER_PADDING_EXPR"
 }
 
-# input_box_text <content> — echo the trailing text of the ACTIVE input row (the
-# LAST line bearing READY_PROMPT_GLYPH), box padding stripped. The input row, NOT
-# the pane's last non-blank line: the real TUI (and the test fixtures) render a
-# FOOTER *below* the input box, so the last non-blank line is the footer and never
-# the prompt.
-input_box_text() {
-  local content="$1" row tail
-  row=$(printf '%s\n' "$content" | grep -F -- "$READY_PROMPT_GLYPH" | tail -1) || row=""
-  [ -n "$row" ] || { printf ''; return 0; }
-  tail=${row##*"$READY_PROMPT_GLYPH"}   # everything after the last glyph
+# COMPOSER_AWK — the reader of a composer row (lib/composer.awk). Resolved once,
+# at source time, beside this file.
+COMPOSER_AWK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/composer.awk"
+
+# composer_row_text <content> [keep-faint] — echo the text of the ACTIVE input
+# row (the LAST line bearing READY_PROMPT_GLYPH) after that row's FIRST glyph:
+# escape sequences removed, faint characters left out (kept when a second
+# argument is given), box border, Braille decoration and NBSP padding
+# normalised. Returns 0 when a row bears the glyph, 1 when none does, and
+# anything else when the reader itself failed (then nothing is echoed and
+# nothing may be concluded).
+#
+# The input row, NOT the pane's last non-blank line: the real TUI (and the test
+# fixtures) render a FOOTER *below* the input box, so the last non-blank line is
+# the footer and never the prompt. The first glyph, not the last: the row's own
+# prompt comes first, and a draft that ends in the glyph character is still a
+# draft (SH-780). Faint characters are left out because providers draw what is
+# not input that way -- Claude Code's predicted next prompt, Codex's
+# placeholder -- which a plain capture showed as a draft (SH-780). <content>
+# should come from `capture-pane -p -e`; a plain capture reads the same, minus
+# that rule.
+composer_row_text() {
+  local tail status=0
+  tail=$(printf '%s\n' "$1" \
+    | COMPOSER_GLYPH="$READY_PROMPT_GLYPH" COMPOSER_KEEP_FAINT="${2:-}" LC_ALL=C awk -f "$COMPOSER_AWK") \
+    || status=$?
+  [ "$status" -le 1 ] || return "$status"
   tail=${tail//│/}                       # strip the box border (literal, mb-safe)
   tail=$(strip_composer_decoration "$tail")   # then any animated decoration (SH-694)
   printf '%s' "$tail"
+  return "$status"
 }
 
-# input_state <pane> — "text" (box holds unsubmitted input) | "empty" (idle box) |
-# "unknown" (capture failed). "unknown" is DISTINCT from "empty" so a transient
-# capture failure can never be misread as a submission confirmation.
+# input_box_text <content> — composer_row_text for callers that only want the
+# text: empty when no row bears the glyph or the reader failed.
+input_box_text() {
+  composer_row_text "$1" || true
+}
+
+# input_state <pane> [strict] — "text" (box holds unsubmitted input) | "empty"
+# (idle box) | "unknown" (capture or reader failed) | "absent" (strict only: no
+# row bears the glyph). "unknown" is DISTINCT from "empty" so a transient
+# failure can never be misread as a submission confirmation, nor as an idle
+# composer that storyhook may type into. Without "strict", a screen with no
+# composer row reads "empty", as a submission that leaves no row must; a caller
+# about to TYPE asks "strict", because a screen with no composer is no evidence
+# of an idle one (SH-780). The capture carries attributes (-e) so that faint
+# placeholder text is not read as input (composer_row_text).
 input_state() {
-  local content box_text
-  content=$(tmux capture-pane -p -t "$1" 2>/dev/null) || { printf 'unknown'; return; }
-  box_text="$(input_box_text "$content")"
+  local content box_text status=0
+  content=$(tmux capture-pane -p -e -t "$1" 2>/dev/null) || { printf 'unknown'; return; }
+  box_text=$(composer_row_text "$content") || status=$?
+  [ "$status" -le 1 ] || { printf 'unknown'; return; }
+  if [ "$status" -eq 1 ] && [ "${2:-}" = strict ]; then
+    printf 'absent'
+    return
+  fi
   case "$box_text" in
     *[![:space:]]*)
       if [ -n "${EMPTY_INPUT_PATTERN:-}" ] \
@@ -362,6 +406,62 @@ input_state() {
       ;;
     *) printf 'empty' ;;
   esac
+}
+
+# poll_composer_holds <pane> <text> — poll composer_holds up to CONFIRM_ATTEMPTS
+# times, CONFIRM_DELAY apart, for the composer to show <text>. 0 once it does,
+# else 1.
+poll_composer_holds() {
+  local attempt=0
+  while [ "$attempt" -lt "$CONFIRM_ATTEMPTS" ]; do
+    composer_holds "$1" "$2" && return 0
+    sleep "$CONFIRM_DELAY"
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+# The placeholders a provider puts in its INPUT, in place of a long paste, as
+# anchored ERE (read from the provider binaries, 2026-09: Claude Code 2.1.283's
+# `[Pasted text #${n} +${lines} lines]`, and `[Pasted text #${n}]` for one line;
+# Codex 0.157.0's `[Pasted Content ${chars} chars]`). configure_agent selects
+# one as PASTE_PLACEHOLDER_PATTERN; STORY_PASTE_PLACEHOLDER_PATTERN overrides it
+# when a provider changes its wording, which composer_holds would otherwise
+# report as a paste that never arrived (it fails closed).
+CLAUDE_PASTE_PLACEHOLDER_PATTERN='^\[Pasted text #[0-9]+( \+[0-9]+ lines)?\]'
+CODEX_PASTE_PLACEHOLDER_PATTERN='^\[Pasted Content [0-9]+ chars\]'
+
+# composer_holds <pane> <text> — 0 only when the composer row shows <text> as
+# its input: the row begins with <text>'s signature (its first line, without
+# leading blanks, cut at its first control character, at most 20 bytes,
+# without trailing blanks), or the whole input is the provider's collapsed-
+# paste placeholder (PASTE_PLACEHOLDER_PATTERN). 1 otherwise, and when the
+# capture or the reader fails.
+#
+# A receipt of "any text" cannot tell our prompt from a dialog's cursor row
+# (`❯ 1. Yes`), and a submit key sent to that row approves the dialog on the
+# person's behalf (SH-780). Faint text is kept here: whether the input holds our
+# paste is the question, not how the provider styles it.
+composer_holds() {
+  local content row
+  content=$(tmux capture-pane -p -e -t "$1" 2>/dev/null) || return 1
+  row=$(composer_row_text "$content" keep-faint) || return 1
+  # Bytes, not characters: both sides are cut and compared the same way.
+  (
+    export LC_ALL=C
+    local text="$2" sig
+    sig=${text%%$'\n'*}
+    sig=${sig%%$'\r'*}
+    sig=${sig#"${sig%%[![:space:]]*}"}
+    sig=${sig%%[[:cntrl:]]*}
+    sig=${sig:0:20}
+    sig=${sig%"${sig##*[![:space:]]}"}
+    row=${row#"${row%%[![:space:]]*}"}
+    [ -n "$sig" ] && [ "${row#"$sig"}" != "$row" ] && exit 0
+    [ -n "${PASTE_PLACEHOLDER_PATTERN:-}" ] \
+      && printf '%s' "$row" | grep -Eq -- "${PASTE_PLACEHOLDER_PATTERN}[[:space:]]*\$" && exit 0
+    exit 1
+  )
 }
 
 # poll_input <pane> <text|empty> — poll input_state up to CONFIRM_ATTEMPTS times,
@@ -781,16 +881,6 @@ prompt_accepted() {
   esac
 }
 
-# paste_text <pane> <text> — literal-paste <text>, then SETTLE so a bracketed
-# paste closes before any Enter. Used for typing a SINGLE-LINE command into a
-# SHELL, where bracketed paste isn't guaranteed; the multi-line-safe prompt send
-# uses paste_prompt below. Sends NO Enter. Returns non-zero if the paste send
-# itself failed.
-paste_text() {
-  tmux send-keys -t "$1" -l "$2" 2>/dev/null || return 1
-  sleep "$PASTE_SETTLE_DELAY"
-}
-
 # paste_prompt <pane> <text> <buffer> — deliver <text> into a Claude TUI as ONE
 # bracketed paste, so an embedded newline stays TEXT instead of submitting the
 # prompt at its first line (`send-keys -l` sends a newline as a literal Enter).
@@ -798,8 +888,8 @@ paste_text() {
 # (bracketed-paste markers → the TUI buffers the whole paste and never submits
 # mid-way) and -d (delete the private buffer after). No -r: tmux's default
 # LF→CR matches what a real terminal sends on a human paste. Sends NO Enter; the
-# settle preserves the settle-before-Enter invariant. Only the PROMPT uses this —
-# the launch send types a single-line command into a shell and keeps paste_text.
+# settle preserves the settle-before-Enter invariant. Only the PROMPT is typed:
+# the launch command is exec'd into the pane, never typed (SH-230).
 # Returns non-zero if either tmux stage failed (caller then skips its receipt
 # poll and retries).
 paste_prompt() {

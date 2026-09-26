@@ -37,36 +37,14 @@ OPTION = "@storyhook-identity-v1"
 
 
 class AgentIdentityTests(unittest.TestCase):
-    """Native fixture providers only record bytes; all routing is production code."""
+    """Native fixture providers record bytes and draw a composer; all routing is production code."""
 
     @classmethod
     def setUpClass(cls):
-        """Compile a byte recorder with a real provider executable identity."""
+        """Compile the composer-drawing byte recorder as both provider executables."""
         cls.tools = tempfile.TemporaryDirectory(prefix="story-identity-tools-", dir="/tmp")
         cls.bin = Path(cls.tools.name)
-        source = cls.bin / "provider.c"
-        source.write_text(r'''
-#include <fcntl.h>
-#include <stdio.h>
-#include <termios.h>
-#include <unistd.h>
-int main(int argc, char **argv) {
-    if (argc != 2) return 2;
-    struct termios tty;
-    if (tcgetattr(0, &tty) != 0) return 3;
-    cfmakeraw(&tty);
-    if (tcsetattr(0, TCSANOW, &tty) != 0) return 4;
-    if (write(1, "\033[?2004h", 8) != 8) return 8;
-    int fd = open(argv[1], O_WRONLY | O_CREAT | O_APPEND, 0600);
-    if (fd < 0) return 5;
-    if (write(fd, "READY\n", 6) != 6) return 6;
-    char bytes[4096];
-    ssize_t n;
-    while ((n = read(0, bytes, sizeof(bytes))) > 0)
-        if (write(fd, bytes, (size_t)n) != n) return 7;
-    return 0;
-}
-''')
+        source = PLUGIN / "tests/fakes/composer-provider.c"
         subprocess.run(["cc", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(cls.bin / "codex")], check=True)
         shutil.copy2(cls.bin / "codex", cls.bin / "claude")
         repo = PLUGIN.parents[1]
@@ -157,10 +135,18 @@ int main(int argc, char **argv) {
                 self.fail(f"timeout waiting for {description}")
             time.sleep(0.01)
 
-    def launch(self, provider="codex", worktree=None, name="TST-1", split=False):
-        """Start a direct provider executable and wait for its input recorder."""
+    def launch(self, provider="codex", worktree=None, name="TST-1", split=False, screen=None):
+        """Start a direct provider executable and wait for its input recorder.
+
+        `screen` is drawn in place of the idle composer (a dialog or a ghost
+        suggestion); the recorder draws it before it signals readiness.
+        """
         output = self.root / f"input-{time.monotonic_ns()}"
         command = f"{shlex.quote(str(self.bin / provider))} {shlex.quote(str(output))}"
+        if screen is not None:
+            screen_file = self.root / f"screen-{time.monotonic_ns()}"
+            screen_file.write_bytes(screen)
+            command += f" {shlex.quote(str(screen_file))}"
         if split:
             args = ["split-window", "-d", "-t", self.pane]
         else:
@@ -174,12 +160,13 @@ int main(int argc, char **argv) {
         self.inputs[pane] = output
         return pane
 
-    def notify(self, message="REPAIR_FIXTURE\nsecond line", **env):
+    def notify(self, message="REPAIR_FIXTURE\nsecond line", flags=(), **env):
         """Drive the real Bash notification entry point."""
         before = self.env.copy()
         self.env.update(env)
         try:
-            result = self.run_command(["bash", str(HELPER), "--project", self.project, "notify", "TST-1", message])
+            result = self.run_command(["bash", str(HELPER), "--project", self.project, "notify", "TST-1",
+                                       message, *flags])
         finally:
             self.env = before
         self.assertTrue(result.stdout.strip(), result.stderr)
@@ -295,12 +282,12 @@ int main(int argc, char **argv) {
         self.assertFalse(result["ok"], result)
         self.assertEqual(self.inputs[self.pane].read_bytes(), before)
 
-    def register(self, pane=None):
+    def register(self, pane=None, provider="codex"):
         """Call the production registration boundary used by managed dispatch."""
         pane = pane or self.pane
         pid = self.tmux("display-message", "-p", "-t", pane, "#{pane_pid}").strip()
         result = self.run_command(["python3", str(IDENTITY), "register", self.project, "TST-1",
-                                   "TST-1", str(self.worktree), pane, pid, "codex"])
+                                   "TST-1", str(self.worktree), pane, pid, provider])
         return json.loads(result.stdout)
 
     def test_managed_registration_binds_the_exact_pane(self):
@@ -523,6 +510,77 @@ int main(int argc, char **argv) {
         self.assertEqual(result["reason"], "pane-changed")
         self.wait_for(lambda: b"PASTED_WITHOUT_SUBMIT" in self.inputs[self.pane].read_bytes(), "pasted input")
         self.assertFalse(self.inputs[self.pane].read_bytes().endswith(b"\t"))
+
+    # SH-780: a resume or a remediation types only into an idle composer, and
+    # submits only what it sees there. The screens below are field rows
+    # recorded on 2026-09-26: a Claude selection dialog (pane %48), a Claude
+    # ghost suggestion, the real Codex placeholder row.
+    CLAUDE_DIALOG = (b"\r\nDo you want to proceed?\r\n"
+                     b"\x1b[94m\xe2\x9d\xaf\x1b[39m \x1b[37m1.\x1b[39m \x1b[94mYes\x1b[39m\r\n"
+                     b"  \x1b[37m2.\x1b[39m No, and tell Claude what to do differently\r\n")
+    CODEX_DIALOG = (b"\r\nImplement this plan?\r\n\xe2\x80\xba 1. Yes, implement this plan\r\n"
+                    b"  2. No, stay in Plan mode\r\n")
+    CLAUDE_GHOST = b"\r\n\x1b[39m\xe2\x9d\xaf\xc2\xa0\x1b[2mmove TST-1 back to verifying\x1b[0m"
+    CODEX_IDLE = (b"\r\n\x1b[1m\xe2\x80\xba\x1b[0m\x1b[48;2;109;104;133m "
+                  b"\x1b[2mAsk Codex to do anything\x1b[0m")
+
+    def relaunch(self, provider, screen):
+        """Replace the case's agent with a registered one drawing `screen`."""
+        self.tmux("kill-pane", "-t", self.pane)
+        self.pane = self.launch(provider=provider, screen=screen)
+        registered = self.register(provider=provider)
+        self.assertTrue(registered["ok"], registered)
+
+    def target(self, provider):
+        """The session binding a Delivered interrupt acknowledges (production helper)."""
+        return self.run_command(["python3", str(PLUGIN / "lib/interrupt-agent.py"), "target",
+                                 self.pane, provider], check=True).stdout.strip()
+
+    def assert_nothing_typed(self, result):
+        """A busy composer is refused before any byte reaches the agent."""
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["reason"], "composer-busy", result)
+        time.sleep(0.2)
+        self.assertEqual(self.inputs[self.pane].read_bytes(), b"READY\n")
+
+    def test_remediation_types_nothing_into_a_dialog(self):
+        """Enter on a dialog would approve it for the person (SH-780)."""
+        for provider, dialog in (("claude", self.CLAUDE_DIALOG), ("codex", self.CODEX_DIALOG)):
+            with self.subTest(provider=provider):
+                self.relaunch(provider, dialog)
+                self.assert_nothing_typed(self.notify("MUST_NOT_ARRIVE"))
+
+    def test_session_bound_resume_types_nothing_into_a_dialog(self):
+        """The resume after an acknowledged interrupt is guarded the same way."""
+        for provider, dialog in (("claude", self.CLAUDE_DIALOG), ("codex", self.CODEX_DIALOG)):
+            with self.subTest(provider=provider):
+                self.relaunch(provider, dialog)
+                self.assert_nothing_typed(self.notify(
+                    "MUST_NOT_ARRIVE", flags=("--expected-target", self.target(provider))))
+
+    def test_nothing_is_typed_where_no_composer_is_drawn(self):
+        """A screen without a composer row is no evidence of an idle composer."""
+        self.relaunch("claude", b"\r\n  a full-screen view with no prompt\r\n")
+        self.assert_nothing_typed(self.notify("MUST_NOT_ARRIVE"))
+
+    def test_a_ghost_suggestion_or_a_placeholder_is_an_idle_composer(self):
+        """Faint text is not a draft, in the daemon's C locale too (SH-780)."""
+        for provider, screen, submit in (("claude", self.CLAUDE_GHOST, b"\r"),
+                                         ("codex", self.CODEX_IDLE, b"\t")):
+            with self.subTest(provider=provider):
+                self.relaunch(provider, screen)
+                result = self.notify("GHOSTED_DELIVERY", LC_ALL="C")
+                self.assertTrue(result["ok"], result)
+                self.wait_for(lambda: self.inputs[self.pane].read_bytes().endswith(submit), "submit key")
+                self.assertIn(b"GHOSTED_DELIVERY", self.inputs[self.pane].read_bytes())
+
+    def test_session_bound_resume_reaches_an_idle_composer(self):
+        """The acknowledged session still receives its resume, once."""
+        self.relaunch("claude", self.CLAUDE_GHOST)
+        result = self.notify("RESUME_FIXTURE", flags=("--expected-target", self.target("claude")))
+        self.assertTrue(result["ok"], result)
+        self.wait_for(lambda: self.inputs[self.pane].read_bytes().endswith(b"\r"), "submit key")
+        self.assertEqual(self.inputs[self.pane].read_bytes().count(b"RESUME_FIXTURE"), 1)
 
     def test_failed_registration_readback_is_refused(self):
         """A successful write without trustworthy readback is not registration."""

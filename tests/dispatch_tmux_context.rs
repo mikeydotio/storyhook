@@ -474,6 +474,30 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
     );
 }
 
+/// A Codex stand-in for the callback test: it draws the composer row the way
+/// Codex does (`›` and a space), echoes what is typed, and on Tab prints the
+/// submitted text above a cleared row. `story.sh notify` reads that row before
+/// it types and before it submits (SH-780), so a pane that draws nothing (the
+/// `/bin/cat` this replaced) can no longer be delivered to.
+const COMPOSER_PROVIDER: &str = r#"import os, tty
+tty.setraw(0)
+draft = b""
+def draw():
+    os.write(1, b"\r\x1b[2K\xe2\x80\xba " + draft)
+os.write(1, b"\r\n")
+draw()
+while True:
+    key = os.read(0, 1)
+    if not key:
+        break
+    if key == b"\t":
+        os.write(1, b"\r\x1b[2K" + draft + b"\r\n")
+        draft = b""
+    else:
+        draft += key
+    draw()
+"#;
+
 #[test]
 fn verification_callback_delivers_only_to_the_default_server_agent() {
     use storyhook::daemon::verification::{ShellVerificationActuator, VerificationActuator};
@@ -567,7 +591,9 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
                 &id,
                 "-c",
                 worktree.to_str().unwrap(),
-                "/bin/cat",
+                "python3",
+                "-c",
+                COMPOSER_PROVIDER,
             ],
         );
         tmux(
@@ -656,7 +682,7 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             .env("STORY_CALLBACK_INHERITED_PANE", inherited_pane.trim())
             .env("TMUX", inherited_tmux.trim())
             .env("TMUX_PANE", inherited_pane.trim())
-            .env("STORY_READY_PROCESS_PATTERN", "^cat$")
+            .env("STORY_READY_PROCESS_PATTERN", "[Pp]ython")
             .env(
                 "PATH",
                 format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH")),

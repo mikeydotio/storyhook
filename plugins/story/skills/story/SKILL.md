@@ -185,8 +185,8 @@ The legacy `--over-budget` flag is accepted as a deprecated no-op. Do not add it
 
 `bash "<story-helper>" notify <story-id> "<message>"` is the daemon-owned callback for
 returning a failed verification attempt to its exact dispatched agent. It verifies the tmux
-window's recorded provider and live process before pasting the literal message and submitting
-it. This is not a user route: never invoke it for an ordinary request or use it instead of a
+window's recorded provider and live process, pastes the literal message only into an idle
+composer, and submits it only while the composer shows it. This is not a user route: never invoke it for an ordinary request or use it instead of a
 durable story comment. A refusal means the verifier must leave the diagnostics on the story
 and block it for manual recovery.
 

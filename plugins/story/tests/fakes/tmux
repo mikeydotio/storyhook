@@ -170,7 +170,7 @@
 #                                no launch to derive from.
 #   $FAKE_TMUX_SHELL             The shell name a mangled launch leaves (zsh).
 #   $FAKE_TMUX_FAIL_SEND_KEYS    literal|enter|all — make send-keys EXIT 1, so
-#                                paste_text's own `|| return 1` is reachable.
+#                                a caller's own failure branch is reachable.
 #                                Exercises only the TYPED form (doctor) — the
 #                                EXEC form never calls send-keys for its launch.
 #   $FAKE_TMUX_CODEX_SPARKLE=1   A Codex occupant renders its idle placeholder
@@ -885,8 +885,8 @@ case "${1:-}" in
       esac
       shift || true
     done
-    # $FAKE_TMUX_FAIL_SEND_KEYS makes `send-keys` FAIL, so paste_text's own
-    # `|| return 1` (lib/session.sh) becomes reachable under test — it was not,
+    # $FAKE_TMUX_FAIL_SEND_KEYS makes `send-keys` FAIL, so a caller's own
+    # failure branch becomes reachable under test — it was not,
     # because every path here used to reach the trailing `exit 0`.
     case "${FAKE_TMUX_FAIL_SEND_KEYS:-}" in
       literal) [ "$has_l" = true ] && exit 1 ;;
