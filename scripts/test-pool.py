@@ -29,11 +29,13 @@ Jobs still running after a grace period get their process trees terminated,
 for the case where only this process was signalled.
 """
 
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -141,8 +143,6 @@ def executables(jobs, cargo_extra, env):
     builds nothing. A job whose executable is not found keeps the battery's
     full thread cap rather than failing: its test count is an optimization.
     """
-    import json
-
     found = {}
     groups = {}
     for job in jobs:
@@ -391,11 +391,21 @@ def main(argv):
     env = job_environment()
 
     built = executables(jobs, cargo_extra, env)
-    for job in jobs:
-        job.log = str(work / f"{job.index}.log")
+
+    def listed(job):
         executable = built.get((job.package, job.kind, job.name))
-        job.tests = count_tests(executable, libtest_args, env) if executable else None
-        job.threads = cap if job.tests is None else max(1, min(cap, job.tests))
+        return count_tests(executable, libtest_args, env) if executable else None
+
+    # Listing executes each binary once. Where run-tests.sh's discovery has not
+    # already done that, the first exec of a freshly linked binary pays macOS's
+    # code-signature check, so the listings share the budget rather than
+    # queueing one behind another.
+    with ThreadPoolExecutor(max_workers=options["budget"]) as executor:
+        counts = list(executor.map(listed, jobs))
+    for job, tests in zip(jobs, counts):
+        job.log = str(work / f"{job.index}.log")
+        job.tests = tests
+        job.threads = cap if tests is None else max(1, min(cap, tests))
 
     durations = read_durations(options["durations"])
     pool = Pool(options, jobs, cargo_extra, libtest_args, env)
