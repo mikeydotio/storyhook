@@ -67,8 +67,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/plugin-identity.sh"
 #
 #   WINDOW_NAME_TPL          resolve_wname
 #   READY_PATTERN            wait_ready
-#   READY_ATTEMPTS           wait_ready
-#   READY_DELAY              wait_ready
+#   READY_ATTEMPTS           wait_ready, poll_composer_idle
+#   READY_DELAY              wait_ready, poll_composer_idle
 #   READY_STABLE_POLLS       wait_ready
 #   READY_FRAME_GLYPH        wait_ready
 #   READY_PROMPT_GLYPH       wait_ready, input_box_text, prompt_accepted
@@ -78,8 +78,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/plugin-identity.sh"
 #                            simply disables the identity half of pane_runs.
 #   READY_TAIL_LINES         pane_tail
 #   READY_ACCEPT_PATTERN     prompt_accepted
-#   CONFIRM_ATTEMPTS         poll_input, poll_composer_holds
-#   CONFIRM_DELAY            poll_input, poll_composer_holds
+#   CONFIRM_ATTEMPTS         poll_input, poll_composer_holds, poll_composer_cleared,
+#                            poll_composer_idle (a drawn composer that holds text)
+#   CONFIRM_DELAY            poll_input, poll_composer_holds, poll_composer_cleared
 #   SEND_RETRIES             send_prompt_confirmed
 #   SUBMIT_KEY               send_prompt_confirmed
 #   EMPTY_INPUT_PATTERN      input_state (provider-rendered empty placeholder)
@@ -462,6 +463,55 @@ composer_holds() {
       && printf '%s' "$row" | grep -Eq -- "${PASTE_PLACEHOLDER_PATTERN}[[:space:]]*\$" && exit 0
     exit 1
   )
+}
+
+# composer_cleared <pane> <text> — 0 when a submission of <text> has cleared the
+# composer: it no longer shows <text> (composer_holds fails) AND holds no input
+# (input_state reads empty; a submission may leave no composer row at all).
+# Both halves, because the two readers differ on faint text: input_state leaves
+# it out, so a collapsed paste drawn faint and still waiting after a swallowed
+# key would read as cleared on its own (SH-799).
+composer_cleared() {
+  ! composer_holds "$1" "$2" && [ "$(input_state "$1")" = empty ]
+}
+
+# poll_composer_cleared <pane> <text> — poll composer_cleared up to
+# CONFIRM_ATTEMPTS times, CONFIRM_DELAY apart. 0 once it holds, else 1.
+poll_composer_cleared() {
+  local attempt=0
+  while [ "$attempt" -lt "$CONFIRM_ATTEMPTS" ]; do
+    composer_cleared "$1" "$2" && return 0
+    sleep "$CONFIRM_DELAY"
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+# poll_composer_idle <pane> — wait for a drawn, idle composer before anything
+# is typed; echo the last `input_state <pane> strict` read. 0 once it reads
+# `empty`, else 1. A composer that is not drawn yet (`absent`) or a screen that
+# cannot be read (`unknown`) is waited for on the READY budget: Claude's
+# readiness is its SessionStart sentinel, which nothing checks against the
+# screen. A drawn row that holds text is a dialog or a draft, which does not
+# leave by itself, so it gets CONFIRM_ATTEMPTS reads in a row and no more — the
+# engine kills a dispatch helper after 180 s (SH-799).
+poll_composer_idle() {
+  local attempt=0 busy=0 state=unknown
+  while [ "$attempt" -lt "$READY_ATTEMPTS" ]; do
+    state=$(input_state "$1" strict)
+    case "$state" in
+      empty) printf 'empty'; return 0 ;;
+      text)
+        busy=$((busy + 1))
+        [ "$busy" -lt "$CONFIRM_ATTEMPTS" ] || break
+        ;;
+      *) busy=0 ;;
+    esac
+    sleep "$READY_DELAY"
+    attempt=$((attempt + 1))
+  done
+  printf '%s' "$state"
+  return 1
 }
 
 # poll_input <pane> <text|empty> — poll input_state up to CONFIRM_ATTEMPTS times,
@@ -925,17 +975,25 @@ capture_pane_transcript() {
   tmux capture-pane -p -t "$target" -S "-$lines" 2>/dev/null || return 1
 }
 
-# send_prompt_confirmed <pane> <text> <buffer> — two-phase confirmed handoff.
+# send_prompt_confirmed <pane> <text> <buffer> — guarded, two-phase handoff.
+#   First:   nothing is typed until a composer is drawn and reads idle
+#            (poll_composer_idle). A dialog draws its cursor row with the
+#            composer's glyph, and a paste or a key lands on whatever is there.
 #   Phase A: paste the prompt (as ONE bracketed paste via <buffer>) and confirm
-#            it was RECEIVED (the input box holds text); re-paste (bounded by
-#            SEND_RETRIES) ONLY if nothing landed — never blind-repaste.
-#   Phase B: send the provider's submit key and confirm SUBMISSION (the box
-#            cleared); on a swallowed key re-send THAT KEY ALONE (bounded) —
-#            never re-paste, which would
+#            RECEIPT of THIS prompt (poll_composer_holds: its first line, or the
+#            provider's collapsed-paste placeholder) — not merely some text,
+#            which a dialog's cursor row also is (SH-799). Re-paste (bounded by
+#            SEND_RETRIES) ONLY while the composer still reads idle, so nothing
+#            landed; anything else may be this paste arriving late or drawn in
+#            a form the pattern does not know, or a dialog, and a second paste
+#            would duplicate the prompt or type into the dialog.
+#   Phase B: before every submit key — the first and each re-send — the
+#            composer must still show this prompt (composer_holds); then confirm
+#            SUBMISSION (composer_cleared). A key already sent whose clear the
+#            screen showed only after the confirmation window IS the submission,
+#            so no further key follows it. Never re-paste here, which would
 #            duplicate the prompt.
-# A positive result REQUIRES having first observed the box hold the prompt, so an
-# empty box from a never-arrived paste can't masquerade as submitted. Claude
-# submits with Enter; current Codex submits with Tab. Returns 0 only once
+# Claude submits with Enter; current Codex submits with Tab. Returns 0 only once
 # submission is confirmed.
 #
 # SH-226 reversed a rule that used to live here: "if receipt is never confirmed,
@@ -947,39 +1005,92 @@ capture_pane_transcript() {
 # It is not harmless, so Phase B is now wholly conditional on receipt.
 #
 # On return, SEND_PROMPT_PHASE names WHICH phase was reached, so a caller can
-# tell an undelivered handoff (nothing was typed — safe to roll back a claim)
-# from an unconfirmed one (it may already be in front of a live agent — rolling
-# back would hand the same story to a second session):
+# tell a handoff no submit key reached (safe to roll back a claim once the pane
+# is stopped) from an unconfirmed one (it may already be in front of a live
+# agent — rolling back would hand the same story to a second session):
 #   submitted            receipt AND submission confirmed (the 0 return)
-#   received-unsubmitted the box held the text; submission never confirmed
-#   undelivered          the text never reached the box; NO Enter was sent
+#   received-unsubmitted a submit key was sent; the submission was never confirmed
+#   undelivered          NO submit key was sent. A bracketed paste submits
+#                        nothing, but the prompt may still be in the composer
+# SEND_PROMPT_DETAIL says why a handoff stopped (send_prompt_note renders it):
+#   composer-not-idle      no idle composer was seen; nothing was typed
+#   prompt-not-seen        every paste left the composer idle
+#   prompt-not-recognised  after a paste the composer showed something else
+#   composer-changed       the composer stopped showing the prompt before a key
+#   submit-unconfirmed     every key was sent; the composer never cleared
+# SEND_PROMPT_STATE is the composer state read when it stopped, where one was.
 SEND_PROMPT_PHASE="undelivered"
+SEND_PROMPT_DETAIL=""
+SEND_PROMPT_STATE=""
 send_prompt_confirmed() {
-  local pane="$1" text="$2" buf="$3" received=false try=0
+  local pane="$1" text="$2" buf="$3" received=false try=0 keys=0 state
   SEND_PROMPT_PHASE="undelivered"
-  # Phase A — deliver + confirm receipt.
+  SEND_PROMPT_DETAIL="composer-not-idle"
+  SEND_PROMPT_STATE=""
+  if ! state=$(poll_composer_idle "$pane"); then
+    SEND_PROMPT_STATE="$state"
+    return 1
+  fi
+  # Phase A — deliver + confirm receipt of this prompt.
   while [ "$try" -le "$SEND_RETRIES" ]; do
-    if paste_prompt "$pane" "$text" "$buf" && poll_input "$pane" text; then
+    if paste_prompt "$pane" "$text" "$buf" && poll_composer_holds "$pane" "$text"; then
       received=true
       break
     fi
-    try=$((try + 1))
-  done
-  # Nothing landed in the box, so nothing is submitted: no submit key is sent.
-  [ "$received" = true ] || return 1
-  SEND_PROMPT_PHASE="received-unsubmitted"
-  # Phase B — submit + confirm. Re-send the submit key alone (never re-paste).
-  try=0
-  while [ "$try" -le "$SEND_RETRIES" ]; do
-    if tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null; then
-      if poll_input "$pane" empty; then
-        SEND_PROMPT_PHASE="submitted"
-        return 0
-      fi
+    state=$(input_state "$pane" strict)
+    if [ "$state" != empty ]; then
+      SEND_PROMPT_DETAIL="prompt-not-recognised"
+      SEND_PROMPT_STATE="$state"
+      return 1
     fi
     try=$((try + 1))
   done
+  if [ "$received" != true ]; then
+    SEND_PROMPT_DETAIL="prompt-not-seen"
+    return 1
+  fi
+  # Phase B — submit + confirm. Re-send the submit key alone (never re-paste).
+  try=0
+  while [ "$try" -le "$SEND_RETRIES" ]; do
+    if [ "$keys" -gt 0 ] && composer_cleared "$pane" "$text"; then
+      SEND_PROMPT_PHASE="submitted"
+      SEND_PROMPT_DETAIL=""
+      return 0
+    fi
+    composer_holds "$pane" "$text" || { SEND_PROMPT_DETAIL="composer-changed"; return 1; }
+    keys=$((keys + 1)); SEND_PROMPT_PHASE="received-unsubmitted"
+    if tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null && poll_composer_cleared "$pane" "$text"; then
+      SEND_PROMPT_PHASE="submitted"
+      SEND_PROMPT_DETAIL=""
+      return 0
+    fi
+    try=$((try + 1))
+  done
+  SEND_PROMPT_DETAIL="submit-unconfirmed"
   return 1
+}
+
+# send_prompt_note — one sentence for a person: why send_prompt_confirmed
+# stopped (SEND_PROMPT_DETAIL), with the composer state it read. Kept beside the
+# function so that every caller says the same thing.
+send_prompt_note() {
+  case "$SEND_PROMPT_DETAIL" in
+    composer-not-idle)
+      printf 'no idle composer was seen before the handoff (the composer read %s: a dialog or a draft if "text", no composer drawn if "absent", an unreadable screen if "unknown"), so nothing was typed and no submit key was sent' "${SEND_PROMPT_STATE:-unknown}" ;;
+    prompt-not-seen)
+      printf 'the prompt never appeared in the composer, which still read idle after every paste, and no submit key was sent' ;;
+    prompt-not-recognised)
+      printf 'after the paste the composer read %s without showing this prompt, so it was not pasted again and no submit key was sent: a dialog may have opened, or the provider draws a collapsed paste in a form storyhook does not recognise (STORY_PASTE_PLACEHOLDER_PATTERN overrides the pattern)' "${SEND_PROMPT_STATE:-unknown}" ;;
+    composer-changed)
+      if [ "$SEND_PROMPT_PHASE" = undelivered ]; then
+        printf 'the composer stopped showing the prompt before the first submit key, so no submit key was sent; a dialog may be open there'
+      else
+        printf 'after a submit key the composer showed neither the prompt nor an empty input, so no further submit key was sent; a dialog may be open there: answer it yourself, never with a blind Enter'
+      fi ;;
+    submit-unconfirmed)
+      printf 'every submit key was sent while the composer still showed the prompt, and the composer never read as cleared' ;;
+    *) printf 'the handoff stopped (%s)' "${SEND_PROMPT_DETAIL:-no detail}" ;;
+  esac
 }
 
 # ---- worktree-ignore hygiene --------------------------------------------------

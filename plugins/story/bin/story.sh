@@ -2778,35 +2778,40 @@ cmd_dispatch() {
       prompt_accepted_flag=true
     fi
   else
-    local send_tail
+    local send_tail send_note
     send_tail=$(pane_tail "$pane")
+    send_note=$(send_prompt_note)
     if [ "$SEND_PROMPT_PHASE" = undelivered ]; then
-      # Nothing reached the input box, so nothing was submitted (guaranteed by
-      # send_prompt_confirmed: no Enter is sent before receipt is observed).
-      # Safe to roll everything back, exactly as a failed window-open does.
+      # No submit key was sent (guaranteed by send_prompt_confirmed: no key
+      # before a receipt of THIS prompt, and none once the composer shows
+      # anything else), and a bracketed paste submits nothing. The prompt may
+      # still sit in the composer, so the rollback stops the pane first and
+      # keeps the claim if that stop cannot be confirmed.
       rollback_dispatch_attempt
       refuse_with handoff-undelivered \
-      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
+      "[story] $id → $AGENT_LABEL is running in window \`$wname\`, but the charter was not handed over: $send_note. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
         "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
               --arg pane "$pane" --arg tail "$send_tail" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
+              --arg detail "$SEND_PROMPT_DETAIL" \
               '{id:$id, window:$window, window_name:$wname, pane:$pane,
                 readiness_confirmed:true, delivery_phase:"undelivered",
-                pane_tail:$tail, claimed:$claimed}')"
+                delivery_detail:$detail, pane_tail:$tail, claimed:$claimed}')"
     fi
-    # received-unsubmitted: the box HELD the prompt and submission was never
-    # confirmed. It may already be in front of a live agent, so the claim and the
-    # worktree STAY — rolling back here would return the story to the ready list
-    # and let the next dispatch hand the same work to a second session.
+    # received-unsubmitted: the box HELD the prompt, a submit key was sent, and
+    # submission was never confirmed. It may already be in front of a live
+    # agent, so the claim and the worktree STAY — rolling back here would return
+    # the story to the ready list and let the next dispatch hand the same work
+    # to a second session.
     local release_note="run \`story move $id $pre_claim_state --if-state $state\` to release it"
     [ "$reused_claim" = true ] \
       && release_note="leave or change the pre-existing \`$state\` state explicitly; this dispatch did not create a claim transition to release"
     refuse_with handoff-unconfirmed \
-      "[story] $id → $AGENT_LABEL is running in window \`$wname\` and the prompt reached its input box, but the submission was never confirmed. The claim and worktree are DELIBERATELY left in place: the agent may already be working. Look with \`story.sh capture $id\`, then either re-submit in that window or $release_note." \
+      "[story] $id → $AGENT_LABEL is running in window \`$wname\` and the prompt reached its input box, but the submission was never confirmed: $send_note. The claim and worktree are DELIBERATELY left in place: the agent may already be working. Look with \`story.sh capture $id\`, then either re-submit in that window or $release_note." \
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
-            --arg pane "$pane" --arg tail "$send_tail" \
+            --arg pane "$pane" --arg tail "$send_tail" --arg detail "$SEND_PROMPT_DETAIL" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:true, delivery_phase:"received-unsubmitted",
-              pane_tail:$tail, claimed:true}')"
+              delivery_detail:$detail, pane_tail:$tail, claimed:true}')"
   fi
 
   # The prompt may now be in front of a live agent. A failed audit write is a

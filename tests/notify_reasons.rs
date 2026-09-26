@@ -31,8 +31,10 @@
 //! and pressed Enter without looking, and Enter on a dialog approves it for
 //! the person. `KEY_SENDERS` lists every place the plugin presses a key in a
 //! pane, with the reason it may, and the scan demands exactly that set; the
-//! last test pins `cmd_notify`'s one guarded delivery: a strict idle check,
-//! one paste, and a submit key only after `composer_holds` sees the prompt.
+//! last test pins the one guarded delivery shape that both prompt senders —
+//! `cmd_notify` and dispatch's `send_prompt_confirmed` (SH-799) — must keep:
+//! an idle check, one paste, a receipt of this prompt, and a submit key only
+//! directly after `composer_holds` sees the prompt, on every try.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -202,7 +204,7 @@ const KEY_SENDERS: [(&str, &str, &str); 6] = [
     (
         "plugins/story/lib/session.sh",
         "send_prompt_confirmed",
-        "the submit key after a receipt of any text; SH-799 narrows it to composer_holds",
+        "the dispatch submit key, only into a composer that read idle and only while composer_holds sees this very prompt",
     ),
 ];
 
@@ -301,41 +303,136 @@ fn every_key_sent_into_a_pane_is_a_listed_sender() {
     );
 }
 
-#[test]
-fn notify_types_once_into_an_idle_composer_and_submits_only_what_it_sees() {
-    let script = read("plugins/story/bin/story.sh");
-    let body = function_body(&script, "cmd_notify");
-    let lines: Vec<&str> = body.lines().collect();
+/// A loop header or its `done`: the lines [`assert_guarded_delivery`] counts to
+/// find the loop that holds the submit key.
+fn opens_loop(line: &str) -> bool {
+    let line = line.trim();
+    (line.starts_with("while ") || line.starts_with("until ") || line.starts_with("for "))
+        && line.ends_with("do")
+}
+
+/// True when `line` calls `composer_holds "$pane"` itself — not a longer name
+/// such as `poll_composer_holds`, which is the receipt, not the gate.
+fn calls_composer_holds(line: &str) -> bool {
+    line.match_indices("composer_holds \"$pane\"").any(|(at, _)| {
+        !line[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// The guarded delivery a prompt sender must keep (SH-780, SH-799): an idle
+/// check (`idle_check`, named per function) before the one paste; the receipt
+/// `poll_composer_holds "$pane"` after the paste and before the key loop;
+/// exactly one `"$SUBMIT_KEY"` send, inside a `while … done`; and, inside that
+/// loop at most two lines above the send, a `composer_holds "$pane"` call that
+/// gates it (`||`, or `if !`). The "any text" receipt must be gone.
+fn assert_guarded_delivery(name: &str, body: &str, idle_check: &str) {
+    let lines: Vec<&str> = body
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
     let at = |needle: &str| -> Vec<usize> {
         lines
             .iter()
             .enumerate()
-            .filter(|(_, line)| line.contains(needle) && !line.trim_start().starts_with('#'))
+            .filter(|(_, line)| line.contains(needle))
             .map(|(index, _)| index)
             .collect()
     };
-    let pastes = at("paste_prompt ");
-    assert_eq!(
-        pastes.len(),
-        1,
-        "every text-delivering notify form must share ONE guarded paste (SH-780)"
+    assert!(
+        !body.contains("poll_input \"$pane\" text"),
+        "{name}: \"any text\" is not a receipt; a dialog's cursor row is text too (SH-799)"
     );
-    let idle = at("input_state \"$pane\" strict");
+    let pastes = at("paste_prompt ");
+    assert_eq!(pastes.len(), 1, "{name}: one guarded paste (SH-780)");
+    let idle = at(idle_check);
     assert!(
         idle.len() == 1 && idle[0] < pastes[0],
-        "the paste must follow a strict idle check of the composer"
+        "{name}: the paste must follow the idle check `{idle_check}`"
     );
     let submits = at("\"$SUBMIT_KEY\"");
-    assert_eq!(
-        submits.len(),
-        1,
-        "notify must send its submit key from one place (SH-780)"
-    );
-    let receipt = at("composer_holds ");
+    assert_eq!(submits.len(), 1, "{name}: the submit key is sent from one place");
+    let send = submits[0];
+    let mut depth = 0;
+    let header = (0..send)
+        .rev()
+        .find(|&index| {
+            if lines[index].trim() == "done" {
+                depth += 1;
+            } else if opens_loop(lines[index]) {
+                if depth == 0 {
+                    return true;
+                }
+                depth -= 1;
+            }
+            false
+        })
+        .unwrap_or_else(|| panic!("{name}: the submit key must be sent inside a retry loop"));
+    let receipt = at("poll_composer_holds \"$pane\"");
     assert!(
         receipt
             .iter()
-            .any(|&line| line > pastes[0] && line < submits[0] && submits[0] - line <= 3),
-        "the submit key must directly follow a composer_holds check of this prompt, on every try"
+            .any(|&line| line >= pastes[0] && line < header),
+        "{name}: the receipt must be poll_composer_holds of this prompt, after the paste and before the key loop"
+    );
+    let gated = (header + 1..send).any(|index| {
+        send - index <= 2
+            && calls_composer_holds(lines[index])
+            && (lines[index].contains("||")
+                || lines[index].trim_start().starts_with("if !")
+                || lines
+                    .get(index + 1)
+                    .is_some_and(|next| next.trim_start().starts_with("||")))
+    });
+    assert!(
+        gated,
+        "{name}: inside its loop, the submit key must directly follow a composer_holds check that stops the loop, on every try"
+    );
+}
+
+#[test]
+fn the_guarded_delivery_check_reads_the_gate_not_the_receipt() {
+    let guarded = "if ! poll_composer_idle \"$pane\"; then return 1; fi\npaste_prompt \"$pane\" \"$t\" b && poll_composer_holds \"$pane\" \"$t\"\nwhile [ \"$try\" -le 2 ]; do\n  composer_holds \"$pane\" \"$t\" || break\n  if tmux send-keys -t \"$pane\" \"$SUBMIT_KEY\"; then return 0; fi\ndone\n";
+    assert_guarded_delivery("positive control", guarded, "poll_composer_idle ");
+    let receipt_only = guarded.replace("  composer_holds \"$pane\" \"$t\" || break\n", "");
+    let unguarded = std::panic::catch_unwind(|| {
+        assert_guarded_delivery("receipt only", &receipt_only, "poll_composer_idle ")
+    });
+    assert!(
+        unguarded.is_err(),
+        "a poll_composer_holds receipt must not count as the per-key gate"
+    );
+    let gate_outside_loop = guarded.replace(
+        "while [ \"$try\" -le 2 ]; do\n  composer_holds \"$pane\" \"$t\" || break\n",
+        "composer_holds \"$pane\" \"$t\" || return 1\nwhile [ \"$try\" -le 2 ]; do\n",
+    );
+    let once = std::panic::catch_unwind(|| {
+        assert_guarded_delivery("gate outside the loop", &gate_outside_loop, "poll_composer_idle ")
+    });
+    assert!(
+        once.is_err(),
+        "a gate above the loop does not guard the re-sent keys"
+    );
+}
+
+#[test]
+fn notify_types_once_into_an_idle_composer_and_submits_only_what_it_sees() {
+    let script = read("plugins/story/bin/story.sh");
+    assert_guarded_delivery(
+        "cmd_notify",
+        function_body(&script, "cmd_notify"),
+        "input_state \"$pane\" strict",
+    );
+}
+
+#[test]
+fn dispatch_types_once_into_an_idle_composer_and_submits_only_what_it_sees() {
+    let session = read("plugins/story/lib/session.sh");
+    assert_guarded_delivery(
+        "send_prompt_confirmed",
+        function_body(&session, "send_prompt_confirmed"),
+        "poll_composer_idle \"$pane\"",
     );
 }

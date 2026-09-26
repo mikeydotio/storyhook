@@ -10,7 +10,8 @@
 # Family C  occupant x fixture matrix -- including the fake's own documented
 #           "must NOT confirm" obligations, which nothing enforced before now
 # Family D  delivery-phase matrix -- the first coverage send_prompt_confirmed's
-#           receipt/submission distinction has ever had
+#           receipt/submission distinction has ever had; since SH-799 also
+#           what each paste and submit key would land on
 # Family E  the configuration trigger -- the process-pattern escape hatch
 source "$(dirname "$0")/lib.sh"
 
@@ -29,7 +30,8 @@ dispatch_run() {
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
   unset FAKE_TMUX_SESSIONS FAKE_TMUX_FAIL_NEW_SESSION FAKE_TMUX_DROP_PASTE \
         FAKE_TMUX_ENTER_ABSORB FAKE_TMUX_LAUNCH_MANGLE FAKE_TMUX_PANE_COMMAND \
-        FAKE_TMUX_FAIL_SEND_KEYS FAKE_TMUX_CAPTURE
+        FAKE_TMUX_FAIL_SEND_KEYS FAKE_TMUX_CAPTURE FAKE_TMUX_DIALOG \
+        FAKE_TMUX_PASTE_PLACEHOLDER FAKE_TMUX_SLOW_CLEAR
   RUN_REPO=$(mk_story_repo)
   RUN_ID=$(new_story "$RUN_REPO" "Occupant-gate case")
   out=$(
@@ -45,6 +47,12 @@ dispatch_run() {
 
 state_of() { (cd "$RUN_REPO" && story show "$RUN_ID" --json | jq -r '.story.story.state'); }
 submits() { cat "$FAKE_TMUX_STATE/prompt_submits" 2>/dev/null || echo 0; }
+# lines_of <state file> -- how many lines the fake logged there (0 when absent).
+lines_of() { if [ -f "$FAKE_TMUX_STATE/$1" ]; then wc -l <"$FAKE_TMUX_STATE/$1" | tr -d ' '; else echo 0; fi; }
+pastes() { lines_of pastes.log; }
+keys() { lines_of submit_keys.log; }
+# answers -- submit keys that landed on a dialog: an approval nobody gave.
+answers() { lines_of dialog_answers; }
 
 # ---- Family A: the launch never started (the SH-226 field cause) -------------
 dispatch_run FAKE_TMUX_CAPTURE=structural FAKE_TMUX_LAUNCH_MANGLE=1
@@ -105,6 +113,9 @@ assert_eq "$(jqf "$out" .ok)" "false" "D: an undelivered prompt fails the dispat
 assert_eq "$(jqf "$out" .reason)" "handoff-undelivered" "D: named as undelivered"
 assert_eq "$(jqf "$out" .delivery_phase)" "undelivered" "D: phase recorded"
 assert_eq "$(submits)" "0" "D: no Enter is sent when receipt was never observed"
+assert_eq "$(keys)" "0" "D: not a single submit key"
+assert_eq "$(pastes)" "3" "D: an idle composer is re-pasted, bounded by SEND_RETRIES"
+assert_eq "$(jqf "$out" .delivery_detail)" "prompt-not-seen" "D: detail names the empty composer"
 assert_eq "$(state_of)" "todo" "D: undelivered is the one send failure safe to roll back"
 
 # The paste LANDED but the Enter is swallowed every time: the charter may be in
@@ -117,6 +128,85 @@ assert_eq "$(jqf "$out" .delivery_phase)" "received-unsubmitted" "D: phase recor
 assert_eq "$(state_of)" "in-progress" \
   "D: the claim is DELIBERATELY kept -- the agent may already be working"
 assert_eq "$(jqf "$out" .claimed)" "true" "D: and the result says so"
+assert_eq "$(jqf "$out" .delivery_detail)" "submit-unconfirmed" "D: detail names the unconfirmed key"
+assert_eq "$(keys)" "3" "D: the key is re-sent only while the composer shows the charter"
+
+# SH-799: what the paste and the submit key land on. A dialog draws its cursor
+# row with the composer's glyph ("❯ 1. Yes"), and before SH-799 that row passed
+# as receipt ("any text"), so the submit key approved the dialog for the
+# person. Every case below also proves no key ever answered a dialog.
+
+# A dialog opened after readiness, before the paste: nothing is typed at all.
+dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_DIALOG=launch
+assert_eq "$(jqf "$out" .reason)" "handoff-undelivered" "D-dialog-launch: refused as undelivered"
+assert_eq "$(jqf "$out" .delivery_phase)" "undelivered" "D-dialog-launch: no submit key was sent"
+assert_eq "$(jqf "$out" .delivery_detail)" "composer-not-idle" "D-dialog-launch: named as a busy composer"
+assert_eq "$(pastes)" "0" "D-dialog-launch: nothing was pasted into the dialog"
+assert_eq "$(keys)" "0" "D-dialog-launch: no submit key"
+assert_eq "$(answers)" "0" "D-dialog-launch: the dialog was not answered"
+assert_eq "$(state_of)" "todo" "D-dialog-launch: rolled back"
+
+# A dialog opened with the paste: no receipt of THIS prompt, so no key -- and
+# no second paste into a composer that is no longer idle.
+dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_DIALOG=paste
+assert_eq "$(jqf "$out" .reason)" "handoff-undelivered" "D-dialog-paste: refused as undelivered"
+assert_eq "$(jqf "$out" .delivery_detail)" "prompt-not-recognised" "D-dialog-paste: the composer shows something else"
+assert_eq "$(pastes)" "1" "D-dialog-paste: never re-pasted"
+assert_eq "$(keys)" "0" "D-dialog-paste: no submit key"
+assert_eq "$(answers)" "0" "D-dialog-paste: the dialog was not answered"
+assert_eq "$(state_of)" "todo" "D-dialog-paste: rolled back"
+case "$(jqf "$out" .display)" in
+  *"no submit key was sent"*) ;;
+  *) fail_test "D-dialog-paste: the display must say that no submit key was sent" ;;
+esac
+
+# A dialog opened on the first submit key: the re-send must look first.
+dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_DIALOG=submit
+assert_eq "$(jqf "$out" .reason)" "handoff-unconfirmed" "D-dialog-submit: a key was sent, so unconfirmed"
+assert_eq "$(jqf "$out" .delivery_phase)" "received-unsubmitted" "D-dialog-submit: phase recorded"
+assert_eq "$(jqf "$out" .delivery_detail)" "composer-changed" "D-dialog-submit: the composer changed"
+assert_eq "$(keys)" "1" "D-dialog-submit: exactly one submit key"
+assert_eq "$(answers)" "0" "D-dialog-submit: the re-send did not answer the dialog"
+assert_eq "$(state_of)" "in-progress" "D-dialog-submit: the claim is kept after a key"
+
+# The real Claude dispatch: the charter collapses to "[Pasted text #1]"
+# (~/.claude/history.jsonl, every storyhook dispatch), which is receipt.
+dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PASTE_PLACEHOLDER=1
+assert_eq "$(jqf "$out" .ok)" "true" "D-placeholder: a collapsed paste is this prompt"
+assert_eq "$(submits)" "1" "D-placeholder: submitted once"
+assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" "$RUN_ID" "D-placeholder: the whole charter was submitted"
+
+# A provider that changes its placeholder fails closed, with a way out named.
+dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PASTE_PLACEHOLDER=1 \
+  'STORY_PASTE_PLACEHOLDER_PATTERN=^\[Something else\]'
+assert_eq "$(jqf "$out" .reason)" "handoff-undelivered" "D-placeholder-drift: refused"
+assert_eq "$(jqf "$out" .delivery_detail)" "prompt-not-recognised" "D-placeholder-drift: not recognised"
+assert_eq "$(keys)" "0" "D-placeholder-drift: no submit key"
+assert_eq "$(pastes)" "1" "D-placeholder-drift: never re-pasted"
+case "$(jqf "$out" .display)" in
+  *STORY_PASTE_PLACEHOLDER_PATTERN*) ;;
+  *) fail_test "D-placeholder-drift: the display must name the override" ;;
+esac
+
+# No composer drawn at all: not evidence of an idle one.
+dispatch_run FAKE_TMUX_CAPTURE=legacy
+assert_eq "$(jqf "$out" .reason)" "handoff-undelivered" "D-no-composer: refused"
+assert_eq "$(jqf "$out" .delivery_detail)" "composer-not-idle" "D-no-composer: named"
+assert_eq "$(pastes)" "0" "D-no-composer: nothing typed"
+
+# The key submitted, but the screen showed the clear only after the
+# confirmation window: that is a submission, and no second key is sent.
+dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SLOW_CLEAR=2
+assert_eq "$(jqf "$out" .ok)" "true" "D-slow-clear: a late clear is a submission"
+assert_eq "$(keys)" "1" "D-slow-clear: exactly one submit key"
+assert_eq "$(submits)" "1" "D-slow-clear: submitted once"
+
+# A faint placeholder with a swallowed key is NOT an empty composer: the
+# charter is still there, so the submission is not confirmed.
+dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PASTE_PLACEHOLDER=faint FAKE_TMUX_ENTER_ABSORB=9
+assert_eq "$(jqf "$out" .ok)" "false" "D-faint-placeholder: no false confirmation"
+assert_eq "$(jqf "$out" .reason)" "handoff-unconfirmed" "D-faint-placeholder: unconfirmed"
+assert_eq "$(submits)" "0" "D-faint-placeholder: nothing was really submitted"
 
 # ---- Family E: the configuration trigger ------------------------------------
 # SH-231 narrows what the escape hatch can rescue. It used to restore
