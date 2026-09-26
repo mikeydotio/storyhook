@@ -494,7 +494,8 @@ fn the_fixture_baseline_is_captured_once_per_run_before_any_worker() {
     let setup = read("e2e/fixture-baseline.ts");
 
     assert!(
-        !support.contains("fixtureBaselines") && !support.contains("new Map<string, Set<string>>()"),
+        !support.contains("fixtureBaselines")
+            && !support.contains("new Map<string, Set<string>>()"),
         "support.ts must not keep a per-worker fixture baseline: a restarted worker would \
          capture the failed test's stray into it (SH-765)"
     );
