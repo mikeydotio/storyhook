@@ -47,3 +47,9 @@
 # Build allocation lock and interrupted atomic-write residue.
 /.build-number.lock
 /.BUILD-*
+
+# Python bytecode. Plugin tests import the helpers in place, and one that
+# does not set PYTHONDONTWRITEBYTECODE leaves a __pycache__ beside them;
+# SH-766 committed one by accident with a broad `git add`.
+__pycache__/
+*.pyc
