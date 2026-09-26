@@ -1855,7 +1855,7 @@ fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
 
     note_stale_login_agent(env);
 
-    let outcome = (|| -> Result<DaemonInfo, AppError> {
+    let outcome: Result<DaemonInfo, AppError> = {
         // Something is there that is not ours. Ask it to stand down before
         // taking its place: it holds the pidfile lock, and a new daemon cannot
         // start while it does.
@@ -1891,7 +1891,7 @@ fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
             )),
             None => failure,
         })
-    })();
+    };
 
     publish_attempt(env, &outcome);
     let _ = FileExt::unlock(&lock);
