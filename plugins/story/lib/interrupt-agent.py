@@ -55,25 +55,6 @@ def target(pane, provider):
                        pane, pid, start, provider], separators=(",", ":"))
 
 
-def signal_known(owned, sig):
-    """Signal only still-live captured identities, never recycled PIDs.
-
-    Liveness is native, so resuming a frozen tree cannot fail on a census.
-    Every process is tried before the first failure is raised.
-    """
-    failures = []
-    for pid, identity in owned.items():
-        try:
-            if proc.alive(pid, identity):
-                os.kill(pid, sig)
-        except ProcessLookupError:
-            pass  # Rechecked for quiescence by the caller.
-        except OSError as error:
-            failures.append(f"PID {pid}: {error}")
-    if failures:
-        raise proc.CleanupError(f"could not send {signal.Signals(sig).name} to captured processes: {'; '.join(failures)}")
-
-
 def survivors(owned):
     """Return the captured incarnations that still run, observed natively."""
     return [pid for pid, identity in owned.items() if proc.alive(pid, identity)]
@@ -139,8 +120,8 @@ def interrupt(pane, provider, expected):
         # Both supported provider TUIs use Escape for a full turn interrupt.
         # No prompt text, submit key, exit command, claim or worktree operation.
         proc.run("tmux", "send-keys", "-t", pane, "Escape")
-        signal_known(holders, signal.SIGTERM)
-        signal_known(owned, signal.SIGCONT)
+        proc.signal_known(holders, signal.SIGTERM)
+        proc.signal_known(owned, signal.SIGCONT)
         # The lock owner's existing TERM trap does normal group cleanup first.
         # Each wait observes before it judges its deadline, so a slow pass
         # cannot turn an exit into escalation or into a refusal.
@@ -152,7 +133,7 @@ def interrupt(pane, provider, expected):
             # Freeze the surviving captured closure, terminate exactly that tree,
             # and retain the guard until a fresh observation proves quiescence.
             freeze(owned, {})
-            signal_known(owned, signal.SIGKILL)
+            proc.signal_known(owned, signal.SIGKILL)
         deadline = time.monotonic() + 5
         while survivors(owned):
             if time.monotonic() >= deadline:
@@ -172,7 +153,7 @@ def interrupt(pane, provider, expected):
         return expected
     finally:
         # Failed probes preserve an inspectable session and visible ownership guard.
-        signal_known(owned, signal.SIGCONT)
+        proc.signal_known(owned, signal.SIGCONT)
 
 
 if __name__ == "__main__":

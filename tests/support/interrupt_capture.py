@@ -105,7 +105,7 @@ class NativeLivenessTests(unittest.TestCase):
         _, status = os.waitpid(child.pid, os.WUNTRACED)
         self.assertTrue(os.WIFSTOPPED(status))
         with patch.object(interrupt.proc, "processes", side_effect=census_unavailable):
-            interrupt.signal_known(owned, signal.SIGCONT)
+            interrupt.proc.signal_known(owned, signal.SIGCONT)
         _, status = os.waitpid(child.pid, os.WCONTINUED | os.WNOHANG)
         self.assertTrue(os.WIFCONTINUED(status), "the frozen child was not continued")
 
@@ -114,7 +114,7 @@ class NativeLivenessTests(unittest.TestCase):
         child, owned = self.spawn()
         stale = {pid: (*identity[:2], "macos:0:0") for pid, identity in owned.items()}
         with patch.object(interrupt.os, "kill") as kill:
-            interrupt.signal_known(stale, signal.SIGSTOP)
+            interrupt.proc.signal_known(stale, signal.SIGSTOP)
         kill.assert_not_called()
         self.assertTrue(interrupt.proc.alive(child.pid, owned[child.pid]))
 

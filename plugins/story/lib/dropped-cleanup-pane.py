@@ -54,25 +54,6 @@ def require_pane(target):
     proc.require_launch_start(int(target["pid"]), target["start"])
 
 
-def signal_known(owned, sig):
-    """Never send signals to a PID whose native incarnation differs.
-
-    Liveness is native, so resuming a frozen closure cannot fail on a census.
-    Every process is tried before the first failure is raised.
-    """
-    failures = []
-    for pid, identity in owned.items():
-        try:
-            if proc.alive(pid, identity):
-                os.kill(pid, sig)
-        except ProcessLookupError:
-            pass  # The next observation proves the process has exited.
-        except OSError as error:
-            failures.append(f"PID {pid}: {error}")
-    if failures:
-        raise proc.CleanupError(f"could not send {signal.Signals(sig).name} to captured processes: {'; '.join(failures)}")
-
-
 def stop(target, path):
     """Resume only the pinned process closure; replacement resources remain intact."""
     if target["pane"] == os.environ.get("TMUX_PANE"):
@@ -89,7 +70,7 @@ def stop(target, path):
     try:
         if record["phase"] == "census":
             require_pane(target)
-            signal_known(owned, signal.SIGSTOP)
+            proc.signal_known(owned, signal.SIGSTOP)
             root = int(target["pid"])
             for _ in range(16):
                 table = proc.processes()
@@ -123,7 +104,7 @@ def stop(target, path):
                 # Kernel identity is checked before killing the window, as well as each PID.
                 proc.require_launch_start(int(target["pid"]), target["start"])
                 proc.run("tmux", "-S", target["socket"], "kill-window", "-t", target["window"])
-            signal_known(owned, signal.SIGKILL)
+            proc.signal_known(owned, signal.SIGKILL)
             deadline = time.monotonic() + 5
             # Observe before judging: a slow pass must not turn death into survival.
             while any(proc.alive(pid, identity) for pid, identity in owned.items()):
@@ -139,7 +120,7 @@ def stop(target, path):
     finally:
         # Settled errors preserve a usable session; retry must freeze a fresh closure.
         if record["phase"] == "census":
-            signal_known(owned, signal.SIGCONT)
+            proc.signal_known(owned, signal.SIGCONT)
 
 
 if __name__ == "__main__":

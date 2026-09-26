@@ -89,7 +89,7 @@ class CleanupTest(unittest.TestCase):
     def test_restart_after_window_closed_still_reaps_its_descendants(self):
         owned = self.known()
         cleanup.save(self.journal, {"target": self.target, "phase": "terminating", "owned": owned})
-        cleanup.signal_known(owned, signal.SIGSTOP)
+        cleanup.proc.signal_known(owned, signal.SIGSTOP)
         self.tmux("kill-window", "-t", self.target["window"])
         cleanup.stop(self.target, self.journal)
         self.assert_quiescent()
