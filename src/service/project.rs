@@ -39,6 +39,7 @@ use crate::store::{
     StoryNo, StoryQuery, WriteOps, WriteWithSnapshot,
 };
 
+use super::block_delivery::{SubmissionGate, derive_block_edges};
 use super::state_set::write_states;
 use super::templates;
 use super::{Clock, append_and_fold, refold_story};
@@ -1536,61 +1537,68 @@ impl<'a, S: Store> ProjectService<'a, S> {
         let written = self
             .store
             .write_with_snapshot(backups_dir, "set-prefix", |tx| {
-                let record = tx.project(project)?.ok_or_else(|| {
-                    StoreError::NotFound(format!("project {project} does not exist"))
-                })?;
-                validate_prefix_change(&*tx, &record, &new_prefix)?;
-                let old_prefix = record.prefix;
+                // Every relationship is rewritten below, so the rename runs
+                // inside the block-edge derivation like any other mutation
+                // of the graph (SH-772). Numbers and edges are preserved, so it
+                // derives nothing; it submits nothing either.
+                derive_block_edges(tx, project, SubmissionGate::NotASubmission, |tx| {
+                    let record = tx.project(project)?.ok_or_else(|| {
+                        StoreError::NotFound(format!("project {project} does not exist"))
+                    })?;
+                    validate_prefix_change(&*tx, &record, &new_prefix)?;
+                    let old_prefix = record.prefix;
 
-                // First, so every write below — this story's own refold
-                // included — validates its relationships against the prefix
-                // they are about to be rewritten to rather than the one they
-                // are being rewritten from.
-                tx.set_prefix(project, &new_prefix)?;
+                    // First, so every write below — this story's own refold
+                    // included — validates its relationships against the prefix
+                    // they are about to be rewritten to rather than the one they
+                    // are being rewritten from.
+                    tx.set_prefix(project, &new_prefix)?;
 
-                let states = tx.state_map(project)?;
-                let rows = tx.stories(project, &StoryQuery::all())?;
-                let mut relationships = 0usize;
+                    let states = tx.state_map(project)?;
+                    let rows = tx.stories(project, &StoryQuery::all())?;
+                    let mut relationships = 0usize;
 
-                for row in &rows {
-                    if row.snapshot.relationships.is_empty() {
-                        refold_story(tx, project, row.story_no, &new_prefix, &states)?;
-                    } else {
-                        let mut events = Vec::with_capacity(row.snapshot.relationships.len() * 2);
-                        for relation in &row.snapshot.relationships {
-                            let other_no = StoryNo::parse_id(&old_prefix, &relation.other_id)?;
-                            events.push(StoryEvent::StoryRelationshipRemoved {
-                                at: now.clone(),
-                                other_id: relation.other_id.clone(),
-                                relation: relation.relation.clone(),
-                            });
-                            events.push(StoryEvent::StoryRelationshipAdded {
-                                at: now.clone(),
-                                other_id: other_no.to_id(&new_prefix),
-                                relation: relation.relation.clone(),
-                            });
-                            relationships += 1;
+                    for row in &rows {
+                        if row.snapshot.relationships.is_empty() {
+                            refold_story(tx, project, row.story_no, &new_prefix, &states)?;
+                        } else {
+                            let mut events =
+                                Vec::with_capacity(row.snapshot.relationships.len() * 2);
+                            for relation in &row.snapshot.relationships {
+                                let other_no = StoryNo::parse_id(&old_prefix, &relation.other_id)?;
+                                events.push(StoryEvent::StoryRelationshipRemoved {
+                                    at: now.clone(),
+                                    other_id: relation.other_id.clone(),
+                                    relation: relation.relation.clone(),
+                                });
+                                events.push(StoryEvent::StoryRelationshipAdded {
+                                    at: now.clone(),
+                                    other_id: other_no.to_id(&new_prefix),
+                                    relation: relation.relation.clone(),
+                                });
+                                relationships += 1;
+                            }
+                            append_and_fold(
+                                tx,
+                                project,
+                                row.story_no,
+                                &new_prefix,
+                                &states,
+                                ExpectedSeq::Exact(row.head_seq),
+                                &events,
+                                &self.provenance,
+                            )?;
                         }
-                        append_and_fold(
-                            tx,
-                            project,
-                            row.story_no,
-                            &new_prefix,
-                            &states,
-                            ExpectedSeq::Exact(row.head_seq),
-                            &events,
-                            &self.provenance,
-                        )?;
                     }
-                }
 
-                Ok(SetPrefixPlan {
-                    slug: record.slug,
-                    name: record.name,
-                    old_prefix,
-                    new_prefix: new_prefix.clone(),
-                    stories: rows.len(),
-                    relationships,
+                    Ok(SetPrefixPlan {
+                        slug: record.slug,
+                        name: record.name,
+                        old_prefix,
+                        new_prefix: new_prefix.clone(),
+                        stories: rows.len(),
+                        relationships,
+                    })
                 })
             })?;
 
