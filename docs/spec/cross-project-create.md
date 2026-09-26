@@ -22,8 +22,8 @@ whatever was already typed.
 ## Why the project is a URL segment, not a body field
 
 `POST /api/repos/{id}/story` (`route_create_story`, `src/api/rest.rs`) reads only
-`title`, `state`, `type`, `description`, `priority`, `labels`, `draft` from its
-body and dispatches `Invocation::New` against `ctx`, which the route table already
+`title`, `state`, `type`, `description`, `priority`, `complexity`, `labels`, `draft`
+and `blocked_by` (SH-779) from its body and dispatches `Invocation::New` against `ctx`, which the route table already
 resolved from `{id}` before the handler runs (`Route::Project`, `src/api/rest.rs`).
 This mirrors the CLI door's own architecture: `Invocation::New` (`src/cli.rs`)
 carries no project field on any variant — the project rides beside the invocation,

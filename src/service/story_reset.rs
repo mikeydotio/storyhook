@@ -38,6 +38,34 @@ pub(crate) fn refuse_reserved(
     Ok(())
 }
 
+/// Names the cleanup operation, other than Full Auto Stop Now, that owns this
+/// story, if any: an unreleased dropped-story cleanup, an unfinished card
+/// reset, or a native `story reset` reservation.
+///
+/// Each owner leaves the story non-active or closed when it finishes, so a
+/// Stop Now that defers to it releases the lane on its next attempt. Until
+/// then the store refuses writes to engine lanes that hold the story.
+pub(crate) fn foreign_owner(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<Option<String>, StoreError> {
+    if let Some(cleanup) = tx.dropped_cleanup(project, story)?
+        && !cleanup.released
+    {
+        return Ok(Some(format!("dropped cleanup {}", cleanup.token)));
+    }
+    if let Some(reset) = tx.story_reset(project, story)?
+        && !reset.completed
+    {
+        return Ok(Some(format!("card reset {}", reset.token)));
+    }
+    if tx.story_resets(project)?.contains_key(&story) {
+        return Ok(Some("a story reset reservation".into()));
+    }
+    Ok(None)
+}
+
 /// Transactional card-reset coordinator; external cleanup runs outside store locks.
 pub struct StoryResetService<'a, S: Store> {
     ctx: &'a Ctx<'a, S>,

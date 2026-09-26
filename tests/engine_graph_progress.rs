@@ -88,8 +88,17 @@ fn nested_scope_and_project_runs_reconsider_priority_as_a_diamond_unblocks() {
         ] {
             relations.relate(from, "blocks", to, false).unwrap();
         }
-        let mut expected = vec![ready, root, left, right, tip, tail];
+        // SH-788: the diamond's blockers all wait under the critical tip, so
+        // each sorts at critical — root, then left and right once root is
+        // done — ahead of the unrelated high `ready`. The queue is still
+        // re-sorted every time work unblocks: tip joins the frontier only
+        // after both of its blockers finish. Before SH-788 this order was
+        // `[ready, root, left, right, tip, tail]`.
+        let mut expected = vec![root, left, right, tip, ready, tail];
         if !scoped {
+            // `outside` ties the floored root at critical; the root's parent
+            // epic (`inner`, high) loses the second key to `outside`'s own
+            // critical, so `outside` goes first.
             expected.insert(0, outside);
         }
         let fake = dispatches(expected.len());

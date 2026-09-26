@@ -57,9 +57,17 @@ phase, or issue:
 
 ```
 story new "Phase 1: Set up database schema"
-story new "Phase 2: Implement API endpoints"
-story new "Phase 3: Add authentication middleware"
+story new "Phase 2: Implement API endpoints" --blocked-by {prefix}-1
+story new "Phase 3: Add authentication middleware" --blocked-by {prefix}-2
 ```
+
+When a new story must wait on another, name the blocker as you file it:
+`--blocked-by` (repeatable) writes the `blocked-by` edge together with the
+story, so it is never ready — and a Full Auto run can never claim it — before
+the edge exists. `story new` followed by `story relate … blocked-by …` or
+`story block … --on …` is two writes, and a Full Auto run can claim the story
+between them. Keep `story relate`/`story block --on` for stories that already
+exist.
 
 Set a priority on each one so `story next` surfaces the right work:
 
@@ -148,6 +156,9 @@ story graph --blocked-by {prefix}-1   # trace why a story is blocked
   — records a real `blocked-by` edge, which clears itself when the blocker
   closes. A reason alone (no `--on`) is free text that never clears itself;
   use it only when the blocker genuinely isn't a story.
+- When filing a new story that must wait on another:
+  `story new "<title>" --blocked-by {prefix}-<blocker>` — never `story new`
+  and then a relate, which leaves the story claimable in between.
 - When unblocked: `story unblock {prefix}-<n>` (or `--on {prefix}-<blocker>`
   to clear just that edge)
 - When submitted: move the story to `verifying` as your final action, from
@@ -180,6 +191,7 @@ what still gets filed.
 | List open stories | `story list` |
 | Show a story | `story show {prefix}-<n>` |
 | Create a story | `story new "<title>"` |
+| File a story already blocked | `story new "<title>" --blocked-by {prefix}-<blocker>` |
 | Move to a state | `story move {prefix}-<n> <state>` |
 | Add a comment | `story comment {prefix}-<n> "comment text"` |
 | Set priority | `story prioritize {prefix}-<n> high` |
@@ -261,6 +273,9 @@ to manage tasks.
 
 - `story list` — list open stories
 - `story new "<title>"` — create a new story
+- `story new "<title>" --blocked-by <id>` — file a story already blocked by
+  another; never file it and then relate it, which leaves it claimable between
+  the two writes
 - `story show <id>` — show story details
 - `story comment <id> "text"` — add a comment
 - `story move <id> <state>` — change story state

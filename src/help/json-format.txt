@@ -22,6 +22,11 @@ Single-story commands return "story": StoryView. The snapshot is nested:
   .story.story.complexity   low, medium, or high; independent of priority
   .story.story.complexity_assessed  Whether complexity was explicitly chosen
   .story.story.comments     Stored discussion, when present
+  .story.story.priority     Stored level: critical, high, medium, low, none
+  .story.blocker_floor      The more urgent level the story sorts at while
+                            it blocks more urgent open work; absent when no
+                            floor raises it. Human output prints both levels
+                            as "low (critical)".
   .story.head_global_seq    Snapshot sequence, when present
 
 List results carry StoryView objects at .stories[], so their IDs are at

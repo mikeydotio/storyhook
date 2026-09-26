@@ -122,6 +122,27 @@ fn a_command_taking_two_ids_accepts_a_mixed_pair() {
     );
 }
 
+/// SH-779: `story new --blocked-by 1` expands the blocker the way
+/// `story block --on 1` does, and leaves a title that reads `1` alone.
+#[test]
+fn new_blocked_by_accepts_a_bare_integer_and_the_title_stays_prose() {
+    let env = TestEnv::isolated();
+    let project = env.project().seed_story("first").build();
+
+    project.run(&["new", "1", "--blocked-by", "1"]).success();
+    let view = project.json(&["show", "SH-2"]);
+    assert_eq!(view["story"]["story"]["title"], "1");
+    let relations = view["story"]["story"]["relationships"]
+        .as_array()
+        .expect("relationships");
+    assert!(
+        relations
+            .iter()
+            .any(|r| r["relation"] == "blocked-by" && r["other_id"] == "SH-1"),
+        "the bare blocker must be recorded canonically: {relations:?}"
+    );
+}
+
 /// **AC-2.** `SH-5` and `5` are the same story under an explicit `--project`.
 ///
 /// The assertion is on the *state the write left behind*, not on the exit code:

@@ -24,6 +24,7 @@ use storyhook::api::http::CSP;
 use storyhook::cli::parse_invocation;
 use storyhook::daemon::lifecycle::CONTROL_DEADLINE;
 use storyhook::daemon::serve::BoundAddress;
+use storyhook::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
 use storyhook::env::Environment;
 use storyhook::invoke::{dispatch, dispatch_unscoped};
 use storyhook::service::Ctx;
@@ -1619,6 +1620,84 @@ fn populate_card_skips_its_own_rebuild_when_nothing_it_renders_changed() {
          rebuild is now conditional (per the assertion above) can silently act on stale data \
          once the story it names moves column or changes description, since the card face \
          renders neither field. Body: {body}"
+    );
+}
+
+/// SH-788: a blocker floor reaches the board through three things that
+/// the e2e spec (`e2e/specs/priority-floor.spec.ts`) exercises in a browser
+/// and these static checks keep from quietly drifting: the card's floor
+/// class and colours are set on the card node BEFORE `populateCard`'s
+/// SH-399 early return (its fingerprint covers the children only, so a
+/// floor that appears on an otherwise unchanged card would never paint),
+/// the words go into the base aria-label (the only label
+/// `updateVerificationElapsedLabels` preserves), and both sorts read the
+/// effective level while the filter keeps the stored one.
+#[test]
+fn a_blocker_floor_paints_before_the_card_rebuild_guard_and_sorts_by_effective_level() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+    let source = script(&html);
+
+    let card = function_body(source, "populateCard");
+    let guard = card
+        .find("if (card.dataset.rendered === rendered) return;")
+        .expect("the SH-399 guard");
+    for needle in [
+        r#"card.classList.toggle("priority-floor", !!floor);"#,
+        r#"card.style.setProperty("--card-accent", priorityColor(effectivePriority(v)));"#,
+        r#"card.style.setProperty("--card-accent-own", priorityColor(st.priority));"#,
+    ] {
+        let at = card
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing `{needle}`"));
+        assert!(at < guard, "`{needle}` must run before the rebuild guard");
+    }
+    let base = card.find("var baseAriaLabel").expect("the base label");
+    let words = card
+        .find("sorted as \" + floor + \" while it blocks more urgent work")
+        .expect("the floor in words");
+    assert!(
+        base < words
+            && words
+                < card
+                    .find("card.dataset.baseAriaLabel = baseAriaLabel;")
+                    .unwrap(),
+        "the floor text must be part of baseAriaLabel"
+    );
+
+    let floor = function_body(source, "blockerFloor");
+    assert!(
+        floor.contains("priorityUrgency(floor) > priorityUrgency(v.story.priority)"),
+        "a floor that is not strictly more urgent must never display: {floor}"
+    );
+    assert!(
+        function_body(source, "columnCardCompare").contains(
+            "priorityUrgency(effectivePriority(a)) - priorityUrgency(effectivePriority(b))"
+        ),
+        "the board's Priority sort must read the effective level"
+    );
+    assert!(
+        function_body(source, "sortValue").contains("var effective = effectivePriority(v);"),
+        "the List's priority column must sort by the effective level"
+    );
+    assert!(
+        source.contains("inclusiveFacetMatches(f.priorities, st.priority)"),
+        "the priority filter matches the stored level, as `story list --priority` does"
+    );
+
+    let rule_start = html
+        .find(".card.priority-floor {")
+        .expect("the stripe rule");
+    let rule = &html[rule_start..rule_start + html[rule_start..].find('}').unwrap()];
+    assert!(
+        rule.contains("background-image:") && !rule.contains("background:"),
+        "longhands only: `.card`'s own `background:` shorthand must keep its colour: {rule}"
+    );
+    assert!(
+        html.contains("@media (forced-colors: active) {\n  .card.priority-floor { border-left-color: CanvasText; }"),
+        "forced colours drop the gradient; a solid stripe must remain"
     );
 }
 
@@ -6143,6 +6222,146 @@ fn web_create_story_without_draft_is_live() {
     assert_eq!(story_field(&json, "draft"), serde_json::Value::Null);
 }
 
+/// The GET status for one story: 200 when it exists, 404 when it does not.
+fn story_status(fixture: &Served, id: &str) -> u16 {
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    match fixture
+        .agent()
+        .get(&format!(
+            "http://127.0.0.1:{port}/api/repos/{repo_id}/story/{id}"
+        ))
+        .call()
+    {
+        Ok(resp) => resp.status().as_u16(),
+        Err(err) => status_of(err),
+    }
+}
+
+#[test]
+fn web_create_story_with_blocked_by_records_both_ends_in_one_create() {
+    let fixture = served();
+    fixture.seed(&["new", "The blocker"]);
+    fixture.seed(&["new", "Another blocker"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    // A bare integer expands exactly as the CLI's `--blocked-by 2` does.
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Waits","blocked_by":["SH-1","2"]}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "id"), "SH-3");
+    assert_eq!(
+        story_field(&json, "relationships"),
+        serde_json::json!([
+            {"relation": "blocked-by", "other_id": "SH-1"},
+            {"relation": "blocked-by", "other_id": "SH-2"}
+        ])
+    );
+}
+
+#[test]
+fn web_create_story_as_a_draft_with_blocked_by() {
+    let fixture = served();
+    fixture.seed(&["new", "The blocker"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"A waiting sketch","draft":true,"blocked_by":["SH-1"]}"#,
+    )
+    .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "draft"), true);
+    assert_eq!(
+        story_field(&json, "relationships"),
+        serde_json::json!([{"relation": "blocked-by", "other_id": "SH-1"}])
+    );
+}
+
+#[test]
+fn web_create_story_with_null_blocked_by_names_no_blocker() {
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Free","blocked_by":null}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "relationships"), serde_json::json!([]));
+}
+
+#[test]
+fn web_create_story_with_an_unknown_blocker_is_404_and_files_nothing() {
+    let fixture = served();
+    fixture.seed(&["new", "The blocker"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let err = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Never filed","blocked_by":["SH-1","SH-9"]}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 404);
+    assert_eq!(story_status(&fixture, "SH-2"), 404, "nothing was filed");
+}
+
+#[test]
+fn web_create_story_refuses_a_malformed_blocked_by_and_files_nothing() {
+    // Dropping a malformed value would file the story ready, with a 201 —
+    // the exact defect `blocked_by` exists to close (SH-779).
+    let fixture = served();
+    fixture.seed(&["new", "The blocker"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    for value in [
+        r#""SH-1""#,
+        "1",
+        "true",
+        "[1]",
+        r#"["SH-1",null]"#,
+        r#"{"id":"SH-1"}"#,
+    ] {
+        let payload = format!(r#"{{"title":"Never filed","blocked_by":{value}}}"#);
+        let err = post_json(
+            &fixture,
+            &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+            &payload,
+        )
+        .unwrap_err();
+        assert_eq!(status_of(err), 400, "blocked_by = {value}");
+    }
+    assert_eq!(story_status(&fixture, "SH-2"), 404, "nothing was filed");
+}
+
+#[test]
+fn web_create_story_with_blocked_by_refuses_an_advanced_state() {
+    let fixture = served();
+    fixture.seed(&["new", "The blocker"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let err = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Born busy","state":"in-progress","blocked_by":["SH-1"]}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 422);
+    assert_eq!(story_status(&fixture, "SH-2"), 404, "nothing was filed");
+}
+
 #[test]
 fn web_publish_makes_a_draft_live() {
     let fixture = served();
@@ -8895,6 +9114,18 @@ fn a_bindable_non_loopback_ip() -> std::net::IpAddr {
 /// `CONTROL_DEADLINE` (5s) and failed. Green after: the read lock is cloned
 /// out and released immediately, so an open SSE connection can no longer
 /// block anything.
+/// How long [`a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection`]
+/// waits for its shimmed tailnet bind: three probe windows.
+///
+/// That test starts its daemon with `STORYHOOK_TAILNET_REPROBE_*_MS`
+/// overrides, so a missed probe is retried within 200ms rather than after the
+/// production 2s backoff. A probe that overruns [`TAILNET_PROBE_TIMEOUT`] under
+/// gate load therefore costs one window, and this tolerates two such misses
+/// before calling the bind absent. The bare 5s it replaces was shorter than
+/// one miss plus that backoff plus the retry, and failed the gate on a tree
+/// with no defect (SH-788's first central verification).
+const LATE_BIND_DEADLINE: Duration = Duration::from_secs(TAILNET_PROBE_TIMEOUT.as_secs() * 3);
+
 #[test]
 fn a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection() {
     let _sse_guard = sse_test_lock();
@@ -8911,8 +9142,13 @@ fn a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection() {
     entries.extend(std::env::split_paths(&env.path_with_binary()));
     let path = std::env::join_paths(entries).expect("joining PATH");
 
+    // Fast retries, as `tailnet_rebind.rs` configures them: a probe that
+    // overruns under load is retried at once rather than after the production
+    // backoff (see `LATE_BIND_DEADLINE`).
     env.story(dir.path())
         .env("PATH", &path)
+        .env("STORYHOOK_TAILNET_REPROBE_INITIAL_MS", "50")
+        .env("STORYHOOK_TAILNET_REPROBE_CAP_MS", "200")
         .args(["web", "start"])
         .assert()
         .success();
@@ -8930,14 +9166,14 @@ fn a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection() {
     // Confirm the premise: the bind must land while the SSE connection
     // above is still open, or this test proves nothing about the ordering
     // it exists to pin.
-    let bind_deadline = Instant::now() + Duration::from_secs(5);
+    let bind_deadline = Instant::now() + LATE_BIND_DEADLINE;
     loop {
         if env.daemon().is_some_and(|i| i.tailnet.is_some()) {
             break;
         }
         assert!(
             Instant::now() < bind_deadline,
-            "the daemon never bound the shimmed tailnet identity within 5s"
+            "the daemon never bound the shimmed tailnet identity within {LATE_BIND_DEADLINE:?}"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

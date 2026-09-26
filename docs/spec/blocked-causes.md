@@ -126,6 +126,41 @@ prose. `e2e/specs/blocked-banner-layout.spec.ts` pins the fix by geometry (bound
 boxes), since `toContainText` cannot distinguish the two renders — both contain
 exactly the same characters.
 
+### Filing a story already blocked (SH-779)
+
+Recording a blocker after filing was two commits. The first commit wakes the Full
+Auto engine at once (`Change::Project` → `poll_engine`, SH-202, no debounce), and
+its claim (`claim_next_filtered_if`, one `BEGIN IMMEDIATE`) took the story while it
+was still ready. MT-32 (moshtail, 2026-09-24) was created and claimed in the same
+second, got its `blocked-by` edge eight seconds later, and was dispatched blocked.
+
+As built:
+
+- `story new <title> --blocked-by <id>` (repeatable), REST `blocked_by` (an array of
+  ids, parsed strictly — a malformed value is a 400, never dropped), the TUI create
+  form's "Blocked by" field, the dashboard modal's "Blocked by" field, and
+  `story.sh create --blocked-by` all reach `StoryService::create` with
+  `NewStoryInput.blocked_by`.
+- `create` resolves the blockers with `story block --on`'s own rules
+  (`relation::resolve_blockers`: dedupe, must exist, a closed blocker is recorded but
+  blocks nothing), appends the new story's `blocked-by` edges in its creating batch,
+  then each blocker's inverse `blocks` edge (`relation::append_blocks_edges`) — in
+  that order, because `story_relations` holds a foreign key on both ends. Any failure
+  rolls back the story, its edges and the allocated number. One `RelationshipChange`
+  hook fires per blocker after commit.
+- The creation-state rule is in `blocked-state-transitions.md`.
+- `creation_events`, which project recovery calls directly, refuses an input with
+  blockers, so a caller that bypasses `create` cannot drop them silently.
+- A draft's blockers may still be edited with separate `/relate`/`/unrelate` writes
+  (the dashboard's draft-edit diff): a draft is never ready, so no claim fits between
+  them. A new story never takes that path.
+- Every filing guide teaches the flag; `tests/blocked_filing_guidance.rs` fails when a
+  shipped surface shows filing and a blocker written afterwards without it.
+
+Not covered here, filed as SH-786: a block recorded between the engine's claim and
+the agent's launch. The engine's `--force` dispatch skips the ready gate, and dispatch
+supersedes a pending Interrupt enqueued after the claim.
+
 ## Deliberately out of scope
 
 Two surfaces carry the identical pre-SH-309 blindness this story's dashboard fix

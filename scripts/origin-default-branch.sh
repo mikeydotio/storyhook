@@ -35,8 +35,14 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 # shellcheck source=github-access.sh
 . "$script_dir/github-access.sh" || exit 1
 
-if ! out="$(github_git ls-remote --symref origin HEAD 2>&1)"; then
-    printf 'origin-default-branch: origin did not answer: %s\n' "$out" >&2
+status=0
+out="$(github_git ls-remote --symref origin HEAD 2>&1)" || status=$?
+if [ "$status" -ne 0 ]; then
+    # A transport killed by a signal prints nothing, so its status is the
+    # only evidence of how it ended (SH-799).
+    how="exit status $status"
+    [ "$status" -le 128 ] || how="killed by signal $((status - 128))"
+    printf 'origin-default-branch: origin did not answer (%s): %s\n' "$how" "$out" >&2
     exit 1
 fi
 name="$(printf '%s\n' "$out" \

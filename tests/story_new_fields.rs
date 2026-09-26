@@ -473,3 +473,153 @@ fn quiet_prints_nothing_and_still_creates_with_required_defaults() {
         .stdout(predicate::str::contains("priority: low"))
         .stdout(predicate::str::contains("type: normal"));
 }
+
+// ============================================================
+// story new --blocked-by (SH-779)
+// ============================================================
+
+/// A project with one story, `SH-1`, to block on.
+fn project_with_a_blocker() -> tempfile::TempDir {
+    let dir = scratch_dir();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "The blocker"])
+        .assert()
+        .success();
+    dir
+}
+
+fn json(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
+    let out = story(dir).args(args).arg("--json").output().unwrap();
+    assert!(
+        out.status.success(),
+        "`story {}` failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("--json output")
+}
+
+#[test]
+fn new_with_blocked_by_files_the_story_blocked_on_both_ends() {
+    let dir = project_with_a_blocker();
+
+    let filed = json(
+        dir.path(),
+        &[
+            "new",
+            "Waits",
+            "--blocked-by",
+            "SH-1",
+            "--blocked-by",
+            "SH-1",
+        ],
+    );
+    assert_eq!(filed["story"]["story"]["id"], "SH-2");
+    assert_eq!(
+        filed["story"]["story"]["relationships"],
+        serde_json::json!([{"relation": "blocked-by", "other_id": "SH-1"}]),
+        "a repeated blocker is recorded once"
+    );
+
+    let blocker = json(dir.path(), &["show", "SH-1"]);
+    assert_eq!(
+        blocker["story"]["story"]["relationships"],
+        serde_json::json!([{"relation": "blocks", "other_id": "SH-2"}])
+    );
+
+    let ready = json(dir.path(), &["list", "--ready"]);
+    let ids: Vec<&str> = ready["stories"]
+        .as_array()
+        .expect("stories")
+        .iter()
+        .filter_map(|row| row["story"]["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec!["SH-1"], "the blocked story is not ready");
+}
+
+#[test]
+fn new_with_an_unknown_blocker_files_nothing() {
+    let dir = project_with_a_blocker();
+
+    story(dir.path())
+        .args(["new", "Never filed", "--blocked-by", "SH-9"])
+        .assert()
+        .failure()
+        .code(3)
+        .stderr(predicate::str::contains("SH-9"));
+
+    story(dir.path())
+        .args(["show", "SH-2"])
+        .assert()
+        .failure()
+        .code(3);
+    story(dir.path())
+        .args(["new", "The next story"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SH-2"));
+}
+
+#[test]
+fn new_with_a_foreign_blocker_is_refused_before_anything_is_written() {
+    let dir = project_with_a_blocker();
+
+    story(dir.path())
+        .args(["new", "Never filed", "--blocked-by", "ZZ-1"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("ZZ-1"));
+
+    story(dir.path())
+        .args(["show", "SH-2"])
+        .assert()
+        .failure()
+        .code(3);
+}
+
+#[test]
+fn new_with_blocked_by_refuses_an_advanced_state_and_files_nothing() {
+    let dir = project_with_a_blocker();
+
+    story(dir.path())
+        .args([
+            "new",
+            "Born busy",
+            "--state",
+            "in-progress",
+            "--blocked-by",
+            "SH-1",
+        ])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("in-progress"))
+        .stderr(predicate::str::contains("SH-1"));
+
+    story(dir.path())
+        .args(["show", "SH-2"])
+        .assert()
+        .failure()
+        .code(3);
+}
+
+#[test]
+fn new_blocked_by_without_a_value_is_a_usage_error() {
+    let dir = project_with_a_blocker();
+
+    story(dir.path())
+        .args(["new", "Title", "--blocked-by"])
+        .assert()
+        .failure()
+        .code(2);
+    story(dir.path())
+        .args(["show", "SH-2"])
+        .assert()
+        .failure()
+        .code(3);
+}

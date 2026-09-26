@@ -998,6 +998,55 @@ which is what the user's determination asks for. It cannot make an
 assertion that is structurally wrong become right, and does not substitute
 for the mechanism work below.
 
+## Load grace in the Rust harness (SH-806)
+
+The same determination, for Rust integration tests. The gate runs at utility
+QoS (SH-785), so every process a test starts loses CPU and I/O to
+default-QoS work. A harness wait sized for an idle machine is then stricter
+than production, whose daemon runs its own children at default QoS (SH-784).
+SH-806 found three such waits in one red run.
+
+`storyhook_test_support::load_grace` is the Rust port. `scripts/tests/load_grace.py`
+(SH-767, SH-766) is the Python port, and the policy is the same in both:
+contention is the one-minute load average per core, the multiplier is
+`max(1, contention)`, and any one wait is capped at 15 minutes.
+`tests/timing_assertions.rs` pins the Rust ceiling to the Python one and allows
+only `load_grace.rs` to read the load average. It reads it in-process
+(`getloadavg`): grace computed by spawning a helper would stall exactly when
+spawns are starved, which is when grace is needed.
+
+- **`Patience`** is a wait that is graced when it starts. When it expires it
+  samples again: it extends if contention rose and never shrinks. Its
+  `Display` names the time waited, the allowance and the reading, so a failure
+  says how patient it was. **`wait_for`** observes before it judges the clock,
+  so a condition that became true while the waiter was starved still counts
+  (SH-766). **`graced_now`** grants a bound handed over whole, such as a child
+  wait that encloses graced waits of its own.
+- **Patience, never proof.** Only a wait for something expected to become true
+  is graced. A ceiling that shows a production deadline did not fire stays
+  derived from that deadline and is never multiplied. `PORTFILE_DEADLINE` is
+  both, so waits on it are graced and the constant is not.
+- **No global knob.** A test that proves grace against a stated contention
+  passes its own sampler (`Patience::starting_at`), for example a floor under
+  the real reading carried to its own child. Nothing is ever set with
+  `set_var`. A knob exported in a shell would widen every wait in the suite.
+- **Readiness is an answer, not an existence.** A fixture tmux server is ready
+  when `display-message -p '#{pid}'` answers with its own pid. tmux binds
+  before it listens and initialises before it serves, and a `new-session` that
+  meets a refused socket starts a server of its own. The same applies to a
+  pane: it reports what its shell runs *now*, so identity is read only after
+  it has settled.
+
+Known limits, stated rather than hidden:
+- The multiplier assumes fair sharing. A process at utility QoS can be starved
+  for longer than load per core shows, which is why expiry samples again. Even
+  so, a burst that starves a wait longer than its whole graced allowance still
+  fails it.
+- The ceiling applies to each wait. An outer wait that encloses graced waits
+  uses `graced_now` on a larger base, so the two scale together until both
+  reach the ceiling.
+- The remaining `tests/*.rs` waits are not yet moved to this module (SH-810).
+
 ## A held request races its own client-side deadline (SH-347)
 
 Six e2e tests were quarantined under the `webkit` Playwright project on an

@@ -193,6 +193,7 @@ fn enrichment_events_are_written_in_one_batch_in_a_fixed_order() {
             priority: Some("high".into()),
             labels: Some(vec!["b".into(), "a".into()]),
             draft: false,
+            blocked_by: Vec::new(),
         })
         .expect("creating an enriched story");
 

@@ -63,19 +63,12 @@ that made it.
   qualify: history is deliberately unreachable from the CLI, so nothing prompts
   you to look, and recoverable-but-undetectable is operationally identical to
   lost.
-- **The blocker floor versus the carve-out.** They collide whenever a defect is
-  `blocked-by` the very instrument that would observe it. Found the first time
-  the rule was used in anger: SH-283 (critical) `blocked-by` SH-335 (high) — a
-  pairing no longer live on either story, since SH-335 landed and SH-283's edge
-  was demoted to `relates-to` when it closed. What the precedent preserves is the
-  reasoning, not the relation; do not go looking for the edge. The
-  carve-out wins, for two reasons worth keeping written down. It is the **more
-  specific** rule — it speaks to this exact pairing, where the floor speaks to
-  dependencies in general. And the floor's purpose is **anti-stall**, which a
-  detector edge does not create: the detector already sorts above everything
-  except the defect it is blocking, so the queue hands it out next by itself.
-  Raising it would buy no scheduling and would erase the ordering the carve-out
-  exists to state.
+- **The blocker floor versus the carve-out.** SH-283 (critical) `blocked-by`
+  SH-335 (high), its detector, first forced the question; the carve-out won then
+  because raising a stored level would erase the ordering it states. SH-788 made
+  the floor derived, never stored (`docs/spec/blocker-floor.md`), so the
+  carve-out now sets the stored level and the detector still sorts at critical
+  while it blocks — shown as `high (critical)`.
 
 ## Scope: adopt or file
 

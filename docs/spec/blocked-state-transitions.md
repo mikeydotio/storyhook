@@ -22,6 +22,13 @@ state as the comparison point. A story created in `blocked` uses the first
 configured non-blocked OPEN state. This prevents a detour through `blocked`
 from manufacturing progress. Unknown comparison states fail with repair context.
 
+Creation with blockers (SH-779) follows the same order rule.
+`domain::transition::validate_blocked_creation` refuses a story filed with blockers
+in reserved `blocked` (that hold outlives the edges and never lifts when they
+retract), and — while any blocker's effective superstate is OPEN, judged against the
+computed index readiness uses — in any state later in catalog order than the default
+open state. A story filed blocked opens where the pipeline starts.
+
 Validate proposed events in order against their preceding folded snapshot.
 Admission and persistence share one write transaction. Refusal names the story,
 source, destination, blockers, and the available abandonment action. No partial

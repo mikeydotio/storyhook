@@ -497,7 +497,7 @@ step and a later explicit or scheduled pass can retry idempotently.
             "new",
             r#"story new <title> [--state <slug>] [--type <slug>] [--description <text>]
               [--priority <level>] [--complexity <level>] [--label <name> ...]
-              [--labels <csv>] [--draft]
+              [--labels <csv>] [--blocked-by <id> ...] [--draft]
 
 Create a new story with the given title. Returns the assigned ID.
 All flags are optional — everything but the title can also be set
@@ -513,10 +513,24 @@ in 'story list' with a [draft] badge (or filter to drafts-only with
 'story list --drafts'). 'story publish <id>' makes it live — one-way,
 so there is no flag to undo it.
 
+--blocked-by <id> files the story already blocked by that story, and
+may be repeated. Each blocked-by edge, and each blocker's own blocks
+edge, is written in the same transaction as the story itself, so the
+story is never ready — and Full Auto can never claim it — before its
+blockers are recorded. Filing with 'story new' and then running
+'story relate <id> blocked-by <x>' or 'story block <id> --on <x>' is
+two writes, and a Full Auto run can claim the story between them.
+A blocker must exist in this project; a closed one is recorded but
+blocks nothing, the same as 'story block --on'. With a blocker, the
+story opens in the default state: 'blocked' is refused (that state
+would outlive the edge), and so is a later state while a blocker is
+open.
+
 When to use:
   When you have a discrete piece of work to track. For bulk creation
   from a spec, use 'story decompose' instead. Use --draft for an
   idea you're still shaping and don't want surfacing as ready work yet.
+  Use --blocked-by whenever the new story must wait on another one.
 
 Examples:
   story new "Implement authentication middleware"
@@ -525,6 +539,7 @@ Examples:
   story new "Add rate limiting" --priority high --label backend --label api
   story new "Investigate flaky test" --description "Fails ~1 in 20 runs in CI"
   story new "Sketch: notification preferences" --draft
+  story new "Ship the export API" --blocked-by SH-4 --blocked-by SH-7
 
 Related:
   story help complexity-rubric — Choose low, medium, or high complexity.
@@ -534,6 +549,8 @@ Related:
   story type list          — Show configured types. Omit --type to use
                              the first configured type.
   story publish <id>     — Make a draft live (one-way)
+  story block <id> --on <x> — Record a blocker on a story that
+                            already exists
   story decompose        — Create multiple stories from a spec file
   story set <id>          — Change any field after creation
   story prioritize <id>  — Set priority after creation
@@ -566,6 +583,7 @@ Filters:
                            closed exclusion for this call, but not the
                            archived one.
   --priority <levels>     Comma-separated: critical,high,medium,low,none
+                           Matches the stored level, not a blocker floor
   --label <labels>        Comma-separated label filter
   --phase <N>             Filter by phase number
   --flagged               Only stories with integrity warnings
@@ -608,8 +626,10 @@ Related:
             "next",
             r#"story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
 
-Get the story execution order, highest priority first while respecting
-dependencies. The first result is ready now. With --count above 1, each later
+Get the story execution order, highest effective priority first while
+respecting dependencies. A story that blocks more urgent open work sorts at
+that work's level (the blocker floor: see 'story help priority-rubric'). The
+first result is ready now. With --count above 1, each later
 result is the story that becomes executable after the earlier results are
 treated as completed; an open blocker therefore appears before its dependent
 instead of removing the dependent from the answer entirely.
@@ -1752,12 +1772,18 @@ When to use:
   only for something that isn't a story — an external dependency, a
   pending decision, waiting on a person.
 
+  For a story you have not filed yet, do not file it and then block
+  it: that is two writes, and a Full Auto run can claim the story
+  between them. File it blocked instead:
+    story new "<title>" --blocked-by <blocker>
+
 Examples:
   story block SH-3 --on SH-9
   story block SH-3 --on SH-9 "needs SH-9's API before this can start"
   story block SH-7 "needs design review"
 
 Related:
+  story new --blocked-by <id>   — File a new story already blocked
   story unblock <id>            — Clear the blocked status
   story relate <a> blocked-by <b>
                                  — Add the edge without touching the reason
@@ -1927,9 +1953,11 @@ Related:
 How to choose a priority — and why the choice does more than label a
 story.
 
-Priority is 'story next''s sort key. Stories are ordered by level,
-then by story number ascending, so a level is a claim about what the
-next session picks up. Three consequences follow, and they are why
+Priority is 'story next''s sort key. Stories are ordered by effective
+level, then by story number ascending, so a level is a claim about
+what the next session picks up. The effective level is the stored
+level, raised while the story blocks more urgent open work (the
+blocker floor, below). Three consequences follow, and they are why
 this rubric is strict rather than generous:
 
   - Ties break toward the OLDER story, so inflating a level quietly
@@ -2027,29 +2055,36 @@ still catches real reds. The POPULATION is the defect: a backlog of
 known flakes is how a genuine red gets waved off as "the usual one".
 Track that as its own story, and price it in the detection layer.
 
-== Relationships never inherit priority ==
+== Relationships never change a stored level ==
 
-A dependency is a scheduling fact, not a severity claim.
+A dependency is a scheduling fact, not a severity claim. No
+relationship changes the level a story stores. storyhook derives the
+one scheduling effect a dependency has, and shows it beside the
+stored level.
 
-  - blocks / blocked-by transmit nothing by default. A low blocker
-    under a high dependent stays low.
-  - The one exception, the blocker floor: if X is blocked-by Y and X
-    sorts EARLIER than Y, raise Y to X's level, never higher. story next
-    places Y before X, but Y still competes on its own priority while it is
-    executable; leaving a low blocker beneath a high dependent would delay
-    both behind unrelated medium work.
-  - When the blocker floor and the detection carve-out disagree, the
-    carve-out wins. It is the more specific rule, and the floor
-    exists to prevent a stall that a detector edge does not create.
-  - Never lower a dependent to match its blocker, and never raise a
-    blocker above its dependent — that is the inflation error where
-    every prerequisite of a critical becomes critical and the level
-    saturates.
+  - The blocker floor: while an open story Y blocks a more urgent
+    open story X, directly or through a chain, Y sorts at X's level.
+    story next, the Full Auto engine, the verifier queue and the
+    dashboard order by it, and every priority display shows both
+    levels, as "low (critical)". A blocking epic hands its floor to
+    each open child. The floor ends by itself when the blockage
+    ends. Drafts and stories with an obviated-by edge pass a floor
+    on, but lend none of their own level.
+  - Do not raise Y's stored level to match its dependent. The floor
+    already schedules Y, and a stored raise outlives the blockage:
+    that is the inflation error, where every prerequisite of a
+    critical becomes critical and the level saturates.
+  - The detection carve-out governs the stored level only. A
+    detector that blocks the defect it observes stays one level below
+    it, and sorts at the defect's level while it blocks it.
+  - Never lower a dependent to match its blocker.
   - parent-of: an epic keeps its own stored priority, independent of
-    every child. story next never surfaces the epic itself, but among
-    ready children with equal own priority, their nearest parent epic's
+    every child, and its own level never flows to a child. story next
+    never surfaces the epic itself, but among ready children with
+    equal effective priority, their nearest parent epic's effective
     priority is the first tie-breaker. With several parents, the most
-    urgent parent wins; a parentless story uses its own priority again.
+    urgent parent wins; a parentless story uses its own effective
+    priority again.
   - relates-to transmits nothing, ever.
   - duplicate-of is not a priority edge: collapse duplicates to one
     story rather than triaging the same defect twice.
@@ -2062,7 +2097,7 @@ A dependency is a scheduling fact, not a severity claim.
 Related:
   story new --priority <level>   — Choose a level at creation
   story prioritize <id> <level>  — Choose or change it afterwards
-  story list --priority <levels> — Filter by level
+  story list --priority <levels> — Filter by stored level
   story next                     — What the sort key decides
 "#,
         );
@@ -3251,7 +3286,7 @@ pub fn compact_reference() -> &'static str {
 LIFECYCLE
   story project new --prefix P  Create a project (asks if given no flags)
   story project show|list|delete Show this one; list all; delete one
-  story new "<title>"             Create a story, returns assigned ID
+  story new "<title>" [--blocked-by <id>] Create a story; the flag files it blocked
   story show <id>                 Story details
   story move <id> <state>         Change state
   story reopen <id>               Reopen a closed story

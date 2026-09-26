@@ -6,7 +6,7 @@ use ratatui::widgets::Paragraph;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::domain::{CommitReference, Priority, StorySnapshot, SuperState, completion_state};
-use crate::output::ReferencedBy;
+use crate::output::{ReferencedBy, priority_label};
 use crate::tui::action::Action;
 use crate::tui::components::modal::render_modal;
 use crate::tui::state::AppState;
@@ -501,9 +501,10 @@ impl Component for StoryDetail {
                 ]));
             }
         } else {
+            let floors = state.data.blocker_floors();
             lines.push(render_field(
                 "Priority",
-                story.priority.as_str(),
+                &priority_label(&story.priority, floors.floor(story)),
                 self.selected_field == 2,
                 label_width,
                 &theme,

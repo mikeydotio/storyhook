@@ -68,13 +68,39 @@ impl Drop for DaemonGuard<'_> {
     }
 }
 
+/// A `codex` whose plugin registry is empty: the Codex double this suite's
+/// premise needs. Without it the daemon asks whatever `codex` this machine
+/// has, which makes network requests and on 2026-09-26 did not answer at all
+/// (SH-815), so the suite's outcome was the machine's.
+const EMPTY_CODEX_REGISTRY: &str = r#"#!/bin/sh
+if [ "$1 $2" = "plugin list" ]; then
+  printf '{"installed":[]}\n'
+  exit 0
+fi
+echo "unexpected codex call: $*" >&2
+exit 64
+"#;
+
 /// Starts the daemon with **no** `STORYHOOK_DISPATCH_SCRIPT`, so resolution
-/// runs the provider registry (empty under this HOME), then the projection.
+/// runs the provider registry (empty under this HOME, and empty in the
+/// Codex double first on `PATH`), then the projection.
 fn start_unpinned(env: &TestEnv) -> DaemonInfo {
+    use std::os::unix::fs::PermissionsExt;
     let dir = scratch_dir();
+    let fake_bin = env.home().join("fake-bin");
+    std::fs::create_dir_all(&fake_bin).expect("mkdir fake bin");
+    let codex = fake_bin.join("codex");
+    std::fs::write(&codex, EMPTY_CODEX_REGISTRY).expect("write the Codex double");
+    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755))
+        .expect("make the Codex double executable");
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin).chain(std::env::split_paths(&env.path_with_binary())),
+    )
+    .expect("join PATH");
     env.story(dir.path())
         .args(["daemon", "start"])
         .env_remove("STORYHOOK_DISPATCH_SCRIPT")
+        .env("PATH", path)
         .assert()
         .success();
     env.daemon()

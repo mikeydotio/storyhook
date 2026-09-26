@@ -482,6 +482,7 @@ impl Component for Board {
 
         let theme = Theme::from_env();
         let rows = self.build_visible_rows(state);
+        let floors = state.data.blocker_floors();
 
         if rows.is_empty() {
             let empty_msg = Line::from(Span::styled(
@@ -582,7 +583,8 @@ impl Component for Board {
                 RowItem::StoryRow { id } => {
                     let is_drag_source = drag_source_id.as_deref() == Some(id.as_str());
                     let story = state.data.find_story(id);
-                    let mut line = render_story_row(story, is_selected, width, &theme);
+                    let floor = story.and_then(|story| floors.floor(story));
+                    let mut line = render_story_row(story, floor, is_selected, width, &theme);
                     if is_drag_source {
                         for span in &mut line.spans {
                             span.style = span.style.patch(theme.drag_source);
@@ -652,6 +654,7 @@ fn render_section_header(
 /// Render a story row line.
 fn render_story_row(
     story: Option<&crate::domain::StorySnapshot>,
+    floor: Option<&Priority>,
     is_selected: bool,
     width: usize,
     theme: &Theme,
@@ -667,8 +670,14 @@ fn render_story_row(
 
     // Priority symbol
     let (pri_sym, pri_style) = priority_display(&story.priority, theme);
-    if !pri_sym.is_empty() {
+    if !pri_sym.is_empty() || floor.is_some() {
         right_parts.push((format!(" {pri_sym}"), pri_style));
+    }
+    // The blocker floor follows the stored glyph in parentheses (SH-788),
+    // as the CLI prints `low (critical)`.
+    if let Some(floor) = floor {
+        let (floor_sym, floor_style) = priority_display(floor, theme);
+        right_parts.push((format!("({floor_sym})"), floor_style));
     }
 
     let blocked_part: Option<(String, ratatui::style::Style)> = if story.awaiting.is_some() {
@@ -823,6 +832,42 @@ mod tests {
                 description: None,
             },
         ]
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    /// SH-788: a board row shows the blocker floor after the stored glyph,
+    /// as the CLI prints `low (critical)`; an unraised row is unchanged.
+    #[test]
+    fn a_story_row_shows_its_blocker_floor_after_its_own_glyph() {
+        let theme = Theme::from_env();
+        let mut story = test_snapshot("SH-1", "todo", "Blocker");
+        story.priority = Priority::Low;
+        let floored = line_text(&render_story_row(
+            Some(&story),
+            Some(&Priority::Critical),
+            false,
+            80,
+            &theme,
+        ));
+        assert!(floored.contains(" .(!!!)"), "{floored}");
+        let plain = line_text(&render_story_row(Some(&story), None, false, 80, &theme));
+        assert!(plain.contains(" .") && !plain.contains('('), "{plain}");
+        // A floored `none` has no glyph of its own, but its floor still shows.
+        story.priority = Priority::None;
+        let none = line_text(&render_story_row(
+            Some(&story),
+            Some(&Priority::Low),
+            false,
+            80,
+            &theme,
+        ));
+        assert!(none.contains(" (.)"), "{none}");
     }
 
     fn test_snapshot(id: &str, state: &str, title: &str) -> StorySnapshot {

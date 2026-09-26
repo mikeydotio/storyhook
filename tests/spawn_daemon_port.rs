@@ -21,9 +21,10 @@
 //! no port pre-selected by this process still comes up and is fully
 //! discoverable from its own portfile.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use storyhook_test_support::{TestEnv, scratch_dir, spawn_daemon};
+use storyhook_test_support::load_grace::{self, Patience};
+use storyhook_test_support::{PORTFILE_DEADLINE, TestEnv, scratch_dir, spawn_daemon};
 
 #[test]
 fn a_directly_spawned_daemon_is_discoverable_from_its_portfile_with_no_port_preselected() {
@@ -33,20 +34,16 @@ fn a_directly_spawned_daemon_is_discoverable_from_its_portfile_with_no_port_pres
 
     let daemon = spawn_daemon(&env, cwd.path(), None);
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let info = loop {
-        if let Some(info) = env.daemon()
-            && info.pid == daemon.pid()
-        {
-            break info;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the directly-spawned daemon never published a portfile naming its own pid \
-             within {deadline:?} of being spawned with no port pre-selected"
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    };
+    let info = load_grace::wait_for(
+        Patience::new(PORTFILE_DEADLINE),
+        Duration::from_millis(25),
+        || {
+            "the directly-spawned daemon never published a portfile naming its own pid after \
+             being spawned with no port pre-selected"
+                .into()
+        },
+        || env.daemon().filter(|info| info.pid == daemon.pid()),
+    );
 
     assert_ne!(
         info.port, 0,

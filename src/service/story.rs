@@ -28,6 +28,7 @@ use crate::store::{
     WriteOps,
 };
 
+use super::relation;
 use super::verification::{
     VERIFICATION_OVERRIDDEN_PREFIX, certified_for_current_stay, override_refusal,
 };
@@ -228,6 +229,12 @@ pub struct NewStoryInput {
     /// story id like any other creation; `StoryService::publish` is the only
     /// way out, and it is one-way.
     pub draft: bool,
+    /// Stories this one is blocked by — `story new --blocked-by` (SH-779).
+    /// Each edge, and each blocker's inverse `blocks` edge, is recorded in
+    /// the creation transaction, so no committed state exists in which the
+    /// new story is ready before its blockers are recorded. Ids must already
+    /// be canonical; the door canonicalizes them.
+    pub blocked_by: Vec<String>,
 }
 
 /// The edits `story set` can apply in one call.
@@ -277,26 +284,64 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// corrupted this repository's own tracker. Every enrichment field is
     /// validated before anything is written, so invalid input leaves neither a
     /// half-created story nor a burnt story number.
+    ///
+    /// `input.blocked_by` is recorded in the same transaction (SH-779): the
+    /// new story's `blocked-by` edges ride in its creating append, and each
+    /// blocker's inverse `blocks` edge follows it. Filing a story and then
+    /// relating it was two commits, and the first one woke the Full Auto
+    /// engine, which claimed the story while it was still ready. Blockers obey
+    /// `story block --on`'s rules ([`relation::resolve_blockers`]), and
+    /// [`crate::domain::transition::validate_blocked_creation`] refuses a
+    /// creation state that a blocked story could not have reached.
     pub fn create(&self, input: &NewStoryInput) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-        let snapshot = self.ctx.write_stories(|tx| {
-            let prefix = project_prefix(&*tx, project)?;
-            let ordered = tx.states(project)?;
-            let states = state_map(&ordered);
-            let events = creation_events(&*tx, project, &ordered, input, &now)?;
-            let story = tx.allocate_story_no(project)?;
-            Ok(append_and_fold(
-                tx,
-                project,
-                story,
-                &prefix,
-                &states,
-                ExpectedSeq::Exact(EventSeq::ZERO),
-                &events,
-                self.ctx.provenance(),
-            )?)
-        })?;
+        let snapshot =
+            self.ctx.write_stories(|tx| {
+                let prefix = project_prefix(&*tx, project)?;
+                let ordered = tx.states(project)?;
+                let states = state_map(&ordered);
+                let mut events = base_creation_events(&*tx, project, &ordered, input, &now)?;
+                // Resolved before the number is allocated: a blocker can only name
+                // a story that already exists, never the one being filed.
+                let blockers =
+                    relation::resolve_blockers(&*tx, project, &prefix, None, &input.blocked_by)?;
+                if !blockers.is_empty() {
+                    admit_blocked_creation(&*tx, project, &prefix, &ordered, &events, &blockers)?;
+                    events.extend(blockers.iter().map(|blocker| {
+                        StoryEvent::StoryRelationshipAdded {
+                            at: now.clone(),
+                            other_id: blocker.id.clone(),
+                            relation: "blocked-by".to_string(),
+                        }
+                    }));
+                }
+                let story = tx.allocate_story_no(project)?;
+                let snapshot = append_and_fold(
+                    tx,
+                    project,
+                    story,
+                    &prefix,
+                    &states,
+                    ExpectedSeq::Exact(EventSeq::ZERO),
+                    &events,
+                    self.ctx.provenance(),
+                )?;
+                // After the new story's own append, never before: `story_relations`
+                // holds a foreign key on both ends, so the row must exist first.
+                relation::append_blocks_edges(
+                    tx,
+                    project,
+                    &prefix,
+                    &states,
+                    &blockers,
+                    &snapshot.id,
+                    &now,
+                    self.ctx.provenance(),
+                    false,
+                )?;
+                Ok(snapshot)
+            })?;
 
         self.ctx.fire_hook(
             HookEventType::Create,
@@ -308,6 +353,25 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 "initial_state": &snapshot.state,
             }),
         );
+        // The same per-blocker hook `story block --on` fires, read from the
+        // edges the story now records.
+        for relation in snapshot
+            .relationships
+            .iter()
+            .filter(|relation| relation.relation == "blocked-by")
+        {
+            self.ctx.fire_hook(
+                HookEventType::RelationshipChange,
+                &serde_json::json!({
+                    "event_type": "relationship_change",
+                    "story_id": &snapshot.id,
+                    "timestamp": self.ctx.now(),
+                    "action": "added",
+                    "relation": "blocked-by",
+                    "other_id": &relation.other_id,
+                }),
+            );
+        }
         Ok(snapshot)
     }
 
@@ -1568,8 +1632,71 @@ pub(super) fn assignable_priority(raw: &str) -> Result<Priority, AppError> {
     }
 }
 
-/// The events `story new` writes, with every field validated first.
+/// The events `story new` writes, with every field validated first, for a
+/// caller that allocates and appends the story itself.
+///
+/// Refuses an input that names blockers. Those edges need the blockers' own
+/// inverse appends in the same transaction, which only
+/// [`StoryService::create`] performs; a caller that took these events alone
+/// would file the story ready and silently drop its blockers (SH-779).
+///
+/// # Errors
+///
+/// [`AppError::Validation`] when `input.blocked_by` is non-empty, or when a
+/// field fails validation.
 pub(super) fn creation_events(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    states: &[StateDef],
+    input: &NewStoryInput,
+    now: &str,
+) -> Result<Vec<StoryEvent>, AppError> {
+    if !input.blocked_by.is_empty() {
+        return Err(AppError::Validation(
+            "internal: a story filed with blockers must be created by StoryService::create, \
+             which records both ends of each edge in the creating transaction"
+                .to_string(),
+        ));
+    }
+    base_creation_events(tx, project, states, input, now)
+}
+
+/// Refuses a creation state a story filed with `blockers` may not open in.
+///
+/// Reads the state from the batch's `StoryCreated` so the rule judges exactly
+/// the slug [`base_creation_events`] validated, and judges each blocker's
+/// superstate against [`super::query::story_map`] — the computed index
+/// readiness uses, so an epic blocker counts by its computed state.
+fn admit_blocked_creation(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    prefix: &str,
+    states: &[StateDef],
+    events: &[StoryEvent],
+    blockers: &[relation::ResolvedBlocker],
+) -> Result<(), AppError> {
+    let Some(StoryEvent::StoryCreated { state, .. }) = events.first() else {
+        return Err(AppError::Storage(
+            "internal: a creation batch must open with StoryCreated".to_string(),
+        ));
+    };
+    let index = super::query::story_map(tx, project)?;
+    let named: Vec<String> = blockers.iter().map(|b| b.id.clone()).collect();
+    let open: Vec<String> = blockers
+        .iter()
+        .filter(|blocker| {
+            index
+                .get(&blocker.no.to_id(prefix))
+                .is_some_and(|story| story.superstate == SuperState::Open)
+        })
+        .map(|blocker| blocker.id.clone())
+        .collect();
+    crate::domain::transition::validate_blocked_creation(state, states, &named, &open)
+}
+
+/// The creation batch itself: `StoryCreated` and every enrichment event,
+/// validated, with no relationship events.
+fn base_creation_events(
     tx: &impl ReadOps,
     project: ProjectId,
     states: &[StateDef],
@@ -2240,5 +2367,50 @@ mod unclaim_tests {
             codes.len(),
             "codes must be distinct: {codes:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod creation_tests {
+    use super::{NewStoryInput, creation_events};
+    use crate::error::AppError;
+    use crate::store::{ReadOps, SqliteStore, Store};
+    use storyhook_test_support::ServiceFixture;
+
+    /// The bypass guard (SH-779): a caller that builds its own creation batch
+    /// — project recovery's repair story — must not be able to take the
+    /// events for an input with blockers and silently file it ready.
+    #[test]
+    fn creation_events_refuses_an_input_with_blockers() {
+        let fixture = ServiceFixture::new();
+        let store = SqliteStore::open(fixture.env().store_path()).unwrap();
+        let project = store
+            .read(|tx| Ok(tx.project_by_slug("fixture")?.unwrap().id))
+            .unwrap();
+        let states = store.read(|tx| tx.states(project)).unwrap();
+
+        let blocked = NewStoryInput {
+            title: "bypasses create".into(),
+            blocked_by: vec!["SH-1".into()],
+            ..NewStoryInput::default()
+        };
+        let error = store
+            .read(|tx| Ok(creation_events(tx, project, &states, &blocked, "now")))
+            .unwrap()
+            .expect_err("blockers need StoryService::create");
+        assert!(
+            matches!(&error, AppError::Validation(message) if message.contains("StoryService::create")),
+            "got {error:?}"
+        );
+
+        let plain = NewStoryInput {
+            title: "an ordinary batch".into(),
+            ..NewStoryInput::default()
+        };
+        let events = store
+            .read(|tx| Ok(creation_events(tx, project, &states, &plain, "now")))
+            .unwrap()
+            .expect("an input without blockers still builds its batch");
+        assert!(!events.is_empty());
     }
 }

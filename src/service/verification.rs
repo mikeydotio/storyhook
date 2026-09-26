@@ -249,7 +249,11 @@ pub struct VerificationCandidate {
     pub story_id: String,
     /// Story title for diagnostics.
     pub title: String,
-    /// Stored priority that ordered the queue.
+    /// Priority that ordered the queue: the story's effective level, raised
+    /// to its blocker floor while it blocks more urgent open work (SH-788),
+    /// so verifying it first starts that work sooner. The cleanup pass reads
+    /// done stories, which never carry a floor, so there it is the stored
+    /// level.
     pub priority: Priority,
     /// Creation timestamp used to break equal-priority ties during cleanup.
     pub created_at: String,
@@ -1265,6 +1269,7 @@ pub(crate) fn ordered_candidates_for(
     if let Some(project) = tx.project(project)? {
         let intents = tx.landing_intents()?;
         let index = super::query::story_map(tx, project.id)?;
+        let floors = crate::domain::BlockerFloors::compute(&index);
         let checkout = tx.checkout_path(project.id)?;
         let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
         let resets = tx.story_resets(project.id)?;
@@ -1311,7 +1316,7 @@ pub(crate) fn ordered_candidates_for(
                 project_slug: project.slug.clone(),
                 story_id: row.story_no.to_id(&project.prefix),
                 title: row.title,
-                priority: row.priority,
+                priority: floors.effective(&row.snapshot),
                 created_at: row.created_at,
                 verifying_since,
                 verifying_generation,

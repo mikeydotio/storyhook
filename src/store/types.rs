@@ -807,13 +807,15 @@ pub enum StorySort {
     /// Ascending story number — the numeric order `list` and `search` use.
     #[default]
     StoryNo,
-    /// Priority first (critical → none), then ascending story number.
+    /// Stored priority first (critical → none), then ascending story number.
     ///
     /// A *total* order, unlike the legacy `priority ASC, created_at ASC`
     /// comparator whose second key has one-second precision and therefore
-    /// ties. `domain::ready_order` (SH-63) is the same rule, adopted by the
-    /// service layer's ready-list comparators after this one had already
-    /// proven it here.
+    /// ties. `domain::ready_order` (SH-63) adopted the same shape for the
+    /// service layer's ready lists after this one had proven it here, but it
+    /// no longer reads the same level: it ranks by *effective* priority, which
+    /// a blocker floor raises (SH-788) and which this column cannot see, so
+    /// no work-ordering surface may sort through this variant.
     Priority,
     /// Most recently updated first; a same-second tie broken exactly by
     /// [`StoryRow::head_global_seq`](crate::store::types::StoryRow::head_global_seq)

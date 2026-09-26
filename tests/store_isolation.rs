@@ -17,9 +17,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use storyhook_test_support::load_grace::Patience;
 use storyhook_test_support::{
-    ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, daemon_containment, path_without_tailscale,
-    scratch_dir, story_binary,
+    ChildGuard, PORTFILE_DEADLINE, STORY_COMMAND_DEADLINE, TestEnv, daemon_containment,
+    path_without_tailscale, scratch_dir, story_binary,
 };
 use tempfile::TempDir;
 
@@ -1433,17 +1434,17 @@ fn published_port(probe: &Probe) -> Option<u16> {
 /// [`published_port`], waited for — the foreground spellings publish on their own
 /// schedule rather than before an exit this test could wait on.
 ///
-/// The bound covers a tailnet probe (3s, and it runs before the portfile is
-/// written) plus process start, with margin: what is being told apart is
-/// "published somewhere else" from "never published at all", and both answers are
-/// reported by the caller.
+/// The bound is patience, graced by contention (SH-806): what is being told
+/// apart is "published somewhere else" from "never published at all", and both
+/// answers are reported by the caller. The base is the 20 s this wait has
+/// always had, twice the shared [`PORTFILE_DEADLINE`].
 fn await_published_port(probe: &Probe) -> Option<u16> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut patience = Patience::new(PORTFILE_DEADLINE * 2);
     loop {
         if let Some(port) = published_port(probe) {
             return Some(port);
         }
-        if std::time::Instant::now() >= deadline {
+        if patience.expired() {
             return None;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));

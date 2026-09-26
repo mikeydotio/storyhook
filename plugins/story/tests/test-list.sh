@@ -77,6 +77,19 @@ assert_eq "$included_has" "true" "fixture sanity: \`story list --include-closed\
 out=$(cd "$repo" && bash "$SCRIPT" list 2>&1)
 assert_eq "$(jqf "$out" '[.stories[].id]|index("'"$closed"'")')" "null" "closed: excluded"
 
+# --- a blocker shows its blocker floor beside its own level (SH-788) ---
+floored=$(new_story "$repo" "Low blocker")
+waiting=$(new_story "$repo" "Critical dependent")
+(cd "$repo" && story prioritize "$floored" low >/dev/null 2>&1)
+(cd "$repo" && story prioritize "$waiting" critical >/dev/null 2>&1)
+(cd "$repo" && story relate "$floored" blocks "$waiting" >/dev/null 2>&1)
+out=$(cd "$repo" && bash "$SCRIPT" list 2>&1)
+row='.stories[] | select(.id == "'"$floored"'")'
+assert_eq "$(jqf "$out" "$row | .priority")" "low" "floor: the stored level is unchanged"
+assert_eq "$(jqf "$out" "$row | .blocker_floor")" "critical" "floor: the row carries the floor"
+assert_contains "$(jqf "$out" .display)" "$floored [low (critical)] Low blocker" "floor: display shows both levels"
+assert_eq "$(jqf "$out" '.stories[] | select(.id == "'"$ready"'") | .blocker_floor')" "null" "floor: absent when nothing raises the story"
+
 # --- arg validation ---
 out=$(cd "$repo" && bash "$SCRIPT" list extra 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "list: takes no arguments"

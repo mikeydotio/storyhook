@@ -16,7 +16,8 @@ use store_support::{create_story, new_store, raw, seed_project};
 use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget, TypeDef};
 use storyhook::error::AppError;
 use storyhook::service::engine::{
-    ConfigureRequest, DispatchOutcome, EngineService, OPERATOR_STOPPED, StartRequest,
+    ConfigureRequest, DISPATCH_TIMEOUT, DispatchOutcome, EngineService, OPERATOR_STOPPED,
+    StartRequest,
 };
 use storyhook::service::{Clock, ConfigService, Ctx, NewStoryInput, StoryService};
 use storyhook::store::ids::StoryNo;
@@ -1377,33 +1378,321 @@ fn immediate_stop_retries_only_failed_targets_and_retains_reservation_identity()
     assert_eq!(fake.calls().len(), 3);
 }
 
+/// Occupies lane 0 of `run` with `story` and then removes its cleanup lease:
+/// the shape a refused dispatch leaves, and the shape of pre-SH-706 lanes.
+fn occupy_without_lease(fixture: &ServiceFixture, run: &str, story: &str, state: EngineLaneState) {
+    occupy(fixture, run, 0, story, "/preserved/SH-13");
+    let mut lane = fixture
+        .store()
+        .read(|tx| tx.engine_lanes(run))
+        .unwrap()
+        .into_iter()
+        .find(|lane| lane.lane_index == 0)
+        .unwrap();
+    lane.state = state;
+    lane.cleanup_lease = None;
+    fixture
+        .store()
+        .write(|tx| tx.put_engine_lane(&lane))
+        .unwrap();
+}
+
+/// SH-774 (reverses the SH-706 legacy-lane refusal): a lane without a cleanup
+/// lease can never be reset, because no retry produces the missing proof of
+/// ownership. Refusing it kept the run draining forever (run 22e4276a,
+/// 2026-09-25). Stop Now now releases the lane and keeps the work: the claim,
+/// the resources, and a diagnosis on the story.
 #[test]
-fn immediate_stop_refuses_a_legacy_lane_without_inventing_cleanup_identity() {
+fn immediate_stop_releases_a_leaseless_lane_and_preserves_its_story() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::default();
     let ctx = fixture.ctx();
     let service = EngineService::new(&ctx, &fake);
     let run = service.start(start_request(1)).unwrap();
     let story = active_reset_story(&fixture, "legacy");
-    occupy(&fixture, &run.id, 0, &story, "/preserved/SH-13");
+    occupy_without_lease(&fixture, &run.id, &story, EngineLaneState::Working);
+
+    let stopped = service.stop(&run.id, true).unwrap();
+
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    assert_eq!(stopped.lanes[0].state, EngineLaneState::Idle);
+    assert_eq!(
+        stopped.lanes[0].outcome.as_deref(),
+        Some("operator-stopped-now")
+    );
+    let detail = stopped.lanes[0].outcome_detail.clone().unwrap();
+    assert!(detail.contains("no cleanup lease"), "{detail}");
+    assert!(detail.contains(&format!("story reset {story}")), "{detail}");
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "in-progress", "the claim is preserved");
+    assert_eq!(row.awaiting.as_deref(), Some(detail.as_str()));
+    assert_eq!(row.snapshot.comments.last().unwrap().text, detail);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.engine_reset(fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .is_none(),
+        "no cleanup identity is invented"
+    );
+    assert!(
+        fake.calls().is_empty(),
+        "no helper touches unproven resources"
+    );
+}
+
+/// SH-774: the incident's lane was quarantined by a refused dispatch, so its
+/// story already says why. Releasing the lane adds a comment and keeps that
+/// first diagnosis as the awaiting reason.
+#[test]
+fn immediate_stop_keeps_an_existing_quarantine_diagnosis() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let service = EngineService::new(&ctx, &fake);
+    let run = service.start(start_request(1)).unwrap();
+    let story = active_reset_story(&fixture, "refused");
+    occupy_without_lease(&fixture, &run.id, &story, EngineLaneState::Quarantined);
+    StoryService::new(&ctx)
+        .set_awaiting(&story, "could not confirm Codex is running")
+        .unwrap();
+
+    let stopped = service.stop(&run.id, true).unwrap();
+
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "in-progress");
+    assert_eq!(
+        row.awaiting.as_deref(),
+        Some("could not confirm Codex is running")
+    );
+    let comment = &row.snapshot.comments.last().unwrap().text;
+    assert!(comment.contains("lane 0 (quarantined)"), "{comment}");
+    assert!(fake.calls().is_empty());
+}
+
+/// SH-774: a lane whose story was purged has no story to restore. Refusing
+/// it failed Stop Now forever, and its failed lookup also refused the
+/// helper's authorization (`engine reset-target`) for every other lane.
+#[test]
+fn immediate_stop_releases_a_lane_whose_story_was_deleted() {
+    let fixture = ServiceFixture::new();
+    let doomed = active_reset_story(&fixture, "deleted mid-run");
+    let kept = active_reset_story(&fixture, "still owned");
+    let fake = FakeDispatcher::new([DispatcherStep::Reset]);
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(2)).unwrap();
+    engine.pause(&run.id).unwrap();
+    occupy(&fixture, &run.id, 0, &doomed, "/owned/doomed");
+    occupy(&fixture, &run.id, 1, &kept, "/owned/kept");
+    StoryService::new(&ctx).delete(&doomed).unwrap();
+
+    let stopped = engine.stop(&run.id, true).unwrap();
+
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    let released = &stopped.lanes[0];
+    assert_eq!(released.state, EngineLaneState::Idle);
+    let detail = released.outcome_detail.as_deref().unwrap();
+    assert!(detail.contains("no longer exists"), "{detail}");
+    assert_eq!(fake.calls().len(), 1, "the leased lane still resets");
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(2)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "todo");
+}
+
+/// SH-774: the leased helper authorizes itself through `engine reset-target`,
+/// which scans every lane of the run. One lane whose story no longer
+/// resolves failed that scan, so no other lane's helper could run.
+#[test]
+fn reset_authorization_skips_a_lane_whose_story_is_gone() {
+    let fixture = ServiceFixture::new();
+    let kept = active_reset_story(&fixture, "still owned");
+    let fake = FakeDispatcher::new([DispatcherStep::ResetFailure("hold".into())]);
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(2)).unwrap();
+    engine.pause(&run.id).unwrap();
+    occupy(&fixture, &run.id, 1, &kept, "/owned/kept");
+    assert!(engine.stop(&run.id, true).is_err());
+    let token = fixture
+        .store()
+        .read(|tx| tx.engine_reset(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap()
+        .token;
+    // The scan visits lanes in order: the unresolvable lane comes first.
+    occupy(&fixture, &run.id, 0, "SH-99", "/owned/gone");
+
+    assert_eq!(engine.reset_target(&run.id, &token).unwrap().token, token);
+}
+
+/// SH-774: a card reset that owns the lane's story made Stop Now fail
+/// ("reset in progress") until that reset finished or was retried. Stop Now
+/// now defers to it: success, run still draining, lane untouched. Once the
+/// card reset has returned the story to todo, the next Stop Now finishes.
+#[test]
+fn stop_now_defers_to_a_card_reset_and_finishes_after_it() {
+    use storyhook::service::story_reset::StoryResetService;
+    let fixture = ServiceFixture::new();
+    let story = active_reset_story(&fixture, "card reset in flight");
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    occupy(&fixture, &run.id, 0, &story, "/owned/card");
+    let card = StoryResetService::new(&ctx)
+        .reserve(&story, &story)
+        .unwrap();
+
+    let deferred = engine.stop(&run.id, true).unwrap();
+
+    assert_eq!(deferred.run.state, EngineRunState::Draining);
+    assert_eq!(deferred.lanes[0].state, EngineLaneState::Working);
+    assert!(fake.calls().is_empty(), "the card reset owns the cleanup");
+
+    // The card reset's own finish: receipt completed, story back to todo.
+    let mut completed = card;
+    completed.completed = true;
+    fixture
+        .store()
+        .write(|tx| tx.put_story_reset(&completed))
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state(&story, "todo", None, None, None)
+        .unwrap();
+    let finished = engine.stop(&run.id, true).unwrap();
+    assert_eq!(finished.run.state, EngineRunState::Finished);
+    assert!(fake.calls().is_empty());
+}
+
+/// SH-774: a lane whose story a card reset owns failed Stop Now before the
+/// later lanes were tried, and its refused bookkeeping write replaced the
+/// error with "reset owns engine lane". The deferral must not hide a real
+/// failure on another lane.
+#[test]
+fn a_deferred_lane_does_not_hide_another_lanes_failure() {
+    use storyhook::service::story_reset::StoryResetService;
+    let fixture = ServiceFixture::new();
+    let owned = active_reset_story(&fixture, "card reset in flight");
+    let failing = active_reset_story(&fixture, "helper refuses");
+    let fake = FakeDispatcher::new([DispatcherStep::ResetFailure("window refused".into())]);
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(2)).unwrap();
+    occupy(&fixture, &run.id, 0, &owned, "/owned/card");
+    occupy(&fixture, &run.id, 1, &failing, "/owned/failing");
+    StoryResetService::new(&ctx)
+        .reserve(&owned, &owned)
+        .unwrap();
+
+    let error = engine.stop(&run.id, true).unwrap_err().to_string();
+
+    assert!(error.contains("window refused"), "{error}");
+    assert!(error.contains("lane 1"), "{error}");
+    assert_eq!(fake.calls().len(), 1, "the later lane was attempted");
+}
+
+/// Writes lane 0 of `run` in the shape a dispatcher that died mid-dispatch
+/// leaves: the story claimed, the lane dispatching, no cleanup lease.
+fn orphan_dispatch(fixture: &ServiceFixture, run: &str, story: &str) {
     let mut lane = fixture
         .store()
-        .read(|tx| tx.engine_lanes(&run.id))
+        .read(|tx| tx.engine_lanes(run))
         .unwrap()
-        .pop()
-        .unwrap();
-    lane.cleanup_lease = None;
+        .remove(0);
+    lane.state = EngineLaneState::Dispatching;
+    lane.story_id = Some(story.to_string());
+    lane.dispatched_at = Some(FIXTURE_NOW.to_string());
     fixture
         .store()
         .write(|tx| tx.put_engine_lane(&lane))
         .unwrap();
+}
 
-    let error = service.stop(&run.id, true).unwrap_err().to_string();
+/// SH-774: a lane left dispatching by a dispatcher that died (daemon exit
+/// mid-dispatch, or a lost write) made every Stop Now wait the full 180 s
+/// for a lease that could never come, then fail; on the daemon's engine
+/// thread that wait also starved every other project's run. The dispatch
+/// lock proves the dispatcher is gone, so the orphan is released at once.
+#[test]
+fn stop_now_releases_an_orphaned_dispatching_lane_without_waiting() {
+    let fixture = ServiceFixture::new();
+    let story = active_reset_story(&fixture, "dispatcher died");
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    orphan_dispatch(&fixture, &run.id, &story);
 
-    assert!(error.contains("no cleanup lease"), "{error}");
-    let retained = service.status(Some(&run.id)).unwrap().pop().unwrap();
-    assert_eq!(retained.run.state, EngineRunState::Draining);
-    assert_eq!(retained.lanes[0].state, EngineLaneState::Working);
+    let started = std::time::Instant::now();
+    let stopped = engine.stop(&run.id, true).unwrap();
+
+    // The production bound a dead dispatch used to consume on every attempt.
+    assert!(
+        started.elapsed() < DISPATCH_TIMEOUT,
+        "waited {:?} for a dead dispatch",
+        started.elapsed()
+    );
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "in-progress");
+    let awaiting = row.awaiting.unwrap();
+    assert!(
+        awaiting.contains("dispatch ended without recording a result"),
+        "{awaiting}"
+    );
+    assert!(fake.calls().is_empty());
+}
+
+/// SH-774: a card reset waits for dispatching lanes to settle, and Stop Now
+/// defers to a card reset. For an orphaned dispatch neither would ever move.
+/// Stop Now frees that lane, the one write the card-reset guard allows, and
+/// leaves the story to the card reset.
+#[test]
+fn stop_now_frees_an_orphaned_dispatch_that_a_card_reset_waits_on() {
+    use storyhook::service::story_reset::StoryResetService;
+    let fixture = ServiceFixture::new();
+    let story = active_reset_story(&fixture, "dispatcher died");
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    orphan_dispatch(&fixture, &run.id, &story);
+    StoryResetService::new(&ctx)
+        .reserve(&story, &story)
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let stopped = engine.stop(&run.id, true).unwrap();
+
+    assert!(
+        started.elapsed() < DISPATCH_TIMEOUT,
+        "waited {:?} for a dead dispatch",
+        started.elapsed()
+    );
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    let reset = fixture
+        .store()
+        .read(|tx| tx.story_reset(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert!(!reset.completed, "the card reset still owns the story");
     assert!(fake.calls().is_empty());
 }
 

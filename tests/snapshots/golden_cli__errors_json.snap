@@ -18,7 +18,7 @@ stderr: <empty>
 $ story new --json
 exit: 2
 stdout: 
-{"error":"usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--complexity low|medium|high] [--label <name> ...] [--labels <csv>] [--draft]","exit_code":2,"result":"error"}
+{"error":"usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--complexity low|medium|high] [--label <name> ...] [--labels <csv>] [--blocked-by <id> ...] [--draft]","exit_code":2,"result":"error"}
 
 stderr: <empty>
 

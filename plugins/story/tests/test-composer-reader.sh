@@ -183,6 +183,73 @@ done
 assert_eq "$(COMPOSER_AWK=/nonexistent/composer.awk holds C '❯' "$claude_ph" "$(row 'CENTRAL VERIFICATION RED')" "$remediation" 2>/dev/null)" no \
   "a failing reader holds nothing"
 
+# ---- SH-799: the reads dispatch's handoff makes ---------------------------------
+# send_prompt_confirmed now types only into a composer that reads idle, takes
+# THIS prompt as receipt, and confirms a submission only once the composer
+# neither shows the prompt nor holds input.
+#
+# A fresh Claude session shows 'Try "..."' in its empty composer until the first
+# submission, and a dispatch pastes into exactly that session. Claude Code
+# 2.1.283 draws the placeholder dim, or with its first letter inverted when it
+# paints its own cursor cell. The recorded idle rows above (F1, F2) carry no
+# inverted cell, so the field rendering is the all-faint one, and it is idle.
+# The inverted variant has a non-faint first letter and reads as text: dispatch
+# then refuses rather than type. That failure is closed and visible, and this
+# pins it, so a provider change shows up here first.
+fresh_row='\033[39m\342\235\257\302\240\033[2mTry "fix lint errors"\033[0m\n'
+fresh_inverted_row='\033[39m\342\235\257\302\240\033[7mT\033[27m\033[2mry "fix lint errors"\033[0m\n'
+charter='Investigate and plan a fix for story SH-7 in this repo. Begin by reading it.'
+for locale in C en_US.UTF-8; do
+  assert_eq "$(strict_state "$locale" '❯' "${claude_rule}${fresh_row}${claude_rule}${claude_footer}")" empty \
+    "$locale: a fresh session's faint 'Try' placeholder is an idle composer"
+  assert_eq "$(strict_state "$locale" '❯' "${claude_rule}${fresh_inverted_row}${claude_rule}${claude_footer}")" text \
+    "$locale: an inverted first letter is not faint, so the composer is not idle (fails closed)"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$(row 'Investigate and plan a fix for story SH-7 in this re[...Truncated text #1 +0 lines...]')" "$charter")" holds \
+    "$locale: Claude's truncated long input still begins with the charter"
+  assert_eq "$(holds "$locale" '›' "$codex_ph" "\342\200\272 Storyhook initialization only. Do not use tools,\n  ? for shortcuts\n" \
+    'Storyhook initialization only. Do not use tools, ask questions.')" holds \
+    "$locale: the Codex initialization turn shows inline"
+done
+
+# cleared <locale> <glyph> <placeholder pattern> <capture> <text> — composer_cleared
+cleared() {
+  printf "$4" >"$CAPTURE_FILE"
+  (export LC_ALL="$1"; READY_PROMPT_GLYPH="$2"; PASTE_PLACEHOLDER_PATTERN="$3"; EMPTY_INPUT_PATTERN=''
+   if composer_cleared %1 "$5"; then printf cleared; else printf no; fi)
+}
+for locale in C en_US.UTF-8; do
+  assert_eq "$(cleared "$locale" '❯' "$claude_ph" "$(row '')" "$charter")" cleared "$locale: an empty composer is cleared"
+  assert_eq "$(cleared "$locale" '❯' "$claude_ph" "  working...\n" "$charter")" cleared \
+    "$locale: no composer row is cleared (a submission may leave none)"
+  assert_eq "$(cleared "$locale" '❯' "$claude_ph" "$claude_ghost" "$charter")" cleared \
+    "$locale: a faint ghost suggestion after the submission is cleared"
+  assert_eq "$(cleared "$locale" '❯' "$claude_ph" "$(row '\033[2m[Pasted text #1]\033[0m')" "$charter")" no \
+    "$locale: a FAINT placeholder is still the charter, not a cleared composer"
+  assert_eq "$(cleared "$locale" '❯' "$claude_ph" "$(row 'Investigate and plan a fix')" "$charter")" no \
+    "$locale: the charter on the row is not cleared"
+  assert_eq "$(cleared "$locale" '❯' "$claude_ph" "${claude_rule}${dialog_row}" "$charter")" no \
+    "$locale: a dialog is not a cleared composer"
+done
+
+# idle_polls <capture> — "<status> <last state> <captures>" of poll_composer_idle.
+# A composer that is not drawn yet is waited for on the READY budget (Claude's
+# readiness never looked at the screen). A drawn row holding text is a dialog
+# or a draft, which does not leave by itself, so it is given CONFIRM_ATTEMPTS
+# reads and no more: the engine kills a dispatch after 180 s.
+COUNT_FILE=$(mktemp /tmp/story-test-composer-count.XXXXXX)
+_TMP_REPOS+=("$COUNT_FILE")
+idle_polls() {
+  printf "$1" >"$CAPTURE_FILE"
+  : >"$COUNT_FILE"
+  (tmux() { [ "${1:-}" = capture-pane ] || return 1; printf x >>"$COUNT_FILE"; cat "$CAPTURE_FILE"; }
+   READY_PROMPT_GLYPH='❯'; EMPTY_INPUT_PATTERN=''; READY_ATTEMPTS=12; READY_DELAY=0; CONFIRM_ATTEMPTS=3
+   last=$(poll_composer_idle %1) && status=0 || status=$?
+   printf '%s %s %s' "$status" "$last" "$(wc -c <"$COUNT_FILE" | tr -d ' ')")
+}
+assert_eq "$(idle_polls "$(row '')")" "0 empty 1" "an idle composer is taken at once"
+assert_eq "$(idle_polls "${claude_rule}${dialog_row}")" "1 text 3" "a dialog is given CONFIRM_ATTEMPTS reads"
+assert_eq "$(idle_polls "  starting...\n")" "1 absent 12" "a composer not drawn yet is waited for on the READY budget"
+
 # A reader that fails has not read an empty composer.
 assert_eq "$(COMPOSER_AWK=/nonexistent/composer.awk state C '❯' "$(row '')" 2>/dev/null)" unknown \
   "a failing reader is unknown, never empty"

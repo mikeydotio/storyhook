@@ -115,6 +115,7 @@ fn view(story: StorySnapshot) -> StoryView {
         stale_info: None,
         progress: None,
         display_state: None,
+        blocker_floor: None,
         head_global_seq: None,
     }
 }
@@ -154,7 +155,8 @@ fn maximal_view() -> StoryView {
                     other_id: "SH-3".to_string(),
                 },
             ],
-            priority: Priority::Critical,
+            // Low, so the blocker floor below is one it could really carry.
+            priority: Priority::Low,
             labels: vec!["backend".to_string(), "api".to_string()],
             story_type: Some("spike".to_string()),
             description: Some("Multi\nline\tdescription with ünïcödé".to_string()),
@@ -208,6 +210,7 @@ fn maximal_view() -> StoryView {
             children_total: 5,
         }),
         display_state: Some("in-progress".to_string()),
+        blocker_floor: Some(Priority::Critical),
         head_global_seq: Some(GlobalSeq::new(7)),
     }
 }
@@ -1539,6 +1542,7 @@ fn invocation_corpus() -> Vec<Invocation> {
             priority: Some("high".to_string()),
             labels: Some(vec!["backend".to_string(), "api".to_string()]),
             draft: true,
+            blocked_by: vec!["SH-2".to_string(), "3".to_string()],
         },
         Invocation::State {
             action: StateAction::List,
@@ -2284,6 +2288,37 @@ fn older_next_wire_shapes_default_the_new_filters_to_absent() {
             phase: None,
             epic: None,
             exclude_label: None,
+        }
+    );
+}
+
+#[test]
+fn older_new_wire_shapes_name_no_blocker() {
+    let decoded: Invocation = serde_json::from_value(serde_json::json!({
+        "New": {
+            "title": "filed by an older client",
+            "state": null,
+            "story_type": null,
+            "description": null,
+            "priority": null,
+            "complexity": null,
+            "labels": null,
+            "draft": false
+        }
+    }))
+    .expect("an older client can omit SH-779's blocked_by");
+    assert_eq!(
+        decoded,
+        Invocation::New {
+            title: "filed by an older client".to_string(),
+            state: None,
+            story_type: None,
+            description: None,
+            priority: None,
+            complexity: None,
+            labels: None,
+            draft: false,
+            blocked_by: Vec::new(),
         }
     );
 }

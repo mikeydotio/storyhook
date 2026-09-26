@@ -101,10 +101,19 @@ codex_bootstrap_ready() {
   # Do not retry an uncertain submission. Even a task-free primer is one turn.
   local SEND_RETRIES=0
   CODEX_BOOTSTRAP_PHASE=submitted
-  send_prompt_confirmed "$pane" \
+  if ! send_prompt_confirmed "$pane" \
     "Storyhook initialization only. Do not use tools, ask questions, make a plan, or work on stories. Reply READY only if the startup hook does not stop this turn." \
-    "story-bootstrap-$CODEX_BOOTSTRAP_TOKEN" \
-    || { WAIT_READY_REASON="bootstrap-submit-unconfirmed"; return 1; }
+    "story-bootstrap-$CODEX_BOOTSTRAP_TOKEN"; then
+    # No submit key was sent, so no turn ran: say that, not "pasted and
+    # unconfirmed" (SH-799). Once a key was sent, the turn may have run.
+    if [ "$SEND_PROMPT_PHASE" = undelivered ]; then
+      CODEX_BOOTSTRAP_PHASE=not-started
+      WAIT_READY_REASON="bootstrap-undelivered"
+    else
+      WAIT_READY_REASON="bootstrap-submit-unconfirmed"
+    fi
+    return 1
+  fi
   wait_ready_sentinel "$pane" "$pid" "$worktree" "$STORY_PLUGIN_ROOT" || return 1
   WAIT_READY_REASON="bootstrap-incomplete"
   while [ "$attempt" -lt "$READY_ATTEMPTS" ]; do

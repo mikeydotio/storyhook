@@ -359,7 +359,7 @@ story project settings get <key>
 story project settings set <key> <value>
 story project settings unset <key>
 
-story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--complexity low|medium|high] [--label <name>] [--labels <csv>] [--draft]
+story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--complexity low|medium|high] [--label <name>] [--labels <csv>] [--blocked-by <id>] [--draft]
 story show <id>
 story log <id>
 story comment <id> "<text>"
@@ -656,6 +656,9 @@ Notes:
 - An epic's priority remains stored independently. Among equal-priority ready stories,
   `story next` uses the most urgent direct parent epic as its first tie-breaker; a story may
   belong to several epics.
+- A story that blocks more urgent open work sorts at that work's level (its blocker floor)
+  until the blockage ends. The stored level does not change; every priority display shows
+  both, as `low (critical)`. See `story help priority-rubric`.
 - New parent/child links that would create a cycle are rejected.
 
 ## Operating Full Auto
