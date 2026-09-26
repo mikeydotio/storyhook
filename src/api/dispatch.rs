@@ -1649,6 +1649,7 @@ pub(crate) fn resolve_dispatch_script(agent: DispatchAgent) -> Result<PathBuf, S
         crate::plugin::release_marketplace_root().ok(),
         crate::plugin::dev_repo_root(),
         agent,
+        &crate::plugin::codex_installed_plugin_root,
     )
 }
 
@@ -1670,12 +1671,17 @@ pub(crate) fn resolve_engine_dispatch_script(agent: EngineAgent) -> Result<PathB
 /// default). This is also what makes `installed_plugin_script`'s real
 /// behavior against a real `installed_plugins.json` testable at all — before
 /// this, only the `configured` override branch had any coverage (SH-196).
+///
+/// `codex_root` is Codex's registry probe, injected for the same reason: the
+/// real one starts the `codex` on this machine's `PATH`, and a test must not
+/// depend on whether that binary answers (SH-815).
 fn resolve_dispatch_script_from_for_agent(
     configured: Option<String>,
     home: Option<PathBuf>,
     release_root: Option<PathBuf>,
     dev_root: Option<PathBuf>,
     agent: DispatchAgent,
+    codex_root: &dyn Fn(&Path) -> Option<PathBuf>,
 ) -> Result<PathBuf, String> {
     if let Some(configured) = configured {
         let path = PathBuf::from(configured);
@@ -1690,7 +1696,7 @@ fn resolve_dispatch_script_from_for_agent(
     }
     let installed = home.and_then(|home| match agent {
         DispatchAgent::Claude => installed_plugin_script(&home),
-        DispatchAgent::Codex => crate::plugin::codex_installed_plugin_root(&home)
+        DispatchAgent::Codex => codex_root(&home)
             .map(|root| root.join("bin/story.sh"))
             .filter(|script| script.is_file()),
     });
@@ -1722,7 +1728,21 @@ fn resolve_dispatch_script_from(
     home: Option<PathBuf>,
     dev_root: Option<PathBuf>,
 ) -> Result<PathBuf, String> {
-    resolve_dispatch_script_from_for_agent(configured, home, None, dev_root, DispatchAgent::Claude)
+    resolve_dispatch_script_from_for_agent(
+        configured,
+        home,
+        None,
+        dev_root,
+        DispatchAgent::Claude,
+        &claude_never_asks_codex,
+    )
+}
+
+/// The Codex registry probe for a Claude resolution: resolving for Claude
+/// must never start `codex`, so a call here fails the test that made it.
+#[cfg(test)]
+fn claude_never_asks_codex(_: &Path) -> Option<PathBuf> {
+    panic!("a Claude resolution must never run the Codex registry probe")
 }
 
 /// Refuses `path` if its declared `DISPATCH_PROTOCOL` is older than
@@ -3542,6 +3562,7 @@ mod tests {
             Some(_root.path().to_path_buf()),
             None,
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         assert_eq!(
             resolved.expect("the release projection must resolve when the registry is empty"),
@@ -3559,6 +3580,7 @@ mod tests {
             Some(_root.path().to_path_buf()),
             None,
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         assert_eq!(
             resolved.expect("an installed plugin should resolve"),
@@ -3586,6 +3608,7 @@ mod tests {
             Some(_root.path().to_path_buf()),
             Some(dev_root.path().to_path_buf()),
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         assert_eq!(resolved.unwrap(), projection);
     }
@@ -3609,6 +3632,7 @@ mod tests {
             Some(root.path().to_path_buf()),
             Some(dev_root.path().to_path_buf()),
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         assert_eq!(resolved.unwrap(), dev_script);
     }
@@ -3623,6 +3647,7 @@ mod tests {
             Some(_root.path().to_path_buf()),
             None,
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         let message = resolved.expect_err("a projection predating the marker must be refused");
         assert!(
@@ -3634,10 +3659,9 @@ mod tests {
 
     #[test]
     fn resolve_dispatch_script_resolves_the_release_projection_for_codex_too() {
-        // One rule for both providers: a home with no Codex plugin cache
-        // (so the `codex plugin list` probe, if `codex` is even on PATH,
-        // names a directory that does not exist under this home) falls
-        // through to the same projection.
+        // One rule for both providers: a Codex registry that names no enabled
+        // plugin falls through to the same projection. The probe is a fake,
+        // so this machine's own `codex` never runs (SH-815).
         let home = storyhook_test_support::scratch_dir();
         let (_root, script) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
         let resolved = resolve_dispatch_script_from_for_agent(
@@ -3646,11 +3670,35 @@ mod tests {
             Some(_root.path().to_path_buf()),
             None,
             DispatchAgent::Codex,
+            &|_: &Path| None,
         );
         assert_eq!(
             resolved.expect("the projection must resolve for codex"),
             script
         );
+    }
+
+    #[test]
+    fn resolve_dispatch_script_prefers_the_codex_registry_over_the_release_projection() {
+        // The Codex twin of the Claude registry-first rule: the root Codex's
+        // registry names outranks the projection. Pinned with a fake probe,
+        // so the branch has coverage that does not depend on this machine.
+        let home = storyhook_test_support::scratch_dir();
+        let (registry, registry_script) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let registry_root = registry.path().join("plugins/story");
+        let (_root, _projection) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let resolved = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_root.path().to_path_buf()),
+            None,
+            DispatchAgent::Codex,
+            &|asked: &Path| {
+                assert_eq!(asked, home.path(), "the probe reads the resolved home");
+                Some(registry_root.clone())
+            },
+        );
+        assert_eq!(resolved.unwrap(), registry_script);
     }
 
     #[test]
@@ -3664,6 +3712,7 @@ mod tests {
             None,
             None,
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         let message = resolved.expect_err("nothing to resolve must be an error");
         assert_eq!(
