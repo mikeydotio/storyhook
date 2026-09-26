@@ -6879,6 +6879,30 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   var storySubmenuFocusIndex = -1;
   var storySubmenuParentItem = null;
 
+  // Pointer aim toward the open story submenu (SH-811). A straight path from
+  // a submenu's parent row to the submenu crosses sibling rows whenever the
+  // submenu's rows are not level with the parent -- its last rows always,
+  // and its first rows too once placeMenu lifts it off the viewport bottom.
+  // Switching on each crossing took the submenu away mid-travel (WCAG 2.2
+  // SC 1.4.13, "hoverable"). So a sibling the pointer enters inside the
+  // triangle from `apex` to the submenu's near edge is held, not applied.
+  // Leaving the triangle applies it at once; getting nearer the edge
+  // re-arms the rest window, so a slow hand has no time limit; resting for
+  // the window applies it, because a pointer that stops on a row wants it.
+  // The timer only ever opens the row under a resting pointer -- never
+  // closes a submenu the pointer is on or travelling to.
+  //
+  // The rest window and the apex bleed are the values Radix UI's submenu
+  // grace uses (300 ms, 5 px); Amazon's menu-aim uses the same window.
+  var STORY_SUBMENU_AIM_REST_MS = 300;
+  var STORY_SUBMENU_AIM_TOLERANCE_PX = 5;
+  // `apex`: the pointer's last point on the open submenu's parent row, or
+  // where it stood when the submenu opened -- null until one is known (a
+  // submenu opened by click or key). `last`: the latest pointer point in
+  // the menu. `pending`: the held `{item, entry}` hover. `best`: the held
+  // pointer's nearest distance to the submenu's near edge so far.
+  var storySubmenuAim = { apex: null, last: null, pending: null, best: Infinity, timer: null };
+
   /** Whether `st` can use the deliberate-abandonment path SH-505 added.
    * The catalog check matters for a migrated project that already owned an
    * OPEN state named `dropped`: the CLI cannot abandon a story there, so the
@@ -7183,7 +7207,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * menu never sets it, so its own items are unaffected. `submenu`, when
    * present, is an opaque `{ariaLabel, items}` -- this function never reads
    * either field, only forwards the whole object to `openSubmenu` on click.
-   * `hoverItem`, when supplied, owns mouse hover behavior for every row;
+   * `hoverItem(row, entry, evt)`, when supplied, owns mouse hover behavior
+   * for every row and receives the `pointerenter` event for its position;
    * flat menus omit it and retain explicit activation. `closeMenu` is the
    * owning menu's own close function, run before an ordinary item's
    * `onSelect`. */
@@ -7197,7 +7222,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var disabled = !!entry.disabled;
       var onPointerEnter = hoverItem ? function(evt) {
         // Touch synthesizes pointerenter before a tap; only a mouse previews.
-        if (evt.pointerType === "mouse") hoverItem(evt.currentTarget, entry);
+        if (evt.pointerType === "mouse") hoverItem(evt.currentTarget, entry, evt);
       } : null;
       if (entry.submenu) {
         var arrow = emojiIcon("submenu", { className: "disclosure-icon", direction: "right" });
@@ -7257,6 +7282,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     storyMenuNode.tabIndex = -1;
     storyMenuNode.addEventListener("click", function(evt) { evt.stopPropagation(); });
     storyMenuNode.addEventListener("keydown", bindStoryMenuKeys);
+    storyMenuNode.addEventListener("pointermove", trackStoryMenuPointer);
+    storyMenuNode.addEventListener("pointerleave", leaveStoryMenu);
     document.body.appendChild(storyMenuNode);
     var anchor = menuAnchor(e, invoker);
     placeMenu(storyMenuNode, anchor.x, anchor.y);
@@ -7293,15 +7320,139 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     storyMenuFocusIndex = focusMenuItem(storyMenuNode, items.indexOf(item), storyMenuFocusIndex);
   }
 
-  /** Previews a mouse-hovered submenu without entering it. No leave handler:
-   * the popover is a DOM sibling and must survive travel from its parent. */
-  function hoverStoryMenuItem(item, entry) {
+  /** The story menu's `hoverItem` (see `renderMenuNode`): a mouse entering
+   * row `item` previews it, unless the pointer is on its way to the open
+   * submenu (`storySubmenuAim`), in which case the preview is held. No leave
+   * handler closes the submenu: it is a DOM sibling and must survive travel
+   * from its parent. */
+  function hoverStoryMenuItem(item, entry, evt) {
+    var point = { x: evt.clientX, y: evt.clientY };
+    storySubmenuAim.last = point;
+    if (item !== storySubmenuParentItem && insideStorySubmenuAim(point)) {
+      holdStoryMenuHover(item, entry, point);
+      return;
+    }
+    applyStoryMenuHover(item, entry, point);
+  }
+
+  /** Previews `item` for a pointer at `point`: focuses it, then opens its
+   * submenu without entering it, or closes whichever submenu is open. */
+  function applyStoryMenuHover(item, entry, point) {
+    dropStorySubmenuAimPending();
     focusStoryMenuItem(item);
-    if (entry.submenu && !entry.disabled) openStorySubmenu(item, entry.submenu, false);
+    if (entry.submenu && !entry.disabled) openStorySubmenu(item, entry.submenu, false, point);
     else closeStorySubmenu();
   }
 
+  /** Holds the hover of `item` while the pointer at `point` aims at the
+   * open submenu, and starts the rest window that applies it. */
+  function holdStoryMenuHover(item, entry, point) {
+    storySubmenuAim.pending = { item: item, entry: entry };
+    storySubmenuAim.best = storySubmenuEdgeDistance(point);
+    armStorySubmenuAimRest();
+  }
+
+  /** (Re)starts the rest window: the held hover applies if the pointer
+   * makes no progress toward the submenu for `STORY_SUBMENU_AIM_REST_MS`. */
+  function armStorySubmenuAimRest() {
+    clearTimeout(storySubmenuAim.timer);
+    storySubmenuAim.timer = setTimeout(applyPendingStoryMenuHover, STORY_SUBMENU_AIM_REST_MS);
+  }
+
+  /** Applies the held hover, if any, at the pointer's latest point. */
+  function applyPendingStoryMenuHover() {
+    var pending = storySubmenuAim.pending;
+    if (pending) applyStoryMenuHover(pending.item, pending.entry, storySubmenuAim.last);
+  }
+
+  /** Forgets the held hover and stops its rest window. */
+  function dropStorySubmenuAimPending() {
+    clearTimeout(storySubmenuAim.timer);
+    storySubmenuAim.timer = null;
+    storySubmenuAim.pending = null;
+    storySubmenuAim.best = Infinity;
+  }
+
+  /** The story menu's `pointermove`: keeps the aim's points current and
+   * decides a held hover -- dropped when the pointer leaves that row,
+   * applied when it leaves the triangle, re-armed only on at least 1 px of
+   * progress toward the submenu, so a tremor or a whole-pixel repeat lets
+   * the rest window run instead of switching. */
+  function trackStoryMenuPointer(evt) {
+    if (evt.pointerType !== "mouse") return;
+    var aim = storySubmenuAim;
+    var point = { x: evt.clientX, y: evt.clientY };
+    aim.last = point;
+    if (storySubmenuParentItem && storySubmenuParentItem.contains(evt.target)) {
+      aim.apex = point;
+      return;
+    }
+    if (!aim.pending) return;
+    if (!aim.pending.item.contains(evt.target)) {
+      dropStorySubmenuAimPending();
+    } else if (!insideStorySubmenuAim(point)) {
+      applyPendingStoryMenuHover();
+    } else if (storySubmenuEdgeDistance(point) <= aim.best - 1) {
+      aim.best = storySubmenuEdgeDistance(point);
+      armStorySubmenuAimRest();
+    }
+  }
+
+  /** The story menu's `pointerleave` -- into the submenu, which sits on top
+   * of the menu's edge, or anywhere else: the pointer is no longer choosing
+   * among these rows, and a return starts a fresh aim. */
+  function leaveStoryMenu() {
+    dropStorySubmenuAimPending();
+    storySubmenuAim.last = null;
+    storySubmenuAim.apex = null;
+  }
+
+  /** The triangle a pointer aiming at the open story submenu stays inside:
+   * `apex` (moved `STORY_SUBMENU_AIM_TOLERANCE_PX` away from the submenu)
+   * and the two ends of the submenu's near edge; `edge` is that edge's x.
+   * Null when there is no submenu, no known apex, or no side to aim at --
+   * a submenu `placeMenu` clamped over its own parent on a narrow viewport. */
+  function storySubmenuAimTriangle() {
+    var apex = storySubmenuAim.apex;
+    if (!storySubmenuNode || !apex) return null;
+    var sub = storySubmenuNode.getBoundingClientRect();
+    var parent = storySubmenuParentItem.getBoundingClientRect();
+    var side = sub.left >= parent.right - 1 ? 1 : (sub.right <= parent.left + 1 ? -1 : 0);
+    if (!side) return null;
+    var edge = side > 0 ? sub.left : sub.right;
+    return {
+      edge: edge,
+      apex: { x: apex.x - side * STORY_SUBMENU_AIM_TOLERANCE_PX, y: apex.y },
+      top: { x: edge, y: sub.top },
+      bottom: { x: edge, y: sub.bottom }
+    };
+  }
+
+  /** Whether `point` is inside the open story submenu's aim triangle. */
+  function insideStorySubmenuAim(point) {
+    var triangle = storySubmenuAimTriangle();
+    return !!triangle && pointInTriangle(point, triangle.apex, triangle.top, triangle.bottom);
+  }
+
+  /** How far `point` is from the open story submenu's near edge. */
+  function storySubmenuEdgeDistance(point) {
+    var triangle = storySubmenuAimTriangle();
+    return triangle ? Math.abs(triangle.edge - point.x) : Infinity;
+  }
+
+  /** Whether `p` lies in triangle `a`-`b`-`c`, edges included: the three
+   * edge cross products never disagree in sign. */
+  function pointInTriangle(p, a, b, c) {
+    function cross(o, u, v) { return (u.x - o.x) * (v.y - o.y) - (u.y - o.y) * (v.x - o.x); }
+    var d1 = cross(p, a, b);
+    var d2 = cross(p, b, c);
+    var d3 = cross(p, c, a);
+    return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+  }
+
   function bindStoryMenuKeys(e) {
+    // The keyboard now owns the menu; a held hover must not steal focus later.
+    dropStorySubmenuAimPending();
     if (storySubmenuNode && (e.key === "Escape" || e.key === "ArrowLeft")) {
       e.preventDefault();
       e.stopPropagation();
@@ -7381,8 +7532,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * narrow viewport. `submenu` is the opaque `{ariaLabel, items}` object
    * `renderMenuNode` forwarded from the model, unread by anything in
    * between. Hover passes `enter = false`; explicit activation enters the
-   * first item, including when the same submenu is already visible. */
-  function openStorySubmenu(parentItem, submenu, enter) {
+   * first item, including when the same submenu is already visible. Hover
+   * also passes the pointer's `point`, the new submenu's first aim apex, so
+   * a submenu opened by a resting pointer is aimed at from where it rests
+   * (SH-811); click and key pass none and the apex waits for a pointer move
+   * on the parent. */
+  function openStorySubmenu(parentItem, submenu, enter, point) {
     focusStoryMenuItem(parentItem);
     if (storySubmenuParentItem === parentItem) {
       if (enter !== false) storySubmenuFocusItem(0);
@@ -7390,6 +7545,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
     closeStorySubmenu();
     storySubmenuParentItem = parentItem;
+    storySubmenuAim.apex = point || null;
     parentItem.setAttribute("aria-expanded", "true");
     storySubmenuNode = renderStorySubmenuNode(submenu.ariaLabel, submenu.items);
     storySubmenuNode.tabIndex = -1;
@@ -7403,9 +7559,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (enter !== false) storySubmenuFocusItem(0);
   }
 
-  /** Clears the open parent state and optionally restores its roving focus. */
+  /** Clears the open parent state and its aim, and optionally restores its
+   * roving focus. */
   function closeStorySubmenu(restoreFocus) {
     var parent = storySubmenuParentItem;
+    dropStorySubmenuAimPending();
+    storySubmenuAim.apex = null;
     if (parent) parent.setAttribute("aria-expanded", "false");
     if (storySubmenuNode && storySubmenuNode.parentNode) detach(storySubmenuNode);
     storySubmenuNode = null;
