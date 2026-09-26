@@ -603,8 +603,9 @@ pub struct ReportData {
     /// The ids `story next --count N` would hand out, in the exact order it
     /// would hand them out. The first is claimable now; each later id becomes
     /// claimable after every preceding id virtually completes, with each
-    /// available frontier ordered by own priority, parent epic priority, then
-    /// story number (all ascending)
+    /// available frontier ordered by effective priority (blocker floors
+    /// included, SH-788), parent epic priority, then story number (all
+    /// ascending)
     /// ([`crate::domain::ready_order`]), over leaf stories only
     /// ([`crate::domain::has_children`] excludes an epic). Unlike
     /// [`Self::ready_ids`] (the unsorted, immediately claimable set driving

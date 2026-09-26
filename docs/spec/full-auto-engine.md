@@ -671,6 +671,10 @@ among tiebreakers: among ready stories of equal priority, the priority of the
 nearest ancestor epic decides, then story number. A story with **no** parent
 epic is ordered as if its parent's priority equalled its own — neither lifted
 nor demoted, because its own priority is the only honest statement about it.
+Since SH-788 every level in this comparison is the *effective* one — raised to
+the story's blocker floor while it blocks more urgent open work
+(`docs/spec/blocker-floor.md`) — so the engine dispatches a floored blocker at
+the level of the work it holds up.
 `ready_order` remains total: the story number still ends it.
 
 **Epics are not actionable.** They already never surface in `story next`

@@ -24,8 +24,9 @@
 //! path it reports with a different, meaningless one.
 //!
 //! `summary`, `report` and `context`'s ready lists rank by
-//! [`domain::ready_order`](crate::domain::ready_order) (own priority, parent
-//! epic priority, then story number) instead of bare story number — a total order the legacy comparator
+//! [`domain::ready_order`](crate::domain::ready_order) (effective priority —
+//! the own level raised to its blocker floor, SH-788 — parent epic priority,
+//! then story number) instead of bare story number — a total order the legacy comparator
 //! did not have (SH-63). `next` extends that comparator into a dependency-aware
 //! execution order: each result virtually completes before the next is chosen,
 //! so a blocked successor can appear after its blocker (SH-450).
