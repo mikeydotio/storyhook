@@ -509,8 +509,9 @@ pub enum AgentPresence {
 /// answering (SH-626: a probe that could not run has not answered no), and
 /// `pane-changed` is conflicting live identity, not proof of absence (SH-677).
 /// `delivery-failed` is a paste refused by a pane that passed every liveness
-/// gate, so the agent is presumed live.
-pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 11] = [
+/// gate, so the agent is presumed live. `composer-busy` (SH-772) is a live,
+/// registered session whose composer did not read idle, so nothing was typed.
+pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 12] = [
     ("resource-query-failed", AgentPresence::NotAbsent),
     ("resource-identity-unsafe", AgentPresence::NotAbsent),
     ("resource-identity-changed", AgentPresence::NotAbsent),
@@ -522,6 +523,7 @@ pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 11] = [
     ("delivery-failed", AgentPresence::NotAbsent),
     ("target-changed", AgentPresence::NotAbsent),
     ("interruption-failed", AgentPresence::NotAbsent),
+    ("composer-busy", AgentPresence::NotAbsent),
 ];
 
 /// Classifies a notify refusal slug against [`NOTIFY_REFUSALS`]; an unknown

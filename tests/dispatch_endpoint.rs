@@ -48,7 +48,7 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 fn stub_script(mode: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=5
+DISPATCH_PROTOCOL=6
 set -u
 case "{mode}" in
   ok)

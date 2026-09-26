@@ -335,3 +335,50 @@ fi
         ]
     );
 }
+
+/// MT-32 exactly: the block's interrupt never reached the session (its bind
+/// step timed out), the agent parked by itself, and the verifier later landed
+/// the blocker. The Resume must still reach the registered session (SH-772 D5).
+#[test]
+fn a_landing_resumes_an_agent_whose_interrupt_never_arrived() {
+    let f = ServiceFixture::new();
+    let blocker = submitted(&f);
+    let id = dependent(&f, "in-progress", &[&blocker]);
+    let calls = f.cwd().join("calls");
+    let helper = f.cwd().join("provider.sh");
+    std::fs::write(
+        &helper,
+        format!(
+            r#"printf '%s|%s\n' "$5" "$6" >> '{}'
+if [ "$5" = --interrupt ]; then
+printf '{{"ok":false,"reason":"pane-query-failed","display":"ps timed out after 5 seconds"}}'
+else
+printf '{{"ok":true,"target":"parked-session","display":"resumed"}}'
+fi
+"#,
+            calls.display()
+        ),
+    )
+    .unwrap();
+    let deliver = || {
+        storyhook::daemon::block_delivery::process_one(f.store(), f.env(), Some(&helper)).unwrap()
+    };
+    assert!(deliver());
+    assert_eq!(deliveries(&f, &id)[0].status, DeliveryStatus::Unreached);
+
+    let intent = admit(&f);
+    assert!(land(&f, &intent));
+    assert!(deliver());
+
+    let resume = &deliveries(&f, &id)[1];
+    assert_eq!(resume.action, BlockAction::Resume);
+    assert_eq!(resume.status, DeliveryStatus::Delivered, "{resume:?}");
+    assert_eq!(resume.target.as_deref(), Some("parked-session"));
+    assert_eq!(
+        std::fs::read_to_string(&calls).unwrap(),
+        format!(
+            "--interrupt|\n{}|--registered-session\n",
+            storyhook::service::block_delivery::UNBLOCK_PROMPT
+        )
+    );
+}

@@ -136,8 +136,12 @@ fn blocked_state_and_dependency_closure_use_the_same_edges() {
     );
 }
 
+/// Every refusal is recorded once and never replayed. Since SH-772 (decision
+/// D5) an unacknowledged interrupt no longer strands its Resume: the Resume
+/// asks the helper for the story's registered session, and whatever that
+/// refusal is, it is recorded with the operator's remedy.
 #[test]
-fn failed_and_missing_agent_deliveries_are_recorded_without_replay_or_resume() {
+fn failed_and_missing_agent_deliveries_are_recorded_without_replay() {
     use storyhook::store::{DeliveryStatus, WriteOps};
     for (reply, expected) in [
         (
@@ -160,7 +164,11 @@ fn failed_and_missing_agent_deliveries_are_recorded_without_replay_or_resume() {
             .write(|tx| tx.set_checkout_path(f.project(), Some(f.cwd())))
             .unwrap();
         let script = f.cwd().join("notify.sh");
-        std::fs::write(&script, format!("cat <<'REPLY'\n{reply}\nREPLY\n")).unwrap();
+        std::fs::write(
+            &script,
+            format!("printf '%s\\n' \"$6\" >> modes\ncat <<'REPLY'\n{reply}\nREPLY\n"),
+        )
+        .unwrap();
         let id = story(&f, "Unreached resume");
         let ctx = f.ctx();
         let svc = StoryService::new(&ctx);
@@ -172,16 +180,22 @@ fn failed_and_missing_agent_deliveries_are_recorded_without_replay_or_resume() {
         );
         assert_eq!(deliveries(&f)[0].status, expected);
         svc.clear_awaiting(&id).unwrap();
-        // Resume must refuse before invoking any helper if the interrupt had no target.
         assert!(
-            storyhook::daemon::block_delivery::process_one(
-                f.store(),
-                f.env(),
-                Some(Path::new("/unused"))
-            )
-            .unwrap()
+            storyhook::daemon::block_delivery::process_one(f.store(), f.env(), Some(&script))
+                .unwrap()
         );
-        assert_eq!(deliveries(&f)[1].status, DeliveryStatus::Unreached);
+        let resume = &deliveries(&f)[1];
+        assert_eq!(resume.status, expected, "{reply}: {resume:?}");
+        assert!(
+            resume
+                .detail
+                .contains("tell the agent the block was lifted")
+        );
+        assert_eq!(
+            std::fs::read_to_string(f.cwd().join("modes")).unwrap(),
+            "\n--registered-session\n",
+            "the interrupt, then a resume to the registered session"
+        );
         assert!(
             !storyhook::daemon::block_delivery::process_one(f.store(), f.env(), Some(&script))
                 .unwrap()
@@ -333,7 +347,7 @@ fn cli_block_and_unblock_reach_the_daemon_delivery_worker() {
     let script = env.home().join("notify.sh");
     std::fs::write(
         &script,
-        r#"DISPATCH_PROTOCOL=5
+        r#"DISPATCH_PROTOCOL=6
 printf '%s' "$STORY_BIN" > helper-story-bin
 "$STORY_BIN" --project "$2" show "$4" --json > helper-story-read.json 2> helper-story-error || exit 23
 if [ "$5" = --interrupt ]; then

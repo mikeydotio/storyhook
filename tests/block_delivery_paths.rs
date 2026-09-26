@@ -264,3 +264,87 @@ fn event_writer_scan_covers_nested_modules_and_all_append_doors() {
         .collect()
     );
 }
+
+/// Top-level bash functions in `script`, as `(name, body)`: from `name() {` to
+/// the first line that is exactly `}`.
+fn bash_functions(script: &str) -> Vec<(String, String)> {
+    let mut functions = Vec::new();
+    let mut lines = script.lines();
+    while let Some(line) = lines.next() {
+        let Some(name) = line.strip_suffix("() {") else {
+            continue;
+        };
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+            continue;
+        }
+        let body: Vec<&str> = lines.by_ref().take_while(|line| *line != "}").collect();
+        functions.push((name.to_owned(), body.join("\n")));
+    }
+    functions
+}
+
+/// SH-772 (decision D5): a Resume with no acknowledged interrupt reaches the
+/// story's REGISTERED session. That is safe only because every door that
+/// writes a registration first reserves the workspace and revokes the story's
+/// pending deliveries, so a Resume still pending can never reach a session
+/// registered after it was enqueued. A new registration writer that skips
+/// either step would let a stale prompt into a replacement session.
+#[test]
+fn every_session_registration_first_revokes_pending_deliveries_under_the_lock() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story");
+    let mut writers = BTreeSet::new();
+    let mut scripts = vec![root.join("bin/story.sh")];
+    for entry in std::fs::read_dir(root.join("lib")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "sh") {
+            scripts.push(path);
+        }
+    }
+    for script in scripts {
+        let source = std::fs::read_to_string(&script).unwrap();
+        for (name, body) in bash_functions(&source) {
+            for verb in ["register", "adopt"] {
+                let call = format!("lib/agent_identity.py\" {verb}");
+                let Some(at) = body.find(&call) else {
+                    continue;
+                };
+                writers.insert(format!("{name}:{verb}"));
+                let before = &body[..at];
+                let revoked = before
+                    .rfind("supersede_block_deliveries \"")
+                    .unwrap_or_else(|| {
+                        panic!("{name} {verb}s a session without revoking pending deliveries first")
+                    });
+                assert!(
+                    before[..revoked].contains("reserve_story_workspace")
+                        || before[..revoked].contains("reserve_dispatch_workspace"),
+                    "{name} revokes pending deliveries without holding the workspace reservation"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        writers,
+        ["cmd_dispatch:register", "cmd_notify:adopt"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        "review every new session-registration writer against the SH-772 D5 contract"
+    );
+}
+
+#[test]
+fn the_function_scanner_reads_top_level_bodies() {
+    let script = "helper() {\n  a\n}\n\ncmd_x() {\n  reserve_story_workspace\n  b() { c; }\n}\n";
+    let functions = bash_functions(script);
+    assert_eq!(
+        functions,
+        [
+            ("helper".to_owned(), "  a".to_owned()),
+            (
+                "cmd_x".to_owned(),
+                "  reserve_story_workspace\n  b() { c; }".to_owned()
+            )
+        ]
+    );
+}

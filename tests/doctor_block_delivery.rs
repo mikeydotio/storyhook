@@ -134,3 +134,42 @@ fn a_row_whose_id_drifted_is_still_healed() {
         .unwrap();
     assert_eq!(row.snapshot.id, id);
 }
+
+/// The heal's Resume has no interrupt in its episode at all. It still reaches
+/// the story's registered session (SH-772 D5), all the way to Delivered.
+#[test]
+fn a_heal_resume_reaches_the_registered_session() {
+    use storyhook::store::WriteOps;
+    let f = ServiceFixture::new();
+    let output = storyhook::env::git_env::command(f.cwd())
+        .args(["init", "-b", "main"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    f.store()
+        .write(|tx| tx.set_checkout_path(f.project(), Some(f.cwd())))
+        .unwrap();
+    let (_, story) = active(&f);
+    corrupt_snapshot(f.store(), f.project(), story, |snapshot| {
+        snapshot["awaiting"] = serde_json::json!("a hold no event recorded");
+    })
+    .unwrap();
+    repair(&f);
+    let helper = f.cwd().join("provider.sh");
+    std::fs::write(
+        &helper,
+        r#"[ "$6" = --registered-session ] || exit 22
+printf '{"ok":true,"target":"parked-session","display":"resumed"}'
+"#,
+    )
+    .unwrap();
+
+    assert!(
+        storyhook::daemon::block_delivery::process_one(f.store(), f.env(), Some(&helper)).unwrap()
+    );
+
+    assert_eq!(
+        deliveries(&f, story),
+        [(BlockAction::Resume, DeliveryStatus::Delivered)]
+    );
+}
