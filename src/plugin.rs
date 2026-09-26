@@ -3,10 +3,11 @@ use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output};
+use std::process::{Command, ExitStatus};
 
-use crate::env::spawn_env::apply_plugin_cli_allowlist;
 use crate::error::AppError;
+use crate::process::Captured;
+use provider_cli::ProviderError;
 
 const MARKETPLACE_NAME: &str = "storyhook";
 const PLUGIN_REF: &str = "story@storyhook";
@@ -25,6 +26,7 @@ use crate::embedded::EmbeddedFile;
 include!(concat!(env!("OUT_DIR"), "/embedded_marketplace.rs"));
 
 pub mod guard;
+pub(crate) mod provider_cli;
 pub mod receipt;
 pub(crate) mod registration;
 pub mod reinstall;
@@ -175,45 +177,14 @@ fn preflight_provider(target: PluginTarget) -> Result<(), AppError> {
                 .to_string(),
         ));
     }
-    if provider_available(target) {
+    if provider_cli::available(target)? {
         Ok(())
     } else {
         Err(AppError::Storage(missing_message(target)))
     }
 }
 
-fn provider_available(target: PluginTarget) -> bool {
-    let mut command = Command::new(target.executable());
-    apply_plugin_cli_allowlist(&mut command);
-    match command
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-    {
-        // Preserve Claude's historical "invokable is enough" detection.
-        Ok(status) => target == PluginTarget::ClaudeCode || status.success(),
-        Err(_) => false,
-    }
-}
-
-fn run_provider(target: PluginTarget, args: &[&str]) -> Result<Output, AppError> {
-    let mut command = Command::new(target.executable());
-    apply_plugin_cli_allowlist(&mut command);
-    command.args(args).output().map_err(|error| {
-        if error.kind() == ErrorKind::NotFound {
-            AppError::Storage(missing_message(target))
-        } else {
-            AppError::Storage(format!(
-                "failed to run `{} {}`: {error}",
-                target.executable(),
-                args.join(" ")
-            ))
-        }
-    })
-}
-
-fn combined_output(out: &Output) -> String {
+fn combined_output(out: &Captured) -> String {
     let mut text = String::from_utf8_lossy(&out.stdout).to_string();
     text.push('\n');
     text.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -235,7 +206,7 @@ fn materialize_release_marketplace() -> Result<PathBuf, AppError> {
 }
 
 fn remove_claude_plugin() -> Result<(), AppError> {
-    let out = run_provider(
+    let out = provider_cli::run(
         PluginTarget::ClaudeCode,
         &["plugin", "uninstall", PLUGIN_REF],
     )?;
@@ -254,7 +225,7 @@ fn remove_claude_plugin() -> Result<(), AppError> {
 }
 
 fn remove_claude_marketplace() -> Result<(), AppError> {
-    let out = run_provider(
+    let out = provider_cli::run(
         PluginTarget::ClaudeCode,
         &["plugin", "marketplace", "remove", MARKETPLACE_NAME],
     )?;
@@ -273,7 +244,7 @@ fn remove_claude_marketplace() -> Result<(), AppError> {
 }
 
 fn add_claude_marketplace(source: &str) -> Result<(), AppError> {
-    let out = run_provider(
+    let out = provider_cli::run(
         PluginTarget::ClaudeCode,
         &["plugin", "marketplace", "add", source, "--scope", "user"],
     )?;
@@ -287,7 +258,7 @@ fn add_claude_marketplace(source: &str) -> Result<(), AppError> {
 }
 
 fn install_claude_plugin() -> Result<(), AppError> {
-    let out = run_provider(
+    let out = provider_cli::run(
         PluginTarget::ClaudeCode,
         &["plugin", "install", PLUGIN_REF, "--scope", "user"],
     )?;
@@ -300,7 +271,7 @@ fn install_claude_plugin() -> Result<(), AppError> {
     )))
 }
 
-fn codex_json(out: &Output, action: &str) -> Result<serde_json::Value, AppError> {
+fn codex_json(out: &Captured, action: &str) -> Result<serde_json::Value, AppError> {
     if !out.status.success() {
         return Err(AppError::Storage(format!(
             "failed to {action}:\n{}",
@@ -322,12 +293,26 @@ fn codex_json(out: &Output, action: &str) -> Result<serde_json::Value, AppError>
 /// cache layout from its exact marketplace/name/version identity and accept
 /// it only when the plugin manifest exists there. This avoids choosing an
 /// arbitrary stale cache directory when more than one version remains.
-pub(crate) fn codex_installed_plugin_root(home: &Path) -> Option<PathBuf> {
-    let out = run_provider(PluginTarget::Codex, &["plugin", "list", "--json"]).ok()?;
+///
+/// `Ok(None)` is an answer: Codex is not installed, or it names no enabled
+/// plugin with a manifest on disk. `Err` is the absence of one: `codex` ran
+/// and failed, or did not answer within its deadline (SH-815). A caller that
+/// falls through to another helper must still be able to say why.
+pub(crate) fn codex_installed_plugin_root(home: &Path) -> Result<Option<PathBuf>, AppError> {
+    let command = "codex plugin list --json";
+    let out = match provider_cli::run(PluginTarget::Codex, &["plugin", "list", "--json"]) {
+        Ok(out) => out,
+        Err(ProviderError::Missing(_)) => return Ok(None),
+        Err(ProviderError::Failed(error)) => return Err(error),
+    };
     if !out.status.success() {
-        return None;
+        return Err(AppError::Storage(format!(
+            "`{command}` failed ({}): {}",
+            out.status,
+            combined_output(&out).trim()
+        )));
     }
-    codex_installed_plugin_root_from(home, &out.stdout)
+    Ok(codex_installed_plugin_root_from(home, &out.stdout))
 }
 
 fn codex_installed_plugin_root_from(home: &Path, raw: &[u8]) -> Option<PathBuf> {
@@ -448,7 +433,7 @@ fn restore_managed_file(path: &Path, previous: Option<&[u8]>, executable: bool) 
 fn verify_codex_rule(rule: &Path, launcher: &Path) -> Result<(), AppError> {
     let rule = rule.to_string_lossy().into_owned();
     let launcher = launcher.to_string_lossy().into_owned();
-    let out = run_provider(
+    let out = provider_cli::run(
         PluginTarget::Codex,
         &[
             "execpolicy",
@@ -541,12 +526,19 @@ pub fn run_helper(target: &str, args: &[String]) -> Result<ExitStatus, AppError>
         ));
     }
     let home = home_dir()?;
-    let root = codex_installed_plugin_root(&home).ok_or_else(|| {
-        AppError::Storage(
-            "could not locate the enabled `story@storyhook` Codex plugin; run `story plugin install codex`"
-                .to_string(),
-        )
-    })?;
+    let root = codex_installed_plugin_root(&home)
+        .map_err(|error| {
+            AppError::Storage(format!(
+                "could not ask Codex for the enabled `story@storyhook` plugin: {error}. If it is \
+                 not installed, run `story plugin install codex`"
+            ))
+        })?
+        .ok_or_else(|| {
+            AppError::Storage(
+                "could not locate the enabled `story@storyhook` Codex plugin; run `story plugin install codex`"
+                    .to_string(),
+            )
+        })?;
     let helper = root.join("bin/story.sh");
     if !helper.is_file() {
         return Err(AppError::Storage(format!(
@@ -600,7 +592,7 @@ fn expect_codex_field(
 }
 
 fn add_codex_marketplace(source: &str) -> Result<(), AppError> {
-    let out = run_provider(
+    let out = provider_cli::run(
         PluginTarget::Codex,
         &["plugin", "marketplace", "add", source, "--json"],
     )?;
@@ -621,7 +613,7 @@ fn add_codex_marketplace(source: &str) -> Result<(), AppError> {
 }
 
 fn add_codex_plugin() -> Result<String, AppError> {
-    let out = run_provider(
+    let out = provider_cli::run(
         PluginTarget::Codex,
         &["plugin", "add", PLUGIN_REF, "--json"],
     )?;
@@ -650,7 +642,7 @@ fn add_codex_plugin() -> Result<String, AppError> {
 }
 
 fn remove_codex_plugin() -> Result<(), AppError> {
-    let out = run_provider(
+    let out = provider_cli::run(
         PluginTarget::Codex,
         &["plugin", "remove", PLUGIN_REF, "--json"],
     )?;
@@ -674,7 +666,7 @@ fn remove_codex_plugin() -> Result<(), AppError> {
 }
 
 fn remove_codex_marketplace() -> Result<(), AppError> {
-    let out = run_provider(
+    let out = provider_cli::run(
         PluginTarget::Codex,
         &[
             "plugin",
@@ -754,7 +746,7 @@ fn install_claude(project_root: &Path, source: &str) -> Result<String, AppError>
 /// or changing the launcher; only Codex may refresh its cache.
 fn verify_codex_install(installed_path: &str) -> Result<(), AppError> {
     let action = "verify the enabled Storyhook Codex plugin";
-    let out = run_provider(PluginTarget::Codex, &["plugin", "list", "--json"])
+    let out = provider_cli::run(PluginTarget::Codex, &["plugin", "list", "--json"])
         .map_err(|error| AppError::Storage(format!("failed to {action}: {error}")))?;
     codex_json(&out, action)?;
     let home = home_dir()?;
@@ -1038,15 +1030,15 @@ pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
 fn uninstall_claude(project_root: &Path) -> Result<String, AppError> {
     let mut removed = Vec::new();
 
-    if provider_available(PluginTarget::ClaudeCode) {
-        let uninstalled = run_provider(
+    if provider_cli::available(PluginTarget::ClaudeCode)? {
+        let uninstalled = provider_cli::run(
             PluginTarget::ClaudeCode,
             &["plugin", "uninstall", PLUGIN_REF],
         )?;
         if uninstalled.status.success() {
             removed.push(format!("unregistered {PLUGIN_REF} via claude"));
         }
-        let _ = run_provider(
+        let _ = provider_cli::run(
             PluginTarget::ClaudeCode,
             &["plugin", "marketplace", "remove", MARKETPLACE_NAME],
         );
@@ -1083,7 +1075,7 @@ fn uninstall_claude(project_root: &Path) -> Result<String, AppError> {
 }
 
 fn uninstall_codex(project_root: &Path) -> Result<String, AppError> {
-    if !provider_available(PluginTarget::Codex) {
+    if !provider_cli::available(PluginTarget::Codex)? {
         return Err(AppError::Storage(missing_message(PluginTarget::Codex)));
     }
     remove_codex_plugin()?;
@@ -1159,7 +1151,7 @@ fn uninstall_codex(project_root: &Path) -> Result<String, AppError> {
 pub fn uninstall(target: &str, project_root: &Path) -> Result<String, AppError> {
     let warning = compatibility_alias_warning(target);
     let target = PluginTarget::parse(target)?;
-    // Before `provider_available`, which is already a provider call, and
+    // Before `provider_cli::available`, which is already a provider call, and
     // before the residue sweep and the receipt: see `guard`'s module doc for
     // the run of this verb that this refuses.
     guard::check(guard::Verb::Uninstall, Some(target.install_token()))?;

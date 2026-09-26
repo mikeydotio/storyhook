@@ -7,7 +7,7 @@
 //! accepts its first connection (SH-693) — and, armed or not, holds
 //! `BEGIN IMMEDIATE` against every client once per [`IDLE_POLL`] for nothing.
 use super::bus::{Change, ChangeBus};
-use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
+use crate::api::dispatch::resolve_control_script;
 use crate::domain::{StoryEvent, SuperState, is_blocked};
 use crate::env::Environment;
 use crate::env::spawn_env::apply_dispatch_allowlist;
@@ -349,10 +349,9 @@ fn process_candidate(
     let resolved;
     let script = match script {
         Some(script) => script,
-        None => match resolve_dispatch_script(DispatchAgent::Codex).or_else(|codex| {
-            resolve_dispatch_script(DispatchAgent::Claude)
-                .map_err(|claude| format!("Codex helper: {codex}; Claude helper: {claude}"))
-        }) {
+        // The same provider-free resolution as the verifier's control verbs:
+        // this worker must not wait on a provider CLI to find its helper (SH-815).
+        None => match resolve_control_script() {
             Ok(path) => {
                 resolved = path;
                 &resolved

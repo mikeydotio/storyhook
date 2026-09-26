@@ -37,6 +37,28 @@ pub(crate) fn plugin_probe_budget() -> Duration {
     )
 }
 
+/// How long a killed orphan may stay visible to tests: it is a zombie until
+/// the system reaps it, which happens after this module's own wait returns.
+#[cfg(test)]
+const ORPHAN_REAP_WAIT: Duration = Duration::from_secs(5);
+
+/// Whether `pid` stops existing within [`ORPHAN_REAP_WAIT`]: the tests' proof
+/// that a timeout stopped a process this module's group kill reached.
+#[cfg(test)]
+pub(crate) fn pid_disappears(pid: libc::pid_t) -> bool {
+    let deadline = Instant::now() + ORPHAN_REAP_WAIT;
+    loop {
+        // SAFETY: signal 0 only asks whether the pid exists.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Bounds diagnostics from a faulty subprocess.
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
 
@@ -45,6 +67,10 @@ pub(crate) struct Captured {
     pub(crate) status: ExitStatus,
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
+    /// Whether the child wrote more stdout than its read bound, so `stdout`
+    /// is a prefix. A caller that parses stdout as an answer must refuse a
+    /// prefix rather than read it as a whole (SH-815).
+    pub(crate) stdout_truncated: bool,
 }
 
 /// A capture error with any bounded answer collected after process cleanup.
@@ -282,6 +308,35 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
     Ok(captured)
 }
 
+/// Runs a command whose standard output is its answer rather than a
+/// diagnostic (SH-815). It is journaled like [`run_captured_private`] (its
+/// start, timeout and finish, never its output), and at `timeout` its whole
+/// process group is stopped under `termination`. Its stdout is read up to
+/// `answer_limit` bytes instead of the diagnostic bound, and
+/// [`Captured::stdout_truncated`] reports a longer answer.
+pub(crate) fn run_captured_answer(
+    command: Command,
+    timeout: Duration,
+    termination: TerminationPolicy,
+    answer_limit: u64,
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(
+        command,
+        termination,
+        None,
+        CaptureWait {
+            private_output: true,
+            stdout_limit: Some(answer_limit),
+            ..CaptureWait::default()
+        },
+        None,
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
 /// Runs a bounded subprocess with staged, file-backed standard input.
 pub(crate) fn run_captured_with_input(
     command: Command,
@@ -308,6 +363,8 @@ struct CaptureWait {
     private_output: bool,
     /// Journal the child's lifecycle only when it fails (SH-761).
     failures_only: bool,
+    /// How much stdout to read; `None` is the diagnostic bound.
+    stdout_limit: Option<u64>,
 }
 
 fn run_captured_until<G>(
@@ -453,10 +510,13 @@ fn run_captured_until<G>(
             &format!("process finished: {status}"),
         );
     }
+    let (stdout, stdout_truncated) =
+        read_capture_up_to(stdout_file, wait.stdout_limit.unwrap_or(MAX_CAPTURE_BYTES));
     Ok(Captured {
         status,
-        stdout: read_capture(stdout_file),
+        stdout,
         stderr: read_capture(stderr_file),
+        stdout_truncated,
     })
 }
 
@@ -600,12 +660,19 @@ fn kill_process_group(pid: u32) {
 }
 
 /// Reads one capture file from its beginning, bounded for diagnostics.
-pub(crate) fn read_capture(mut file: File) -> Vec<u8> {
+pub(crate) fn read_capture(file: File) -> Vec<u8> {
+    read_capture_up_to(file, MAX_CAPTURE_BYTES).0
+}
+
+/// Reads up to `limit` bytes of one capture file, and whether the file held
+/// more. The length is the file's own, so a cut is known without reading it.
+fn read_capture_up_to(mut file: File, limit: u64) -> (Vec<u8>, bool) {
     let mut bytes = Vec::new();
     if file.seek(SeekFrom::Start(0)).is_ok() {
-        let _ = file.take(MAX_CAPTURE_BYTES).read_to_end(&mut bytes);
+        let _ = (&mut file).take(limit).read_to_end(&mut bytes);
     }
-    bytes
+    let truncated = file.metadata().is_ok_and(|meta| meta.len() > limit);
+    (bytes, truncated)
 }
 
 #[cfg(test)]
@@ -771,5 +838,96 @@ mod tests {
             Ok(_) => panic!("the probe exited without reaching its timeout"),
         }
         assert_eq!(std::fs::read_to_string(marker).unwrap(), "terminated");
+    }
+
+    /// A deadline no answer test reaches: each child below writes and exits.
+    const ANSWER_DEADLINE: Duration = Duration::from_secs(30);
+
+    /// A child that writes exactly `bytes` bytes of stdout and exits.
+    fn writes(bytes: u64) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", &format!("head -c {bytes} /dev/zero")]);
+        command
+    }
+
+    fn answer(bytes: u64, limit: u64) -> Captured {
+        match run_captured_answer(
+            writes(bytes),
+            ANSWER_DEADLINE,
+            TerminationPolicy::Kill,
+            limit,
+        ) {
+            Ok(captured) => captured,
+            Err(error) => panic!("the writer failed: {}", error.detail()),
+        }
+    }
+
+    /// SH-815: an answer that fits its limit exactly is whole, and one byte
+    /// more is reported as cut rather than handed over as if it were whole.
+    #[test]
+    fn an_answer_longer_than_its_limit_is_reported_as_cut() {
+        let whole = answer(4096, 4096);
+        assert_eq!(whole.stdout.len(), 4096);
+        assert!(!whole.stdout_truncated, "an answer at its limit is whole");
+
+        let cut = answer(4097, 4096);
+        assert_eq!(cut.stdout.len(), 4096, "the read stops at the limit");
+        assert!(cut.stdout_truncated, "one byte past the limit is a cut");
+    }
+
+    /// The answer limit replaces the diagnostic bound for its caller only:
+    /// an answer larger than 64 KiB arrives whole, and the diagnostic path
+    /// still stops at 64 KiB and now says that it did.
+    #[test]
+    fn the_answer_limit_widens_only_its_own_capture() {
+        let large = MAX_CAPTURE_BYTES * 2;
+        let whole = answer(large, large);
+        assert_eq!(whole.stdout.len() as u64, large);
+        assert!(!whole.stdout_truncated);
+
+        let diagnostic = match run_captured(writes(MAX_CAPTURE_BYTES + 1), ANSWER_DEADLINE) {
+            Ok(captured) => captured,
+            Err(error) => panic!("the writer failed: {}", error.detail()),
+        };
+        assert_eq!(diagnostic.stdout.len() as u64, MAX_CAPTURE_BYTES);
+        assert!(diagnostic.stdout_truncated);
+    }
+
+    /// An answer that never comes still ends at its deadline, with the whole
+    /// process group gone: the grandchild that holds the capture file open
+    /// is killed with its parent, so nothing it started outlives the call.
+    #[test]
+    fn an_answer_that_never_comes_is_stopped_with_its_whole_group() {
+        let root = storyhook_test_support::scratch_dir();
+        let grandchild = root.path().join("grandchild");
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "sleep 300 & printf %s $! > \"$1\"; wait",
+            "silent-answer",
+            grandchild.to_str().unwrap(),
+        ]);
+        let result = run_captured_answer(
+            command,
+            Duration::from_millis(200),
+            TerminationPolicy::Kill,
+            4096,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(CaptureError::Timeout(TimeoutTermination::Killed))
+            ),
+            "a silent answer must end at its deadline"
+        );
+        let pid: libc::pid_t = std::fs::read_to_string(&grandchild)
+            .expect("the child recorded its grandchild")
+            .trim()
+            .parse()
+            .expect("a pid");
+        assert!(
+            pid_disappears(pid),
+            "the grandchild {pid} outlived its group's deadline"
+        );
     }
 }

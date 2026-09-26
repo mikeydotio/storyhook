@@ -439,7 +439,12 @@ that same completion state, which the helper spells as the constant
 — before removing the tmux window, the worktree, the local branch and the
 per-story caches. A failed reap comments CLEANUP REQUIRED and is retried by
 `next_cleanup`, queried separately from active verification so a cleanup
-fault cannot starve the gate. Until SH-652 the helper accepted only the
+fault cannot starve the gate. The reap still holds the attempt guard, so
+every step before `record_cleanup_*` must end on its own. The helper is found
+without a provider CLI while any file names it (`resolve_control_script`,
+SH-815), and a provider CLI that has to run is bounded by
+`PROVIDER_CLI_TIMEOUT`. A resolution that fails is a failed reap, with
+CLEANUP REQUIRED; it does not hold the guard. Until SH-652 the helper accepted only the
 project's *first* CLOSED state or `$STORY_DONE_STATE`, so in a project that
 ordered another CLOSED state ahead of `done` every retry failed the same way.
 
