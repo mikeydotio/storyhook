@@ -2853,7 +2853,7 @@ mod priority_label_tests {
         let line = list(view("none", true, Some("high")));
         assert!(line.contains("SH-1 [todo] (none (high))"), "{line}");
         let line = list(view("none", true, None));
-        assert!(line.contains("SH-1 [todo] Legacy"), "{line}");
+        assert!(line.contains("SH-1 [todo] [Default] Legacy"), "{line}");
     }
 }
 
