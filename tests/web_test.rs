@@ -1622,6 +1622,84 @@ fn populate_card_skips_its_own_rebuild_when_nothing_it_renders_changed() {
     );
 }
 
+/// SH-788: a blocker floor reaches the board through three things that
+/// the e2e spec (`e2e/specs/priority-floor.spec.ts`) exercises in a browser
+/// and these static checks keep from quietly drifting: the card's floor
+/// class and colours are set on the card node BEFORE `populateCard`'s
+/// SH-399 early return (its fingerprint covers the children only, so a
+/// floor that appears on an otherwise unchanged card would never paint),
+/// the words go into the base aria-label (the only label
+/// `updateVerificationElapsedLabels` preserves), and both sorts read the
+/// effective level while the filter keeps the stored one.
+#[test]
+fn a_blocker_floor_paints_before_the_card_rebuild_guard_and_sorts_by_effective_level() {
+    let html = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web_dashboard.html"),
+    )
+    .expect("reading src/web_dashboard.html");
+    let source = script(&html);
+
+    let card = function_body(source, "populateCard");
+    let guard = card
+        .find("if (card.dataset.rendered === rendered) return;")
+        .expect("the SH-399 guard");
+    for needle in [
+        r#"card.classList.toggle("priority-floor", !!floor);"#,
+        r#"card.style.setProperty("--card-accent", priorityColor(effectivePriority(v)));"#,
+        r#"card.style.setProperty("--card-accent-own", priorityColor(st.priority));"#,
+    ] {
+        let at = card
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing `{needle}`"));
+        assert!(at < guard, "`{needle}` must run before the rebuild guard");
+    }
+    let base = card.find("var baseAriaLabel").expect("the base label");
+    let words = card
+        .find("sorted as \" + floor + \" while it blocks more urgent work")
+        .expect("the floor in words");
+    assert!(
+        base < words
+            && words
+                < card
+                    .find("card.dataset.baseAriaLabel = baseAriaLabel;")
+                    .unwrap(),
+        "the floor text must be part of baseAriaLabel"
+    );
+
+    let floor = function_body(source, "blockerFloor");
+    assert!(
+        floor.contains("priorityUrgency(floor) > priorityUrgency(v.story.priority)"),
+        "a floor that is not strictly more urgent must never display: {floor}"
+    );
+    assert!(
+        function_body(source, "columnCardCompare").contains(
+            "priorityUrgency(effectivePriority(a)) - priorityUrgency(effectivePriority(b))"
+        ),
+        "the board's Priority sort must read the effective level"
+    );
+    assert!(
+        function_body(source, "sortValue").contains("var effective = effectivePriority(v);"),
+        "the List's priority column must sort by the effective level"
+    );
+    assert!(
+        source.contains("inclusiveFacetMatches(f.priorities, st.priority)"),
+        "the priority filter matches the stored level, as `story list --priority` does"
+    );
+
+    let rule_start = html
+        .find(".card.priority-floor {")
+        .expect("the stripe rule");
+    let rule = &html[rule_start..rule_start + html[rule_start..].find('}').unwrap()];
+    assert!(
+        rule.contains("background-image:") && !rule.contains("background:"),
+        "longhands only: `.card`'s own `background:` shorthand must keep its colour: {rule}"
+    );
+    assert!(
+        html.contains("@media (forced-colors: active) {\n  .card.priority-floor { border-left-color: CanvasText; }"),
+        "forced colours drop the gradient; a solid stripe must remain"
+    );
+}
+
 /// `populateCard()` owns only the card's derived `pending` and
 /// `not-draggable` classes (SH-424). Transient classes belong to independent
 /// drag and animation lifecycles, so a render must toggle the derived tokens
