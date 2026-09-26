@@ -248,7 +248,11 @@ fn key_senders(relative: &str, source: &str) -> Vec<(String, String)> {
 /// Every regular source file under the plugin's executable directories.
 fn plugin_sources() -> Vec<String> {
     let mut files = Vec::new();
-    for dir in ["plugins/story/bin", "plugins/story/lib", "plugins/story/hooks"] {
+    for dir in [
+        "plugins/story/bin",
+        "plugins/story/lib",
+        "plugins/story/hooks",
+    ] {
         let mut entries: Vec<_> = std::fs::read_dir(repo_root().join(dir))
             .unwrap_or_else(|error| panic!("{dir} must be readable: {error}"))
             .map(|entry| entry.expect("directory entry").path())
