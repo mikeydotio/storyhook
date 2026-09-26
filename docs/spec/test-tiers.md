@@ -1023,7 +1023,7 @@ keep the failure to one red:
    and fixtures: `--list` runs no global setup.
 2. **A new worker heals first.** The `fixtureHeal` auto fixture runs once per
    worker process, before the first test's hooks. It removes each stray from
-   `CLEANED_PROJECTS` (Alpha, Beta: the projects specs register cleanup for)
+   `CLEANED_PROJECTS` (Alpha, Beta, Delta: the projects specs register cleanup for)
    through the same barrier-gated removal. A new worker exists only because a
    test failed, so this is exactly where strays are found.
 3. **A heal that fails is reported once.** It fails that one test and writes a

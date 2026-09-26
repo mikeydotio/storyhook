@@ -1,5 +1,5 @@
 import {
-  test, expect, cleanUpCreatedStories, healAtWorkerStart, healFixtureProjects, projectSlug,
+  test, expect, CLEANED_PROJECTS, cleanUpCreatedStories, healAtWorkerStart, healFixtureProjects, projectSlug,
   removeStrays, requiredEnv, storiesInProject,
 } from "./support";
 import type { APIRequestContext, TestInfo } from "@playwright/test";
@@ -256,7 +256,7 @@ test("a barrier read that outlasts its patience fails naming the barrier, and th
   // A failed cleanup fails its test, and Playwright starts a new worker for
   // the next one. That worker's first test runs this heal before any hook.
   await healFixtureProjects(request);
-  for (const project of ["Alpha Project", "Beta Project"]) {
+  for (const project of CLEANED_PROJECTS) {
     const present = new Set((await storiesInProject(request, project)).map((s) => s.id));
     expect(present, `${project} is back to the run's baseline`).toEqual(fixtureBaseline(project));
   }
@@ -265,7 +265,7 @@ test("a barrier read that outlasts its patience fails naming the barrier, and th
 // SH-765: the baseline is the run's, captured before any worker, so a worker
 // restarted after a failed cleanup cannot take the failure's stray in.
 test("the run's fixture baseline names the seeded stories of every cleaned project", async ({ request }) => {
-  for (const project of ["Alpha Project", "Beta Project"]) {
+  for (const project of CLEANED_PROJECTS) {
     const baseline = fixtureBaseline(project);
     expect(baseline.size, `${project} was seeded before the run`).toBeGreaterThan(0);
     const present = new Set((await storiesInProject(request, project)).map((s) => s.id));

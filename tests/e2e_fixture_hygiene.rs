@@ -535,6 +535,42 @@ fn cleaned_projects(support: &str) -> Vec<String> {
         .collect()
 }
 
+/// The project one `cleanUpCreatedStories(<argument>)` call registers: a
+/// string literal, or a `const NAME = "..."` in the same spec. Anything else
+/// fails here rather than escaping the parity check below (SH-765: a constant
+/// argument once hid Delta from a literal-only scan).
+fn registered_project(relative: &str, text: &str, argument: &str) -> String {
+    let argument = argument.trim();
+    if let Some(literal) = argument.strip_prefix('"').and_then(|a| a.strip_suffix('"')) {
+        return literal.to_string();
+    }
+    let declaration = format!("const {argument} = \"");
+    let value = text.split_once(&declaration).unwrap_or_else(|| {
+        panic!(
+            "{relative}: cleanUpCreatedStories({argument}) names neither a string literal nor \
+             a `const {argument} = \"...\"` in the same file, so its project cannot be checked"
+        )
+    });
+    value.1[..value.1.find('"').expect("a closed project name")].to_string()
+}
+
+#[test]
+fn registered_project_reads_literals_and_same_file_constants() {
+    assert_eq!(
+        registered_project("a", "", "\"Alpha Project\""),
+        "Alpha Project"
+    );
+    assert_eq!(
+        registered_project("b", "const SCRATCH = \"Delta Project\";", "SCRATCH"),
+        "Delta Project"
+    );
+    let unresolved = std::panic::catch_unwind(|| registered_project("c", "", "projectName"));
+    assert!(
+        unresolved.is_err(),
+        "an unresolvable argument must fail the scan"
+    );
+}
+
 /// A new worker removes earlier strays before its first test runs any hook
 /// (SH-765).
 ///
@@ -543,9 +579,9 @@ fn cleaned_projects(support: &str) -> Vec<String> {
 /// runs once per worker process, is exactly where strays are found. Auto
 /// fixtures resolve before the first `beforeEach` (Playwright 1.63 runs hooks
 /// with the "test" fixture set). The heal covers exactly the projects that
-/// specs register cleanup for. Delta, Gamma and Engine hold stories that no
-/// cleanup force-deletes, and a heal that started deleting there would be a
-/// new hazard.
+/// specs register cleanup for: extending the per-test cleanup to a worker's
+/// start must not start deleting in a project (Gamma, Engine) that no cleanup
+/// touches.
 #[test]
 fn a_new_worker_heals_exactly_the_cleaned_projects_before_any_hook() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -577,11 +613,15 @@ fn a_new_worker_heals_exactly_the_cleaned_projects_before_any_hook() {
     );
     let mut registered: Vec<String> = all_specs(root)
         .iter()
-        .flat_map(|(_, text)| {
-            text.match_indices("cleanUpCreatedStories(\"")
+        .flat_map(|(relative, text)| {
+            text.match_indices("cleanUpCreatedStories(")
                 .map(|(at, needle)| {
                     let rest = &text[at + needle.len()..];
-                    rest[..rest.find('"').expect("a closed project name")].to_string()
+                    registered_project(
+                        relative,
+                        text,
+                        &rest[..rest.find(')').expect("a closed call")],
+                    )
                 })
                 .collect::<Vec<_>>()
         })

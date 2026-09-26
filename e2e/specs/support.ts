@@ -406,10 +406,12 @@ let workerHealed = false;
 const HEAL_FAILED_MARKER = ".fixture-heal-failed";
 
 /**
- * Runs `heal` ({@link healFixtureProjects} in the `fixtureHeal` fixture) for
- * a new worker, unless an earlier worker's heal already failed in this run. A new worker exists because a test failed, and a failed
- * cleanup is the only way a stray outlives its test. So this is exactly where
- * strays are found, and it runs before any hook of the first test.
+ * Runs `heal` ({@link healFixtureProjects} in the `fixtureHeal` fixture) at
+ * the start of a worker, unless an earlier worker's heal already failed in
+ * this run. After the first worker, a new worker exists only because a test
+ * failed, and a failed cleanup is the only way a stray outlives its test. So
+ * this is exactly where strays are found, and it runs before any hook of the
+ * worker's first test.
  *
  * A heal that fails fails that one test and leaves a marker. Later workers
  * report the marker and do not try again. Without the marker, one stray that
@@ -1516,11 +1518,13 @@ export async function waitForDisplayedStoryBlockDeliveries(page: Page, id: strin
 /**
  * The projects whose strays the suite removes: those that specs register
  * {@link cleanUpCreatedStories} for, and no others. The worker-start heal
- * covers exactly these. Delta (Dispatch Auto's claim target), Gamma and
- * Engine hold stories that no cleanup force-deletes, and the heal must not
+ * covers exactly these. Delta is one (`status-destination-prompt.spec.ts`),
+ * and a stray there is the worst kind: Delta is Dispatch Auto's claim
+ * target, so a stray could change what `story claim --next` hands out. Gamma
+ * and Engine hold stories that no cleanup deletes, and the heal must not
  * start deleting there.
  */
-export const CLEANED_PROJECTS: readonly string[] = ["Alpha Project", "Beta Project"];
+export const CLEANED_PROJECTS: readonly string[] = ["Alpha Project", "Beta Project", "Delta Project"];
 
 /**
  * Registers an `afterEach` that deletes, through the API, every story the
