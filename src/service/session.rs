@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::domain::{
-    Priority, StorySnapshot, active_state, apply_computed_epic_states, is_claimable, is_epic,
-    ready_order,
+    Priority, ReadyRanking, StorySnapshot, active_state, apply_computed_epic_states, is_claimable,
+    is_epic, ready_order,
 };
 use crate::error::AppError;
 use crate::help_topics;
@@ -423,7 +423,8 @@ fn highest_priority<'a>(
         .into_iter()
         .filter(|story| !crate::domain::is_human_only(story))
         .collect();
-    sorted.sort_by(|a, b| ready_order(a, b, stories));
+    let ranking = ReadyRanking::new(stories);
+    sorted.sort_by(|a, b| ready_order(a, b, &ranking));
     sorted.into_iter().next()
 }
 

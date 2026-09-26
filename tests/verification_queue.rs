@@ -30,7 +30,7 @@ use storyhook::service::gate_command::GateCommand;
 use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
 use storyhook::service::verification_control::VerificationAction;
 use storyhook::service::{
-    Clock, ConfigService, Ctx, NewStoryInput, PrLinkService, StoryService,
+    Clock, ConfigService, Ctx, NewStoryInput, PrLinkService, RelationService, StoryService,
     VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_CLEANUP_REQUIRED_PREFIX,
     VERIFICATION_GREEN_PREFIX, VERIFICATION_SUBMITTED_PREFIX, VERIFICATION_WITHDRAWN_PREFIX,
     VerificationCandidate, VerificationProblem, VerificationQueue,
@@ -120,6 +120,54 @@ fn the_queue_selects_the_highest_priority_verifying_story() {
     assert_eq!(selected.story_id, high);
     assert_ne!(selected.story_id, low);
     assert_eq!(selected.pull_request.unwrap().url, PR_TWO);
+}
+
+/// SH-788: a low submission that a critical open story waits on drains at
+/// critical, ahead of a high submission, because verifying it first is what
+/// lets the critical work start. The candidate carries that effective level,
+/// so `ahead_counts` and the queue comment agree with the order.
+#[test]
+fn a_submission_blocking_more_urgent_work_drains_at_its_blocker_floor() {
+    let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
+    let blocker = submitted(&fixture, "low blocker", Priority::Low, PR_ONE);
+    let high = submitted(&fixture, "high submission", Priority::High, PR_TWO);
+    let waiting = StoryService::new(&fixture.ctx())
+        .create(&NewStoryInput {
+            title: "critical dependent".into(),
+            priority: Some("critical".into()),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    RelationService::new(&fixture.ctx())
+        .relate(&blocker, "blocks", &waiting, false)
+        .unwrap();
+
+    let ordered = VerificationQueue::new(fixture.store()).ordered().unwrap();
+    assert_eq!(
+        ordered
+            .iter()
+            .map(|c| (c.story_id.as_str(), c.priority.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (blocker.as_str(), Priority::Critical),
+            (high.as_str(), Priority::High)
+        ]
+    );
+
+    // The floor lasts only as long as the blockage.
+    StoryService::new(&fixture.ctx())
+        .set_state(&waiting, "done", None, None, None)
+        .unwrap();
+    let ordered = VerificationQueue::new(fixture.store()).ordered().unwrap();
+    assert_eq!(
+        ordered
+            .iter()
+            .map(|c| c.story_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![high.as_str(), blocker.as_str()]
+    );
 }
 
 #[test]
@@ -5432,7 +5480,9 @@ fn a_queued_candidate_shows_its_position_and_what_is_ahead_of_it() {
         "{queued_comment}"
     );
     assert!(
-        queued_comment.contains("0 candidates of higher priority, 0 of equal priority and older"),
+        queued_comment.contains(
+            "0 candidates of higher effective priority, 0 of equal effective priority and older"
+        ),
         "{queued_comment}"
     );
 }

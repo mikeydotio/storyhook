@@ -646,7 +646,7 @@ pub fn render(view: &VerificationProgressView<'_>, now: &str) -> String {
         } => {
             out.push_str(&format!("Verification — QUEUED (position {position})\n"));
             out.push_str(&format!(
-                "Ahead of it: {ahead_higher_priority} candidate{} of higher priority, {ahead_equal_priority_older} of equal priority and older.\n",
+                "Ahead of it: {ahead_higher_priority} candidate{} of higher effective priority, {ahead_equal_priority_older} of equal effective priority and older.\n",
                 if *ahead_higher_priority == 1 { "" } else { "s" }
             ));
             out.push_str("- [ ] release gate — not started\n");
@@ -1006,7 +1006,9 @@ mod tests {
         let body = render(&view, "2026-08-31T18:04:00Z");
         assert!(body.starts_with(GATE_PROGRESS_PREFIX));
         assert!(body.contains("QUEUED (position 3)"));
-        assert!(body.contains("2 candidates of higher priority, 0 of equal priority and older"));
+        assert!(body.contains(
+            "2 candidates of higher effective priority, 0 of equal effective priority and older"
+        ));
     }
 
     #[test]

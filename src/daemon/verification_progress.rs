@@ -380,7 +380,8 @@ impl PublishBackoff {
 }
 
 /// How many of `ordered[..index]` sort strictly ahead of `ordered[index]` on
-/// priority alone, versus on the equal-priority/older-creation tie-break.
+/// effective priority alone ([`VerificationCandidate::priority`]), versus on
+/// the equal-priority/older-creation tie-break.
 ///
 /// Sound because `ordered` is already sorted the identical way
 /// [`VerificationQueue::next`] drains it: nothing ahead of `index` can have a

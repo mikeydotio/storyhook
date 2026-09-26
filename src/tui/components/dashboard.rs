@@ -443,7 +443,8 @@ pub fn priority_breakdown(stories: &[StorySnapshot]) -> PriorityBreakdown {
 
 /// The stories this project offers as work to pick up, ranked the way `story
 /// next` ranks them: [`domain::ready_order`](crate::domain::ready_order),
-/// own priority, parent epic priority, then story number. Sorting by priority
+/// effective priority (blocker floors included, SH-788), parent epic
+/// priority, then story number. Sorting by priority
 /// alone (as this used to)
 /// has no second key at all, so two same-priority stories fell back to
 /// whatever order `stories` arrived in — the same tie SH-63 fixed on the CLI
@@ -465,17 +466,13 @@ pub fn priority_breakdown(stories: &[StorySnapshot]) -> PriorityBreakdown {
 /// invalid state this signature cannot express.
 pub fn ready_stories(data: &DataStore) -> Vec<&StorySnapshot> {
     let readiness = data.readiness();
-    let stories: std::collections::BTreeMap<&str, &StorySnapshot> = data
-        .stories
-        .iter()
-        .map(|story| (story.id.as_str(), story))
-        .collect();
+    let ranking = readiness.ranking();
     let mut ready: Vec<&StorySnapshot> = data
         .stories
         .iter()
         .filter(|story| readiness.is_claimable(story))
         .collect();
-    ready.sort_by(|a, b| ready_order(a, b, &stories));
+    ready.sort_by(|a, b| ready_order(a, b, &ranking));
     ready
 }
 
@@ -854,6 +851,74 @@ mod tests {
             ready.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
             ["SH-1"],
             "the dependent waits on an open blocker; the blocker itself is free"
+        );
+    }
+
+    /// SH-788: the panel ranks the way `story next` does, so a low blocker
+    /// that a critical story waits on sorts at critical, above an unrelated
+    /// high story — including when the wait runs through a draft, which the
+    /// panel only sees because the drafts reach the ranking too.
+    #[test]
+    fn ready_stories_rank_a_blocker_at_its_blocker_floor() {
+        let mut blocker = make_snapshot(
+            "SH-1",
+            "todo",
+            "Low blocker",
+            Priority::Low,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        blocker.relationships.push(StoryRelation {
+            relation: "blocks".to_string(),
+            other_id: "SH-3".to_string(),
+        });
+        let high = make_snapshot(
+            "SH-2",
+            "todo",
+            "Unrelated",
+            Priority::High,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        let mut draft = make_snapshot(
+            "SH-3",
+            "todo",
+            "Draft in the middle",
+            Priority::Low,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        draft.draft = true;
+        draft.relationships.extend([
+            StoryRelation {
+                relation: "blocked-by".to_string(),
+                other_id: "SH-1".to_string(),
+            },
+            StoryRelation {
+                relation: "blocks".to_string(),
+                other_id: "SH-4".to_string(),
+            },
+        ]);
+        let mut critical = make_snapshot(
+            "SH-4",
+            "todo",
+            "Critical dependent",
+            Priority::Critical,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        critical.relationships.push(StoryRelation {
+            relation: "blocked-by".to_string(),
+            other_id: "SH-3".to_string(),
+        });
+
+        let data = project(vec![blocker, high, critical]).with_drafts(vec![draft]);
+        assert_eq!(
+            ready_stories(&data)
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            ["SH-1", "SH-2"]
         );
     }
 

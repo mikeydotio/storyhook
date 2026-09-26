@@ -260,10 +260,12 @@ fn verifying_is_open_and_unblocked_but_absent_from_work_allocation() {
 }
 
 /// SH-450: an open dependency is an ordering edge, not a declaration that
-/// its successor can never be done. The frontier is reconsidered after each
-/// virtual completion: SH-3 wins the initial frontier on medium priority,
-/// SH-1 then precedes its own dependent, and newly-unblocked critical SH-2
-/// immediately outranks the unrelated low SH-4.
+/// its successor can never be done. SH-788: the low blocker SH-1 sorts at the
+/// level of the critical SH-2 that waits on it, so it wins the initial
+/// frontier over the unrelated medium SH-3 instead of waiting behind it (the
+/// order this test pinned before SH-788 was `[SH-3, SH-1, SH-2, SH-4]`). The
+/// frontier is still reconsidered after each virtual completion: SH-2, newly
+/// unblocked, outranks SH-3, and SH-3 outranks the unrelated low SH-4.
 #[test]
 fn next_walks_blockers_and_reprioritizes_each_unblocked_frontier() {
     let fixture = ServiceFixture::new();
@@ -289,14 +291,65 @@ fn next_walks_blockers_and_reprioritizes_each_unblocked_frontier() {
     assert_eq!(
         ids(&all),
         [
-            independent.as_str(),
             blocker.as_str(),
             dependent.as_str(),
+            independent.as_str(),
             tail.as_str()
         ]
     );
     let first_two = query(&fixture, |service| service.next(2, None));
-    assert_eq!(ids(&first_two), [independent.as_str(), blocker.as_str()]);
+    assert_eq!(ids(&first_two), [blocker.as_str(), dependent.as_str()]);
+}
+
+/// SH-788: the floor travels down a whole chain. SH-1 blocks SH-2, which
+/// blocks the critical SH-3; both blockers sort at critical, ahead of the
+/// unrelated high SH-4. When SH-3 closes, the blockage ends and so does the
+/// floor: the two blockers fall back to their own low level, behind SH-4.
+#[test]
+fn next_ranks_a_whole_blocking_chain_at_its_most_urgent_dependent_until_it_closes() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let root = new_story(&ctx, "low root");
+    let middle = new_story(&ctx, "low middle");
+    let critical = new_story(&ctx, "critical dependent");
+    let high = new_story(&ctx, "high independent");
+    let stories = StoryService::new(&ctx);
+    for (id, level) in [
+        (&root, "low"),
+        (&middle, "low"),
+        (&critical, "critical"),
+        (&high, "high"),
+    ] {
+        stories.set_priority(id, level).expect("prioritizing");
+    }
+    let relations = RelationService::new(&ctx);
+    relations
+        .relate(&root, "blocks", &middle, false)
+        .expect("relating");
+    relations
+        .relate(&middle, "blocks", &critical, false)
+        .expect("relating");
+
+    let chained = query(&fixture, |service| service.next(usize::MAX, None));
+    assert_eq!(
+        ids(&chained),
+        [
+            root.as_str(),
+            middle.as_str(),
+            critical.as_str(),
+            high.as_str()
+        ]
+    );
+
+    stories
+        .set_state(&critical, "done", None, None, None)
+        .expect("closing the critical dependent");
+    let released = query(&fixture, |service| service.next(usize::MAX, None));
+    assert_eq!(
+        ids(&released),
+        [high.as_str(), root.as_str(), middle.as_str()],
+        "the floor must end with the blockage"
+    );
 }
 
 /// A phase-scoped queue must not manufacture readiness by hiding a blocker

@@ -82,6 +82,11 @@ pub use complexity::Complexity;
 pub mod blocker_floor;
 pub use blocker_floor::BlockerFloors;
 
+/// A story index paired with the blocker floors derived from it — what
+/// [`ready_order`] reads.
+pub mod ready_ranking;
+pub use ready_ranking::ReadyRanking;
+
 /// Sniffing and naming an attachment's media type from its own bytes
 /// (SH-315).
 ///
@@ -3112,30 +3117,14 @@ pub fn is_claimable(
     active.is_none_or(|state| story.state != state.slug)
 }
 
-/// The priority of the nearest parent epic for ready-order purposes.
+/// The order ready work is offered in: effective priority, nearest parent-epic
+/// effective priority, story number, then id — all ascending.
 ///
-/// Only a `child-of` target that is actually an EPIC confers its priority
-/// (SH-499): urgency is inherited from the initiative a story belongs to, and a
-/// normal story that happens to have children is not one. This filter used to
-/// read `has_children` and its doc used to claim every `child-of` target was
-/// "structurally an epic". Multiple parents are legal; the most urgent of
-/// those equally-near parents wins, so membership in a critical epic cannot be
-/// masked by simultaneous membership in a less urgent one. A parentless story
-/// uses its own priority, which neither promotes nor demotes independent work.
-pub fn parent_epic_priority(story: &StorySnapshot, all_stories: &impl StoryIndex) -> Priority {
-    story
-        .relationships
-        .iter()
-        .filter(|relation| relation.relation == "child-of")
-        .filter_map(|relation| all_stories.story(&relation.other_id))
-        .filter(|parent| is_epic(parent))
-        .map(|parent| parent.priority.clone())
-        .min()
-        .unwrap_or_else(|| story.priority.clone())
-}
-
-/// The order ready work is offered in: story priority, nearest parent-epic
-/// priority, story number, then id — all ascending.
+/// Effective priority is the story's own level, raised to its blocker floor
+/// while it blocks more urgent open work ([`BlockerFloors`], SH-788): a low
+/// story that a critical one waits on is critical work until it is done.
+/// Both levels come from `ranking`, which derives the floors from the same
+/// index it looks parents up in.
 ///
 /// A **total** order: the pair (priority, number) is unique within a project,
 /// because [`story_number`] is. Two stories can never tie on both keys the way
@@ -3156,15 +3145,18 @@ pub fn parent_epic_priority(story: &StorySnapshot, all_stories: &impl StoryIndex
 /// even for two ids [`story_number`] cannot parse (a hand-imported document
 /// predating the id grammar SH-117 introduced), where both sides would
 /// otherwise tie at `u64::MAX`.
-pub fn ready_order(
+pub fn ready_order<I: StoryIndex>(
     a: &StorySnapshot,
     b: &StorySnapshot,
-    all_stories: &impl StoryIndex,
+    ranking: &ReadyRanking<'_, I>,
 ) -> std::cmp::Ordering {
-    a.priority
-        .cmp(&b.priority)
+    ranking
+        .effective(a)
+        .cmp(&ranking.effective(b))
         .then_with(|| {
-            parent_epic_priority(a, all_stories).cmp(&parent_epic_priority(b, all_stories))
+            ranking
+                .parent_epic_priority(a)
+                .cmp(&ranking.parent_epic_priority(b))
         })
         .then_with(|| story_number(&a.id).cmp(&story_number(&b.id)))
         .then_with(|| a.id.cmp(&b.id))
@@ -4306,13 +4298,14 @@ mod tests {
 
     use super::{
         COMPLETION_STATE_SLUG, DROPPED_STATE_SLUG, FieldEdit, Priority, REQUIRED_STATES,
-        STATE_ROLE_ACTIVE, StateChanges, StateDef, StateUsage, StoryEvent, StoryRelation,
-        StorySnapshot, SuperState, TypeDef, VERIFYING_STATE_SLUG, active_state, completion_state,
-        compute_display_state, compute_progress, default_type, derive_family_relationships,
-        fold_story, has_children, is_claimable, is_ready, last_activity_type, needs_intervention,
-        normalize_labels, ready_order, story_number, validate_event_for_append,
-        validate_required_states, validate_state_defs, validate_state_defs_for_write,
-        validate_state_slug, validate_type_slug, with_required_states, would_create_parent_cycle,
+        ReadyRanking, STATE_ROLE_ACTIVE, StateChanges, StateDef, StateUsage, StoryEvent,
+        StoryRelation, StorySnapshot, SuperState, TypeDef, VERIFYING_STATE_SLUG, active_state,
+        completion_state, compute_display_state, compute_progress, default_type,
+        derive_family_relationships, fold_story, has_children, is_claimable, is_ready,
+        last_activity_type, needs_intervention, normalize_labels, ready_order, story_number,
+        validate_event_for_append, validate_required_states, validate_state_defs,
+        validate_state_defs_for_write, validate_state_slug, validate_type_slug,
+        with_required_states, would_create_parent_cycle,
     };
 
     #[test]
@@ -7470,8 +7463,97 @@ mod tests {
             .cloned()
             .map(|story| (story.id.clone(), story))
             .collect();
-        stories.sort_by(|a, b| ready_order(a, b, &index));
+        let ranking = ReadyRanking::new(&index);
+        stories.sort_by(|a, b| ready_order(a, b, &ranking));
         stories.into_iter().map(|s| s.id).collect()
+    }
+
+    /// Records `blocker` blocks `dependent` on both ends, as the store does.
+    fn block(blocker: &mut StorySnapshot, dependent: &mut StorySnapshot) {
+        blocker.relationships.push(StoryRelation {
+            relation: "blocks".to_string(),
+            other_id: dependent.id.clone(),
+        });
+        dependent.relationships.push(StoryRelation {
+            relation: "blocked-by".to_string(),
+            other_id: blocker.id.clone(),
+        });
+    }
+
+    /// Records `parent` parent-of `child` on both ends, as the store does.
+    fn adopt(parent: &mut StorySnapshot, child: &mut StorySnapshot) {
+        parent.relationships.push(StoryRelation {
+            relation: "parent-of".to_string(),
+            other_id: child.id.clone(),
+        });
+        child.relationships.push(StoryRelation {
+            relation: "child-of".to_string(),
+            other_id: parent.id.clone(),
+        });
+    }
+
+    fn index_of(stories: &[&StorySnapshot]) -> BTreeMap<String, StorySnapshot> {
+        stories
+            .iter()
+            .map(|story| (story.id.clone(), (*story).clone()))
+            .collect()
+    }
+
+    fn ranked(
+        candidates: &[&StorySnapshot],
+        index: &BTreeMap<String, StorySnapshot>,
+    ) -> Vec<String> {
+        let ranking = ReadyRanking::new(index);
+        let mut sorted: Vec<&StorySnapshot> = candidates.to_vec();
+        sorted.sort_by(|a, b| ready_order(a, b, &ranking));
+        sorted.into_iter().map(|story| story.id.clone()).collect()
+    }
+
+    #[test]
+    fn ready_order_ranks_a_floored_blocker_at_its_floor() {
+        // SH-788: SH-5 is low, but critical SH-6 waits on it.
+        let mut blocker = ready_snapshot("SH-5", Priority::Low, "2026-01-01T00:00:00Z");
+        let mut dependent = ready_snapshot("SH-6", Priority::Critical, "2026-01-01T00:00:00Z");
+        let high = ready_snapshot("SH-2", Priority::High, "2026-01-01T00:00:00Z");
+        block(&mut blocker, &mut dependent);
+        let index = index_of(&[&blocker, &dependent, &high]);
+        assert_eq!(ranked(&[&high, &blocker], &index), ["SH-5", "SH-2"]);
+    }
+
+    #[test]
+    fn ready_order_ties_a_parentless_floored_blocker_by_number_not_by_its_own_level() {
+        // Without a parent, the second key is the story's own EFFECTIVE level.
+        // Its stored `low` there would sort it after every critical story.
+        let mut blocker = ready_snapshot("SH-5", Priority::Low, "2026-01-01T00:00:00Z");
+        let mut dependent = ready_snapshot("SH-9", Priority::Critical, "2026-01-01T00:00:00Z");
+        let earlier = ready_snapshot("SH-3", Priority::Critical, "2026-01-01T00:00:00Z");
+        let later = ready_snapshot("SH-7", Priority::Critical, "2026-01-01T00:00:00Z");
+        block(&mut blocker, &mut dependent);
+        let index = index_of(&[&blocker, &dependent, &earlier, &later]);
+        assert_eq!(
+            ranked(&[&later, &blocker, &earlier], &index),
+            ["SH-3", "SH-5", "SH-7"]
+        );
+    }
+
+    #[test]
+    fn ready_order_breaks_an_effective_tie_on_the_parent_epic_effective_level() {
+        // SH-4 is high, floored to critical through its low epic SH-1, which
+        // blocks critical SH-9. SH-5 is critical in a medium epic SH-2. The
+        // tie at critical goes to SH-1's effective critical, not its stored low.
+        let mut blocking_epic = ready_snapshot("SH-1", Priority::Low, "2026-01-01T00:00:00Z");
+        let mut other_epic = ready_snapshot("SH-2", Priority::Medium, "2026-01-01T00:00:00Z");
+        for epic in [&mut blocking_epic, &mut other_epic] {
+            epic.story_type = Some(super::EPIC_TYPE_SLUG.to_string());
+        }
+        let mut floored = ready_snapshot("SH-4", Priority::High, "2026-01-01T00:00:00Z");
+        let mut critical = ready_snapshot("SH-5", Priority::Critical, "2026-01-01T00:00:00Z");
+        let mut waiting = ready_snapshot("SH-9", Priority::Critical, "2026-01-01T00:00:00Z");
+        adopt(&mut blocking_epic, &mut floored);
+        adopt(&mut other_epic, &mut critical);
+        block(&mut blocking_epic, &mut waiting);
+        let index = index_of(&[&blocking_epic, &other_epic, &floored, &critical, &waiting]);
+        assert_eq!(ranked(&[&critical, &floored], &index), ["SH-4", "SH-5"]);
     }
 
     #[test]
@@ -7561,7 +7643,7 @@ mod tests {
         .collect();
 
         assert_eq!(
-            ready_order(&promoted, &ordinary, &index),
+            ready_order(&promoted, &ordinary, &ReadyRanking::new(&index)),
             std::cmp::Ordering::Less,
             "the critical parent wins before story number; the low second parent cannot mask it"
         );
@@ -7991,7 +8073,7 @@ mod event_kind_tests {
 mod ready_order_properties {
     use proptest::prelude::*;
 
-    use super::{Priority, StorySnapshot, SuperState, ready_order};
+    use super::{Priority, ReadyRanking, StorySnapshot, SuperState, ready_order};
 
     /// Five fixed ids, so ties are possible (only five priority buckets
     /// exist) but the id set itself never varies between the two orderings
@@ -8072,8 +8154,9 @@ mod ready_order_properties {
                 .cloned()
                 .map(|story| (story.id.clone(), story))
                 .collect();
-            a.sort_by(|left, right| ready_order(left, right, &index));
-            b.sort_by(|left, right| ready_order(left, right, &index));
+            let ranking = ReadyRanking::new(&index);
+            a.sort_by(|left, right| ready_order(left, right, &ranking));
+            b.sort_by(|left, right| ready_order(left, right, &ranking));
 
             let ids_of = |stories: &[StorySnapshot]| -> Vec<String> {
                 stories.iter().map(|s| s.id.clone()).collect()

@@ -38,9 +38,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cli::GraphMode;
 use crate::domain::{
-    self, DependencyGraph, Priority, StateDef, StorySnapshot, SuperState, compute_display_state,
-    compute_integrity_issues, compute_progress, derive_family_relationships, is_claimable,
-    is_ready, last_activity_type, parse_duration,
+    self, DependencyGraph, Priority, ReadyRanking, StateDef, StorySnapshot, SuperState,
+    compute_display_state, compute_integrity_issues, compute_progress, derive_family_relationships,
+    is_claimable, is_ready, last_activity_type, parse_duration,
 };
 use crate::error::AppError;
 use crate::output::{
@@ -699,7 +699,8 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
                     && is_claimable(&view.story, &stories, active.as_ref())
             })
             .collect();
-        ready.sort_by(|a, b| domain::ready_order(&a.story, &b.story, &stories));
+        let ranking = ReadyRanking::new(&stories);
+        ready.sort_by(|a, b| domain::ready_order(&a.story, &b.story, &ranking));
         let ready_count = ready.len();
         ready.truncate(READY_PREVIEW);
 
@@ -1361,7 +1362,8 @@ fn type_label(story: &StorySnapshot) -> String {
 /// shared by `summary`, `report` and `context`. `execution_queue` uses the
 /// same tuple as its ordered frontier rather than sorting a completed list.
 fn sort_ready(views: &mut [StoryView], stories: &BTreeMap<String, StorySnapshot>) {
-    views.sort_by(|a, b| domain::ready_order(&a.story, &b.story, stories));
+    let ranking = ReadyRanking::new(stories);
+    views.sort_by(|a, b| domain::ready_order(&a.story, &b.story, &ranking));
 }
 
 /// The execution queue `story next --count N` hands out, in full and in order.
@@ -1451,13 +1453,14 @@ fn execution_queue(
         }
     }
 
+    let ranking = ReadyRanking::new(stories);
     let mut frontier = BTreeSet::<(Priority, Priority, u64, &str)>::new();
     for (id, count) in &predecessor_counts {
         if *count == 0 {
             let story = &candidates[id].story;
             frontier.insert((
-                story.priority.clone(),
-                domain::parent_epic_priority(story, stories),
+                ranking.effective(story),
+                ranking.parent_epic_priority(story),
                 domain::story_number(id),
                 id,
             ));
@@ -1476,8 +1479,8 @@ fn execution_queue(
                 if *count == 0 {
                     let story = &candidates[successor].story;
                     frontier.insert((
-                        story.priority.clone(),
-                        domain::parent_epic_priority(story, stories),
+                        ranking.effective(story),
+                        ranking.parent_epic_priority(story),
                         domain::story_number(successor),
                         successor,
                     ));
