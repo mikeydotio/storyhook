@@ -22,6 +22,8 @@ ceiling, ignored child death, and a restarted settlement deadline each turned
 its corresponding HarnessObservation case red.
 """
 
+import contextlib
+import io
 import json
 import os
 import shlex
@@ -33,6 +35,9 @@ import subprocess
 import tempfile
 import unittest
 from unittest import mock
+
+sys.dont_write_bytecode = True
+import load_grace
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 
@@ -46,10 +51,25 @@ MARGIN = 5
 # immediately, so this generosity costs time only for a live stalled fixture.
 MILESTONE_DEADLINE = 3 * int(CLEANUP_BUDGET_MS) / 1000 + MARGIN
 POLL_INTERVAL = 0.01
+# SH-347's recorded tolerance for any one graced wait. The whole Python suite
+# is one Rust test inside the gate, whose silence watchdog is about 29 minutes,
+# so a real hang must fail as a case well before that (SH-767).
+PATIENCE_CEILING = load_grace.PATIENCE_CEILING
+# Startup patience, the largest allowance, reaches the ceiling at this grace.
+# Every allowance scales by the same grace, so their order never changes.
+MAX_GRACE = PATIENCE_CEILING / MILESTONE_DEADLINE
+# An injected census this many times the reaping eighth: the kill's own census
+# then spans the whole window, as a loaded ps did in the PR 857 gate (SH-767).
+CENSUS_OVERRUN = 1.25
 
 
 class VerifierLifecycle(unittest.TestCase):
     """Each case owns its repository, Git configuration, locks and evidence."""
+
+    # Set by setUp; an observation-only harness has no repository.
+    common = None
+    # Sampled by setUp; an observation-only harness runs at the idle values.
+    grace = 1.0
 
     def setUp(self):
         """Create two published commits in an isolated repository."""
@@ -66,6 +86,7 @@ class VerifierLifecycle(unittest.TestCase):
                     "STORYHOOK_STORE_PATH": str(self.root / "store.db"),
                     "STORYHOOK_LOCK_DIR": str(self.root / "locks"),
                     "STORYHOOK_VERIFIER_MIRROR": "0", "TMPDIR": "/tmp"}
+        self.sample_grace()
         self.set_cleanup_budget(CLEANUP_BUDGET_MS)
         self.git("init", "-q", "-b", "main")
         self.git("config", "user.name", "Lifecycle Fixture")
@@ -87,7 +108,7 @@ class VerifierLifecycle(unittest.TestCase):
     def command(self, *args, cwd=None, check=True):
         """Run real commands with bounded waits and fixture-only environment."""
         result = subprocess.run(args, cwd=cwd or self.repo, env=self.env,
-                                capture_output=True, text=True, timeout=MILESTONE_DEADLINE)
+                                capture_output=True, text=True, timeout=self.milestone_deadline)
         if check:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
@@ -189,7 +210,7 @@ class VerifierLifecycle(unittest.TestCase):
                                 sys.executable, "-c", code)
         pid = self.wait_pid(ready, child, log)
         self.addCleanup(lambda: self.stop_pid(pid))
-        self.assertEqual(child.wait(timeout=self.settle_timeout), 0)
+        self.assertEqual(self.wait_settled(child, log), 0)
         self.assertGone(pid)
         log.seek(0)
         output = log.read().decode()
@@ -284,6 +305,7 @@ class VerifierLifecycle(unittest.TestCase):
 
     def _wait_publication(self, path, child, log, *, pid_record):
         started = time.monotonic()
+        patience = self.patience(self.milestone_deadline, started)
         content = None
 
         def published():
@@ -313,43 +335,139 @@ class VerifierLifecycle(unittest.TestCase):
                 value = published()
                 if value:
                     return value
-            elapsed = time.monotonic() - started
-            if status is not None or elapsed >= MILESTONE_DEADLINE:
+            now = time.monotonic()
+            elapsed = now - started
+            if status is not None or patience.expired(now):
                 reason = f"exited {status}" if status is not None else "deadline expired"
                 # pread leaves the child's shared log offset untouched.
                 evidence = os.pread(log.fileno(), os.fstat(log.fileno()).st_size, 0).decode(errors="replace")
                 self.fail(f"child pid={child.pid} {reason} before publishing {path}; "
-                          f"elapsed={elapsed:.3f}s allowance={MILESTONE_DEADLINE}s "
+                          f"elapsed={elapsed:.3f}s allowance={patience.allowance}s "
                           f"load={os.getloadavg()} content={content!r}\n{evidence}")
             time.sleep(POLL_INTERVAL)
 
-    def set_cleanup_budget(self, milliseconds):
-        """Supply a valid fixture budget while preserving its input spelling."""
-        self.assertTrue(milliseconds.isascii() and milliseconds.isdecimal())
-        self.assertTrue(4000 <= int(milliseconds) <= 99999999)
-        self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = milliseconds
-        self.budget = int(milliseconds) / 1000
+    def sample_grace(self):
+        """Grace this case once by measured contention (SH-767).
+
+        Production reads its cleanup budget once, at launch, so the budget a
+        case hands over is a snapshot; only the harness's own waits resample.
+        """
+        ratio = load_grace.contention()
+        self.grace = load_grace.multiplier(ratio, MAX_GRACE)
+        if self.grace > 1:
+            print(f"{self.id()}: {load_grace.describe(ratio, self.grace)}", file=sys.stderr)
+
+    def set_cleanup_budget(self, milliseconds, graced=True):
+        """Supply a valid fixture budget, graced by this case's contention.
+
+        Leading zeros survive grace, so they still reach verify-pr.sh's
+        decimal normalization; graced=False hands the spelling over unchanged.
+        """
+        def assert_valid(value):
+            # The same policy verify-pr.sh and verifier-owner.py enforce.
+            self.assertTrue(value.isascii() and value.isdecimal() and len(value) <= 8, value)
+            self.assertTrue(4000 <= int(value) <= 99999999, value)
+        assert_valid(milliseconds)
+        spelled = load_grace.graced_spelling(milliseconds, self.grace) if graced else milliseconds
+        assert_valid(spelled)
+        self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = spelled
+        self.budget = int(spelled) / 1000
 
     @property
     def settle_timeout(self):
-        """Allow the supplied cancellation ladder plus scheduling/reap margin."""
-        return self.budget + MARGIN
+        """Allow the supplied cancellation ladder plus a margin graced like it."""
+        return self.budget + MARGIN * self.grace
 
-    def wait_cancelled(self, child, pid):
-        """Observe the cancelled wrapper and gate within one shared allowance."""
-        deadline = time.monotonic() + self.settle_timeout
-        try:
-            child.wait(timeout=max(0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            self.fail(f"verifier pid={child.pid} did not finish cancellation within {self.settle_timeout}s")
+    @property
+    def milestone_deadline(self):
+        """Startup and synchronous-command patience, graced like every allowance."""
+        return MILESTONE_DEADLINE * self.grace
+
+    def patience(self, allowance, started):
+        """Start a harness wait that extends while contention rises (SH-347)."""
+        return load_grace.Patience(allowance, self.grace, MAX_GRACE, started)
+
+    def evidence(self, log):
+        """Collect the child's own log and every gate attempt log for a failure.
+
+        The gate supervisor's refusals reach only the attempt log, so a wrapper
+        log alone cannot tell which layer ended a cancellation (SH-767).
+        """
+        parts = []
+        if log is not None:
+            # pread leaves the child's shared log offset untouched.
+            parts.append(os.pread(log.fileno(), os.fstat(log.fileno()).st_size, 0).decode(errors="replace"))
+        logs = self.common / "storyhook/verification-logs" if self.common else None
+        if logs is not None and logs.is_dir():
+            for path in sorted(logs.glob("pr-1-*-attempt.*")):
+                if not path.name.endswith(".jsonl"):
+                    parts.append(f"--- {path}\n{path.read_text(errors='replace')}")
+        return "\n".join(parts)
+
+    def settle_failure(self, reason, log, started, allowance):
+        """Fail a settlement wait with its timing, load and explaining logs."""
+        elapsed = time.monotonic() - started
+        self.fail(f"{reason}: elapsed={elapsed:.3f}s allowance={allowance}s "
+                  f"load={os.getloadavg()}\n{self.evidence(log)}")
+
+    def session_pids(self, sid):
+        """List live members of one recorded session, independently of the owner."""
+        result = subprocess.run(["ps", "-axo", "pid=,stat="], capture_output=True, text=True, check=True)
+        members = []
+        for line in result.stdout.splitlines():
+            pid_text, state = line.split(maxsplit=1)
+            try:
+                if not state.startswith("Z") and os.getsid(int(pid_text)) == sid:
+                    members.append(int(pid_text))
+            except ProcessLookupError:
+                continue
+        return members
+
+    def wait_cancelled(self, child, pid, log=None, sessions=lambda: ()):
+        """Observe the wrapper, gate and recorded sessions within one shared allowance.
+
+        A wrapper that ended its lifecycle supervisor early leaves that session
+        running; the record is final only once every recorded session is quiet.
+        """
+        started = time.monotonic()
+        patience = self.patience(self.settle_timeout, started)
+        while True:
+            try:
+                child.wait(timeout=patience.remaining(time.monotonic()))
+                break
+            except subprocess.TimeoutExpired:
+                if patience.expired(time.monotonic()):
+                    self.settle_failure(f"verifier pid={child.pid} did not finish cancellation",
+                                        log, started, patience.allowance)
         while True:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                return
-            if time.monotonic() >= deadline:
-                self.fail(f"gate session pid={pid} survived cancellation within {self.settle_timeout}s")
+                break
+            if patience.expired(time.monotonic()):
+                self.settle_failure(f"gate session pid={pid} survived cancellation",
+                                    log, started, patience.allowance)
             time.sleep(POLL_INTERVAL)
+        while True:
+            members = [member for sid in sessions() for member in self.session_pids(sid)]
+            if not members:
+                return
+            if patience.expired(time.monotonic()):
+                self.settle_failure(f"recorded sessions still have members {members}",
+                                    log, started, patience.allowance)
+            time.sleep(POLL_INTERVAL)
+
+    def wait_settled(self, child, log):
+        """Wait one settlement allowance for a supervised child, failing with evidence."""
+        started = time.monotonic()
+        patience = self.patience(self.settle_timeout, started)
+        while True:
+            try:
+                return child.wait(timeout=patience.remaining(time.monotonic()))
+            except subprocess.TimeoutExpired:
+                if patience.expired(time.monotonic()):
+                    self.settle_failure(f"child pid={child.pid} did not settle",
+                                        log, started, patience.allowance)
 
     def spawn(self, *args):
         """Own a child and regular log files so survivors cannot hold pipes open."""
@@ -380,7 +498,7 @@ class VerifierLifecycle(unittest.TestCase):
         self.assertIn("live verifier owner", result["detail"])
         self.assertEqual((self.wt / ".git").read_bytes(), pointer)
         release.touch()
-        self.assertEqual(child.wait(timeout=self.settle_timeout), 0)
+        self.assertEqual(self.wait_settled(child, log), 0)
         self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
 
     def test_killed_supervisor_cannot_reclaim_descriptor_closing_child(self):
@@ -393,7 +511,7 @@ class VerifierLifecycle(unittest.TestCase):
         pid = self.wait_pid(ready, child, log)
         self.addCleanup(lambda: self.stop_pid(pid))
         child.kill()
-        child.wait(timeout=self.settle_timeout)
+        self.wait_settled(child, log)
         result = self.ensure()
         self.assertEqual(result["result"], "infrastructure-failure")
         self.assertIn("live owner session", result["detail"])
@@ -430,7 +548,7 @@ while True:
                 pid = self.wait_pid(ready, owner, log)
                 self.addCleanup(lambda pid=pid: self.stop_pid(pid))
                 owner.send_signal(signum)
-                status = owner.wait(timeout=self.settle_timeout)
+                status = self.wait_settled(owner, log)
                 log.seek(0)
                 self.assertEqual(status, 128 + signum, log.read().decode())
                 self.assertEqual(result.read_text(), "0", "cleanup worker was cancelled directly")
@@ -475,7 +593,7 @@ while True:
                 pid = self.wait_pid(ready, owner, log)
                 self.addCleanup(lambda pid=pid: self.stop_pid(pid))
                 owner.send_signal(signum)
-                status = owner.wait(timeout=self.settle_timeout)
+                status = self.wait_settled(owner, log)
                 log.seek(0)
                 self.assertEqual(status, 128 + signum, log.read().decode())
                 self.assertEqual(result.read_text(), str(int(signum)))
@@ -513,7 +631,7 @@ while True:
         owner_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
         owner = json.loads(owner_path.read_text())
         os.killpg(owner["session"], signal.SIGKILL)
-        child.wait(timeout=self.settle_timeout)
+        self.wait_settled(child, log)
         self.assertNotEqual(child.returncode, 0)
         self.env["PATH"] = self.env["PATH"].split(":", 1)[1]
         result = self.ensure()
@@ -845,25 +963,30 @@ while True:
         if descendant:
             descendant_pid = self.wait_pid(Path(str(ready) + ".child"), child, log)
         os.killpg(child.pid, signal.SIGTERM)
-        self.wait_cancelled(child, pid)
+
+        def recorded_sessions():
+            owner = json.loads(owner_path.read_text())
+            return {owner.get("session"), owner.get("gate_session")} - {None}
+        self.wait_cancelled(child, pid, log, recorded_sessions)
+        evidence = self.evidence(log)
         if not resistant:
-            self.assertTrue(terminated.exists(), "TERM never reached the supervised gate")
+            self.assertTrue(terminated.exists(), "TERM never reached the supervised gate\n" + evidence)
         owner = json.loads(owner_path.read_text())
-        self.assertFalse(owner["gate_started"], owner)
-        self.assertIsNone(owner["gate_session"], owner)
+        self.assertFalse(owner["gate_started"], f"{owner}\n{evidence}")
+        self.assertIsNone(owner["gate_session"], f"{owner}\n{evidence}")
         if descendant:
-            with self.assertRaises(ProcessLookupError):
-                os.kill(descendant_pid, 0)
+            # A killed descendant may still await its reaper as a zombie.
+            self.assertGone(descendant_pid)
         if damage:
             # Tracked evidence must survive even when restoration cannot succeed.
             retained = list(self.wt.parent.glob("verification-recovery-*/worktree/f"))
-            self.assertEqual(len(retained), 1)
+            self.assertEqual(len(retained), 1, evidence)
             self.assertEqual(retained[0].read_text(), "gate evidence")
             self.assertTrue((retained[0].parent.parent / "lease").is_dir())
         else:
-            self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), self.base)
-            self.assertEqual(self.git("status", "--porcelain", cwd=self.wt), "")
-            self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+            self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), self.base, evidence)
+            self.assertEqual(self.git("status", "--porcelain", cwd=self.wt), "", evidence)
+            self.assertEqual(self.ensure()["result"], "verifier-worktree-ready", evidence)
 
     def test_outer_cancellation_reaches_cooperative_gate_and_restores(self):
         """The same process-group signal Rust sends reaches nested sessions."""
@@ -930,7 +1053,7 @@ while True:
             "def release(fd, data):\n"
             "    result=write(fd,data)\n"
             "    if data==b'1':\n"
-            f"        deadline=time.monotonic()+{MILESTONE_DEADLINE!r}\n"
+            f"        deadline=time.monotonic()+{self.milestone_deadline!r}\n"
             "        while not Path(" + repr(str(ready)) + ").exists():\n"
             "            if time.monotonic()>deadline: raise RuntimeError('gate never ready')\n"
             "            time.sleep(.01)\n"
@@ -942,7 +1065,7 @@ while True:
         child, log = self.spawn("python3", str(bootstrap))
         pid = self.wait_pid(ready, child, log)
         self.addCleanup(lambda: self.stop_pid(pid))
-        child.wait(timeout=self.settle_timeout)
+        self.wait_settled(child, log)
         log.seek(0)
         self.assertTrue(terminated.exists(), log.read().decode())
         owner_path = next((self.common / "storyhook/verifier-lifecycle").glob("*.owner"))
@@ -1014,6 +1137,90 @@ while True:
         _, owner = self.owner_record()
         self.assertFalse(owner["gate_started"], owner)
         self.assertIsNone(owner["gate_leader_exit"], owner)
+
+    # -- SH-767: the reaping eighth runs from the delivered SIGKILL -----------
+
+    def slow_census(self, delay):
+        """Delay only the supervisors' session census, the way gate load does.
+
+        The real ps still answers and every other ps shape passes straight
+        through; only the census's timing changes (SH-767).
+        """
+        real_ps = self.command("sh", "-c", "command -v ps").stdout.strip()
+        wrapper = self.root / "slow-census"
+        wrapper.mkdir()
+        (wrapper / "ps").write_text(
+            '#!/bin/bash\n'
+            'if [ "$#" -eq 2 ] && [ "$1" = -axo ] && [ "$2" = pid=,stat= ]; then\n'
+            f'  sleep {delay:.3f}\nfi\n'
+            'exec ' + shlex.quote(real_ps) + ' "$@"\n')
+        (wrapper / "ps").chmod(0o755)
+        self.env["PATH"] = str(wrapper) + ":" + self.env["PATH"]
+
+    @property
+    def census_outlasting_the_reaping_eighth(self):
+        """One census longer than the whole post-KILL reaping window."""
+        return self.budget / 8 * CENSUS_OVERRUN
+
+    def test_slow_census_cannot_refuse_a_delivered_gate_kill(self):
+        """A kill is judged by a census begun after its reaping eighth closed.
+
+        Before SH-767 the gate supervisor refused in the same pass that sent
+        SIGKILL, from the scheduled deadline, naming members its pre-kill census
+        saw; the orphan was already dead and the record kept a started gate.
+        """
+        self.set_cleanup_budget("4000")
+        self.slow_census(self.census_outlasting_the_reaping_eighth)
+        orphan = self.root / "orphan-pid"
+        verdict = self.gate_verdict(
+            f"trap '' TERM; sleep 300 & echo $! > {shlex.quote(str(orphan))}; exit 5")
+        pid = int(orphan.read_text())
+        self.addCleanup(lambda: self.stop_pid(pid))
+        log = self.attempt_log().read_text()
+        self.assertEqual(verdict["result"], "tests-failed", verdict)
+        self.assertNotIn("cleanup_failure", verdict, log)
+        self.assertNotIn("could not reap", log)
+        self.assertGone(pid)
+        _, owner = self.owner_record()
+        self.assertFalse(owner["gate_started"], owner)
+        self.assertIsNone(owner["gate_leader_exit"], owner)
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+
+    def test_slow_census_cannot_refuse_a_delivered_lifecycle_kill(self):
+        """The lifecycle supervisor shares the same reaping eighth (SH-767)."""
+        self.set_cleanup_budget("4000")
+        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
+        self.slow_census(self.census_outlasting_the_reaping_eighth)
+        orphan = self.root / "orphan-pid"
+        result = self.owner("bash", "-c", f"trap '' TERM; sleep 300 & echo $! > {shlex.quote(str(orphan))}")
+        pid = int(orphan.read_text())
+        self.addCleanup(lambda: self.stop_pid(pid))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("leaving survivors", result.stderr)
+        self.assertNotIn("could not reap", result.stderr)
+        self.assertGone(pid)
+        _, owner = self.owner_record()
+        self.assertTrue(owner["completed"], owner)
+        self.assertIsNone(owner["session"], owner)
+
+    def test_supplied_budget_reaches_supervision_in_decimal(self):
+        """The spelling a case supplies reaches every supervisor normalized.
+
+        "08000" is not octal, so a lost 10# stops the ungraced gate; graced to
+        "032000" it is valid octal, so a lost 10# would deliver 13312 (SH-767).
+        A passing gate never escalates, so neither run depends on load.
+        """
+        seen = self.root / "budget-seen"
+        script = f'printf %s "$STORYHOOK_VERIFIER_CLEANUP_GRACE_MS" > {shlex.quote(str(seen))}'
+        for grace, graced, spelled, delivered in ((1.0, False, "08000", "8000"),
+                                                  (4.0, True, "032000", "32000")):
+            with self.subTest(grace=grace):
+                self.grace = grace
+                self.set_cleanup_budget("08000", graced=graced)
+                self.assertEqual(self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"], spelled)
+                verdict = self.gate_verdict(script)
+                self.assertEqual(verdict["result"], "gate-passed", verdict)
+                self.assertEqual(seen.read_text(), delivered)
 
     def recorded_leader_exit(self, alive):
         """Rewrite the record as a gate supervisor that died mid-reap leaves it."""
@@ -1092,32 +1299,38 @@ while True:
         orphan = self.root / "orphan-pid"
         leader = self.root / "leader-pid"
         tree = self.git("merge-tree", "--write-tree", self.base, self.head)
-        # The verdict is read apart from the gate's own noise; the orphan's
-        # stdio goes to the attempt log, so a regular file is enough here.
+        # The verdict is read apart from the gate's own noise, which is kept
+        # as failure evidence; the orphan's stdio goes to the attempt log, so
+        # regular files are enough here.
         verdict_file = tempfile.TemporaryFile()
         self.addCleanup(verdict_file.close)
+        diagnostics = tempfile.TemporaryFile()
+        self.addCleanup(diagnostics.close)
         child = subprocess.Popen(
             ["bash", str(SCRIPTS / "verify-pr.sh"), "--run-gate", "1", tree, self.base,
              self.head, str(self.wt), "--", "bash", "-c",
              "trap '' TERM; echo $$ > " + shlex.quote(str(leader)) + "; sleep 300 & echo $! > "
              + shlex.quote(str(orphan)) + "; exit 5"],
-            cwd=self.repo, env=self.env, stdout=verdict_file, stderr=subprocess.DEVNULL)
-        self.addCleanup(child.wait, timeout=MILESTONE_DEADLINE)
+            cwd=self.repo, env=self.env, stdout=verdict_file, stderr=diagnostics)
+        self.addCleanup(child.wait, timeout=self.milestone_deadline)
         self.addCleanup(lambda: child.poll() is None and child.kill())
-        orphan_pid = self.wait_pid(orphan, child, verdict_file)
+        orphan_pid = self.wait_pid(orphan, child, diagnostics)
         self.addCleanup(lambda: self.stop_pid(orphan_pid))
-        leader_pid = self.wait_pid(leader, child, verdict_file)
+        leader_pid = self.wait_pid(leader, child, diagnostics)
         # A reaping poll also shows a zombie for one tick; the pin is that
         # the zombie outlives the TERM-resistant orphan's whole grace, which
         # is a quarter of the budget for the gate session (SH-686).
         zombie_seen = []
-        deadline = time.monotonic() + self.settle_timeout
+        started = time.monotonic()
+        patience = self.patience(self.settle_timeout, started)
         while child.poll() is None:
-            self.assertLess(time.monotonic(), deadline, "supervisor did not settle the exited leader")
+            if patience.expired(time.monotonic()):
+                self.settle_failure("supervisor did not settle the exited leader",
+                                    diagnostics, started, patience.allowance)
             if self.process_state(leader_pid).startswith("Z"):
                 zombie_seen.append(time.monotonic())
             time.sleep(.01)
-        self.assertEqual(child.returncode, 0)
+        self.assertEqual(child.returncode, 0, self.evidence(diagnostics))
         self.assertTrue(zombie_seen, "the exited leader was never observed as a zombie")
         self.assertGreaterEqual(zombie_seen[-1] - zombie_seen[0], self.budget / 4 / 2,
                                 "the exited leader was reaped before its session settled")
@@ -1162,6 +1375,10 @@ class HarnessObservation(unittest.TestCase):
         self.harness.env = dict(os.environ)
         self.harness.set_cleanup_budget(CLEANUP_BUDGET_MS)
         self.addCleanup(self.harness.doCleanups)
+        # Observation is pinned at idle; ContentionGrace owns contention.
+        idle = mock.patch.object(load_grace, "contention", return_value=0.5)
+        idle.start()
+        self.addCleanup(idle.stop)
 
     def test_pid_reader_waits_for_empty_and_partial_records(self):
         """The writer completes only after the reader observes pending content."""
@@ -1313,6 +1530,57 @@ class HarnessObservation(unittest.TestCase):
                 self.harness.wait_cancelled(child, 23456)
         self.assertEqual(now[0], self.harness.settle_timeout)
 
+    def test_settle_failure_carries_wrapper_and_attempt_logs(self):
+        """A settle timeout names every log that could explain it (SH-767)."""
+        self.harness.common = self.root / "common"
+        attempts = self.harness.common / "storyhook/verification-logs"
+        attempts.mkdir(parents=True)
+        (attempts / "pr-1-tree-attempt.abc").write_text("attempt evidence")
+        (attempts / "pr-1-tree-attempt.abc.compiler.jsonl").write_text("compiler noise")
+        child = mock.Mock(pid=12345)
+        now = [0]
+
+        def times_out(timeout):
+            now[0] += timeout
+            raise subprocess.TimeoutExpired("fixture", timeout)
+
+        child.wait.side_effect = times_out
+        with tempfile.TemporaryFile() as log:
+            log.write(b"wrapper evidence")
+            log.flush()
+            with mock.patch.object(time, "monotonic", side_effect=lambda: now[0]), \
+                 self.assertRaisesRegex(AssertionError, "did not settle") as failure:
+                self.harness.wait_settled(child, log)
+        for evidence in ("12345", "wrapper evidence", "attempt evidence",
+                         "allowance=" + str(self.harness.settle_timeout), "load="):
+            self.assertIn(evidence, str(failure.exception))
+        self.assertNotIn("compiler noise", str(failure.exception))
+
+    def test_cancellation_waits_for_recorded_sessions_on_the_same_deadline(self):
+        """A record is read only after its sessions are quiet, within one allowance."""
+        self.harness.set_cleanup_budget("8000")
+        for quiet_after in (2, None):
+            with self.subTest(quiet_after=quiet_after):
+                child = mock.Mock(pid=12345)
+                now = [0]
+                censuses = []
+
+                def census(sid):
+                    censuses.append(sid)
+                    return [] if quiet_after and len(censuses) >= quiet_after else [34567]
+
+                with mock.patch.object(time, "monotonic", side_effect=lambda: now[0]), \
+                     mock.patch.object(time, "sleep", side_effect=lambda period: now.__setitem__(0, now[0] + period)), \
+                     mock.patch.object(os, "kill", side_effect=ProcessLookupError), \
+                     mock.patch.object(self.harness, "session_pids", side_effect=census):
+                    if quiet_after:
+                        self.harness.wait_cancelled(child, 23456, sessions=lambda: {45678})
+                        self.assertEqual(censuses, [45678] * quiet_after)
+                    else:
+                        with self.assertRaisesRegex(AssertionError, r"recorded sessions still have members \[34567\]"):
+                            self.harness.wait_cancelled(child, 23456, sessions=lambda: {45678})
+                        self.assertGreaterEqual(now[0], self.harness.settle_timeout)
+
     def test_spawn_cleanup_keeps_the_budget_given_to_that_child(self):
         """Changing the next fixture input cannot tighten an existing cleanup."""
         self.harness.set_cleanup_budget("30000")
@@ -1325,6 +1593,167 @@ class HarnessObservation(unittest.TestCase):
         self.harness.doCleanups()
         child.kill.assert_called_once()
         child.wait.assert_called_once_with(timeout=original_timeout)
+
+
+class ContentionGrace(unittest.TestCase):
+    """Pin the SH-347 grace policy the harness applies under contention (SH-767)."""
+
+    def harness(self, grace):
+        """An observation-only harness at a chosen grace."""
+        harness = VerifierLifecycle()
+        harness.env = {}
+        harness.grace = grace
+        return harness
+
+    def test_contention_is_one_minute_load_per_core(self):
+        """The reading is runnable threads per core; an unobtainable one is None."""
+        with mock.patch.object(os, "getloadavg", return_value=(48, 37, 20)), \
+             mock.patch.object(load_grace, "cores", return_value=10):
+            self.assertEqual(load_grace.contention(), 4.8)
+        with mock.patch.object(os, "getloadavg", side_effect=OSError("unobtainable")):
+            self.assertIsNone(load_grace.contention())
+
+    def test_cores_prefer_the_process_count_and_never_reach_zero(self):
+        """An affinity-limited count wins; older interpreters fall back."""
+        for process_count, machine_count, expected in ((4, 10, 4), (None, 10, 10), (None, None, 1)):
+            with self.subTest(process_count=process_count, machine_count=machine_count), \
+                 mock.patch.object(os, "process_cpu_count", return_value=process_count, create=True), \
+                 mock.patch.object(os, "cpu_count", return_value=machine_count):
+                self.assertEqual(load_grace.cores(), expected)
+        with mock.patch.object(os, "process_cpu_count", None, create=True), \
+             mock.patch.object(os, "cpu_count", return_value=6):
+            self.assertEqual(load_grace.cores(), 6)
+
+    def test_multiplier_is_exactly_one_without_contention(self):
+        """At or below one thread per core every allowance is its idle value."""
+        for ratio in (None, 0, 0.5, 1):
+            with self.subTest(ratio=ratio):
+                self.assertEqual(load_grace.multiplier(ratio, MAX_GRACE), 1.0)
+
+    def test_multiplier_follows_contention_up_to_the_ceiling(self):
+        """Above contention the grace is the ratio, capped so no wait passes 15 minutes."""
+        self.assertEqual(load_grace.multiplier(4.8, MAX_GRACE), 4.8)
+        self.assertEqual(load_grace.multiplier(1000, MAX_GRACE), MAX_GRACE)
+        self.assertAlmostEqual(MILESTONE_DEADLINE * MAX_GRACE, PATIENCE_CEILING)
+
+    def test_graced_spelling_keeps_leading_zeros_and_whole_milliseconds(self):
+        """Grace scales the value only; its spelling still exercises normalization."""
+        for milliseconds, grace, expected in (("30000", 1.0, "30000"), ("08000", 1.0, "08000"),
+                                              ("08000", 4.0, "032000"), ("16000", 1.5, "24000"),
+                                              ("8000", 4.8, "38400"), ("4000", 1.0001, "4001"),
+                                              ("0004000", 2.0, "0008000")):
+            with self.subTest(milliseconds=milliseconds, grace=grace):
+                self.assertEqual(load_grace.graced_spelling(milliseconds, grace), expected)
+        for milliseconds in ("30000", "16000", "8000", "08000", "4000"):
+            with self.subTest(ceiling=milliseconds):
+                self.assertLessEqual(len(load_grace.graced_spelling(milliseconds, MAX_GRACE)), 8)
+
+    def test_description_names_the_reading_and_the_grace(self):
+        """A grace nobody can see is a verdict that depends on unreported state."""
+        with mock.patch.object(load_grace, "cores", return_value=10):
+            described = load_grace.describe(4.8, 4.8)
+            for text in ("contention=4.80", "cores=10", "multiplier=4.80"):
+                self.assertIn(text, described)
+            self.assertIn("contention=unavailable", load_grace.describe(None, 1.0))
+
+    def test_patience_grants_contention_up_to_the_absolute_ceiling(self):
+        """A fixture's patience is its base times contention, never past 15 minutes (SH-766)."""
+        self.assertEqual(load_grace.PATIENCE_CEILING, 15 * 60)
+        for base, ratio, expected in ((55, None, 55), (55, 0.4, 55), (55, 1, 55), (55, 4.8, 264),
+                                      (55, 1000, load_grace.PATIENCE_CEILING),
+                                      (1080, 50, 1080)):
+            with self.subTest(base=base, ratio=ratio):
+                self.assertAlmostEqual(load_grace.patience(base, ratio), expected)
+
+    def test_shell_fixtures_read_patience_and_its_reading(self):
+        """A shell fixture gets whole seconds on stdout and the reading on stderr."""
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(load_grace, "contention", return_value=4.8), \
+             mock.patch.object(load_grace, "cores", return_value=10), \
+             contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(load_grace.main(["patience", "30.5"]), 0)
+        self.assertEqual(stdout.getvalue(), "147\n")
+        self.assertIn("contention=4.80", stderr.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()):
+            for argv in ([], ["patience"], ["patience", "soon"], ["patience", "-1"], ["other", "3"]):
+                with self.subTest(argv=argv):
+                    self.assertEqual(load_grace.main(argv), 2)
+
+    def test_patience_reads_no_load_before_its_allowance(self):
+        """An unexpired wait costs no reading and reports what is left."""
+        patience = load_grace.Patience(10, 1.0, MAX_GRACE, 100)
+        with mock.patch.object(load_grace, "contention", side_effect=AssertionError("resampled early")):
+            self.assertFalse(patience.expired(109.99))
+            self.assertEqual(patience.remaining(104), 6)
+            self.assertEqual(patience.remaining(120), 0)
+
+    def test_patience_expires_when_contention_has_not_risen(self):
+        """A reading at or below the granted grace neither extends nor shrinks."""
+        for granted, ratio in ((1.0, 0.5), (2.0, 1.5), (2.0, 2.0)):
+            with self.subTest(granted=granted, ratio=ratio), \
+                 mock.patch.object(load_grace, "contention", return_value=ratio):
+                patience = load_grace.Patience(10 * granted, granted, MAX_GRACE, 0)
+                self.assertTrue(patience.expired(10 * granted))
+                self.assertEqual(patience.allowance, 10 * granted)
+
+    def test_patience_extends_in_proportion_and_says_so(self):
+        """Rising contention resets the deadline before it fires, never silently."""
+        patience = load_grace.Patience(10, 1.0, MAX_GRACE, 0)
+        with mock.patch.object(load_grace, "contention", return_value=3.0), \
+             mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+            self.assertFalse(patience.expired(10))
+        self.assertEqual(patience.allowance, 30)
+        self.assertIn("load-grace", stderr.getvalue())
+        self.assertIn("30.000", stderr.getvalue())
+        with mock.patch.object(load_grace, "contention", return_value=2.0):
+            self.assertFalse(patience.expired(29))
+            self.assertTrue(patience.expired(30))
+        self.assertEqual(patience.allowance, 30)
+
+    def test_patience_extension_stops_at_the_ceiling(self):
+        """No reading can extend one wait past the recorded 15-minute tolerance."""
+        patience = load_grace.Patience(MILESTONE_DEADLINE, 1.0, MAX_GRACE, 0)
+        with mock.patch.object(load_grace, "contention", return_value=1000), \
+             mock.patch.object(sys, "stderr", new_callable=io.StringIO):
+            self.assertFalse(patience.expired(MILESTONE_DEADLINE))
+            self.assertAlmostEqual(patience.allowance, PATIENCE_CEILING)
+            self.assertTrue(patience.expired(PATIENCE_CEILING))
+
+    def test_contended_case_scales_every_allowance_together(self):
+        """Budget, settlement and startup patience keep their order under grace."""
+        harness = self.harness(4.8)
+        harness.set_cleanup_budget("8000")
+        self.assertEqual(harness.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"], "38400")
+        self.assertEqual(harness.budget, 38.4)
+        self.assertAlmostEqual(harness.settle_timeout, 38.4 + MARGIN * 4.8)
+        self.assertAlmostEqual(harness.milestone_deadline, MILESTONE_DEADLINE * 4.8)
+        self.assertGreater(harness.milestone_deadline, harness.settle_timeout)
+        self.assertGreater(harness.settle_timeout, harness.budget)
+        harness.set_cleanup_budget("08000", graced=False)
+        self.assertEqual(harness.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"], "08000")
+        self.assertEqual(harness.budget, 8.0)
+        self.assertAlmostEqual(harness.settle_timeout, 8.0 + MARGIN * 4.8)
+
+    def test_budgets_outside_production_policy_are_refused(self):
+        """The fixture refuses what verify-pr.sh and verifier-owner.py refuse."""
+        harness = self.harness(1.0)
+        for milliseconds in ("", "0", "3999", "wat", "1.5", "123456789", "\u0661\u0662\u0660\u0660\u0660"):
+            with self.subTest(milliseconds=milliseconds), self.assertRaises(AssertionError):
+                harness.set_cleanup_budget(milliseconds)
+        with self.assertRaises(AssertionError):
+            self.harness(MAX_GRACE).set_cleanup_budget("99999999")
+
+    def test_sampling_is_silent_at_idle_and_named_under_contention(self):
+        """A case graced by load says so once, with the reading that caused it."""
+        for ratio, grace, named in ((0.5, 1.0, False), (None, 1.0, False), (4.8, 4.8, True)):
+            harness = self.harness(1.0)
+            with self.subTest(ratio=ratio), \
+                 mock.patch.object(load_grace, "contention", return_value=ratio), \
+                 mock.patch.object(load_grace, "cores", return_value=10), \
+                 mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+                harness.sample_grace()
+                self.assertEqual(harness.grace, grace)
+                self.assertEqual("multiplier=4.80" in stderr.getvalue(), named)
 
 
 if __name__ == "__main__":

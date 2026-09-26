@@ -579,6 +579,16 @@ pub trait ReadOps {
 
 /// Everything that can be written inside a transaction.
 pub trait WriteOps: ReadOps {
+    /// Marks whether this transaction is inside block-edge derivation.
+    ///
+    /// Only `service::block_delivery::derive_block_edges` sets it
+    /// (`tests/block_delivery_paths.rs` fences that). The service write funnel
+    /// reads it back through [`derives_block_edges`](Self::derives_block_edges)
+    /// to refuse a block-relevant write that nothing would derive Resume and
+    /// Interrupt effects for (SH-772).
+    fn set_block_edge_derivation(&mut self, active: bool);
+    /// Whether this transaction is inside block-edge derivation.
+    fn derives_block_edges(&self) -> bool;
     /// Acquire a new active fault identity; false means an active owner already exists.
     fn insert_project_recovery(&mut self, record: &ProjectRecovery) -> Result<bool, StoreError>;
     /// Advance coordination state once without changing immutable identity.

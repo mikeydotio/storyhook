@@ -51,11 +51,21 @@ fn settle_claim_resume(project: &Project<'_>, id: &str) {
         );
         std::thread::sleep(Duration::from_millis(10));
     };
+    // SH-772 (decision D5): the Resume is no longer refused for want of an
+    // acknowledged interrupt; it asks for the story's registered session. No
+    // agent was ever dispatched here, so it ends Unreached, loudly, with the
+    // operator's remedy, and binds no session.
     assert_eq!(settled.status, DeliveryStatus::Unreached, "{settled:?}");
     assert!(settled.target.is_none(), "{settled:?}");
-    assert_eq!(
-        settled.detail,
-        "no agent reached: no acknowledged interrupted session to resume"
+    assert!(
+        settled.detail.starts_with("no agent reached:"),
+        "{settled:?}"
+    );
+    assert!(
+        settled
+            .detail
+            .contains("tell the agent the block was lifted"),
+        "{settled:?}"
     );
 
     // The acknowledgement commits before the worker drops its workspace guard.

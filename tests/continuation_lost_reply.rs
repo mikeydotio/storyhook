@@ -51,7 +51,7 @@ fn committed_request_with_lost_cli_reply_enters_exact_status_review() {
     std::fs::create_dir_all(plugin.join("bin")).unwrap();
     std::fs::create_dir_all(plugin.join("lib")).unwrap();
     let dispatch = plugin.join("bin/story.sh");
-    std::fs::write(&dispatch, "#!/bin/sh\nDISPATCH_PROTOCOL=5\n").unwrap();
+    std::fs::write(&dispatch, "#!/bin/sh\nDISPATCH_PROTOCOL=6\n").unwrap();
     let runtime = plugin.join("lib/continuation_runtime.py");
     let capture_marker = dir.path().join("capture.observed");
     let runtime_source = format!(

@@ -574,3 +574,39 @@ fn set_prefix_takes_a_verified_backup_before_writing() {
         .expect("the backup was taken before the rename committed, so it still reads HP");
     assert_eq!(record.prefix, "HP");
 }
+
+/// SH-772: the rename rewrites every relationship, so it runs inside the
+/// block-edge derivation — and because numbers and edges survive it, it must
+/// derive nothing: no new effect, and the pending one it found left pending.
+#[test]
+fn set_prefix_neither_records_nor_retires_block_deliveries() {
+    use storyhook::store::{BlockAction, DeliveryStatus};
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "agentics", "HP");
+    let blocker = create_story(&store, project, "Blocks the worked story", FIXTURE_NOW);
+    let worked = create_story(&store, project, "Worked while blocked", FIXTURE_NOW);
+    link_atomic(&store, project, blocker, "blocks", worked).expect("linking the pair");
+    append_and_fold(
+        &store,
+        project,
+        worked,
+        ExpectedSeq::Any,
+        &[StoryEvent::StoryStateChanged {
+            at: FIXTURE_NOW.to_string(),
+            state: "in-progress".to_string(),
+        }],
+    )
+    .expect("working the blocked story");
+    store
+        .write(|tx| tx.enqueue_block_delivery(project, worked, BlockAction::Interrupt))
+        .expect("an interrupt the worker has not started");
+    let before = store.read(|tx| tx.block_deliveries(project)).unwrap();
+
+    service(&store)
+        .set_prefix(project, "AGE", backups_dir().path())
+        .expect("renaming the prefix");
+
+    let after = store.read(|tx| tx.block_deliveries(project)).unwrap();
+    assert_eq!(after, before);
+    assert_eq!(after[0].status, DeliveryStatus::Pending);
+}

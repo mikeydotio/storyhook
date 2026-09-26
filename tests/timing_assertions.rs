@@ -67,6 +67,18 @@
 //! uses; a site that adopts it should route the value through a name for the
 //! same reason as everything else here.
 //!
+//! # The same rule in the shipping plugin helpers (SH-766)
+//!
+//! A bare bound inside a production helper makes the same claim, and under
+//! load it fails for real users, not only in the gate:
+//! `plugins/story/lib/stop-dispatch-pane.py` gave its `ps` census a bare
+//! `timeout=5`, and interrupts and the interruption contract test failed
+//! while their callers still had most of a 45 s budget. Every probe there now
+//! runs through `probe_budget.run` inside one `probe_budget.operation()`.
+//! The Python scan below also reads every tracked `plugins/story/lib/*.py`.
+//! Its one exemption names the story that owns the redesign, and it fails
+//! as soon as the exempt file no longer needs it.
+//!
 //! # Derived, not hand-listed, and its own positive control
 //!
 //! Every tracked `tests/*.rs` file is read via `git ls-files`, the same
@@ -82,7 +94,7 @@
 //! marker, for the same reason: a test that had to exempt itself would be one
 //! edit away from exempting everything.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use storyhook_test_support::without_rust_comments;
@@ -643,6 +655,59 @@ fn no_python_test_uses_a_bare_process_or_milestone_ceiling() {
              cleanup budget or name and document the startup allowance (SH-698):\n{}",
         findings.join("\n")
     );
+}
+
+/// Plugin helpers whose bare bounds are filed rather than fixed: the path and
+/// the story that owns the redesign. Each entry must still match a finding.
+const PLUGIN_BOUND_EXEMPTIONS: [(&str, &str); 1] = [(
+    // A nested 120 s dispatch inside a 125 s caller bound: no probe budget
+    // fits until the resume contract is redesigned.
+    "plugins/story/lib/continuation_runtime.py",
+    "SH-798",
+)];
+
+#[test]
+fn no_plugin_helper_bounds_a_probe_with_a_bare_literal() {
+    let corpus = tracked_test_files(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        "plugins/story/lib/*.py",
+    );
+    assert!(
+        corpus.contains_key("plugins/story/lib/stop-dispatch-pane.py"),
+        "the pane helper was not read; this scan proved nothing"
+    );
+    let mut exempted = BTreeSet::new();
+    let mut findings = Vec::new();
+    for (path, source) in &corpus {
+        let found = bare_python_ceilings(source);
+        if found.is_empty() {
+            continue;
+        }
+        if PLUGIN_BOUND_EXEMPTIONS
+            .iter()
+            .any(|(exempt, _)| exempt == path)
+        {
+            exempted.insert(path.as_str());
+            continue;
+        }
+        findings.extend(
+            found
+                .into_iter()
+                .map(|bound| format!("{path}:{}: {}", bound.line, bound.text)),
+        );
+    }
+    assert!(
+        findings.is_empty(),
+        "bare probe or wait bound in a plugin helper: run the probe through probe_budget.run \
+         inside probe_budget.operation(), or name and document a policy value (SH-766):\n{}",
+        findings.join("\n")
+    );
+    for (path, story) in PLUGIN_BOUND_EXEMPTIONS {
+        assert!(
+            exempted.contains(path),
+            "{path} has no bare bound any more; remove its {story} exemption"
+        );
+    }
 }
 
 #[test]

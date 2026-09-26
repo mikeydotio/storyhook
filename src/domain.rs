@@ -1143,6 +1143,43 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
     }
 }
 
+/// The event kinds that cannot change any story's effective blocking.
+///
+/// Blocking reads a story's state and superstate, its awaiting hold, its
+/// `blocked-by` edges and their targets' superstate, and — through the epic
+/// rollup — types, `parent-of` edges, drafts and obviation (see [`is_blocked`]
+/// and [`apply_computed_epic_states`]). None of these kinds folds into any of
+/// that. The list is of the *inert* kinds on purpose: a kind added later is
+/// block-relevant until someone argues otherwise here, so forgetting to
+/// classify it makes a write outside block-edge derivation fail loudly rather
+/// than lose a Resume silently (SH-772).
+pub const BLOCK_INERT_EVENT_KINDS: [&str; 17] = [
+    "StoryCommentAdded",
+    "StoryCommentRetracted",
+    "StoryCleanupLeaseRecorded",
+    "StoryComplexitySet",
+    "StoryComplexityCleared",
+    "StoryPrioritySet",
+    "StoryPriorityCleared",
+    "StoryLabelsSet",
+    "StoryTitleSet",
+    "StoryDescriptionSet",
+    KIND_STORY_COMMIT_LINKED,
+    "StoryPrLinked",
+    "StoryPrUnlinked",
+    "StoryPrMerged",
+    "StoryPrClosed",
+    "StoryAttachmentAdded",
+    "StoryAttachmentRemoved",
+];
+
+/// Whether appending `event` can change some story's effective blocking, so
+/// its transaction must derive block-delivery edges (SH-772).
+#[must_use]
+pub fn may_change_effective_block(event: &StoryEvent) -> bool {
+    !BLOCK_INERT_EVENT_KINDS.contains(&event_kind(event))
+}
+
 /// The write-path guard against a label no reader can ever address again.
 ///
 /// Every producer of [`StoryEvent::StoryLabelsSet`] is expected to normalize
@@ -7874,6 +7911,48 @@ mod event_kind_tests {
             );
             assert!(is_known_event_kind(event_kind(&event)));
         }
+    }
+
+    /// SH-772: the inert list names real kinds only, and pins exactly which
+    /// ones a write outside block-edge derivation may append.
+    #[test]
+    fn exactly_the_listed_kinds_are_block_inert() {
+        for kind in BLOCK_INERT_EVENT_KINDS {
+            assert!(is_known_event_kind(kind), "`{kind}` is not an event kind");
+        }
+        let relevant: Vec<&str> = EVENT_KINDS
+            .iter()
+            .copied()
+            .filter(|kind| !BLOCK_INERT_EVENT_KINDS.contains(kind))
+            .collect();
+        assert_eq!(
+            relevant,
+            [
+                "StoryCreated",
+                "StoryAwaitingSet",
+                "StoryAwaitingCleared",
+                "StoryStateChanged",
+                "StoryStateCleared",
+                "StoryRelationshipAdded",
+                "StoryRelationshipRemoved",
+                "StoryTypeSet",
+                "StoryClosedAndArchived",
+                "StoryDeleted",
+                "StoryHidden",
+                "StoryUnhidden",
+                "StoryCreatedAsDraft",
+                "StoryPublished",
+            ]
+        );
+        assert!(may_change_effective_block(
+            &StoryEvent::StoryAwaitingCleared { at: "t".into() }
+        ));
+        assert!(!may_change_effective_block(
+            &StoryEvent::StoryCommentAdded {
+                at: "t".into(),
+                text: "t".into(),
+            }
+        ));
     }
 
     #[test]

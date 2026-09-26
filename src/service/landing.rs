@@ -1,5 +1,6 @@
 //! Admission and resolution of durable verifier landing authority.
 
+use super::block_delivery::{SubmissionGate, derive_block_edges};
 use super::{Ctx, VerificationCandidate, VerificationQueue};
 pub use crate::domain::landing::VerifiedSubmission;
 use crate::error::AppError;
@@ -132,68 +133,73 @@ impl<S: Store> VerificationQueue<'_, S> {
                 "landing context belongs to another project".into(),
             ));
         }
+        // Completion is a story mutation like any other: it closes this story
+        // and retracts the edges it imposed, so the stories it unblocks are
+        // owed their Resume (SH-772). It moves nothing into `verifying`.
         Ok(self.store.write(|tx| {
-            if let Some(candidate) = candidate
-                && !super::verification::human::permits(tx, candidate)?
-            {
-                return Ok(false);
-            }
-            if !tx.landing_intents()?.contains(intent) {
-                return Ok(false);
-            }
-            crate::store::landing::validate_intent(tx, intent)?;
-            let prefix = super::project_prefix(tx, intent.project)?;
-            let row = tx
-                .story(intent.project, intent.story)?
-                .ok_or_else(|| StoreError::NotFound(intent.story_id.clone()))?;
-            // A remote merge may already have happened. Keep its intent for
-            // reconciliation rather than completing a person's reserved work.
-            if crate::domain::is_human_only(&row.snapshot) {
-                return Ok(false);
-            }
-            let done = completion_state(&tx.states(intent.project)?).ok_or_else(|| {
-                StoreError::Validation("project lacks required done state".into())
-            })?;
-            let states = tx.state_map(intent.project)?;
-            let now = ctx.now();
-            let comment = format!(
-                "{} merge tree `{}` passed `{}` and pull request {} landed.\n\n{}",
-                super::VERIFICATION_GREEN_PREFIX,
-                intent.certification.tree,
-                intent.certification.gate,
-                intent.pull_request,
-                crate::text_lint::quote_evidence(detail)
-            );
-            if let Some(incident) = tx.verification_incident(intent.project)?
-                && incident.project == intent.project
-                && incident.generation == intent.generation
-            {
-                tx.clear_verification_incident(&incident.incident_id)?;
-            }
-            tx.remove_landing_intent(intent)?;
-            super::story::append_state_transition(
-                tx,
-                intent.project,
-                intent.story,
-                &row,
-                &prefix,
-                &states,
-                &done,
-                &now,
-                vec![
-                    StoryEvent::StoryCommentAdded {
-                        at: now.clone(),
-                        text: comment,
-                    },
-                    StoryEvent::StoryPrMerged {
-                        at: now.clone(),
-                        url: intent.pull_request.clone(),
-                    },
-                ],
-                ctx.provenance(),
-            )?;
-            super::project_recovery::record_landing(tx, intent, &now)?;
-            Ok(true)
+            derive_block_edges(tx, intent.project, SubmissionGate::NotASubmission, |tx| {
+                if let Some(candidate) = candidate
+                    && !super::verification::human::permits(tx, candidate)?
+                {
+                    return Ok(false);
+                }
+                if !tx.landing_intents()?.contains(intent) {
+                    return Ok(false);
+                }
+                crate::store::landing::validate_intent(tx, intent)?;
+                let prefix = super::project_prefix(tx, intent.project)?;
+                let row = tx
+                    .story(intent.project, intent.story)?
+                    .ok_or_else(|| StoreError::NotFound(intent.story_id.clone()))?;
+                // A remote merge may already have happened. Keep its intent for
+                // reconciliation rather than completing a person's reserved work.
+                if crate::domain::is_human_only(&row.snapshot) {
+                    return Ok(false);
+                }
+                let done = completion_state(&tx.states(intent.project)?).ok_or_else(|| {
+                    StoreError::Validation("project lacks required done state".into())
+                })?;
+                let states = tx.state_map(intent.project)?;
+                let now = ctx.now();
+                let comment = format!(
+                    "{} merge tree `{}` passed `{}` and pull request {} landed.\n\n{}",
+                    super::VERIFICATION_GREEN_PREFIX,
+                    intent.certification.tree,
+                    intent.certification.gate,
+                    intent.pull_request,
+                    crate::text_lint::quote_evidence(detail)
+                );
+                if let Some(incident) = tx.verification_incident(intent.project)?
+                    && incident.project == intent.project
+                    && incident.generation == intent.generation
+                {
+                    tx.clear_verification_incident(&incident.incident_id)?;
+                }
+                tx.remove_landing_intent(intent)?;
+                super::story::append_state_transition(
+                    tx,
+                    intent.project,
+                    intent.story,
+                    &row,
+                    &prefix,
+                    &states,
+                    &done,
+                    &now,
+                    vec![
+                        StoryEvent::StoryCommentAdded {
+                            at: now.clone(),
+                            text: comment,
+                        },
+                        StoryEvent::StoryPrMerged {
+                            at: now.clone(),
+                            url: intent.pull_request.clone(),
+                        },
+                    ],
+                    ctx.provenance(),
+                )?;
+                super::project_recovery::record_landing(tx, intent, &now)?;
+                Ok(true)
+            })
         })?)
     }
 

@@ -163,11 +163,17 @@ fn workspace_contention_does_not_claim_or_starve_another_story() {
     service.clear_awaiting(&first).unwrap();
     drop(lock);
     assert_eq!(rows(&f)[0].status, DeliveryStatus::Superseded);
+    // The block ended before its interrupt ever ran. Since SH-772 (decision
+    // D5) that no longer strands the Resume: it goes to the first story's
+    // registered session, once the workspace is free.
     process_one(f.store(), f.env(), Some(&script)).unwrap();
     assert_eq!(
         std::fs::read_to_string(f.cwd().join("reached")).unwrap(),
-        second
+        first
     );
+    let resume = rows(&f).into_iter().last().unwrap();
+    assert_eq!(resume.action, BlockAction::Resume);
+    assert_eq!(resume.status, DeliveryStatus::Delivered);
 }
 
 #[test]

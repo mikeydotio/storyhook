@@ -17,6 +17,13 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("pane_processes", Path(__file__).with_name("stop-dispatch-pane.py"))
 proc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(proc)
+import probe_budget  # noqa: E402  (loaded by proc; the same operation deadline)
+
+# Seconds the gate owner's own TERM trap gets to clean up its group before
+# this controller freezes and kills the captured tree. machine-lock.sh needs
+# two lock polls (TERMINATION_GRACE_SECS, 2 s) plus reaping; escalating is
+# safe, only less gentle, so this is policy rather than a probe bound.
+GATE_TERM_GRACE = 5
 
 
 def cancelled(signum, _frame):
@@ -35,28 +42,29 @@ def processes():
 
 
 def target(pane, provider):
-    """Bind a delivery to a server, pane and exec-launched provider lifetime."""
+    """Bind a delivery to a server, pane and exec-launched provider lifetime.
+
+    The pane process is read natively: binding needs one incarnation, not a
+    process census that machine load can time out (SH-766).
+    """
     if provider not in ("codex", "claude"):
         raise proc.CleanupError("unrecognized provider")
     pid = int(proc.run("tmux", "display-message", "-p", "-t", pane, "#{pane_pid}"))
-    table = processes()
-    if pid <= 1 or pid not in table:
+    if pid <= 1:
         raise proc.CleanupError("pane process exited before identity capture")
+    try:
+        start = proc.process_identity(pid)["start"]
+    except ProcessLookupError:
+        raise proc.CleanupError("pane process exited before identity capture") from None
     if proc.run("tmux", "show-options", "-w", "-v", "-t", pane, "@storyhook-agent") != provider:
         raise proc.CleanupError("pane provider changed during capture")
     return json.dumps([proc.run("tmux", "display-message", "-p", "-t", pane, "#{socket_path}"),
-                       pane, pid, proc.process_identity(pid)["start"], provider], separators=(",", ":"))
+                       pane, pid, start, provider], separators=(",", ":"))
 
 
-def signal_known(owned, sig):
-    """Signal only still-live captured identities, never recycled PIDs."""
-    table = processes()
-    for pid, identity in owned.items():
-        if proc.same_process(table, pid, identity):
-            try:
-                os.kill(pid, sig)
-            except ProcessLookupError:
-                pass  # Rechecked for quiescence by the caller.
+def survivors(owned):
+    """Return the captured incarnations that still run, observed natively."""
+    return [pid for pid, identity in owned.items() if proc.alive(pid, identity)]
 
 
 def freeze(owned, roots):
@@ -64,7 +72,7 @@ def freeze(owned, roots):
     for _ in range(16):
         table = processes()
         live_roots = {pid for pid, identity in {**roots, **owned}.items()
-                      if proc.same_process(table, pid, identity)}
+                      if proc.alive(pid, identity)}
         tree = set().union(*(proc.descendants(table, pid) for pid in live_roots))
         new = tree - owned.keys()
         if not new:
@@ -102,14 +110,15 @@ def interrupt(pane, provider, expected):
                 raise proc.CleanupError(f"gate {lock} predates interruption-safe ownership; no native key sent")
             holders[pid] = (*table[pid], proc.process_identity(pid)["start"])
             freeze(owned, {pid: holders[pid]})
-            if not proc.same_process(processes(), pid, holders[pid]):
+            if not proc.alive(pid, holders[pid]):
                 raise proc.CleanupError(f"gate owner {pid} exited during capture; cleanup uncertain")
             if (lock / "pid").read_text().strip() != str(pid) or (lock / "started").read_text().strip() != started:
                 raise proc.CleanupError(f"gate {lock} changed owner during capture")
             guard = lock / "interrupt"
             guard.mkdir()
             guards.append((guard, pid, started))
-            (guard / "started").write_text(processes()[os.getpid()][1] + "\n")
+            # This controller's own start spelling, from the census that found the gate.
+            (guard / "started").write_text(table[os.getpid()][1] + "\n")
             (guard / "owner").write_text(f"{os.getpid()}\n")
         if target(pane, provider) != expected:
             raise proc.CleanupError("pane was replaced while capturing gates")
@@ -118,27 +127,22 @@ def interrupt(pane, provider, expected):
         # Both supported provider TUIs use Escape for a full turn interrupt.
         # No prompt text, submit key, exit command, claim or worktree operation.
         proc.run("tmux", "send-keys", "-t", pane, "Escape")
-        signal_known(holders, signal.SIGTERM)
-        signal_known(owned, signal.SIGCONT)
+        proc.signal_known(holders, signal.SIGTERM)
+        proc.signal_known(owned, signal.SIGCONT)
         # The lock owner's existing TERM trap does normal group cleanup first.
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            table = processes()
-            if not any(proc.same_process(table, pid, identity) for pid, identity in owned.items()):
-                break
+        # Each wait observes before it judges its deadline, so a slow pass
+        # cannot turn an exit into escalation or into a refusal.
+        deadline = time.monotonic() + min(GATE_TERM_GRACE, probe_budget.remaining())
+        while survivors(owned) and time.monotonic() < deadline:
             time.sleep(.05)
-        else:
+        if survivors(owned):
             # Native interruption may have killed the wrapper before its trap.
             # Freeze the surviving captured closure, terminate exactly that tree,
-            # and retain the guard until a fresh process census proves quiescence.
+            # and retain the guard until a fresh observation proves quiescence.
             freeze(owned, {})
-            signal_known(owned, signal.SIGKILL)
-        deadline = time.monotonic() + 5
-        while True:
-            table = processes()
-            if not any(proc.same_process(table, pid, identity) for pid, identity in owned.items()):
-                break
-            if time.monotonic() >= deadline:
+            proc.signal_known(owned, signal.SIGKILL)
+        while survivors(owned):
+            if probe_budget.remaining() <= 0:
                 raise proc.CleanupError("gate children survived cancellation; ownership guard retained")
             time.sleep(.05)
         for guard, pid, started in guards:
@@ -155,18 +159,19 @@ def interrupt(pane, provider, expected):
         return expected
     finally:
         # Failed probes preserve an inspectable session and visible ownership guard.
-        signal_known(owned, signal.SIGCONT)
+        proc.signal_known(owned, signal.SIGCONT)
 
 
 if __name__ == "__main__":
     try:
         operation, pane, provider = sys.argv[1:4]
-        if operation == "target":
-            print(target(pane, provider))
-        elif operation == "interrupt":
-            print(interrupt(pane, provider, sys.argv[4]))
-        else:
-            raise proc.CleanupError(f"unknown operation: {operation}")
+        with probe_budget.operation():
+            if operation == "target":
+                print(target(pane, provider))
+            elif operation == "interrupt":
+                print(interrupt(pane, provider, sys.argv[4]))
+            else:
+                raise proc.CleanupError(f"unknown operation: {operation}")
     except (proc.CleanupError, OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

@@ -48,7 +48,10 @@
 /.build-number.lock
 /.BUILD-*
 
-# Python bytecode. The test runners set PYTHONDONTWRITEBYTECODE, but a bare
-# `python3 scripts/…` does not, and cargo treats any untracked, unignored file
-# in the package as a reason to rerun build.rs (SH-783).
+# Python bytecode. The test runners set PYTHONDONTWRITEBYTECODE and plugin
+# entry points set sys.dont_write_bytecode, but a helper imported in place by
+# anything else leaves a __pycache__ beside it: SH-766 committed one by
+# accident with a broad `git add`, and cargo treats any untracked, unignored
+# file in the package as a reason to rerun build.rs (SH-783).
 __pycache__/
+*.pyc

@@ -6,12 +6,31 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PLUGIN.parents[1] / "scripts/tests"))
+import load_grace  # noqa: E402
+
+# Production's bound on one notify: the daemon's NOTIFY_TIMEOUT plus its
+# SIGTERM grace, derived by test-agent-identity.sh. A fixture command may not
+# be stricter than production is with the helper it exercises (SH-766).
+NOTIFY_BOUND = float(os.environ["STORYHOOK_TEST_NOTIFY_BOUND_SECS"])
+# A fixture event (a pane, a file, a server exit) appears within this at idle.
+FIXTURE_EVENT_SECONDS = 5
+
+
+def patience(base):
+    """Grace one fixture allowance by the current contention (SH-347), and say so."""
+    ratio = load_grace.contention()
+    graced = load_grace.patience(base, ratio)
+    if graced > base:
+        print(f"{load_grace.describe(ratio, graced / base)}: {base:g}s -> {graced:.1f}s", file=sys.stderr)
+    return graced
 HELPER = PLUGIN / "bin/story.sh"
 IDENTITY = PLUGIN / "lib/agent_identity.py"
 OPTION = "@storyhook-identity-v1"
@@ -115,12 +134,12 @@ int main(int argc, char **argv) {
         """Terminate this private server and reap its process."""
         if self.server.poll() is None:
             self.server.terminate()
-        self.server.communicate(timeout=10)
+        self.server.communicate(timeout=patience(FIXTURE_EVENT_SECONDS))
 
     def run_command(self, args, **kwargs):
         """Run a bounded subprocess under this fixture's environment."""
         return subprocess.run(args, env=self.env, cwd=self.repo, capture_output=True,
-                              text=True, timeout=15, **kwargs)
+                              text=True, timeout=patience(NOTIFY_BOUND), **kwargs)
 
     def git(self, *args):
         """Run Git only in the fixture repository."""
@@ -132,7 +151,7 @@ int main(int argc, char **argv) {
 
     def wait_for(self, predicate, description):
         """Wait for an observable fixture event with a finite deadline."""
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + patience(FIXTURE_EVENT_SECONDS)
         while not predicate():
             if time.monotonic() > deadline:
                 self.fail(f"timeout waiting for {description}")
@@ -205,6 +224,16 @@ int main(int argc, char **argv) {
         """A session-bound Resume cannot register a replacement on discovery."""
         answer = self.run_command(["bash", str(HELPER), "--project", self.project,
             "notify", "TST-1", "RESUME_FIXTURE", "--expected-target", "previous-session"])
+        result = json.loads(answer.stdout)
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["reason"], "pane-provider-unknown")
+        self.assertEqual(self.inputs[self.pane].read_bytes(), b"READY\n")
+        self.assertEqual(self.tmux("show-options", "-p", "-qv", "-t", self.pane, OPTION), "")
+
+    def test_registered_resume_never_adopts_an_unregistered_direct_provider(self):
+        """A resume with no acknowledged interrupt reaches only an existing registration (SH-772)."""
+        answer = self.run_command(["bash", str(HELPER), "--project", self.project,
+            "notify", "TST-1", "RESUME_FIXTURE", "--registered-session"])
         result = json.loads(answer.stdout)
         self.assertFalse(result["ok"], result)
         self.assertEqual(result["reason"], "pane-provider-unknown")

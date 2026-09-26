@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 sys.dont_write_bytecode = True
+import probe_budget
 from process_identity import process_identity
 from workspace_ownership import inherited_fds, require_workspace
 
@@ -37,8 +38,8 @@ class IdentityError(Exception):
 
 
 def run(*args, reason="pane-query-failed"):
-    """Run a bounded external probe and retain stderr on failure."""
-    result = subprocess.run(args, capture_output=True, text=True, timeout=5, check=False, pass_fds=inherited_fds())
+    """Run an external probe within its operation budget and retain stderr on failure."""
+    result = probe_budget.run(args, capture_output=True, text=True, check=False, pass_fds=inherited_fds())
     if result.returncode:
         raise IdentityError(reason, f"{args[0]} {args[1]}: {result.stderr.strip() or result.returncode}")
     return result.stdout.rstrip("\n")
@@ -66,7 +67,7 @@ def panes(socket=""):
         except FileNotFoundError:
             return {}
     command = ["tmux", "-u", *(["-S", socket] if socket else []), "list-panes", "-a", "-F", FORMAT]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False, pass_fds=inherited_fds())
+    result = probe_budget.run(command, capture_output=True, text=True, check=False, pass_fds=inherited_fds())
     if result.returncode:
         # A closed server can leave its socket behind. Only tmux's exact
         # ECONNREFUSED answer is absence; permissions and malformed data refuse.
@@ -358,4 +359,6 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # One invocation is one operation: its probes share one budget.
+    with probe_budget.operation():
+        sys.exit(main())

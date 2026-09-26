@@ -140,7 +140,10 @@ set -euo pipefail
 # older helper must never be mistaken for one that proves exact postconditions.
 # Protocol 5 requires native notify --interrupt and session-bound resume argv.
 # An older helper would paste --interrupt as prompt text, so it must be refused.
-DISPATCH_PROTOCOL=5
+# Protocol 6 adds `notify <id> <prompt> --registered-session` (SH-772): a resume
+# whose interrupt was never acknowledged. An older helper would read the flag
+# as an unknown argument or, worse, fall back to the adopting 2-argument form.
+DISPATCH_PROTOCOL=6
 
 # Shared tmux/worktree/pane-readiness mechanics (window/worktree naming,
 # git-safety helpers, the readiness gate, confirmed-send) live in
@@ -3564,6 +3567,14 @@ cmd_capture() {
 # cmd_notify <story-id> <message> — resume the exact dispatched agent after
 # centralized verification returns its PR for repair (SH-521).
 #
+# Block delivery (SH-690) uses three narrower forms, none of which adopts a pane:
+#   <id> --interrupt                          native interrupt; prints the bound target
+#   <id> <prompt> --expected-target <target>  resume the session that interrupt acknowledged
+#   <id> <prompt> --registered-session        resume the story's registered session when no
+#                                             interrupt was acknowledged (SH-772 D5): types
+#                                             nothing unless the composer is idle, submits only
+#                                             after the prompt is seen, prints the bound target
+#
 # Every refusal slug this verb can emit is classified BY NAME on the daemon
 # side (`NOTIFY_REFUSALS`, src/daemon/verification.rs) as either "no live
 # agent in that window" -- the verifier re-dispatches in place (SH-650) -- or
@@ -3572,11 +3583,13 @@ cmd_capture() {
 # without classifying it there fails the build rather than falling through to
 # whichever default happens to be safe.
 cmd_notify() {
-  local id="${1:-}" message="${2:-}" expected="${4:-}" target="" diagnostic
+  local id="${1:-}" message="${2:-}" expected="${4:-}" registered="" target="" diagnostic
   if ! { [ -n "$id" ] && [ -n "$message" ] && \
-    { [ "$#" -eq 2 ] || { [ "$#" -eq 4 ] && [ "${3:-}" = --expected-target ] && [ -n "$expected" ] && [ "$message" != --interrupt ]; }; }; }; then
-    fail "usage: story.sh notify <story-id> <message> [--expected-target <target>] | <story-id> --interrupt"
+    { [ "$#" -eq 2 ] || { [ "$#" -eq 4 ] && [ "${3:-}" = --expected-target ] && [ -n "$expected" ] && [ "$message" != --interrupt ]; } \
+      || { [ "$#" -eq 3 ] && [ "${3:-}" = --registered-session ] && [ "$message" != --interrupt ]; }; }; }; then
+    fail "usage: story.sh notify <story-id> <message> [--expected-target <target> | --registered-session] | <story-id> --interrupt"
   fi
+  [ "${3:-}" != --registered-session ] || registered=1
   valid_story_id "$id" \
     || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
@@ -3604,7 +3617,7 @@ cmd_notify() {
   fi
   identity=$(printf '%s' "$identity_result" | jq -c '.identity')
   if [ "$(printf '%s' "$identity_result" | jq -r '.requires_adoption // false')" = true ]; then
-    if [ "$message" = --interrupt ] || [ -n "$expected" ]; then
+    if [ "$message" = --interrupt ] || [ -n "$expected" ] || [ -n "$registered" ]; then
       refuse "pane-provider-unknown" "delayed interruption or resumption requires an existing exact session registration; no session was adopted."
     fi
     if ! supersede_block_deliveries "$id"; then
@@ -3624,7 +3637,7 @@ cmd_notify() {
   local TMUX="$server,0,0"
   export TMUX
 
-  if [ "$message" = --interrupt ] || [ -n "$expected" ]; then
+  if [ "$message" = --interrupt ] || [ -n "$expected" ] || [ -n "$registered" ]; then
     target=$(python3 "$STORY_PLUGIN_ROOT/lib/interrupt-agent.py" target "$pane" "$provider" 2>&1) \
       || refuse "target-changed" "could not bind the dispatched session: $target"
     [ -z "$expected" ] || [ "$expected" = "$target" ] \
@@ -3647,6 +3660,37 @@ cmd_notify() {
   reserve_story_workspace "$id"
   if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$identity"); then
     refuse "pane-changed" "agent identity changed before delivery: $(printf '%s' "$identity_result" | jq -r '.display')"
+  fi
+  if [ -n "$registered" ]; then
+    # No interrupt's Escape cleared this screen (SH-772 D5), so the composer may
+    # hold a draft, a permission dialog or a plan approval. A dialog's cursor row
+    # ('❯ 1. Yes') reads as composer text, and an Enter there APPROVES it on the
+    # person's behalf. So nothing is typed unless the composer reads idle, the
+    # submit key is sent only after the prompt is seen in the composer (the
+    # SH-226 receipt rule), and the identity is revalidated in between.
+    local state try=0
+    state=$(input_state "$pane")
+    [ "$state" = empty ] \
+      || refuse "composer-busy" "the session's composer is not idle ($state): it may hold a draft or a dialog, so nothing was typed into $id's session."
+    paste_prompt "$pane" "$message" "story-resume-$id" \
+      || refuse "delivery-failed" "could not paste the resume prompt into pane \`$pane\`."
+    poll_input "$pane" text \
+      || refuse "delivery-failed" "the resume prompt never appeared in pane \`$pane\`'s composer; no submit key was sent."
+    revalidate_story_resources
+    reserve_story_workspace "$id"
+    if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$identity"); then
+      refuse "pane-changed" "agent identity changed before submission: $(printf '%s' "$identity_result" | jq -r '.display')"
+    fi
+    while [ "$try" -le "$SEND_RETRIES" ]; do
+      if tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null && poll_input "$pane" empty; then
+        jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" --arg target "$target" \
+          '{ok:true, id:$id, window_name:$window, pane:$pane, target:$target,
+            display:("[story] resumed " + $id + " in window `" + $window + "` (" + $pane + ").")}'
+        return 0
+      fi
+      try=$((try + 1))
+    done
+    refuse "delivery-failed" "the resume prompt reached pane \`$pane\`, but its submission was never confirmed."
   fi
   buffer="story-verify-$id"
   paste_prompt "$pane" "$message" "$buffer" \

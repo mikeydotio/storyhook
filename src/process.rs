@@ -19,6 +19,24 @@ mod cancellation;
 mod progress;
 pub use cancellation::Cancellation;
 
+/// The plugin helpers' per-operation probe budget: `BUDGET_SECONDS` in the
+/// `probe_budget.py` this binary embeds. Each caller that runs those helpers
+/// pins its own bound against it (SH-766).
+#[cfg(test)]
+pub(crate) fn plugin_probe_budget() -> Duration {
+    const SOURCE: &str = include_str!("../plugins/story/lib/probe_budget.py");
+    let seconds = SOURCE
+        .lines()
+        .find_map(|line| line.strip_prefix("BUDGET_SECONDS = "))
+        .expect("probe_budget.py must declare `BUDGET_SECONDS = <seconds>`");
+    Duration::from_secs(
+        seconds
+            .trim()
+            .parse()
+            .expect("BUDGET_SECONDS must be whole seconds"),
+    )
+}
+
 /// Bounds diagnostics from a faulty subprocess.
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
 

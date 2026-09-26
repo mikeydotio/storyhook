@@ -23,12 +23,46 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+/// How long one `story.sh notify` delivery may run before it is terminated.
+///
+/// Each plugin helper it runs bounds its probes by one per-operation budget
+/// (`plugins/story/lib/probe_budget.py`), which must end inside this bound.
+pub const NOTIFY_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// How long a terminated notify helper may run its own cleanup before SIGKILL.
+pub const NOTIFY_TERM_GRACE: Duration = Duration::from_secs(10);
+
+/// What an operator can do when a Resume may not have reached its agent.
+///
+/// Appended to every Unreached or Uncertain Resume, in the stored detail and in
+/// the outcome comment, so a lost resume is never only a status nobody reads
+/// (SH-772: MT-32 sat idle 37 hours behind one).
+const RESUME_REMEDY: &str = "The agent may not know the block was lifted. If a session is \
+     still working this story, tell the agent the block was lifted (paste the unblock prompt into \
+     its tmux window); if no session is, dispatch the story again.";
+
+/// `delivery` as it is recorded: an undelivered Resume carries [`RESUME_REMEDY`].
+fn recorded(delivery: &BlockDelivery) -> BlockDelivery {
+    let mut recorded = delivery.clone();
+    if recorded.action == BlockAction::Resume
+        && matches!(
+            recorded.status,
+            DeliveryStatus::Unreached | DeliveryStatus::Uncertain
+        )
+        && !recorded.detail.contains(RESUME_REMEDY)
+    {
+        recorded.detail = format!("{} {RESUME_REMEDY}", recorded.detail);
+    }
+    recorded
+}
+
 fn finish(
     tx: &mut impl WriteOps,
     ctx: &Ctx<'_, impl Store>,
     delivery: &BlockDelivery,
     expected: DeliveryStatus,
 ) -> Result<(), AppError> {
+    let delivery = &recorded(delivery);
     if !tx.update_block_delivery(delivery, expected)? {
         return Ok(());
     }
@@ -141,6 +175,27 @@ fn recover_one(
     Ok(())
 }
 
+/// The session a Resume must name, when its own block episode acknowledged one.
+///
+/// The episode is every row of the story after its previous Resume. Its latest
+/// Interrupt counts only when it was Delivered with a target: that exact
+/// session is then the only one the Resume may reach (`--expected-target`, the
+/// SH-718 binding). Otherwise (unreached, uncertain, superseded, or no
+/// Interrupt at all) the Resume goes to the story's current registered session
+/// (`--registered-session`), under the same pending authority and workspace
+/// lock an Interrupt binds with (SH-772, decision D5). An earlier episode's
+/// session names a lifetime that may be long gone, so it never binds.
+fn acknowledged_session(history: &[BlockDelivery], resume: &BlockDelivery) -> Option<String> {
+    history
+        .iter()
+        .rev()
+        .filter(|earlier| earlier.story == resume.story && earlier.id < resume.id)
+        .take_while(|earlier| earlier.action != BlockAction::Resume)
+        .find(|earlier| earlier.action == BlockAction::Interrupt)
+        .filter(|interrupt| interrupt.status == DeliveryStatus::Delivered)
+        .and_then(|interrupt| interrupt.target.clone())
+}
+
 /// Deliver one pending effect using the real helper protocol; returns whether work existed.
 /// The script parameter permits isolated provider fixtures without changing production flow.
 pub fn process_one(
@@ -246,17 +301,7 @@ fn process_candidate(
                     }
             });
         if delivery.action == BlockAction::Resume {
-            delivery.target = tx
-                .block_deliveries(delivery.project)?
-                .into_iter()
-                .rev()
-                .find(|d| {
-                    d.id < delivery.id
-                        && d.story == delivery.story
-                        && d.action == BlockAction::Interrupt
-                })
-                .filter(|d| d.status == DeliveryStatus::Delivered)
-                .and_then(|d| d.target);
+            delivery.target = acknowledged_session(&history, &delivery);
         }
         let ctx = Ctx::new(store, project.id, env.home(), env.clone()).no_hooks(true);
         if delivery.action == BlockAction::Resume
@@ -274,10 +319,7 @@ fn process_candidate(
             return Ok(Some((delivery, project.slug, id, checkout)));
         }
 
-        if !applicable
-            || checkout.is_none()
-            || delivery.action == BlockAction::Resume && delivery.target.is_none()
-        {
+        if !applicable || checkout.is_none() {
             delivery.status = if !applicable {
                 DeliveryStatus::Superseded
             } else {
@@ -285,10 +327,8 @@ fn process_candidate(
             };
             delivery.detail = if !applicable {
                 "current story state no longer permits this delivery"
-            } else if checkout.is_none() {
-                "no agent reached: project has no linked checkout"
             } else {
-                "no agent reached: no acknowledged interrupted session to resume"
+                "no agent reached: project has no linked checkout"
             }
             .into();
             finish(tx, &ctx, &delivery, DeliveryStatus::Pending)?;
@@ -350,10 +390,11 @@ fn process_candidate(
             command.arg("--interrupt");
         }
         BlockAction::Resume => {
-            command
-                .arg(UNBLOCK_PROMPT)
-                .arg("--expected-target")
-                .arg(delivery.target.as_deref().expect("resume target checked"));
+            command.arg(UNBLOCK_PROMPT);
+            match delivery.target.as_deref() {
+                Some(target) => command.arg("--expected-target").arg(target),
+                None => command.arg("--registered-session"),
+            };
         }
     }
     workspace
@@ -362,11 +403,15 @@ fn process_candidate(
         .dispatch_command(&mut command);
     let result = run_captured_quiescent(
         command,
-        Duration::from_secs(45),
+        NOTIFY_TIMEOUT,
         TerminationPolicy::TerminateThenKill {
-            grace: Duration::from_secs(10),
+            grace: NOTIFY_TERM_GRACE,
         },
     );
+    // Only a Resume sent to the registered session learns its target from the
+    // helper; an acknowledgement that names none proves nothing about who was
+    // reached, so it stays Uncertain.
+    let names_its_target = delivery.action == BlockAction::Interrupt || delivery.target.is_none();
     delivery.status = DeliveryStatus::Uncertain;
     match result {
         Err(error) => {
@@ -383,7 +428,7 @@ fn process_candidate(
                     .get("target")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty());
-                if success && (delivery.action == BlockAction::Resume || target.is_some()) {
+                if success && (!names_its_target || target.is_some()) {
                     delivery.status = DeliveryStatus::Delivered;
                     if let Some(target) = target {
                         delivery.target = Some(target.into());
@@ -398,6 +443,7 @@ fn process_candidate(
                                 | "pane-dead"
                                 | "pane-changed"
                                 | "target-changed"
+                                | "composer-busy"
                         )
                     )
                 {
@@ -408,6 +454,13 @@ fn process_candidate(
                     .and_then(|v| v.as_str())
                     .unwrap_or("helper returned no delivery diagnostic")
                     .into();
+                if success && delivery.status == DeliveryStatus::Uncertain {
+                    delivery.detail = format!(
+                        "the helper acknowledged the resume without naming the session it \
+                         reached: {}",
+                        delivery.detail
+                    );
+                }
             }
             Err(error) => {
                 delivery.detail = format!(
@@ -455,5 +508,22 @@ pub(crate) fn poll(store: &impl Store, env: &Environment, bus: &ChangeBus, stop:
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod probe_budget_tests {
+    use super::NOTIFY_TIMEOUT;
+
+    /// A notify helper's probe budget leaves a third of the notify bound for
+    /// interpreter start and exit under load, so the helper can resume what
+    /// it froze before the daemon terminates it (SH-766).
+    #[test]
+    fn helper_probe_budget_ends_inside_the_notify_bound() {
+        let budget = crate::process::plugin_probe_budget();
+        assert!(
+            budget * 3 <= NOTIFY_TIMEOUT * 2,
+            "probe budget {budget:?} is more than two thirds of NOTIFY_TIMEOUT {NOTIFY_TIMEOUT:?}"
+        );
     }
 }
