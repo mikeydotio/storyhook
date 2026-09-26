@@ -8,7 +8,7 @@ use std::thread;
 use storyhook::daemon::bus::{Change, ChangeBus};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
-    NotifyDelivery, ReconcileWait, ResumePlan, SubmissionFailure, TickResult,
+    HoldWatch, NotifyDelivery, ReconcileWait, ResumePlan, SubmissionFailure, TickResult,
     VERIFICATION_IDLE_TIMEOUT, VerificationActivity, VerificationActuator, VerificationOutcome,
     tick_with_activity, wait_for_reconciled_candidate,
 };
@@ -40,6 +40,21 @@ fn submitted(fixture: &ServiceFixture, title: &str, priority: Priority, url: &st
         .set_state(&id, "verifying", None, None, None)
         .expect("submitting the story for verification");
     id
+}
+
+/// An agent pane that wrote just now: the reconcile these tests hold for is
+/// live, so only a resubmission, a stop, or a store fact may end the hold.
+fn live_agent(
+    _candidate: &storyhook::service::VerificationCandidate,
+    _lease: Option<&storyhook::domain::StoryCleanupLease>,
+    _cancellation: &storyhook::daemon::verification::VerificationCancellation,
+) -> storyhook::service::engine::WindowProbe {
+    storyhook::service::engine::WindowProbe::Alive {
+        last_output_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|now| i64::try_from(now.as_secs()).ok()),
+    }
 }
 
 struct BlockingActuator {
@@ -339,6 +354,7 @@ fn reconciliation_wait_ignores_other_work_and_wakes_for_its_reserved_story() {
                     &subscription,
                     &stop,
                     &reserved,
+                    &HoldWatch::production(&live_agent),
                 ))
                 .unwrap();
         });
@@ -394,6 +410,7 @@ fn reconciliation_wait_stops_without_a_resubmission() {
                     &subscription,
                     &stop,
                     &reserved,
+                    &HoldWatch::production(&live_agent),
                 ))
                 .unwrap();
         });

@@ -7,6 +7,10 @@
 //! the waiter starts on its own thread: the activity journal, which records
 //! every child the daemon runners start and is how the defect was measured,
 //! and the `git` tally, which also sees the `git` the journal never records.
+//!
+//! Since SH-770 the one process a hold may start is its agent probe, at most
+//! one per `RECOVERY_WAKE` and never on a pass or a wake: a third seam counts
+//! the probes.
 
 use super::*;
 use crate::daemon::activity::context::{LogContext, enter};
@@ -129,6 +133,14 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
     let subscription = bus.subscribe();
     let stop = AtomicBool::new(false);
     let idle = Cancellation::default();
+    let probes = std::sync::atomic::AtomicUsize::new(0);
+    let counted = |candidate: &VerificationCandidate,
+                   lease: Option<&crate::domain::StoryCleanupLease>,
+                   cancellation: &Cancellation| {
+        probes.fetch_add(1, Ordering::Relaxed);
+        super::reconcile_hold::unwatched(candidate, lease, cancellation)
+    };
+    let watch = HoldWatch::production(&counted);
     let (idle_tx, idle_rx) = channel();
     let (resumed_tx, resumed_rx) = channel();
     std::thread::scope(|scope| {
@@ -144,6 +156,7 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
                 &stop,
                 &reserved,
                 &idle,
+                &watch,
             );
             idle_tx
                 .send((result, built_on_this_thread() - before))
@@ -154,6 +167,7 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
                 &stop,
                 &reserved,
                 &Cancellation::default(),
+                &watch,
             );
             resumed_tx
                 .send((result, built_on_this_thread() - before))
@@ -181,6 +195,15 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
             "a cancelled wait returns no candidate"
         );
         assert_eq!(idle_git, 0, "an idle reconcile wait must build no git");
+        assert!(
+            CONTROL_DEADLINE / 10 < watch.probe_every,
+            "the idle window must end before the first probe is due"
+        );
+        assert_eq!(
+            probes.load(Ordering::Relaxed),
+            0,
+            "passes and wakes never probe; the first probe waits one interval"
+        );
         let idle_children = child_records(&logs);
         assert!(
             idle_children.is_empty(),

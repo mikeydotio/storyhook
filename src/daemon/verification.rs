@@ -29,7 +29,10 @@ use crate::process::Cancellation;
 pub use crate::process::Cancellation as VerificationCancellation;
 pub use control::VerificationControlState;
 use reconcile_hold::wait_for_reconciled_candidate_cancellable;
-pub use reconcile_hold::{HoldRelease, ReconcileWait, wait_for_reconciled_candidate};
+pub use reconcile_hold::{
+    AgentProbe, GONE_CONFIRMATIONS, HoldRelease, HoldWatch, ReconcileWait,
+    wait_for_reconciled_candidate,
+};
 
 use super::bus::{Change, ChangeBus};
 use super::lifecycle::{CurrentRequest, InFlight};
@@ -50,7 +53,8 @@ use crate::process::{
     run_captured_with_progress_and_registration,
 };
 use crate::service::engine::{
-    DISPATCH_TIMEOUT, DispatchOptions, DispatchOutcomeState, run_shell_dispatch_cancellable,
+    DISPATCH_TIMEOUT, DispatchOptions, DispatchOutcomeState, WindowProbe,
+    run_shell_dispatch_cancellable,
 };
 use crate::service::gate_progress::GATE_PROGRESS_PREFIX;
 use crate::service::project_fault::ProjectFault;
@@ -609,6 +613,26 @@ pub trait VerificationActuator: Send + Sync {
         _cancellation: &VerificationCancellation,
     ) -> VerificationOutcome {
         self.verify(candidate, pull_request)
+    }
+    /// Whether a returned story's agent still runs, without touching its pane
+    /// (SH-770). A conflict-reconcile hold asks once per probe interval.
+    /// `lease` is the cleanup lease the story's latest submission recorded,
+    /// read from the store at the probe.
+    ///
+    /// The default knows no agent panes, which a hold reads as no evidence:
+    /// the store's silence alone then decides at the stall ceiling.
+    fn probe_agent(
+        &self,
+        candidate: &VerificationCandidate,
+        _lease: Option<&crate::domain::StoryCleanupLease>,
+        _cancellation: &Cancellation,
+    ) -> WindowProbe {
+        WindowProbe::Unanswered {
+            detail: format!(
+                "this verifier cannot observe the agent pane of {}",
+                candidate.story_id
+            ),
+        }
     }
     /// Delivers remediation to the exact dispatched agent pane, or answers
     /// that no live agent is there to receive it.
@@ -1186,6 +1210,29 @@ impl ShellVerificationActuator {
 }
 
 impl VerificationActuator for ShellVerificationActuator {
+    /// Probes the windows named for the story on the tmux server its lease
+    /// records: the server `story.sh notify` delivers to, and the one a
+    /// `--resume` re-dispatch relaunches on. One `tmux list-panes`.
+    fn probe_agent(
+        &self,
+        candidate: &VerificationCandidate,
+        lease: Option<&crate::domain::StoryCleanupLease>,
+        cancellation: &Cancellation,
+    ) -> WindowProbe {
+        let Some(lease) = lease else {
+            return WindowProbe::Unanswered {
+                detail: format!(
+                    "no cleanup lease records the tmux server of {}'s agent",
+                    candidate.story_id
+                ),
+            };
+        };
+        crate::service::resources::tmux::probe_story_panes(
+            &lease.tmux.socket_path,
+            &crate::service::resources::lease_names(lease, &BTreeSet::new()),
+            cancellation,
+        )
+    }
     fn land(
         &self,
         candidate: &VerificationCandidate,
@@ -3339,12 +3386,18 @@ fn poll_project_verification(
             bus,
             Some(&mut request_id),
             |reserved| {
+                let probe = |candidate: &VerificationCandidate,
+                             lease: Option<&crate::domain::StoryCleanupLease>,
+                             cancellation: &Cancellation| {
+                    actuator.probe_agent(candidate, lease, cancellation)
+                };
                 wait_for_reconciled_candidate_cancellable(
                     store,
                     &subscription,
                     stop,
                     reserved,
                     &activity.cancellation_for(project),
+                    &HoldWatch::production(&probe),
                 )
             },
         );

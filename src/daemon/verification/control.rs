@@ -637,6 +637,7 @@ mod tests {
                     &stop,
                     &candidate,
                     &token,
+                    &HoldWatch::production(&super::super::reconcile_hold::unwatched),
                 );
                 finished.send(result).unwrap();
             });

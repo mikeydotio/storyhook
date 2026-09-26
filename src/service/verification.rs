@@ -404,10 +404,27 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                     permitted: human::permits_row(tx, &row, reserved)?,
                     blocked: blocked_reason(snapshot, &index),
                     state: row.state,
+                    head_seq: row.head_global_seq,
                 }),
                 _ => None,
             };
             Ok::<_, StoreError>(HoldView { generation, story })
+        })?)
+    }
+
+    /// The cleanup lease the reserved story's latest submission recorded, read
+    /// from the store now rather than from the candidate's copy (SH-770): it
+    /// names the tmux server the story's agent pane lives on.
+    pub(crate) fn cleanup_lease_for(
+        &self,
+        reserved: &VerificationCandidate,
+    ) -> Result<Option<StoryCleanupLease>, AppError> {
+        Ok(self.store.read(|tx| {
+            let Some(project) = tx.project(reserved.project)? else {
+                return Ok(None);
+            };
+            let number = StoryNo::parse_id(&project.prefix, &reserved.story_id)?;
+            Ok::<_, StoreError>(latest_cleanup_lease(tx, project.id, number)?)
         })?)
     }
 
@@ -1308,6 +1325,9 @@ pub(crate) struct HeldStory {
     pub(crate) blocked: Option<String>,
     /// The story's current state slug.
     pub(crate) state: String,
+    /// The story's change-feed position: it moves on every story event, so
+    /// it is the store channel of the stall judgment (SH-657).
+    pub(crate) head_seq: GlobalSeq,
 }
 
 /// Why an open story cannot proceed, in the words that blocked it, or `None`
