@@ -690,20 +690,22 @@ fn the_fractional_width_specs_have_one_project() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. A continued matrix preserves every project's failure evidence
+// 4. A continued matrix preserves every slice's failure evidence
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_matrix_records_failures_continues_and_keeps_each_projects_artifacts() {
+fn the_matrix_records_failures_continues_and_keeps_each_slices_artifacts() {
     let runner = read("scripts/run-e2e.sh");
 
+    // The pool itself runs every slice after a failure and reports only once
+    // all have run (tests/e2e_pool.rs); this is the runner handing it all.
     assert!(
-        runner.contains("run_one_project \"$project\"")
-            && runner.contains("project=$project FAILED (exit $status)")
-            && runner.contains("overall_status=$status")
+        runner.contains(". \"$repo_root/scripts/e2e-pool.sh\"")
+            && runner.contains("e2e_pool_run \"$e2e_jobs\" \"$E2E_STOP_GRACE_SECONDS\" run_slice ")
+            && runner.contains("|| overall_status=$?")
             && runner.contains("exit \"$overall_status\""),
-        "a failed Playwright project must be recorded while the outer project loop continues, \
-         and the runner must report failure only after every remaining project had its turn"
+        "every slice must run through scripts/e2e-pool.sh, which continues past a failed \
+         slice, and the runner must report failure only after every slice had its turn"
     );
     assert!(
         runner.contains("results_root=\"$repo_root/e2e/test-results/current\""),
@@ -711,9 +713,10 @@ fn the_matrix_records_failures_continues_and_keeps_each_projects_artifacts() {
          it a later Playwright project can clear the earlier project's screenshots and traces"
     );
     assert!(
-        runner.contains("--output=\"$results_root/$project\""),
-        "each Playwright invocation must write beneath a project-keyed output directory; the \
-         default shared test-results directory is cleared at the start of every invocation"
+        runner.contains("--output=\"$results_root/$slice\""),
+        "each Playwright invocation must write beneath a slice-keyed output directory: \
+         Playwright clears its output directory at the start of every invocation, so two \
+         slices of one project sharing one would erase each other's evidence"
     );
 }
 
@@ -832,9 +835,35 @@ fn each_project_invocation_owns_its_daemon_seed_and_fake_tmux_state() {
         );
     }
     assert!(
-        runner.contains("run_one_project \"$project\"")
-            && runner.contains("run_one_project \"$explicit_project\""),
-        "both matrix and explicit-project paths must enter the same isolated runner"
+        runner.contains("run_one_project \"${slice_projects[$i]}\" \"$1\" \"${slice_lists[$i]}\"")
+            && runner.matches("run_one_project \"").count() == 1,
+        "every slice, of the full matrix or of an explicit --project, must enter the same \
+         isolated runner through one call"
+    );
+}
+
+/// A signalled slice's cleanup stops its daemon and removes its seed. The
+/// pool sends TERM to a slice's shells after its writers (SH-792); a second
+/// signal arriving mid-cleanup must not abandon that half-done.
+#[test]
+fn a_slices_cleanup_cannot_be_cut_short_by_a_second_signal() {
+    let runner = read("scripts/run-e2e.sh");
+    let cleanup = runner
+        .split_once("  cleanup() {")
+        .expect("run_one_project defines cleanup")
+        .1
+        .split_once("\n  }\n")
+        .expect("cleanup ends")
+        .0;
+    let immune = cleanup
+        .find("trap '' TERM INT HUP")
+        .expect("cleanup ignores TERM, INT and HUP while it runs");
+    let stop = cleanup
+        .find("\"$story_bin\" daemon stop")
+        .expect("cleanup stops the daemon");
+    assert!(
+        immune < stop,
+        "the signals are ignored before the daemon stop starts"
     );
 }
 

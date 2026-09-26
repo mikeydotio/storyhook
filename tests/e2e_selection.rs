@@ -428,23 +428,30 @@ fn the_runner_lists_through_the_library_and_never_bare() {
         runner.contains(". \"$repo_root/scripts/e2e-selection.sh\""),
         "scripts/run-e2e.sh must source scripts/e2e-selection.sh"
     );
+    // The plan listing that sizes the slices (SH-792), and each slice's own.
     assert_eq!(
         runner.matches("e2e_list_selection ").count(),
-        1,
-        "exactly one listing probe, and it goes through the library"
+        2,
+        "exactly two listing probes, the plan's and each slice's, both through the library"
     );
-    // `|| list_status=$?`, never `if ! …` (SH-224, tests/shell_negated_status.rs),
+    // `|| …_status=$?`, never `if ! …` (SH-224, tests/shell_negated_status.rs),
     // and never `|| true`, which is the exact discard SH-625 was filed on.
-    assert!(
-        runner.contains("|| list_status=$?"),
-        "the probe's exit status is captured, not discarded"
-    );
+    for capture in ["|| list_status=$?", "|| plan_status=$?"] {
+        assert!(
+            runner.contains(capture),
+            "each probe's exit status is captured, not discarded: missing {capture:?}"
+        );
+    }
     assert!(
         !runner.contains("--list"),
         "no non-comment line of scripts/run-e2e.sh may invoke --list itself; the flags \
          that make its exit status meaningful live in the library"
     );
-    for arm in ["\"$E2E_SELECTION_EMPTY\")", "exit \"$list_status\""] {
+    for arm in [
+        "\"$E2E_SELECTION_EMPTY\")",
+        "exit \"$list_status\"",
+        "exit \"$plan_status\"",
+    ] {
         assert!(
             runner.contains(arm),
             "the runner branches on the library's verdict: missing {arm:?}"
@@ -460,14 +467,16 @@ fn the_runner_lists_through_the_library_and_never_bare() {
 fn the_runner_refuses_a_run_in_which_nothing_ran() {
     let runner = without_shell_comments(&read_checkout_file("scripts/run-e2e.sh"));
 
-    let record = offset_of(&runner, ">\"$results_root/selected/$project\"");
+    // Keyed by slice (SH-792): two slices of one project writing one file
+    // would undercount the sum below.
+    let record = offset_of(&runner, ">\"$results_root/selected/$slice\"");
     let real_run = offset_of(
         &runner,
         "npx playwright test --project=\"$project\" --output=",
     );
     assert!(
         record < real_run,
-        "each project records its selected count BEFORE its real run, so a red project \
+        "each slice records its selected count BEFORE its real run, so a red slice \
          still counts as having run (record at {record}, run at {real_run})"
     );
 
@@ -479,13 +488,53 @@ fn the_runner_refuses_a_run_in_which_nothing_ran() {
     let final_exit = offset_of(&runner, "exit \"$overall_status\"");
     assert!(
         decide < consulted && consulted < final_exit,
-        "the whole-run count is consulted after the project loop and before the final exit \
-         (loop at {decide}, consulted at {consulted}, exit at {final_exit})"
+        "the whole-run count is consulted after the slices ran and before the final exit \
+         (projects at {decide}, consulted at {consulted}, exit at {final_exit})"
     );
     let refusal = &runner[consulted..final_exit];
     assert!(
         refusal.contains("exit 1"),
         "a run that executed no test exits nonzero rather than reporting green"
+    );
+    assert!(
+        refusal.contains("[ \"$tests_run\" != \"$plan_total\" ]"),
+        "a run whose slices ran a different number of tests than the plan listed is refused \
+         rather than reported green (SH-792)"
+    );
+}
+
+/// The plan listing runs before any daemon or seed exists, so it alone gets
+/// `e2e/plan-listing.ts`'s placeholder fixtures (SH-792). The flag must stay
+/// on that one command: exported, it would reach every slice's real run.
+#[test]
+fn the_plan_listing_alone_runs_in_placeholder_mode() {
+    let runner = without_shell_comments(&read_checkout_file("scripts/run-e2e.sh"));
+    let flagged: Vec<&str> = runner
+        .lines()
+        .filter(|line| line.contains("E2E_PLAN_LISTING"))
+        .map(str::trim)
+        .collect();
+    assert_eq!(
+        flagged,
+        vec![
+            "env E2E_PLAN_LISTING=1 DASHBOARD_URL=http://plan-listing.invalid npx playwright test \
+             \"${project_flags[@]}\" \"${extra_args[@]+\"${extra_args[@]}\"}\")\" || plan_status=$?"
+        ],
+        "E2E_PLAN_LISTING appears once, scoped by `env` to the plan listing"
+    );
+
+    let support = read_checkout_file("e2e/specs/support.ts");
+    let required_env = support
+        .split_once("export function requiredEnv(")
+        .expect("support.ts defines requiredEnv")
+        .1
+        .split_once("\n}\n")
+        .expect("requiredEnv ends")
+        .0;
+    assert!(
+        required_env.contains("planListingPlaceholder(name)"),
+        "requiredEnv hands out a placeholder only through plan-listing.ts, which refuses \
+         outside a --list run"
     );
 }
 

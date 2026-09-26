@@ -278,13 +278,16 @@ e2e-install:
 	cd e2e && npm ci
 	cd e2e && npx playwright install --with-deps chromium webkit firefox
 
-# Runs just the dashboard's browser suite. Bare, this loops once per project
+# Runs just the dashboard's browser suite. Bare, this covers every project
 # `e2e/playwright.config.ts` names (chromium, webkit, mobile-chromium,
-# mobile-webkit, untrusted-origin-chromium, fractional-firefox), each against
-# its own isolated daemon and seed (SH-321, SH-335, SH-348, SH-762). Pass
-# Playwright CLI flags through, e.g. `make e2e ARGS=--headed` (applies to
-# every project in the loop) or `make e2e ARGS=--project=webkit` (runs that
-# one project only).
+# mobile-webkit, untrusted-origin-chromium, fractional-firefox), cut into
+# slices of whole spec files that run at the same time, each against its own
+# isolated daemon and seed (SH-321, SH-335, SH-348, SH-762, SH-792).
+# `STORYHOOK_E2E_JOBS=N` sets how many run at once (and so how many slices
+# there are). Pass Playwright CLI flags through, e.g. `make e2e ARGS=--headed`
+# (applies to every slice) or `make e2e ARGS=--project=webkit` (that one
+# project only, still sliced); a `--shard` or `--test-list` of your own gets
+# one slice per project and is never cut again.
 e2e:
 	bash scripts/run-e2e.sh $(ARGS)
 
