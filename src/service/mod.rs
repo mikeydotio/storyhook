@@ -563,6 +563,10 @@ pub(crate) fn append_and_fold_maintenance(
     for event in events {
         crate::domain::validate_event_for_append(event)?;
     }
+    // The backstop for a mutation that would change effective blocking with
+    // nothing to record its Resume or Interrupt (SH-772: a verifier landing
+    // did exactly that, and its agent was never told).
+    refuse_underived_block_change(&*tx, project, story, prefix, events)?;
     // A durable reset owns state transfer until cleanup is proven. Keep
     // discussion and metadata edits available while guarding every producer.
     if events.iter().any(|event| {
@@ -590,6 +594,41 @@ pub(crate) fn append_and_fold_maintenance(
     Ok(snapshot)
 }
 
+/// Refuses `events` for `story` when one of them can change effective blocking
+/// and `tx` is not inside `block_delivery::derive_block_edges`.
+fn refuse_underived_block_change(
+    tx: &impl WriteOps,
+    project: ProjectId,
+    story: StoryNo,
+    prefix: &str,
+    events: &[StoryEvent],
+) -> Result<(), AppError> {
+    if tx.derives_block_edges() {
+        return Ok(());
+    }
+    let relevant: Vec<&str> = events
+        .iter()
+        .filter(|event| crate::domain::may_change_effective_block(event))
+        .map(crate::domain::event_kind)
+        .collect();
+    if relevant.is_empty() {
+        return Ok(());
+    }
+    Err(underived(project, story, prefix, &relevant.join(", ")))
+}
+
+/// The refusal both backstops raise: which story, what was written, and the
+/// door that should have been used.
+fn underived(project: ProjectId, story: StoryNo, prefix: &str, what: &str) -> AppError {
+    AppError::Storage(format!(
+        "{} (project {project}): {what} can change effective blocking, but this write runs \
+         outside block-edge derivation, so no Resume or Interrupt would be recorded for the \
+         stories it blocks or unblocks. Open the transaction through Ctx::write_stories, or \
+         wrap it in service::block_delivery::derive_block_edges (SH-772).",
+        story.to_id(prefix)
+    ))
+}
+
 /// Re-derives one story's read model from the history it already has.
 ///
 /// [`append_and_fold`] without the append. There is exactly one reason to
@@ -605,6 +644,11 @@ pub(crate) fn refold_story(
     prefix: &str,
     states: &BTreeMap<String, StateDef>,
 ) -> Result<StorySnapshot, AppError> {
+    // A refold can move a row to any state its definitions now imply, so it
+    // is block-relevant whatever caused it (SH-772).
+    if !tx.derives_block_edges() {
+        return Err(underived(project, story, prefix, "a refold"));
+    }
     let head = tx.head_seq(project, story)?;
     let stored = tx.events_for(project, story)?;
     let (known, _unknown) = partition_known(story, &stored);

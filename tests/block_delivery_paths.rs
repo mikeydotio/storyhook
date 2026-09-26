@@ -19,7 +19,10 @@ fn event_writers(root: &Path) -> BTreeSet<String> {
                 pending.push(path);
                 continue;
             }
-            if path.extension().is_none_or(|e| e != "rs") {
+            // Unit-test modules call the helpers to test them, not to mutate.
+            if path.extension().is_none_or(|e| e != "rs")
+                || path.file_name().is_some_and(|name| name == "tests.rs")
+            {
                 continue;
             }
             let source = compact_code(&std::fs::read_to_string(&path).unwrap());
@@ -27,6 +30,11 @@ fn event_writers(root: &Path) -> BTreeSet<String> {
                 "append_and_fold(",
                 "append_restored_and_fold(",
                 "append_and_fold_maintenance(",
+                // SH-772: the landing door called only this one, so a scan that
+                // knew three names never saw it.
+                "append_state_transition(",
+                "retract_closed_blocker_edges(",
+                "refold_story(",
             ]
             .iter()
             .any(|helper| source.contains(helper))
@@ -56,9 +64,13 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "git",
         "history",
         "integrity",
+        "landing",
         "pr_check",
+        "project",
+        "project_recovery",
         "project_recovery/refusal",
         "project_recovery/resume",
+        "project_recovery/test_return",
         "relation",
         "reset",
         "story",
@@ -107,10 +119,6 @@ fn every_event_writer_accounts_for_effective_block_changes() {
             "pr_link",
             "PR-link metadata only; completion is in pr_check/verification",
         ),
-        (
-            "project",
-            "prefix rename preserves numeric identity and graph; creation has no prior agents",
-        ),
     ];
     let expected = wrapped
         .iter()
@@ -127,7 +135,7 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         let source =
             compact_code(&std::fs::read_to_string(root.join(format!("{name}.rs"))).unwrap());
         assert!(
-            source.contains("write_stories("),
+            source.contains("write_stories(") || source.contains("derive_block_edges("),
             "{name} must derive edges before commit"
         );
     }
@@ -152,6 +160,74 @@ fn every_event_writer_accounts_for_effective_block_changes() {
     }
 }
 
+/// Production code in `src/`, excluding the store's own internals and unit
+/// test modules, as `(relative path, code without comments)`.
+fn production_sources() -> Vec<(String, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    let mut pending = vec![root.clone()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let relative = path
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if path.is_dir() {
+                if relative != "store" && !relative.ends_with("/tests") && relative != "tests" {
+                    pending.push(path);
+                }
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") || relative.ends_with("tests.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let production = text.split("\n#[cfg(test)]\nmod tests {").next().unwrap();
+            found.push((
+                relative,
+                storyhook_test_support::without_rust_comments(production),
+            ));
+        }
+    }
+    found
+}
+
+/// SH-772: only the derivation may declare a transaction derived, and only the
+/// service funnel and the known replay doors write read-model rows directly.
+/// Either rule broken would let a write change effective blocking unseen.
+#[test]
+fn derivation_is_declared_in_one_place_and_rows_are_written_through_known_doors() {
+    let mut declarers = Vec::new();
+    let mut row_writers = BTreeSet::new();
+    for (path, code) in production_sources() {
+        if code.contains("set_block_edge_derivation(") {
+            declarers.push(path.clone());
+        }
+        if code.contains(".put_story(") || code.contains(".purge_story(") {
+            row_writers.insert(path);
+        }
+    }
+    assert_eq!(declarers, ["service/block_delivery.rs"]);
+    assert_eq!(
+        row_writers,
+        [
+            // The funnel and `refold_story`, both behind the backstop.
+            "service/mod.rs",
+            // Delete purges inside `write_stories`.
+            "service/story.rs",
+            // Replays into a project with no stories yet: nothing to resume.
+            "service/migrate.rs",
+            "service/transfer.rs",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        "a new direct row writer must derive block edges or say why it cannot change blocking"
+    );
+}
+
 #[test]
 fn event_writer_scan_covers_nested_modules_and_all_append_doors() {
     let scratch = storyhook_test_support::scratch_dir();
@@ -170,14 +246,21 @@ fn event_writer_scan_covers_nested_modules_and_all_append_doors() {
             "comment.rs",
             "// append_and_fold(tx);\n/* append_restored_and_fold(tx); */",
         ),
+        ("nested/tests.rs", "append_and_fold(tx);"),
+        ("indirect.rs", "super::story::append_state_transition(tx);"),
     ] {
         std::fs::write(scratch.path().join(file), source).unwrap();
     }
     assert_eq!(
         event_writers(scratch.path()),
-        ["ordinary", "nested/restored", "nested/maintenance"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
+        [
+            "ordinary",
+            "nested/restored",
+            "nested/maintenance",
+            "indirect"
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
     );
 }

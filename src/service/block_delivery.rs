@@ -79,14 +79,28 @@ fn snapshot(tx: &impl ReadOps, project: ProjectId) -> Result<BTreeMap<StoryNo, S
 /// its own write instead. Intermediate states inside `f` are never delivered:
 /// only the project as it stood before `f` and as `f` leaves it are compared.
 /// No external operation may run here, because SQLite owns the write lock.
+///
+/// While `f` runs, the transaction is marked as deriving, which is what the
+/// service write funnel checks before it accepts a block-relevant event
+/// (SH-772). A nested derivation is refused: its inner before/after pair
+/// would record the same transition twice.
 pub(crate) fn derive_block_edges<W: WriteOps, T>(
     tx: &mut W,
     project: ProjectId,
     gate: SubmissionGate<'_>,
     f: impl FnOnce(&mut W) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
+    if tx.derives_block_edges() {
+        return Err(StoreError::Invariant(
+            "block-edge derivation is already running in this transaction; a nested \
+             derivation would record the same transition twice"
+                .into(),
+        ));
+    }
     let before = snapshot(tx, project)?;
+    tx.set_block_edge_derivation(true);
     let result = f(tx)?;
+    tx.set_block_edge_derivation(false);
     let after = snapshot(tx, project)?;
     for (story, next) in after {
         // Newly imported/created rows have no dispatched turn to interrupt.
