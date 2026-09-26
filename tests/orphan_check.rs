@@ -533,11 +533,40 @@ fn a_process_that_exits_on_its_own_within_the_grace_period_is_never_reported() {
         "a self-exiting shim must not fail the postlude\nstderr: {err}"
     );
     assert!(
-        err.trim().is_empty(),
+        without_the_abandoned_class(&err).trim().is_empty(),
         "the postlude must say nothing about a process that exited on its own — \
          only a process this run actually had to signal is a leak\nstderr: {err}"
     );
     drop(guard);
+}
+
+/// `stderr` without the abandoned-store report, which is about every storeless
+/// daemon this user owns, not about this fixture (SH-493 made that class
+/// machine-wide on purpose). Another test binary running beside this one in
+/// the pooled gate, another worktree's suite, or an agent's targeted run can
+/// own one, and collecting it is the script working: SH-783's first pooled
+/// gate failed this file's silence claim on exactly that. What remains must
+/// still be silent, so a report about THIS checkout's processes fails as
+/// before.
+fn without_the_abandoned_class(err: &str) -> String {
+    let mut kept = Vec::new();
+    let mut in_survivor_table = false;
+    for line in err.lines() {
+        if let Some(message) = line.strip_prefix("check-no-orphan-servers: ") {
+            in_survivor_table = message.starts_with("abandoned-store daemon(s) survived SIGKILL");
+            if in_survivor_table
+                || message.contains("serving a store that no longer exists")
+                || message.contains("nothing here depends on them being gone")
+            {
+                continue;
+            }
+        } else if in_survivor_table {
+            // `report`'s `ps` table under the survivor heading.
+            continue;
+        }
+        kept.push(line);
+    }
+    kept.join("\n")
 }
 
 /// The preflight is unchanged: no grace period, no killing, refuse and name
