@@ -598,7 +598,8 @@ case "${1:-}" in
       # un-redirected background job keeps a command substitution's pipe open
       # until the job itself exits).
       if [ "${FAKE_TMUX_PANE_CHILD:-}" = 1 ]; then
-        ( python3 -c 'import pathlib,subprocess,sys,time; child=subprocess.Popen(["sleep","30"]); pathlib.Path(sys.argv[1]).write_text(str(child.pid)); time.sleep(30)' "$STATE/child_pid" </dev/null >/dev/null 2>&1 & printf '%s' "$!" > "$STATE/pane_pid" )
+        # The parent reaps the child; both share the caller's graced lifetime.
+        ( python3 -c 'import pathlib,subprocess,sys; child=subprocess.Popen(["sleep",sys.argv[2]]); pathlib.Path(sys.argv[1]).write_text(str(child.pid)); child.wait()' "$STATE/child_pid" "${FAKE_TMUX_PANE_LIFETIME:-30}" </dev/null >/dev/null 2>&1 & printf '%s' "$!" > "$STATE/pane_pid" )
       else
         ( sleep "${FAKE_TMUX_PANE_LIFETIME:-30}" </dev/null >/dev/null 2>&1 & printf '%s' "$!" > "$STATE/pane_pid" )
       fi
