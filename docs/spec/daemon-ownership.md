@@ -172,6 +172,35 @@ is untouched by this change.
   guessed at, per this project's own discipline against fixing an
   unmeasured problem.
 
+### An explicit executable search path (SH-819)
+
+The v3.0.3 launchd transition exposed an environment dependency: launchd's
+minimal PATH omitted the provider CLIs and gate tools that the old forked
+daemon inherited from its caller. `story daemon install` now captures only
+PATH in the plist's `EnvironmentVariables` dictionary. It does not copy the
+rest of the shell environment or source startup files. Existing child
+allowlists and Git environment scrubbing remain in force.
+
+PATH must be nonempty UTF-8, contain XML-compatible characters, and use only
+nonempty absolute entries. Validation occurs before a plist write or daemon
+stop. Search order, duplicates, symlink spellings, and nonexistent absolute
+directories remain unchanged. Reinstall from the desired shell environment
+after changing tool locations, then restart the daemon.
+
+The daemon publishes its actual PATH as optional `DaemonInfo.execution_path`.
+Old metadata, an unset PATH, and non-UTF-8 PATH mean unknown. They do not block
+startup. `story doctor install` observes the local daemon without starting it
+and shows the saved and running PATH separately. It resolves executable files
+against the running PATH without running tool probes. Relative or empty PATH
+entries, unsupported plist forms, and failed daemon observation are findings,
+not evidence that tools are available.
+
+Missing bash, git, gh, tmux, or python3 names the affected capability. A missing
+provider CLI is a finding when that provider is registered or the CLI is
+visible to the caller. Missing cargo, node, or make is a finding when visible
+to the caller; otherwise it is informational. These checks establish lookup,
+not whether an executable, interpreter, or arbitrary project gate will work.
+
 ## Types
 
 ```
@@ -211,6 +240,20 @@ retry logic against an injected fake `launchctl`; `bind_preferred`'s
 port-hint fallback order; the plist's `Interactive`/`--owner launchd`
 content; `DaemonOwner` round-tripping through the portfile and `story daemon
 status`.
+
+SH-819 adds validation and independent platform-plist round trips, install
+replacement and rejection tests, and an isolated real macOS daemon launched with
+the generated arguments and environment over a minimal PATH. Fixture provider
+CLIs use an interpreter found through PATH. A daemon event-hook child drives
+the production verifier actuator to run fixture gate tools. Negative controls
+remove the explicit PATH or a tool. Doctor coverage includes stale saved PATH,
+legacy metadata, stopped daemons, observation errors, and a caller whose PATH
+cannot mask the daemon's missing tools. No test registers a real agent.
+
+The SH-819 live check remains after landing and installation of the fixed
+build: reinstall from the desired tool environment, confirm `owner launchd`
+and the serving class, then check `story doctor install`. Keep the existing
+workaround until that build is installed.
 
 **Manual**, on a real machine, after landing:
 1. `story daemon install` (picks up the `Interactive` plist).

@@ -64,6 +64,9 @@ use std::path::{Path, PathBuf};
 use crate::env::{Environment, StoreLocation};
 use crate::path_identity;
 
+mod path;
+pub use path::{ExecutionPath, registered_path};
+
 /// The launchd label for the user agent.
 ///
 /// Reverse-DNS under the author's own domain, which is the convention every
@@ -121,7 +124,10 @@ pub fn path(env: &Environment) -> PathBuf {
 /// The daemon reads it back to self-report `DaemonOwner::Launchd` into its own
 /// portfile (`lifecycle::resolve_owner`), which is what lets `story daemon
 /// status` show the accidental case when there is one.
-pub fn plist(exe: &Path, env: &Environment) -> String {
+///
+/// `execution_path` is captured explicitly at install time. No other variable
+/// from the installer's shell becomes part of the durable login environment.
+pub fn plist(exe: &Path, env: &Environment, execution_path: &ExecutionPath) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -137,6 +143,11 @@ pub fn plist(exe: &Path, env: &Environment) -> String {
         <string>--owner</string>
         <string>launchd</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{execution_path}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>ProcessType</key>
@@ -148,6 +159,8 @@ pub fn plist(exe: &Path, env: &Environment) -> String {
 "#,
         label = label(env),
         exe = xml_escape(&exe.display().to_string()),
+        // XML normalizes literal CR to LF; a reference preserves the path.
+        execution_path = xml_escape(execution_path.as_str()).replace('\r', "&#13;"),
         // A login agent for the store a launchd child would open with no
         // flags needs no flag itself, and leaving it off keeps that store's
         // plist identical to the one every existing installation has. For any
@@ -598,6 +611,53 @@ fn xml_unescape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plist(exe: &Path, env: &Environment) -> String {
+        super::plist(
+            exe,
+            env,
+            &ExecutionPath::parse(Some(std::ffi::OsStr::new("/usr/bin:/bin"))).unwrap(),
+        )
+    }
+
+    #[test]
+    fn login_agent_carries_only_the_explicit_execution_path() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let raw =
+            "/custom links/工具 & <bin>:/quotes'\"\r\n\t:/missing/bin:/symlink/bin:/usr/bin:/bin";
+        let path = ExecutionPath::parse(Some(std::ffi::OsStr::new(raw))).unwrap();
+        let text = super::plist(Path::new("/usr/local/bin/story"), &env, &path);
+        assert!(text.contains("<key>EnvironmentVariables</key>"), "{text}");
+        assert_eq!(registered_path(&text).unwrap(), Some(path));
+        let dictionary = text
+            .split_once("<key>EnvironmentVariables</key>")
+            .unwrap()
+            .1
+            .split_once("</dict>")
+            .unwrap()
+            .0;
+        assert_eq!(dictionary.matches("<key>").count(), 1, "{dictionary}");
+        assert!(dictionary.contains("&amp; &lt;bin&gt;"));
+        #[cfg(target_os = "macos")]
+        {
+            // Check the writer against the platform decoder, independently of
+            // our reader. Character references must preserve literal CR.
+            let file = dir.path().join("agent.plist");
+            std::fs::write(&file, &text).unwrap();
+            let output = std::process::Command::new("/usr/bin/plutil")
+                .args(["-convert", "json", "-o", "-", "--"])
+                .arg(&file)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let decoded: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                decoded["EnvironmentVariables"],
+                serde_json::json!({"PATH": raw})
+            );
+        }
+    }
 
     fn scratch() -> tempfile::TempDir {
         tempfile::Builder::new()

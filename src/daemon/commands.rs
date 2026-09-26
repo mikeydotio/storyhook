@@ -369,7 +369,11 @@ pub fn install(env: &Environment, this_binary: bool) -> Result<LoginAgentReport,
     let running = crate::path_identity::running_exe()
         .ok_or_else(|| AppError::Storage("failed to find the running executable".to_string()))?;
     let inputs = install_guard::gather(user_id(), this_binary, running);
-    let mut report = apply(&install_plan(env, &inputs)?, &bootstrap_via_launchctl)?;
+    let execution_path = std::env::var_os("PATH");
+    let mut report = apply(
+        &install_plan(env, &inputs, execution_path.as_deref())?,
+        &bootstrap_via_launchctl,
+    )?;
     // Named at the moment a machine grows past one store, not only when
     // someone happens to run `status` later.
     let others = agent::describe_others(env);
@@ -385,15 +389,22 @@ pub fn install(env: &Environment, this_binary: bool) -> Result<LoginAgentReport,
 ///
 /// [`AppError::Usage`] when the executable gate refuses, or when a temporary
 /// store would leave a durable login agent behind.
-fn install_plan(env: &Environment, inputs: &install_guard::Inputs) -> Result<Plan, AppError> {
+fn install_plan(
+    env: &Environment,
+    inputs: &install_guard::Inputs,
+    execution_path: Option<&std::ffi::OsStr>,
+) -> Result<Plan, AppError> {
     let verdict =
         install_guard::decide(inputs).map_err(|refusal| AppError::Usage(refusal.to_string()))?;
     let path = agent::path(env);
     refuse_temporary_store_for_durable_agent(env.store_path(), &path)?;
+    let execution_path = agent::ExecutionPath::parse(execution_path).map_err(|error| AppError::Usage(format!(
+        "cannot install the login agent: {error}. Nothing was written. Set PATH to nonempty absolute directories and run `story daemon install` again."
+    )))?;
     Ok(Plan {
         label: agent::label(env),
         path,
-        contents: agent::plist(&verdict.enthrone, env),
+        contents: agent::plist(&verdict.enthrone, env, &execution_path),
     })
 }
 
@@ -455,7 +466,7 @@ fn apply(
     match load(plan) {
         Ok(warning) => Ok(LoginAgentReport::new(
             format!(
-                "installed the storyhook daemon as a launchd agent ({})\n  {}",
+                "installed the storyhook daemon as a launchd agent ({})\n  {}\n  PATH captured from this shell; run `story daemon install` again after changing tool directories.",
                 plan.label,
                 plan.path.display()
             ),
@@ -674,6 +685,51 @@ pub fn user_id() -> u32 {
 mod tests {
     use super::*;
 
+    fn install_plan(env: &Environment, inputs: &install_guard::Inputs) -> Result<Plan, AppError> {
+        super::install_plan(env, inputs, Some(std::ffi::OsStr::new("/usr/bin:/bin")))
+    }
+
+    #[test]
+    fn an_invalid_path_leaves_the_existing_agent_untouched() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let path = agent::path(&env);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "previous agent").unwrap();
+        for raw in [
+            None,
+            Some(OsStr::new("")),
+            Some(OsStr::new("/bin:")),
+            Some(OsStr::new("relative:/bin")),
+            Some(OsStr::new("/bad\u{1}")),
+            Some(OsStr::from_bytes(b"/bad\xff")),
+        ] {
+            let result = super::install_plan(&env, &permitting_inputs(), raw)
+                .and_then(|plan| apply(&plan, &|_| panic!("invalid PATH reached launchctl")));
+            assert!(result.is_err(), "accepted {raw:?}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous agent");
+        }
+    }
+
+    #[test]
+    fn reinstall_replaces_the_recorded_path() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        for raw in ["/old tools:/bin", "/new tools:/usr/bin:/bin"] {
+            let plan =
+                super::install_plan(&env, &permitting_inputs(), Some(std::ffi::OsStr::new(raw)))
+                    .unwrap();
+            apply(&plan, &|_| Ok(None)).unwrap();
+            let text = std::fs::read_to_string(agent::path(&env)).unwrap();
+            assert_eq!(
+                agent::registered_path(&text).unwrap().unwrap().as_str(),
+                raw
+            );
+        }
+    }
+
     fn shell_output(script: &str) -> std::process::Output {
         std::process::Command::new("/bin/sh")
             .args(["-c", script])
@@ -772,6 +828,7 @@ mod tests {
             tailnet: None,
             cookie_name: String::new(),
             owner,
+            execution_path: None,
         }
     }
 

@@ -456,6 +456,7 @@ mod tests {
             tailnet: None,
             cookie_name: "storyhook_test".to_string(),
             owner: None,
+            execution_path: None,
         }
     }
 
