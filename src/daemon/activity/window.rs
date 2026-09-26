@@ -74,7 +74,7 @@ pub(crate) fn poll(store: &impl Store, env: &Environment, stop: &AtomicBool) {
             let mut projects = Vec::new();
             for project in tx.projects()? {
                 if let Some(checkout) = tx.checkout_path(project.id)? {
-                    projects.push((project.slug, checkout.join(".storyhook/logs")));
+                    projects.push((project.slug, super::project_journal(&checkout)));
                 }
             }
             Ok(projects)

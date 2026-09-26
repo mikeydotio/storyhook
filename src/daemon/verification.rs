@@ -864,7 +864,7 @@ impl ShellVerificationActuator {
             super::activity::window::open(
                 &self.env,
                 &candidate.project_slug,
-                &candidate.checkout.join(".storyhook/logs"),
+                &super::activity::project_journal(&candidate.checkout),
             );
         }
         scope

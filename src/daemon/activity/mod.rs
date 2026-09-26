@@ -24,6 +24,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::env::Environment;
 
+/// Where a registered checkout keeps its project journal, relative to the
+/// checkout (SH-748).
+pub(crate) const PROJECT_JOURNAL: &str = ".storyhook/logs";
+
+/// The project journal directory of `checkout`.
+pub(crate) fn project_journal(checkout: &Path) -> PathBuf {
+    checkout.join(PROJECT_JOURNAL)
+}
+
 static ACTIVE: OnceLock<Journal> = OnceLock::new();
 static DIAGNOSTICS: Mutex<Option<OutputWatch>> = Mutex::new(None);
 static STOPPED: AtomicBool = AtomicBool::new(false);
