@@ -32,8 +32,26 @@ fn read(relative: &str) -> String {
 /// the definition check and the invocation check cannot drift apart.
 const WRAPPER: &str = "keep_display_awake";
 
+/// The two `--list` enumerations `scripts/run-e2e.sh` makes through
+/// `scripts/e2e-selection.sh`, which open no browser: `(opener, argument,
+/// ending)` -- the continued line that calls the helper, and the start and end
+/// of the Playwright command line it hands over. Each slice lists itself; the
+/// plan listing lists the whole selection first (SH-792).
+const LISTING_ENVELOPES: [(&str, &str, &str); 2] = [
+    (
+        "list_output=\"$(e2e_list_selection ",
+        "npx playwright test ",
+        "\")\" || list_status=$?",
+    ),
+    (
+        "plan_output=\"$(cd \"$repo_root/e2e\" && e2e_list_selection ",
+        "env E2E_PLAN_LISTING=1 DASHBOARD_URL=http://plan-listing.invalid npx playwright test ",
+        "\")\" || plan_status=$?",
+    ),
+];
+
 /// Lines that launch a real Playwright run: every `npx playwright test`
-/// that is not the `--list` enumeration (which opens no browser).
+/// that is not a `--list` enumeration (which opens no browser).
 fn real_playwright_runs(script: &str) -> Vec<(usize, &str)> {
     let lines: Vec<_> = script.lines().collect();
     lines
@@ -43,14 +61,16 @@ fn real_playwright_runs(script: &str) -> Vec<(usize, &str)> {
         .filter(|(index, line)| {
             let listing_argument = index.checked_sub(1).is_some_and(|previous| {
                 let opener = lines[previous].trim();
-                opener.starts_with("list_output=\"$(e2e_list_selection ")
-                    && opener.ends_with('\\')
-                    && line.trim_start().starts_with("npx playwright test ")
-                    && line.trim_end().ends_with("\")\" || list_status=$?")
-                    && line.matches("npx playwright test").count() == 1
-                    && line.matches("||").count() == 1
-                    && !line.contains(';')
-                    && !line.contains("&&")
+                LISTING_ENVELOPES.iter().any(|(start, argument, ending)| {
+                    opener.starts_with(start)
+                        && opener.ends_with('\\')
+                        && line.trim_start().starts_with(argument)
+                        && line.trim_end().ends_with(ending)
+                        && line.matches("npx playwright test").count() == 1
+                        && line.matches("||").count() == 1
+                        && !line.contains(';')
+                        && !line.contains("&&")
+                })
             });
             line.contains("npx playwright test") && !line.contains("--list") && !listing_argument
         })
@@ -140,6 +160,15 @@ fn the_listing_helper_exemption_requires_its_actual_envelope() {
     let argument = r#"  npx playwright test --project="$project" "${playwright_args[@]+"${playwright_args[@]}"}")" || list_status=$?"#;
     let listing = format!("{opener}\n{argument}\n");
     assert!(real_playwright_runs(&listing).is_empty());
+    let plan_opener = r#"plan_output="$(cd "$repo_root/e2e" && e2e_list_selection "$results_root/plan-listing.stderr" \"#;
+    let plan_argument = r#"  env E2E_PLAN_LISTING=1 DASHBOARD_URL=http://plan-listing.invalid npx playwright test "${project_flags[@]}")" || plan_status=$?"#;
+    assert!(real_playwright_runs(&format!("{plan_opener}\n{plan_argument}\n")).is_empty());
+    // Each envelope's opener only exempts its own argument shape.
+    assert_eq!(
+        real_playwright_runs(&format!("{opener}\n{plan_argument}\n")).len(),
+        1,
+        "the slice listing's opener must not exempt the plan listing's argument"
+    );
     for altered in [
         format!("# {opener}\n{argument}\n"),
         format!("{}\n{argument}\n", opener.trim_end_matches('\\')),

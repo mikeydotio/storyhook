@@ -3,10 +3,11 @@
 # The browser harness's "does this project select anything?" question, answered
 # in a way that cannot mistake a failed question for an empty answer (SH-625).
 #
-# `scripts/run-e2e.sh` runs one Playwright invocation per project and asks
-# `--list` first, so a filter that only matches, say, `.mobile.spec.ts$` files
-# skips `chromium`/`webkit` instead of aborting the whole loop over a project
-# the caller never meant to filter into (SH-335). Until SH-625 that probe
+# `scripts/run-e2e.sh` runs one Playwright invocation per slice (SH-792; per
+# project before that) and asks `--list` first, so a filter that only
+# matches, say, `.mobile.spec.ts$` files skips `chromium`/`webkit` instead of
+# aborting the whole loop over a project the caller never meant to filter
+# into (SH-335). Until SH-625 that probe
 # discarded both stderr and the exit status and read the answer as text, and
 # Playwright's text is the SAME for an empty selection and for a listing that
 # never happened -- so a spec that failed to load, an unknown flag, or a config

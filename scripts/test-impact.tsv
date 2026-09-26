@@ -78,6 +78,7 @@ e2e_display_awake	scripts/run-e2e.sh
 e2e_fixture_hygiene	:(glob)**/*
 e2e_launch_probe	:(glob)**/*
 e2e_load_grace	:(glob)**/*
+e2e_pool	scripts/e2e-pool.sh
 e2e_provider_doubles	plugins/story/tests/fakes/tmux
 e2e_provider_doubles	scripts/e2e-provider-doubles.sh
 e2e_provider_doubles	scripts/run-e2e.sh

@@ -35,13 +35,20 @@
 # meant the second engine's pass hit fixtures the first engine's pass had
 # already consumed, and failed for reasons that had nothing to do with the
 # engine under test -- see SH-335 (`story show SH-335` carries the verdict).
-# So the unit of isolation here is "one project, one seed, one daemon, one
-# FAKE_TMUX_STATE" -- exactly what this script already built for a single
-# engine -- and a bare `bash scripts/run-e2e.sh` with no project filter loops
-# it once per project *this script derives from `e2e/playwright.config.ts`*,
-# never from a hand-maintained list here. A project added to the config (the
-# already-filed `mobile-webkit` follow-up, say) is covered by this loop
-# without this file changing.
+# So the unit of isolation here is "one Playwright invocation, one seed, one
+# daemon, one FAKE_TMUX_STATE" -- exactly what this script already built for a
+# single engine -- and a bare `bash scripts/run-e2e.sh` with no project filter
+# runs every project *this script derives from `e2e/playwright.config.ts`*,
+# never from a hand-maintained list here. A project added to the config is
+# covered without this file changing.
+#
+# SLICES, AT THE SAME TIME (SH-792). One project after another, that unit made
+# this leg about 41 minutes. The selection is now listed once, split by
+# `scripts/e2e-pool.sh` into slices -- one project and a Playwright
+# `--test-list` of whole spec files each -- and up to STORYHOOK_E2E_JOBS slices
+# run at once, each through its own `run_one_project`: the same isolation,
+# smaller. `workers: 1` inside each invocation stays a council decision
+# (SH-627); what changed is how many invocations run at once.
 set -euo pipefail
 
 # Playwright forces FORCE_COLOR=1 in workers. Translate NO_COLOR before Node
@@ -64,6 +71,8 @@ repo_root="$PWD"
 . "$repo_root/scripts/e2e-selection.sh"
 # shellcheck source=e2e-provider-doubles.sh
 . "$repo_root/scripts/e2e-provider-doubles.sh"
+# shellcheck source=e2e-pool.sh
+. "$repo_root/scripts/e2e-pool.sh"
 # Cargo's own mutable artifact. Never invoked: `$story_bin`, assigned after
 # the build below, is the leased hard link of it.
 story_artifact="$repo_root/target/debug/story"
@@ -101,6 +110,28 @@ if [ "${#ALL_PROJECTS[@]}" -lt 2 ]; then
   echo "  drifted from the file's actual shape, or the config lost a project." >&2
   exit 1
 fi
+
+# --- How many slices run at once (SH-792). -------------------------------
+#
+# STORYHOOK_E2E_JOBS bounds the pool, and the selection is cut into
+# E2E_SLICES_PER_JOB slices per job, so one knob sets both. The defaults are
+# measured, not assumed (docs/spec/test-audit.md records the sweep): 8 of 10
+# cores kept two free, where 12 bought 4% at twice the load flakes; two slices
+# per job let a freed slot take the next slice, where one per job left the
+# small projects holding whole slots.
+E2E_DEFAULT_JOBS=8
+E2E_SLICES_PER_JOB=2
+# What a signalled slice's writers, and then its shells, each get to exit
+# before the pool kills them: `cleanup` below stops a daemon and removes a
+# seed in about a second.
+E2E_STOP_GRACE_SECONDS=10
+e2e_jobs="${STORYHOOK_E2E_JOBS:-$E2E_DEFAULT_JOBS}"
+case "$e2e_jobs" in
+  '' | *[!0-9]* | 0*)
+    echo "run-e2e.sh: STORYHOOK_E2E_JOBS must be a positive integer, got '$e2e_jobs'" >&2
+    exit 2
+    ;;
+esac
 
 # --- WebKit's Tab order, measured once, never assumed (SH-335). ---------
 #
@@ -182,26 +213,47 @@ if command -v caffeinate >/dev/null 2>&1; then
   keep_display_awake=(caffeinate -d -u -i)
 fi
 
-# --- One fully isolated run per project. ---------------------------------
+# --- One fully isolated run per slice. -----------------------------------
+#
+# run_one_project PROJECT SLICE TEST_LIST [PLAYWRIGHT_ARGS...]
 #
 # Everything from here down used to be this whole script's top level, run
-# once. It is now a function run once PER PROJECT, each invocation in its
-# own subshell so `trap cleanup EXIT` scopes to that subshell's process
-# rather than the outer script's -- the same isolation a fresh `bash
-# scripts/run-e2e.sh` process gave for free before this change, reused
-# rather than reinvented with a RETURN trap and manual bookkeeping.
+# once. It is now a function run once PER SLICE (SH-792; once per project
+# before that), each invocation in its own subshell so `trap cleanup EXIT`
+# scopes to that subshell's process rather than the outer script's -- the
+# same isolation a fresh `bash scripts/run-e2e.sh` process gave for free,
+# reused rather than reinvented with a RETURN trap and manual bookkeeping.
+# SLICE names everything this run writes that another slice could collide
+# with: its output directory, its `selected/` count and its progress row.
+# TEST_LIST is the slice's Playwright test-list, or `-` when the caller
+# partitioned the selection itself.
 run_one_project() {
 (
   project="$1"
-  shift
+  slice="$2"
+  test_list="$3"
+  shift 3
   playwright_args=("$@")
+  slice_args=()
+  if [ "$test_list" != - ]; then
+    slice_args=(--test-list="$test_list")
+  fi
 
   data_root="$(mktemp -d /private/tmp/story-e2e.XXXXXX)"
-  daemon_started=0
+  isolated=0
 
   cleanup() {
     local status=$?
-    if [ "$daemon_started" = "1" ]; then
+    # A second signal here would abandon a half-stopped daemon and a
+    # half-removed seed; the pool KILLs a cleanup that overruns its grace.
+    trap '' TERM INT HUP
+    # Whenever this run's isolated store is in effect, and only then: before
+    # `storyhook_isolate` below, this environment still names the developer's
+    # real store. Not only after the explicit `daemon start`, because every
+    # `story` call in the seeding auto-starts this run's daemon well before
+    # it. Stopping is synchronous, and a no-op when nothing runs, so the
+    # removal below never races a daemon still writing its state home.
+    if [ "$isolated" = "1" ]; then
       "$story_bin" daemon stop >/dev/null 2>&1 || true
     fi
     # The fake's placeholder pane process is told below to outlive this whole
@@ -219,7 +271,7 @@ run_one_project() {
   }
   trap cleanup EXIT
 
-  echo "run-e2e.sh: === project=$project ===" >&2
+  echo "run-e2e.sh: === project=$project slice=$slice ===" >&2
   cd "$repo_root/e2e"
 
   # THE ISOLATION, in one shared place -- `scripts/test-env.sh`, whose own
@@ -240,6 +292,7 @@ run_one_project() {
   # shellcheck source=test-env.sh
   . "$repo_root/scripts/test-env.sh"
   storyhook_isolate "$data_root"
+  isolated=1
 
   # The leased binary, for the specs' own CLI calls (SH-635). A spec that ran
   # Cargo's artifact directly would, after a rebuild, itself be the client
@@ -306,8 +359,9 @@ run_one_project() {
   # session, and would strand each dispatch's placeholder process, which the
   # next `new-window` in the same directory reaps. The wrapper's own
   # one-writer check below is what keeps that safe -- and it is safe across
-  # projects too, since each project's subshell gets its own `data_root` and
-  # therefore its own `FAKE_TMUX_STATE`, run sequentially, never concurrently.
+  # slices too, since each slice's subshell gets its own `data_root` and
+  # therefore its own `FAKE_TMUX_STATE`: slices run at the same time (SH-792),
+  # never in one state directory.
   export FAKE_TMUX_STATE="$data_root/faketmux"
   mkdir -p "$FAKE_TMUX_STATE"
   # The placeholder process the fake's `new-window` spawns to stand in for the
@@ -547,7 +601,6 @@ WRAPPER
   # not a formality.
   echo "run-e2e.sh: starting the daemon…" >&2
   start_output="$("$story_bin" daemon start 2>&1)"
-  daemon_started=1
   echo "$start_output" >&2
 
   # The daemon always binds loopback, and *additionally* binds its Tailscale
@@ -650,20 +703,22 @@ WRAPPER
   # ids at MODULE load time (`requiredEnv(...)`), so even `--list` -- which
   # loads every matching file to enumerate its tests -- throws before those
   # are exported. Under the old text-only read that throw was one of the
-  # very load errors that reported as a skip.
+  # very load errors that reported as a skip. The outer plan listing (SH-792)
+  # is the one listing that runs before any fixture exists, which is why it
+  # alone runs in `e2e/plan-listing.ts`'s placeholder mode.
   list_status=0
   list_output="$(e2e_list_selection "$data_root/playwright-list.stderr" \
-    npx playwright test --project="$project" "${playwright_args[@]+"${playwright_args[@]}"}")" || list_status=$?
+    npx playwright test --project="$project" "${slice_args[@]+"${slice_args[@]}"}" "${playwright_args[@]+"${playwright_args[@]}"}")" || list_status=$?
   case "$list_status" in
     0) ;;
     "$E2E_SELECTION_EMPTY")
-      echo "run-e2e.sh: project=$project selects no tests under this filter — skipping" >&2
-      gate_progress_emit_item "release gate/e2e/$project" skipped
+      echo "run-e2e.sh: slice=$slice selects no tests under this filter — skipping" >&2
+      gate_progress_emit_item "release gate/e2e/$slice" skipped
       exit 0
       ;;
     *)
-      echo "run-e2e.sh: project=$project could not be listed (exit $list_status) — refusing, not skipping (SH-625)" >&2
-      gate_progress_emit_item "release gate/e2e/$project" failed
+      echo "run-e2e.sh: slice=$slice could not be listed (exit $list_status) — refusing, not skipping (SH-625)" >&2
+      gate_progress_emit_item "release gate/e2e/$slice" failed
       exit "$list_status"
       ;;
   esac
@@ -677,13 +732,13 @@ WRAPPER
   # project is this script's alone, so the two writers never race over one
   # event shape.
   known_total="$(e2e_selection_total "$list_output")"
-  export STORYHOOK_GATE_PROGRESS_PATH="release gate/e2e/$project"
+  export STORYHOOK_GATE_PROGRESS_PATH="release gate/e2e/$slice"
   gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" running "total=$known_total"
-  # This project is about to run $known_total tests: say so where the outer
-  # loop can add it up (SH-625). Written BEFORE the real run, so a red project
+  # This slice is about to run $known_total tests: say so where the outer
+  # script can add it up (SH-625, SH-792). Written BEFORE the real run, so a red project
   # still counts as having run -- the verdict below carries its own failure.
   mkdir -p "$results_root/selected"
-  printf '%s\n' "$known_total" >"$results_root/selected/$project"
+  printf '%s\n' "$known_total" >"$results_root/selected/$slice"
   e2e_start=$(date +%s)
   # The two specs that dispatch for real -- ordinary dispatch and Full Auto --
   # consulted after the real run below. Asking Playwright's own list is
@@ -706,7 +761,7 @@ WRAPPER
   # refusal that names the machine, not one launch timeout per test.
   export E2E_PROJECT="$project"
   status=0
-  "${keep_display_awake[@]+"${keep_display_awake[@]}"}" npx playwright test --project="$project" --output="$results_root/$project" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
+  "${keep_display_awake[@]+"${keep_display_awake[@]}"}" npx playwright test --project="$project" --output="$results_root/$slice" "${slice_args[@]+"${slice_args[@]}"}" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
   e2e_elapsed=$(( $(date +%s) - e2e_start ))
 
   # --- Was the run's binary rebuilt under it? Informational either way
@@ -726,7 +781,7 @@ WRAPPER
   # executable inode and liveness, which is exactly the shape of the SH-635
   # incident: a replaced daemon on a fresh `--port 0` binding.
   if ! storyhook_daemon_is_still_ours "$portfile" "$port" "$story_bin"; then
-    echo "run-e2e.sh: project=$project: the daemon this run started is gone or replaced" >&2
+    echo "run-e2e.sh: slice=$slice: the daemon this run started is gone or replaced" >&2
     echo "  (see above). Read every failure after that point as ONE dead daemon," >&2
     echo "  not as that many tree failures -- the SH-627 shape (SH-635)." >&2
     if [ "$status" -eq 0 ]; then
@@ -737,7 +792,7 @@ WRAPPER
   gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" \
     "$([ "$status" = 0 ] && echo passed || echo failed)" "seconds=$e2e_elapsed"
   if [ "$status" -ne 0 ]; then
-    echo "run-e2e.sh: project=$project failed. If the error above is about a missing browser executable, run 'make e2e-install' and retry." >&2
+    echo "run-e2e.sh: slice=$slice failed. If the error above is about a missing browser executable, run 'make e2e-install' and retry." >&2
     exit "$status"
   fi
 
@@ -757,7 +812,7 @@ WRAPPER
   # combination selected no dispatch-driving spec at all, since then there
   # is nothing to have recorded.
   if [ "$real_dispatch_selected" -gt 0 ] && [ ! -s "$FAKE_TMUX_STATE/new_window_args.log" ]; then
-    echo "run-e2e.sh: project=$project selected a real-dispatch spec, but no dispatch reached this run's fake tmux state" >&2
+    echo "run-e2e.sh: slice=$slice selected a real-dispatch spec, but no dispatch reached this run's fake tmux state" >&2
     echo "  directory ($FAKE_TMUX_STATE/new_window_args.log is missing or empty)." >&2
     echo "  Either the spec didn't actually dispatch, or the dispatch children used a" >&2
     echo "  different fake-tmux state than the one this script configured (SH-263)." >&2
@@ -766,17 +821,25 @@ WRAPPER
 )
 }
 
-# --- Decide: one project (caller asked for it explicitly) or the full
-# derived set (the `make test` / bare `make e2e` default). Recognizes
-# `--project=NAME`; a bare `--project NAME` (space-separated) is not
-# supported by this wrapper -- Playwright itself accepts both, but every
-# caller in this repo (`make e2e ARGS='--project=webkit'`, this file's own
-# prior triage runs) already uses the `=` form.
+# --- Decide: which projects, then which slices (SH-792). ------------------
+#
+# `--project=NAME` narrows the run to that project (the `make e2e
+# ARGS=--project=webkit` triage path), and that project is still sliced. A bare
+# `--project NAME` (space-separated) is not supported by this wrapper --
+# Playwright itself accepts both, but every caller in this repo uses the `=`
+# form. A caller that partitions the selection itself -- `--shard` or
+# `--test-list`, in either spelling -- gets one slice per project, so its
+# partition is never cut a second time.
 explicit_project=""
+caller_partition=0
 extra_args=()
 for arg in "$@"; do
   case "$arg" in
     --project=*) explicit_project="${arg#--project=}" ;;
+    --shard | --shard=* | --test-list | --test-list=*)
+      caller_partition=1
+      extra_args+=("$arg")
+      ;;
     *) extra_args+=("$arg") ;;
   esac
 done
@@ -786,39 +849,154 @@ if [ -n "$explicit_project" ]; then
 else
   projects_to_run=("${ALL_PROJECTS[@]}")
 fi
-
-# SH-524: declare every project this run will attempt, before any of them
-# start, so a not-yet-reached project (sequential -- SH-335) shows in the
-# checklist as pending rather than being absent until its own turn arrives.
+project_flags=()
 for project in "${projects_to_run[@]}"; do
-  gate_progress_emit_item "release gate/e2e/$project" pending
+  project_flags+=(--project="$project")
 done
 
-overall_status=0
-if [ -n "$explicit_project" ]; then
-  run_one_project "$explicit_project" "${extra_args[@]+"${extra_args[@]}"}" || overall_status=$?
-else
-  for project in "${ALL_PROJECTS[@]}"; do
-    run_one_project "$project" "${extra_args[@]+"${extra_args[@]}"}" || {
-      status=$?
-      echo "run-e2e.sh: project=$project FAILED (exit $status)" >&2
-      overall_status=$status
-    }
-  done
-fi
+# --- The plan: which slices this run is (SH-792). -------------------------
+slice_names=()
+slice_projects=()
+slice_lists=()
+slice_counts=()
+plan_total=""
 
-# A run in which no project selected a test executed nothing, and nothing
-# executed is not a pass (SH-625) -- whatever each project's own verdict was.
-# The per-project skip above is legitimate inside the loop (a `.mobile.spec.ts`
-# filter gives `chromium`/`webkit` nothing while the mobile pair runs), and
-# only the SUM can tell that case from a filter typo, or from a single
-# explicit `--project=` given a filter it cannot match: a caller who named
-# specs meant to run them. Every gate-tier caller passes no filter, so this
-# can only ever fire on an interactive or triage run -- exactly the moment
-# someone is deciding whether a fix works.
+# A caller's own partition (`--shard`, `--test-list`) is applied exactly as
+# this runner always applied it: per project, one Playwright invocation each.
+# Playwright shards a multi-project listing across the projects instead, so no
+# plan listing can describe that partition; each slice lists itself.
+partition_by_project() {
+  local project
+  for project in "${projects_to_run[@]}"; do
+    slice_names+=("$project")
+    slice_projects+=("$project")
+    slice_lists+=(-)
+    slice_counts+=("?")
+  done
+}
+
+# The plan listing: one listing of every selected project under the caller's
+# filters, before any fixture exists, through the same library as each
+# slice's own listing -- so a spec that cannot load is refused by name here
+# too and never read as an empty selection (SH-625). No daemon or seed exists
+# yet, so it runs in `e2e/plan-listing.ts`'s mode: a dashboard URL that is
+# never contacted, and fixture values `requiredEnv` hands out only to a
+# listing. It also compiles every selected spec into Playwright's shared
+# transform cache before the slices start at once.
+#
+# A failure here refuses the whole leg before any project runs; one project's
+# listing failing used to refuse only that project. A spec that will not load
+# under the plan would not load in any slice either.
+plan_slices() {
+  local plan_status=0 plan_output file_counts counted_total plan_rows
+  local slice project list count has_slice
+  plan_output="$(cd "$repo_root/e2e" && e2e_list_selection "$results_root/plan-listing.stderr" \
+    env E2E_PLAN_LISTING=1 DASHBOARD_URL=http://plan-listing.invalid npx playwright test "${project_flags[@]}" "${extra_args[@]+"${extra_args[@]}"}")" || plan_status=$?
+  case "$plan_status" in
+    0) ;;
+    "$E2E_SELECTION_EMPTY")
+      for project in "${projects_to_run[@]}"; do
+        gate_progress_emit_item "release gate/e2e/$project" skipped
+      done
+      echo "run-e2e.sh: no project selected a test under this filter — nothing ran, refusing to report green (SH-625)" >&2
+      exit 1
+      ;;
+    *)
+      echo "run-e2e.sh: the plan listing could not be read (exit $plan_status) — refusing, not skipping (SH-625)" >&2
+      exit "$plan_status"
+      ;;
+  esac
+
+  # Every listed test must be counted under some file, or a drift in
+  # Playwright's line shape would drop tests from every slice without a word.
+  plan_total="$(e2e_selection_total "$plan_output")"
+  file_counts="$(printf '%s\n' "$plan_output" | e2e_pool_file_counts)"
+  counted_total="$(printf '%s\n' "$file_counts" | awk -F '\t' '{ sum += $3 } END { print sum + 0 }')"
+  if [ "$counted_total" != "$plan_total" ]; then
+    echo "run-e2e.sh: the plan listing's Total: line says $plan_total tests, but its test lines" >&2
+    echo "  name $counted_total. The shape of Playwright's listing lines has drifted from what" >&2
+    echo "  scripts/e2e-pool.sh reads; refusing rather than running part of the selection." >&2
+    exit 1
+  fi
+
+  # Kept with the run's artifacts: which files each slice ran is the first
+  # question a red slice raises.
+  mkdir -p "$results_root/slices"
+  plan_rows="$(printf '%s\n' "$file_counts" | e2e_pool_plan "$((e2e_jobs * E2E_SLICES_PER_JOB))" "$results_root/slices" "${projects_to_run[@]}")"
+  while IFS=$'\t' read -r slice project list count; do
+    [ -n "$slice" ] || continue
+    slice_names+=("$slice")
+    slice_projects+=("$project")
+    slice_lists+=("$list")
+    slice_counts+=("$count")
+  done < <(printf '%s\n' "$plan_rows")
+
+  for project in "${projects_to_run[@]}"; do
+    has_slice=0
+    for slice in ${slice_projects[@]+"${slice_projects[@]}"}; do
+      if [ "$slice" = "$project" ]; then
+        has_slice=1
+      fi
+    done
+    if [ "$has_slice" = 0 ]; then
+      echo "run-e2e.sh: project=$project selects no tests under this filter — skipping" >&2
+      gate_progress_emit_item "release gate/e2e/$project" skipped
+    fi
+  done
+}
+
+if [ "$caller_partition" = 1 ]; then
+  partition_by_project
+  echo "run-e2e.sh: ${#slice_names[@]} slice(s), one per project under the caller's own partition, up to $e2e_jobs at once:" >&2
+else
+  plan_slices
+  echo "run-e2e.sh: $plan_total tests in ${#slice_names[@]} slice(s), up to $e2e_jobs at once (STORYHOOK_E2E_JOBS):" >&2
+fi
+_i=0
+while [ "$_i" -lt "${#slice_names[@]}" ]; do
+  printf '  %-36s %5s tests\n' "${slice_names[$_i]}" "${slice_counts[$_i]}" >&2
+  # SH-524: every slice this run will attempt shows in the checklist before
+  # any starts, pending rather than absent until the pool reaches it.
+  gate_progress_emit_item "release gate/e2e/${slice_names[$_i]}" pending
+  _i=$((_i + 1))
+done
+unset _i
+
+# The pool's runner: one slice, by name, through its own fixture.
+run_slice() {
+  local i=0
+  while [ "$i" -lt "${#slice_names[@]}" ]; do
+    if [ "${slice_names[$i]}" = "$1" ]; then
+      run_one_project "${slice_projects[$i]}" "$1" "${slice_lists[$i]}" "${extra_args[@]+"${extra_args[@]}"}"
+      return
+    fi
+    i=$((i + 1))
+  done
+  echo "run-e2e.sh: the plan has no slice named $1" >&2
+  return 1
+}
+
+# Every slice runs even after one fails, and each keeps its own artifacts
+# under $results_root/<slice>. The pool returns 0 or 1: a slice's own status
+# of 125 or more would read to scripts/gate-legs.sh as a cancelled gate.
+overall_status=0
+e2e_pool_run "$e2e_jobs" "$E2E_STOP_GRACE_SECONDS" run_slice ${slice_names[@]+"${slice_names[@]}"} || overall_status=$?
+
+# A run in which no slice selected a test executed nothing, and nothing
+# executed is not a pass (SH-625) -- whatever each slice's own verdict was.
+# The plan listing already refuses an empty selection; this is the same
+# question asked of what the slices actually ran.
 tests_run="$(e2e_selection_tests_run "$results_root/selected")"
 if [ "$overall_status" = 0 ] && [ "$tests_run" = 0 ]; then
   echo "run-e2e.sh: no project selected a test under this filter — nothing ran, refusing to report green (SH-625)" >&2
+  exit 1
+fi
+# Every test the plan listed ran in exactly one slice (SH-792). A caller's
+# own partition has no plan total to hold the slices to.
+if [ "$overall_status" = 0 ] && [ -n "$plan_total" ] && [ "$tests_run" != "$plan_total" ]; then
+  echo "run-e2e.sh: the slices ran $tests_run tests, but the plan listed $plan_total. A slice's" >&2
+  echo "  test-list lost or gained a file; refusing rather than reporting part of the" >&2
+  echo "  selection green. Each slice's list is in $results_root/slices." >&2
   exit 1
 fi
 

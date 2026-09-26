@@ -148,6 +148,28 @@ assert_contains "$first" "|dir" "a sourced lib.sh mints a state directory that e
 [ "${first%|*}" != "${second%|*}" ] \
   || fail_test "two independent test files were handed the same state directory [${first%|*}]"
 
+# --- the placeholder's lifetime is graced, not an idle-machine 30 s ----------
+#
+# Two gates lost pane-probing tests to the fake's bare 30 s self-expiry: SH-760
+# (test-dispatch-pane-readiness.sh) and SH-792 (test-notify.sh and
+# test-notify-registered-session.sh read `pane-dead`, the exact signature a
+# FAKE_TMUX_PANE_LIFETIME=1 run reproduces). lib.sh grants every test the
+# contention-graced lifetime scripts/tests/load_grace.py computes, and leaves a
+# lifetime a test chose for itself alone.
+lifetime_after_lib() {
+  env "$@" bash -c 'source "$1/lib.sh"; printf "%s" "${FAKE_TMUX_PANE_LIFETIME:-}"' _ "$TESTS_DIR" 2>/dev/null
+}
+graced="$(lifetime_after_lib -u FAKE_TMUX_PANE_LIFETIME)"
+case "$graced" in
+  '' | *[!0-9]*) fail_test "a sourced lib.sh exported no whole-second pane lifetime [$graced]" ;;
+  *)
+    [ "$graced" -ge 30 ] \
+      || fail_test "a sourced lib.sh graced the pane lifetime below the fake's idle 30 s [$graced]"
+    ;;
+esac
+assert_eq "$(lifetime_after_lib FAKE_TMUX_PANE_LIFETIME=7)" "7" \
+  "a lifetime the test set itself survives sourcing lib.sh"
+
 # --- the fixed default cannot come back -----------------------------------
 #
 # Structural, not behavioural: the refusal above proves today's fake has no
