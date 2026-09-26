@@ -778,7 +778,9 @@ fn stop_now_during_a_dispatch_that_is_then_refused_finishes_the_run() {
         let filler = scope.spawn(|| engine.reconcile(&run));
         dispatching.recv_timeout(DISPATCH_TIMEOUT).unwrap();
         let owner = scope.spawn(|| engine.stop(&run, true));
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // The owner records the intent before it waits for the dispatch;
+        // bound the poll by the same production deadline it waits under.
+        let deadline = Instant::now() + DISPATCH_TIMEOUT;
         while engine.status(Some(&run)).unwrap().pop().unwrap().run.state
             != EngineRunState::Draining
         {

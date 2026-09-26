@@ -16,7 +16,8 @@ use store_support::{create_story, new_store, raw, seed_project};
 use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget, TypeDef};
 use storyhook::error::AppError;
 use storyhook::service::engine::{
-    ConfigureRequest, DispatchOutcome, EngineService, OPERATOR_STOPPED, StartRequest,
+    ConfigureRequest, DISPATCH_TIMEOUT, DispatchOutcome, EngineService, OPERATOR_STOPPED,
+    StartRequest,
 };
 use storyhook::service::{Clock, ConfigService, Ctx, NewStoryInput, StoryService};
 use storyhook::store::ids::StoryNo;
@@ -1638,8 +1639,9 @@ fn stop_now_releases_an_orphaned_dispatching_lane_without_waiting() {
     let started = std::time::Instant::now();
     let stopped = engine.stop(&run.id, true).unwrap();
 
+    // The production bound a dead dispatch used to consume on every attempt.
     assert!(
-        started.elapsed() < Duration::from_secs(30),
+        started.elapsed() < DISPATCH_TIMEOUT,
         "waited {:?} for a dead dispatch",
         started.elapsed()
     );
@@ -1679,7 +1681,11 @@ fn stop_now_frees_an_orphaned_dispatch_that_a_card_reset_waits_on() {
     let started = std::time::Instant::now();
     let stopped = engine.stop(&run.id, true).unwrap();
 
-    assert!(started.elapsed() < Duration::from_secs(30));
+    assert!(
+        started.elapsed() < DISPATCH_TIMEOUT,
+        "waited {:?} for a dead dispatch",
+        started.elapsed()
+    );
     assert_eq!(stopped.run.state, EngineRunState::Finished);
     let reset = fixture
         .store()
