@@ -7,8 +7,8 @@
   verifier's remediation (`notify <id> <message>`, also used by project
   recovery) and the resume after an acknowledged interrupt
   (`notify <id> <prompt> --expected-target <target>`).
-- **Status**: Fixed on `worktree-SH-780`. Follow-up: SH-799 (the same receipt
-  for dispatch's `send_prompt_confirmed`).
+- **Status**: Fixed on `worktree-SH-780`. The dispatch sibling, SH-799, is
+  fixed too (see the last section).
 
 ## Defect
 
@@ -66,3 +66,57 @@ A dialog that opens in the milliseconds between the last `composer_holds` read
 and the key. A placeholder pattern that stops matching after a provider update
 fails closed (`delivery-failed`, the story parks); `STORY_PASTE_PLACEHOLDER_PATTERN`
 overrides it.
+
+## SH-799: the dispatch sibling
+
+`send_prompt_confirmed` (`lib/session.sh`) hands every dispatch its charter and
+Codex its initialization turn. It kept the SH-226 receipt ("any text"), and it
+re-sent the submit key up to `SEND_RETRIES` times without a look. Claude's
+readiness is its SessionStart sentinel, so nothing read the screen before the
+paste. A dialog that opened after readiness passed the receipt, and the key
+approved it. Before the fix, the new tests showed exactly that: with a dialog
+at the window, on the paste or on the first key, a key answered the dialog.
+
+Evidence taken before the change, because a wrong pattern here fails every
+dispatch: `~/.claude/history.jsonl` shows every storyhook dispatch as
+`[Pasted text #1]` in the composer. The Claude Code 2.1.283 binary builds
+exactly that string, and above 10 000 characters it keeps the first 500 (the
+signature still matches). The Codex 0.157.0 binary has `[Pasted Content N
+chars]`.
+
+The function now takes the notify shape, plus what its design review found:
+
+| Step | Rule |
+|---|---|
+| before typing | `poll_composer_idle`: a drawn, idle composer. Not drawn yet: wait on the READY budget. A row with text (a dialog, a draft): `CONFIRM_ATTEMPTS` reads, then stop |
+| receipt | `poll_composer_holds`; re-paste only while the composer still reads idle, never over anything else |
+| each key | `composer_holds` first; a key already sent whose clear showed late is the submission (`composer_cleared`), and no second key follows |
+| confirmation | `composer_cleared`: not this prompt **and** no input. `input_state` alone leaves faint text out, so a faint placeholder after a swallowed key read as submitted |
+
+`undelivered` now means exactly "no submit key was sent", and dispatch rolls it
+back (the pane is stopped first). The refusal keeps `handoff-undelivered`, so
+project recovery still reads it as a proven failure, and it adds
+`delivery_detail`: `composer-not-idle`, `prompt-not-seen`,
+`prompt-not-recognised`, `composer-changed` or `submit-unconfirmed`. A Codex
+initialization with no key sent is `bootstrap-undelivered`.
+
+The review's late-clear and faint findings also held for `cmd_notify`: a
+remediation whose clear showed late was refused while the agent worked, and
+the verifier parked the story. Notify now confirms the same way. The generic
+`poll_input`, whose "text" form was the unsafe receipt, is deleted.
+
+**Class detector**: `tests/notify_reasons.rs` checks one guarded shape for both
+prompt senders. There is an idle check before the single paste, and a
+`poll_composer_holds` receipt before the key loop. The one `$SUBMIT_KEY` send
+sits inside its loop, at most two lines below a `composer_holds` call that stops
+the loop. A positive control proves that the receipt does not count as the gate.
+
+**Residual, beyond the notify ones**:
+- A fresh Claude session shows `Try "..."` until the first submission. The
+  binary draws it all faint, or with the first letter inverted when Claude
+  paints its own cursor cell. The live captures show no painted cell, so the
+  composer reads idle. If a later Claude draws the inverted form, every dispatch
+  refuses `composer-not-idle`: visible, and closed. `test-composer-reader.sh`
+  pins both renderings.
+- A prompt echoed on a glyph row below a hidden composer could pass
+  `composer_holds`.

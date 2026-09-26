@@ -175,6 +175,9 @@ Every form that types a prompt now runs one block in `cmd_notify`:
    text. Otherwise `delivery-failed`, and no submit key.
 3. Revalidate the identity (`pane-changed`).
 4. Read `composer_holds` again before the submit key and before each re-send.
+   A submission is confirmed by `composer_cleared` (this prompt gone **and** no
+   input), and a key whose clear the screen showed late is that submission: no
+   second key follows it (SH-799).
 
 The composer reader (`lib/composer.awk`, used by `input_state`) reads
 `capture-pane -e`. Faint text is not input: Claude's predicted next prompt and
@@ -185,5 +188,5 @@ resolves to `text`, so storyhook does not type.
 `tests/notify_reasons.rs` lists every place the plugin presses a key in a pane
 (`KEY_SENDERS`) and pins `cmd_notify`'s single guarded delivery. A remaining
 window, not closed: a dialog that opens in the milliseconds between the last
-`composer_holds` read and the key. SH-799 applies the same receipt to dispatch
-(`send_prompt_confirmed`).
+`composer_holds` read and the key. SH-799 gave dispatch's `send_prompt_confirmed`
+the same shape, checked by the same test.
