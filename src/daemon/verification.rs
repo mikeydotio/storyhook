@@ -20,6 +20,7 @@ mod workspace_tests;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
 mod observation;
+mod reconcile_hold;
 mod recovery_transport;
 mod repair_admission;
 pub(crate) use recovery_transport::ControlOwner;
@@ -27,6 +28,8 @@ pub mod status;
 use crate::process::Cancellation;
 pub use crate::process::Cancellation as VerificationCancellation;
 pub use control::VerificationControlState;
+pub use reconcile_hold::wait_for_reconciled_candidate;
+use reconcile_hold::wait_for_reconciled_candidate_cancellable;
 
 use super::bus::{Change, ChangeBus};
 use super::lifecycle::{CurrentRequest, InFlight};
@@ -3118,61 +3121,6 @@ fn comment_once(
     text: &str,
 ) -> Result<(), AppError> {
     VerificationQueue::new(ctx.store()).comment_if_human_permitted(ctx, candidate, text)
-}
-
-/// Waits until the reserved story creates a newer verification generation.
-///
-/// Other queue arrivals and coarse bus wakes only cause a fresh observation;
-/// they cannot transfer the reservation. An observation reads the store alone
-/// and starts no process; the checkout origin is validated once, for the
-/// resubmission this returns (SH-769). A daemon stop ends the wait without
-/// manufacturing a candidate. Public for shutdown and event-order integration
-/// tests.
-pub fn wait_for_reconciled_candidate(
-    store: &impl Store,
-    subscription: &crate::daemon::bus::Subscription,
-    stop: &AtomicBool,
-    reserved: &VerificationCandidate,
-) -> Result<Option<VerificationCandidate>, AppError> {
-    wait_for_reconciled_candidate_cancellable(
-        store,
-        subscription,
-        stop,
-        reserved,
-        &Cancellation::default(),
-    )
-}
-
-fn wait_for_reconciled_candidate_cancellable(
-    store: &impl Store,
-    subscription: &crate::daemon::bus::Subscription,
-    stop: &AtomicBool,
-    reserved: &VerificationCandidate,
-    cancellation: &Cancellation,
-) -> Result<Option<VerificationCandidate>, AppError> {
-    let queue = VerificationQueue::new(store);
-    let newer = |generation: Option<GlobalSeq>| {
-        generation.is_some() && generation != reserved.verifying_generation
-    };
-    loop {
-        if stop.load(Ordering::Relaxed)
-            || cancellation.is_cancelled()
-            || !observation::human_permits(store, reserved)?
-        {
-            return Ok(None);
-        }
-        // A pass runs every 100 ms and on every bus wake, so it reads the store
-        // alone: validating origins starts `git` (SH-769). Only a resubmission
-        // is validated, and the second read may find it gone again.
-        if newer(queue.current_generation_for(reserved)?)
-            && let Some(candidate) = queue
-                .current_for(reserved)?
-                .filter(|candidate| newer(candidate.verifying_generation))
-        {
-            return Ok(Some(candidate));
-        }
-        let _ = subscription.recv(Duration::from_millis(100));
-    }
 }
 
 /// Runs the verifiers until daemon shutdown: one worker per registered
