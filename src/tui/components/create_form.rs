@@ -20,6 +20,9 @@ pub enum CreateField {
     Description,
     Priority,
     Labels,
+    /// Story ids this one is blocked by, separated by commas or spaces
+    /// (SH-779). Recorded in the creation transaction.
+    BlockedBy,
     /// Reasoning demands; default is unassessed medium.
     Complexity,
 }
@@ -29,6 +32,7 @@ const CREATE_FIELDS: &[CreateField] = &[
     CreateField::Description,
     CreateField::Priority,
     CreateField::Labels,
+    CreateField::BlockedBy,
     CreateField::Complexity,
 ];
 
@@ -45,6 +49,8 @@ pub struct CreateForm {
     pub title_input: tui_input::Input,
     pub description_input: tui_input::Input,
     pub label_input: tui_input::Input,
+    /// The blockers typed so far, as story ids separated by commas or spaces.
+    pub blocked_by_input: tui_input::Input,
     pub priority_cursor: usize,
     /// Zero is unassessed; one through three are low, medium, high.
     pub complexity_cursor: usize,
@@ -63,6 +69,7 @@ impl CreateForm {
             title_input: tui_input::Input::default(),
             description_input: tui_input::Input::default(),
             label_input: tui_input::Input::default(),
+            blocked_by_input: tui_input::Input::default(),
             priority_cursor: 0,
             complexity_cursor: 0,
         }
@@ -94,6 +101,14 @@ impl CreateForm {
             .filter(|s| !s.is_empty())
             .collect();
 
+        let blocked_by: Vec<String> = self
+            .blocked_by_input
+            .value()
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect();
+
         vec![Action::CreateStory {
             complexity: self
                 .complexity_cursor
@@ -103,6 +118,7 @@ impl CreateForm {
             priority,
             labels,
             description,
+            blocked_by,
         }]
     }
 }
@@ -167,6 +183,10 @@ impl Component for CreateForm {
                     },
                     CreateField::Labels => {
                         self.label_input
+                            .handle_event(&crossterm::event::Event::Key(key));
+                    }
+                    CreateField::BlockedBy => {
+                        self.blocked_by_input
                             .handle_event(&crossterm::event::Event::Key(key));
                     }
                 }
@@ -248,11 +268,19 @@ impl Component for CreateForm {
             &theme,
         ));
 
+        lines.push(render_form_field(
+            "Blocked by",
+            self.blocked_by_input.value(),
+            self.focused_field == 4,
+            label_width,
+            &theme,
+        ));
+
         let complexity = ["medium (unassessed)", "low", "medium", "high"][self.complexity_cursor];
         lines.push(render_form_field(
             "Complexity",
             complexity,
-            self.focused_field == 4,
+            self.focused_field == 5,
             label_width,
             &theme,
         ));
@@ -371,7 +399,10 @@ mod tests {
         assert_eq!(form.focused_field, 3); // Labels
 
         form.handle_key(key(KeyCode::Tab), &state);
-        assert_eq!(form.focused_field, 4); // Complexity
+        assert_eq!(form.focused_field, 4); // Blocked by
+
+        form.handle_key(key(KeyCode::Tab), &state);
+        assert_eq!(form.focused_field, 5); // Complexity
 
         // Wraps around
         form.handle_key(key(KeyCode::Tab), &state);
@@ -386,7 +417,10 @@ mod tests {
 
         // BackTab goes to last field
         form.handle_key(key(KeyCode::BackTab), &state);
-        assert_eq!(form.focused_field, 4); // Complexity
+        assert_eq!(form.focused_field, 5); // Complexity
+
+        form.handle_key(key(KeyCode::BackTab), &state);
+        assert_eq!(form.focused_field, 4); // Blocked by
 
         form.handle_key(key(KeyCode::BackTab), &state);
         assert_eq!(form.focused_field, 3); // Labels
@@ -678,5 +712,45 @@ mod tests {
         }
         form.handle_key(key(KeyCode::Char('j')), &state);
         assert_eq!(form.complexity_cursor, 3);
+    }
+
+    // =======================================================================
+    // SH-779: Blocked by
+    // =======================================================================
+
+    #[test]
+    fn blocked_by_splits_on_commas_and_spaces_and_drops_empties() {
+        let state = make_state();
+        let mut form = CreateForm::new();
+        for ch in "Waits".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+        while form.current_field() != CreateField::BlockedBy {
+            form.handle_key(key(KeyCode::Tab), &state);
+        }
+        for ch in "SH-2, 3,,  SH-4 ".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+
+        let actions = form.handle_key(key(KeyCode::Enter), &state);
+        match &actions[0] {
+            Action::CreateStory { blocked_by, .. } => assert_eq!(
+                blocked_by,
+                &vec!["SH-2".to_string(), "3".to_string(), "SH-4".to_string()]
+            ),
+            other => panic!("Expected CreateStory, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_blocked_by_names_no_blocker() {
+        let state = make_state();
+        let mut form = CreateForm::new();
+        form.title_input = tui_input::Input::new("Free".into());
+        let actions = form.handle_key(key(KeyCode::Enter), &state);
+        assert!(matches!(
+            &actions[0],
+            Action::CreateStory { blocked_by, .. } if blocked_by.is_empty()
+        ));
     }
 }

@@ -248,6 +248,7 @@ Usage:
   story dispatch-policy show|set|reset|resolve      (complexity-based model and effort)
   story new <title> [--state <slug>] [--type <slug>] [--description <text>]
                     [--priority <level>] [--complexity low|medium|high] [--label <name> ...]
+                    [--blocked-by <id> ...]          (filed already blocked)
                     [--draft]                        (claims an id; not yet live)
   story tui                                           (interactive terminal UI)
   story web start [--port <PORT>]                  (start web dashboard)
@@ -553,6 +554,11 @@ pub enum Invocation {
         labels: Option<Vec<String>>,
         /// Creates the story as a draft (SH-175) — `story new --draft`.
         draft: bool,
+        /// Stories this one is blocked by — `story new --blocked-by <id>`,
+        /// repeatable (SH-779). Recorded in the creation transaction, so the
+        /// story is never ready before its blockers are.
+        #[serde(default)]
+        blocked_by: Vec<String>,
     },
     /// Makes a draft story live — `story publish <id>` (SH-175). One-way;
     /// idempotent on a story that is already live.
@@ -1924,6 +1930,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
             value("complexity"),
             value("label"),
             value("labels"),
+            value("blocked-by"),
             bare("draft"),
         ],
     },
@@ -3080,8 +3087,9 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
     let mut labels: Vec<String> = Vec::new();
     let mut title_parts = Vec::new();
     let mut draft = false;
+    let mut blocked_by: Vec<String> = Vec::new();
     let mut index = 1;
-    let usage = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--complexity low|medium|high] [--label <name> ...] [--labels <csv>] [--draft]";
+    let usage = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--complexity low|medium|high] [--label <name> ...] [--labels <csv>] [--blocked-by <id> ...] [--draft]";
     while index < args.len() {
         match args[index].as_str() {
             "--state" => {
@@ -3138,6 +3146,13 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
                 draft = true;
                 index += 1;
             }
+            "--blocked-by" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                blocked_by.push(value.clone());
+                index += 2;
+            }
             _ => {
                 title_parts.push(args[index].clone());
                 index += 1;
@@ -3166,6 +3181,7 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
             Some(labels)
         },
         draft,
+        blocked_by,
     })
 }
 
@@ -6663,6 +6679,56 @@ mod tests {
             }
             other => panic!("expected New, got {:?}", other),
         }
+    }
+
+    // --- --blocked-by on new (SH-779) ---
+
+    #[test]
+    fn new_collects_every_blocked_by_in_order_and_keeps_the_title() {
+        let args: Vec<String> = [
+            "new",
+            "Wait",
+            "--blocked-by",
+            "SH-2",
+            "for",
+            "--blocked-by",
+            "5",
+            "it",
+        ]
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect();
+        match parse_invocation(&args).unwrap() {
+            Invocation::New {
+                title, blocked_by, ..
+            } => {
+                assert_eq!(title, "Wait for it");
+                assert_eq!(blocked_by, vec!["SH-2".to_string(), "5".to_string()]);
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn new_without_blocked_by_names_no_blocker() {
+        match parse_invocation(&["new".to_string(), "Free".to_string()]).unwrap() {
+            Invocation::New { blocked_by, .. } => assert!(blocked_by.is_empty()),
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn new_blocked_by_without_a_value_is_a_usage_error_naming_the_flag() {
+        let error = parse_invocation(&[
+            "new".to_string(),
+            "Title".to_string(),
+            "--blocked-by".to_string(),
+        ])
+        .unwrap_err();
+        assert!(
+            matches!(&error, AppError::Usage(message) if message.contains("--blocked-by <id>")),
+            "got {error:?}"
+        );
     }
 
     #[test]

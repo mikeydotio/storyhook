@@ -296,6 +296,7 @@ fn every_declared_flag_is_accepted_by_its_verb() {
         (&["new"], "--label", Some("tag")),
         (&["new"], "--labels", Some("a,b")),
         (&["new"], "--draft", None),
+        (&["new"], "--blocked-by", Some("SH-1")),
         (&["list"], "--ready", None),
         (&["list"], "--blocked", None),
         (&["list"], "--flagged", None),

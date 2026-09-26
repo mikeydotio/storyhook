@@ -58,6 +58,32 @@ inline=$(jqf "$out" .id)
 assert_eq "$(cd "$repo" && story show "$inline" --json | jq -r '.story.story.description')" "just a line" \
   "create: inline --description"
 
+# --- SH-779: --blocked-by files the story already blocked, in one write ---
+blocker=$(jqf "$(cd "$repo" && bash "$SCRIPT" create --title "The blocker" 2>&1)" .id)
+other=$(jqf "$(cd "$repo" && bash "$SCRIPT" create --title "Another blocker" 2>&1)" .id)
+out=$(cd "$repo" && bash "$SCRIPT" create --title "Waits on both" \
+        --blocked-by "$blocker" --blocked-by "$other" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "create: --blocked-by ok"
+waits=$(jqf "$out" .id)
+edges=$(cd "$repo" && story show "$waits" --json \
+          | jq -r '[.story.story.relationships[] | select(.relation == "blocked-by") | .other_id] | sort | join(",")')
+assert_eq "$edges" "$(printf '%s\n%s\n' "$blocker" "$other" | sort | paste -sd, -)" \
+  "create: every --blocked-by reaches the CLI as an edge"
+ready=$(cd "$repo" && story list --ready --json | jq -r '[.stories[].story.id] | join(",")')
+case ",$ready," in
+  *",$waits,"*) fail_test "create: a story filed with --blocked-by must not be ready" ;;
+esac
+out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" create --title "Dry blocked" --blocked-by "$blocker" 2>&1)
+assert_contains "$(jqf "$out" '.commands[0]')" "--blocked-by $blocker" "dry: names each --blocked-by"
+out=$(cd "$repo" && bash "$SCRIPT" create --title "x" --blocked-by 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "create: --blocked-by needs a value"
+assert_contains "$(jqf "$out" .display)" "--blocked-by" "create: says which flag"
+before=$(cd "$repo" && story list --json | jq '.stories|length')
+out=$(cd "$repo" && bash "$SCRIPT" create --title "Never filed" --blocked-by TST-999 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "create: an unknown blocker is ok:false"
+after=$(cd "$repo" && story list --json | jq '.stories|length')
+assert_eq "$after" "$before" "create: an unknown blocker files nothing"
+
 # --- dry run files nothing ---
 before=$(cd "$repo" && story list --json | jq '.stories|length')
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" create --title "Never filed" 2>&1)

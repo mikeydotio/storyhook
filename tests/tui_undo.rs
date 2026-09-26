@@ -103,6 +103,7 @@ fn create_story(fixture: &Fixture, title: &str) -> String {
             priority: None,
             labels: None,
             draft: false,
+            blocked_by: Vec::new(),
         },
     )
     .unwrap()

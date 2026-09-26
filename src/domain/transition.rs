@@ -108,3 +108,160 @@ pub fn validate_transition(
     }
     Ok(())
 }
+
+/// Refuses a creation state that a story filed with `blocked-by` edges may
+/// not open in (SH-779).
+///
+/// `blockers` is every story named at creation; `open_blockers` is the subset
+/// whose effective superstate is OPEN, judged against the same computed index
+/// readiness uses. Two states are refused:
+///
+/// * `blocked`, whatever the blockers' states. The reserved state is a hold of
+///   its own: it outlives the edges, which retract when their blockers close,
+///   so the story would never become ready again without a manual move.
+/// * Any state later in catalog order than the default open state, while a
+///   blocker is open — the same position rule [`validate_transition`] applies
+///   to a move, so a story cannot be filed where it could not have advanced.
+///
+/// # Errors
+///
+/// [`AppError::Validation`] naming the refused state, the blockers, and the
+/// state to file in instead; or naming `story doctor --fix` when the catalog
+/// cannot place the state.
+pub fn validate_blocked_creation(
+    state: &str,
+    states: &[StateDef],
+    blockers: &[String],
+    open_blockers: &[String],
+) -> Result<(), AppError> {
+    if blockers.is_empty() {
+        return Ok(());
+    }
+    let default = super::default_open_state(states).ok_or_else(|| {
+        AppError::Validation("project has no OPEN-mapped default state".to_string())
+    })?;
+    if state == "blocked" {
+        return Err(AppError::Validation(format!(
+            "a story filed with blockers cannot open in `blocked`: that state is a separate hold \
+             that stays after {} close, so the story would never become ready again. File it in \
+             `{}`; its blocked-by edges already keep it from being claimed",
+            blockers.join(", "),
+            default.slug
+        )));
+    }
+    if open_blockers.is_empty() {
+        return Ok(());
+    }
+    let position = |slug: &str| {
+        states.iter().position(|s| s.slug == slug).ok_or_else(|| {
+            AppError::Validation(format!(
+                "cannot compare state `{slug}`; repair the state catalog with `story doctor --fix`"
+            ))
+        })
+    };
+    if position(state)? > position(&default.slug)? {
+        return Err(AppError::Validation(format!(
+            "a story cannot be filed in `{state}` while it is blocked by {}; file it in `{}` and \
+             move it once its blockers close",
+            open_blockers.join(", "),
+            default.slug
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(slug: &str, super_state: SuperState) -> StateDef {
+        StateDef {
+            slug: slug.to_string(),
+            super_state,
+            role: None,
+            description: None,
+        }
+    }
+
+    fn catalog() -> Vec<StateDef> {
+        vec![
+            state("todo", SuperState::Open),
+            state("in-progress", SuperState::Open),
+            state("verifying", SuperState::Open),
+            state("blocked", SuperState::Open),
+            state("done", SuperState::Closed),
+            state("dropped", SuperState::Closed),
+        ]
+    }
+
+    fn ids(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    #[test]
+    fn no_blockers_admits_every_state() {
+        for slug in ["todo", "in-progress", "verifying", "blocked"] {
+            validate_blocked_creation(slug, &catalog(), &[], &[]).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_default_state_is_always_admitted() {
+        validate_blocked_creation("todo", &catalog(), &ids(&["SH-1"]), &ids(&["SH-1"])).unwrap();
+    }
+
+    #[test]
+    fn an_advanced_state_is_refused_only_while_a_blocker_is_open() {
+        for slug in ["in-progress", "verifying"] {
+            let error = validate_blocked_creation(
+                slug,
+                &catalog(),
+                &ids(&["SH-1", "SH-2"]),
+                &ids(&["SH-2"]),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(slug), "{error}");
+            assert!(error.contains("SH-2"), "names the open blocker: {error}");
+            assert!(
+                !error.contains("SH-1"),
+                "a closed blocker holds nothing: {error}"
+            );
+            assert!(error.contains("`todo`"), "names the state to use: {error}");
+            validate_blocked_creation(slug, &catalog(), &ids(&["SH-1"]), &[]).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_blocked_state_is_refused_whatever_the_blockers_are() {
+        for open in [ids(&["SH-1"]), Vec::new()] {
+            let error = validate_blocked_creation("blocked", &catalog(), &ids(&["SH-1"]), &open)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("`blocked`"), "{error}");
+            assert!(error.contains("`todo`"), "{error}");
+        }
+    }
+
+    #[test]
+    fn the_rule_follows_catalog_order_not_the_default_catalog() {
+        // A catalog whose pipeline starts at `backlog`: `todo` is now an
+        // advancement, and `backlog` is where a blocked filing belongs.
+        let mut states = vec![state("backlog", SuperState::Open)];
+        states.extend(catalog());
+        let error = validate_blocked_creation("todo", &states, &ids(&["SH-1"]), &ids(&["SH-1"]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("`backlog`"), "{error}");
+        validate_blocked_creation("backlog", &states, &ids(&["SH-1"]), &ids(&["SH-1"])).unwrap();
+    }
+
+    #[test]
+    fn a_state_the_catalog_cannot_place_names_the_repair() {
+        let error =
+            validate_blocked_creation("limbo", &catalog(), &ids(&["SH-1"]), &ids(&["SH-1"]))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("story doctor --fix"), "{error}");
+    }
+}

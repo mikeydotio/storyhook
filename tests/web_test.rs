@@ -6143,6 +6143,146 @@ fn web_create_story_without_draft_is_live() {
     assert_eq!(story_field(&json, "draft"), serde_json::Value::Null);
 }
 
+/// The GET status for one story: 200 when it exists, 404 when it does not.
+fn story_status(fixture: &Served, id: &str) -> u16 {
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    match fixture
+        .agent()
+        .get(&format!(
+            "http://127.0.0.1:{port}/api/repos/{repo_id}/story/{id}"
+        ))
+        .call()
+    {
+        Ok(resp) => resp.status().as_u16(),
+        Err(err) => status_of(err),
+    }
+}
+
+#[test]
+fn web_create_story_with_blocked_by_records_both_ends_in_one_create() {
+    let fixture = served();
+    fixture.seed(&["new", "The blocker"]);
+    fixture.seed(&["new", "Another blocker"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    // A bare integer expands exactly as the CLI's `--blocked-by 2` does.
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Waits","blocked_by":["SH-1","2"]}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "id"), "SH-3");
+    assert_eq!(
+        story_field(&json, "relationships"),
+        serde_json::json!([
+            {"relation": "blocked-by", "other_id": "SH-1"},
+            {"relation": "blocked-by", "other_id": "SH-2"}
+        ])
+    );
+}
+
+#[test]
+fn web_create_story_as_a_draft_with_blocked_by() {
+    let fixture = served();
+    fixture.seed(&["new", "The blocker"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"A waiting sketch","draft":true,"blocked_by":["SH-1"]}"#,
+    )
+    .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "draft"), true);
+    assert_eq!(
+        story_field(&json, "relationships"),
+        serde_json::json!([{"relation": "blocked-by", "other_id": "SH-1"}])
+    );
+}
+
+#[test]
+fn web_create_story_with_null_blocked_by_names_no_blocker() {
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Free","blocked_by":null}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "relationships"), serde_json::json!([]));
+}
+
+#[test]
+fn web_create_story_with_an_unknown_blocker_is_404_and_files_nothing() {
+    let fixture = served();
+    fixture.seed(&["new", "The blocker"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let err = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Never filed","blocked_by":["SH-1","SH-9"]}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 404);
+    assert_eq!(story_status(&fixture, "SH-2"), 404, "nothing was filed");
+}
+
+#[test]
+fn web_create_story_refuses_a_malformed_blocked_by_and_files_nothing() {
+    // Dropping a malformed value would file the story ready, with a 201 —
+    // the exact defect `blocked_by` exists to close (SH-779).
+    let fixture = served();
+    fixture.seed(&["new", "The blocker"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    for value in [
+        r#""SH-1""#,
+        "1",
+        "true",
+        "[1]",
+        r#"["SH-1",null]"#,
+        r#"{"id":"SH-1"}"#,
+    ] {
+        let payload = format!(r#"{{"title":"Never filed","blocked_by":{value}}}"#);
+        let err = post_json(
+            &fixture,
+            &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+            &payload,
+        )
+        .unwrap_err();
+        assert_eq!(status_of(err), 400, "blocked_by = {value}");
+    }
+    assert_eq!(story_status(&fixture, "SH-2"), 404, "nothing was filed");
+}
+
+#[test]
+fn web_create_story_with_blocked_by_refuses_an_advanced_state() {
+    let fixture = served();
+    fixture.seed(&["new", "The blocker"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let err = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Born busy","state":"in-progress","blocked_by":["SH-1"]}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 422);
+    assert_eq!(story_status(&fixture, "SH-2"), 404, "nothing was filed");
+}
+
 #[test]
 fn web_publish_makes_a_draft_live() {
     let fixture = served();

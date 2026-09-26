@@ -772,6 +772,7 @@ fn file_one<S: Store>(
             AUTO_FILED_LABEL.to_string(),
         ]),
         draft: false,
+        blocked_by: Vec::new(),
     };
     match StoryService::new(&ctx).create(&input) {
         Ok(snapshot) => {

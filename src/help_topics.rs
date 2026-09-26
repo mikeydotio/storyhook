@@ -497,7 +497,7 @@ step and a later explicit or scheduled pass can retry idempotently.
             "new",
             r#"story new <title> [--state <slug>] [--type <slug>] [--description <text>]
               [--priority <level>] [--complexity <level>] [--label <name> ...]
-              [--labels <csv>] [--draft]
+              [--labels <csv>] [--blocked-by <id> ...] [--draft]
 
 Create a new story with the given title. Returns the assigned ID.
 All flags are optional — everything but the title can also be set
@@ -513,10 +513,24 @@ in 'story list' with a [draft] badge (or filter to drafts-only with
 'story list --drafts'). 'story publish <id>' makes it live — one-way,
 so there is no flag to undo it.
 
+--blocked-by <id> files the story already blocked by that story, and
+may be repeated. Each blocked-by edge, and each blocker's own blocks
+edge, is written in the same transaction as the story itself, so the
+story is never ready — and Full Auto can never claim it — before its
+blockers are recorded. Filing with 'story new' and then running
+'story relate <id> blocked-by <x>' or 'story block <id> --on <x>' is
+two writes, and a Full Auto run can claim the story between them.
+A blocker must exist in this project; a closed one is recorded but
+blocks nothing, the same as 'story block --on'. With a blocker, the
+story opens in the default state: 'blocked' is refused (that state
+would outlive the edge), and so is a later state while a blocker is
+open.
+
 When to use:
   When you have a discrete piece of work to track. For bulk creation
   from a spec, use 'story decompose' instead. Use --draft for an
   idea you're still shaping and don't want surfacing as ready work yet.
+  Use --blocked-by whenever the new story must wait on another one.
 
 Examples:
   story new "Implement authentication middleware"
@@ -525,6 +539,7 @@ Examples:
   story new "Add rate limiting" --priority high --label backend --label api
   story new "Investigate flaky test" --description "Fails ~1 in 20 runs in CI"
   story new "Sketch: notification preferences" --draft
+  story new "Ship the export API" --blocked-by SH-4 --blocked-by SH-7
 
 Related:
   story help complexity-rubric — Choose low, medium, or high complexity.
@@ -534,6 +549,8 @@ Related:
   story type list          — Show configured types. Omit --type to use
                              the first configured type.
   story publish <id>     — Make a draft live (one-way)
+  story block <id> --on <x> — Record a blocker on a story that
+                            already exists
   story decompose        — Create multiple stories from a spec file
   story set <id>          — Change any field after creation
   story prioritize <id>  — Set priority after creation
@@ -1752,12 +1769,18 @@ When to use:
   only for something that isn't a story — an external dependency, a
   pending decision, waiting on a person.
 
+  For a story you have not filed yet, do not file it and then block
+  it: that is two writes, and a Full Auto run can claim the story
+  between them. File it blocked instead:
+    story new "<title>" --blocked-by <blocker>
+
 Examples:
   story block SH-3 --on SH-9
   story block SH-3 --on SH-9 "needs SH-9's API before this can start"
   story block SH-7 "needs design review"
 
 Related:
+  story new --blocked-by <id>   — File a new story already blocked
   story unblock <id>            — Clear the blocked status
   story relate <a> blocked-by <b>
                                  — Add the edge without touching the reason
@@ -3251,7 +3274,7 @@ pub fn compact_reference() -> &'static str {
 LIFECYCLE
   story project new --prefix P  Create a project (asks if given no flags)
   story project show|list|delete Show this one; list all; delete one
-  story new "<title>"             Create a story, returns assigned ID
+  story new "<title>" [--blocked-by <id>] Create a story; the flag files it blocked
   story show <id>                 Story details
   story move <id> <state>         Change state
   story reopen <id>               Reopen a closed story

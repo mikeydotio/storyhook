@@ -357,6 +357,7 @@ fn dispatch_inner<S: Store>(
             complexity,
             labels,
             draft,
+            blocked_by,
         } => {
             let input = NewStoryInput {
                 title,
@@ -367,6 +368,7 @@ fn dispatch_inner<S: Store>(
                 complexity,
                 labels,
                 draft,
+                blocked_by,
             };
             let story = StoryService::new(ctx).create(&input)?;
             ctx.story_view(&story.id)

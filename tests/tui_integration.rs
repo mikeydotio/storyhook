@@ -160,6 +160,7 @@ fn create_story(fixture: &Fixture, title: &str) -> String {
             priority: None,
             labels: None,
             draft: false,
+            blocked_by: Vec::new(),
         },
     )
     .unwrap()
@@ -1302,6 +1303,7 @@ fn create_draft(fixture: &Fixture, title: &str) -> String {
             priority: None,
             labels: None,
             draft: true,
+            blocked_by: Vec::new(),
         },
     )
     .unwrap()

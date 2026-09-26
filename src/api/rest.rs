@@ -33,8 +33,9 @@ use crate::daemon::http1::{Header, Method};
 use crate::daemon::verification::VerificationActivity;
 
 use crate::api::http::{
-    Reply, TrustedHosts, error_reply, get_bool, get_str, get_str_array, guarded, guarded_no_body,
-    html_reply, json_reply, parse_json_object, path_segments, require_str, text_reply, to_json,
+    Reply, TrustedHosts, error_reply, get_bool, get_str, get_str_array, get_strict_str_array,
+    guarded, guarded_no_body, html_reply, json_reply, parse_json_object, path_segments,
+    require_str, text_reply, to_json,
 };
 use crate::api::routes::{ProjectRoute, Route, StoryAction, classify};
 use crate::api::tokens::{TokenError, TokenRegistry};
@@ -1274,6 +1275,9 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
             None
         };
         let draft = get_bool(&obj, "draft");
+        // Strict: a malformed `blocked_by` that were dropped would file the
+        // story ready — the defect the field exists to close (SH-779).
+        let blocked_by = get_strict_str_array(&obj, "blocked_by")?;
         Ok(reply_with(
             ctx,
             201,
@@ -1286,6 +1290,7 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
                 complexity,
                 labels,
                 draft,
+                blocked_by,
             },
         ))
     })()

@@ -216,6 +216,10 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::UnlinkPr { id, .. } => vec![id],
 
         Invocation::Relate { a, b, .. } => vec![a, b],
+        // `--blocked-by` names blockers exactly as `block --on` does, so a
+        // bare `story new "X" --blocked-by 9` expands the same way (SH-779).
+        // The title beside it is prose, never an id.
+        Invocation::New { blocked_by, .. } => blocked_by.iter_mut().collect(),
         // `on` names blockers just as `Relate::b` names a relation target — a
         // bare `story block SH-1 --on 9` must expand `9` the same way
         // `story relate SH-1 blocked-by 9` does (SH-398).
@@ -276,7 +280,6 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
 
         Invocation::Help
         | Invocation::Project { .. }
-        | Invocation::New { .. }
         // `state` is a state slug, not a story id — same reason `SetState::state`
         // above is excluded rather than swept in with `id`.
         | Invocation::HideState { .. }
@@ -386,6 +389,21 @@ mod tests {
                     relation: "blocks".into(),
                     b: "1".into(),
                     remove: false,
+                },
+                2,
+            ),
+            (
+                "new --blocked-by",
+                Invocation::New {
+                    complexity: None,
+                    title: "1".into(),
+                    state: None,
+                    story_type: None,
+                    description: None,
+                    priority: None,
+                    labels: None,
+                    draft: false,
+                    blocked_by: vec!["1".into(), "2".into()],
                 },
                 2,
             ),
@@ -507,6 +525,7 @@ mod tests {
                 priority: None,
                 labels: None,
                 draft: false,
+                blocked_by: Vec::new(),
             },
             Invocation::Graph {
                 mode: GraphMode::Overview,
@@ -580,6 +599,27 @@ mod tests {
             },
             "a comment body that happens to read `1` is prose, not a handle"
         );
+
+        let filed = expanded(Invocation::New {
+            complexity: None,
+            title: "1".into(),
+            state: None,
+            story_type: None,
+            description: None,
+            priority: None,
+            labels: None,
+            draft: false,
+            blocked_by: vec!["1".into()],
+        });
+        match filed {
+            Invocation::New {
+                title, blocked_by, ..
+            } => {
+                assert_eq!(blocked_by, vec!["SH-1".to_string()]);
+                assert_eq!(title, "1", "a title that reads `1` is prose, not a handle");
+            }
+            other => panic!("expected New, got {other:?}"),
+        }
 
         let bulk = expanded(Invocation::BulkUpdate {
             updates: vec![("1".into(), "1".into())],

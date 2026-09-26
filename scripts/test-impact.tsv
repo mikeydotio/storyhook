@@ -15,6 +15,8 @@ block_interrupt	scripts/tests/load_grace.py
 block_interrupt	tests/support/block_interrupt.py
 block_interrupt	tests/support/interrupt_capture.py
 block_notice_paths	:(glob)**/*
+blocked_filing_guidance	:(glob)plugins/story/references/*.md
+blocked_filing_guidance	:(glob)plugins/story/skills/*/SKILL.md
 branch_policy	:(glob)**/*
 browser_gate	:(glob)**/*
 build_identity	:(glob)**/*
