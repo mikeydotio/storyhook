@@ -1,5 +1,6 @@
 """Exercise the shipping notify door, real tmux and real gate; fake only the provider."""
 import json
+import math
 import os
 from pathlib import Path
 import shlex
@@ -11,6 +12,25 @@ import time
 
 repo, scratch = map(Path, sys.argv[1:3])
 project_slug = sys.argv[3]
+sys.path.insert(0, str(repo / "scripts/tests"))
+import load_grace  # noqa: E402
+
+# Production's bound on one notify: the daemon's NOTIFY_TIMEOUT plus its
+# SIGTERM grace, handed in by tests/block_interrupt.rs. A fixture command may
+# not be stricter than production is with the helper it exercises (SH-766).
+NOTIFY_BOUND = float(os.environ["STORYHOOK_TEST_NOTIFY_BOUND_SECS"])
+# A fixture process or tmux event appears within this many seconds at idle.
+FIXTURE_EVENT_SECONDS = 8
+
+
+def patience(base):
+    """Grace one fixture allowance by the current contention (SH-347), and say so."""
+    ratio = load_grace.contention()
+    graced = load_grace.patience(base, ratio)
+    if graced > base:
+        print(f"{load_grace.describe(ratio, graced / base)}: {base:g}s -> {graced:.1f}s", file=sys.stderr)
+    return graced
+
 tmux = shutil.which("tmux")
 assert tmux, "tmux is required; this regression must not skip"
 socket = scratch / "tmux.sock"
@@ -51,10 +71,10 @@ while True:
 
 def run(*args, **kwargs):
     return subprocess.run(args, env=env, cwd=scratch, capture_output=True,
-                          text=True, timeout=25, **kwargs)
+                          text=True, timeout=patience(NOTIFY_BOUND), **kwargs)
 
-def wait_for(predicate, why, seconds=8):
-    end = time.monotonic() + seconds
+def wait_for(predicate, why, seconds=FIXTURE_EVENT_SECONDS):
+    end = time.monotonic() + patience(seconds)
     while time.monotonic() < end:
         if predicate():
             return
@@ -103,7 +123,9 @@ try:
         probe = ("import subprocess,sys; "
                  f"s=subprocess.run(['ps','-o','stat=','-p','{writer}'],capture_output=True,text=True).stdout.strip(); "
                  "sys.exit(71 if s and not s.startswith('Z') else 0)")
-        waiter = subprocess.Popen(["bash", str(gate), "--max-wait", "15", "gate", "--", "python3", "-c", probe],
+        # The waiter queues before the interrupt, so it must outwait the whole notify.
+        waiter_wait = math.ceil(patience(NOTIFY_BOUND))
+        waiter = subprocess.Popen(["bash", str(gate), "--max-wait", str(waiter_wait), "gate", "--", "python3", "-c", probe],
                                   env=env, cwd=scratch, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if mode == "failed":
             (scratch / "refuse-native").touch()
@@ -115,7 +137,7 @@ try:
             assert not (scratch / "native").exists() and not (scratch / "submitted").exists()
             evidence = list((scratch / "locks").glob("gate.*.lock/interrupt/processes.json"))
             assert evidence and str(writer) in json.loads(evidence[0].read_text())["processes"]
-            _, diagnostic = waiter.communicate(timeout=20)
+            _, diagnostic = waiter.communicate(timeout=waiter_wait + patience(FIXTURE_EVENT_SECONDS))
             assert waiter.returncode != 0 and "interruption cleanup incomplete" in diagnostic, diagnostic
             break
         assert answer.get("ok"), (answer, result.stderr)
@@ -125,10 +147,11 @@ try:
         assert not alive(writer), "gate child survived acknowledged interruption"
         assert not alive(holder), "gate owner survived acknowledged interruption"
         assert alive(agent), "provider session was killed"
-        _, diagnostic = waiter.communicate(timeout=20)
+        _, diagnostic = waiter.communicate(timeout=waiter_wait + patience(FIXTURE_EVENT_SECONDS))
         assert waiter.returncode == 0, "another holder entered over surviving writers: " + diagnostic
         assert unrelated.poll() is None, "an unrelated gate holder was stopped"
-        next_holder = run("bash", str(gate), "--max-wait", "2", "gate", "--", "true")
+        next_holder = run("bash", str(gate), "--max-wait", str(math.ceil(patience(FIXTURE_EVENT_SECONDS))),
+                          "gate", "--", "true")
         assert next_holder.returncode == 0, next_holder.stderr
         prompt = "Your story experienced a temporary block, which has been lifted. The environment and dev branch may have changed. Please reread your story, its comments, and its relationships to understand the changes, and adjust your work accordingly. If the change is significant, resetting & rebasing the worktree and restarting the story may be appropriate."
         resume = json.loads(run("bash", str(helper), "notify", "SH-1", prompt,
@@ -149,7 +172,7 @@ finally:
     for child in (waiter, unrelated):
         if child is not None and child.poll() is None:
             child.terminate()
-            child.wait(timeout=10)
+            child.wait(timeout=patience(FIXTURE_EVENT_SECONDS))
     # Exact fixture-owned identities only, including writers from red/mutant runs.
     for pid, started in owned.items():
         if started and run("ps", "-o", "lstart=", "-p", str(pid)).stdout.strip() == started:

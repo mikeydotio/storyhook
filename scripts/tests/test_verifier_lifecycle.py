@@ -22,6 +22,7 @@ ceiling, ignored child death, and a restarted settlement deadline each turned
 its corresponding HarnessObservation case red.
 """
 
+import contextlib
 import io
 import json
 import os
@@ -53,7 +54,7 @@ POLL_INTERVAL = 0.01
 # SH-347's recorded tolerance for any one graced wait. The whole Python suite
 # is one Rust test inside the gate, whose silence watchdog is about 29 minutes,
 # so a real hang must fail as a case well before that (SH-767).
-PATIENCE_CEILING = 15 * 60
+PATIENCE_CEILING = load_grace.PATIENCE_CEILING
 # Startup patience, the largest allowance, reaches the ceiling at this grace.
 # Every allowance scales by the same grace, so their order never changes.
 MAX_GRACE = PATIENCE_CEILING / MILESTONE_DEADLINE
@@ -1654,6 +1655,29 @@ class ContentionGrace(unittest.TestCase):
             for text in ("contention=4.80", "cores=10", "multiplier=4.80"):
                 self.assertIn(text, described)
             self.assertIn("contention=unavailable", load_grace.describe(None, 1.0))
+
+    def test_patience_grants_contention_up_to_the_absolute_ceiling(self):
+        """A fixture's patience is its base times contention, never past 15 minutes (SH-766)."""
+        self.assertEqual(load_grace.PATIENCE_CEILING, 15 * 60)
+        for base, ratio, expected in ((55, None, 55), (55, 0.4, 55), (55, 1, 55), (55, 4.8, 264),
+                                      (55, 1000, load_grace.PATIENCE_CEILING),
+                                      (1080, 50, 1080)):
+            with self.subTest(base=base, ratio=ratio):
+                self.assertAlmostEqual(load_grace.patience(base, ratio), expected)
+
+    def test_shell_fixtures_read_patience_and_its_reading(self):
+        """A shell fixture gets whole seconds on stdout and the reading on stderr."""
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.object(load_grace, "contention", return_value=4.8), \
+             mock.patch.object(load_grace, "cores", return_value=10), \
+             contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(load_grace.main(["patience", "30.5"]), 0)
+        self.assertEqual(stdout.getvalue(), "147\n")
+        self.assertIn("contention=4.80", stderr.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()):
+            for argv in ([], ["patience"], ["patience", "soon"], ["patience", "-1"], ["other", "3"]):
+                with self.subTest(argv=argv):
+                    self.assertEqual(load_grace.main(argv), 2)
 
     def test_patience_reads_no_load_before_its_allowance(self):
         """An unexpired wait costs no reading and reports what is left."""

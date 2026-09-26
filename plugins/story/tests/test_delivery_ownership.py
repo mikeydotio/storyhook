@@ -42,9 +42,9 @@ class InterruptOwnershipTests(unittest.TestCase):
                 patch.object(INTERRUPT.os, "kill") as killed:
             INTERRUPT.freeze(owned, {401: (1, "same second", "native:401")})
             self.assertEqual(owned[402], (401, "same second", "native:402"))
-            self.assertTrue(INTERRUPT.proc.same_process(table, 402, owned[402]))
+            self.assertTrue(INTERRUPT.proc.alive(402, owned[402]))
             with patch.object(INTERRUPT.proc, "process_identity", return_value={"start": "replacement"}):
-                self.assertFalse(INTERRUPT.proc.same_process(table, 402, owned[402]))
+                self.assertFalse(INTERRUPT.proc.alive(402, owned[402]))
             killed.assert_any_call(402, signal.SIGSTOP)
 
     def test_target_uses_native_start_not_second_precision_ps(self):

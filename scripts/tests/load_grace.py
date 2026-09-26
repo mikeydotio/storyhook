@@ -15,6 +15,9 @@ import math
 import os
 import sys
 
+# SH-347's recorded tolerance for any one graced wait: 15 minutes.
+PATIENCE_CEILING = 15 * 60
+
 
 def cores():
     """Return the logical cores this process may run on, never zero.
@@ -46,6 +49,16 @@ def multiplier(ratio, maximum):
     if ratio is None:
         return 1.0
     return min(maximum, max(1.0, ratio))
+
+
+def patience(base, ratio):
+    """Return base seconds graced by one contention reading, within PATIENCE_CEILING.
+
+    The ceiling bounds the result, not the multiplier, as gracedTestBudget in
+    e2e/load-grace.ts does, so a large base cannot multiply past 15 minutes.
+    A base already above the ceiling is returned unchanged: grace never shortens.
+    """
+    return max(base, min(PATIENCE_CEILING, base * multiplier(ratio, math.inf)))
 
 
 def graced_spelling(milliseconds, grace):
@@ -98,3 +111,26 @@ class Patience:
     def remaining(self, now):
         """Return the seconds left in the current allowance at now."""
         return max(0, self.started + self.allowance - now)
+
+
+def main(argv):
+    """Serve shell fixtures: `load_grace.py patience <seconds>` prints whole graced seconds.
+
+    The reading and the grace go to stderr, so a graced run is never silent.
+    """
+    try:
+        verb, base = argv
+        base = float(base)
+    except ValueError:
+        verb, base = None, None
+    if verb != "patience" or base is None or not math.isfinite(base) or base < 0:
+        print("usage: load_grace.py patience <seconds>", file=sys.stderr)
+        return 2
+    ratio = contention()
+    print(describe(ratio, multiplier(ratio, math.inf)), file=sys.stderr)
+    print(math.ceil(patience(base, ratio)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

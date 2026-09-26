@@ -14,18 +14,19 @@ import sys
 
 # An installed plugin directory is not this process's to write into.
 sys.dont_write_bytecode = True
+import probe_budget
 import tmux_server_env
-
-# One bounded tmux control call; a wedged server must not hold a dispatch.
-TIMEOUT = 10
 
 
 def run(*arguments):
-    """Run one tmux command and return stdout, failing loudly with its diagnostic."""
+    """Run one tmux command and return stdout, failing loudly with its diagnostic.
+
+    The helper budget bounds each call, so a wedged server cannot hold a dispatch.
+    """
     environment = os.environ.copy()
     environment.pop("STORY_WORKSPACE_LOCK_FD", None)
-    result = subprocess.run(["tmux", *arguments], env=environment, capture_output=True, text=True,
-                            timeout=TIMEOUT, close_fds=True)
+    result = probe_budget.run(["tmux", *arguments], env=environment, capture_output=True, text=True,
+                              close_fds=True)
     if result.returncode:
         raise RuntimeError(f"tmux {' '.join(arguments)}: {result.stderr.strip()} (exit {result.returncode})")
     return result.stdout
@@ -47,7 +48,10 @@ def main(argv):
 
 if __name__ == "__main__":
     try:
-        sys.exit(main(sys.argv[1:]))
+        # One invocation is one operation: its tmux calls share one budget.
+        with probe_budget.operation():
+            status = main(sys.argv[1:])
+        sys.exit(status)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"tmux-env: {error}", file=sys.stderr)
         sys.exit(1)

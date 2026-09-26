@@ -503,6 +503,16 @@ router_verbs() {
 # jqf <json> <filter> — run a jq filter, echo the raw result.
 jqf() { printf '%s' "$1" | jq -r "$2"; }
 
+# rust_duration_secs <path-from-repo-root> <CONST>: the whole seconds of a
+# `pub const CONST: Duration = Duration::from_secs(N);` declaration, so a
+# fixture derives its bound from the production value (SH-672, SH-766).
+# Prints nothing and returns 1 when the declaration moved.
+rust_duration_secs() {
+  local seconds
+  seconds=$(sed -n "s/^pub const $2: Duration = Duration::from_secs(\([0-9]*\));/\1/p" "$TESTS_DIR/../../../$1")
+  [ -n "$seconds" ] && printf '%s\n' "$seconds"
+}
+
 finish() {
   if [ "$_FAILED" -eq 0 ]; then
     echo "PASS"

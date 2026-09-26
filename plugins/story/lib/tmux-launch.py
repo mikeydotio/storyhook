@@ -13,12 +13,11 @@ import sys
 
 # An installed plugin directory is not this process's to write into.
 sys.dont_write_bytecode = True
+import probe_budget
 from tmux_server_env import (GITHUB_CREDENTIALS, GITHUB_ROUTING, PANE_SELECTORS,
                              client_environment, reports_no_server)
 
 PANE_COMMANDS = ("new-session", "new-window", "respawn-pane")
-# Bounds the server probe; the launch itself keeps tmux's own behaviour.
-PROBE_TIMEOUT = 10
 
 
 def server_answers(prefix, environment):
@@ -28,8 +27,9 @@ def server_answers(prefix, environment):
     other failure is surfaced, because guessing would either start a server
     with this process's environment or refuse a launch that could succeed.
     """
-    probe = subprocess.run(["tmux", *prefix, "list-sessions", "-F", "#{session_id}"], env=environment,
-                           capture_output=True, text=True, timeout=PROBE_TIMEOUT, close_fds=True)
+    # The probe is bounded by the helper budget; the launch keeps tmux's own behaviour.
+    probe = probe_budget.run(["tmux", *prefix, "list-sessions", "-F", "#{session_id}"], env=environment,
+                             capture_output=True, text=True, close_fds=True)
     if probe.returncode == 0:
         return True
     if reports_no_server(probe.stderr):

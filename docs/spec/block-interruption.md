@@ -108,3 +108,50 @@ interrupt now only decides how the session is named:
 Every Unreached or Uncertain Resume records the operator's remedy.
 `every_session_registration_first_revokes_pending_deliveries_under_the_lock` in
 `tests/block_delivery_paths.rs` pins the revocation property the rule rests on.
+
+### Probe bounds under contention (SH-766)
+
+The interrupt helper (`plugins/story/lib/interrupt-agent.py`) and the two
+cleanup helpers that load `stop-dispatch-pane.py` read the process table with
+`ps`. Every `ps` or `tmux` call used to have a bare 5 s bound. Under gate load
+(load average 300 to 800 on 10 cores) a `ps` spawn takes more than 5 s, so the
+interruption contract test went red on trees with no defect, and real interrupts
+ended Unreached ("could not bind the dispatched session", SH-772).
+See `docs/rca/sh-766-plugin-probe-bounds-under-load.md`.
+
+- **A captured process is judged by its kernel identity.** `alive(pid, identity)`
+  compares only the native start token (`process_identity.py`: libproc on macOS,
+  `/proc` on Linux). No census, no spawn. An exited or zombie process raises
+  `ProcessLookupError`, so exit is told apart from a failed probe. `target()`,
+  `signal_known`, every wait and every `finally` use it. The census stays only
+  for descendant discovery and for the `ps` `lstart` text that the gate lock
+  protocol compares with `machine-lock.sh`'s `started` file. A `finally` that
+  resumes a frozen tree therefore cannot fail on the census that failed the
+  operation.
+- **One budget for each helper operation.** `probe_budget.py`: every helper
+  entry point (`stop-dispatch-pane`, `interrupt-agent`, `dropped-cleanup-pane`,
+  `agent_identity`, `tmux-env`) runs as one `operation()` of `BUDGET_SECONDS`
+  (30 s), and each probe gets what remains. That is two thirds of the tightest
+  caller bound: `NOTIFY_TIMEOUT` and `CLEANUP_HELPER_TIMEOUT`, both 45 s, and the
+  second kills without SIGTERM. Unit tests beside those constants pin the
+  relation. A timeout raises `ProbeTimeout`, a `TimeoutExpired` that names the
+  probe, its allowance, the budget spent and the load average.
+- **Why not a load multiplier.** Spawn latency is not proportional to load per
+  core (SH-643: 250 times the latency at 5 times the contention). A multiplied
+  inner bound would also cross the callers' fixed bounds, and the dropped-cleanup
+  kill could then land while processes are frozen. Why not a caller deadline in
+  the environment: it would reach long-lived descendants (tmux sessions, agent
+  shells) unless every launch removed it (the SH-758 class).
+- **The interrupt's TERM wait** (`GATE_TERM_GRACE`, 5 s) is policy, not a probe
+  bound. It is how long the gate owner's own TERM trap gets before this helper
+  freezes and kills the captured tree. Escalation is safe, only less gentle.
+- **Fenced.** `tests/timing_assertions.rs` refuses a bare `timeout=` or
+  `monotonic() +` literal in any `plugins/story/lib/*.py`. The one exemption is
+  `continuation_runtime.py` (SH-798: its resume runs a 120 s dispatch inside a
+  125 s bound), and it fails when that file no longer needs the exemption.
+- **Fixtures are not stricter than production.** `tests/support/block_interrupt.py`
+  and `test-agent-identity.py` give a command the notify bound (`NOTIFY_TIMEOUT` +
+  `NOTIFY_TERM_GRACE`). `test-dispatch-pane-readiness.sh` gives the fake pane
+  `DISPATCH_TIMEOUT`. Each is graced by contention with
+  `scripts/tests/load_grace.py` `patience()` (SH-347: up to 15 minutes, reported
+  whenever it applies).

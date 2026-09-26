@@ -51,6 +51,15 @@
 source "$(dirname "$0")/lib.sh"
 
 FAKE_TMUX_DIR="$TESTS_DIR/fakes"
+# The fake pane must outlive the readiness wait it hosts. Production bounds a
+# whole dispatch by DISPATCH_TIMEOUT; its readiness polls stretch under load,
+# and the fake's 30 s default placeholder died first in SH-760's gate
+# (pid-exited, not no-sentinel). Grace the bound by contention (SH-347, SH-766).
+dispatch_timeout=$(rust_duration_secs src/service/engine.rs DISPATCH_TIMEOUT) \
+  || fail_test "cannot derive DISPATCH_TIMEOUT from src/service/engine.rs"
+FAKE_TMUX_PANE_LIFETIME=$(python3 "$TESTS_DIR/../../../scripts/tests/load_grace.py" patience "${dispatch_timeout:-0}") \
+  || fail_test "cannot grace the fake pane lifetime"
+export FAKE_TMUX_PANE_LIFETIME
 
 export FAKE_TMUX_STATE
 FAKE_TMUX_STATE="$(mktemp -d /tmp/story-test-tmux.XXXXXX)"
