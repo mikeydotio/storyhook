@@ -1552,6 +1552,7 @@ fn a_portfile_without_a_daemon_does_not_stop_one_starting() {
         store_path: env.environment().store_path().to_path_buf(),
         tailnet: None,
         cookie_name: "storyhook_stale".to_string(),
+        owner: None,
     };
     let environment = env.environment();
     std::fs::create_dir_all(environment.daemon_state_dir()).unwrap();
@@ -1777,6 +1778,7 @@ fn wedge_the_daemon(env: &TestEnv) -> std::fs::File {
         store_path: environment.store_path().to_path_buf(),
         tailnet: None,
         cookie_name: "storyhook_wedged".to_string(),
+        owner: None,
     };
     std::fs::write(
         environment.daemon_file(),

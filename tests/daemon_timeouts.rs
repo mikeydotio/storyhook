@@ -111,6 +111,7 @@ impl SilentPeer {
             store_path: std::path::PathBuf::from("/private/tmp/storyhook-timeouts/store.db"),
             tailnet: None,
             cookie_name: "storyhook_timeouts".to_string(),
+            owner: None,
         }
     }
 }
@@ -298,6 +299,7 @@ fn a_refused_connection_still_fails_immediately() {
         store_path: std::path::PathBuf::from("/private/tmp/storyhook-timeouts/store.db"),
         tailnet: None,
         cookie_name: "storyhook_timeouts".to_string(),
+        owner: None,
     };
 
     let started = Instant::now();

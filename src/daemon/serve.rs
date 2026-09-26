@@ -337,29 +337,44 @@ where
     thread::scope(|scope| {
         {
             let (bus, stop) = (bus.clone(), Arc::clone(&stop));
-            scope.spawn(move || heartbeat(&bus, &stop));
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                heartbeat(&bus, &stop)
+            });
         }
         {
             let (bus, stop) = (bus.clone(), Arc::clone(&stop));
             let watcher = watcher.clone();
-            scope.spawn(move || poll_change_token(store, &watcher, &bus, &stop));
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                poll_change_token(store, &watcher, &bus, &stop)
+            });
         }
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();
-            scope.spawn(move || watch_parent(&env, &stop));
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                watch_parent(&env, &stop)
+            });
         }
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();
             let bus = bus.clone();
-            scope.spawn(move || crate::daemon::block_delivery::poll(store, &env, &bus, &stop));
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                crate::daemon::block_delivery::poll(store, &env, &bus, &stop)
+            });
         }
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();
             let bus = bus.clone();
-            scope.spawn(move || crate::daemon::continuation::poll(store, &env, &bus, &stop));
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                crate::daemon::continuation::poll(store, &env, &bus, &stop)
+            });
         }
         // The unattended GitHub poll (SH-212) — absent entirely without the
         // `github-pr` feature, the same way `pr_check::run_check`, the
@@ -368,7 +383,10 @@ where
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();
-            scope.spawn(move || crate::daemon::github_poll::poll_github(store, &env, &stop));
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                crate::daemon::github_poll::poll_github(store, &env, &stop)
+            });
         }
         {
             let stop = Arc::clone(&stop);
@@ -377,6 +395,7 @@ where
             let activity = verification_activity.clone();
             let inflight = Arc::clone(&serving.inflight);
             scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
                 crate::daemon::verification::poll_verification(
                     store, &env, &bus, &stop, &activity, &inflight,
                 )
@@ -390,6 +409,7 @@ where
             let env = env.clone();
             let activity = verification_activity.clone();
             scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
                 crate::daemon::verification_progress::poll_verification_progress(
                     store, &env, &stop, &activity,
                 )
@@ -403,6 +423,7 @@ where
             let bus = bus.clone();
             let draining = &serving.draining;
             scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
                 if engine_start_rx.recv().is_ok() {
                     crate::daemon::engine::poll_engine(store, &env, &bus, &stop, draining);
                 }
@@ -411,7 +432,10 @@ where
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();
-            scope.spawn(move || crate::daemon::cleanup::poll_cleanup(store, &env, &stop));
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                crate::daemon::cleanup::poll_cleanup(store, &env, &stop)
+            });
         }
         if !has_tailnet && let Some(loopback_addr) = loopback_addr {
             let stop = Arc::clone(&stop);
@@ -421,6 +445,7 @@ where
             let nested_tx = nested_tx.clone();
             let slots = Arc::clone(&connection_slots);
             scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
                 tailnet_reprobe(
                     scope,
                     serving,
@@ -455,7 +480,10 @@ where
         // answering its first request (SH-287).
         {
             let env = env.clone();
-            scope.spawn(move || crate::daemon::crash::file_pending(store, &env));
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                crate::daemon::crash::file_pending(store, &env)
+            });
         }
 
         let mut listeners = listeners;
@@ -1411,6 +1439,11 @@ fn worker(
         }) => {
             finish(request, reply);
             thread::spawn(move || {
+                // Spawned from an already-`Serving` per-connection thread,
+                // but this loop's own job — waiting out whatever is still
+                // in flight before exiting the process — is background
+                // shutdown work, not a request/response (SH-784).
+                super::qos::WorkClass::Housekeeping.enter();
                 // Uncapped: `draining` already refuses every job dequeued
                 // after this point, so this can only shrink. A daemon with
                 // nothing in flight exits after one `SHUTDOWN_CHECK` —
@@ -1443,6 +1476,10 @@ fn worker(
 /// actual routing. A fixed pool needs nothing more elaborate — no idle
 /// tracking, no retirement — because there is nothing elastic to track.
 fn dispatch<S: Store>(serving: &Serving<'_, S>, jobs: &Mutex<mpsc::Receiver<Job>>) {
+    // Once per pool thread, not per job: these threads are long-lived for
+    // the daemon's whole life, so entering the class here (rather than
+    // inside the loop) is both correct and free (SH-784).
+    super::qos::WorkClass::Serving.enter();
     loop {
         let job = {
             let jobs = jobs.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1478,7 +1515,13 @@ fn nested_lane<'scope, S: Store>(
     jobs: mpsc::Receiver<Job>,
 ) {
     for job in jobs {
-        scope.spawn(move || route_job(serving, job));
+        scope.spawn(move || {
+            // One thread per nested job (never pooled), so entering the
+            // class here — rather than in `route_job`, which the pooled
+            // dispatchers above also call — costs nothing extra (SH-784).
+            super::qos::WorkClass::Serving.enter();
+            route_job(serving, job)
+        });
     }
 }
 

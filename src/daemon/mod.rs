@@ -28,7 +28,12 @@
 //!   permanent seat on this machine (SH-411).
 //! * [`http1`] — the HTTP/1.1 connection layer: parsing, framing, and every
 //!   deadline and cap a peer socket is held to (SH-177).
+//! * [`launchd`] — every direct `launchctl` invocation, in one place: the
+//!   login agent's registration and, since SH-784, asking it to actually run
+//!   the daemon.
 //! * [`lifecycle`] — the portfile, the pidfile lock, and auto-spawn.
+//! * [`qos`] — the two classes a daemon thread requests of the operating
+//!   system: serving a client's request, or everything else (SH-784).
 //! * [`seat_guard`] — what an *uninstalled* build is refused on the default
 //!   store: replacing its daemon, or starting one at all (SH-634).
 //! * [`serve`] — the listeners and the accept loop.
@@ -56,8 +61,10 @@ pub mod gc;
 pub mod github_poll;
 pub mod http1;
 pub mod install_guard;
+pub(crate) mod launchd;
 pub mod lifecycle;
 pub mod project_recovery;
+pub(crate) mod qos;
 pub mod seat_guard;
 pub mod serve;
 pub mod subscribe;

@@ -301,6 +301,7 @@ mod tests {
             store_path: std::path::PathBuf::new(),
             tailnet: None,
             cookie_name: "storyhook_test".to_string(),
+            owner: None,
         }
     }
 

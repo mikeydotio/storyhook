@@ -1516,6 +1516,12 @@ fn spawn_dispatch(
     bus: ChangeBus,
 ) {
     std::thread::spawn(move || {
+        // Spawned from an already-`Serving` per-connection thread
+        // (`dispatch::intercept` runs on it), but this thread's own job —
+        // watching a `story.sh` dispatch child for tens of seconds — is
+        // background-shaped, not the request/response itself, so it must not
+        // inherit the elevated class (SH-784).
+        crate::daemon::qos::WorkClass::Housekeeping.enter();
         let classification = run_child(
             &script, &project, &story, agent, &model, &effort, fast, auto, &env,
         );

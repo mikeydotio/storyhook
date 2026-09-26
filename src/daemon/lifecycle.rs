@@ -129,6 +129,65 @@ pub struct DaemonIdentity {
     pub start_time: Option<String>,
 }
 
+/// How a daemon process came to exist (SH-784).
+///
+/// Self-reported by the daemon into its own portfile via the hidden
+/// `--owner` flag on `daemon --serve` (see [`DaemonAction::Serve`](crate::cli::DaemonAction::Serve)),
+/// and read back by `story daemon status` (`commands::status`) so the
+/// accidental case — a client's own scheduling class and coalition leaking
+/// into a daemon that should have neither — is visible rather than silent.
+/// [`choose_launcher`] decides which of these a given `ensure`/`start`/
+/// `restart` call produces; this type is what the *result* looks like once
+/// the daemon that answers is actually running.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DaemonOwner {
+    /// Started by launchd — kickstarted, or booted via `RunAtLoad` — rather
+    /// than forked by any client. Its plist's `ProcessType = Interactive`
+    /// (`agent::plist`) is what lets a
+    /// [`WorkClass::Serving`](super::qos::WorkClass::Serving) request on one
+    /// of its threads actually raise that thread's priority; a forked
+    /// daemon's request is accepted but has no effect (measured on SH-784).
+    Launchd {
+        /// This store's launchd label ([`super::agent::label`]).
+        label: String,
+    },
+    /// Forked directly by a client, inheriting whatever scheduling class and
+    /// resource coalition that client happened to be in — the condition
+    /// this story exists to make deliberate rather than accidental wherever
+    /// it cannot yet be avoided.
+    Forked {
+        /// The forking client's own process id, read from this daemon's own
+        /// `getppid()` early in [`run`] when nothing supplied one on the
+        /// command line. Diagnostic only, the same standard
+        /// [`DaemonInfo::pid`] already documents itself as: liveness never
+        /// depends on it.
+        parent_pid: u32,
+        /// Why a fork was chosen over launchd.
+        reason: ForkReason,
+    },
+}
+
+/// Why [`DaemonOwner::Forked`] was chosen instead of launchd (SH-784).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ForkReason {
+    /// This binary carries `fault-injection` (`crate::env::is_test_build`) —
+    /// every test daemon, regardless of OS or of whether an agent happens to
+    /// be installed on the development machine. Tests must not depend on a
+    /// launchd agent existing, and must never register one for real (every
+    /// `launchd`-touching test in this codebase already avoids that).
+    TestBuild,
+    /// No launchd agent serves this exact store. macOS only in practice —
+    /// every other OS forks unconditionally today and reports this same
+    /// reason (SH-787 tracks giving Linux its own service-manager path;
+    /// until then, `story daemon install` refusing there means "no agent
+    /// installed" is simply always true).
+    NoAgentInstalled,
+    /// Nothing internal passed `--owner` at all: a human ran
+    /// `story daemon --serve` directly rather than through
+    /// `ensure`/`start`/`restart`.
+    Manual,
+}
+
 /// One external process group currently owned by the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OwnedProcess {
@@ -641,6 +700,14 @@ pub struct DaemonInfo {
     /// this field.
     #[serde(default)]
     pub cookie_name: String,
+    /// How this daemon came to exist (SH-784) — see [`DaemonOwner`].
+    ///
+    /// `None` for a portfile written by a pre-SH-784 build, or by a build
+    /// resolving `--owner` from an argv shape this one no longer parses; both
+    /// read as "unknown," the same reasoning `tailnet` and `cookie_name`
+    /// already give.
+    #[serde(default)]
+    pub owner: Option<DaemonOwner>,
 }
 
 impl DaemonInfo {
@@ -947,34 +1014,114 @@ pub fn info_for(
         store_path: store.to_path_buf(),
         tailnet: bound.tailnet.clone(),
         cookie_name: crate::api::tokens::cookie_name_for_store(store),
+        // Set by `run` immediately after construction, the same way it
+        // amends `tailnet` on a late bind — `owner` is a fact about *how
+        // this process started*, which nothing at this call's level knows;
+        // every other caller (crash-report fixtures, restart's own tests)
+        // has no launcher to report and is correctly served by `None`.
+        owner: None,
     })
 }
 
-/// Binds a listener for the daemon: the preferred port, else one the kernel
-/// picks.
+/// Binds a listener for the daemon: the preferred port, else this store's
+/// remembered port hint, else one the kernel picks (SH-784).
 ///
 /// Falling back rather than failing is what makes "port already in use" stop
 /// being a startup failure at all. The portfile is authoritative about where the
 /// daemon actually is, so nothing downstream needs the preferred port to have
-/// been available.
+/// been available. The hint step exists because a *named* store's preferred
+/// port is always `0` ([`default_daemon_port`](crate::env::default_daemon_port))
+/// and a launchd-owned daemon's plist cannot carry a per-invocation `--port`
+/// (`agent::plist`'s `ProgramArguments` are fixed at install time) — without
+/// it, every restart of a launchd-owned named-store daemon would land on a
+/// fresh random port, silently breaking the exact-port guarantee
+/// [`commands::restart`](super::commands::restart) still promises for a
+/// forked replacement. Every successful bind updates the hint
+/// ([`write_port_hint`]) regardless of which branch produced it, so the very
+/// next bind — fork or launchd, named store or default — has the best guess
+/// available.
 ///
 /// SH-147 was filed speculatively — worried this could call the tailnet
-/// probe inside [`super::serve::bind_listeners`] twice, spending `2 *
-/// TAILNET_PROBE_TIMEOUT` inside [`SPAWN_DEADLINE`] on a fallback — and was
-/// never reproduced, because `bind_listeners` binds loopback before it
-/// probes, so a port-taken failure returns before the probe is ever reached.
-/// SH-186 removed the concern at its root rather than merely confirming that
-/// ordering: `bind_listeners` no longer probes the tailnet at all, on either
-/// call here, so there is no probe on this path to double.
+/// probe inside [`super::serve::bind_listeners`] more than once, spending
+/// multiples of `TAILNET_PROBE_TIMEOUT` inside [`SPAWN_DEADLINE`] on a
+/// fallback — and was never reproduced, because `bind_listeners` binds
+/// loopback before it probes, so a port-taken failure returns before the
+/// probe is ever reached. SH-186 removed the concern at its root rather than
+/// merely confirming that ordering: `bind_listeners` no longer probes the
+/// tailnet at all, on any call here — up to three now that the hint adds one
+/// — so there is no probe on this path to multiply.
 /// `tests/tailnet_probe_budget.rs` now pins the stronger claim.
 pub fn bind_preferred(
     env: &Environment,
 ) -> Result<(Vec<super::serve::Listener>, super::serve::BoundAddress), AppError> {
     let preferred = env.preferred_port();
-    match super::serve::bind_listeners(preferred) {
-        Ok(bound) => Ok(bound),
-        Err(_) if preferred != 0 => super::serve::bind_listeners(0),
-        Err(e) => Err(e),
+    let bound = if preferred == 0 {
+        bind_hinted_or_any(env)?
+    } else {
+        match super::serve::bind_listeners(preferred) {
+            Ok(bound) => bound,
+            Err(_) => bind_hinted_or_any(env)?,
+        }
+    };
+    write_port_hint(env, bound.1.port());
+    Ok(bound)
+}
+
+/// The fallback [`bind_preferred`] reaches for once the preferred port is
+/// unavailable or was never a real preference (`0`): this store's
+/// remembered hint, if one exists and binding it succeeds, else an
+/// OS-assigned port. The final `bind_listeners(0)` is the backstop and is
+/// not expected to fail in practice — an all-ports-exhausted machine has
+/// problems this function cannot solve either way.
+fn bind_hinted_or_any(
+    env: &Environment,
+) -> Result<(Vec<super::serve::Listener>, super::serve::BoundAddress), AppError> {
+    if let Some(hint) = read_port_hint(env)
+        && hint != 0
+        && let Ok(bound) = super::serve::bind_listeners(hint)
+    {
+        return Ok(bound);
+    }
+    super::serve::bind_listeners(0)
+}
+
+/// One store's remembered "last bound port" — see [`Environment::daemon_port_hint`].
+#[derive(Serialize, Deserialize)]
+struct PortHint {
+    port: u16,
+}
+
+/// Reads this store's port hint, or `None` if there is not one this build
+/// can parse.
+///
+/// Absence is never an error: a store's very first bind, a hint file this
+/// build cannot parse, and one that simply is not there all read as "no
+/// preference," which is exactly what [`bind_hinted_or_any`]'s own
+/// OS-assigned backstop is for — the same "unparseable reads as absent"
+/// doctrine [`read_info_at`] already documents for the portfile.
+fn read_port_hint(env: &Environment) -> Option<u16> {
+    let raw = std::fs::read_to_string(env.daemon_port_hint()).ok()?;
+    serde_json::from_str::<PortHint>(&raw)
+        .ok()
+        .map(|hint| hint.port)
+}
+
+/// Best-effort: written after every successful bind, fork or launchd,
+/// default store or named. A hint that fails to write costs the next bind a
+/// guess it would otherwise have gotten right, never a startup failure — the
+/// same reasoning [`publish_attempt_failure`]'s own doc gives for treating
+/// its diagnostic as disposable.
+fn write_port_hint(env: &Environment, port: u16) {
+    let Ok(document) = serde_json::to_string(&PortHint { port }) else {
+        return;
+    };
+    if std::fs::create_dir_all(env.daemon_state_dir()).is_err() {
+        return;
+    }
+    let path = env.daemon_port_hint();
+    let temp = path.with_extension("json.tmp");
+    if std::fs::write(&temp, document).is_ok() {
+        let _ = std::fs::rename(&temp, &path);
     }
 }
 
@@ -987,18 +1134,85 @@ fn enter_stable_working_directory(env: &Environment) -> Result<(), AppError> {
     })
 }
 
+/// What started this daemon, resolved from `daemon --serve`'s own `--owner`
+/// flag (SH-784) — `None` when it was not given, meaning a human ran the
+/// command directly rather than through `ensure`/`start`/`restart`'s
+/// [`choose_launcher`].
+///
+/// `parent_pid` is read from this process's own `getppid()` rather than
+/// supplied by the caller: whichever code path passes `--owner` explicitly is
+/// also the one blocked polling this daemon for health
+/// ([`await_healthy`]/[`super::launchd::LaunchdLauncher`]'s own wait), so it
+/// has not exited and cannot yet have been reparented to `launchd` — the read
+/// is reliable for exactly as long as that polling window lasts, which is
+/// all [`DaemonOwner::Forked::parent_pid`]'s diagnostic purpose needs.
+fn resolve_owner(env: &Environment, flag: Option<&str>) -> DaemonOwner {
+    match flag {
+        Some("launchd") => DaemonOwner::Launchd {
+            label: super::agent::label(env),
+        },
+        Some("fork-test-build") => DaemonOwner::Forked {
+            parent_pid: native_parent_pid(),
+            reason: ForkReason::TestBuild,
+        },
+        Some("fork-no-agent") => DaemonOwner::Forked {
+            parent_pid: native_parent_pid(),
+            reason: ForkReason::NoAgentInstalled,
+        },
+        _ => DaemonOwner::Forked {
+            parent_pid: native_parent_pid(),
+            reason: ForkReason::Manual,
+        },
+    }
+}
+
+/// This process's actual OS parent, for [`resolve_owner`]'s `Forked` case.
+///
+/// Distinct from [`parent_pid`], which reads `STORYHOOK_PARENT_PID` — an
+/// opt-in test harness signal production never sets, for a different
+/// question ("should I exit because my test binary did").
+fn native_parent_pid() -> u32 {
+    // SAFETY: `getppid` takes no arguments, cannot fail, and cannot be made
+    // to touch memory this process does not own.
+    #[cfg(unix)]
+    unsafe {
+        libc::getppid() as u32
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
 /// Runs the daemon in this process, until it is asked to stop.
 ///
-/// The order is the contract: install the panic hook (so nothing this process
-/// does from here on can panic unrecorded), enter the environment's stable home
-/// directory (so no child can inherit the request that started the daemon's
-/// working directory), take the lifetime lock (so a second daemon cannot
-/// start), harvest whatever residue that lock's previous holder left (SH-287),
+/// The order is the contract: reset the umask (so files this process creates
+/// never come out more restrictive than the mode it explicitly asked for,
+/// regardless of what its launching client's shell happened to have set —
+/// SH-784), install the panic hook (so nothing this process does from here on
+/// can panic unrecorded), enter the environment's stable home directory (so
+/// no child can inherit the request that started the daemon's working
+/// directory), take the lifetime lock (so a second daemon cannot start),
+/// harvest whatever residue that lock's previous holder left (SH-287),
 /// reconcile durable Full Auto state, bind loopback, publish the portfile, then
 /// serve. Publication comes after reconciliation so no client can claim work
 /// against pre-restart lane state. Only a background thread inside `serve`
 /// probes the tailnet (SH-186).
-pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), AppError> {
+///
+/// `owner_flag` is `daemon --serve`'s own `--owner` argument, resolved by
+/// [`resolve_owner`] into the [`DaemonOwner`] this daemon publishes about
+/// itself.
+pub fn run<S: crate::store::Store>(
+    store: &S,
+    env: &Environment,
+    owner_flag: Option<&str>,
+) -> Result<(), AppError> {
+    // SAFETY: `umask` takes one plain mode value, affects only this
+    // process's own future file creations, and cannot fail.
+    #[cfg(unix)]
+    unsafe {
+        libc::umask(0o022);
+    }
     crate::daemon::crash::install_panic_hook(env);
     enter_stable_working_directory(env)?;
     let _pidfile = claim_pidfile(env)?;
@@ -1023,7 +1237,8 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
     crate::daemon::engine::reconcile_restart_tick(store, env);
 
     let (listeners, bound) = bind_preferred(env)?;
-    let info = info_for(&bound, mint_token(), &env.now(), env.store_path())?;
+    let mut info = info_for(&bound, mint_token(), &env.now(), env.store_path())?;
+    info.owner = Some(resolve_owner(env, owner_flag));
     write_info(env, &info)?;
     eprintln!(
         "storyhook daemon {} on http://127.0.0.1:{} (pid {}) holding {}",
@@ -1180,9 +1395,15 @@ pub fn restart(env: &Environment) -> Result<RestartedDaemon, AppError> {
                     .to_string(),
             )
         })?;
+        // `daemon_port(stopped.port)` is a preference, not an instruction
+        // (`Environment::preferred_port`'s own doc): it reaches
+        // `ForkLauncher` as an exact `--port` argument, but a
+        // `LaunchdLauncher` replacement cannot carry a per-invocation port at
+        // all — its plist is fixed — so it recovers `stopped.port` only when
+        // `bind_preferred`'s own port-hint sidecar still names it (SH-784,
+        // council decision on `.council/sh784-restart-port-launchd/`).
         let replacement_env = env.clone().daemon_port(stopped.port);
-        let child = spawn_child(&replacement_env)?;
-        let running = await_healthy(&replacement_env, child)?;
+        let running = launch_daemon(&replacement_env)?;
         Ok(RestartedDaemon { stopped, running })
     })();
 
@@ -1409,6 +1630,182 @@ fn publish_attempt_failure(env: &Environment, failure: &AppError) {
     }
 }
 
+/// Starts a daemon this client decided is missing, and reports which
+/// mechanism it used (SH-784).
+///
+/// [`choose_launcher`] picks an implementation; [`launch_daemon`] is what
+/// [`spawn_locked`] and [`restart`] actually call, and re-derives the
+/// resulting [`DaemonInfo`] once this returns — the `DaemonOwner` here is for
+/// the *caller's* immediate use (deciding whether to print
+/// [`warn_no_agent_installed`]), not what gets persisted: the daemon
+/// self-reports the same fact into its own portfile via `--owner`
+/// (`resolve_owner`, called from inside `run`).
+pub(crate) trait DaemonLauncher {
+    /// Starts the daemon and waits until it answers, or fails loudly.
+    fn launch(&self, env: &Environment) -> Result<DaemonOwner, AppError>;
+}
+
+/// Forks [`spawn_child`] and waits for it ([`await_healthy`]) — the path
+/// every daemon took before SH-784, and the only one a test build or an OS
+/// with no launchd equivalent yet (SH-787) ever takes after it.
+struct ForkLauncher {
+    reason: ForkReason,
+}
+
+impl DaemonLauncher for ForkLauncher {
+    fn launch(&self, env: &Environment) -> Result<DaemonOwner, AppError> {
+        let child = spawn_child(env, self.reason)?;
+        await_healthy(env, child)?;
+        Ok(DaemonOwner::Forked {
+            parent_pid: std::process::id(),
+            reason: self.reason,
+        })
+    }
+}
+
+/// Which [`DaemonLauncher`] a given `ensure`/`start`/`restart` call should
+/// use, and why, decided before either the warning or the launch itself
+/// (SH-784's approved design).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LauncherChoice {
+    /// This store has a launchd agent installed for it.
+    Launchd,
+    /// No launchd agent applies; fall back to forking, for `reason`.
+    Fork(ForkReason),
+}
+
+/// A pure function of this build and this store's login-agent health —
+/// **never** of the calling process's own scheduling class or coalition, so
+/// the daemon's ownership cannot itself become an accident of whichever
+/// client happened to trigger a start (the exact defect this story exists to
+/// close). Unit-tested directly against synthetic [`super::agent::Health`]
+/// values; no I/O of its own beyond the one `agent::health` read.
+fn choose_launcher(env: &Environment) -> LauncherChoice {
+    decide_launcher(
+        crate::env::is_test_build(),
+        cfg!(target_os = "macos"),
+        super::agent::health(env),
+    )
+}
+
+/// The pure decision table [`choose_launcher`] gathers inputs for — split out
+/// the same way [`super::agent::health`] delegates to [`super::agent::judge`],
+/// so the table itself is unit-testable against synthetic inputs with no
+/// filesystem I/O.
+fn decide_launcher(
+    is_test_build: bool,
+    macos: bool,
+    health: super::agent::Health,
+) -> LauncherChoice {
+    if is_test_build {
+        return LauncherChoice::Fork(ForkReason::TestBuild);
+    }
+    if !macos {
+        return LauncherChoice::Fork(ForkReason::NoAgentInstalled);
+    }
+    match health {
+        // Neither state names an agent that can be trusted to start *this*
+        // store's daemon: the first names none at all, the second names one
+        // that would kickstart the wrong store entirely.
+        super::agent::Health::NotInstalled | super::agent::Health::ServesAnotherStore { .. } => {
+            LauncherChoice::Fork(ForkReason::NoAgentInstalled)
+        }
+        // Every other `Health` variant's plist still names *this* store —
+        // Missing/Unreadable/Disagrees/Unconfirmable included. Routing those
+        // through launchd anyway is deliberate: a refusal from `launchctl`
+        // reports the real cause (the approved design's "if the agent is
+        // installed but launchd refuses, the command fails loudly; it does
+        // not fall back to a fork"), and `note_stale_login_agent`'s own
+        // warning, printed regardless of this choice, already names which of
+        // these states applies.
+        _ => LauncherChoice::Launchd,
+    }
+}
+
+impl LauncherChoice {
+    fn launcher(self) -> Box<dyn DaemonLauncher> {
+        match self {
+            LauncherChoice::Launchd => Box::new(super::launchd::LaunchdLauncher),
+            LauncherChoice::Fork(reason) => Box::new(ForkLauncher { reason }),
+        }
+    }
+}
+
+/// Tells a human at a terminal that this daemon is running unmanaged, and how
+/// to fix it — the fork-path sibling of [`note_stale_login_agent`], for the
+/// state that function does not cover (no agent at all, rather than a broken
+/// one). Same two guards: terminal-only, and silent on Linux, where
+/// `story daemon install` itself refuses (SH-787 tracks giving that platform
+/// its own remedy), so naming it here would send an operator to a command
+/// that cannot help them yet.
+fn warn_no_agent_installed() {
+    use std::io::IsTerminal;
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+    if cfg!(target_os = "macos") {
+        eprintln!(
+            "storyhook: no launchd agent is installed for this store, so this daemon was \
+             started directly and will not run at its own scheduling class. Run \
+             `story daemon install` to fix this."
+        );
+    }
+}
+
+/// Starts a daemon this client found none usable for, via whichever
+/// [`DaemonLauncher`] [`choose_launcher`] selects, and returns its published
+/// [`DaemonInfo`] once healthy.
+fn launch_daemon(env: &Environment) -> Result<DaemonInfo, AppError> {
+    let choice = choose_launcher(env);
+    if choice == LauncherChoice::Fork(ForkReason::NoAgentInstalled) {
+        warn_no_agent_installed();
+    }
+    choice.launcher().launch(env)?;
+    read_info(env).ok_or_else(|| {
+        AppError::Storage(
+            "the daemon reported healthy but published no readable portfile afterward".to_string(),
+        )
+    })
+}
+
+/// Polls until a launchd-owned daemon of this build is answering, or gives up
+/// loudly (SH-784's [`super::launchd::LaunchdLauncher`]).
+///
+/// The [`await_healthy`] sibling for a launcher with no `Child` to watch:
+/// `launchctl kickstart` returns as soon as launchd has *accepted* the
+/// request, not once the daemon is serving, so this still has to wait. What
+/// it cannot do without a `Child` is distinguish "still starting" from
+/// "already exited" as precisely — [`LaunchdLauncher::launch`](super::launchd::LaunchdLauncher)
+/// clears [`Environment::daemon_failure`] first, the same invariant
+/// `spawn_child` keeps for the fork path, so a failure record found here
+/// during the wait is trustworthy evidence rather than stale residue, even
+/// without a pid to confirm it against.
+pub(crate) fn await_launchd_healthy(env: &Environment) -> Result<(), AppError> {
+    let deadline = Instant::now() + SPAWN_DEADLINE;
+    while Instant::now() < deadline {
+        if let Some(info) = read_info(env)
+            && info.is_this_binary()
+            && info.serves(env.store_path())
+            && hello(&info).is_ok()
+        {
+            return Ok(());
+        }
+        if let Some(failure) = read_startup_failure(env) {
+            return Err(failure.with_context(
+                "the launchd-owned daemon could not start; this is what it reported on its \
+                 way out:",
+            ));
+        }
+        std::thread::sleep(SPAWN_POLL);
+    }
+    Err(AppError::Storage(format!(
+        "launchd did not report a healthy daemon within {}s.\n{}\nInspect \
+         `launchctl print gui/<uid>/<label>` and the daemon's own log.",
+        SPAWN_DEADLINE.as_secs(),
+        describe_paths(env),
+    )))
+}
+
 /// The slow path: hold the spawn lock, re-check, replace what is there, start a
 /// daemon, and keep holding until it answers.
 ///
@@ -1488,8 +1885,7 @@ fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
         };
 
         stand_down_legacy_daemon(env);
-        let child = spawn_child(env)?;
-        await_healthy(env, child).map_err(|failure| match refusal {
+        launch_daemon(env).map_err(|failure| match refusal {
             Some(refused) => failure.with_context(&format!(
                 "the daemon already holding this store did not stand down: {refused}"
             )),
@@ -1590,7 +1986,7 @@ fn disinherit_descriptors() {
 /// still running. [`await_healthy`] needs to, because a daemon that exits
 /// during startup is otherwise indistinguishable from one that is slow, and
 /// the client spent the whole five-second deadline finding that out.
-fn spawn_child(env: &Environment) -> Result<std::process::Child, AppError> {
+fn spawn_child(env: &Environment, reason: ForkReason) -> Result<std::process::Child, AppError> {
     let (exe, _) = current_binary()?;
     std::fs::create_dir_all(env.daemon_state_dir())?;
     // A crash's whole stderr — the default panic output the hook in
@@ -1630,11 +2026,27 @@ fn spawn_child(env: &Environment) -> Result<std::process::Child, AppError> {
     // unrepresentable.
     let port = env.preferred_port().to_string();
     let store = env.store_path().to_path_buf();
+    // Self-reported into the child's own portfile (`resolve_owner`, `run`) so
+    // `story daemon status` can name why this daemon was forked rather than
+    // launchd-owned (SH-784) — `NoAgentInstalled`/`TestBuild` only, never
+    // `Manual`: this function is reached only from [`ForkLauncher`], which
+    // always knows why it was chosen.
+    let owner = match reason {
+        ForkReason::TestBuild => "fork-test-build",
+        ForkReason::NoAgentInstalled => "fork-no-agent",
+        ForkReason::Manual => {
+            debug_assert!(
+                false,
+                "spawn_child is never reached with ForkReason::Manual"
+            );
+            "fork-no-agent"
+        }
+    };
     let mut command = Command::new(exe);
     command
         .arg("--store-path")
         .arg(&store)
-        .args(["daemon", "--serve", "--port", &port])
+        .args(["daemon", "--serve", "--port", &port, "--owner", owner])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log);
@@ -2865,6 +3277,180 @@ mod tests {
             .expect("a scratch directory")
     }
 
+    /// A placeholder `Health` reading for table cases that do not care about
+    /// its fields — every variant besides `NotInstalled` names a plist, and
+    /// the paths themselves are irrelevant to `decide_launcher`.
+    fn health_naming_this_store() -> super::super::agent::Health {
+        super::super::agent::Health::Agrees {
+            plist: PathBuf::new(),
+            exe: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn a_test_build_always_forks_regardless_of_health_or_os() {
+        for macos in [true, false] {
+            for health in [
+                super::super::agent::Health::NotInstalled,
+                health_naming_this_store(),
+            ] {
+                assert_eq!(
+                    decide_launcher(true, macos, health),
+                    LauncherChoice::Fork(ForkReason::TestBuild),
+                    "a test build must never depend on this machine's own launchd state"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_non_macos_build_always_forks_with_no_agent_installed() {
+        assert_eq!(
+            decide_launcher(false, false, health_naming_this_store()),
+            LauncherChoice::Fork(ForkReason::NoAgentInstalled),
+            "SH-787 gives Linux its own service-manager path; until then it always forks"
+        );
+    }
+
+    #[test]
+    fn macos_with_no_agent_for_this_store_forks() {
+        assert_eq!(
+            decide_launcher(false, true, super::super::agent::Health::NotInstalled),
+            LauncherChoice::Fork(ForkReason::NoAgentInstalled)
+        );
+    }
+
+    #[test]
+    fn macos_whose_label_serves_a_different_store_forks_rather_than_kickstart_the_wrong_one() {
+        let health = super::super::agent::Health::ServesAnotherStore {
+            plist: PathBuf::new(),
+            exe: PathBuf::new(),
+            serves: PathBuf::from("/some/other/store.db"),
+            wanted: PathBuf::from("/this/store.db"),
+        };
+        assert_eq!(
+            decide_launcher(false, true, health),
+            LauncherChoice::Fork(ForkReason::NoAgentInstalled)
+        );
+    }
+
+    #[test]
+    fn macos_with_any_agent_naming_this_store_uses_launchd_even_when_unhealthy() {
+        // Missing/Unreadable/Disagrees/Unconfirmable all still name *this*
+        // store's plist, so launchd is asked anyway — a refusal reports the
+        // real cause rather than silently falling back to a fork.
+        let unhealthy = [
+            super::super::agent::Health::Unreadable {
+                plist: PathBuf::new(),
+            },
+            super::super::agent::Health::Missing {
+                plist: PathBuf::new(),
+                exe: PathBuf::new(),
+            },
+            super::super::agent::Health::Disagrees {
+                plist: PathBuf::new(),
+                exe: PathBuf::new(),
+                installed: PathBuf::new(),
+            },
+            super::super::agent::Health::Unconfirmable {
+                plist: PathBuf::new(),
+                exe: PathBuf::new(),
+            },
+            health_naming_this_store(),
+        ];
+        for health in unhealthy {
+            assert_eq!(
+                decide_launcher(false, true, health),
+                LauncherChoice::Launchd
+            );
+        }
+    }
+
+    #[test]
+    fn a_free_nonzero_preferred_port_wins_over_a_stale_hint() {
+        let dir = scratch();
+        // Learn two distinct free ports, then release both before binding
+        // for real: `preferred` must win even though a (now-free, but
+        // different) `hint` is on record, proving the hint is consulted only
+        // when the preference itself is absent or unavailable.
+        let a = std::net::TcpListener::bind("127.0.0.1:0").expect("free port a");
+        let preferred = a.local_addr().expect("port a").port();
+        let b = std::net::TcpListener::bind("127.0.0.1:0").expect("free port b");
+        let hint = b.local_addr().expect("port b").port();
+        drop(a);
+        drop(b);
+
+        let env = Environment::at(dir.path()).daemon_port(preferred);
+        write_port_hint(&env, hint);
+        let (_listeners, bound) = bind_preferred(&env).expect("binding the preferred port");
+        assert_eq!(
+            bound.port(),
+            preferred,
+            "a free, nonzero preference must win outright, never deferring to the hint"
+        );
+    }
+
+    #[test]
+    fn a_missing_port_hint_reads_as_absent() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        assert_eq!(read_port_hint(&env), None);
+    }
+
+    #[test]
+    fn a_written_port_hint_round_trips() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        write_port_hint(&env, 54321);
+        assert_eq!(read_port_hint(&env), Some(54321));
+    }
+
+    #[test]
+    fn a_port_hint_this_build_cannot_parse_reads_as_absent() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the daemon state dir");
+        std::fs::write(env.daemon_port_hint(), "not json").expect("writing a bad hint");
+        assert_eq!(
+            read_port_hint(&env),
+            None,
+            "an unparseable hint must read as no preference, never panic or error"
+        );
+    }
+
+    #[test]
+    fn binding_falls_back_to_the_hint_when_the_preferred_port_is_unavailable() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        // Occupy a real port, record it as both this environment's preferred
+        // port and its hint, then prove the hint alone (preferred := 0, the
+        // named-store shape) still steers `bind_preferred` to a free port
+        // rather than straight to a random one — the exact mechanism a
+        // named store's launchd-owned restart relies on.
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").expect("binding a throwaway port");
+        let taken_port = taken.local_addr().expect("the throwaway port").port();
+        write_port_hint(&env, taken_port);
+        let (_listeners, bound) = bind_preferred(&env).expect("binding with a stale hint");
+        assert_ne!(
+            bound.port(),
+            taken_port,
+            "a hint pointing at an unavailable port must fall back to an OS-assigned one"
+        );
+        drop(taken);
+    }
+
+    #[test]
+    fn a_successful_bind_updates_the_port_hint() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let (_listeners, bound) = bind_preferred(&env).expect("an ordinary bind");
+        assert_eq!(
+            read_port_hint(&env),
+            Some(bound.port()),
+            "the hint must name whatever port was actually bound, for the next start to find"
+        );
+    }
+
     /// A control call reaches a daemon on loopback and nowhere else, so it must
     /// never inherit the environment's proxy.
     ///
@@ -3174,6 +3760,27 @@ mod tests {
         assert_eq!(info.advertised_host(), "127.0.0.1");
     }
 
+    /// A pre-SH-784 portfile carries no `owner` key at all. There is nothing
+    /// true to report about a fact that build never recorded, so it must
+    /// parse and read as `None` rather than fail — the same doctrine
+    /// `a_portfile_without_a_tailnet_field_reads_as_loopback_only` already
+    /// pins for `tailnet`.
+    #[test]
+    fn a_portfile_without_an_owner_field_reads_as_none() {
+        let dir = scratch();
+        let path = dir.path().join("daemon.json");
+        std::fs::write(
+            &path,
+            r#"{"pid":1,"port":4321,"version":"0.0.0","protocol":1,"exe":"/bin/story",
+               "exe_mtime":0,"started_at":"2026-01-01T00:00:00Z","token":"t",
+               "store_path":"/tmp/store.db"}"#,
+        )
+        .expect("writing a portfile from before the field existed");
+
+        let info = read_info_at(&path).expect("an older portfile still parses");
+        assert_eq!(info.owner, None);
+    }
+
     /// Disinheriting must not swallow the report that `exec` failed.
     ///
     /// This is the only assertion that distinguishes [`disinherit_descriptors`]'s
@@ -3386,6 +3993,7 @@ mod tests {
             store_path: PathBuf::from("/private/tmp/storyhook-lifecycle/store.db"),
             tailnet: None,
             cookie_name: "storyhook_test".to_string(),
+            owner: None,
         };
         assert!(!info.is_this_binary());
     }
@@ -3409,6 +4017,7 @@ mod tests {
             store_path: PathBuf::from("/private/tmp/storyhook-lifecycle/store.db"),
             tailnet: None,
             cookie_name: "storyhook_test".to_string(),
+            owner: None,
         };
         assert!(
             !info.is_this_binary(),

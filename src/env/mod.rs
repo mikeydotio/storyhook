@@ -62,6 +62,8 @@ pub(crate) mod runtime_file {
     pub const LOG: &str = "daemon.log";
     /// [`super::Environment::daemon_log_rotated`].
     pub const LOG_ROTATED: &str = "daemon.log.1";
+    /// [`super::Environment::daemon_port_hint`].
+    pub const PORT_HINT: &str = "daemon.port-hint";
 }
 
 /// The port the daemon prefers, and the one the dashboard bookmark names.
@@ -441,6 +443,21 @@ impl Environment {
     /// [`Self::crash_logs_dir`] before this file can be rotated away again.
     pub fn daemon_log_rotated(&self) -> PathBuf {
         self.daemon_state_dir().join(runtime_file::LOG_ROTATED)
+    }
+
+    /// Where this store's daemon remembers the last port it actually bound
+    /// (SH-784).
+    ///
+    /// A preference, never an instruction: [`crate::daemon::lifecycle::bind_preferred`]
+    /// tries it only after this environment's own [`Self::preferred_port`],
+    /// and falls further back to an OS-assigned port if even the hint is
+    /// unavailable. It exists because a *named* store's preferred port is
+    /// always `0` ([`default_daemon_port`]) and a launchd-owned daemon's
+    /// plist cannot carry a per-invocation `--port`, so without this a
+    /// launchd-kickstarted restart would land on a fresh random port every
+    /// time rather than the one an operator was just using.
+    pub fn daemon_port_hint(&self) -> PathBuf {
+        self.daemon_state_dir().join(runtime_file::PORT_HINT)
     }
 
     /// Where this store's daemon persists its finished
