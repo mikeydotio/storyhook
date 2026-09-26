@@ -1286,6 +1286,7 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
                 complexity,
                 labels,
                 draft,
+                blocked_by: Vec::new(),
             },
         ))
     })()

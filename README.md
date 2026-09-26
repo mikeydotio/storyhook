@@ -359,7 +359,7 @@ story project settings get <key>
 story project settings set <key> <value>
 story project settings unset <key>
 
-story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--complexity low|medium|high] [--label <name>] [--labels <csv>] [--draft]
+story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--complexity low|medium|high] [--label <name>] [--labels <csv>] [--blocked-by <id>] [--draft]
 story show <id>
 story log <id>
 story comment <id> "<text>"

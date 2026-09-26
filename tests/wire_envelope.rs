@@ -1539,6 +1539,7 @@ fn invocation_corpus() -> Vec<Invocation> {
             priority: Some("high".to_string()),
             labels: Some(vec!["backend".to_string(), "api".to_string()]),
             draft: true,
+            blocked_by: vec!["SH-2".to_string(), "3".to_string()],
         },
         Invocation::State {
             action: StateAction::List,
@@ -2284,6 +2285,37 @@ fn older_next_wire_shapes_default_the_new_filters_to_absent() {
             phase: None,
             epic: None,
             exclude_label: None,
+        }
+    );
+}
+
+#[test]
+fn older_new_wire_shapes_name_no_blocker() {
+    let decoded: Invocation = serde_json::from_value(serde_json::json!({
+        "New": {
+            "title": "filed by an older client",
+            "state": null,
+            "story_type": null,
+            "description": null,
+            "priority": null,
+            "complexity": null,
+            "labels": null,
+            "draft": false
+        }
+    }))
+    .expect("an older client can omit SH-779's blocked_by");
+    assert_eq!(
+        decoded,
+        Invocation::New {
+            title: "filed by an older client".to_string(),
+            state: None,
+            story_type: None,
+            description: None,
+            priority: None,
+            complexity: None,
+            labels: None,
+            draft: false,
+            blocked_by: Vec::new(),
         }
     );
 }

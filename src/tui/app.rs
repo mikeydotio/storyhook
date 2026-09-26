@@ -583,6 +583,7 @@ fn create_story_mutation(
             // SH-175's draft flag has no TUI surface — the story scoped it to
             // the CLI and web dashboard only.
             draft: false,
+            blocked_by: Vec::new(),
         },
     )?;
     match response {
