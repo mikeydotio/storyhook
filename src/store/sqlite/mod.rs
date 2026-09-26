@@ -605,6 +605,9 @@ pub struct SqliteWriteTx<'a> {
     open: bool,
     activity: Vec<(String, String)>,
     ownership: ownership::Ownership,
+    /// See [`WriteOps::set_block_edge_derivation`]. Per transaction, never
+    /// persisted: a fresh transaction always starts outside derivation.
+    derives_block_edges: bool,
 }
 
 impl<'a> SqliteWriteTx<'a> {
@@ -625,6 +628,7 @@ impl<'a> SqliteWriteTx<'a> {
             open: true,
             activity: Vec::new(),
             ownership: ownership::Ownership::default(),
+            derives_block_edges: false,
         };
         transaction.ownership = ownership::Ownership::begin(&transaction.conn)?;
         Ok(transaction)
@@ -1112,6 +1116,14 @@ impl_read_ops!(SqliteReadTx);
 impl_read_ops!(SqliteWriteTx);
 
 impl WriteOps for SqliteWriteTx<'_> {
+    fn set_block_edge_derivation(&mut self, active: bool) {
+        self.derives_block_edges = active;
+    }
+
+    fn derives_block_edges(&self) -> bool {
+        self.derives_block_edges
+    }
+
     fn insert_landing_intent(
         &mut self,
         intent: &crate::store::LandingIntent,

@@ -55,11 +55,12 @@ use crate::domain::{
     inverse_relation, normalize_labels, validate_required_states, validate_type_slug,
 };
 use crate::error::{AppError, IntegrityDetail};
+use crate::store::rebuild::repair_read_model_in;
 use crate::store::{
     AttachmentBlobRow, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, diff,
-    repair_read_model,
 };
 
+use super::block_delivery::{SubmissionGate, derive_block_edges};
 use super::state_set::write_states_repairing;
 use super::{
     Ctx, append_and_fold_maintenance, project_prefix,
@@ -321,8 +322,14 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         // Then the read model, before anything reads it (SH-285). Still a write
         // of its own, and still atomic: folding it into the story repairs below
         // would put the one repair that is always safe at the mercy of an
-        // unrelated append failure.
-        let repair = repair_read_model(self.ctx.store(), project)?;
+        // unrelated append failure. Every reader reads these rows, so healing
+        // one can block or unblock a working story; the heal owes the same
+        // delivery edges as any other mutation (SH-772). It submits nothing.
+        let repair = self.ctx.store().write(|tx| {
+            derive_block_edges(tx, project, SubmissionGate::NotASubmission, |tx| {
+                repair_read_model_in(tx, project)
+            })
+        })?;
 
         // `prefix` rides out of the write because the advice assembled after it
         // has to render a `StoryNo` the way the report does (SH-269), and this

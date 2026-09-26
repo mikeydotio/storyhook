@@ -79,7 +79,7 @@ fn build_corpus() -> Project<'static> {
     let stub = env.home().join("golden-notify.sh");
     std::fs::write(
         &stub,
-        "DISPATCH_PROTOCOL=5\nprintf '%s' '{\"ok\":false,\"reason\":\"pane-unavailable\",\"display\":\"no agent reached: the golden corpus dispatches nothing\"}'\n",
+        "DISPATCH_PROTOCOL=6\nprintf '%s' '{\"ok\":false,\"reason\":\"pane-unavailable\",\"display\":\"no agent reached: the golden corpus dispatches nothing\"}'\n",
     )
     .expect("writing the dispatch stub");
     env.story(env.home())

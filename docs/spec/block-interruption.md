@@ -30,7 +30,9 @@ quiescent, the controller revalidates and atomically retires only that owned
 lock. Failure retains a visible guard; older holders that cannot honor it are
 refused with a diagnostic. Helper protocol 5 prevents older helpers from
 pasting the interrupt flag as text. Resume binds
-to the interrupted session, so replacement panes do not inherit old prompts.
+to the interrupted session when the block's interrupt acknowledged one, so
+replacement panes do not inherit old prompts; otherwise it reaches the story's
+registered session through protocol 6's `--registered-session` (SH-772, below).
 Tmux cannot acknowledge delivery atomically with SQLite: interrupted deliveries
 are reported as uncertain after restart and are never blindly replayed.
 
@@ -65,3 +67,44 @@ that under a gate that was terminated before it reported (SH-692), and `dev`
 was red until SH-693 landed. The class detector is
 `tests/fault_injection.rs::an_armed_daemon_left_idle_is_not_killed_by_its_own_housekeeping`;
 the per-function pins are in `tests/block_delivery.rs`.
+
+### Every door derives, and the funnel refuses one that does not (SH-772)
+
+The paragraph above says every service mutation compares the complete project
+before and after. SH-690 enforced that with a source scan, and one door slipped
+past it: the verifier's landing (`VerificationQueue::complete_landing_guarded`)
+closed the landed story in a plain write, so the in-progress stories it unblocked
+never got their Resume. moshtail MT-32 sat idle 37 hours that way. `story doctor
+--fix`'s drift heal had the same gap. See `docs/rca/sh-772-landing-bypassed-block-delivery.md`.
+
+- The derivation is one function, `service::block_delivery::derive_block_edges`.
+  `Ctx::write_stories` is the ordinary door; the landing, the doctor heal and the
+  prefix rename call the function inside their own writes. Its `SubmissionGate`
+  says whether a story newly entering `verifying` is checked as a submission:
+  those three pass `NotASubmission`, so they skip the four pre-write git calls.
+- The derivation keys stories by row number, so it reads a drifted row without
+  failing, and it refuses to nest.
+- The write funnel (`append_and_fold_maintenance`) refuses any event whose kind is
+  not in `domain::BLOCK_INERT_EVENT_KINDS` when the transaction is not inside the
+  derivation, and `refold_story` refuses outside it. The inert list is explicit,
+  so a new event kind is block-relevant until someone argues otherwise.
+- `tests/block_delivery_paths.rs` still lists every writer, now including the
+  indirect helpers, and fences the derivation flag's setter and direct row writes.
+
+The resume rule changed with it (council decision D5 on SH-772). A Resume's
+authority is its own: it is still Pending while the worker holds the workspace
+lock, and every door that registers a session (dispatch `register`, notify
+`adopt`) reserves that lock and revokes pending rows first. So the episode's
+interrupt now only decides how the session is named:
+
+- the latest interrupt in the Resume's own episode (the rows after the story's
+  previous Resume) was Delivered: `--expected-target <target>`, exactly as before;
+- anything else (unreached, uncertain, superseded, or no interrupt): helper
+  protocol 6's `--registered-session`, which never adopts, types nothing unless the
+  composer reads idle (a dialog's `❯ 1. Yes` row reads as text, and Enter would
+  approve it), submits only after it sees the prompt, and names the session it
+  bound. An acknowledgement that names none stays Uncertain.
+
+Every Unreached or Uncertain Resume records the operator's remedy.
+`every_session_registration_first_revokes_pending_deliveries_under_the_lock` in
+`tests/block_delivery_paths.rs` pins the revocation property the rule rests on.

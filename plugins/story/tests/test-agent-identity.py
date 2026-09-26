@@ -211,6 +211,16 @@ int main(int argc, char **argv) {
         self.assertEqual(self.inputs[self.pane].read_bytes(), b"READY\n")
         self.assertEqual(self.tmux("show-options", "-p", "-qv", "-t", self.pane, OPTION), "")
 
+    def test_registered_resume_never_adopts_an_unregistered_direct_provider(self):
+        """A resume with no acknowledged interrupt reaches only an existing registration (SH-772)."""
+        answer = self.run_command(["bash", str(HELPER), "--project", self.project,
+            "notify", "TST-1", "RESUME_FIXTURE", "--registered-session"])
+        result = json.loads(answer.stdout)
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["reason"], "pane-provider-unknown")
+        self.assertEqual(self.inputs[self.pane].read_bytes(), b"READY\n")
+        self.assertEqual(self.tmux("show-options", "-p", "-qv", "-t", self.pane, OPTION), "")
+
     def test_adoption_refuses_a_bad_revocation_receipt_before_registration_or_input(self):
         """Only the durable endpoint is replaced; native identity and input are real."""
         endpoint = self.root / "story-endpoint"
