@@ -5,6 +5,10 @@ use crate::store::{DroppedCleanup, Store};
 use std::process::Command;
 use std::time::Duration;
 
+/// How long `dropped-cleanup-pane.py` may run before it is killed, with no
+/// SIGTERM first.
+const CLEANUP_HELPER_TIMEOUT: Duration = Duration::from_secs(45);
+
 /// Pins a live pane incarnation before cleanup can reserve or signal it.
 pub(super) fn capture(report: &ResourceReport) -> Result<Option<String>, AppError> {
     let Some(pane) = &report.pane else {
@@ -92,7 +96,7 @@ pub(super) fn stop<S: Store>(
     workspace.dispatch_command(&mut command);
     let output = crate::process::run_captured_quiescent(
         command,
-        Duration::from_secs(45),
+        CLEANUP_HELPER_TIMEOUT,
         crate::process::TerminationPolicy::Kill,
     )
     .map_err(|e| AppError::Validation(format!("dropped pane cleanup uncertain: {}", e.detail())))?;

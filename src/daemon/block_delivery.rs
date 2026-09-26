@@ -23,6 +23,12 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+/// How long one `story.sh notify` delivery may run before it is terminated.
+pub const NOTIFY_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// How long a terminated notify helper may run its own cleanup before SIGKILL.
+pub const NOTIFY_TERM_GRACE: Duration = Duration::from_secs(10);
+
 /// What an operator can do when a Resume may not have reached its agent.
 ///
 /// Appended to every Unreached or Uncertain Resume, in the stored detail and in
@@ -394,9 +400,9 @@ fn process_candidate(
         .dispatch_command(&mut command);
     let result = run_captured_quiescent(
         command,
-        Duration::from_secs(45),
+        NOTIFY_TIMEOUT,
         TerminationPolicy::TerminateThenKill {
-            grace: Duration::from_secs(10),
+            grace: NOTIFY_TERM_GRACE,
         },
     );
     // Only a Resume sent to the registered session learns its target from the
