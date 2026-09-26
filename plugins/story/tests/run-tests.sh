@@ -112,12 +112,16 @@ started=()
 # into gate machinery today, but a harness that isolates the data home
 # neutralizes this the same unconditional way it neutralizes
 # STORYHOOK_STORE_PATH (SH-136 doctrine: defense in depth, not case-by-case
-# reasoning about which child currently needs it).
+# reasoning about which child currently needs it). TMUX and TMUX_PANE go for
+# the same reason: the gate often runs inside a tmux pane, and a script that
+# runs `tmux new-session` without `-S` would otherwise land its sessions on
+# that real server rather than the per-test TMUX_TMPDIR lib.sh gives it.
 launch() {
   local i="$1"
   started[$i]=$SECONDS
   (
-    env -u STORYHOOK_GATE_PROGRESS bash "${order[$i]}" >"$LOGS/$i.log" 2>&1 </dev/null
+    env -u STORYHOOK_GATE_PROGRESS -u TMUX -u TMUX_PANE \
+      bash "${order[$i]}" >"$LOGS/$i.log" 2>&1 </dev/null
     echo "$?" >"$LOGS/$i.rc.tmp"
     mv "$LOGS/$i.rc.tmp" "$LOGS/$i.rc"
   ) &

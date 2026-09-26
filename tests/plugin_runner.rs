@@ -367,3 +367,26 @@ wait"#,
         "scripts and their children outlived the runner: {survivors:?}"
     );
 }
+
+/// A script never inherits the caller's tmux server. The gate often runs
+/// inside a tmux pane, and a script that runs `tmux new-session` without
+/// `-S` (`test-dispatch-failure-cleanup.sh`) would otherwise create its
+/// sessions on that real server instead of the per-test `TMUX_TMPDIR` lib.sh
+/// gives it.
+#[test]
+fn children_never_inherit_the_callers_tmux_server() {
+    let suite = Suite::new();
+    suite.script(
+        "a",
+        r#"if [ -n "${TMUX:-}${TMUX_PANE:-}" ]; then echo "inherited TMUX=${TMUX:-} TMUX_PANE=${TMUX_PANE:-}"; exit 1; fi"#,
+    );
+
+    let out = suite
+        .command("1")
+        .env("TMUX", "/private/tmp/tmux-501/default,1234,0")
+        .env("TMUX_PANE", "%9")
+        .output()
+        .expect("running the plugin runner");
+
+    assert!(out.status.success(), "{}", stdout(&out));
+}
