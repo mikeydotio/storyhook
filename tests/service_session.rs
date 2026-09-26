@@ -142,6 +142,26 @@ fn the_next_line_reports_a_priority_when_there_is_one() {
     );
 }
 
+/// SH-788: a low story that a critical one waits on is the most urgent work
+/// there is, so it outranks an unrelated high story on the `Next:` line just
+/// as it does in `story next`.
+#[test]
+fn the_next_line_names_a_blocker_at_its_blocker_floor() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Unrelated", Some("high"));
+    let blocker = create(&fixture, "Low blocker", Some("low"));
+    let waiting = create(&fixture, "Critical dependent", Some("critical"));
+    storyhook::service::RelationService::new(&fixture.ctx())
+        .relate(&blocker, "blocks", &waiting, false)
+        .expect("relating");
+
+    let context = context(&fixture);
+    assert!(
+        context.contains(&format!("Next: {blocker} — Low blocker (")),
+        "{context}"
+    );
+}
+
 /// The `Next:` line has to name whatever `story next` would offer first, and
 /// the two used to share a comparator by copy-paste rather than by code —
 /// `highest_priority`'s own doc comment said so. Two `high` stories tie on

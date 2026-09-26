@@ -583,6 +583,7 @@ Filters:
                            closed exclusion for this call, but not the
                            archived one.
   --priority <levels>     Comma-separated: critical,high,medium,low,none
+                           Matches the stored level, not a blocker floor
   --label <labels>        Comma-separated label filter
   --phase <N>             Filter by phase number
   --flagged               Only stories with integrity warnings
@@ -625,8 +626,10 @@ Related:
             "next",
             r#"story next [--count <n>] [--phase <N>] [--epic <id>] [--exclude-label <csv>]
 
-Get the story execution order, highest priority first while respecting
-dependencies. The first result is ready now. With --count above 1, each later
+Get the story execution order, highest effective priority first while
+respecting dependencies. A story that blocks more urgent open work sorts at
+that work's level (the blocker floor: see 'story help priority-rubric'). The
+first result is ready now. With --count above 1, each later
 result is the story that becomes executable after the earlier results are
 treated as completed; an open blocker therefore appears before its dependent
 instead of removing the dependent from the answer entirely.
@@ -1950,9 +1953,11 @@ Related:
 How to choose a priority — and why the choice does more than label a
 story.
 
-Priority is 'story next''s sort key. Stories are ordered by level,
-then by story number ascending, so a level is a claim about what the
-next session picks up. Three consequences follow, and they are why
+Priority is 'story next''s sort key. Stories are ordered by effective
+level, then by story number ascending, so a level is a claim about
+what the next session picks up. The effective level is the stored
+level, raised while the story blocks more urgent open work (the
+blocker floor, below). Three consequences follow, and they are why
 this rubric is strict rather than generous:
 
   - Ties break toward the OLDER story, so inflating a level quietly
@@ -2050,29 +2055,36 @@ still catches real reds. The POPULATION is the defect: a backlog of
 known flakes is how a genuine red gets waved off as "the usual one".
 Track that as its own story, and price it in the detection layer.
 
-== Relationships never inherit priority ==
+== Relationships never change a stored level ==
 
-A dependency is a scheduling fact, not a severity claim.
+A dependency is a scheduling fact, not a severity claim. No
+relationship changes the level a story stores. storyhook derives the
+one scheduling effect a dependency has, and shows it beside the
+stored level.
 
-  - blocks / blocked-by transmit nothing by default. A low blocker
-    under a high dependent stays low.
-  - The one exception, the blocker floor: if X is blocked-by Y and X
-    sorts EARLIER than Y, raise Y to X's level, never higher. story next
-    places Y before X, but Y still competes on its own priority while it is
-    executable; leaving a low blocker beneath a high dependent would delay
-    both behind unrelated medium work.
-  - When the blocker floor and the detection carve-out disagree, the
-    carve-out wins. It is the more specific rule, and the floor
-    exists to prevent a stall that a detector edge does not create.
-  - Never lower a dependent to match its blocker, and never raise a
-    blocker above its dependent — that is the inflation error where
-    every prerequisite of a critical becomes critical and the level
-    saturates.
+  - The blocker floor: while an open story Y blocks a more urgent
+    open story X, directly or through a chain, Y sorts at X's level.
+    story next, the Full Auto engine, the verifier queue and the
+    dashboard order by it, and every priority display shows both
+    levels, as "low (critical)". A blocking epic hands its floor to
+    each open child. The floor ends by itself when the blockage
+    ends. Drafts and stories with an obviated-by edge pass a floor
+    on, but lend none of their own level.
+  - Do not raise Y's stored level to match its dependent. The floor
+    already schedules Y, and a stored raise outlives the blockage:
+    that is the inflation error, where every prerequisite of a
+    critical becomes critical and the level saturates.
+  - The detection carve-out governs the stored level only. A
+    detector that blocks the defect it observes stays one level below
+    it, and sorts at the defect's level while it blocks it.
+  - Never lower a dependent to match its blocker.
   - parent-of: an epic keeps its own stored priority, independent of
-    every child. story next never surfaces the epic itself, but among
-    ready children with equal own priority, their nearest parent epic's
+    every child, and its own level never flows to a child. story next
+    never surfaces the epic itself, but among ready children with
+    equal effective priority, their nearest parent epic's effective
     priority is the first tie-breaker. With several parents, the most
-    urgent parent wins; a parentless story uses its own priority again.
+    urgent parent wins; a parentless story uses its own effective
+    priority again.
   - relates-to transmits nothing, ever.
   - duplicate-of is not a priority edge: collapse duplicates to one
     story rather than triaging the same defect twice.
@@ -2085,7 +2097,7 @@ A dependency is a scheduling fact, not a severity claim.
 Related:
   story new --priority <level>   — Choose a level at creation
   story prioritize <id> <level>  — Choose or change it afterwards
-  story list --priority <levels> — Filter by level
+  story list --priority <levels> — Filter by stored level
   story next                     — What the sort key decides
 "#,
         );

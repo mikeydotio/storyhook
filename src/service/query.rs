@@ -24,8 +24,9 @@
 //! path it reports with a different, meaningless one.
 //!
 //! `summary`, `report` and `context`'s ready lists rank by
-//! [`domain::ready_order`](crate::domain::ready_order) (own priority, parent
-//! epic priority, then story number) instead of bare story number — a total order the legacy comparator
+//! [`domain::ready_order`](crate::domain::ready_order) (effective priority —
+//! the own level raised to its blocker floor, SH-788 — parent epic priority,
+//! then story number) instead of bare story number — a total order the legacy comparator
 //! did not have (SH-63). `next` extends that comparator into a dependency-aware
 //! execution order: each result virtually completes before the next is chosen,
 //! so a blocked successor can appear after its blocker (SH-450).
@@ -38,14 +39,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cli::GraphMode;
 use crate::domain::{
-    self, DependencyGraph, Priority, StateDef, StorySnapshot, SuperState, compute_display_state,
-    compute_integrity_issues, compute_progress, derive_family_relationships, is_claimable,
-    is_ready, last_activity_type, parse_duration,
+    self, BlockerFloors, DependencyGraph, Priority, ReadyRanking, StateDef, StorySnapshot,
+    SuperState, compute_display_state, compute_integrity_issues, compute_progress,
+    derive_family_relationships, is_claimable, is_ready, last_activity_type, parse_duration,
 };
 use crate::error::AppError;
 use crate::output::{
     BlockedChainView, ContinuationAlert, GraphOverview, GraphView, ProjectSnapshotView,
-    ReferencedBy, ReportData, StaleInfo, StoryView, SummaryView,
+    ReferencedBy, ReportData, StaleInfo, StoryView, SummaryView, priority_label,
 };
 use crate::store::{
     ContinuationStatus, GlobalSeq, ProjectId, ReadOps, StoryNo, StoryQuery, StoryRow,
@@ -387,10 +388,17 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// straight into views without the cross-story pass, and a search result
     /// that suddenly carried flags would change every `--json` consumer's
     /// document.
+    ///
+    /// The one cross-story fact it does carry is the blocker floor (SH-788):
+    /// a search result prints the story's priority, and that priority must
+    /// read the same here as in `list` and `show`. It costs no extra read —
+    /// the floors come from the same story map the matches do — and the
+    /// field is absent unless a floor raises the story.
     pub fn search(&self, query: &str) -> Result<Vec<StoryView>, AppError> {
         let needle = query.to_lowercase();
-        let mut results: Vec<StoryView> = self
-            .all_stories_legacy_order()?
+        let stories = story_map(self.tx, self.project)?;
+        let floors = BlockerFloors::compute(&stories);
+        let mut results: Vec<StoryView> = legacy_order(&stories)
             .into_iter()
             .filter(|story| {
                 story.title.to_lowercase().contains(&needle)
@@ -403,7 +411,10 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
                         .iter()
                         .any(|label| label.to_lowercase().contains(&needle))
             })
-            .map(bare_view)
+            .map(|story| StoryView {
+                blocker_floor: floors.floor(&story).cloned(),
+                ..bare_view(story)
+            })
             .collect();
         sort_story_views(&mut results);
         Ok(results)
@@ -699,7 +710,8 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
                     && is_claimable(&view.story, &stories, active.as_ref())
             })
             .collect();
-        ready.sort_by(|a, b| domain::ready_order(&a.story, &b.story, &stories));
+        let ranking = ReadyRanking::new(&stories);
+        ready.sort_by(|a, b| domain::ready_order(&a.story, &b.story, &ranking));
         let ready_count = ready.len();
         ready.truncate(READY_PREVIEW);
 
@@ -712,14 +724,22 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
                 "by_type": type_counts,
                 "blocked_count": blocked.len(),
                 "ready_count": ready_count,
-                "ready_stories": ready.iter().map(|view| serde_json::json!({
-                    "id": view.story.id,
-                    "title": view.story.title,
-                    "state": view.story.state,
-                    "priority": view.story.priority.as_str(),
-                    "complexity": view.story.complexity.as_str(),
-                    "complexity_assessed": view.story.complexity_assessed,
-                })).collect::<Vec<_>>(),
+                "ready_stories": ready.iter().map(|view| {
+                    let mut row = serde_json::json!({
+                        "id": view.story.id,
+                        "title": view.story.title,
+                        "state": view.story.state,
+                        "priority": view.story.priority.as_str(),
+                        "complexity": view.story.complexity.as_str(),
+                        "complexity_assessed": view.story.complexity_assessed,
+                    });
+                    // Absent, not null, when nothing raises the story — the
+                    // same shape `StoryView.blocker_floor` serializes to.
+                    if let Some(floor) = &view.blocker_floor {
+                        row["blocker_floor"] = floor.as_str().into();
+                    }
+                    row
+                }).collect::<Vec<_>>(),
             });
             return Ok(serde_json::to_string_pretty(&document).unwrap_or_default());
         }
@@ -744,11 +764,15 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         if !ready.is_empty() {
             body.push_str(&format!("\n## Ready to Work ({ready_count} total)\n\n"));
             for view in &ready {
-                let priority = if view.story.priority == Priority::None {
-                    String::new()
-                } else {
-                    format!(" ({})", view.story.priority.as_str())
-                };
+                let priority =
+                    if view.story.priority == Priority::None && view.blocker_floor.is_none() {
+                        String::new()
+                    } else {
+                        format!(
+                            " ({})",
+                            priority_label(&view.story.priority, view.blocker_floor.as_ref())
+                        )
+                    };
                 body.push_str(&format!(
                     "- {} {}{}; complexity: {}{}\n",
                     view.story.id,
@@ -906,17 +930,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// output: `search` numerically via [`sort_story_views`], `handoff`
     /// per-bucket (SH-64). This traversal order is otherwise unobserved.
     fn all_stories_legacy_order(&self) -> Result<Vec<StorySnapshot>, AppError> {
-        let stories = story_map(self.tx, self.project)?;
-        let mut all = Vec::with_capacity(stories.len());
-        for superstate in [SuperState::Open, SuperState::Closed] {
-            all.extend(
-                stories
-                    .values()
-                    .filter(|story| story.superstate == superstate)
-                    .cloned(),
-            );
-        }
-        Ok(all)
+        Ok(legacy_order(&story_map(self.tx, self.project)?))
     }
 
     /// This service's "now", as a datetime.
@@ -1146,9 +1160,11 @@ pub fn story_views(
 
     let resets = tx.story_resets(project)?;
     let reset_prefix = project_prefix(tx, project)?;
+    let floors = BlockerFloors::compute(&stories);
     let mut views = Vec::with_capacity(stories.len());
     for story in stories.into_values() {
         let id = story.id.clone();
+        let blocker_floor = floors.floor(&story).cloned();
         // Rendered back to sentences here, and only here: `flagged_reasons`
         // is a published JSON field (SH-244 typed the *checks*, not this).
         let mut flagged_reasons: Vec<String> = issues
@@ -1208,6 +1224,7 @@ pub fn story_views(
             stale_info: None,
             progress: progress.get(&id).cloned(),
             display_state: display_state.get(&id).cloned(),
+            blocker_floor,
             head_global_seq: head_global_seq.get(&id).copied(),
         });
     }
@@ -1238,7 +1255,22 @@ pub fn sort_story_views(views: &mut [StoryView]) {
     views.sort_by_key(|view| domain::story_number(&view.story.id));
 }
 
-/// A view carrying only the snapshot — what `search` returns.
+/// Open stories, then closed ones, each in id order — the legacy
+/// directory-listing order `all_stories_legacy_order` walks.
+fn legacy_order(stories: &BTreeMap<String, StorySnapshot>) -> Vec<StorySnapshot> {
+    let mut all = Vec::with_capacity(stories.len());
+    for superstate in [SuperState::Open, SuperState::Closed] {
+        all.extend(
+            stories
+                .values()
+                .filter(|story| story.superstate == superstate)
+                .cloned(),
+        );
+    }
+    all
+}
+
+/// A view carrying only the snapshot — what `search` builds on.
 ///
 /// `referenced_by.commits` still comes along for free (it is folded into the
 /// snapshot itself, no store read required); `referenced_by.prs` does not — a
@@ -1257,6 +1289,7 @@ fn bare_view(story: StorySnapshot) -> StoryView {
         stale_info: None,
         progress: None,
         display_state: None,
+        blocker_floor: None,
         // No row read here — a project-wide `story_rows` read is exactly the
         // per-view work this helper exists to skip, same as `referenced_by.prs`
         // above. `None` tells a comparator to fall back to its previous
@@ -1361,7 +1394,8 @@ fn type_label(story: &StorySnapshot) -> String {
 /// shared by `summary`, `report` and `context`. `execution_queue` uses the
 /// same tuple as its ordered frontier rather than sorting a completed list.
 fn sort_ready(views: &mut [StoryView], stories: &BTreeMap<String, StorySnapshot>) {
-    views.sort_by(|a, b| domain::ready_order(&a.story, &b.story, stories));
+    let ranking = ReadyRanking::new(stories);
+    views.sort_by(|a, b| domain::ready_order(&a.story, &b.story, &ranking));
 }
 
 /// The execution queue `story next --count N` hands out, in full and in order.
@@ -1451,13 +1485,14 @@ fn execution_queue(
         }
     }
 
+    let ranking = ReadyRanking::new(stories);
     let mut frontier = BTreeSet::<(Priority, Priority, u64, &str)>::new();
     for (id, count) in &predecessor_counts {
         if *count == 0 {
             let story = &candidates[id].story;
             frontier.insert((
-                story.priority.clone(),
-                domain::parent_epic_priority(story, stories),
+                ranking.effective(story),
+                ranking.parent_epic_priority(story),
                 domain::story_number(id),
                 id,
             ));
@@ -1476,8 +1511,8 @@ fn execution_queue(
                 if *count == 0 {
                     let story = &candidates[successor].story;
                     frontier.insert((
-                        story.priority.clone(),
-                        domain::parent_epic_priority(story, stories),
+                        ranking.effective(story),
+                        ranking.parent_epic_priority(story),
                         domain::story_number(successor),
                         successor,
                     ));

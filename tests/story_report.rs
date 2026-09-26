@@ -227,6 +227,47 @@ fn report_html_shows_priority() {
         .stdout(predicate::str::contains("Low priority cleanup"));
 }
 
+/// SH-788: the table sorts a floored blocker among the level it sorts at,
+/// badges it in that level's colour, and prints both levels.
+#[test]
+fn report_html_sorts_and_badges_a_blocker_at_its_floor() {
+    let dir = scratch_dir();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    for (title, level) in [
+        ("Low blocker", "low"),
+        ("Critical dependent", "critical"),
+        ("Unrelated high", "high"),
+    ] {
+        story(dir.path())
+            .args(["new", title, "--priority", level])
+            .assert()
+            .success();
+    }
+    story(dir.path())
+        .args(["relate", "SH-1", "blocks", "SH-2"])
+        .assert()
+        .success();
+
+    let html = String::from_utf8(
+        story(dir.path())
+            .args(["report", "--html"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(
+        html.contains("<span class=\"priority-badge priority-critical\">low (critical)</span>"),
+        "{html}"
+    );
+    let blocker = html.find("Low blocker").expect("the blocker row");
+    let high = html.find("Unrelated high").expect("the high row");
+    assert!(blocker < high, "the floored blocker sorts at critical");
+}
+
 #[test]
 fn report_html_shows_type_breakdown() {
     let dir = scratch_dir();

@@ -3038,6 +3038,7 @@ cmd_list() {
           title: .story.title,
           state: .story.state,
           priority: .story.priority,
+          blocker_floor: .blocker_floor,
           option: {
             label: .story.id,
             description: (.story.title // "(no title)")
@@ -3047,7 +3048,9 @@ cmd_list() {
           if ($rows | length) == 0
           then "No ready stories to pick up."
           else "[story] " + ($rows | length | tostring) + " ready story(ies):\n"
-               + ([ $rows[] | "  " + .story.id + " [" + (.story.priority // "none") + "] " + (.story.title // "(no title)") ] | join("\n"))
+               + ([ $rows[] | "  " + .story.id + " [" + (.story.priority // "none")
+                    + (if .blocker_floor then " (" + .blocker_floor + ")" else "" end)
+                    + "] " + (.story.title // "(no title)") ] | join("\n"))
           end
         )
       }'

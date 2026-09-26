@@ -15,7 +15,8 @@ dashboard's board:
 
 `COLUMN_SORT_OPTIONS` (`src/web_dashboard.html`) offered Added/Modified/Priority.
 `Priority ↓` *coincidentally* resembles `domain::ready_order` (priority ASC, then
-story number ASC) but is not the same answer: `story next` also excludes epics
+story number ASC; since SH-788 both read the *effective* level, raised to a
+blocker floor — `docs/spec/blocker-floor.md`) but is not the same answer: `story next` also excludes epics
 (`!has_children`) and every already-claimed story, and nothing kept the two in
 step — a column sorted "Priority ↓" could show an epic first, which `story next`
 would never offer at all.
