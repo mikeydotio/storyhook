@@ -30,7 +30,7 @@ pub use control::VerificationControlState;
 
 use super::bus::{Change, ChangeBus};
 use super::lifecycle::{CurrentRequest, InFlight};
-use crate::api::dispatch::{DispatchAgent, resolve_dispatch_script};
+use crate::api::dispatch::resolve_control_script;
 use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{
     CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt, SubmissionReceipt,
@@ -841,9 +841,10 @@ impl ShellVerificationActuator {
         if let Some(path) = &self.helper_path {
             return Ok(path.clone());
         }
-        resolve_dispatch_script(DispatchAgent::Codex)
-            .or_else(|_| resolve_dispatch_script(DispatchAgent::Claude))
-            .map_err(AppError::Storage)
+        // Never through a provider CLI while a file names the helper: a
+        // `codex plugin list` that never answered once held this verifier
+        // after a landing for as long as the daemon lived (SH-815).
+        resolve_control_script().map_err(AppError::Storage)
     }
 
     fn log_scope(&self, candidate: &VerificationCandidate) -> super::activity::context::Scope {
