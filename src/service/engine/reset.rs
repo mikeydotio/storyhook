@@ -15,7 +15,7 @@ enum StopTarget {
     /// The lane is idle, or this attempt released it without cleanup.
     Settled,
     /// A leased reset that the helper must clean up.
-    Reset(EngineReset),
+    Reset(Box<EngineReset>),
     /// Another cleanup operation owns the story and releases the lane when
     /// it finishes; the store refuses this lane's writes until then.
     Deferred(String),
@@ -174,7 +174,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         ));
                         return Ok(());
                     }
-                    StopTarget::Reset(reset) => reset,
+                    StopTarget::Reset(reset) => *reset,
                 };
                 let result = (|| {
                     let workspace = WorkspaceLock::acquire(
@@ -328,7 +328,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         "reset reservation belongs to a different lane identity".into(),
                     ));
                 }
-                return Ok(StopTarget::Reset(reset));
+                return Ok(StopTarget::Reset(Box::new(reset)));
             }
             let states = tx.state_map(project)?;
             let active = active_state(&tx.states(project)?)
@@ -412,7 +412,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 failure: None,
             };
             tx.put_engine_reset(&reset)?;
-            Ok(StopTarget::Reset(reset))
+            Ok(StopTarget::Reset(Box::new(reset)))
         })?)
     }
 
