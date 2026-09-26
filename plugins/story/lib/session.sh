@@ -337,30 +337,53 @@ strip_composer_decoration() {
   printf '%s' "$1" | LC_ALL=C sed -E -e "$COMPOSER_DECORATION_EXPR" -e "$COMPOSER_PADDING_EXPR"
 }
 
-# input_box_text <content> — echo the text of the ACTIVE input row (the LAST line
-# bearing READY_PROMPT_GLYPH) after that row's FIRST glyph, box padding stripped.
+# COMPOSER_AWK — the reader of a composer row (lib/composer.awk). Resolved once,
+# at source time, beside this file.
+COMPOSER_AWK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/composer.awk"
+
+# composer_row_text <content> — echo the text of the ACTIVE input row (the LAST
+# line bearing READY_PROMPT_GLYPH) after that row's FIRST glyph: escape
+# sequences removed, faint characters left out, box border, Braille decoration
+# and NBSP padding normalised. Returns 0 when a row bears the glyph, 1 when none
+# does, and anything else when the reader itself failed (then nothing is
+# echoed and nothing may be concluded).
+#
 # The input row, NOT the pane's last non-blank line: the real TUI (and the test
 # fixtures) render a FOOTER *below* the input box, so the last non-blank line is
 # the footer and never the prompt. The first glyph, not the last: the row's own
 # prompt comes first, and a draft that ends in the glyph character is still a
-# draft (SH-780).
-input_box_text() {
-  local content="$1" row tail
-  row=$(printf '%s\n' "$content" | grep -F -- "$READY_PROMPT_GLYPH" | tail -1) || row=""
-  [ -n "$row" ] || { printf ''; return 0; }
-  tail=${row#*"$READY_PROMPT_GLYPH"}    # everything after the first glyph
+# draft (SH-780). Faint characters are left out because providers draw what is
+# not input that way -- Claude Code's predicted next prompt, Codex's
+# placeholder -- which a plain capture showed as a draft (SH-780). <content>
+# should come from `capture-pane -p -e`; a plain capture reads the same, minus
+# that rule.
+composer_row_text() {
+  local tail status=0
+  tail=$(printf '%s\n' "$1" | COMPOSER_GLYPH="$READY_PROMPT_GLYPH" LC_ALL=C awk -f "$COMPOSER_AWK") \
+    || status=$?
+  [ "$status" -le 1 ] || return "$status"
   tail=${tail//│/}                       # strip the box border (literal, mb-safe)
   tail=$(strip_composer_decoration "$tail")   # then any animated decoration (SH-694)
   printf '%s' "$tail"
+  return "$status"
+}
+
+# input_box_text <content> — composer_row_text for callers that only want the
+# text: empty when no row bears the glyph or the reader failed.
+input_box_text() {
+  composer_row_text "$1" || true
 }
 
 # input_state <pane> — "text" (box holds unsubmitted input) | "empty" (idle box) |
-# "unknown" (capture failed). "unknown" is DISTINCT from "empty" so a transient
-# capture failure can never be misread as a submission confirmation.
+# "unknown" (capture or reader failed). "unknown" is DISTINCT from "empty" so a
+# transient failure can never be misread as a submission confirmation, nor as
+# an idle composer that storyhook may type into. The capture carries attributes
+# (-e) so that faint placeholder text is not read as input (composer_row_text).
 input_state() {
-  local content box_text
-  content=$(tmux capture-pane -p -t "$1" 2>/dev/null) || { printf 'unknown'; return; }
-  box_text="$(input_box_text "$content")"
+  local content box_text status=0
+  content=$(tmux capture-pane -p -e -t "$1" 2>/dev/null) || { printf 'unknown'; return; }
+  box_text=$(composer_row_text "$content") || status=$?
+  [ "$status" -le 1 ] || { printf 'unknown'; return; }
   case "$box_text" in
     *[![:space:]]*)
       if [ -n "${EMPTY_INPUT_PATTERN:-}" ] \
