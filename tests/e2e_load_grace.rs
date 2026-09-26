@@ -13,7 +13,7 @@
 //! the multiplier is *right*, that the watchdog ever *fires*, that a grant
 //! is ever *used*, that the ceiling is ever *reached*, or that any of this
 //! makes a single WebKit test pass. Only a real run under real contention
-//! answers those, which is what `e2e/specs/load-grace.spec.ts`'s executed
+//! answers those, which is what `e2e/specs/load-grace.node.spec.ts`'s executed
 //! unit tests and the browser suite's own runs are for.
 
 use std::path::{Path, PathBuf};

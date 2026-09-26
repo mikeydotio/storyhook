@@ -356,6 +356,23 @@ if [ -z "${FAKE_TMUX_STATE:-}" ]; then
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
 fi
 
+# The fake's placeholder pane process self-expires (`fakes/tmux`, 30 s by
+# default) so a test that forgets it still heals. That 30 s is an idle-machine
+# bound every pane-probing test silently depended on: under gate load the steps
+# between a `new-window` and a later probe of that pane outran it, and every
+# probe then read `pane-dead` -- SH-760's gate (test-dispatch-pane-readiness.sh,
+# fixed in that one file) and SH-792's (test-notify.sh,
+# test-notify-registered-session.sh). It is patience, not proof, so it is
+# graced by contention here, once, for every test (SH-347, SH-766). A test
+# that proves expiry itself still sets its own lifetime after sourcing this.
+if [ -z "${FAKE_TMUX_PANE_LIFETIME:-}" ]; then
+  if ! FAKE_TMUX_PANE_LIFETIME="$(python3 "$TESTS_DIR/../../../scripts/tests/load_grace.py" patience 30)"; then
+    printf 'lib.sh: cannot grace the fake pane lifetime (scripts/tests/load_grace.py)\n' >&2
+    exit 1
+  fi
+  export FAKE_TMUX_PANE_LIFETIME
+fi
+
 # Keep every terminal operation on the fixture's server. SH-655 found
 # fourteen tests consulting the real server through the former census gate.
 # SH-672 removes that gate; recovery still probes panes, so isolation remains

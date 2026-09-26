@@ -14,6 +14,7 @@ test("Settings renders the running Storyhook version in its About section", asyn
   await expect(settings).toBeVisible();
   await expect(settings.getByRole("heading", { level: 2 })).toHaveText([
     "Notices",
+    "Automatic model and effort",
     "Projects",
     "About",
     "Dispatch log",

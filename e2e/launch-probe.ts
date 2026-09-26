@@ -77,6 +77,12 @@ function selectedProject(config: FullConfig): FullProject {
 
 export default async function launchProbe(config: FullConfig): Promise<void> {
   const project = selectedProject(config);
+  // The `*.node.spec.ts` project runs no browser by design (SH-792); probing
+  // one would launch the very engine it refuses to have.
+  if ((project.metadata as { engineFree?: boolean } | undefined)?.engineFree) {
+    console.error(`launch-probe: project ${project.name} is engine-free; no browser to probe`);
+    return;
+  }
   const engine = engineFor(project);
   // Mirror the fixture's `_browserOptions`: the project's own launch options
   // (the untrusted-origin project carries `--host-resolver-rules`), its

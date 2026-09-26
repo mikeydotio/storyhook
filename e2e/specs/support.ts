@@ -18,6 +18,7 @@ import {
   MAX_TEST_TIMEOUT_MS,
   resetTestBudget,
 } from "../load-grace";
+import { planListingPlaceholder } from "../plan-listing";
 
 /** The expectation shapes Playwright's own text matchers accept. */
 type TextExpectation = string | RegExp | (string | RegExp)[];
@@ -416,11 +417,17 @@ async function resetFixtureTokenPreferences(request: APIRequestContext): Promise
  * An environment variable this suite cannot run without. Throws rather than
  * defaulting, so a spec run outside `scripts/run-e2e.sh` fails loudly
  * instead of quietly hitting a dashboard with no fixtures and no token --
- * mirrors `playwright.config.ts`'s own `DASHBOARD_URL` check.
+ * mirrors `playwright.config.ts`'s own `DASHBOARD_URL` check. The one
+ * exception is the runner's plan listing, which loads every spec before any
+ * fixture exists and runs none of them (`../plan-listing.ts`, SH-792).
  */
 export function requiredEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
+    const placeholder = planListingPlaceholder(name);
+    if (placeholder !== undefined) {
+      return placeholder;
+    }
     throw new Error(
       `${name} is not set — run this suite through scripts/run-e2e.sh, which starts an ` +
         "isolated daemon, seeds its fixtures, and exports the variables this file needs.",

@@ -66,10 +66,16 @@ is_core_rust_target_path() {
 
 # Inputs shared by every cached verdict. If the orchestration or the scope
 # definition changes, no result produced under the previous contract is
-# silently reused.
+# silently reused. `leg.sh` sources the progress and activity helpers for
+# every leg, so they are orchestration too.
+#
+# Each arm below must name every script its leg's command executes, directly
+# or through another script: `tests/gate_leg_reuse.rs` derives that set from
+# the Makefile and the scripts themselves and fails on an omission (SH-792).
 is_gate_contract() {
     case "$1" in
     (Makefile | scripts/gate-legs.sh | scripts/leg.sh | scripts/gate-leg-fingerprint.sh | scripts/cargo_diagnostics.py) return 0 ;;
+    (scripts/gate-progress.sh | scripts/activity-log.sh) return 0 ;;
     (*) return 1 ;;
     esac
 }
@@ -131,6 +137,7 @@ is_input() {
             fi
             ;;
         (tests/* | scripts/run-tests.sh | scripts/test-pool.py | scripts/run-rust-battery.sh | scripts/rust-test-targets.sh) return 0 ;;
+        (scripts/test-env.sh | scripts/machine-lock.sh | scripts/activity-run.py | scripts/test-delta.sh | scripts/test_output.py) return 0 ;;
         esac
         ;;
     (rust-contracts)
@@ -147,12 +154,14 @@ is_input() {
         is_non_dashboard_production_rust "$path" && return 0
         case "$path" in
         (plugins/story/* | .agents/plugins/marketplace.json | .claude-plugin/marketplace.json) return 0 ;;
+        (scripts/test-env.sh | scripts/binary-lease.sh | scripts/test-git-endpoint.py | scripts/tests/load_grace.py) return 0 ;;
         esac
         ;;
     (e2e)
         is_production_rust "$path" && return 0
         case "$path" in
         (e2e/* | plugins/story/* | scripts/run-e2e.sh | scripts/test-browser-launch-reporter.py | .storyhook.toml) return 0 ;;
+        (scripts/e2e-*.sh | scripts/test-env.sh | scripts/binary-lease.sh) return 0 ;;
         esac
         ;;
     esac

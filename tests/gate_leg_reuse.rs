@@ -183,6 +183,19 @@ impl Repo {
         fs::write(path, contents).expect("writing fixture file");
     }
 
+    /// Makes `relative` a regular file holding the checkout's own copy plus
+    /// `suffix`. A fixture script can be a symlink into the real checkout, and
+    /// `write` would follow it and edit the tracked original.
+    fn replace_with_tracked_copy(&self, relative: &str, suffix: &str) {
+        let original = fs::read_to_string(checkout().join(relative))
+            .unwrap_or_else(|e| panic!("reading the tracked {relative}: {e}"));
+        let path = self.path().join(relative);
+        if path.symlink_metadata().is_ok() {
+            fs::remove_file(&path).unwrap_or_else(|e| panic!("unlinking fixture {relative}: {e}"));
+        }
+        self.write(relative, &format!("{original}{suffix}"));
+    }
+
     fn git(&self, args: &[&str]) -> Output {
         let out = Command::new("git")
             .args(args)
@@ -636,4 +649,176 @@ fn rust_battery_classifier_is_disjoint_and_exhaustive() {
         expected,
         "the split silently omitted or invented a Cargo test target"
     );
+}
+
+/// Every reusable leg must re-run when any script its command executes
+/// changes. `leg.sh --reuse` can only reuse evidence as safely as the leg's
+/// fingerprint arm is complete, and an arm is a hand-kept list: SH-792 found
+/// the e2e arm missing every helper `run-e2e.sh` sources, so an edit to
+/// `e2e-selection.sh` could have been certified by a browser run that never
+/// executed it. This derives each leg's command from the Makefile and the
+/// scripts that command reaches from the scripts themselves, so a new helper
+/// is covered the day it is sourced, not the day someone remembers the arm.
+#[test]
+fn every_script_a_reusable_leg_executes_is_an_input_to_that_leg() {
+    let legs = reusable_leg_entries();
+    for expected in [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+        "e2e",
+    ] {
+        assert!(
+            legs.iter().any(|(label, _)| label == expected),
+            "the Makefile parse lost the {expected} leg: {legs:?}"
+        );
+    }
+
+    for (label, entry) in &legs {
+        // `leg.sh` runs every leg and sources helpers of its own; the leg's
+        // command script is the rest of what executes.
+        let mut seeds = vec!["scripts/leg.sh".to_owned()];
+        seeds.extend(entry.clone());
+        if entry.as_deref() == Some("plugins/story/tests/run-tests.sh") {
+            // The plugin runner executes every `test-*.sh` beside it through a
+            // glob, and they source `lib.sh`; no reference parse can follow a
+            // glob, so the directory's scripts are seeds in their own right.
+            seeds.extend(tracked_scripts_in("plugins/story/tests"));
+        }
+        let scripts = executed_scripts(&seeds);
+
+        let repo = Repo::new();
+        for script in &scripts {
+            repo.replace_with_tracked_copy(script, "");
+        }
+        repo.git(&["add", "."]);
+        assert!(repo.run_leg(label, true).status.success());
+        let mut runs = 1;
+        for (probe, script) in scripts.iter().enumerate() {
+            repo.replace_with_tracked_copy(script, &format!("\n# fingerprint probe {probe}\n"));
+            let result = repo.run_leg(label, true);
+            assert!(
+                result.status.success(),
+                "{label} after editing {script}: {result:?}"
+            );
+            runs += 1;
+            assert_eq!(
+                repo.executions(label),
+                runs,
+                "the {label} leg reused evidence after {script} changed, although \
+                 {label}'s command executes it; add it to that leg's arm in \
+                 scripts/gate-leg-fingerprint.sh"
+            );
+        }
+    }
+}
+
+/// `(label, command script)` for every `leg.sh --reuse` call in the
+/// Makefile. The script is `None` for a command that runs no repository
+/// script (`cargo fmt`).
+fn reusable_leg_entries() -> Vec<(String, Option<String>)> {
+    let makefile = fs::read_to_string(checkout().join("Makefile")).expect("reading the Makefile");
+    let mut legs: Vec<(String, Option<String>)> = Vec::new();
+    for line in makefile.lines() {
+        let Some((_, rest)) = line.split_once("scripts/leg.sh --reuse ") else {
+            continue;
+        };
+        let label = rest
+            .split_whitespace()
+            .next()
+            .expect("a leg label")
+            .to_owned();
+        let command = rest.split_once(" -- ").expect("a leg command").1;
+        let tokens: Vec<&str> = command
+            .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+            .filter(|token| !token.is_empty())
+            .collect();
+        let entry = tokens
+            .windows(2)
+            .find(|pair| matches!(pair[0], "bash" | "python3") && is_script(pair[1]))
+            .map(|pair| pair[1].to_owned());
+        if !legs.iter().any(|(known, _)| *known == label) {
+            legs.push((label, entry));
+        }
+    }
+    legs
+}
+
+/// The seeds and every tracked script they run or source, transitively.
+fn executed_scripts(seeds: &[String]) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut todo = seeds.to_vec();
+    while let Some(path) = todo.pop() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let text = fs::read_to_string(checkout().join(&path))
+            .unwrap_or_else(|e| panic!("reading {path}: {e}"));
+        todo.extend(script_references(&path, &text));
+    }
+    seen
+}
+
+/// The tracked scripts `path` executes: the operand of `.`, `source`, `bash`
+/// or `python3` on any non-comment line. Only operation words count, so a
+/// script that merely NAMES another as data (the fingerprint's own case arms,
+/// a usage message) adds nothing.
+fn script_references(path: &str, text: &str) -> Vec<String> {
+    let dir = Path::new(path).parent().expect("script has a directory");
+    let mut found = Vec::new();
+    for line in text.lines() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let tokens: Vec<&str> = line
+            .split(|c: char| c.is_whitespace() || ";&|()".contains(c))
+            .filter(|token| !token.is_empty())
+            .collect();
+        for pair in tokens.windows(2) {
+            if !matches!(pair[0], "." | "source" | "bash" | "python3") {
+                continue;
+            }
+            let operand = pair[1].trim_matches(|c| c == '"' || c == '\'');
+            if !is_script(operand) {
+                continue;
+            }
+            // Repository-rooted spellings (`$repo_root/scripts/x`,
+            // `$TESTS_DIR/../../../scripts/x`, `scripts/x`) and the
+            // script-relative `$script_dir/x`.
+            let candidate = if let Some(at) = operand.find("scripts/") {
+                operand[at..].to_owned()
+            } else if let Some(rest) = operand.strip_prefix("$script_dir/") {
+                dir.join(rest).to_string_lossy().into_owned()
+            } else {
+                continue;
+            };
+            if checkout().join(&candidate).is_file() {
+                found.push(candidate);
+            }
+        }
+    }
+    found
+}
+
+fn is_script(token: &str) -> bool {
+    let token = token.trim_matches(|c| c == '"' || c == '\'');
+    token.ends_with(".sh") || token.ends_with(".py")
+}
+
+fn tracked_scripts_in(dir: &str) -> Vec<String> {
+    let out = Command::new("git")
+        .args(["ls-files", "--", dir])
+        .current_dir(checkout())
+        .output()
+        .expect("listing tracked scripts");
+    assert!(out.status.success(), "git ls-files failed: {out:?}");
+    String::from_utf8(out.stdout)
+        .expect("utf-8 paths")
+        .lines()
+        .filter(|path| is_script(path))
+        .map(str::to_owned)
+        .collect()
 }

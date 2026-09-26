@@ -91,13 +91,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 
-use storyhook_test_support::{ChildGuard, scratch_dir};
+use storyhook_test_support::{ChildGuard, load_grace, scratch_dir};
 use tempfile::TempDir;
 
 /// A fetch during verification must not restore newer bytes under the old
@@ -409,13 +408,26 @@ fn completion_records(repo: &MergeRepo) -> Vec<String> {
 /// [`wait_for`] with a longer deadline: the gate seam re-execs under
 /// machine-lock and the lifecycle owner before its command starts, which is
 /// more start-up than the bare speculative run `wait_for` was sized for.
-fn wait_for_within(path: &Path, deadline: Duration) {
-    let give_up_at = Instant::now() + deadline;
-    while !path.exists() && Instant::now() < give_up_at {
-        thread::sleep(Duration::from_millis(20));
-    }
-    assert!(path.exists(), "timed out waiting for {}", path.display());
+///
+/// `idle` is patience, never proof: the wait is for a marker the fixture is
+/// expected to write, so it is graced by contention (SH-806, SH-810).
+fn wait_for_within(path: &Path, idle: Duration) {
+    load_grace::wait_for(
+        load_grace::Patience::new(idle),
+        MARKER_POLL,
+        || format!("timed out waiting for {}", path.display()),
+        || path.exists().then_some(()),
+    );
 }
+
+/// How often a marker wait looks again.
+const MARKER_POLL: Duration = Duration::from_millis(20);
+
+/// What a speculative run needs on an idle machine to set up its merge and
+/// start the fixture command, or to exit after a signal or a release. Graced
+/// by contention at each use: SH-792's gate missed the 5 s marker at utility
+/// QoS on a tree that did not touch merge-preflight.
+const SPECULATIVE_PATIENCE: Duration = Duration::from_secs(5);
 
 /// The SH-607 production incident had one decisive failure followed by 611
 /// unknown outcomes. A tail cannot recover the failure from that ordering.
@@ -1849,11 +1861,7 @@ fn git_with_objects(cwd: &Path, primary: &Path, alternate: &Path, args: &[&str])
 }
 
 fn wait_for(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !path.exists() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(20));
-    }
-    assert!(path.exists(), "timed out waiting for {}", path.display());
+    wait_for_within(path, SPECULATIVE_PATIENCE);
 }
 
 #[cfg(target_os = "macos")]
@@ -2205,7 +2213,7 @@ fn speculative_run_keeps_shared_worktree_refs_resolvable_while_gate_is_blocked()
     let bisect_reset = run(&sibling, "git", &["bisect", "reset"]);
 
     fs::write(&release, "release\n").expect("releasing the speculative gate");
-    let status = child.wait_within(Duration::from_secs(5), || {
+    let status = child.wait_within(load_grace::graced_now(SPECULATIVE_PATIENCE), || {
         "the speculative gate did not exit after release".to_owned()
     });
 
@@ -2496,7 +2504,7 @@ fn speculative_run_forwards_hup_and_term_and_cleans_before_reraising() {
             .output()
             .expect("signalling speculative-run");
         assert_ok(&signal, "signalling speculative-run");
-        let status = child.wait_within(Duration::from_secs(5), || {
+        let status = child.wait_within(load_grace::graced_now(SPECULATIVE_PATIENCE), || {
             format!("the speculative run did not exit after {name}")
         });
         assert_eq!(status.signal(), Some(number), "{name} must be re-raised");
