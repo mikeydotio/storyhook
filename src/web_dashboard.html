@@ -1889,6 +1889,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       <div class="field"><label for="create-priority">Priority</label><select id="create-priority"></select></div>
     </div>
     <div class="field" id="create-labels-field"><label>Labels</label></div>
+    <div class="field"><label for="create-blocked-by">Blocked by (optional)</label><input type="text" id="create-blocked-by" autocomplete="off" placeholder="Story IDs, e.g. SH-2, SH-5"></div>
     <div class="modal-error" id="create-error"></div>
   </div>
   <div class="modal-footer">
@@ -14816,6 +14817,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("create-title").value = story ? story.title : "";
     $("create-description").value = (story && story.description) || "";
     autoGrowTextarea($("create-description"));
+    $("create-blocked-by").value = story ? draftBlockedBy(editingDraft).join(", ") : "";
     $("create-error").textContent = "";
     var m = draft ? draftMeta : meta();
     var defaults = m.defaults || {};
@@ -15027,6 +15029,64 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     return Promise.all(calls);
   }
 
+  /** `token` in canonical `PREFIX-n` form when it names a story of the modal's
+   * target project -- a bare `2` or `sh-2` both become `SH-2` -- and unchanged
+   * otherwise, so the server still reports a foreign or malformed id itself.
+   * The draft-edit diff below compares against recorded edges, which are
+   * always canonical: without this, retyping a blocker as `2` would read as
+   * "remove SH-2, add 2" and drop the edge. */
+  function canonicalCreateBlocker(token) {
+    var repo = state.repos.filter(function(r) { return r.id === createTargetProject; })[0];
+    var match = /^(?:([^-\s]+)-)?(\d+)$/.exec(token);
+    if (!repo || !repo.prefix || !match) return token;
+    if (match[1] && match[1].toUpperCase() !== repo.prefix.toUpperCase()) return token;
+    return repo.prefix + "-" + String(parseInt(match[2], 10));
+  }
+
+  /** The story ids typed into `#create-blocked-by` (SH-779): split on commas
+   * and whitespace, canonicalized, empties and repeats dropped, in the order
+   * typed. */
+  function createBlockedByIds() {
+    var seen = {};
+    return $("create-blocked-by").value.split(/[\s,]+/)
+      .filter(function(token) { return token; })
+      .map(canonicalCreateBlocker)
+      .filter(function(id) {
+        if (seen[id]) return false;
+        seen[id] = true;
+        return true;
+      });
+  }
+
+  /** The `blocked-by` edges a `StoryView` records, as story ids. */
+  function draftBlockedBy(view) {
+    return ((view && view.story && view.story.relationships) || [])
+      .filter(function(r) { return r.relation === "blocked-by"; })
+      .map(function(r) { return r.other_id; });
+  }
+
+  /** Applies the form's blockers to the draft `id` as an add/remove diff
+   * against `originalIds`, one `/relate` or `/unrelate` at a time (SH-779).
+   * These are separate writes, which is safe only because a draft is never
+   * ready: no Full Auto run can claim it between them. A NEW story must never
+   * come through here -- it sends `blocked_by` in its creating POST, so its
+   * edges land in the same transaction. Resolves with no request when nothing
+   * changed; rejects on the first refusal (an unknown id is a 404), leaving
+   * the later steps unsent for the caller's retry. */
+  function applyBlockerDiff(id, originalIds, capturedBase) {
+    var base = capturedBase || createApiBase();
+    var next = createBlockedByIds();
+    var before = originalIds || [];
+    var steps = [];
+    next.filter(function(b) { return before.indexOf(b) === -1; }).forEach(function(b) {
+      steps.push(function() { return api("POST", base + "/relate", { a: id, relation: "blocked-by", b: b }); });
+    });
+    before.filter(function(b) { return next.indexOf(b) === -1; }).forEach(function(b) {
+      steps.push(function() { return api("POST", base + "/unrelate", { a: id, relation: "blocked-by", b: b }); });
+    });
+    return steps.reduce(function(chain, step) { return chain.then(step); }, Promise.resolve());
+  }
+
   /** Turns a confirmed story response into this modal's persisted draft.
    * The project becomes immutable at the same boundary story identity does;
    * every later retry PATCHes this id instead of POSTing a duplicate. */
@@ -15092,15 +15152,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       request = api("PATCH", base + "/story/" + encodeURIComponent(id), body)
         .then(function(payload) {
           adoptPersistedCreateDraft(payload, targetProject);
+          // The PATCH reply is the server's own record of the draft's edges,
+          // so a retry after a partial diff starts from what actually landed.
+          var recordedBlockers = draftBlockedBy(editingDraft);
           return applyLabelDiff(id, current.story.labels, base).then(function() {
             editingDraft.story.labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
-            return payload;
-          });
+            return applyBlockerDiff(id, recordedBlockers, base);
+          }).then(function() { return payload; });
         });
     } else {
       body.draft = true;
       var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
       if (labels.length) body.labels = labels;
+      var blockers = createBlockedByIds();
+      if (blockers.length) body.blocked_by = blockers;
       request = api("POST", base + "/story", body)
         .then(function(payload) { return adoptPersistedCreateDraft(payload, targetProject); });
     }
@@ -15248,12 +15313,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       request = persistCreateDraftWithAttachments(body, targetProject);
     } else if (editingDraft) {
       var id = editingDraft.story.id;
+      var recordedBlockers = draftBlockedBy(editingDraft);
       request = api("PATCH", base + "/story/" + encodeURIComponent(id), body)
-        .then(function() { return applyLabelDiff(id, editingDraft.story.labels); });
+        .then(function() { return applyLabelDiff(id, editingDraft.story.labels); })
+        .then(function() { return applyBlockerDiff(id, recordedBlockers, base); });
     } else {
       body.draft = true;
       var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
       if (labels.length) body.labels = labels;
+      var blockers = createBlockedByIds();
+      if (blockers.length) body.blocked_by = blockers;
       request = api("POST", base + "/story", body);
     }
     request
@@ -15310,12 +15379,19 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         });
     } else if (editingDraft) {
       var id = editingDraft.story.id;
+      var recordedBlockers = draftBlockedBy(editingDraft);
+      // Every edge is recorded before the publish that makes the story ready.
       request = api("PATCH", base + "/story/" + encodeURIComponent(id), body)
         .then(function() { return applyLabelDiff(id, editingDraft.story.labels); })
+        .then(function() { return applyBlockerDiff(id, recordedBlockers, base); })
         .then(function() { return api("POST", base + "/story/" + encodeURIComponent(id) + "/publish", {}); });
     } else {
       var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
       if (labels.length) body.labels = labels;
+      // SH-779: the blockers ride in the creating POST, so the story is never
+      // ready -- and never claimable by a Full Auto run -- without them.
+      var blockers = createBlockedByIds();
+      if (blockers.length) body.blocked_by = blockers;
       request = api("POST", base + "/story", body);
     }
     request
@@ -15976,6 +16052,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("create-save-draft").addEventListener("click", saveDraft);
     $("create-submit").addEventListener("click", submitCreate);
     bindEnterSubmit($("create-title"), submitCreate);
+    bindEnterSubmit($("create-blocked-by"), submitCreate);
     $("create-description").addEventListener("input", function() { autoGrowTextarea(this); });
     $("create-description").addEventListener("paste", stagePastedCreateAttachments);
     $("drafts-btn").addEventListener("click", function() { closeMoreMenu(true); openDraftsModal(); });
