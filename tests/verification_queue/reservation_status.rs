@@ -180,3 +180,292 @@ fn the_verifier_help_topic_names_the_reservation() {
     let topic = storyhook::help_topics::get_help_topic("verifier").unwrap();
     assert!(topic.contains("reservation"), "{topic}");
 }
+
+/// A fake verifier that reads status from inside its own blocking calls,
+/// where the tick still owns the project's slot.
+struct StatusProbe<'a> {
+    fixture: &'a ServiceFixture,
+    activity: &'a VerificationActivity,
+    outcomes: Mutex<VecDeque<VerificationOutcome>>,
+    /// Successive submission answers; exhausted means adopt the linked PR.
+    submissions: Mutex<VecDeque<Result<SubmittedPullRequest, SubmissionFailure>>>,
+    /// When set, the first `notify` resubmits this story and then fails.
+    resubmit_on_first_notify: Option<String>,
+    notifications: Mutex<usize>,
+    verified: Mutex<Vec<Option<GlobalSeq>>>,
+    probes: Mutex<Vec<(&'static str, VerifierStatus)>>,
+}
+
+impl<'a> StatusProbe<'a> {
+    fn new(
+        fixture: &'a ServiceFixture,
+        activity: &'a VerificationActivity,
+        outcomes: impl IntoIterator<Item = VerificationOutcome>,
+    ) -> Self {
+        Self {
+            fixture,
+            activity,
+            outcomes: Mutex::new(outcomes.into_iter().collect()),
+            submissions: Mutex::new(VecDeque::new()),
+            resubmit_on_first_notify: None,
+            notifications: Mutex::new(0),
+            verified: Mutex::new(Vec::new()),
+            probes: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn probe(&self, call: &'static str) {
+        let status = status_at(self.fixture, self.activity, &self.fixture.env().now());
+        self.probes.lock().unwrap().push((call, status));
+    }
+
+    fn probes(&self) -> Vec<(&'static str, VerifierStatus)> {
+        self.probes.lock().unwrap().clone()
+    }
+}
+
+impl VerificationActuator for StatusProbe<'_> {
+    fn submit(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        self.submissions
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| adopt_linked(candidate))
+    }
+
+    fn verify(
+        &self,
+        candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        self.verified
+            .lock()
+            .unwrap()
+            .push(candidate.verifying_generation);
+        self.outcomes
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("every verification attempt must have a fixture outcome")
+    }
+
+    fn land(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        storyhook::daemon::verification::LandingOutcome::Merged {
+            detail: "test merge confirmed".into(),
+        }
+    }
+
+    fn recover_landing(
+        &self,
+        _candidate: &VerificationCandidate,
+        _intent: &storyhook::store::LandingIntent,
+    ) -> storyhook::daemon::verification::LandingOutcome {
+        storyhook::daemon::verification::LandingOutcome::Merged {
+            detail: "test merge recovered".into(),
+        }
+    }
+
+    fn notify(
+        &self,
+        _candidate: &VerificationCandidate,
+        _message: &str,
+    ) -> Result<NotifyDelivery, AppError> {
+        self.probe("notify");
+        let first = {
+            let mut notifications = self.notifications.lock().unwrap();
+            *notifications += 1;
+            *notifications == 1
+        };
+        if first && let Some(story) = &self.resubmit_on_first_notify {
+            StoryService::new(&self.fixture.ctx())
+                .set_state(story, "verifying", None, Some("in-progress"), None)
+                .unwrap();
+            return Err(AppError::Storage("pane query failed".into()));
+        }
+        Ok(NotifyDelivery::Delivered)
+    }
+
+    fn redispatch(
+        &self,
+        _candidate: &VerificationCandidate,
+        _plan: &ResumePlan,
+    ) -> Result<(), AppError> {
+        panic!("a delivered or failed notification never re-dispatches here")
+    }
+
+    fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+        self.probe("reap");
+        Ok(())
+    }
+}
+
+/// Asserts that `status` shows `story` held for `reason` as ordinary work.
+fn assert_reserved(status: &VerifierStatus, story: &str, reason: ReservationReason, case: &str) {
+    let reservation = status
+        .reservation
+        .as_ref()
+        .unwrap_or_else(|| panic!("{case}: no reservation in {status:?}"));
+    assert_eq!(reservation.story_id, story, "{case}");
+    assert_eq!(reservation.reason, reason, "{case}");
+    assert_eq!(status.evidence_error, None, "{case}: {status:?}");
+    assert_eq!(status.warning, None, "{case}: {status:?}");
+}
+
+#[test]
+fn every_return_reserves_the_verifier_while_its_diagnosis_is_delivered() {
+    let cases = [
+        (
+            "red",
+            VerificationOutcome::TestsFailed {
+                tree: "abc123".into(),
+                log: "/tmp/red.log".into(),
+                detail: "red".into(),
+                gate: GateCommand::DEFAULT.into(),
+            },
+            ReservationReason::Remediation,
+        ),
+        (
+            "invalid submission",
+            VerificationOutcome::InvalidSubmission {
+                detail: "invalid".into(),
+            },
+            ReservationReason::Remediation,
+        ),
+        (
+            "conflict",
+            VerificationOutcome::Conflict {
+                detail: "conflict".into(),
+            },
+            ReservationReason::Reconcile,
+        ),
+    ];
+    for (case, outcome, reason) in cases {
+        let fixture = ServiceFixture::new();
+        fixture.github_checkout("https://github.com/acme/widgets");
+        let id = submitted(&fixture, case, Priority::Low, PR_ONE);
+        let activity = VerificationActivity::new();
+        std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+        let inflight = InFlight::new(fixture.env().clone());
+        let actuator = StatusProbe::new(&fixture, &activity, [outcome]);
+
+        let result = tick_with_activity(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            fixture.project(),
+        )
+        .unwrap();
+
+        assert_eq!(result, TickResult::Returned, "{case}");
+        let probes = actuator.probes();
+        assert_eq!(probes.len(), 1, "{case}");
+        assert_eq!(probes[0].0, "notify", "{case}");
+        assert_reserved(&probes[0].1, &id, reason, case);
+        assert!(activity.active_for(fixture.project()).is_none(), "{case}");
+    }
+}
+
+#[test]
+fn a_refused_submission_reserves_the_verifier_while_its_diagnosis_is_delivered() {
+    let fixture = ServiceFixture::new();
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "dirty", None);
+    let env = Environment::at(root.path());
+    std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(env.clone());
+    let activity = VerificationActivity::new();
+    let actuator = StatusProbe::new(&fixture, &activity, []);
+    actuator
+        .submissions
+        .lock()
+        .unwrap()
+        .push_back(Err(SubmissionFailure::Refused {
+            reason: "dirty-worktree".into(),
+            display: "story.sh submit: the worktree has uncommitted changes.".into(),
+        }));
+
+    let result = tick_with_activity(
+        fixture.store(),
+        &env,
+        &actuator,
+        &activity,
+        &inflight,
+        fixture.project(),
+    )
+    .unwrap();
+
+    assert_eq!(result, TickResult::Returned);
+    let probes = actuator.probes();
+    assert_eq!(probes.len(), 1);
+    assert_reserved(&probes[0].1, &id, ReservationReason::Remediation, "refused");
+}
+
+/// The reservation is kept once the return commits, even when the delivery
+/// that follows fails and the story has already come back: the tick then
+/// continues, and the new generation must replace the reservation before any
+/// refresh finds it current (a debug assertion pins that order).
+#[test]
+fn a_failed_delivery_after_a_resubmission_continues_with_the_new_generation() {
+    let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
+    let root = scratch_dir();
+    let (id, _) = leased_submission(&fixture, root.path(), "comes back", Some(PR_ONE));
+    let returned = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap()
+        .verifying_generation;
+    let env = Environment::at(root.path());
+    std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(env.clone());
+    let activity = VerificationActivity::new();
+    let mut actuator = StatusProbe::new(
+        &fixture,
+        &activity,
+        [VerificationOutcome::TestsFailed {
+            tree: "abc123".into(),
+            log: "/tmp/red.log".into(),
+            detail: "red".into(),
+            gate: GateCommand::DEFAULT.into(),
+        }],
+    );
+    actuator.resubmit_on_first_notify = Some(id.clone());
+    actuator
+        .submissions
+        .lock()
+        .unwrap()
+        .push_back(Err(SubmissionFailure::Refused {
+            reason: "dirty-worktree".into(),
+            display: "story.sh submit: the worktree has uncommitted changes.".into(),
+        }));
+
+    let result = tick_with_activity(
+        fixture.store(),
+        &env,
+        &actuator,
+        &activity,
+        &inflight,
+        fixture.project(),
+    )
+    .unwrap();
+
+    assert_eq!(result, TickResult::Returned);
+    let verified = actuator.verified.lock().unwrap().clone();
+    assert_eq!(verified.len(), 1, "only the resubmission is verified");
+    assert_ne!(verified[0], returned);
+    let probes = actuator.probes();
+    assert_eq!(probes.len(), 2);
+    for (_, status) in &probes {
+        assert_reserved(status, &id, ReservationReason::Remediation, "delivery");
+    }
+    assert!(activity.active_for(fixture.project()).is_none());
+}

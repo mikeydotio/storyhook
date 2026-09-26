@@ -115,7 +115,7 @@ fn remediation_reuses_verifier_lock_without_parking_or_interrupting_agent() {
         &candidate,
         diagnosis,
         &guard,
-        None,
+        ReservationReason::Remediation,
     )
     .unwrap();
     let row = store

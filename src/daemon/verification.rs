@@ -2068,7 +2068,7 @@ where
                         &candidate,
                         UNLEASED_SUBMISSION,
                         &active,
-                        None,
+                        ReservationReason::Remediation,
                     )? {
                         GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                         GenerationWrite::Superseded => match refresh_authority(
@@ -2091,7 +2091,7 @@ where
                         &candidate,
                         &problem.message(),
                         &active,
-                        None,
+                        ReservationReason::Remediation,
                     )? {
                         GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                         GenerationWrite::Superseded => match refresh_authority(
@@ -2330,7 +2330,7 @@ where
                             crate::text_lint::quote_evidence(&detail)
                         ),
                         &active,
-                        Some(ReservationReason::Reconcile),
+                        ReservationReason::Reconcile,
                     )?;
                     let remediation_started = match remediation_started {
                         GenerationWrite::Applied(started) => started,
@@ -2378,7 +2378,7 @@ where
                             crate::text_lint::quote_evidence(&detail)
                         ),
                         &active,
-                        None,
+                        ReservationReason::Remediation,
                     )?;
                     if matches!(result, GenerationWrite::Applied(_)) {
                         return Ok(TickResult::Returned);
@@ -2410,7 +2410,7 @@ where
                             crate::text_lint::quote_evidence(&detail)
                         ),
                         &active,
-                        None,
+                        ReservationReason::Remediation,
                     )?;
                     if matches!(result, GenerationWrite::Applied(_)) {
                         return Ok(TickResult::Returned);
@@ -2549,7 +2549,13 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
                         pull_request.url, linked.url, candidate.story_id
                     );
                     return Ok(return_for_repair(
-                        queue, ctx, actuator, candidate, &diagnosis, owner, None,
+                        queue,
+                        ctx,
+                        actuator,
+                        candidate,
+                        &diagnosis,
+                        owner,
+                        ReservationReason::Remediation,
                     )?
                     .map(|_| Some(TickResult::Returned)));
                 }
@@ -2572,7 +2578,13 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
             }
         }
         Err(SubmissionFailure::Refused { display, .. }) => Ok(return_for_repair(
-            queue, ctx, actuator, candidate, &display, owner, None,
+            queue,
+            ctx,
+            actuator,
+            candidate,
+            &display,
+            owner,
+            ReservationReason::Remediation,
         )?
         .map(|_| Some(TickResult::Returned))),
         Err(SubmissionFailure::Infrastructure { detail }) => Ok(record_infrastructure_failure(
@@ -2815,8 +2827,9 @@ fn record_cleanup_required(
 /// will make.
 ///
 /// `reservation` names why `owner` keeps its slot once the return takes its
-/// generation out of the queue (SH-768). It is declared before that write and
-/// kept only if the write applied.
+/// generation out of the queue (SH-768): through delivery, and on a conflict
+/// through the wait that follows. It is declared before that write and kept
+/// only if the write applied.
 fn return_for_repair<S: Store, A: VerificationActuator>(
     queue: &VerificationQueue<'_, S>,
     ctx: &Ctx<'_, S>,
@@ -2824,22 +2837,20 @@ fn return_for_repair<S: Store, A: VerificationActuator>(
     candidate: &VerificationCandidate,
     diagnosis: &str,
     owner: &VerificationGuard,
-    reservation: Option<ReservationReason>,
+    reservation: ReservationReason,
 ) -> Result<GenerationWrite<bool>, AppError> {
     let cancellation = &owner.cancellation;
     if cancellation.is_cancelled() || !queue.human_permits(candidate)? {
         return Ok(GenerationWrite::Applied(false));
     }
-    let pending = reservation.map(|reason| owner.reserve(reason, ctx.now()));
+    let pending = owner.reserve(reservation, ctx.now());
     if matches!(
         queue.record_generation_returned(ctx, candidate, diagnosis)?,
         GenerationWrite::Superseded
     ) {
         return Ok(GenerationWrite::Superseded);
     }
-    if let Some(pending) = pending {
-        pending.retire();
-    }
+    pending.retire();
     let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
     let delivered = actuator.notify(candidate, diagnosis);
     if cancellation.is_cancelled() || !queue.human_permits(candidate)? {

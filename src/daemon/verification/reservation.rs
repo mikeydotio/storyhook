@@ -7,13 +7,21 @@
 //! declaration is process-local: it cannot outlive the daemon that holds it.
 
 use std::sync::PoisonError;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActiveVerification, VerificationGuard};
+use super::{ActiveVerification, RECOVERY_WAKE, VerificationGuard};
 use crate::daemon::verification_progress::{StoryVerificationStatus, VerificationStatus};
 use crate::service::VerificationCandidate;
+use crate::service::engine::DISPATCH_TIMEOUT;
 use crate::store::GlobalSeq;
+
+/// Longest one control verb (notify, re-dispatch, reap) runs under the
+/// production actuator: its timeout, then the grace before its process group
+/// is killed (`ShellVerificationActuator::new`).
+const CONTROL_VERB_CEILING: Duration =
+    Duration::from_secs(DISPATCH_TIMEOUT.as_secs() + RECOVERY_WAKE.as_secs());
 
 /// Why a project's verifier keeps its slot after its own write took the owned
 /// generation out of the verifying queue.
@@ -22,6 +30,8 @@ use crate::store::GlobalSeq;
 pub enum ReservationReason {
     /// Returned on a merge conflict; held until the agent resubmits.
     Reconcile,
+    /// Returned for repair; held while the diagnosis reaches the agent.
+    Remediation,
 }
 
 impl ReservationReason {
@@ -30,6 +40,20 @@ impl ReservationReason {
     pub fn describe(self) -> &'static str {
         match self {
             Self::Reconcile => "merge-conflict reconcile until it resubmits",
+            Self::Remediation => "delivery of its returned diagnosis",
+        }
+    }
+
+    /// Age past which the reservation outlived every deadline of the work it
+    /// holds for, so it is overdue; `None` when only the agent can end it.
+    #[must_use]
+    pub fn overdue_after(self) -> Option<Duration> {
+        match self {
+            // Ended by a resubmission; whether that wait gets a bound is SH-770.
+            Self::Reconcile => None,
+            // A paste, a resume re-dispatch, and a second paste, plus one wake
+            // of store work around them.
+            Self::Remediation => Some(CONTROL_VERB_CEILING * 3 + RECOVERY_WAKE),
         }
     }
 }
@@ -424,6 +448,47 @@ mod tests {
             .retire();
         drop(guard);
         assert!(activity.active_for(board.project).is_none());
+    }
+
+    #[test]
+    fn only_a_bounded_reservation_becomes_overdue() {
+        // A paste, a resume re-dispatch and a second paste, each at its full
+        // production deadline, must never read as overdue.
+        let delivery = 3 * (crate::service::engine::DISPATCH_TIMEOUT + RECOVERY_WAKE);
+        assert!(ReservationReason::Remediation.overdue_after().unwrap() > delivery);
+        assert_eq!(ReservationReason::Reconcile.overdue_after(), None);
+
+        for reason in [ReservationReason::Remediation, ReservationReason::Reconcile] {
+            let board = Board::new();
+            let held = board.story("Held", Some("verifying"));
+            let activity = VerificationActivity::new();
+            let guard = activity.acquire(&board.candidate(&held), T0.into());
+            board.move_to(&held, "in-progress");
+            guard.reserve(reason, T0.into()).retire();
+            let bound = reason
+                .overdue_after()
+                .map_or(7 * 24 * 60 * 60, |bound| bound.as_secs());
+            let bound = i64::try_from(bound).unwrap();
+
+            let at_bound = board.status_at(&activity, &after(bound));
+            assert_eq!(at_bound.warning, None, "{reason:?}: {at_bound:?}");
+            let past = board.status_at(&activity, &after(bound + 1));
+            assert_eq!(past.evidence_error, None, "{reason:?}");
+            match reason.overdue_after() {
+                Some(ceiling) => assert!(
+                    past.warning
+                        .as_deref()
+                        .is_some_and(|warning| warning.contains(&format!(
+                            "{held} ({}) for {}s, beyond its {}s ceiling",
+                            reason.describe(),
+                            bound + 1,
+                            ceiling.as_secs()
+                        ))),
+                    "{past:?}"
+                ),
+                None => assert_eq!(past.warning, None, "{reason:?}: {past:?}"),
+            }
+        }
     }
 
     #[test]

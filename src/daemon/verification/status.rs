@@ -152,6 +152,16 @@ pub(crate) fn snapshot(
         evidence_error =
             Some("evidence age unavailable (missing timestamp or clock moved backwards)".into());
     }
+    let reservation = reservation.zip(active).map(|(reservation, active)| {
+        VerifierReservation::project(active, reservation, &statuses, &now)
+    });
+    let overdue = reservation.as_ref().and_then(|reservation| {
+        let bound = reservation.reason.overdue_after()?;
+        let age = reservation
+            .age_seconds
+            .filter(|age| *age > bound.as_secs())?;
+        Some((reservation, age, bound))
+    });
     let warning = if let Some(i) = incident
         .as_ref()
         .filter(|i| incident_is_current && i.halted)
@@ -176,6 +186,14 @@ pub(crate) fn snapshot(
             project.slug,
             error.replace(['\n', '\r'], " ")
         ))
+    } else if let Some((reservation, age, bound)) = overdue {
+        Some(format!(
+            "{} verifier reserved for {} ({}) for {age}s, beyond its {}s ceiling; story verifier status; story daemon logs",
+            project.slug,
+            reservation.story_id,
+            reservation.reason.describe(),
+            bound.as_secs()
+        ))
     } else if let Some(seconds) = silence_seconds
         .filter(|s| *s > super::super::verification_progress::PUBLISH_INTERVAL.as_secs())
     {
@@ -198,9 +216,7 @@ pub(crate) fn snapshot(
             verifying,
             held_stories,
             active: active.cloned(),
-            reservation: reservation.zip(active).map(|(reservation, active)| {
-                VerifierReservation::project(active, reservation, &statuses, &now)
-            }),
+            reservation,
             recovery,
             project_recoveries: crate::service::project_recovery::status_snapshot(
                 tx,
