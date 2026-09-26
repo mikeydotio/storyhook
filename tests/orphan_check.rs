@@ -995,22 +995,44 @@ fn a_daemon_on_a_vanished_store_is_collected_wherever_its_binary_lives() {
 /// makes this run's verification a lie. This class is provably nobody's, and
 /// there can be hundreds of them at once from other worktrees — failing a run
 /// over a mess it did not make is the SH-306 pressure exactly.
+///
+/// Each phase gets its OWN abandoned daemon (SH-783). With one daemon shared
+/// by all three, the preflight collected it and `postlude` and `check` then
+/// scanned nothing, so their half of this claim was never exercised. Every
+/// daemon starts on a store that exists, so an earlier phase's scan leaves it
+/// alone; its store is removed only just before its own phase runs. Age is
+/// `ps`'s view of the process, not of the store, so the one shared wait still
+/// makes all three old enough.
 #[test]
 fn collecting_an_abandoned_daemon_never_fails_the_phase() {
     let _serial = serialize_aged_global_process_case();
     let fixture = Fixture::new_while_aged_global_process_is_leased();
     let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
-    let child = spawn_matching(&packaged, &fixture.missing_store());
-    let _guard = child;
+    let phases = ["preflight", "postlude", "check"];
+    let daemons: Vec<(ChildGuard, PathBuf)> = phases
+        .iter()
+        .map(|phase| {
+            let store = fixture.path().join(format!("{phase}-store.db"));
+            std::fs::write(&store, b"removed just before its phase scans")
+                .expect("fixture: creating a store that exists until its phase");
+            (spawn_matching(&packaged, &store), store)
+        })
+        .collect();
     wait_until_old_enough();
 
-    for phase in ["preflight", "postlude", "check"] {
+    for (phase, (daemon, store)) in phases.iter().zip(&daemons) {
+        std::fs::remove_file(store).expect("fixture: abandoning this phase's daemon");
         let out = fixture.run_while_aged_global_process_is_leased(&[phase]);
+        let err = stderr(&out);
         assert!(
             out.status.success(),
             "`{phase}` must collect an abandoned daemon rather than refuse over \
-             one\nstderr: {}",
-            stderr(&out)
+             one\nstderr: {err}"
+        );
+        assert!(
+            !pid_running(daemon.pid()),
+            "`{phase}` must collect the abandoned daemon it found, not merely \
+             succeed\nstderr: {err}"
         );
     }
 
