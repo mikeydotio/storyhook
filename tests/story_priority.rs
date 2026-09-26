@@ -263,7 +263,7 @@ fn json_carries_the_blocker_floor_only_while_it_raises_the_story() {
         unrelated["story"].get("blocker_floor").is_none(),
         "absent, not null, when nothing raises the story: {unrelated}"
     );
-    let context = json(dir, &["load-context", "--json"]);
+    let context = json(dir, &["load-context", "--format", "json"]);
     let row = context["ready_stories"]
         .as_array()
         .unwrap()
