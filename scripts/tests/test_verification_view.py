@@ -17,6 +17,16 @@ PROGRAM = POLICY.read_text() + "\n" + SCRIPT.read_text()
 DEADLINE = 15  # Includes private server startup and loaded macOS PTY allocation.
 
 
+def diagnosis(what, result):
+    """Name a failed child by its role and output, never by its argv.
+
+    The reconcile argv is the whole composed program, which is what a
+    CalledProcessError prints instead of the stderr that says why (SH-806).
+    """
+    return (f"{what} exited {result.returncode}\n"
+            f"stderr: {result.stderr.strip() or '(empty)'}\nstdout: {result.stdout.strip() or '(empty)'}")
+
+
 class ViewTests(unittest.TestCase):
     """Every fixture owns its foreground server and destroys it in cleanup."""
 
@@ -97,15 +107,20 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
 
     def tmux(self, *args, check=True):
         """Bound every private control operation."""
-        return subprocess.run(self.tmux_argv + list(args), env=self.env, capture_output=True,
-                              text=True, timeout=DEADLINE, check=check).stdout.strip()
+        result = subprocess.run(self.tmux_argv + list(args), env=self.env, capture_output=True,
+                                text=True, timeout=DEADLINE)
+        if check:
+            self.assertEqual(result.returncode, 0, diagnosis(f"tmux {args[0]}", result))
+        return result.stdout.strip()
 
     def reconcile(self, project="one", check=True):
         """Run the production helper with literal hostile-path arguments."""
         directory = self.root / project / "logs with spaces ' $(inert)"
-        return subprocess.run(["python3", "-c", PROGRAM, project, str(directory), str(self.reader)],
-                              env=self.env, capture_output=True, text=True,
-                              timeout=DEADLINE, check=check)
+        result = subprocess.run(["python3", "-c", PROGRAM, project, str(directory), str(self.reader)],
+                                env=self.env, capture_output=True, text=True, timeout=DEADLINE)
+        if check:
+            self.assertEqual(result.returncode, 0, diagnosis(f"reconcile of {project}", result))
+        return result
 
     def identity(self, project="one"):
         """Return immutable reader identity rather than a reusable index."""
@@ -113,6 +128,19 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
                          "#{window_id}|#{pane_id}|#{pane_pid}")
         self.assertTrue(identity.startswith("@"), "project verification window is absent")
         return identity
+
+    def test_failures_carry_the_failing_programs_own_diagnosis(self):
+        # SH-806: a CalledProcessError names the argv (here, the whole composed
+        # program) and drops stderr, so a gate red could not say why a reconcile failed.
+        wrapper = self.root / "bin/tmux"
+        wrapper.write_text(wrapper.read_text().replace(
+            "exec ", 'if [ "$1" = list-sessions ]; then echo "fixture diagnosis" >&2; exit 1; fi\nexec ', 1))
+        with self.assertRaises(self.failureException) as reconcile:
+            self.reconcile()
+        self.assertIn("fixture diagnosis", str(reconcile.exception))
+        with self.assertRaises(self.failureException) as control:
+            self.tmux("list-windows", "-t", "=absent")
+        self.assertRegex(str(control.exception), r"tmux list-windows exited 1\nstderr: \S")
 
     def test_disabled_mirror_does_not_even_probe_tmux(self):
         wrapper = self.root / "bin/tmux"
