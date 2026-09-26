@@ -742,7 +742,8 @@ is resolved as Playwright's own `browserName` fixture resolves it
 the launch options mirror the fixture's; no `timeout:` is passed, so the ceiling
 derives from Playwright's own default (SH-394). `scripts/run-e2e.sh` exports
 `E2E_PROJECT` after its `--list` probe — listing runs no global setup — and before
-the real run. Measured by toggle in the worktree that shipped it, never mocked
+the real run. A second global setup, `e2e/fixture-baseline.ts`, runs after the probe
+(SH-765; see "A failed cleanup is one red" below). Measured by toggle in the worktree that shipped it, never mocked
 (SH-263, SH-345): `PLAYWRIGHT_BROWSERS_PATH=/nonexistent --project=webkit` refused
 in 11 ms with zero tests attempted; healthy webkit, chromium, mobile-webkit and
 untrusted-origin-chromium launched in 409/226/179/107 ms and ran.
@@ -996,6 +997,45 @@ lets a test that would have passed on more time actually get that time,
 which is what the user's determination asks for. It cannot make an
 assertion that is structurally wrong become right, and does not substitute
 for the mechanism work below.
+
+**A third consumer: the cleanup barrier (SH-765).** Before each forced DELETE,
+`cleanUpCreatedStories` waits on the block-delivery barrier, which reads the
+isolated store with python3. That read had its own bare 5 s bound inside the
+graced wait. At load 727-900 it expired, and the whole cleanup failed. The
+wait now samples its patience when it begins (`gracedPatience()`: the expect
+base times the current multiplier). Each read is bounded by what remains of
+that patience. The read is asynchronous, so the watchdog above keeps running
+while python3 starts. A patience above the base is reported on stderr and as
+an annotation, like a watchdog extension.
+
+## A failed cleanup is one red (SH-765)
+
+`cleanUpCreatedStories` keeps one red spec as one red (SH-245), but only while
+the cleanup itself succeeds. When it fails, the stray outlives its test, and
+Playwright starts a new worker for the next test. The baseline used to be
+per-worker module state, so the new worker captured it with the stray inside,
+and every later test that counted the project failed on it. Three rules now
+keep the failure to one red:
+
+1. **The baseline belongs to the run.** `e2e/fixture-baseline.ts` is a global
+   setup. It captures every project's IDs before any worker exists and passes
+   them to every worker in `E2E_FIXTURE_BASELINE`. It is read only inside hooks
+   and fixtures: `--list` runs no global setup.
+2. **A new worker heals first.** The `fixtureHeal` auto fixture runs once per
+   worker process, before the first test's hooks. It removes each stray from
+   `CLEANED_PROJECTS` (Alpha, Beta: the projects specs register cleanup for)
+   through the same barrier-gated removal. A new worker exists only because a
+   test failed, so this is exactly where strays are found.
+3. **A heal that fails is reported once.** It fails that one test and writes a
+   marker in the project's output directory, which Playwright clears at each
+   run's start. Later workers report the marker and do not retry. So a stray
+   that cannot be removed never turns the rest of the run red.
+
+Fences: `tests/e2e_fixture_hygiene.rs`
+(`the_fixture_baseline_is_captured_once_per_run_before_any_worker`,
+`a_new_worker_heals_exactly_the_cleaned_projects_before_any_hook`) and the
+audit in `tests/e2e_browser_coverage.rs`. Postmortem:
+`docs/rca/sh-765-cleanup-barrier-cascade.md`.
 
 ## A held request races its own client-side deadline (SH-347)
 
