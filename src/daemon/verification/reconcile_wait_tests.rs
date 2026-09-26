@@ -20,12 +20,14 @@ use std::path::Path;
 use std::sync::mpsc::channel;
 use storyhook_test_support::{ServiceFixture, scratch_dir};
 
-const ORIGIN: &str = "https://github.com/acme/widgets";
-const REPLACEMENT: &str = "https://github.com/acme/replacement";
-const HELD_PR: &str = "https://github.com/acme/widgets/pull/1";
-const QUEUED_PR: &str = "https://github.com/acme/widgets/pull/2";
-const ARRIVAL_PR: &str = "https://github.com/acme/replacement/pull/3";
-const RETURNED_PR: &str = "https://github.com/acme/widgets/pull/4";
+// A reserved host (RFC 2606): fixtures name no live host, and
+// tests/github_shell.rs scans this file as production source.
+const ORIGIN: &str = "https://github.example.com/acme/widgets";
+const REPLACEMENT: &str = "https://github.example.com/acme/replacement";
+const HELD_PR: &str = "https://github.example.com/acme/widgets/pull/1";
+const QUEUED_PR: &str = "https://github.example.com/acme/widgets/pull/2";
+const ARRIVAL_PR: &str = "https://github.example.com/acme/replacement/pull/3";
+const RETURNED_PR: &str = "https://github.example.com/acme/widgets/pull/4";
 
 /// Creates a story at `priority`, links `url` as its close-on-merge pull
 /// request, and submits it to `verifying`.
@@ -202,7 +204,7 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
             resumed.pull_request,
             Err(VerificationProblem::UnregisteredPullRequest {
                 url: HELD_PR.into(),
-                registered: vec!["github.com/acme/replacement".into()],
+                registered: vec!["github.example.com/acme/replacement".into()],
             }),
             "the waiter returns the resubmission as the origin-validated queue reports it"
         );
