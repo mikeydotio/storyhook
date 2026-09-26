@@ -295,6 +295,7 @@ fn stale_probe_and_duplicate_stop_cannot_compete_with_the_reset_owner() {
         probe_release: Mutex<mpsc::Receiver<()>>,
         reset_entered: mpsc::Sender<()>,
         reset_release: Mutex<mpsc::Receiver<()>>,
+        resets: std::sync::atomic::AtomicUsize,
     }
     impl Dispatcher for Held {
         fn dispatch(&self, _: DispatchRequest) -> Result<DispatchOutcome, AppError> {
@@ -325,6 +326,8 @@ fn stale_probe_and_duplicate_stop_cannot_compete_with_the_reset_owner() {
             request: EngineReset,
             _workspace: std::os::fd::BorrowedFd<'_>,
         ) -> Result<DispatchOutcome, AppError> {
+            self.resets
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.reset_entered.send(()).unwrap();
             self.reset_release
                 .lock()
@@ -348,6 +351,7 @@ fn stale_probe_and_duplicate_stop_cannot_compete_with_the_reset_owner() {
         probe_release: Mutex::new(probe_release),
         reset_entered,
         reset_release: Mutex::new(reset_release),
+        resets: std::sync::atomic::AtomicUsize::new(0),
     };
     let ctx = fixture.ctx();
     let engine = EngineService::new(&ctx, &held);
@@ -356,12 +360,13 @@ fn stale_probe_and_duplicate_stop_cannot_compete_with_the_reset_owner() {
         probe_started.recv_timeout(DISPATCH_TIMEOUT).unwrap();
         let owner = scope.spawn(|| engine.stop(&run, true));
         reset_started.recv_timeout(DISPATCH_TIMEOUT).unwrap();
-        assert!(
-            engine
-                .stop(&run, true)
-                .unwrap_err()
-                .to_string()
-                .contains("already in progress")
+        // SH-774: a duplicate cannot compete, and it is not a failure either:
+        // the owner already holds the durable intent it would record.
+        let duplicate = engine.stop(&run, true).unwrap();
+        assert_eq!(duplicate.run.state, EngineRunState::Draining);
+        assert_eq!(
+            duplicate.run.stop_reason.as_deref(),
+            Some("operator-stopped-now")
         );
         StoryService::new(&ctx)
             .comment("SH-1", "comment during cleanup survives")
@@ -383,6 +388,11 @@ fn stale_probe_and_duplicate_stop_cannot_compete_with_the_reset_owner() {
             EngineRunState::Finished
         );
     });
+    assert_eq!(
+        held.resets.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the duplicate Stop Now must not run a second cleanup"
+    );
     let row = fixture
         .store()
         .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
@@ -495,6 +505,41 @@ fn a_repeated_failing_stop_now_does_not_rewrite_the_run_record() {
         "a retry that changes no run fact must not write the run record"
     );
     assert_eq!(fake.calls().len(), 2, "both attempts ran the helper");
+}
+
+/// SH-774: a graceful drain that finished first made a later Stop Now (the
+/// dashboard's Abandon run) fail with "cannot `stop --now`", although a
+/// finished run has idle lanes and nothing left to discard.
+#[test]
+fn stop_now_on_a_finished_run_returns_it_unchanged() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine
+        .start(StartRequest {
+            scope: EngineScope::Project,
+            lanes: 1,
+            agent: EngineAgent::Codex,
+            model: None,
+            effort: None,
+            speed: None,
+        })
+        .unwrap();
+    let drained = engine.stop(&run.id, false).unwrap();
+    assert_eq!(drained.run.state, EngineRunState::Finished);
+    let record = fixture.store().read(|tx| tx.engine_run(&run.id)).unwrap();
+
+    let stopped = engine.stop(&run.id, true).unwrap();
+
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    assert_eq!(stopped.run.stop_reason.as_deref(), Some("operator-stopped"));
+    assert_eq!(
+        fixture.store().read(|tx| tx.engine_run(&run.id)).unwrap(),
+        record,
+        "an idempotent Stop Now must not rewrite a finished run"
+    );
+    assert!(fake.calls().is_empty());
 }
 
 #[test]

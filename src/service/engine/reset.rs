@@ -84,11 +84,20 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             .map_err(|e| {
                 AppError::Storage(format!("opening reset lock {}: {e}", lock_path.display()))
             })?;
-        let _executor = ExecutorLock::acquire(&lock, &lock_path).map_err(|e| {
-            AppError::Validation(format!(
-                "engine run `{run_id}` reset already in progress or lock unavailable: {e}"
-            ))
-        })?;
+        // A busy lock means another Stop Now already owns this run's cleanup.
+        // This request still records the same durable intent below, so the
+        // owner, or the next steady reconcile, finishes it; a duplicate has
+        // nothing to add and nothing to fail (SH-774).
+        let executor = match ExecutorLock::acquire(&lock, &lock_path) {
+            Ok(guard) => Some(guard),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => None,
+            Err(error) => {
+                return Err(AppError::Storage(format!(
+                    "locking Stop Now controller {} for engine run `{run_id}`: {error}",
+                    lock_path.display()
+                )));
+            }
+        };
         // The helper runs from a neutral directory; only this context retains
         // the original caller. Refuse before scheduling restartable cleanup.
         let caller = self
@@ -96,31 +105,15 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             .cwd()
             .canonicalize()
             .map_err(|e| AppError::Storage(format!("resolving reset caller directory: {e}")))?;
-        self.ctx.store().read(|tx| {
+        let now = self.ctx.now();
+        let finished = self.ctx.store().write(|tx| {
             let project = self.ctx.project();
             let slug = project_slug(tx, project)?;
-            run_for_project(tx, &slug, run_id)?;
-            let prefix = project_prefix(tx, project)?;
-            let active = active_state(&tx.states(project)?)
-                .ok_or_else(|| StoreError::Invariant("project has no active state".into()))?.slug.clone();
-            for lane in tx.engine_lanes(run_id)? {
-                if let (Some(id), Some(lease)) = (&lane.story_id, &lane.cleanup_lease) {
-                    let (_, row) = resolve_story(tx, project, &prefix, id)?;
-                    if row.state == active && caller.starts_with(&lease.worktree_path) {
-                        return Err(StoreError::Invariant(format!("cannot reset calling worktree for story `{id}`; invoke Stop Now from outside its worktree")));
-                    }
-                }
-            }
-            Ok(())
-        })?;
-        let now = self.ctx.now();
-        self.ctx.store().write(|tx| {
-            let slug = project_slug(tx, self.ctx.project())?;
             let mut run = run_for_project(tx, &slug, run_id)?;
-            if run.state == EngineRunState::Finished
-                && run.stop_reason.as_deref() == Some(OPERATOR_STOPPED_NOW)
-            {
-                return Ok(());
+            // Every path to `finished` requires idle lanes: nothing is left
+            // to discard, whatever stopped the run.
+            if run.state == EngineRunState::Finished {
+                return Ok(true);
             }
             require_state(
                 &run,
@@ -132,6 +125,17 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     EngineRunState::Halted,
                 ],
             )?;
+            let prefix = project_prefix(tx, project)?;
+            let active = active_state(&tx.states(project)?)
+                .ok_or_else(|| StoreError::Invariant("project has no active state".into()))?.slug.clone();
+            for lane in tx.engine_lanes(run_id)? {
+                if let (Some(id), Some(lease)) = (&lane.story_id, &lane.cleanup_lease) {
+                    let (_, row) = resolve_story(tx, project, &prefix, id)?;
+                    if row.state == active && caller.starts_with(&lease.worktree_path) {
+                        return Err(StoreError::Invariant(format!("cannot reset calling worktree for story `{id}`; invoke Stop Now from outside its worktree")));
+                    }
+                }
+            }
             let before = run.clone();
             run.state = EngineRunState::Draining;
             if run.stop_reason.as_deref() != Some(OPERATOR_STOPPED_NOW) {
@@ -140,13 +144,13 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             run.stop_reason = Some(OPERATOR_STOPPED_NOW.into());
             // The change watcher compares whole run records: rewriting only
             // `updated_at` on a retry would wake the next retry at once.
-            if run == before {
-                return Ok(());
+            if run != before {
+                run.updated_at = now.clone();
+                tx.update_engine_run(&run)?;
             }
-            run.updated_at = now.clone();
-            tx.update_engine_run(&run)
+            Ok(false)
         })?;
-        if self.one_view(run_id)?.run.state == EngineRunState::Finished {
+        if finished || executor.is_none() {
             return self.one_view(run_id);
         }
         let lanes = self.stop_lanes_after_dispatch(run_id, Instant::now() + DISPATCH_TIMEOUT)?;
