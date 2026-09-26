@@ -24,10 +24,10 @@
 use std::fs;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use storyhook_test_support::{run_bounded, scratch_dir_named};
+use storyhook_test_support::{ChildGuard, run_bounded, scratch_dir_named};
 use tempfile::TempDir;
 
 /// Every scenario here finishes in a few seconds. This bound exists only so a
@@ -648,20 +648,6 @@ fn wait_for(fx: &Fixture, markers: &[&str], deadline: Duration) {
     }
 }
 
-fn wait_exit(child: &mut std::process::Child, deadline: Duration) -> ExitStatus {
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().expect("polling the scenario") {
-            return status;
-        }
-        if start.elapsed() >= deadline {
-            let _ = child.kill();
-            panic!("the pool did not exit after its signal (SCENARIO_DEADLINE)");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 fn pid_alive(pid: &str) -> bool {
     Command::new("kill")
         .args(["-0", pid.trim()])
@@ -673,20 +659,26 @@ fn pid_alive(pid: &str) -> bool {
 
 fn signal_stops_writers_first_and_re_raises(signal: &str, number: i32) {
     let fx = Fixture::new();
-    let mut child = fx
-        .command(SIGNAL_SCENARIO)
+    let mut command = fx.command(SIGNAL_SCENARIO);
+    command
         .stdout(fs::File::create(fx.file("stdout")).unwrap())
-        .stderr(fs::File::create(fx.file("stderr")).unwrap())
-        .spawn()
-        .expect("starting the signal scenario");
+        .stderr(fs::File::create(fx.file("stderr")).unwrap());
+    // Guarded from the instant it exists, so a panic before the wait below
+    // cannot leak the scenario or its stubs (tests/fixture_isolation.rs).
+    let mut child = ChildGuard::spawn(&mut command).expect("starting the signal scenario");
     wait_for(&fx, &["A.running", "B.running", "B.pid"], STARTUP_DEADLINE);
 
     let sent = Command::new("kill")
-        .args([format!("-{signal}"), child.id().to_string()])
+        .args([format!("-{signal}"), child.pid().to_string()])
         .status()
         .expect("sending the signal");
     assert!(sent.success());
-    let status = wait_exit(&mut child, SCENARIO_DEADLINE);
+    let status = child.wait_within(SCENARIO_DEADLINE, || {
+        format!(
+            "the pool did not exit after its {signal} (SCENARIO_DEADLINE):\n{}",
+            fx.read("stderr")
+        )
+    });
     let stderr = fx.read("stderr");
 
     assert!(
