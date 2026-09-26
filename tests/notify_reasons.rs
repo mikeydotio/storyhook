@@ -26,6 +26,13 @@
 //! (`WINDOW_PROBE_FORMAT`), because the fake tmux answers that one format in
 //! one arm and a second spelling would be a third format for every fixture
 //! to learn (SH-136). The two literals must stay byte-identical.
+//!
+//! The third pin is the key senders (SH-780). `notify` pasted a remediation
+//! and pressed Enter without looking, and Enter on a dialog approves it for
+//! the person. `KEY_SENDERS` lists every place the plugin presses a key in a
+//! pane, with the reason it may, and the scan demands exactly that set; the
+//! last test pins `cmd_notify`'s one guarded delivery: a strict idle check,
+//! one paste, and a submit key only after `composer_holds` sees the prompt.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -153,5 +160,178 @@ fn the_shell_pane_probe_asks_the_engines_own_question() {
     assert!(
         function_body(&session, "pane_probe").contains("\"$PANE_PROBE_FORMAT\""),
         "pane_probe must ask with the named constant, not a second spelling"
+    );
+}
+
+/// Every place the plugin presses a key in a pane: `(file, function, why it
+/// may)`.
+///
+/// SH-780: `notify` pasted a remediation and pressed Enter without looking at
+/// the pane, and Enter on a dialog's cursor row (`❯ 1. Yes`) approves the
+/// dialog for the person. The defect class is a key sent into an agent's pane
+/// with no proof of what it will act on. So every sender is written down here
+/// with its reason, and [`every_key_sent_into_a_pane_is_a_listed_sender`]
+/// demands that the plugin's source holds exactly these: a new sender fails
+/// the build until someone states why it is safe.
+const KEY_SENDERS: [(&str, &str, &str); 6] = [
+    (
+        "plugins/story/bin/story.sh",
+        "cmd_notify",
+        "the submit key, and only while composer_holds sees this very prompt",
+    ),
+    (
+        "plugins/story/bin/story.sh",
+        "ensure_provider_plan_mode",
+        "Codex's plan-mode key before any prompt is typed, at a composer the readiness gate matched",
+    ),
+    (
+        "plugins/story/hooks/full-auto.sh",
+        "approve_claude_plan",
+        "Enter on a plan-approval prompt that the Full Auto watcher matched exactly",
+    ),
+    (
+        "plugins/story/hooks/full-auto.sh",
+        "approve_codex_plan",
+        "Enter on a plan-approval prompt that the Full Auto watcher matched exactly",
+    ),
+    (
+        "plugins/story/lib/interrupt-agent.py",
+        "interrupt",
+        "Escape, the native interrupt, after the session is bound to the expected target",
+    ),
+    (
+        "plugins/story/lib/session.sh",
+        "send_prompt_confirmed",
+        "the submit key after a receipt of any text; SH-799 narrows it to composer_holds",
+    ),
+];
+
+/// The `(file, function)` of every key-sending line in one plugin source file.
+///
+/// Bash: a code line (not a comment) that runs `tmux send-keys`, with no
+/// double quote before it on the line — so the `"tmux send-keys -t <pane> …"`
+/// strings that dispatch prints as a dry-run plan are not senders. Its
+/// function is the nearest `name() {` above it. Python: a line naming
+/// `"send-keys"`, in the nearest `def` above it.
+fn key_senders(relative: &str, source: &str) -> Vec<(String, String)> {
+    let python = relative.ends_with(".py");
+    let mut function = String::from("<top level>");
+    let mut found = Vec::new();
+    for line in source.lines() {
+        let code = line.trim_start();
+        if python {
+            if let Some(rest) = code.strip_prefix("def ") {
+                function = rest.split('(').next().unwrap_or(rest).to_string();
+            }
+            if !code.starts_with('#') && code.contains("\"send-keys\"") {
+                found.push((relative.to_string(), function.clone()));
+            }
+            continue;
+        }
+        if let Some(name) = line.strip_suffix("() {") {
+            if !name.contains(' ') {
+                function = name.to_string();
+            }
+        }
+        if code.starts_with('#') {
+            continue;
+        }
+        if let Some(at) = code.find("tmux send-keys") {
+            if !code[..at].contains('"') {
+                found.push((relative.to_string(), function.clone()));
+            }
+        }
+    }
+    found
+}
+
+/// Every regular source file under the plugin's executable directories.
+fn plugin_sources() -> Vec<String> {
+    let mut files = Vec::new();
+    for dir in ["plugins/story/bin", "plugins/story/lib", "plugins/story/hooks"] {
+        let mut entries: Vec<_> = std::fs::read_dir(repo_root().join(dir))
+            .unwrap_or_else(|error| panic!("{dir} must be readable: {error}"))
+            .map(|entry| entry.expect("directory entry").path())
+            .filter(|path| path.is_file())
+            .collect();
+        entries.sort();
+        for path in entries {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if name.ends_with(".sh") || name.ends_with(".py") {
+                files.push(format!("{dir}/{name}"));
+            }
+        }
+    }
+    files
+}
+
+#[test]
+fn the_sender_scanner_finds_code_and_skips_plans_and_comments() {
+    let bash = "\nsend_it() {\n  # tmux send-keys -t \"$pane\" Enter is only a comment\n  printf '%s' \"(\\\"tmux send-keys -t <pane> \\\" + $key)\"\n  if tmux send-keys -t \"$pane\" \"$SUBMIT_KEY\"; then :; fi\n}\n";
+    assert_eq!(
+        key_senders("x.sh", bash),
+        vec![("x.sh".to_string(), "send_it".to_string())]
+    );
+    let python = "def press(pane):\n    # proc.run(\"tmux\", \"send-keys\") in a comment\n    proc.run(\"tmux\", \"send-keys\", \"-t\", pane, \"Escape\")\n";
+    assert_eq!(
+        key_senders("x.py", python),
+        vec![("x.py".to_string(), "press".to_string())]
+    );
+}
+
+#[test]
+fn every_key_sent_into_a_pane_is_a_listed_sender() {
+    let mut found = Vec::new();
+    for file in plugin_sources() {
+        found.extend(key_senders(&file, &read(&file)));
+    }
+    found.sort();
+    let mut listed: Vec<(String, String)> = KEY_SENDERS
+        .iter()
+        .map(|(file, function, _)| ((*file).to_string(), (*function).to_string()))
+        .collect();
+    listed.sort();
+    assert_eq!(
+        found, listed,
+        "the plugin's key senders changed; a key sent into an agent's pane needs proof of what it acts on (SH-780) — list the sender in KEY_SENDERS with that reason, or remove it"
+    );
+}
+
+#[test]
+fn notify_types_once_into_an_idle_composer_and_submits_only_what_it_sees() {
+    let script = read("plugins/story/bin/story.sh");
+    let body = function_body(&script, "cmd_notify");
+    let lines: Vec<&str> = body.lines().collect();
+    let at = |needle: &str| -> Vec<usize> {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains(needle) && !line.trim_start().starts_with('#'))
+            .map(|(index, _)| index)
+            .collect()
+    };
+    let pastes = at("paste_prompt ");
+    assert_eq!(
+        pastes.len(),
+        1,
+        "every text-delivering notify form must share ONE guarded paste (SH-780)"
+    );
+    let idle = at("input_state \"$pane\" strict");
+    assert!(
+        idle.len() == 1 && idle[0] < pastes[0],
+        "the paste must follow a strict idle check of the composer"
+    );
+    let submits = at("\"$SUBMIT_KEY\"");
+    assert_eq!(
+        submits.len(),
+        1,
+        "notify must send its submit key from one place (SH-780)"
+    );
+    let receipt = at("composer_holds ");
+    assert!(
+        receipt
+            .iter()
+            .any(|&line| line > pastes[0] && line < submits[0] && submits[0] - line <= 3),
+        "the submit key must directly follow a composer_holds check of this prompt, on every try"
     );
 }

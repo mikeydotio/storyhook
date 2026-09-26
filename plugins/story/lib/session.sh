@@ -78,8 +78,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/plugin-identity.sh"
 #                            simply disables the identity half of pane_runs.
 #   READY_TAIL_LINES         pane_tail
 #   READY_ACCEPT_PATTERN     prompt_accepted
-#   CONFIRM_ATTEMPTS         poll_input
-#   CONFIRM_DELAY            poll_input
+#   CONFIRM_ATTEMPTS         poll_input, poll_composer_holds
+#   CONFIRM_DELAY            poll_input, poll_composer_holds
 #   SEND_RETRIES             send_prompt_confirmed
 #   SUBMIT_KEY               send_prompt_confirmed
 #   EMPTY_INPUT_PATTERN      input_state (provider-rendered empty placeholder)
@@ -406,6 +406,19 @@ input_state() {
       ;;
     *) printf 'empty' ;;
   esac
+}
+
+# poll_composer_holds <pane> <text> — poll composer_holds up to CONFIRM_ATTEMPTS
+# times, CONFIRM_DELAY apart, for the composer to show <text>. 0 once it does,
+# else 1.
+poll_composer_holds() {
+  local attempt=0
+  while [ "$attempt" -lt "$CONFIRM_ATTEMPTS" ]; do
+    composer_holds "$1" "$2" && return 0
+    sleep "$CONFIRM_DELAY"
+    attempt=$((attempt + 1))
+  done
+  return 1
 }
 
 # The placeholders a provider puts in its INPUT, in place of a long paste, as

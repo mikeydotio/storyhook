@@ -31,7 +31,9 @@ provider = scratch / "provider.py"
 # its pad (Claude: U+276F and NBSP; Codex: U+203A and a space), then what was
 # typed, cleared by the submit key. story.sh notify reads that row before it
 # types and before it submits. Bracketed paste stays off: this provider reads
-# every ESC byte as the native Escape key.
+# every ESC byte as the native Escape key. Its gate's output goes to a log, as
+# a real agent captures a tool's output instead of printing it into its
+# composer row (where it would read as a draft).
 provider.write_text('''import os,sys,subprocess,signal,time,tty
 from pathlib import Path
 tty.setraw(sys.stdin.fileno())
@@ -40,7 +42,8 @@ glyph='\\u276f\\u00a0' if sys.argv[4]=='claude' else '\\u203a '
 message=b''
 def draw(): os.write(1,b'\\r\\x1b[2K'+glyph.encode()+message)
 os.write(1,b'\\r\\n'); draw()
-gate=subprocess.Popen(["bash",sys.argv[3],"gate","--","python3","-c", "import os,signal,time; from pathlib import Path; Path('writer').write_text(str(os.getpid())); signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(90)"], cwd=root)
+gate_log=open(root/'gate.log','ab')
+gate=subprocess.Popen(["bash",sys.argv[3],"gate","--","python3","-c", "import os,signal,time; from pathlib import Path; Path('writer').write_text(str(os.getpid())); signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(90)"], cwd=root, stdout=gate_log, stderr=gate_log)
 (root/'holder').write_text(str(gate.pid))
 (root/'ready').write_text(str(os.getpid()))
 while True:

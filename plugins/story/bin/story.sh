@@ -3575,9 +3575,13 @@ cmd_capture() {
 #   <id> --interrupt                          native interrupt; prints the bound target
 #   <id> <prompt> --expected-target <target>  resume the session that interrupt acknowledged
 #   <id> <prompt> --registered-session        resume the story's registered session when no
-#                                             interrupt was acknowledged (SH-772 D5): types
-#                                             nothing unless the composer is idle, submits only
-#                                             after the prompt is seen, prints the bound target
+#                                             interrupt was acknowledged (SH-772 D5); prints
+#                                             the bound target
+#
+# Every form that types a prompt types nothing unless a composer is drawn and
+# reads idle, and sends the submit key only while the composer shows that
+# prompt (SH-780): a dialog's cursor row reads like composer text, and a submit
+# key there approves the dialog for the person.
 #
 # Every refusal slug this verb can emit is classified BY NAME on the daemon
 # side (`NOTIFY_REFUSALS`, src/daemon/verification.rs) as either "no live
@@ -3665,50 +3669,51 @@ cmd_notify() {
   if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$identity"); then
     refuse "pane-changed" "agent identity changed before delivery: $(printf '%s' "$identity_result" | jq -r '.display')"
   fi
-  if [ -n "$registered" ]; then
-    # No interrupt's Escape cleared this screen (SH-772 D5), so the composer may
-    # hold a draft, a permission dialog or a plan approval. A dialog's cursor row
-    # ('❯ 1. Yes') reads as composer text, and an Enter there APPROVES it on the
-    # person's behalf. So nothing is typed unless the composer reads idle, the
-    # submit key is sent only after the prompt is seen in the composer (the
-    # SH-226 receipt rule), and the identity is revalidated in between.
-    local state try=0
-    state=$(input_state "$pane")
-    [ "$state" = empty ] \
-      || refuse "composer-busy" "the session's composer is not idle ($state): it may hold a draft or a dialog, so nothing was typed into $id's session."
-    paste_prompt "$pane" "$message" "story-resume-$id" \
-      || refuse "delivery-failed" "could not paste the resume prompt into pane \`$pane\`."
-    poll_input "$pane" text \
-      || refuse "delivery-failed" "the resume prompt never appeared in pane \`$pane\`'s composer; no submit key was sent."
-    revalidate_story_resources
-    reserve_story_workspace "$id"
-    if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$identity"); then
-      refuse "pane-changed" "agent identity changed before submission: $(printf '%s' "$identity_result" | jq -r '.display')"
-    fi
-    while [ "$try" -le "$SEND_RETRIES" ]; do
-      if tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null && poll_input "$pane" empty; then
-        jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" --arg target "$target" \
-          '{ok:true, id:$id, window_name:$window, pane:$pane, target:$target,
-            display:("[story] resumed " + $id + " in window `" + $window + "` (" + $pane + ").")}'
-        return 0
-      fi
-      try=$((try + 1))
-    done
-    refuse "delivery-failed" "the resume prompt reached pane \`$pane\`, but its submission was never confirmed."
+  # Every form that types a prompt shares this one guard (SH-780; SH-772 D5 first
+  # built it for the registered session). The composer may hold a draft, a
+  # permission dialog or a plan approval, and a dialog's cursor row ('❯ 1. Yes')
+  # is drawn with the composer's own glyph: a submit key there APPROVES the
+  # dialog on the person's behalf. An interrupt's Escape does not make it safe
+  # either: a provider may restore the interrupted prompt into the composer. So
+  # nothing is typed unless a composer is drawn and reads idle, and the submit
+  # key is sent -- the first time and on every re-send -- only while the
+  # composer shows this very prompt (composer_holds, lib/session.sh), with the
+  # identity revalidated after the paste.
+  local what="verification remediation" buffer="story-verify-$id" state try=0
+  if [ -n "$expected" ] || [ -n "$registered" ]; then
+    what="resume prompt"
+    buffer="story-resume-$id"
   fi
-  buffer="story-verify-$id"
+  state=$(input_state "$pane" strict)
+  [ "$state" = empty ] \
+    || refuse "composer-busy" "the composer in window \`$wname\` is not idle ($state): it may hold a draft or a dialog, or show no composer at all, so nothing was typed into $id's session. Answer or clear it there, then deliver the $what again."
   paste_prompt "$pane" "$message" "$buffer" \
-    || refuse "delivery-failed" "could not paste the verification remediation into pane \`$pane\`."
+    || refuse "delivery-failed" "could not paste the $what into pane \`$pane\`."
+  poll_composer_holds "$pane" "$message" \
+    || refuse "delivery-failed" "the $what never appeared in pane \`$pane\`'s composer, so no submit key was sent; if it arrives late it will wait, unsent, in window \`$wname\`."
   revalidate_story_resources
   reserve_story_workspace "$id"
   if ! identity_result=$(python3 "$STORY_PLUGIN_ROOT/lib/agent_identity.py" validate "$identity"); then
     refuse "pane-changed" "agent identity changed before submission: $(printf '%s' "$identity_result" | jq -r '.display')"
   fi
-  tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null \
-    || refuse "delivery-failed" "the remediation reached pane \`$pane\`, but tmux refused the submit key."
-  jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" \
-    '{ok:true, id:$id, window_name:$window, pane:$pane,
-      display:("[story] notified " + $id + " in window `" + $window + "` (" + $pane + ").")}'
+  while [ "$try" -le "$SEND_RETRIES" ]; do
+    composer_holds "$pane" "$message" \
+      || refuse "delivery-failed" "the composer in window \`$wname\` no longer shows the $what, so no further submit key was sent; check that window."
+    if tmux send-keys -t "$pane" "$SUBMIT_KEY" 2>/dev/null && poll_input "$pane" empty; then
+      if [ -n "$expected" ] || [ -n "$registered" ]; then
+        jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" --arg target "$target" \
+          '{ok:true, id:$id, window_name:$window, pane:$pane, target:$target,
+            display:("[story] resumed " + $id + " in window `" + $window + "` (" + $pane + ").")}'
+      else
+        jq -n --arg id "$id" --arg window "$wname" --arg pane "$pane" \
+          '{ok:true, id:$id, window_name:$window, pane:$pane,
+            display:("[story] notified " + $id + " in window `" + $window + "` (" + $pane + ").")}'
+      fi
+      return 0
+    fi
+    try=$((try + 1))
+  done
+  refuse "delivery-failed" "the $what reached pane \`$pane\`, but its submission was never confirmed; it may still be in the composer in window \`$wname\`."
 }
 
 # _project_integrity — run the CLI's own `story doctor` tolerantly.
