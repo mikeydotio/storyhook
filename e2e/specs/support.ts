@@ -25,6 +25,8 @@ import {
   resetTestBudget,
 } from "../load-grace";
 import { fixtureApiUrl, requiredEnv } from "../fixture-api";
+import { fixtureBaseline, projectStories } from "../fixture-baseline";
+import type { BoardStory } from "../fixture-baseline";
 
 export { requiredEnv };
 
@@ -1368,15 +1370,6 @@ export async function holdUntilRefused(
   };
 }
 
-/**
- * Board stories, as `GET .../data` reports them: open and closed alike,
- * neither deleted nor draft (`project_data_json` in `src/api/rest.rs`).
- */
-interface BoardStory {
-  id: string;
-  superstate: string;
-}
-
 /** Reads `projectName`'s board stories and drafts, by id. Exported (SH-439)
  * so a spec that needs to prove a story landed in one project and not
  * another can ask this directly, rather than hand-rolling a second `/data`
@@ -1385,35 +1378,8 @@ export async function storiesInProject(
   request: APIRequestContext,
   projectName: string,
 ): Promise<BoardStory[]> {
-  const slug = await projectSlug(request, projectName);
-  const resp = await request.get(
-    fixtureApiUrl(`/api/repos/${encodeURIComponent(slug)}/data`),
-    { headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") } },
-  );
-  if (!resp.ok()) {
-    throw new Error(
-      `GET /data for "${projectName}" answered ${resp.status()}: ${await resp.text()}`,
-    );
-  }
-  const data = await resp.json();
-  const views = [...(data.stories ?? []), ...(data.drafts ?? [])];
-  return views.map((view: { story: BoardStory }) => ({
-    id: view.story.id,
-    superstate: view.story.superstate,
-  }));
+  return projectStories(request, await projectSlug(request, projectName), projectName);
 }
-
-/**
- * The stories each project held the first time a spec asked — the seeded
- * fixture, since every spec that creates one registers the cleanup below
- * and so cannot leave one behind for the next spec's baseline to absorb.
- *
- * Module state, so it is captured once for the whole run rather than once
- * per file. That relies on `workers: 1` (`playwright.config.ts`): a second
- * worker would take its own baseline in its own process, at whatever moment
- * its first test ran, which is not necessarily a pristine board.
- */
-const fixtureBaselines = new Map<string, Set<string>>();
 
 /** Wait for every real delivery to settle before issuing a cleanup mutation.
  * A completed move is not a completed notification. DELETE is sent once,
@@ -1505,16 +1471,8 @@ export async function waitForDisplayedStoryBlockDeliveries(page: Page, id: strin
  * API request below removes either shape without reopening it first.
  */
 export function cleanUpCreatedStories(projectName: string): void {
-  test.beforeEach(async ({ request }) => {
-    if (fixtureBaselines.has(projectName)) return;
-    const baseline = await storiesInProject(request, projectName);
-    fixtureBaselines.set(projectName, new Set(baseline.map((s) => s.id)));
-  });
-
   test.afterEach(async ({ request }) => {
-    const baseline = fixtureBaselines.get(projectName);
-    if (!baseline) return;
-    await removeStrays(request, projectName, baseline);
+    await removeStrays(request, projectName, fixtureBaseline(projectName));
   });
 }
 

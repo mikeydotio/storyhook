@@ -468,3 +468,54 @@ fn only_the_shared_helper_pauses_the_pages_clock() {
          ./support, which resumes in a `finally`."
     );
 }
+
+// ---------------------------------------------------------------------------
+// The baseline outlives a worker (SH-765)
+// ---------------------------------------------------------------------------
+
+/// The fixture baseline is captured once per run, before any worker exists.
+///
+/// It used to be module state in `support.ts`, captured lazily the first time
+/// a spec asked. A failed test stops its worker. The next worker imported
+/// `support.ts` again and took a new baseline with the failed test's stray
+/// already in it. The stray then became "fixture" for the rest of the run:
+/// SH-765 saw one cleanup timeout reported as "2 Drafts" in every later test
+/// that counted Alpha's drafts. The run's global setup is the only point that
+/// is both pristine and shared by every worker.
+#[test]
+fn the_fixture_baseline_is_captured_once_per_run_before_any_worker() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |relative: &str| {
+        std::fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|e| panic!("reading {relative}: {e}"))
+    };
+    let support = read("e2e/specs/support.ts");
+    let config = read("e2e/playwright.config.ts");
+    let setup = read("e2e/fixture-baseline.ts");
+
+    assert!(
+        !support.contains("fixtureBaselines") && !support.contains("new Map<string, Set<string>>()"),
+        "support.ts must not keep a per-worker fixture baseline: a restarted worker would \
+         capture the failed test's stray into it (SH-765)"
+    );
+    let cleanup = support
+        .split_once("export function cleanUpCreatedStories(")
+        .expect("support.ts defines cleanUpCreatedStories")
+        .1;
+    let cleanup = &cleanup[..cleanup.find("\n}\n").expect("the function body ends")];
+    assert!(
+        cleanup.contains("removeStrays(request, projectName, fixtureBaseline(projectName))"),
+        "the cleanup must compare against the run's baseline, read when the hook runs"
+    );
+    assert!(
+        config.contains("globalSetup: [\"./launch-probe.ts\", \"./fixture-baseline.ts\"],"),
+        "e2e/playwright.config.ts must run e2e/fixture-baseline.ts as a global setup, after \
+         the launch probe"
+    );
+    assert!(
+        setup.contains("export const FIXTURE_BASELINE_ENV = \"E2E_FIXTURE_BASELINE\";")
+            && setup.contains("process.env[FIXTURE_BASELINE_ENV] = JSON.stringify("),
+        "the global setup hands the baseline to every worker through the environment, which \
+         Playwright forks each worker with"
+    );
+}

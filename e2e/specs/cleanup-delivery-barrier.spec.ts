@@ -4,6 +4,7 @@ import {
 import type { APIRequestContext, TestInfo } from "@playwright/test";
 import { BlockDeliveryBarrier, readBlockDeliverySnapshot } from "../block-delivery-barrier.cjs";
 import { fixtureApiUrl } from "../fixture-api";
+import { FIXTURE_BASELINE_ENV, fixtureBaseline } from "../fixture-baseline";
 import { BASE_EXPECT_TIMEOUT_MS, gracedPatience } from "../load-grace";
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -250,4 +251,42 @@ test("a barrier read that outlasts its patience fails naming the barrier and del
   expect(performance.now() - started, "the patience, not the slow start, ended the wait")
     .toBeLessThan(shimDelayMs);
   expect((await storiesInProject(request, "Alpha Project")).map((s) => s.id)).toContain(id);
+});
+
+// SH-765: the baseline is the run's, captured before any worker, so a worker
+// restarted after a failed cleanup cannot take the failure's stray in.
+test("the run's fixture baseline names the seeded stories of every cleaned project", async ({ request }) => {
+  for (const project of ["Alpha Project", "Beta Project"]) {
+    const baseline = fixtureBaseline(project);
+    expect(baseline.size, `${project} was seeded before the run`).toBeGreaterThan(0);
+    const present = new Set((await storiesInProject(request, project)).map((s) => s.id));
+    for (const id of baseline) expect(present.has(id), `${project} still holds seeded ${id}`).toBe(true);
+  }
+});
+
+test("the run's fixture baseline is loud when absent, malformed, or missing a project", () => {
+  // Synchronous on purpose: no await, so a timeout cannot abandon this body
+  // before the finally restores the run's real value.
+  const captured = process.env[FIXTURE_BASELINE_ENV];
+  try {
+    delete process.env[FIXTURE_BASELINE_ENV];
+    expect(() => fixtureBaseline("Alpha Project")).toThrow(/E2E_FIXTURE_BASELINE is not set/);
+    for (const [raw, refusal] of [
+      ["{", /is not JSON/],
+      ["null", /not a map of project names/],
+      ["[]", /not a map of project names/],
+      ['{"Alpha Project":"AA-1"}', /not a map of project names/],
+      ['{"Alpha Project":[1]}', /not a map of project names/],
+    ] as const) {
+      process.env[FIXTURE_BASELINE_ENV] = raw;
+      expect(() => fixtureBaseline("Alpha Project"), raw).toThrow(refusal);
+    }
+    process.env[FIXTURE_BASELINE_ENV] = '{"Alpha Project":["AA-1"]}';
+    expect(() => fixtureBaseline("Beta Project")).toThrow(/no project named "Beta Project"; it has "Alpha Project"/);
+    expect(() => fixtureBaseline("constructor")).toThrow(/no project named "constructor"/);
+    expect([...fixtureBaseline("Alpha Project")]).toEqual(["AA-1"]);
+  } finally {
+    if (captured === undefined) delete process.env[FIXTURE_BASELINE_ENV];
+    else process.env[FIXTURE_BASELINE_ENV] = captured;
+  }
 });
