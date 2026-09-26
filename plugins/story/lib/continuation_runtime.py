@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 
+sys.dont_write_bytecode = True
 from workspace_ownership import inherited_fds
 from continuation_identity import handoff_message_id
 
