@@ -1534,6 +1534,68 @@ fn reset_authorization_skips_a_lane_whose_story_is_gone() {
     assert_eq!(engine.reset_target(&run.id, &token).unwrap().token, token);
 }
 
+/// SH-774: a card reset that owns the lane's story made Stop Now fail
+/// ("reset in progress") until that reset finished or was retried. Stop Now
+/// now defers to it: success, run still draining, lane untouched. Once the
+/// card reset has returned the story to todo, the next Stop Now finishes.
+#[test]
+fn stop_now_defers_to_a_card_reset_and_finishes_after_it() {
+    use storyhook::service::story_reset::StoryResetService;
+    let fixture = ServiceFixture::new();
+    let story = active_reset_story(&fixture, "card reset in flight");
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    occupy(&fixture, &run.id, 0, &story, "/owned/card");
+    let card = StoryResetService::new(&ctx).reserve(&story, &story).unwrap();
+
+    let deferred = engine.stop(&run.id, true).unwrap();
+
+    assert_eq!(deferred.run.state, EngineRunState::Draining);
+    assert_eq!(deferred.lanes[0].state, EngineLaneState::Working);
+    assert!(fake.calls().is_empty(), "the card reset owns the cleanup");
+
+    // The card reset's own finish: receipt completed, story back to todo.
+    let mut completed = card;
+    completed.completed = true;
+    fixture
+        .store()
+        .write(|tx| tx.put_story_reset(&completed))
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state(&story, "todo", None, None, None)
+        .unwrap();
+    let finished = engine.stop(&run.id, true).unwrap();
+    assert_eq!(finished.run.state, EngineRunState::Finished);
+    assert!(fake.calls().is_empty());
+}
+
+/// SH-774: a lane whose story a card reset owns failed Stop Now before the
+/// later lanes were tried, and its refused bookkeeping write replaced the
+/// error with "reset owns engine lane". The deferral must not hide a real
+/// failure on another lane.
+#[test]
+fn a_deferred_lane_does_not_hide_another_lanes_failure() {
+    use storyhook::service::story_reset::StoryResetService;
+    let fixture = ServiceFixture::new();
+    let owned = active_reset_story(&fixture, "card reset in flight");
+    let failing = active_reset_story(&fixture, "helper refuses");
+    let fake = FakeDispatcher::new([DispatcherStep::ResetFailure("window refused".into())]);
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(2)).unwrap();
+    occupy(&fixture, &run.id, 0, &owned, "/owned/card");
+    occupy(&fixture, &run.id, 1, &failing, "/owned/failing");
+    StoryResetService::new(&ctx).reserve(&owned, &owned).unwrap();
+
+    let error = engine.stop(&run.id, true).unwrap_err().to_string();
+
+    assert!(error.contains("window refused"), "{error}");
+    assert!(error.contains("lane 1"), "{error}");
+    assert_eq!(fake.calls().len(), 1, "the later lane was attempted");
+}
+
 #[test]
 fn immediate_stop_detaches_verification_without_calling_a_cleanup_helper() {
     let fixture = ServiceFixture::new();

@@ -8,6 +8,19 @@ use crate::service::workspace_lock::WorkspaceLock;
 use crate::store::{EngineReset, ExpectedSeq, ProjectId, StoryNo};
 use std::os::fd::{AsRawFd, BorrowedFd};
 
+/// What Stop Now does with one occupied lane. Every lane maps to exactly one
+/// outcome, and none of them refuses forever, so no lane can keep a stopped
+/// run draining indefinitely (SH-774).
+enum StopTarget {
+    /// The lane is idle, or this attempt released it without cleanup.
+    Settled,
+    /// A leased reset that the helper must clean up.
+    Reset(EngineReset),
+    /// Another cleanup operation owns the story and releases the lane when
+    /// it finishes; the store refuses this lane's writes until then.
+    Deferred(String),
+}
+
 /// Rejects mutations that would transfer a story while reset owns its work.
 pub(crate) fn refuse_reserved(
     tx: &impl ReadOps,
@@ -161,13 +174,23 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         }
         let lanes = self.stop_lanes_after_dispatch(run_id, Instant::now() + DISPATCH_TIMEOUT)?;
         let mut failures = Vec::new();
+        let mut deferred = Vec::new();
         for lane in lanes
             .iter()
             .filter(|lane| lane.state != EngineLaneState::Idle)
         {
-            let attempt = self.reserve_reset(lane).and_then(|reset| {
-                let Some(reset) = reset else {
-                    return Ok(());
+            let attempt = self.reserve_reset(lane).and_then(|target| {
+                let reset = match target {
+                    StopTarget::Settled => return Ok(()),
+                    StopTarget::Deferred(owner) => {
+                        deferred.push(format!(
+                            "lane {} story `{}`: {owner} owns its cleanup",
+                            lane.lane_index,
+                            lane.story_id.as_deref().unwrap_or("unknown")
+                        ));
+                        return Ok(());
+                    }
+                    StopTarget::Reset(reset) => reset,
                 };
                 let result = (|| {
                     let workspace = WorkspaceLock::acquire(
@@ -232,6 +255,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         if !failures.is_empty() {
             return Err(AppError::Storage(failures.join("; ")));
         }
+        // Not a failure: the other owner releases these lanes when it
+        // finishes, and the durable intent makes the next attempt finish the
+        // run then (SH-774).
+        if !deferred.is_empty() {
+            return self.one_view(run_id);
+        }
         self.ctx.store().write(|tx| {
             let slug = project_slug(tx, self.ctx.project())?;
             let mut run = run_for_project(tx, &slug, run_id)?;
@@ -254,11 +283,11 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     /// Reserves one occupied lane's leased reset, or releases a lane that
     /// Stop Now can never reset.
     ///
-    /// `None` means the lane is idle now. A lane without a cleanup lease, or
+    /// A lane without a cleanup lease, or
     /// whose story no longer exists, is released without cleanup (SH-774):
     /// no retry can produce the missing proof of ownership, so refusing it
     /// kept the run draining forever and blocked the project's next run.
-    fn reserve_reset(&self, observed: &EngineLaneRecord) -> Result<Option<EngineReset>, AppError> {
+    fn reserve_reset(&self, observed: &EngineLaneRecord) -> Result<StopTarget, AppError> {
         let now = self.ctx.now();
         Ok(self.ctx.write_stories(|tx| {
             let project = self.ctx.project();
@@ -268,7 +297,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 .find(|lane| lane.lane_index == observed.lane_index)
                 .ok_or_else(|| StoreError::Invariant("reset lane disappeared".into()))?;
             if lane.state == EngineLaneState::Idle {
-                return Ok(None);
+                return Ok(StopTarget::Settled);
             }
             if lane.story_id != observed.story_id || lane.cleanup_lease != observed.cleanup_lease {
                 return Err(StoreError::Invariant("reset lane ownership changed".into()));
@@ -283,10 +312,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     lane.run_id, lane.lane_index,
                 );
                 put_or_retire_idle_lane(tx, &released_lane(&lane, &now, detail))?;
-                return Ok(None);
+                return Ok(StopTarget::Settled);
             };
             let number = row.story_no;
-            super::super::story_reset::refuse_reserved(tx, project, number)?;
+            if let Some(owner) = super::super::story_reset::foreign_owner(tx, project, number)? {
+                return Ok(StopTarget::Deferred(owner));
+            }
             if let Some(reset) = tx.engine_reset(project, number)? {
                 if reset.run_id != lane.run_id
                     || reset.lane_index != lane.lane_index
@@ -296,7 +327,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         "reset reservation belongs to a different lane identity".into(),
                     ));
                 }
-                return Ok(Some(reset));
+                return Ok(StopTarget::Reset(reset));
             }
             let states = tx.state_map(project)?;
             let active = active_state(&tx.states(project)?)
@@ -308,7 +339,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 // transfer authority away from this engine attempt.
                 let idle = idle_lane(&lane.run_id, lane.lane_index, &now);
                 put_or_retire_idle_lane(tx, &idle)?;
-                return Ok(None);
+                return Ok(StopTarget::Settled);
             }
             let Some(lease) = lane.cleanup_lease.clone() else {
                 // Only the lease proves which window, worktree and branch this
@@ -346,7 +377,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     self.ctx.provenance(),
                 )?;
                 put_or_retire_idle_lane(tx, &released_lane(&lane, &now, detail))?;
-                return Ok(None);
+                return Ok(StopTarget::Settled);
             };
             let events: Vec<_> = tx
                 .events_for(project, number)?
@@ -373,7 +404,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 failure: None,
             };
             tx.put_engine_reset(&reset)?;
-            Ok(Some(reset))
+            Ok(StopTarget::Reset(reset))
         })?)
     }
 
