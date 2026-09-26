@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { expect as baseExpect, test as base } from "@playwright/test";
 import {
   BlockDeliveryBarrier,
@@ -15,6 +17,7 @@ import type {
   Page,
   Request,
   Route,
+  TestInfo,
 } from "@playwright/test";
 import {
   BASE_EXPECT_TIMEOUT_MS,
@@ -287,7 +290,7 @@ const LOAD_GRACE_RESET_INTERVAL_MS = 5_000;
  * can see is the SH-306 shape one layer up: a gate whose verdict depends on
  * state it never reported.
  */
-export const test = base.extend<{ loadGrace: void; testToken: void }>({
+export const test = base.extend<{ loadGrace: void; testToken: void; fixtureHeal: void }>({
   testToken: [
     async ({ request }, use) => {
       await resetFixtureTokenPreferences(request);
@@ -378,7 +381,67 @@ export const test = base.extend<{ loadGrace: void; testToken: void }>({
     },
     { auto: true },
   ],
+  // SH-765: the first test of each worker process removes the strays an
+  // earlier test's failed cleanup left. `loadGrace` is named so its watchdog
+  // is already running while the heal waits on a barrier.
+  fixtureHeal: [
+    async ({ request, loadGrace }, use, testInfo) => {
+      void loadGrace;
+      if (!workerHealed) {
+        workerHealed = true;
+        await healAtWorkerStart(testInfo.project.outputDir, testInfo, () => healFixtureProjects(request));
+      }
+      await use();
+    },
+    { auto: true },
+  ],
 });
+
+/** Whether this worker process has run its heal. Module state on purpose:
+ * Playwright starts a fresh process, and so a fresh module, for each worker. */
+let workerHealed = false;
+
+/** The marker a failed heal leaves in the project's output directory, which
+ * Playwright clears at the start of every run. */
+const HEAL_FAILED_MARKER = ".fixture-heal-failed";
+
+/**
+ * Runs `heal` ({@link healFixtureProjects} in the `fixtureHeal` fixture) for
+ * a new worker, unless an earlier worker's heal already failed in this run. A new worker exists because a test failed, and a failed
+ * cleanup is the only way a stray outlives its test. So this is exactly where
+ * strays are found, and it runs before any hook of the first test.
+ *
+ * A heal that fails fails that one test and leaves a marker. Later workers
+ * report the marker and do not try again. Without the marker, one stray that
+ * cannot be removed would fail every remaining test, one new worker at a
+ * time: worse than the cascade this heal exists to stop.
+ */
+export async function healAtWorkerStart(
+  markerDir: string,
+  testInfo: Pick<TestInfo, "title" | "annotations">,
+  heal: () => Promise<void>,
+): Promise<void> {
+  const marker = join(markerDir, HEAL_FAILED_MARKER);
+  if (existsSync(marker)) {
+    const line =
+      `fixture-heal: not retried; an earlier worker's heal failed (${marker}): ` +
+      readFileSync(marker, "utf8");
+    process.stderr.write(`${line}\n`);
+    testInfo.annotations.push({ type: "fixture-heal", description: line });
+    return;
+  }
+  try {
+    await heal();
+  } catch (error) {
+    mkdirSync(dirname(marker), { recursive: true });
+    writeFileSync(marker, `before "${testInfo.title}": ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `fixture-heal: a new worker could not remove the strays an earlier failed test left ` +
+        `in ${CLEANED_PROJECTS.join(", ")}. Later workers will not retry (${marker}).`,
+      { cause: error },
+    );
+  }
+}
 
 // An ended page may still have a preference write in flight. A separate token
 // per test keeps that write out of the next test's preference record.
@@ -1451,6 +1514,15 @@ export async function waitForDisplayedStoryBlockDeliveries(page: Page, id: strin
 }
 
 /**
+ * The projects whose strays the suite removes: those that specs register
+ * {@link cleanUpCreatedStories} for, and no others. The worker-start heal
+ * covers exactly these. Delta (Dispatch Auto's claim target), Gamma and
+ * Engine hold stories that no cleanup force-deletes, and the heal must not
+ * start deleting there.
+ */
+export const CLEANED_PROJECTS: readonly string[] = ["Alpha Project", "Beta Project"];
+
+/**
  * Registers an `afterEach` that deletes, through the API, every story the
  * spec left behind in `projectName` — anything not in the fixture the run
  * started with. Call once at the top of any spec file that creates stories
@@ -1465,15 +1537,39 @@ export async function waitForDisplayedStoryBlockDeliveries(page: Page, id: strin
  * whether the test passed or failed, so a stray cannot outlive the test
  * that created it, and a red spec stays one red spec.
  *
+ * When the cleanup itself fails (SH-765: a barrier read that ran out of
+ * patience), the stray survives its test. The baseline is the run's, taken
+ * before any worker (`e2e/fixture-baseline.ts`), so the worker Playwright
+ * starts after the failure cannot take the stray in as fixture. The
+ * `fixtureHeal` auto fixture then removes it before that worker's first test
+ * runs any hook.
+ *
  * Permanent deletion accepts OPEN and CLOSED stories alike. That matters for
  * cleanup because a closed stray still sits in `state.data.stories` and
  * inflates `#filter-count`'s denominator for the rest of the run. The forced
  * API request below removes either shape without reopening it first.
  */
 export function cleanUpCreatedStories(projectName: string): void {
+  if (!CLEANED_PROJECTS.includes(projectName)) {
+    throw new Error(
+      `cleanUpCreatedStories("${projectName}"): add the project to CLEANED_PROJECTS in ` +
+        "e2e/specs/support.ts, so the worker-start heal also removes its strays",
+    );
+  }
   test.afterEach(async ({ request }) => {
     await removeStrays(request, projectName, fixtureBaseline(projectName));
   });
+}
+
+/**
+ * Removes every stray from every project in {@link CLEANED_PROJECTS}: each
+ * story the run's baseline does not name, through the same barrier-gated
+ * removal as the per-test cleanup (SH-765).
+ */
+export async function healFixtureProjects(request: APIRequestContext): Promise<void> {
+  for (const project of CLEANED_PROJECTS) {
+    await removeStrays(request, project, fixtureBaseline(project));
+  }
 }
 
 /**

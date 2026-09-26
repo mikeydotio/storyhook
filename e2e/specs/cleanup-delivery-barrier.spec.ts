@@ -1,5 +1,6 @@
 import {
-  test, expect, cleanUpCreatedStories, projectSlug, removeStrays, requiredEnv, storiesInProject,
+  test, expect, cleanUpCreatedStories, healAtWorkerStart, healFixtureProjects, projectSlug,
+  removeStrays, requiredEnv, storiesInProject,
 } from "./support";
 import type { APIRequestContext, TestInfo } from "@playwright/test";
 import { BlockDeliveryBarrier, readBlockDeliverySnapshot } from "../block-delivery-barrier.cjs";
@@ -235,7 +236,7 @@ test("cleanup removes a story whose barrier read is slower than the old fixed bo
   expect((await storiesInProject(request, "Alpha Project")).map((s) => s.id)).not.toContain(id);
 });
 
-test("a barrier read that outlasts its patience fails naming the barrier and deletes nothing", async ({ request }, testInfo) => {
+test("a barrier read that outlasts its patience fails naming the barrier, and the next worker's heal removes the stray", async ({ request }, testInfo) => {
   const baseline = new Set((await storiesInProject(request, "Alpha Project")).map((s) => s.id));
   const id = await createAlphaStory(request, "SH-765 barrier out of patience");
   const slug = await projectSlug(request, "Alpha Project");
@@ -251,6 +252,14 @@ test("a barrier read that outlasts its patience fails naming the barrier and del
   expect(performance.now() - started, "the patience, not the slow start, ended the wait")
     .toBeLessThan(shimDelayMs);
   expect((await storiesInProject(request, "Alpha Project")).map((s) => s.id)).toContain(id);
+
+  // A failed cleanup fails its test, and Playwright starts a new worker for
+  // the next one. That worker's first test runs this heal before any hook.
+  await healFixtureProjects(request);
+  for (const project of ["Alpha Project", "Beta Project"]) {
+    const present = new Set((await storiesInProject(request, project)).map((s) => s.id));
+    expect(present, `${project} is back to the run's baseline`).toEqual(fixtureBaseline(project));
+  }
 });
 
 // SH-765: the baseline is the run's, captured before any worker, so a worker
@@ -289,4 +298,38 @@ test("the run's fixture baseline is loud when absent, malformed, or missing a pr
     if (captured === undefined) delete process.env[FIXTURE_BASELINE_ENV];
     else process.env[FIXTURE_BASELINE_ENV] = captured;
   }
+});
+
+// SH-765 / D7c: a heal that cannot remove a stray fails one test, not every
+// remaining test. The marker lives in this test's own output directory here;
+// the fixture uses the project's, which Playwright clears at each run's start.
+test("a failed heal fails once, and later workers report it without retrying", async ({}, testInfo) => {
+  const markerDir = testInfo.outputPath("heal-marker");
+  const attempts: string[] = [];
+  const failingHeal = async () => {
+    attempts.push("heal");
+    throw new Error("DELETE AA-9 answered 409");
+  };
+  const first = { title: "first test of worker 2", annotations: [] as TestInfo["annotations"] };
+  await expect(healAtWorkerStart(markerDir, first, failingHeal))
+    .rejects.toThrow(/^fixture-heal: a new worker could not remove .*Later workers will not retry/);
+  expect(attempts).toEqual(["heal"]);
+
+  const later = { title: "first test of worker 3", annotations: [] as TestInfo["annotations"] };
+  await healAtWorkerStart(markerDir, later, failingHeal);
+  expect(attempts, "a later worker does not retry a failed heal").toEqual(["heal"]);
+  expect(later.annotations).toEqual([{
+    type: "fixture-heal",
+    description: expect.stringMatching(
+      /^fixture-heal: not retried; .*before "first test of worker 2": DELETE AA-9 answered 409$/,
+    ),
+  }]);
+});
+
+test("a heal runs when no earlier worker's heal failed", async ({}, testInfo) => {
+  const attempts: string[] = [];
+  await healAtWorkerStart(testInfo.outputPath("heal-marker"), { title: "t", annotations: [] }, async () => {
+    attempts.push("heal");
+  });
+  expect(attempts).toEqual(["heal"]);
 });
