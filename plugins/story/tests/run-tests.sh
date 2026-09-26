@@ -30,7 +30,11 @@ set -uo pipefail
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILTER="${1:-}"
 
-JOBS="${STORYHOOK_PLUGIN_JOBS:-1}"
+# 4, measured on 2026-09-25 at load average 18-25, with the verifier's own gate
+# running: 107/107 green at 4 jobs in 401 s and at 6 jobs in 372 s, against
+# 870-1870 s one at a time. Six bought 7% for half again the process churn on
+# a machine several suites share, so four it is.
+JOBS="${STORYHOOK_PLUGIN_JOBS:-4}"
 case "$JOBS" in
 ('' | *[!0-9]* | 0*)
   echo "run-tests.sh: STORYHOOK_PLUGIN_JOBS must be a positive integer, got '$JOBS'" >&2
