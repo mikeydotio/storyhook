@@ -756,39 +756,50 @@ pub fn repair_read_model<S: Store>(
     store: &S,
     project: ProjectId,
 ) -> Result<RepairReport, StoreError> {
-    store.write(|tx| {
-        // One fold, read twice: once to say what was wrong, once to write the
-        // rows that put it right. Nothing between them could change the answer
-        // — they were always inside this one transaction — so the second fold
-        // was pure cost (SH-267).
-        let rebuilt = rebuild(tx, project)?;
-        let before = diff_rebuilt(tx, project, &rebuilt)?;
-        let mut report = RepairReport {
-            repaired: before,
-            ..RepairReport::default()
-        };
-        for story in rebuilt {
-            let complete = story.is_complete();
-            match story.snapshot {
-                // Deliberately not written: see this function's own doc
-                // comment. `head_seq` is the trap that makes a "helpful"
-                // partial write worse than none — `put_story` would stamp the
-                // row at the FULL head, taken from the very event that did not
-                // decode, so the row would claim to be a fold up to head and
-                // the one column that tells *stale* from *wrong* would be
-                // spent saying something false.
-                Ok(_) if !complete => {
-                    report.withheld.push((story.story_no, story.unknown_events));
-                }
-                Ok(snapshot) => {
-                    tx.put_story(project, &snapshot, story.head_seq)?;
-                    report.rewritten.push(story.story_no);
-                }
-                Err(reason) => report.unrepairable.push((story.story_no, reason)),
+    store.write(|tx| repair_read_model_in(tx, project))
+}
+
+/// [`repair_read_model`] inside a write transaction the caller already holds.
+///
+/// Split out so `story doctor --fix` can run the heal inside
+/// `service::block_delivery::derive_block_edges` (SH-772): a healed row can
+/// change a story's effective blocking, and the store layer does not know
+/// what a delivery is.
+pub(crate) fn repair_read_model_in(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+) -> Result<RepairReport, StoreError> {
+    // One fold, read twice: once to say what was wrong, once to write the
+    // rows that put it right. Nothing between them could change the answer
+    // — they were always inside this one transaction — so the second fold
+    // was pure cost (SH-267).
+    let rebuilt = rebuild(tx, project)?;
+    let before = diff_rebuilt(tx, project, &rebuilt)?;
+    let mut report = RepairReport {
+        repaired: before,
+        ..RepairReport::default()
+    };
+    for story in rebuilt {
+        let complete = story.is_complete();
+        match story.snapshot {
+            // Deliberately not written: see [`repair_read_model`]'s doc
+            // comment. `head_seq` is the trap that makes a "helpful"
+            // partial write worse than none — `put_story` would stamp the
+            // row at the FULL head, taken from the very event that did not
+            // decode, so the row would claim to be a fold up to head and
+            // the one column that tells *stale* from *wrong* would be
+            // spent saying something false.
+            Ok(_) if !complete => {
+                report.withheld.push((story.story_no, story.unknown_events));
             }
+            Ok(snapshot) => {
+                tx.put_story(project, &snapshot, story.head_seq)?;
+                report.rewritten.push(story.story_no);
+            }
+            Err(reason) => report.unrepairable.push((story.story_no, reason)),
         }
-        Ok(report)
-    })
+    }
+    Ok(report)
 }
 
 /// Renders an optional field so that "absent" and "empty" are distinguishable
