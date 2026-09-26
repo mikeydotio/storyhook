@@ -78,9 +78,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/plugin-identity.sh"
 #                            simply disables the identity half of pane_runs.
 #   READY_TAIL_LINES         pane_tail
 #   READY_ACCEPT_PATTERN     prompt_accepted
-#   CONFIRM_ATTEMPTS         poll_input, poll_composer_holds, poll_composer_cleared,
+#   CONFIRM_ATTEMPTS         poll_composer_holds, poll_composer_cleared,
 #                            poll_composer_idle (a drawn composer that holds text)
-#   CONFIRM_DELAY            poll_input, poll_composer_holds, poll_composer_cleared
+#   CONFIRM_DELAY            poll_composer_holds, poll_composer_cleared
 #   SEND_RETRIES             send_prompt_confirmed
 #   SUBMIT_KEY               send_prompt_confirmed
 #   EMPTY_INPUT_PATTERN      input_state (provider-rendered empty placeholder)
@@ -511,18 +511,6 @@ poll_composer_idle() {
     attempt=$((attempt + 1))
   done
   printf '%s' "$state"
-  return 1
-}
-
-# poll_input <pane> <text|empty> — poll input_state up to CONFIRM_ATTEMPTS times,
-# CONFIRM_DELAY apart, for the box to reach <want>. 0 on reaching it, else 1.
-poll_input() {
-  local pane="$1" want="$2" attempt=0
-  while [ "$attempt" -lt "$CONFIRM_ATTEMPTS" ]; do
-    [ "$(input_state "$pane")" = "$want" ] && return 0
-    sleep "$CONFIRM_DELAY"
-    attempt=$((attempt + 1))
-  done
   return 1
 }
 
