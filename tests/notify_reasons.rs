@@ -314,12 +314,13 @@ fn opens_loop(line: &str) -> bool {
 /// True when `line` calls `composer_holds "$pane"` itself — not a longer name
 /// such as `poll_composer_holds`, which is the receipt, not the gate.
 fn calls_composer_holds(line: &str) -> bool {
-    line.match_indices("composer_holds \"$pane\"").any(|(at, _)| {
-        !line[..at]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
+    line.match_indices("composer_holds \"$pane\"")
+        .any(|(at, _)| {
+            !line[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
 }
 
 /// The guarded delivery a prompt sender must keep (SH-780, SH-799): an idle
@@ -353,7 +354,11 @@ fn assert_guarded_delivery(name: &str, body: &str, idle_check: &str) {
         "{name}: the paste must follow the idle check `{idle_check}`"
     );
     let submits = at("\"$SUBMIT_KEY\"");
-    assert_eq!(submits.len(), 1, "{name}: the submit key is sent from one place");
+    assert_eq!(
+        submits.len(),
+        1,
+        "{name}: the submit key is sent from one place"
+    );
     let send = submits[0];
     let mut depth = 0;
     let header = (0..send)
@@ -409,7 +414,11 @@ fn the_guarded_delivery_check_reads_the_gate_not_the_receipt() {
         "composer_holds \"$pane\" \"$t\" || return 1\nwhile [ \"$try\" -le 2 ]; do\n",
     );
     let once = std::panic::catch_unwind(|| {
-        assert_guarded_delivery("gate outside the loop", &gate_outside_loop, "poll_composer_idle ")
+        assert_guarded_delivery(
+            "gate outside the loop",
+            &gate_outside_loop,
+            "poll_composer_idle ",
+        )
     });
     assert!(
         once.is_err(),
