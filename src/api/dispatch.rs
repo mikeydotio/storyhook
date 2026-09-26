@@ -1649,6 +1649,7 @@ pub(crate) fn resolve_dispatch_script(agent: DispatchAgent) -> Result<PathBuf, S
         crate::plugin::release_marketplace_root().ok(),
         crate::plugin::dev_repo_root(),
         agent,
+        &crate::plugin::codex_installed_plugin_root,
     )
 }
 
@@ -1670,29 +1671,34 @@ pub(crate) fn resolve_engine_dispatch_script(agent: EngineAgent) -> Result<PathB
 /// default). This is also what makes `installed_plugin_script`'s real
 /// behavior against a real `installed_plugins.json` testable at all — before
 /// this, only the `configured` override branch had any coverage (SH-196).
+///
+/// `codex_root` is Codex's registry probe, injected for the same reason: the
+/// real one starts the `codex` on this machine's `PATH`, and a test must not
+/// depend on whether that binary answers (SH-815).
 fn resolve_dispatch_script_from_for_agent(
     configured: Option<String>,
     home: Option<PathBuf>,
     release_root: Option<PathBuf>,
     dev_root: Option<PathBuf>,
     agent: DispatchAgent,
+    codex_root: &dyn Fn(&Path) -> Result<Option<PathBuf>, crate::error::AppError>,
 ) -> Result<PathBuf, String> {
     if let Some(configured) = configured {
-        let path = PathBuf::from(configured);
-        return if path.is_file() {
-            check_dispatch_protocol(path)
-        } else {
-            Err(format!(
-                "STORYHOOK_DISPATCH_SCRIPT names `{}`, which is not a file",
-                path.display()
-            ))
-        };
+        return configured_script(configured);
     }
+    // A Codex registry that could not be read falls through like an empty
+    // one. It is named only if nothing else resolves: the daemon journal
+    // already records the failed run, and the projection is the same bytes.
+    let mut unread = None;
     let installed = home.and_then(|home| match agent {
         DispatchAgent::Claude => installed_plugin_script(&home),
-        DispatchAgent::Codex => crate::plugin::codex_installed_plugin_root(&home)
-            .map(|root| root.join("bin/story.sh"))
-            .filter(|script| script.is_file()),
+        DispatchAgent::Codex => match codex_root(&home) {
+            Ok(root) => codex_registry_script(root),
+            Err(error) => {
+                unread = Some(error);
+                None
+            }
+        },
     });
     if let Some(path) = installed {
         return check_dispatch_protocol(path);
@@ -1707,10 +1713,117 @@ fn resolve_dispatch_script_from_for_agent(
     }
     Err(format!(
         "could not find plugins/story/bin/story.sh for agent `{}` -- install it with \
-             `story plugin install {}` or set STORYHOOK_DISPATCH_SCRIPT",
+             `story plugin install {}` or set STORYHOOK_DISPATCH_SCRIPT{}",
         agent.as_str(),
-        agent.as_str()
+        agent.as_str(),
+        unread
+            .map(|error| format!(" (Codex's plugin registry could not be read: {error})"))
+            .unwrap_or_default()
     ))
+}
+
+/// Locates the helper the daemon runs for its own control verbs — the
+/// verifier's notify, reap, submit and redispatch, and block delivery —
+/// without starting a provider CLI while a file names one (SH-815).
+///
+/// These verbs do not depend on the provider
+/// (`docs/spec/provider-independent-resources.md`): the helper reads the
+/// target's provider from recorded evidence, never from which installed copy
+/// runs it, and every copy is the same `plugins/story` bytes. So the order is
+/// [`resolve_dispatch_script`]'s candidates with its one subprocess moved
+/// last: the override, this binary's release projection, a dev checkout,
+/// Claude's registry file, and only then Codex's registry, which asks `codex`
+/// and is bounded by [`crate::plugin::provider_cli::PROVIDER_CLI_TIMEOUT`].
+/// Until SH-815 Codex's registry came first, and a `codex` that never
+/// answered held the verifier's reap for as long as the daemon lived.
+///
+/// A candidate older than [`REQUIRED_DISPATCH_PROTOCOL`] is skipped, and
+/// named if nothing newer resolves, which is the fallback the old
+/// Codex-then-Claude chain gave. An operator's override is still refused
+/// outright: it names exactly one script.
+pub(crate) fn resolve_control_script() -> Result<PathBuf, String> {
+    resolve_control_script_from(
+        std::env::var("STORYHOOK_DISPATCH_SCRIPT").ok(),
+        std::env::var("HOME").ok().map(PathBuf::from),
+        crate::plugin::release_marketplace_root().ok(),
+        crate::plugin::dev_repo_root(),
+        &crate::plugin::codex_installed_plugin_root,
+    )
+}
+
+/// [`resolve_control_script`] with every environment, filesystem root and
+/// provider probe injected, for the reason
+/// [`resolve_dispatch_script_from_for_agent`] gives.
+fn resolve_control_script_from(
+    configured: Option<String>,
+    home: Option<PathBuf>,
+    release_root: Option<PathBuf>,
+    dev_root: Option<PathBuf>,
+    codex_root: &dyn Fn(&Path) -> Result<Option<PathBuf>, crate::error::AppError>,
+) -> Result<PathBuf, String> {
+    if let Some(configured) = configured {
+        return configured_script(configured);
+    }
+    let mut refused = Vec::new();
+    let files = [release_root, dev_root]
+        .into_iter()
+        .flatten()
+        .map(|root| root.join("plugins/story/bin/story.sh"))
+        .filter(|path| path.is_file())
+        .chain(home.as_deref().and_then(installed_plugin_script));
+    for path in files {
+        match check_dispatch_protocol(path) {
+            Ok(path) => return Ok(path),
+            Err(reason) => refused.push(reason),
+        }
+    }
+    let mut unread = None;
+    if let Some(home) = &home {
+        match codex_root(home) {
+            Ok(root) => {
+                if let Some(path) = codex_registry_script(root) {
+                    match check_dispatch_protocol(path) {
+                        Ok(path) => return Ok(path),
+                        Err(reason) => refused.push(reason),
+                    }
+                }
+            }
+            Err(error) => unread = Some(error),
+        }
+    }
+    let mut message = "could not find plugins/story/bin/story.sh for the daemon's control verbs \
+         -- install it with `story plugin install claude` or `story plugin install codex`, \
+         or set STORYHOOK_DISPATCH_SCRIPT"
+        .to_string();
+    for reason in refused {
+        message.push_str("; ");
+        message.push_str(&reason);
+    }
+    if let Some(error) = unread {
+        message.push_str(&format!(
+            "; Codex's plugin registry could not be read: {error}"
+        ));
+    }
+    Err(message)
+}
+
+/// The operator's `STORYHOOK_DISPATCH_SCRIPT`, protocol-checked, or why not.
+fn configured_script(configured: String) -> Result<PathBuf, String> {
+    let path = PathBuf::from(configured);
+    if path.is_file() {
+        check_dispatch_protocol(path)
+    } else {
+        Err(format!(
+            "STORYHOOK_DISPATCH_SCRIPT names `{}`, which is not a file",
+            path.display()
+        ))
+    }
+}
+
+/// The helper inside the plugin root Codex's registry names, if it is there.
+fn codex_registry_script(root: Option<PathBuf>) -> Option<PathBuf> {
+    root.map(|root| root.join("bin/story.sh"))
+        .filter(|script| script.is_file())
 }
 
 /// The Claude-only, no-release-projection shape most resolution tests need;
@@ -1722,7 +1835,21 @@ fn resolve_dispatch_script_from(
     home: Option<PathBuf>,
     dev_root: Option<PathBuf>,
 ) -> Result<PathBuf, String> {
-    resolve_dispatch_script_from_for_agent(configured, home, None, dev_root, DispatchAgent::Claude)
+    resolve_dispatch_script_from_for_agent(
+        configured,
+        home,
+        None,
+        dev_root,
+        DispatchAgent::Claude,
+        &claude_never_asks_codex,
+    )
+}
+
+/// The Codex registry probe for a Claude resolution: resolving for Claude
+/// must never start `codex`, so a call here fails the test that made it.
+#[cfg(test)]
+fn claude_never_asks_codex(_: &Path) -> Result<Option<PathBuf>, crate::error::AppError> {
+    panic!("a Claude resolution must never run the Codex registry probe")
 }
 
 /// Refuses `path` if its declared `DISPATCH_PROTOCOL` is older than
@@ -3542,6 +3669,7 @@ mod tests {
             Some(_root.path().to_path_buf()),
             None,
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         assert_eq!(
             resolved.expect("the release projection must resolve when the registry is empty"),
@@ -3559,6 +3687,7 @@ mod tests {
             Some(_root.path().to_path_buf()),
             None,
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         assert_eq!(
             resolved.expect("an installed plugin should resolve"),
@@ -3586,6 +3715,7 @@ mod tests {
             Some(_root.path().to_path_buf()),
             Some(dev_root.path().to_path_buf()),
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         assert_eq!(resolved.unwrap(), projection);
     }
@@ -3609,6 +3739,7 @@ mod tests {
             Some(root.path().to_path_buf()),
             Some(dev_root.path().to_path_buf()),
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         assert_eq!(resolved.unwrap(), dev_script);
     }
@@ -3623,6 +3754,7 @@ mod tests {
             Some(_root.path().to_path_buf()),
             None,
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         let message = resolved.expect_err("a projection predating the marker must be refused");
         assert!(
@@ -3634,10 +3766,9 @@ mod tests {
 
     #[test]
     fn resolve_dispatch_script_resolves_the_release_projection_for_codex_too() {
-        // One rule for both providers: a home with no Codex plugin cache
-        // (so the `codex plugin list` probe, if `codex` is even on PATH,
-        // names a directory that does not exist under this home) falls
-        // through to the same projection.
+        // One rule for both providers: a Codex registry that names no enabled
+        // plugin falls through to the same projection. The probe is a fake,
+        // so this machine's own `codex` never runs (SH-815).
         let home = storyhook_test_support::scratch_dir();
         let (_root, script) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
         let resolved = resolve_dispatch_script_from_for_agent(
@@ -3646,10 +3777,73 @@ mod tests {
             Some(_root.path().to_path_buf()),
             None,
             DispatchAgent::Codex,
+            &|_: &Path| Ok(None),
         );
         assert_eq!(
             resolved.expect("the projection must resolve for codex"),
             script
+        );
+    }
+
+    #[test]
+    fn resolve_dispatch_script_prefers_the_codex_registry_over_the_release_projection() {
+        // The Codex twin of the Claude registry-first rule: the root Codex's
+        // registry names outranks the projection. Pinned with a fake probe,
+        // so the branch has coverage that does not depend on this machine.
+        let home = storyhook_test_support::scratch_dir();
+        let (registry, registry_script) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let registry_root = registry.path().join("plugins/story");
+        let (_root, _projection) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let resolved = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_root.path().to_path_buf()),
+            None,
+            DispatchAgent::Codex,
+            &|asked: &Path| {
+                assert_eq!(asked, home.path(), "the probe reads the resolved home");
+                Ok(Some(registry_root.clone()))
+            },
+        );
+        assert_eq!(resolved.unwrap(), registry_script);
+    }
+
+    /// A Codex registry that cannot be read (SH-815: `codex plugin list`
+    /// that never answered) falls through to the projection like an empty
+    /// one, so a stuck Codex does not stop a dispatch the projection serves.
+    #[test]
+    fn resolve_dispatch_script_falls_through_a_codex_registry_that_could_not_be_read() {
+        let home = storyhook_test_support::scratch_dir();
+        let (_root, script) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let resolved = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_root.path().to_path_buf()),
+            None,
+            DispatchAgent::Codex,
+            &|_: &Path| Err(crate::error::AppError::Storage("probe stalled".into())),
+        );
+        assert_eq!(resolved.unwrap(), script);
+    }
+
+    /// With nothing else to resolve, the unread registry is the reason, so
+    /// the error names it rather than only suggesting an install.
+    #[test]
+    fn resolve_dispatch_script_names_a_codex_registry_that_could_not_be_read() {
+        let home = storyhook_test_support::scratch_dir();
+        let message = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            None,
+            None,
+            DispatchAgent::Codex,
+            &|_: &Path| Err(crate::error::AppError::Storage("probe stalled".into())),
+        )
+        .expect_err("nothing resolves");
+        assert!(message.contains("story plugin install codex"), "{message}");
+        assert!(
+            message.ends_with("(Codex's plugin registry could not be read: probe stalled)"),
+            "{message}"
         );
     }
 
@@ -3664,6 +3858,7 @@ mod tests {
             None,
             None,
             DispatchAgent::Claude,
+            &claude_never_asks_codex,
         );
         let message = resolved.expect_err("nothing to resolve must be an error");
         assert_eq!(
@@ -3671,5 +3866,164 @@ mod tests {
             "could not find plugins/story/bin/story.sh for agent `claude` -- install it with \
              `story plugin install claude` or set STORYHOOK_DISPATCH_SCRIPT"
         );
+    }
+
+    /// The Codex registry probe for a control resolution that a file must
+    /// settle first: a call here is the SH-815 wedge, so it fails the test.
+    fn a_file_settles_it_first(_: &Path) -> Result<Option<PathBuf>, crate::error::AppError> {
+        panic!("a control verb asked a provider CLI while a file named its helper")
+    }
+
+    /// A dev checkout holding a protocol-current `story.sh`.
+    fn fake_dev_checkout() -> (tempfile::TempDir, PathBuf) {
+        let root = storyhook_test_support::scratch_dir();
+        let script = root.path().join("plugins/story/bin/story.sh");
+        std::fs::create_dir_all(script.parent().unwrap()).expect("mkdir dev checkout bin");
+        std::fs::write(&script, FAKE_STORY_SH).expect("write dev story.sh");
+        (root, script)
+    }
+
+    /// SH-815's fix: with the release projection on disk, the control verbs
+    /// run it, and no provider registry is consulted, Codex's least of all.
+    #[test]
+    fn control_script_takes_the_release_projection_without_asking_a_provider() {
+        let home = fake_installed_plugin_home(&["plugins/cache/storyhook/story/0.5.0"]);
+        let (_root, projection) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let resolved = resolve_control_script_from(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_root.path().to_path_buf()),
+            None,
+            &a_file_settles_it_first,
+        );
+        assert_eq!(resolved.unwrap(), projection);
+    }
+
+    #[test]
+    fn control_script_takes_a_dev_checkout_before_either_registry() {
+        let home = fake_installed_plugin_home(&["plugins/cache/storyhook/story/0.5.0"]);
+        let (_dev, dev_script) = fake_dev_checkout();
+        let resolved = resolve_control_script_from(
+            None,
+            Some(home.path().to_path_buf()),
+            None,
+            Some(_dev.path().to_path_buf()),
+            &a_file_settles_it_first,
+        );
+        assert_eq!(resolved.unwrap(), dev_script);
+    }
+
+    #[test]
+    fn control_script_reads_the_claude_registry_file_before_asking_codex() {
+        let home = fake_installed_plugin_home(&["plugins/cache/storyhook/story/0.5.0"]);
+        let resolved = resolve_control_script_from(
+            None,
+            Some(home.path().to_path_buf()),
+            None,
+            None,
+            &a_file_settles_it_first,
+        );
+        assert_eq!(
+            resolved.unwrap(),
+            home.path()
+                .join("plugins/cache/storyhook/story/0.5.0/bin/story.sh")
+        );
+    }
+
+    /// The Codex registry stays reachable for a machine where it is the one
+    /// helper source, and it is asked once, last.
+    #[test]
+    fn control_script_asks_the_codex_registry_last() {
+        let home = storyhook_test_support::scratch_dir();
+        let (registry, registry_script) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let registry_root = registry.path().join("plugins/story");
+        let asked = std::cell::Cell::new(0);
+        let resolved = resolve_control_script_from(
+            None,
+            Some(home.path().to_path_buf()),
+            None,
+            None,
+            &|_: &Path| {
+                asked.set(asked.get() + 1);
+                Ok(Some(registry_root.clone()))
+            },
+        );
+        assert_eq!(resolved.unwrap(), registry_script);
+        assert_eq!(asked.get(), 1);
+    }
+
+    /// A stale candidate is skipped, as the old Codex-then-Claude chain let a
+    /// stale Codex answer fall back to Claude's, and named if nothing newer
+    /// resolves.
+    #[test]
+    fn control_script_skips_a_stale_candidate_and_names_it_when_nothing_else_resolves() {
+        let home = home_whose_registry_lost_the_plugin();
+        let (_stale_root, stale) = fake_release_projection(None);
+        let (_dev, dev_script) = fake_dev_checkout();
+        let resolved = resolve_control_script_from(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_stale_root.path().to_path_buf()),
+            Some(_dev.path().to_path_buf()),
+            &a_file_settles_it_first,
+        );
+        assert_eq!(
+            resolved.unwrap(),
+            dev_script,
+            "the stale projection is skipped"
+        );
+
+        let message = resolve_control_script_from(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_stale_root.path().to_path_buf()),
+            None,
+            &|_: &Path| Ok(None),
+        )
+        .expect_err("only a stale candidate exists");
+        assert!(message.contains(&stale.display().to_string()), "{message}");
+        assert!(message.contains("out of date"), "{message}");
+    }
+
+    #[test]
+    fn control_script_names_a_codex_registry_that_could_not_be_read() {
+        let home = storyhook_test_support::scratch_dir();
+        let message = resolve_control_script_from(
+            None,
+            Some(home.path().to_path_buf()),
+            None,
+            None,
+            &|_: &Path| {
+                Err(crate::error::AppError::Storage(
+                    "`codex plugin list --json` did not answer within 60s".into(),
+                ))
+            },
+        )
+        .expect_err("nothing resolves");
+        assert!(message.contains("story plugin install claude"), "{message}");
+        assert!(
+            message.ends_with(
+                "Codex's plugin registry could not be read: \
+                 `codex plugin list --json` did not answer within 60s"
+            ),
+            "{message}"
+        );
+    }
+
+    /// The operator's override names exactly one script, so a stale one is
+    /// refused rather than skipped for something the operator did not name.
+    #[test]
+    fn control_script_refuses_a_stale_override() {
+        let (_root, stale) = fake_release_projection(None);
+        let (_dev, _dev_script) = fake_dev_checkout();
+        let message = resolve_control_script_from(
+            Some(stale.display().to_string()),
+            None,
+            None,
+            Some(_dev.path().to_path_buf()),
+            &a_file_settles_it_first,
+        )
+        .expect_err("a stale override is refused");
+        assert!(message.contains("out of date"), "{message}");
     }
 }

@@ -607,3 +607,99 @@ fn helper_diagnostic_is_literal_evidence_and_does_not_strand_delivery() {
             .contains(&storyhook::text_lint::quote_evidence(detail))
     }));
 }
+
+/// How long the fake `codex` below waits before it exits: longer than the
+/// delivery wait, so a resolution that asks Codex first fails that wait,
+/// and bounded, so a fake started by that resolution does not outlive the
+/// test by much.
+const FAKE_CODEX_HANG_SECS: u64 = 30;
+
+/// SH-815: block delivery finds its helper without asking a provider CLI.
+///
+/// The daemon starts with no `STORYHOOK_DISPATCH_SCRIPT`, so it resolves the
+/// helper itself, and the `codex` first on its `PATH` does not answer. Until
+/// SH-815 the delivery worker asked Codex's registry first and waited on that
+/// `codex` for as long as it ran, while this binary's release projection held
+/// the helper the whole time. The verifier's reap and notify took the same
+/// path, and a Codex launch that never returned stopped the verifier for good.
+#[test]
+fn block_delivery_never_waits_on_a_provider_cli_to_find_its_helper() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+    use storyhook_test_support::TestEnv;
+    let env = TestEnv::isolated();
+    struct Stop<'a>(&'a TestEnv);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            self.0.stop_daemon();
+        }
+    }
+    let _stop = Stop(&env);
+    let executable = |path: &Path, body: String| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let invocations = env.home().join("codex-invocations");
+    let fake_bin = env.home().join("fake-bin");
+    executable(
+        &fake_bin.join("codex"),
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec sleep {FAKE_CODEX_HANG_SECS}\n",
+            invocations.display()
+        ),
+    );
+    // Where `story plugin install` materializes this binary's release.
+    executable(
+        &env.data_dir()
+            .join("plugins")
+            .join(env!("CARGO_PKG_VERSION"))
+            .join("plugins/story/bin/story.sh"),
+        r#"#!/usr/bin/env bash
+DISPATCH_PROTOCOL=6
+if [ "$5" = --interrupt ]; then
+  printf sent > native-interrupt
+  printf '{"ok":true,"target":"daemon-session","display":"native interrupt acknowledged"}'
+fi
+"#
+        .to_string(),
+    );
+    let path = std::env::join_paths(
+        std::iter::once(fake_bin).chain(std::env::split_paths(&env.path_with_binary())),
+    )
+    .unwrap();
+    env.story(env.home())
+        .args(["daemon", "start"])
+        .env_remove("STORYHOOK_DISPATCH_SCRIPT")
+        .env("PATH", path)
+        .assert()
+        .success();
+    let p = env
+        .project()
+        .prefix("BLK")
+        .git()
+        .seed_story("Provider-free delivery")
+        .build();
+    p.story()
+        .args(["move", "BLK-1", "in-progress"])
+        .assert()
+        .success();
+    p.story()
+        .args(["block", "BLK-1", "temporary repair"])
+        .assert()
+        .success();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !p.path().join("native-interrupt").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never delivered the interrupt; codex was asked: {:?}",
+            std::fs::read_to_string(&invocations).ok()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        !invocations.exists(),
+        "block delivery started a provider CLI to find its helper: {:?}",
+        std::fs::read_to_string(&invocations).ok()
+    );
+}
