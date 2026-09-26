@@ -1520,7 +1520,7 @@ fn reset_authorization_skips_a_lane_whose_story_is_gone() {
     let engine = EngineService::new(&ctx, &fake);
     let run = engine.start(start_request(2)).unwrap();
     engine.pause(&run.id).unwrap();
-    occupy(&fixture, &run.id, 0, &kept, "/owned/kept");
+    occupy(&fixture, &run.id, 1, &kept, "/owned/kept");
     assert!(engine.stop(&run.id, true).is_err());
     let token = fixture
         .store()
@@ -1528,7 +1528,8 @@ fn reset_authorization_skips_a_lane_whose_story_is_gone() {
         .unwrap()
         .unwrap()
         .token;
-    occupy(&fixture, &run.id, 1, "SH-99", "/owned/gone");
+    // The scan visits lanes in order: the unresolvable lane comes first.
+    occupy(&fixture, &run.id, 0, "SH-99", "/owned/gone");
 
     assert_eq!(engine.reset_target(&run.id, &token).unwrap().token, token);
 }
