@@ -1154,7 +1154,7 @@ with sqlite3.connect(sys.argv[1]) as db:
         INSERT INTO stories VALUES(1,171,'created'),(1,172,'neighbor'),(2,171,'other');
         INSERT INTO block_deliveries VALUES(1,1,171,'interrupt','attempting'),(2,1,172,'interrupt','pending'),(3,2,171,'interrupt','pending');
     """)
-`, path], { timeout: 5_000, stdio: "pipe" })"#,
+`, path], { timeout: gracedPatience(), stdio: "pipe" })"#,
     ),
     (
         "e2e/block-delivery-barrier.cjs",
@@ -1273,6 +1273,31 @@ fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
             );
             assert_eq!(e2e_subprocess_owner(path, &changed, 0), None, "{changed}");
         }
+    }
+}
+
+/// Whether a process bound is a bare millisecond literal (`5_000`, `15000`).
+fn is_bare_numeric(bound: &str) -> bool {
+    !bound.is_empty() && bound.chars().all(|c| c.is_ascii_digit() || c == '_')
+}
+
+/// SH-765: every process bound in this inventory is derived from the
+/// load-grace patience, never a bare literal. A fixed number of milliseconds
+/// is exactly the bound that failed under load (`spawnSync python3
+/// ETIMEDOUT` at load 727-900), so a re-audit that writes one back fails
+/// here, by name, rather than passing the exact-text match it was given.
+#[test]
+fn no_audited_command_carries_a_bare_numeric_bound() {
+    // Controls, so the predicate below cannot pass by seeing nothing.
+    assert!(is_bare_numeric("5_000") && is_bare_numeric("15000"));
+    assert!(!is_bare_numeric("boundMs") && !is_bare_numeric("gracedPatience()"));
+    for (path, approved) in AUDITED_SQLITE_COMMANDS {
+        let bound = approved_bound(approved);
+        assert!(
+            !is_bare_numeric(bound),
+            "{path}: the audited process bound `{bound}` is a bare literal. Derive it from \
+             the load-grace patience (gracedPatience(), or what remains of a wait's) (SH-765)"
+        );
     }
 }
 

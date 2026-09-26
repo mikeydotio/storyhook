@@ -92,7 +92,10 @@ test("invalid or duplicate delivery IDs and changed actions are refused", () => 
 });
 
 /** Writes the private delivery fixture database the reader cases query.
- * The one call site of the audited setup command (tests/e2e_browser_coverage.rs). */
+ * The one call site of the audited setup command (tests/e2e_browser_coverage.rs).
+ * Bounded by the graced patience sampled now, not a fixed literal (SH-765).
+ * It stays synchronous: it runs before anything in the test that needs the
+ * event loop. */
 function writeDeliveryFixture(testInfo: TestInfo): string {
   const path = testInfo.outputPath("delivery-read-fixture.db");
   mkdirSync(dirname(path), { recursive: true });
@@ -107,7 +110,7 @@ with sqlite3.connect(sys.argv[1]) as db:
         INSERT INTO stories VALUES(1,171,'created'),(1,172,'neighbor'),(2,171,'other');
         INSERT INTO block_deliveries VALUES(1,1,171,'interrupt','attempting'),(2,1,172,'interrupt','pending'),(3,2,171,'interrupt','pending');
     """)
-`, path], { timeout: 5_000, stdio: "pipe" });
+`, path], { timeout: gracedPatience(), stdio: "pipe" });
   return path;
 }
 
