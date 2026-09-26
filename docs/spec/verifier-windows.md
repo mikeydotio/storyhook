@@ -15,6 +15,9 @@ session is created detached. A healthy window is reused without resetting its
 reader or stealing focus. The view reads the continuous project journal; phase
 banners are records and do not replace readers.
 
+The daemon prepares the journal directory, ignore file first, before it runs
+the helper. The helper never creates the directory. If the directory is absent,
+it fails loudly before any tmux call (SH-771, `activity-log.md`).
 A bounded Python helper takes a nonblocking per-directory flock. It identifies
 owned windows with a canonical journal hash, pane ID/PID, and original reader
 command. An unrelated occupant or multiple panes named `verification` is a

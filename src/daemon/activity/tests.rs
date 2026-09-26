@@ -100,10 +100,11 @@ fn fixture_activity_start_keeps_journaling_without_window_launch() {
         !root.join("tmux.calls").exists(),
         "a fixture contacted tmux"
     );
-    let records: Vec<Record> = std::fs::read_dir(env.daemon_state_dir().join("activity"))
+    let records: Vec<Record> = super::day_files(&env.daemon_state_dir().join("activity"))
         .unwrap()
-        .flat_map(|entry| {
-            std::fs::read_to_string(entry.unwrap().path())
+        .into_iter()
+        .flat_map(|day| {
+            std::fs::read_to_string(day)
                 .unwrap()
                 .lines()
                 .map(|line| serde_json::from_str(line).unwrap())

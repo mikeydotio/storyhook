@@ -990,9 +990,15 @@ fn verifier_holds_the_gate_across_the_complete_speculative_run() {
     assert_ok(&outcome, "running the centralized verification gate");
     let payload: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
     assert_eq!(payload["result"], "gate-passed", "{payload}");
+    // Only day files are journals; the directory also ignores itself (SH-771).
     let journal = fs::read_dir(repo.path().join("activity"))
         .unwrap()
-        .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .map(|path| fs::read_to_string(path).unwrap())
         .collect::<String>();
     let rows: Vec<serde_json::Value> = journal
         .lines()

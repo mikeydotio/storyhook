@@ -167,15 +167,19 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
             self.assertEqual(result.returncode, 0, diagnosis(f"tmux {args[0]}", result))
         return result.stdout.strip()
 
-    def reconcile(self, project="one", check=True):
+    def reconcile(self, project="one", check=True, prepared=True):
         """Run the production helper with literal hostile-path arguments.
 
         With check, a tick whose only failure was a tmux client outlasting the
         reconciler's own bound runs again while the machine is contended, as
         the daemon's next tick would (SH-806 D3); at idle that is a defect and
         fails at once. Without check, the caller judges exactly one tick.
+        Prepared, the journal directory exists first, as the daemon makes it
+        before it runs the view (SH-771).
         """
         directory = self.root / project / "logs with spaces ' $(inert)"
+        if prepared:
+            directory.mkdir(parents=True, exist_ok=True)
         argv = ["python3", "-c", PROGRAM, project, str(directory), str(self.reader)]
         patience = None
         while True:
@@ -258,9 +262,20 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         wrapper = self.root / "bin/tmux"
         wrapper.write_text('#!/bin/sh\nprintf called > "$HOME/called"\nexit 99\n')
         self.env["STORYHOOK_VERIFIER_MIRROR"] = "0"
-        self.reconcile()
+        self.reconcile(prepared=False)
         self.assertFalse((self.root / "called").exists())
         self.assertFalse((self.root / "one").exists())
+
+    def test_an_unprepared_journal_directory_fails_before_any_tmux_call(self):
+        # SH-771: the daemon creates the directory with its ignore file. A
+        # view that created it would leave .view.lock where git can see it.
+        wrapper = self.root / "bin/tmux"
+        wrapper.write_text('#!/bin/sh\nprintf called > "$HOME/called"\nexit 99\n')
+        result = self.reconcile(check=False, prepared=False)
+        self.assertEqual(result.returncode, 1, diagnosis("reconcile of one", result))
+        self.assertIn("absent; the daemon prepares it first", result.stderr)
+        self.assertFalse((self.root / "one").exists())
+        self.assertFalse((self.root / "called").exists())
 
     def test_interrupted_owned_allocation_is_reaped_without_replacing_healthy_view(self):
         self.reconcile()
@@ -369,6 +384,9 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
                 time.sleep(.05)
 
         first = wait_for_view()
+        # SH-771: the daemon found this journal directory without an ignore
+        # file, as every checkout journaled before SH-771 is, and fixed it.
+        self.assertIn("*", (directory / ".gitignore").read_text().splitlines())
         self.tmux("kill-window", "-t", first.split("|")[0])
         second = wait_for_view(first)
         self.assertNotEqual(first, second)

@@ -46,6 +46,11 @@ pub struct VerifierStatus {
     pub evidence_error: Option<String>,
     /// One concise actionable unhealthy-queue notice.
     pub warning: Option<String>,
+    /// The project's checkout tracks journal files in git, which its
+    /// journal's own ignore file cannot hide, and the command that fixes
+    /// it (SH-771). Separate from `warning`, which describes queue health.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_warning: Option<String>,
 }
 
 impl VerificationActivity {
@@ -186,6 +191,10 @@ pub(crate) fn snapshot(
             silence_seconds,
             evidence_error,
             warning,
+            journal_warning: crate::daemon::activity::hygiene::warning_for(
+                ctx.env(),
+                ctx.project(),
+            ),
         },
         statuses,
     ))
@@ -280,6 +289,9 @@ impl VerifierStatus {
             }
         }
         if let Some(warning) = &self.warning {
+            text.push_str(&format!("warning: {warning}\n"));
+        }
+        if let Some(warning) = &self.journal_warning {
             text.push_str(&format!("warning: {warning}\n"));
         }
         text

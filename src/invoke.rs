@@ -1886,7 +1886,7 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
         DaemonAction::Stop { force } => {
             crate::daemon::commands::stop(&env, force).map(Response::Message)
         }
-        DaemonAction::Status => crate::daemon::commands::status(&env).map(Response::Message),
+        DaemonAction::Status => crate::daemon::commands::status(&env),
         DaemonAction::Install { this_binary } => {
             crate::daemon::commands::install(&env, this_binary).map(login_agent_response)
         }

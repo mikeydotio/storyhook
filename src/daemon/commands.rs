@@ -95,7 +95,13 @@ pub fn stop(env: &Environment, force: bool) -> Result<String, AppError> {
 /// binary that is gone" is the answer it owes. [`agent::describe`] renders
 /// every state, including the ones [`agent::warning`] stays quiet about: a
 /// reader who came to look is owed the whole answer.
-pub fn status(env: &Environment) -> Result<String, AppError> {
+///
+/// A running daemon's journal hygiene findings (SH-771) come back as
+/// warnings, one per registered checkout whose index tracks journal files.
+/// They are read from the daemon's own state directory, so this still never
+/// opens the store or contacts the daemon. A daemon that is not running has
+/// no current findings, so that branch reports none.
+pub fn status(env: &Environment) -> Result<Response, AppError> {
     let info = lifecycle::observe_local(env).map_err(|error| {
         AppError::Storage(with_reclaimable(
             env,
@@ -108,7 +114,7 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
         ))
     })?;
     let Some(info) = info else {
-        return Ok(with_reclaimable(
+        return Ok(Response::Message(with_reclaimable(
             env,
             format!(
                 "storyhook daemon is not running\n\n{}\n{}\n{}\n{}",
@@ -117,7 +123,7 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
                 crate::daemon::backup::describe_maintenance(env),
                 agent::report(env)
             ),
-        ));
+        )));
     };
     let staleness = if info.is_this_binary() {
         String::new()
@@ -142,20 +148,23 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
             info.display_version()
         )
     };
-    Ok(with_reclaimable(
-        env,
-        format!(
-            "storyhook daemon {} running at {} (PID {}){}{}\n\n{}\n{}\n{}\n{}",
-            info.display_version(),
-            info.local_url(),
-            info.pid,
-            staleness,
-            describe_owner(&info),
-            lifecycle::describe_paths(env),
-            crate::daemon::backup::describe(env),
-            crate::daemon::backup::describe_maintenance(env),
-            agent::report(env)
+    Ok(Response::MessageWithWarnings(
+        with_reclaimable(
+            env,
+            format!(
+                "storyhook daemon {} running at {} (PID {}){}{}\n\n{}\n{}\n{}\n{}",
+                info.display_version(),
+                info.local_url(),
+                info.pid,
+                staleness,
+                describe_owner(&info),
+                lifecycle::describe_paths(env),
+                crate::daemon::backup::describe(env),
+                crate::daemon::backup::describe_maintenance(env),
+                agent::report(env)
+            ),
         ),
+        crate::daemon::activity::hygiene::warnings(env),
     ))
 }
 
@@ -746,12 +755,33 @@ mod tests {
     fn status_reports_nothing_running_and_says_where_it_looked() {
         let dir = scratch();
         let env = Environment::at(dir.path());
-        let reported = status(&env).expect("status");
+        let Response::Message(reported) = status(&env).expect("status") else {
+            panic!("a stopped daemon's status has no warnings");
+        };
         assert!(reported.contains("not running"), "{reported}");
         assert!(
             reported.contains(&env.daemon_file().display().to_string()),
             "a status that does not say where it looked is unactionable: {reported}"
         );
+    }
+
+    /// SH-771: a stopped daemon has no current journal findings, so a file
+    /// its predecessor left behind is not reported.
+    #[test]
+    fn a_stopped_daemons_status_reports_no_journal_findings() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let findings = env.journal_hygiene_file();
+        std::fs::create_dir_all(findings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &findings,
+            r#"{"tracked":[{"project_id":1,"project":"stale","checkout":"/stale","files":1,"more":false}]}"#,
+        )
+        .unwrap();
+        let Response::Message(reported) = status(&env).expect("status") else {
+            panic!("a stopped daemon's status has no warnings");
+        };
+        assert!(!reported.contains("stale"), "{reported}");
     }
 
     /// A minimal, otherwise-inert `DaemonInfo` for exercising `describe_owner`
