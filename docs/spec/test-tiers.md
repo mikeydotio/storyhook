@@ -163,7 +163,7 @@ The audit of every category the story could mean, since it named two:
 |---|---|---|
 | `rust-suite`, `rust-contracts`, the `test-changed` subset | `scripts/run-tests.sh` | **Now** — `--no-fail-fast` on every executing `cargo test` |
 | `plugin` | `plugins/story/tests/run-tests.sh` | Already — loops every file, exits 1 at the end |
-| `e2e/<project>` (WebKit included) | `scripts/run-e2e.sh` | Already — no `maxFailures` (declined above), and the project loop continues past a red project |
+| `e2e/<slice>` (WebKit included) | `scripts/run-e2e.sh` | Already — no `maxFailures` (declined above), and the slice pool (`scripts/e2e-pool.sh`, SH-792) runs every slice past a red one |
 | the legs of `_test-body` | `Makefile` | No, on purpose — see below |
 
 The flag lives in `run-tests.sh` as one `cargo_test_flags` array applied to
@@ -926,9 +926,10 @@ there is nothing left to reset.
 
 1. **Config-evaluation scaling** (`e2e/playwright.config.ts`) grades the two
    SH-222 budgets — `timeout: 15_000` and `expect: { timeout: 5_000 }` —
-   once per project run (`scripts/run-e2e.sh` invokes Playwright once per
-   project). This is the *only* way to grace `expect.timeout` at all; it
-   cannot be retuned mid-run once a project starts.
+   once per Playwright invocation (`scripts/run-e2e.sh` invokes Playwright
+   once per slice since SH-792, once per project before). This is the *only*
+   way to grace `expect.timeout` at all; it cannot be retuned mid-run once a
+   slice starts.
 2. **A per-test watchdog** (the `loadGrace` auto-use fixture in
    `e2e/specs/support.ts`) samples every 500ms during a running test and
    calls `testInfo.setTimeout()` before its own deadline, monotonically —

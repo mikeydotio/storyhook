@@ -186,17 +186,86 @@ to other worktrees' leftovers. If that ever shows up as a failure in the
 sibling, run `orphan_check` alone after the pool, the Rust counterpart of the
 plugin runner's serial lane.
 
+## The browser leg as concurrent slices (SH-792)
+
+Design of record for **SH-792**, measured 2026-09-26.
+
+### What changed
+
+`scripts/run-e2e.sh` ran its Playwright projects one after another, one worker
+each. It now lists the whole selection once (the *plan listing*, before any
+fixture exists, in `e2e/plan-listing.ts`'s placeholder mode), cuts it with
+`scripts/e2e-pool.sh` into slices of whole spec files -- one project and a
+Playwright `--test-list` each, packed longest first -- and runs up to
+`STORYHOOK_E2E_JOBS` slices at once. Each slice is still one `run_one_project`
+with its own seed, daemon and fake tmux, `workers: 1` (SH-627). The run is
+refused if the slices ran a different number of tests than the plan listed.
+A caller's own `--shard`/`--test-list` keeps its per-project meaning. The pool
+replays each slice's log whole and in order, returns 0 or 1 (never a slice's
+own 137, which `gate-legs.sh` would read as a cancelled gate), and on a signal
+stops writers before the shells whose cleanup removes what they write.
+`tests/e2e_pool.rs` drives it under `/bin/bash` 3.2 with stubs.
+
+The cross-engine question went to a council (verdict on SH-792): every
+browser-driving desktop spec keeps running on both engines; only the five specs
+that never reach a browser run once, as `*.node.spec.ts`, in an engine-free
+`node` project that refuses to launch any browser. `tests/e2e_browser_coverage.rs`
+fails a desktop-pair spec that requests no browser fixture. No per-spec engine
+tag: a guard can check a tag exists, never that it is true.
+
+### Measurements
+
+All on this machine (M1 Max, 10 cores) with other agent sessions running;
+load is the 1-minute average, mean (max).
+
+| Run | Slices | Wall | Load | Result |
+|---|---|---|---|---|
+| HEAD, sequential | 6 projects | 2,842 s | 33 (130) | 4 failed: settings-version (a real bug, fixed on SH-792), 3 load flakes |
+| 8 jobs x 1 slice/job | 8 | 774 s | 32 (57) | green, 1,411 passed |
+| 8 jobs x 2 | 16 | 625 s | 52 (66) | SH-811 on both engines + load flakes |
+| 10 jobs, 1 file/slice (isolation proof) | 252 | 807 s | 122 (185) | SH-811 + 3 webkit load flakes (green alone) |
+| 12 jobs x 2 | 24 | 599 s | 87 (132) | SH-811 + load flakes, two at the ungraced 5 s expect budget (SH-813) |
+
+**The default is 8 jobs, 2 slices per job.** Twelve bought 4% at twice the
+load flakes; eight keeps two cores free. One slice per job left the four small
+projects each holding a whole slot. Per-test time rose about 1.3x at 8 jobs
+and about 3x at 12 under ambient load. WindowServer's IOSurface count peaked at
+566-1,365 in every run, far from the 65,535 crash threshold (every slice keeps
+the display awake, SH-628), so no WebKit cap.
+
+**Under 5 minutes was not reached**, and the council recorded why: the leg is
+bound by machine contention, not by coverage -- dropping WebKit desktop
+entirely would still land at about 5.3-6.4 minutes on this machine. The levers
+left are SH-812 (duration-weighted packing; per-file times run 0.1-94 s while
+slices are packed by count) and less fixed setup per slice (6-15 s each).
+
+### What slicing exposed
+
+- **Order-dependent specs.** Slices change which files run before a spec. The
+  one-file-per-slice isolation proof is the detector: exactly one spec fails
+  alone, `story-submenu-hover.spec.ts`'s right-side pointer travel, on both
+  engines and on the unchanged runner too. It was green only because
+  `dispatch.spec.ts` ran first and moved AA-1 out of todo (bisected). SH-811;
+  not quarantined, since it may be a product defect.
+- **First-wave load grace.** Slices that start together sample the lagging
+  1-minute load at config evaluation and keep an ungraced `expect.timeout` for
+  their whole life. SH-813.
+- **A dead release gate nobody saw.** The baseline found
+  `settings-version.spec.ts` red on both engines since SH-756 added a Settings
+  section on 2026-09-21: the browser suite runs only in the release tier. A
+  leg measured in minutes can run far more often.
+
 ## Roadmap to 15 minutes
 
 What this story leaves, in order of leverage. Each is a story related to
 SH-783.
 
 1. **SH-792 — e2e: shard the browser projects and decide cross-engine
-   coverage.** 1,212 of about 1,400 test runs are the 111 desktop specs run
-   twice (chromium and webkit), one project at a time, one worker each.
-   Per-shard daemons and seeds (`run_one_project` already isolates per project)
-   can run concurrently; which specs need both engines is a scope decision for
-   a council. This is the release gate's largest leg by far.
+   coverage.** Done: see "The browser leg as concurrent slices" below
+   (about 47 to about 10 minutes under ambient load). What it left: SH-811
+   (an order-dependent spec the slices exposed), SH-812 (pack slices by
+   measured duration, cut per-slice setup), SH-813 (first-wave load grace),
+   SH-807 (an interrupted run's dispatch child can outlive cleanup).
 2. **SH-795 — the Rust legs' non-test time.** About 250 s of serial listing
    before the core pool, plus the link time of 332 integration binaries of
    about 24 MB each.
