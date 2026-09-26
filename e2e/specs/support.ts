@@ -18,6 +18,9 @@ import {
   MAX_TEST_TIMEOUT_MS,
   resetTestBudget,
 } from "../load-grace";
+import { fixtureApiUrl, requiredEnv } from "../fixture-api";
+
+export { requiredEnv };
 
 /** The expectation shapes Playwright's own text matchers accept. */
 type TextExpectation = string | RegExp | (string | RegExp)[];
@@ -375,11 +378,7 @@ let activeTestToken: string | null = null;
 
 async function resetFixtureTokenPreferences(request: APIRequestContext): Promise<void> {
   // Some auth specs paste the original suite token into the token modal.
-  // Browser-only hostname mappings do not apply to Node's APIRequestContext.
-  // Fixture administration always uses the runner's local daemon socket.
-  const endpoint = new URL("/api/preferences", requiredEnv("DASHBOARD_URL"));
-  endpoint.hostname = "127.0.0.1";
-  const response = await request.patch(endpoint.toString(), {
+  const response = await request.patch(fixtureApiUrl("/api/preferences"), {
     headers: {
       "X-Storyhook": "1",
       "X-Storyhook-Token": requiredEnv("DASHBOARD_NAMED_TOKEN"),
@@ -410,23 +409,6 @@ async function resetFixtureTokenPreferences(request: APIRequestContext): Promise
   if (!response.ok()) {
     throw new Error(`resetting dashboard preferences failed: ${response.status()} ${await response.text()}`);
   }
-}
-
-/**
- * An environment variable this suite cannot run without. Throws rather than
- * defaulting, so a spec run outside `scripts/run-e2e.sh` fails loudly
- * instead of quietly hitting a dashboard with no fixtures and no token --
- * mirrors `playwright.config.ts`'s own `DASHBOARD_URL` check.
- */
-export function requiredEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(
-      `${name} is not set — run this suite through scripts/run-e2e.sh, which starts an ` +
-        "isolated daemon, seeds its fixtures, and exports the variables this file needs.",
-    );
-  }
-  return value;
 }
 
 /**
@@ -534,7 +516,7 @@ export async function projectSlug(
   request: APIRequestContext,
   name: string,
 ): Promise<string> {
-  const resp = await request.get("/api/repos", {
+  const resp = await request.get(fixtureApiUrl("/api/repos"), {
     headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") },
   });
   const repos: Array<{ id: string; name: string }> = await resp.json();
@@ -1399,7 +1381,7 @@ export async function storiesInProject(
 ): Promise<BoardStory[]> {
   const slug = await projectSlug(request, projectName);
   const resp = await request.get(
-    `/api/repos/${encodeURIComponent(slug)}/data`,
+    fixtureApiUrl(`/api/repos/${encodeURIComponent(slug)}/data`),
     { headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") } },
   );
   if (!resp.ok()) {
@@ -1475,65 +1457,79 @@ export function cleanUpCreatedStories(projectName: string): void {
   test.afterEach(async ({ request }) => {
     const baseline = fixtureBaselines.get(projectName);
     if (!baseline) return;
-    const slug = await projectSlug(request, projectName);
-    // `X-Storyhook` as well as the token: a mutation also has to clear
-    // `mutation_guard_ok`'s CSRF check, which a read does not
-    // (`src/api/admission.rs`). Without it these answer 403.
-    const headers = {
-      "X-Storyhook": "1",
-      "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
-    };
-    const storyUrl = (id: string) =>
-      `/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(id)}`;
+    await removeStrays(request, projectName, baseline);
+  });
+}
 
-    // Repeated passes preserve SH-495's loud, fixpoint cleanup. Permanent
-    // deletion retracts child edges itself, so parent/child order no longer
-    // matters, but the fixpoint still reports every refusal and proves that a
-    // pass made progress instead of quietly leaving a stray behind.
-    //
-    // Passes rather than a topological sort because `/data` gives this helper
-    // `{id, superstate}` and no relationship at all: each pass removes
-    // whatever is currently a leaf, which dissolves the next layer up. That
-    // needs no graph, terminates on any shape, and costs one extra round trip
-    // per level of nesting -- which in this suite is one.
-    //
-    // A pass that removes NOTHING while work remains is the only failure
-    // condition, and it reports every refusal it collected rather than the
-    // first: with several strays, the first error is rarely the informative
-    // one. This is still loud (SH-245) -- a cleanup that quietly gives up
-    // leaves exactly the stray it exists to remove, and the next spec pays.
-    let refusals: string[] = [];
-    let remaining = (await storiesInProject(request, projectName)).filter(
-      (story) => !baseline.has(story.id),
-    );
-    while (remaining.length > 0) {
-      const before = remaining.length;
-      refusals = [];
-      for (const story of remaining) {
-        await waitForStoryBlockDeliveries(slug, story.id);
-        const deleted = await request.delete(storyUrl(story.id), {
-          headers,
-          data: { force: true },
-        });
-        if (!deleted.ok()) {
-          refusals.push(
-            `DELETE ${story.id} answered ${deleted.status()}: ${await deleted.text()}`,
-          );
-        }
-      }
-      remaining = (await storiesInProject(request, projectName)).filter(
-        (story) => !baseline.has(story.id),
-      );
-      if (remaining.length >= before) {
-        throw new Error(
-          `cleanUpCreatedStories: a full pass removed nothing and ` +
-            `${remaining.length} story/stories remain ` +
-            `(${remaining.map((s) => s.id).join(", ")}). Refusals:\n  ` +
-            refusals.join("\n  "),
+/**
+ * Deletes, through the API, every story in `projectName` that `baseline`
+ * does not name, each one only after its block-delivery barrier opens
+ * ({@link waitForStoryBlockDeliveries}). Throws, naming every refusal, when a
+ * full pass removes nothing while strays remain.
+ */
+export async function removeStrays(
+  request: APIRequestContext,
+  projectName: string,
+  baseline: ReadonlySet<string>,
+): Promise<void> {
+  const slug = await projectSlug(request, projectName);
+  // `X-Storyhook` as well as the token: a mutation also has to clear
+  // `mutation_guard_ok`'s CSRF check, which a read does not
+  // (`src/api/admission.rs`). Without it these answer 403.
+  const headers = {
+    "X-Storyhook": "1",
+    "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+  };
+  const storyUrl = (id: string) =>
+    fixtureApiUrl(`/api/repos/${encodeURIComponent(slug)}/story/${encodeURIComponent(id)}`);
+
+  // Repeated passes preserve SH-495's loud, fixpoint cleanup. Permanent
+  // deletion retracts child edges itself, so parent/child order no longer
+  // matters, but the fixpoint still reports every refusal and proves that a
+  // pass made progress instead of quietly leaving a stray behind.
+  //
+  // Passes rather than a topological sort because `/data` gives this helper
+  // `{id, superstate}` and no relationship at all: each pass removes
+  // whatever is currently a leaf, which dissolves the next layer up. That
+  // needs no graph, terminates on any shape, and costs one extra round trip
+  // per level of nesting -- which in this suite is one.
+  //
+  // A pass that removes NOTHING while work remains is the only failure
+  // condition, and it reports every refusal it collected rather than the
+  // first: with several strays, the first error is rarely the informative
+  // one. This is still loud (SH-245) -- a cleanup that quietly gives up
+  // leaves exactly the stray it exists to remove, and the next spec pays.
+  let refusals: string[] = [];
+  let remaining = (await storiesInProject(request, projectName)).filter(
+    (story) => !baseline.has(story.id),
+  );
+  while (remaining.length > 0) {
+    const before = remaining.length;
+    refusals = [];
+    for (const story of remaining) {
+      await waitForStoryBlockDeliveries(slug, story.id);
+      const deleted = await request.delete(storyUrl(story.id), {
+        headers,
+        data: { force: true },
+      });
+      if (!deleted.ok()) {
+        refusals.push(
+          `DELETE ${story.id} answered ${deleted.status()}: ${await deleted.text()}`,
         );
       }
     }
-  });
+    remaining = (await storiesInProject(request, projectName)).filter(
+      (story) => !baseline.has(story.id),
+    );
+    if (remaining.length >= before) {
+      throw new Error(
+        `cleanUpCreatedStories: a full pass removed nothing and ` +
+          `${remaining.length} story/stories remain ` +
+          `(${remaining.map((s) => s.id).join(", ")}). Refusals:\n  ` +
+          refusals.join("\n  "),
+      );
+    }
+  }
 }
 
 /**
