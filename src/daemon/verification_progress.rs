@@ -449,10 +449,10 @@ fn publish_project(
     activity: &VerificationActivity,
     project: crate::store::ProjectId,
 ) -> Result<bool, AppError> {
-    let (ordered, active, incident) = activity.read_project(store, project, |tx, active, _| {
+    let (ordered, active, incident) = activity.read_project(store, project, |tx, owner, _| {
         Ok((
             crate::service::verification::ordered_candidates_for(tx, project)?,
-            active.cloned(),
+            owner.map(|owner| owner.active.clone()),
             tx.verification_incident(project)?,
         ))
     })?;

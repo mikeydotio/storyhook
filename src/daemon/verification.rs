@@ -22,7 +22,10 @@ pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 mod observation;
 mod recovery_transport;
 mod repair_admission;
+mod reservation;
 pub(crate) use recovery_transport::ControlOwner;
+pub(crate) use reservation::{Reservation, SlotView};
+pub use reservation::{ReservationReason, VerifierReservation};
 pub mod status;
 use crate::process::Cancellation;
 pub use crate::process::Cancellation as VerificationCancellation;
@@ -120,6 +123,9 @@ struct VerificationSlot {
     active: ActiveVerification,
     cancellation: Cancellation,
     output: crate::service::gate_output::OutputObserver,
+    /// Why the owner keeps this slot after its own write took the owned
+    /// generation out of the queue (SH-768).
+    reservation: Option<Reservation>,
 }
 
 impl VerificationActivity {
@@ -272,6 +278,7 @@ impl VerificationActivity {
                 active: active.clone(),
                 cancellation: cancellation.clone(),
                 output: crate::service::gate_output::OutputObserver::default(),
+                reservation: None,
             },
         );
         VerificationGuard {
@@ -349,6 +356,9 @@ impl VerificationGuard {
         slot.active = replacement.clone();
         slot.candidate = candidate.clone();
         slot.output = crate::service::gate_output::OutputObserver::default();
+        // Set here, under the lock this already holds: the registry mutex is
+        // not reentrant. A new generation is queued, so nothing is reserved.
+        slot.reservation = None;
         self.active = replacement;
     }
 }
@@ -2038,7 +2048,7 @@ where
             .no_hooks(true);
             if submission_due(&candidate, submitted) {
                 submitted = Some(candidate.verifying_generation);
-                match submit_candidate(&queue, &ctx, actuator, &candidate, &active.cancellation)? {
+                match submit_candidate(&queue, &ctx, actuator, &candidate, &active)? {
                     GenerationWrite::Applied(Some(result)) => return Ok(result),
                     // Recorded: the link is a store fact now. Re-derive rather than
                     // trust a PrLink built here, so whatever `ordered_candidates`
@@ -2057,7 +2067,8 @@ where
                         actuator,
                         &candidate,
                         UNLEASED_SUBMISSION,
-                        &active.cancellation,
+                        &active,
+                        None,
                     )? {
                         GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                         GenerationWrite::Superseded => match refresh_authority(
@@ -2079,7 +2090,8 @@ where
                         actuator,
                         &candidate,
                         &problem.message(),
-                        &active.cancellation,
+                        &active,
+                        None,
                     )? {
                         GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                         GenerationWrite::Superseded => match refresh_authority(
@@ -2317,7 +2329,8 @@ where
                             push_promise(candidate.cleanup_lease.is_some(), false),
                             crate::text_lint::quote_evidence(&detail)
                         ),
-                        &active.cancellation,
+                        &active,
+                        Some(ReservationReason::Reconcile),
                     )?;
                     let remediation_started = match remediation_started {
                         GenerationWrite::Applied(started) => started,
@@ -2364,7 +2377,8 @@ where
                             push_promise(candidate.cleanup_lease.is_some(), true),
                             crate::text_lint::quote_evidence(&detail)
                         ),
-                        &active.cancellation,
+                        &active,
+                        None,
                     )?;
                     if matches!(result, GenerationWrite::Applied(_)) {
                         return Ok(TickResult::Returned);
@@ -2395,7 +2409,8 @@ where
                             push_promise(candidate.cleanup_lease.is_some(), false),
                             crate::text_lint::quote_evidence(&detail)
                         ),
-                        &active.cancellation,
+                        &active,
+                        None,
                     )?;
                     if matches!(result, GenerationWrite::Applied(_)) {
                         return Ok(TickResult::Returned);
@@ -2504,14 +2519,14 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
     ctx: &Ctx<'_, S>,
     actuator: &A,
     candidate: &VerificationCandidate,
-    cancellation: &Cancellation,
+    owner: &VerificationGuard,
 ) -> Result<GenerationWrite<Option<TickResult>>, AppError> {
     let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
-    if cancellation.is_cancelled() {
+    if owner.is_cancelled() {
         return Ok(GenerationWrite::Applied(Some(TickResult::Stopped)));
     }
     let submitted = actuator.submit(candidate);
-    if cancellation.is_cancelled() && submitted.is_err() {
+    if owner.is_cancelled() && submitted.is_err() {
         return Ok(GenerationWrite::Applied(Some(TickResult::Stopped)));
     }
     super::activity::emit(
@@ -2534,12 +2549,7 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
                         pull_request.url, linked.url, candidate.story_id
                     );
                     return Ok(return_for_repair(
-                        queue,
-                        ctx,
-                        actuator,
-                        candidate,
-                        &diagnosis,
-                        cancellation,
+                        queue, ctx, actuator, candidate, &diagnosis, owner, None,
                     )?
                     .map(|_| Some(TickResult::Returned)));
                 }
@@ -2561,12 +2571,10 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
                 Err(error) => Err(error),
             }
         }
-        Err(SubmissionFailure::Refused { display, .. }) => {
-            Ok(
-                return_for_repair(queue, ctx, actuator, candidate, &display, cancellation)?
-                    .map(|_| Some(TickResult::Returned)),
-            )
-        }
+        Err(SubmissionFailure::Refused { display, .. }) => Ok(return_for_repair(
+            queue, ctx, actuator, candidate, &display, owner, None,
+        )?
+        .map(|_| Some(TickResult::Returned))),
         Err(SubmissionFailure::Infrastructure { detail }) => Ok(record_infrastructure_failure(
             queue,
             ctx,
@@ -2656,6 +2664,13 @@ fn refresh_authority<S: Store>(
     }
     match candidate_authority(queue, candidate)? {
         CandidateAuthority::Current(current) => {
+            // A committed return cannot be followed by Current: re-entering
+            // `verifying` always makes a newer generation. So a reservation
+            // here outlived the write it declared (SH-768).
+            debug_assert!(
+                !active.is_reserved(),
+                "a verifier reservation survived into a current generation"
+            );
             // Same generation, fresh derived facts: a submission recorded a
             // moment ago is visible as the linked pull request from here on.
             *candidate = *current;
@@ -2798,22 +2813,32 @@ fn record_cleanup_required(
 /// the queue on `true` and releases it on `false`, so the hold applies whether
 /// or not the FIRST paste landed, and never waits for a resubmission nobody
 /// will make.
+///
+/// `reservation` names why `owner` keeps its slot once the return takes its
+/// generation out of the queue (SH-768). It is declared before that write and
+/// kept only if the write applied.
 fn return_for_repair<S: Store, A: VerificationActuator>(
     queue: &VerificationQueue<'_, S>,
     ctx: &Ctx<'_, S>,
     actuator: &A,
     candidate: &VerificationCandidate,
     diagnosis: &str,
-    cancellation: &Cancellation,
+    owner: &VerificationGuard,
+    reservation: Option<ReservationReason>,
 ) -> Result<GenerationWrite<bool>, AppError> {
+    let cancellation = &owner.cancellation;
     if cancellation.is_cancelled() || !queue.human_permits(candidate)? {
         return Ok(GenerationWrite::Applied(false));
     }
+    let pending = reservation.map(|reason| owner.reserve(reason, ctx.now()));
     if matches!(
         queue.record_generation_returned(ctx, candidate, diagnosis)?,
         GenerationWrite::Superseded
     ) {
         return Ok(GenerationWrite::Superseded);
+    }
+    if let Some(pending) = pending {
+        pending.retire();
     }
     let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
     let delivered = actuator.notify(candidate, diagnosis);

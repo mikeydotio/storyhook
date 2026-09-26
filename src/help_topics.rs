@@ -2732,6 +2732,11 @@ Inspect and control this project's centralized verifier.
   are distinct from infrastructure halts. Old payloads have no recovery rows.
   The dashboard reads the same snapshot. Use repair show for full evidence.
 
+  A story returned on a merge conflict keeps the verifier reserved until the
+  story resubmits. status reports this as reservation (story, generation,
+  reason, reserved_at, age, queued behind). It is normal work, not missing
+  evidence, and the silence clock does not run while the verifier is reserved.
+
   A project fault releases verifier ownership after cleanup. The managed agent
   decides scope before edits, preserves required gate coverage, tests new and
   impacted behavior, commits, and moves its repair to verifying as the last

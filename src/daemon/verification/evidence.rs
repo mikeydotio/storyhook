@@ -140,7 +140,8 @@ impl AttemptEvidence {
     }
 }
 
-fn owned_candidate<'a>(
+/// The queued candidate at exactly the generation `active` owns, if any.
+pub(super) fn owned_candidate<'a>(
     ordered: &'a [VerificationCandidate],
     active: &ActiveVerification,
 ) -> Option<&'a VerificationCandidate> {

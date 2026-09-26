@@ -9,6 +9,9 @@ mod output_reporting;
 #[path = "verification_queue/human_only.rs"]
 mod human_only;
 
+#[path = "verification_queue/reservation_status.rs"]
+mod reservation_status;
+
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};

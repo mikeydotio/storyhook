@@ -156,13 +156,14 @@ impl VerificationActivity {
     }
 
     /// Reads board state while preserving the registry-before-store lock order.
+    /// The owner's identity and its reservation come from one registry read.
     pub(crate) fn read_project<S: Store, T>(
         &self,
         store: &S,
         project: ProjectId,
         read: impl FnOnce(
             &S::ReadTx<'_>,
-            Option<&ActiveVerification>,
+            Option<SlotView<'_>>,
             VerificationControlState,
         ) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
@@ -171,7 +172,10 @@ impl VerificationActivity {
         store.read(|tx| {
             read(
                 tx,
-                slot.map(|slot| &slot.active),
+                slot.map(|slot| SlotView {
+                    active: &slot.active,
+                    reservation: slot.reservation.as_ref(),
+                }),
                 state(tx.verification_enabled(project)?, slot),
             )
         })
