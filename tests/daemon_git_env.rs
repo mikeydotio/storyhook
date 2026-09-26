@@ -32,7 +32,7 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook_test_support::{ChildGuard, TestEnv, git, scratch_dir_named};
 
@@ -203,7 +203,8 @@ fn commit_sync_outside_a_repository_is_still_refused_by_a_poisoned_daemon() {
 ///
 /// Not a performance budget. It distinguishes "started" from "never starts", so
 /// that a client below cannot race ahead and spawn a *clean* daemon of its own —
-/// which would turn this test permanently green while proving nothing.
+/// which would turn this test permanently green while proving nothing. It is
+/// patience, graced by contention (SH-806).
 const STARTUP: Duration = Duration::from_secs(10);
 
 /// Waits until `env`'s daemon has **published its portfile**, or fails saying it
@@ -218,18 +219,18 @@ const STARTUP: Duration = Duration::from_secs(10);
 /// rather than on the property.
 fn await_daemon(env: &TestEnv) {
     let portfile = env.environment().daemon_file();
-    let deadline = Instant::now() + STARTUP;
-    while Instant::now() < deadline {
-        if storyhook::daemon::lifecycle::read_info_at(&portfile).is_some() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    panic!(
-        "the directly-spawned daemon never published {} within {STARTUP:?}; without it the \
-         client below would spawn a clean daemon of its own and this test would pass for the \
-         wrong reason",
-        portfile.display()
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(STARTUP),
+        Duration::from_millis(25),
+        || {
+            format!(
+                "the directly-spawned daemon never published {}; without it the client below \
+                 would spawn a clean daemon of its own and this test would pass for the wrong \
+                 reason",
+                portfile.display()
+            )
+        },
+        || storyhook::daemon::lifecycle::read_info_at(&portfile).map(drop),
     );
 }
 
