@@ -1,6 +1,7 @@
 //! Production project reader and fixture containment, on private tmux sockets.
 
 use std::process::Command;
+use storyhook_test_support::load_grace;
 use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, daemon_containment};
 
 #[test]
@@ -31,7 +32,9 @@ fn project_readers_reconcile_and_fixture_servers_are_owned() {
         .env("STORY_VIEW_TEST_STORE", env.environment().store_path());
     let output = ChildGuard::spawn_with_output(&mut command)
         .unwrap()
-        .wait_with_output_within(STORY_COMMAND_DEADLINE * 4, || {
+        // The suite's own waits are graced by contention (SH-806), so the
+        // bound around all of them is graced the same way.
+        .wait_with_output_within(load_grace::graced_now(STORY_COMMAND_DEADLINE * 4), || {
             "private project-view regressions did not finish".into()
         });
     assert!(output.status.success(), "{output:?}");

@@ -123,3 +123,15 @@ Evidence: the story's recorded reproduction (100 frames at 0.5 s) and the mutati
 Codex 0.154.0 could not reach the composer without a trust-bypass flag or keypresses, so the
 flag's effect rests on Codex's documented key and its `sparkle.rs` gate. The postmortem is
 `docs/rca/codex-sparkle-composer-check.md`.
+
+## As-built: guarded handoff (SH-799)
+
+The primer goes through `send_prompt_confirmed`, which since SH-799 types only into a drawn,
+idle composer, takes this prompt as receipt (its first line: the primer is short enough that
+Codex shows it inline), and sends Tab only while the composer still shows it. When no submit
+key was sent (the composer was not idle before the paste, or showed something else after it,
+such as a dialog), the refusal is `bootstrap-undelivered` with `bootstrap_phase: not-started`,
+and it says what the composer showed. No initialization turn ran. Once a key was sent, the
+refusal stays `bootstrap-submit-unconfirmed`: that turn may have run. Coverage:
+`test-dispatch-codex-bootstrap.sh`, where a dialog opens with the initialization paste. See
+`docs/rca/sh-780-notify-submit-on-dialog.md`.

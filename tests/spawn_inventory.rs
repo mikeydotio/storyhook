@@ -62,6 +62,25 @@
 //! a process group bounds *who you can kill*, but giving the child a file
 //! instead of a pipe removes the wait entirely, and only the second works when
 //! what the child leaves behind is not yours to kill.
+//!
+//! # The second question: does the wait end? (SH-815)
+//!
+//! The kinds above ask whether a *descendant* can hold the caller. SH-815 was
+//! the child itself: `codex plugin list --json`, run by the daemon through a
+//! bare `.output()` to find the verifier's helper, never got past its own
+//! launch, and the verifier waited for as long as the daemon lived. No
+//! descendant was involved, the row said `Reads` correctly, and the site
+//! passed this classification with no deadline at all.
+//!
+//! So a new site has to answer two questions, and the failure message asks
+//! both: which kind it is, and what ends the wait when the child never does.
+//! A child that a person waits on can be interrupted by that person. One that
+//! a daemon thread waits on needs a deadline that stops its whole process
+//! group: `crate::process`'s `run_captured*` family is the shared way, and
+//! `plugin::provider_cli` is the one door for provider CLIs. The column is not
+//! written into [`INVENTORY`] because a row keys a constructor rather than a
+//! wait: `env::git_env`'s one constructor serves bounded and unbounded callers
+//! alike, so a per-row answer would be prose that no test could check.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -229,12 +248,14 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // rather than assumed — a future `--version` that consulted the daemon
     // would move this row to `Detached`'s problem, not leave it unchanged.
     ("src/install_status.rs", "&spelling", Kind::Reads),
-    // `plugin::run_provider` — the selected provider CLI (`claude` or `codex`).
-    // Classified as `Reads` because install/uninstall captures both streams to
-    // report the provider's exact failure. The availability probe sharing this
-    // constructor uses null streams and `.status()`, so the more restrictive
-    // classification covers every call made through it.
-    ("src/plugin.rs", "target.executable(", Kind::Reads),
+    // `plugin::provider_cli` — every run of a provider CLI (`claude` or
+    // `codex`). `Waited` since SH-815: it goes through the shared
+    // `run_captured_answer`, so stdout and stderr are files rather than pipes,
+    // the child has its own process group, and `PROVIDER_CLI_TIMEOUT` stops
+    // that whole group. Until then it was `Reads` through a bare `.output()`
+    // with no deadline, and a `codex plugin list` that never passed its own
+    // launch held the central verifier for as long as the daemon lived.
+    ("src/plugin/provider_cli.rs", "program", Kind::Waited),
     // `plugin::run_helper` — the Codex stable-launcher bridge. The helper
     // inherits the caller's streams and is waited to completion with
     // `.status()`, so there is no output pipe whose EOF a descendant could
@@ -381,6 +402,12 @@ fn every_way_storyhook_starts_a_process_is_classified() {
                       leaves behind is not yours to kill.\n\
            Detached — it outlives you, so it must inherit nothing: see\n\
                       daemon::lifecycle::spawn_child and tests/daemon_fd_hygiene.rs.\n\
+         \n\
+         Then say what ends the wait if the child never exits. A daemon thread\n\
+         needs a deadline that stops the child's whole process group: use\n\
+         crate::process's run_captured* family, and plugin::provider_cli for\n\
+         claude or codex. SH-815 is a codex launch, with no deadline, that held\n\
+         the verifier for as long as the daemon lived.\n\
          \n\
          This is not a rule about how to spawn. It is the classification step that\n\
          was skipped when the daemon spawn was written, and SH-94 is what that cost."

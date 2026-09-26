@@ -10,10 +10,33 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use storyhook::daemon::lifecycle::SPAWN_DEADLINE;
+use storyhook_test_support::load_grace::{self, Patience};
 use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, TestEnv, scratch_dir};
 
-// Let production startup report its own timeout before the harness does.
+/// Patience for a process this fixture started to become observable: a tmux
+/// server answering, a hand-spawned daemon publishing its portfile, a
+/// delivered callback drawn in its pane.
+///
+/// Twice the [`SPAWN_DEADLINE`] production gives a client-spawned daemon to
+/// publish and answer. A hand-spawned `--serve` has no production publish
+/// deadline of its own, so this is patience, not proof, and every wait on it
+/// is graced by contention (SH-806).
 const STARTUP_DEADLINE: Duration = SPAWN_DEADLINE.saturating_mul(2);
+
+/// How long the probe helper waits for its pane's environment receipt before
+/// contention grace: a tmux pane starting python3, which writes one file.
+///
+/// **Chosen, not derived**, in the sense `ACCEPT_DEADLINE` in the test-support
+/// crate documents: at idle the receipt lands in milliseconds, and this tells
+/// "slow" from "never".
+const RECEIPT_PATIENCE: Duration = Duration::from_secs(5);
+
+/// How often a fixture wait looks again.
+const POLL: Duration = Duration::from_millis(25);
+
+/// Long enough for several refused readiness probes; only ever spent on a
+/// socket that is known never to answer.
+const REFUSAL_PATIENCE: Duration = Duration::from_millis(500);
 
 fn tmux(socket: &Path, args: &[&str]) -> String {
     let mut command = Command::new("tmux");
@@ -42,20 +65,113 @@ fn server(socket: &Path) -> ChildGuard {
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
     let mut guard = ChildGuard::spawn(&mut command).expect("start foreground fixture server");
-    let deadline = Instant::now() + STARTUP_DEADLINE;
-    while !socket.exists() {
-        assert!(
-            guard.try_wait().is_none(),
-            "fixture tmux server exited before creating its socket"
-        );
-        assert!(
-            Instant::now() < deadline,
-            "fixture tmux socket did not appear"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    await_answering(socket, &mut guard, Patience::new(STARTUP_DEADLINE));
     tmux(socket, &["new-session", "-d", "-s", "fixture", "/bin/sh"]);
     guard
+}
+
+/// How many times the probe helper looks for its pane receipt: graced by
+/// contention, and capped at half of production's `DISPATCH_TIMEOUT`, which
+/// bounds the whole helper under the daemon, so the helper's own "receipt
+/// missing" is reported before the daemon's dispatch timeout replaces it.
+fn receipt_polls() -> u128 {
+    let patience = load_grace::graced_now(RECEIPT_PATIENCE)
+        .min(storyhook::service::engine::DISPATCH_TIMEOUT / 2);
+    patience.as_millis() / POLL.as_millis()
+}
+
+/// The last lines a fixture child wrote to `log`, for a failure message.
+fn log_tail(log: &Path) -> String {
+    const TAIL_LINES: usize = 20;
+    let text = std::fs::read_to_string(log)
+        .unwrap_or_else(|error| format!("<unreadable {}: {error}>", log.display()));
+    let lines: Vec<&str> = text.lines().collect();
+    let tail = lines[lines.len().saturating_sub(TAIL_LINES)..].join("\n");
+    if tail.is_empty() {
+        "<empty>".into()
+    } else {
+        tail
+    }
+}
+
+/// Waits until the fixture server answers a client at `socket` as itself.
+///
+/// tmux binds its socket before it listens and initialises before it serves,
+/// so a socket file is not a ready server (SH-806). The answer must be this
+/// server's own pid: a `new-session` that meets a refused socket starts a
+/// server of its own, which this fixture would neither own nor clean up.
+/// `display-message` never starts a server, so asking cannot create one.
+fn await_answering(socket: &Path, server: &mut ChildGuard, patience: Patience) {
+    let pid = server.pid().to_string();
+    load_grace::wait_for(
+        patience,
+        POLL,
+        || {
+            format!(
+                "fixture tmux server {pid} did not answer at {}",
+                socket.display()
+            )
+        },
+        || {
+            assert!(
+                server.try_wait().is_none(),
+                "fixture tmux server {pid} exited before it answered"
+            );
+            (answering_pid(socket).as_deref() == Some(pid.as_str())).then_some(())
+        },
+    );
+}
+
+/// The pid of whichever server answers at `socket`, if one does.
+fn answering_pid(socket: &Path) -> Option<String> {
+    let mut command = Command::new("tmux");
+    command
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .arg("-S")
+        .arg(socket)
+        .args(["display-message", "-p", "#{pid}"]);
+    let output = ChildGuard::spawn_with_output(&mut command)
+        .expect("start fixture readiness probe")
+        .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            "fixture readiness probe did not finish".into()
+        });
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[test]
+fn a_bound_socket_that_never_answers_is_not_a_ready_fixture_server() {
+    let scratch = scratch_dir();
+    let socket = scratch.path().join("unlistening");
+    let mut command = Command::new("python3");
+    command
+        .args([
+            "-c",
+            "import socket, sys, time\ns = socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])\ntime.sleep(600)",
+        ])
+        .arg(&socket);
+    let mut holder = ChildGuard::spawn(&mut command).expect("start a socket that never listens");
+    load_grace::wait_for(
+        Patience::new(STARTUP_DEADLINE),
+        POLL,
+        || "the unlistening socket was never bound".into(),
+        || socket.exists().then_some(()),
+    );
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        await_answering(
+            &socket,
+            &mut holder,
+            Patience::starting_at(REFUSAL_PATIENCE, Instant::now(), || None),
+        );
+    }))
+    .expect_err("tmux binds before it listens: a socket file is not a ready server (SH-806)");
+    let message = refused
+        .downcast_ref::<String>()
+        .expect("the readiness wait refuses with a formatted message");
+    assert!(message.contains("did not answer"), "{message}");
 }
 
 #[test]
@@ -124,9 +240,9 @@ socket=$(tmux display-message -p '#{{socket_path}}')
 rm -f '{receipt}'
 pane=$(python3 '{launcher}' new-window -d -t fixture: -P -F '#{{pane_id}}' "python3 '{capture}' '{receipt}'; sleep 120")
 trap 'tmux kill-pane -t "$pane"' EXIT
-for ((i=0; i<200; i++)); do
+for ((i=0; i<{receipt_polls}; i++)); do
   [ ! -f '{receipt}' ] || break
-  sleep 0.025
+  sleep {poll}
 done
 [ -f '{receipt}' ] || {{ echo 'pane environment receipt missing' >&2; exit 1; }}
 printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s,"binary":"%s","pane":%s}}\n' "$socket" "$*" "$auth" "$STORY_BIN" "$(cat '{receipt}')"
@@ -135,6 +251,8 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s,"binary":"%s","pane":%s}
             receipt = receipt.display(),
             launcher = launcher.display(),
             capture = capture.display(),
+            receipt_polls = receipt_polls(),
+            poll = POLL.as_secs_f64(),
         ),
     )
     .expect("write the boundary probe");
@@ -152,7 +270,7 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s,"binary":"%s","pane":%s}
         .env("TMUX_PANE", inherited_pane.trim());
     let output = ChildGuard::spawn_with_output(&mut interactive)
         .expect("invoke the helper directly with interactive context")
-        .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+        .wait_with_output_within(load_grace::graced_now(STORY_COMMAND_DEADLINE), || {
             "interactive probe did not finish".into()
         });
     assert!(
@@ -169,6 +287,7 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s,"binary":"%s","pane":%s}
     );
     assert_pane_routing(&direct);
 
+    let daemon_log = scratch.path().join("daemon.err");
     let mut serve = env.raw_story(scratch.path());
     serve
         .args(["daemon", "--serve", "--port", "0"])
@@ -180,24 +299,32 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s,"binary":"%s","pane":%s}
         .env("STORYHOOK_GITHUB_AUTHORITY", "/daemon/authority")
         .env("STORYHOOK_GITHUB_EXPECTED", "github.example/daemon/repo")
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(
+            std::fs::File::create(&daemon_log).expect("create the fixture daemon's stderr log"),
+        );
     let mut daemon =
         ChildGuard::spawn(&mut serve).expect("start daemon with unrelated tmux context");
-    let deadline = Instant::now() + STARTUP_DEADLINE;
-    let info = loop {
-        if let Some(info) = env.daemon() {
-            break info;
-        }
-        assert!(
-            daemon.try_wait().is_none(),
-            "fixture daemon exited before publishing its port"
-        );
-        assert!(
-            Instant::now() < deadline,
-            "fixture daemon did not publish its port"
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    };
+    // Its stderr names each startup phase it reached (backup, bind), so a slow
+    // start says where it was (SH-806).
+    let info = load_grace::wait_for(
+        Patience::new(STARTUP_DEADLINE),
+        POLL,
+        || {
+            format!(
+                "fixture daemon did not publish its port; its stderr ends:\n{}",
+                log_tail(&daemon_log)
+            )
+        },
+        || {
+            if let Some(status) = daemon.try_wait() {
+                panic!(
+                    "fixture daemon exited {status} before publishing its port; its stderr ends:\n{}",
+                    log_tail(&daemon_log)
+                );
+            }
+            env.daemon()
+        },
+    );
     let url = format!(
         "http://127.0.0.1:{}/api/repos/fixture/story/SH-1/dispatch",
         info.port
@@ -221,7 +348,7 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s,"binary":"%s","pane":%s}
         let handle = accepted["dispatch"]["handle"]
             .as_str()
             .expect("dispatch handle");
-        let deadline = Instant::now() + STORY_COMMAND_DEADLINE.saturating_mul(2);
+        let mut patience = Patience::new(STORY_COMMAND_DEADLINE.saturating_mul(2));
         let record = loop {
             let response: serde_json::Value = ureq::get(format!("{url}/{handle}"))
                 .header("X-Storyhook", "1")
@@ -236,10 +363,10 @@ printf '{{"ok":true,"socket":"%s","argv":"%s","auth":%s,"binary":"%s","pane":%s}
                 break response["dispatch"].clone();
             }
             assert!(
-                Instant::now() < deadline,
-                "dispatch never finished: {response}"
+                !patience.expired(),
+                "dispatch never finished ({patience}): {response}"
             );
-            std::thread::sleep(Duration::from_millis(25));
+            std::thread::sleep(POLL);
         };
         assert_eq!(
             record["state"], "ok",
@@ -289,6 +416,82 @@ fn assert_pane_routing(payload: &serde_json::Value) {
 
 #[test]
 fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
+    engine_probe_case(
+        "engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids",
+        1,
+        None,
+    );
+}
+
+/// SH-806: consecutive unanswered probes that outlast the idle patience are
+/// what a loaded gate produced; with measured contention the harness must
+/// keep waiting for an answer, as production's next reconcile pass does.
+#[test]
+fn engine_waits_for_an_answer_as_long_as_contention_grants() {
+    engine_probe_case(
+        "engine_waits_for_an_answer_as_long_as_contention_grants",
+        FORCED_UNDER_CONTENTION,
+        Some(CONTENTION_FLOOR),
+    );
+}
+
+/// How long the engine child waits for an answered liveness probe, or for a
+/// stop, before contention grace.
+///
+/// The fixture's own forced timeout plus three whole probe attempts, each
+/// bounded by production's `TMUX_TIMEOUT`. At idle a live server answers the
+/// first real probe in milliseconds, so this prices only "slow" against
+/// "never"; it is patience, not proof, and is graced by contention (SH-806).
+const ANSWER_PATIENCE: Duration = storyhook::service::engine::TMUX_TIMEOUT.saturating_mul(4);
+
+/// The engine child's graced patience, under the floor its parent stated.
+fn answer_patience() -> Patience {
+    match std::env::var(FLOOR_ENV) {
+        Ok(floor) => {
+            let floor: f64 = floor
+                .parse()
+                .unwrap_or_else(|error| panic!("{FLOOR_ENV}={floor:?} is not a ratio: {error}"));
+            Patience::starting_at(ANSWER_PATIENCE, Instant::now(), move || {
+                Some(load_grace::contention().map_or(floor, |measured| measured.max(floor)))
+            })
+        }
+        Err(_) => Patience::new(ANSWER_PATIENCE),
+    }
+}
+
+/// The program the default server's `@1` finally runs, and so the identity
+/// the engine must recognize there.
+const OCCUPANT: &str = "sleep";
+
+/// The default `@1`'s command: the pane's shell runs a short delay, then
+/// becomes [`OCCUPANT`].
+///
+/// A tmux pane runs its command through the default shell, which may start
+/// further programs (`zsh` then `bash` for `/bin/sh` on macOS), so what the
+/// pane reports right after `new-window` is not what it will run. The delay
+/// makes that hand-off certain on every run rather than only under load
+/// (SH-806), so the fixture cannot pass by reading the pane early by luck.
+fn occupant_command() -> String {
+    format!("sleep 0.5; exec {OCCUPANT} 2147483647")
+}
+
+/// Probes the adapter holds past `TMUX_TIMEOUT` in the contention variant:
+/// together they outlast both the old fixed 10 s wait and the idle
+/// [`ANSWER_PATIENCE`], so only grace lets the next real probe answer.
+const FORCED_UNDER_CONTENTION: u32 = 5;
+
+/// The contention the variant states, under whatever the machine measures.
+const CONTENTION_FLOOR: f64 = 2.0;
+
+/// Carries [`CONTENTION_FLOOR`] to the variant's own child only; never a
+/// variable other waits read (SH-806 D4).
+const FLOOR_ENV: &str = "STORY_ENGINE_CONTENTION_FLOOR";
+
+/// Monitoring and stop address the default server, whose `@1` overlaps an
+/// unrelated server's, after `forced` probes the adapter holds past
+/// `TMUX_TIMEOUT`. `name` is the calling test, which re-runs itself as the
+/// isolated engine child.
+fn engine_probe_case(name: &str, forced: u32, floor: Option<f64>) {
     use storyhook::service::engine::{Dispatcher, ShellDispatcher, TMUX_TIMEOUT, WindowProbe};
 
     const RESULT_ENV: &str = "STORY_ENGINE_TMUX_RESULT";
@@ -296,7 +499,7 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
         // Process-local environment poisoning cannot race sibling Rust tests.
         let env = TestEnv::isolated();
         let dispatcher = ShellDispatcher::new("unused-helper", env.environment());
-        let deadline = Instant::now() + STARTUP_DEADLINE;
+        let mut patience = answer_patience();
         let mut unanswered = Vec::new();
         // Reconciliation observes again after Unanswered; only an answered
         // probe can establish server routing. Gone is never a retry condition.
@@ -311,20 +514,44 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
                 WindowProbe::Unanswered { detail } => {
                     unanswered.push(detail);
                     assert!(
-                        Instant::now() < deadline,
-                        "engine never answered within the harness deadline: {unanswered:?}"
+                        !patience.expired(),
+                        "engine never answered within the harness patience ({patience}): {unanswered:?}"
                     );
-                    std::thread::sleep(Duration::from_millis(25));
+                    std::thread::sleep(POLL);
                 }
             }
         };
-        let stopped = dispatcher.kill_window("@1");
+        // A stop that timed out is asked again (SH-806 D8): the parent's
+        // list-windows checks, not this call's latency, prove which @1 died.
+        let mut patience = answer_patience();
+        let mut stop_timeouts = Vec::new();
+        let stopped = loop {
+            match dispatcher.kill_window("@1") {
+                Err(error) if error.to_string().contains("did not answer while killing") => {
+                    stop_timeouts.push(error.to_string());
+                    assert!(
+                        !patience.expired(),
+                        "engine stop never answered within the harness patience ({patience}): {stop_timeouts:?}"
+                    );
+                    std::thread::sleep(POLL);
+                }
+                // A timed-out kill may have landed before tmux could say so.
+                Err(error)
+                    if !stop_timeouts.is_empty()
+                        && error.to_string().contains("can't find window") =>
+                {
+                    break Ok(());
+                }
+                other => break other,
+            }
+        };
         std::fs::write(
             result_path,
             serde_json::json!({
                 "alive": matches!(probe, WindowProbe::Alive { .. }),
                 "probe": format!("{probe:?}"),
                 "unanswered": unanswered,
+                "stop_timeouts": stop_timeouts,
                 "stop_error": stopped.err().map(|error| error.to_string()),
             })
             .to_string(),
@@ -350,7 +577,14 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
     let _unrelated_server = server(&unrelated_socket);
     let target = tmux(
         &default_socket,
-        &["new-window", "-d", "-P", "-F", "#{window_id}", "/bin/sh"],
+        &[
+            "new-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{window_id}",
+            &occupant_command(),
+        ],
     );
     let other_target = tmux(
         &unrelated_socket,
@@ -371,29 +605,39 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
     );
     let inherited_pane = tmux(&unrelated_socket, &["display-message", "-p", "#{pane_id}"]);
 
-    let default_process = tmux(
-        &default_socket,
-        &[
-            "display-message",
-            "-p",
-            "-t",
-            "@1",
-            "#{pane_current_command}",
-        ],
-    );
-    assert!(
-        !default_process.trim().is_empty(),
-        "default fixture process identity"
-    );
+    // The engine's identity check compares against what the pane runs once
+    // settled, so read it only after the hand-off (SH-806).
+    let mut patience = Patience::new(STARTUP_DEADLINE);
+    let default_process = loop {
+        let current = tmux(
+            &default_socket,
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                "@1",
+                "#{pane_current_command}",
+            ],
+        );
+        if current.trim() == OCCUPANT {
+            break current;
+        }
+        assert!(
+            !patience.expired(),
+            "default fixture @1 never settled into {OCCUPANT} ({patience}); it runs {current:?}"
+        );
+        std::thread::sleep(POLL);
+    };
     assert_ne!(
         default_process.trim(),
         "cat",
         "servers need distinguishable occupants"
     );
 
-    // Delay the first probe past the production budget to reproduce a busy
-    // host deterministically. Later calls still execute real tmux, including
-    // the potentially destructive kill-window call, in the private namespace.
+    // Delay the first `forced` probes past the production budget to reproduce
+    // a busy host deterministically. Later calls still execute real tmux,
+    // including the potentially destructive kill-window call, in the private
+    // namespace.
     let real_tmux = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
         .map(|directory| directory.join("tmux"))
         .find(|path| path.is_file())
@@ -404,12 +648,11 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
     std::fs::write(
         &adapter,
         format!(
-            "#!/bin/sh\nset -eu\nexport TMUX_TMPDIR='{}'\nif [ \"$1\" = display-message ] && [ ! -e '{}' ]; then\n  touch '{}'\n  sleep {}\nfi\nexec '{}' \"$@\"\n",
-            tmux_root.display(),
-            scratch.path().join("first-probe-delayed").display(),
-            scratch.path().join("first-probe-delayed").display(),
-            TMUX_TIMEOUT.as_secs() + 1,
-            real_tmux.display()
+            "#!/bin/sh\nset -eu\nexport TMUX_TMPDIR='{root}'\nif [ \"$1\" = display-message ]; then\n  held=$(cat '{counter}' 2>/dev/null || echo 0)\n  if [ \"$held\" -lt {forced} ]; then\n    echo $((held + 1)) > '{counter}'\n    sleep {delay}\n  fi\nfi\nexec '{real}' \"$@\"\n",
+            root = tmux_root.display(),
+            counter = scratch.path().join("probes-delayed").display(),
+            delay = TMUX_TIMEOUT.as_secs() + 1,
+            real = real_tmux.display()
         ),
     )
     .expect("write isolated tmux namespace adapter");
@@ -418,11 +661,7 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
     let result_path = scratch.path().join("observed.json");
     let mut command = Command::new(std::env::current_exe().expect("this test executable"));
     command
-        .args([
-            "--exact",
-            "engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids",
-            "--nocapture",
-        ])
+        .args(["--exact", name, "--nocapture"])
         .env(RESULT_ENV, &result_path)
         .env("TMUX", inherited_tmux.trim())
         .env("TMUX_PANE", inherited_pane.trim())
@@ -434,9 +673,12 @@ fn engine_monitoring_and_stop_use_default_server_with_overlapping_window_ids() {
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH")),
         );
+    if let Some(floor) = floor {
+        command.env(FLOOR_ENV, floor.to_string());
+    }
     let output = ChildGuard::spawn_with_output(&mut command)
         .expect("isolated engine subprocess")
-        .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+        .wait_with_output_within(load_grace::graced_now(STORY_COMMAND_DEADLINE), || {
             "engine probe did not finish".into()
         });
     assert!(
@@ -689,9 +931,10 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             );
         let output = ChildGuard::spawn_with_output(&mut command)
             .expect("callback subprocess")
-            .wait_with_output_within(STORY_COMMAND_DEADLINE.saturating_mul(2), || {
-                "callback probe did not finish".into()
-            });
+            .wait_with_output_within(
+                load_grace::graced_now(STORY_COMMAND_DEADLINE.saturating_mul(2)),
+                || "callback probe did not finish".into(),
+            );
         assert!(
             output.status.success(),
             "callback subprocess: {}",
@@ -704,17 +947,17 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             result["error"].is_null(),
             "{mode} production notification failed: {result}"
         );
-        let deadline = Instant::now() + STARTUP_DEADLINE;
+        let mut patience = Patience::new(STARTUP_DEADLINE);
         loop {
             let transcript = tmux(expected_socket, &["capture-pane", "-p", "-t", "@1"]);
             if transcript.contains(&marker) {
                 break;
             }
             assert!(
-                Instant::now() < deadline,
-                "{mode} callback never arrived: {transcript}"
+                !patience.expired(),
+                "{mode} callback never arrived ({patience}): {transcript}"
             );
-            std::thread::sleep(Duration::from_millis(25));
+            std::thread::sleep(POLL);
         }
         let other = tmux(other_socket, &["capture-pane", "-p", "-t", "@1"]);
         assert!(

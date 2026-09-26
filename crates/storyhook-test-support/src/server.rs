@@ -584,15 +584,17 @@ pub fn wait_for_addr(addr: &str) {
 ///
 /// [`bind_preferred`]: storyhook::daemon::lifecycle::bind_preferred
 pub fn port_of(env: &crate::env::TestEnv, pid: u32) -> u16 {
-    let deadline = Instant::now() + PORTFILE_DEADLINE;
+    // Patience, not proof: graced by contention (SH-806). The constant itself
+    // stays ungraced, because crash.rs also uses it as a proof ceiling.
+    let mut patience = crate::load_grace::Patience::new(PORTFILE_DEADLINE);
     loop {
         match env.daemon() {
             Some(info) if info.pid == pid => return info.port,
             other => assert!(
-                Instant::now() < deadline,
+                !patience.expired(),
                 "the daemon this test armed (pid {pid}) never became the one a client would \
-                 find. The portfile names {:?} — if that is another daemon, the command below \
-                 would go to it and the armed process would never run the work.",
+                 find ({patience}). The portfile names {:?} — if that is another daemon, the \
+                 command below would go to it and the armed process would never run the work.",
                 other.map(|info| info.pid),
             ),
         }
@@ -603,14 +605,17 @@ pub fn port_of(env: &crate::env::TestEnv, pid: u32) -> u16 {
 /// How long a hand-spawned daemon has to publish its portfile.
 ///
 /// **Chosen, not derived**, in the sense [`ACCEPT_DEADLINE`] documents that
-/// phrase for — but not arbitrary: a daemon binds its listeners before it
-/// publishes, and `bind_listeners` probes the tailnet on the way, which is
-/// bounded at `TAILNET_PROBE_TIMEOUT` (3s). A `tailscale` wedged for the whole
-/// probe therefore delays publication by that much and no more; measured at
-/// 3.36s against a `tailscale` shim that sleeps for two minutes. The rest is
-/// margin for process start, and what is being told apart is "published
-/// somewhere else" from "never published at all".
-pub(crate) const PORTFILE_DEADLINE: Duration = Duration::from_secs(10);
+/// phrase for. Before it publishes, a daemon opens and migrates its store,
+/// harvests its predecessor's residue, takes a backup when one is due (always,
+/// on a fresh store), classifies the lanes a predecessor left and binds its
+/// listeners; the tailnet probe runs only after publication (SH-186). What is
+/// being told apart is "published somewhere else" from "never published at
+/// all".
+///
+/// A wait on it is patience and is graced by contention (`load_grace`,
+/// SH-806); the constant itself is not, because [`crate::crash`] also uses it
+/// as a proof ceiling and derives `STARTING_DEATH_DEADLINE` from it.
+pub const PORTFILE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Sends `GET /` and returns the response's status line, or `None` while the
 /// server is not answering. A read timeout is essential: the failure this

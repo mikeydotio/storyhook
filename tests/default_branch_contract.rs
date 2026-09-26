@@ -91,20 +91,36 @@ impl Fixture {
     }
 
     fn plugin(&self) -> Output {
+        self.plugin_with(Path::new(env!("CARGO_BIN_EXE_story")))
+    }
+
+    fn bundle(&self) -> Output {
+        self.bundle_with(Path::new(env!("CARGO_BIN_EXE_story")))
+    }
+
+    /// The plugin copy, with `story_bin` as the transport helper.
+    fn plugin_with(&self, story_bin: &Path) -> Output {
         let lib = checkout().join("plugins/story/lib/session.sh");
-        run(
+        run_with(
             &self.repo,
             "bash",
             &[
                 "-c",
                 &format!("source '{}' && default_branch", lib.display()),
             ],
+            story_bin,
         )
     }
 
-    fn bundle(&self) -> Output {
+    /// The bundle copy, with `story_bin` as the transport helper.
+    fn bundle_with(&self, story_bin: &Path) -> Output {
         let script = checkout().join("scripts/origin-default-branch.sh");
-        run(&self.repo, "bash", &[&script.display().to_string()])
+        run_with(
+            &self.repo,
+            "bash",
+            &[&script.display().to_string()],
+            story_bin,
+        )
     }
 
     /// Runs both copies and requires them to agree; returns the shared
@@ -133,10 +149,14 @@ fn path_arg(path: &Path) -> String {
 }
 
 fn run(cwd: &Path, program: &str, args: &[&str]) -> Output {
+    run_with(cwd, program, args, Path::new(env!("CARGO_BIN_EXE_story")))
+}
+
+fn run_with(cwd: &Path, program: &str, args: &[&str], story_bin: &Path) -> Output {
     Command::new(program)
         .args(args)
         .current_dir(cwd)
-        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("STORY_BIN", story_bin)
         .env("HOME", cwd)
         .env(
             "PATH",
@@ -258,4 +278,37 @@ fn an_unreachable_origin_is_unknown_never_main() {
     let (name, ok) = fx.ask_both("unreachable origin");
     assert!(!ok);
     assert_eq!(name, "");
+}
+
+/// A transport helper that dies from a signal prints nothing, so "origin did
+/// not answer" must say how it ended. The SH-799 gate failed this contract's
+/// detached-HEAD case with a bare "origin did not answer: " and nothing that
+/// could say why.
+#[test]
+fn a_transport_killed_by_a_signal_is_named_never_silent() {
+    let fx = Fixture::new();
+    let killed = fx.repo.join(".git/killed-story");
+    std::fs::write(&killed, "#!/bin/sh\nkill -9 $$\n").expect("fixture: writing the stub");
+    std::fs::set_permissions(&killed, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("fixture: marking the stub executable");
+
+    for (which, out) in [
+        ("plugin", fx.plugin_with(&killed)),
+        ("bundle", fx.bundle_with(&killed)),
+    ] {
+        assert!(
+            !out.status.success(),
+            "{which}: a killed transport is no answer"
+        );
+        assert_eq!(
+            text(&out.stdout),
+            "",
+            "{which}: nothing is printed on failure"
+        );
+        let err = text(&out.stderr);
+        assert!(
+            err.contains("did not answer") && err.contains("killed by signal 9"),
+            "{which}: {err}"
+        );
+    }
 }

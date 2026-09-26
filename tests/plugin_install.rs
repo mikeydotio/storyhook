@@ -1162,6 +1162,26 @@ fn stable_codex_bridge_refuses_other_providers_and_missing_plugins() {
     assert!(combined(&claude).contains("supports only the Codex stable launcher"));
 }
 
+/// SH-815: when Codex cannot answer which plugin is enabled, the bridge says
+/// that, with Codex's own words, instead of claiming the plugin is missing.
+/// The install remedy stays in the message for the case where it is.
+#[test]
+fn stable_codex_bridge_names_a_codex_that_could_not_list_its_plugins() {
+    let harness = Harness::new(true);
+    harness.install_fake("codex", FAKE_CODEX);
+    harness.set_codex_mode("list-fail");
+
+    let failed = harness.run(&["plugin", "run", "codex", "context"]);
+    let message = combined(&failed);
+    assert!(!failed.status.success(), "{message}");
+    assert!(
+        message.contains("could not ask Codex for the enabled `story@storyhook` plugin"),
+        "{message}"
+    );
+    assert!(message.contains("list exploded"), "{message}");
+    assert!(message.contains("story plugin install codex"), "{message}");
+}
+
 #[test]
 fn packaged_binary_materializes_and_registers_its_exact_embedded_marketplace() {
     let packaged = Harness::new(true);

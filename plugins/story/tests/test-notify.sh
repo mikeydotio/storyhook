@@ -100,6 +100,29 @@ assert_eq "$(jqf "$out" .reason)" delivery-failed "dropped paste: named"
 assert_eq "$(submits)" "$submits_before" "dropped paste: no submit key was sent"
 : > "$FAKE_TMUX_STATE/input"
 
+# SH-799: a key that submitted, but whose clear the screen showed only after
+# the confirmation window, IS the submission. Before, the re-send read "the
+# composer no longer shows the remediation" and refused delivery-failed while
+# the agent worked on it, so the verifier parked the story.
+submits_before=$(submits)
+out=$(remediate env FAKE_TMUX_SLOW_CLEAR=2 STORY_CONFIRM_ATTEMPTS=2)
+assert_eq "$(jqf "$out" .ok)" true "late clear: delivered"
+assert_eq "$(($(submits) - submits_before))" 1 "late clear: exactly one submit key"
+assert_eq "$(cat "$FAKE_TMUX_STATE/submitted")" "$message" "late clear: the remediation was submitted"
+
+# A collapsed paste drawn faint is still the remediation. input_state leaves
+# faint text out, so a swallowed key used to read as a cleared composer and
+# notify answered ok for a prompt that was never submitted.
+printf '0' > "$FAKE_TMUX_STATE/prompt_submits"
+printf '9' > "$FAKE_TMUX_STATE/absorb"
+out=$(remediate env FAKE_TMUX_PASTE_PLACEHOLDER=faint STORY_CONFIRM_ATTEMPTS=2)
+assert_eq "$(jqf "$out" .ok)" false "faint placeholder: no false delivery"
+assert_eq "$(jqf "$out" .reason)" delivery-failed "faint placeholder: named as unconfirmed"
+assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 0 "faint placeholder: nothing was really submitted"
+: > "$FAKE_TMUX_STATE/input"
+rm -f "$FAKE_TMUX_STATE/input_display"
+printf '0' > "$FAKE_TMUX_STATE/absorb"
+
 # SH-650: a pane whose process has exited under remain-on-exit is a corpse, not
 # an occupant. tmux freezes #{pane_current_command} at its last live value, so
 # pane_runs still answers yes; only #{pane_dead} tells the two apart. Before

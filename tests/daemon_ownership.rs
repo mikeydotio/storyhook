@@ -11,11 +11,13 @@
 //! retry logic against an injected fake `launchctl`.
 
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook::daemon::lifecycle::{self, DaemonInfo, DaemonOwner, ForkReason};
 use storyhook_test_support::{ChildGuard, TestEnv, scratch_dir};
 
+/// How long a spawned daemon has to publish its portfile, before contention
+/// grace: patience that tells "started" from "never starts" (SH-806).
 const STARTUP: Duration = Duration::from_secs(10);
 
 /// Stops whatever daemon `env` is running, even if the test panics first —
@@ -35,17 +37,12 @@ impl Drop for DaemonGuard<'_> {
 /// before the bind and the publish.
 fn await_daemon(env: &TestEnv) -> DaemonInfo {
     let portfile = env.environment().daemon_file();
-    let deadline = Instant::now() + STARTUP;
-    while Instant::now() < deadline {
-        if let Some(info) = lifecycle::read_info_at(&portfile) {
-            return info;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    panic!(
-        "the daemon never published {} within {STARTUP:?}",
-        portfile.display()
-    );
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(STARTUP),
+        Duration::from_millis(25),
+        || format!("the daemon never published {}", portfile.display()),
+        || lifecycle::read_info_at(&portfile),
+    )
 }
 
 /// A `story daemon start` in the test harness always takes the fork path

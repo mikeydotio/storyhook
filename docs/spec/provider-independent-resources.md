@@ -187,3 +187,37 @@ that removed the Agentics incident's worktree files is not established.
 Git administration and retirement semantics:
 [repository layout](https://git-scm.com/docs/gitrepository-layout),
 [worktree commands](https://git-scm.com/docs/git-worktree).
+
+## SH-815: control verbs find their helper without a provider CLI
+
+The daemon's own control verbs use `api::dispatch::resolve_control_script`.
+These are the verifier's notify, reap, submit and redispatch, and block
+delivery. These verbs do not depend on the provider (see the audit above), so
+no provider registry has a better helper for them than this binary's release
+projection. The order is the dispatch candidates with the one subprocess moved
+last:
+
+1. the `STORYHOOK_DISPATCH_SCRIPT` override;
+2. the release projection;
+3. a dev checkout;
+4. Claude's registry file;
+5. Codex's registry, which is `codex plugin list --json`.
+
+A stale file candidate is skipped and named if nothing newer resolves. A stale
+override is still refused. `resolve_dispatch_script` keeps its registry-first
+order for launching sessions, where a healthy machine must dispatch the bytes
+its interactive sessions load.
+
+Until SH-815, Codex's registry came first for the control verbs, even in a
+project that dispatches with Claude. On 2026-09-26 a Codex launch that never
+passed `_dyld_start` held the verifier's post-landing reap for as long as the
+daemon lived. Every provider CLI run now goes through `plugin::provider_cli`:
+- a `PROVIDER_CLI_TIMEOUT` of 60 s, which is twice Codex's own 30 s
+  remote-request timeout;
+- SIGTERM, then SIGKILL, to the whole process group;
+- file-backed capture, with an 8 MiB answer limit that refuses a cut answer;
+- journal entries for its start, its timeout and its finish.
+
+`tests/block_delivery.rs::block_delivery_never_waits_on_a_provider_cli_to_find_its_helper`
+pins the order end to end, and `tests/spawn_inventory.rs` asks every new spawn
+site what ends its wait.

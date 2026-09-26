@@ -181,6 +181,31 @@
 #                                text, so a confirmed submission was reported
 #                                as bootstrap-submit-unconfirmed.
 #
+# WHAT A SUBMIT KEY LANDS ON (SH-799). A dialog draws its cursor row with the
+# composer's own glyph, and a submit key there answers the dialog for the
+# person. These knobs let a test put that in front of the handoff; each state
+# file below is reset by new-window (and so by respawn-pane):
+#   $FAKE_TMUX_DIALOG=launch|paste|submit  A dialog opens with the window (after
+#                                readiness, before any paste), with the first
+#                                prompt paste (which still lands behind it), or
+#                                on the first prompt submit key (which it
+#                                swallows). While $STATE/dialog_open exists,
+#                                capture-pane draws ONLY the dialog, whose
+#                                cursor row is `❯ 1. Yes` (Codex: `› 1. Yes,
+#                                proceed`). A submit key then ANSWERS it: the
+#                                key is appended to $STATE/dialog_answers — the
+#                                harm under test — and the dialog closes.
+#   $FAKE_TMUX_PASTE_PLACEHOLDER=1|faint  A bracketed paste shows the provider's
+#                                collapsed-paste placeholder on the input row
+#                                (Claude `[Pasted text #N]` / `[Pasted text #N
+#                                +M lines]`, Codex `[Pasted Content N chars]`),
+#                                as the real providers do for a dispatch
+#                                charter; `faint` draws it with SGR 2. The box
+#                                ($STATE/input) still holds the pasted text.
+#   $FAKE_TMUX_SLOW_CLEAR=N      After a real prompt submission, the next N
+#                                captures still show the submitted row: the
+#                                screen redraws after the confirmation window.
+#
 # THE PANE'S PID AND DISPATCH SENTINEL (SH-231). `wait_ready_sentinel` — the
 # readiness gate `cmd_dispatch` now polls instead of `wait_ready`'s screen
 # scrape — genuinely `kill -0`s the pid it captured and re-queries
@@ -312,6 +337,17 @@ _submit_box() {
     printf 'true' > "$STATE/launched" 2>/dev/null || true
     return
   fi
+  # A dialog on the screen takes the key before the composer can (SH-799).
+  if [ -f "$STATE/dialog_open" ]; then
+    printf '%s\n' "${submit_key:-Enter}" >> "$STATE/dialog_answers" 2>/dev/null || true
+    rm -f "$STATE/dialog_open" 2>/dev/null || true
+    return                                           # the dialog was answered
+  fi
+  if [ "${FAKE_TMUX_DIALOG:-}" = submit ] && [ ! -f "$STATE/dialog_opened" ]; then
+    : > "$STATE/dialog_open" 2>/dev/null || true
+    : > "$STATE/dialog_opened" 2>/dev/null || true
+    return                                           # swallowed; a dialog opened
+  fi
   absorb="$(cat "$STATE/absorb" 2>/dev/null || printf '0')"
   if [ "${absorb:-0}" -gt 0 ] 2>/dev/null; then
     printf '%s' "$((absorb - 1))" > "$STATE/absorb" 2>/dev/null || true
@@ -321,7 +357,17 @@ _submit_box() {
   printf '%s' "$box" > "$STATE/submitted" 2>/dev/null || true      # OVERWRITE: last submit wins
   n="$(cat "$STATE/prompt_submits" 2>/dev/null || printf '0')"
   printf '%s' "$((n + 1))" > "$STATE/prompt_submits" 2>/dev/null || true
+  # A slow screen keeps drawing what was just submitted (FAKE_TMUX_SLOW_CLEAR).
+  if [ "${FAKE_TMUX_SLOW_CLEAR:-0}" -gt 0 ] 2>/dev/null; then
+    if [ -s "$STATE/input_display" ]; then
+      cp "$STATE/input_display" "$STATE/slow_clear_row" 2>/dev/null || true
+    else
+      printf '%s' "$box" > "$STATE/slow_clear_row" 2>/dev/null || true
+    fi
+    printf '%s' "$FAKE_TMUX_SLOW_CLEAR" > "$STATE/slow_clear" 2>/dev/null || true
+  fi
   : > "$STATE/input" 2>/dev/null || true            # prompt submitted
+  rm -f "$STATE/input_display" 2>/dev/null || true
   # Codex runs SessionStart on the first submitted turn, never at launch.
   if [ "$n" = 0 ] && [ -f "$STATE/pending_sentinel" ]; then
     local pending_path
@@ -373,6 +419,30 @@ _paste_keys() {
         ;;
     esac
   done
+}
+
+# _show_paste_placeholder <text> — with $FAKE_TMUX_PASTE_PLACEHOLDER set, record
+# the placeholder a real provider puts on its input row in place of a pasted
+# <text> (the strings of Claude Code 2.1.283 and Codex 0.157.0). A second paste
+# appends a second placeholder, numbered on, as Claude does.
+_show_paste_placeholder() {
+  local text="$1" n lines placeholder
+  [ -n "${FAKE_TMUX_PASTE_PLACEHOLDER:-}" ] || return 0
+  n="$(cat "$STATE/paste_count" 2>/dev/null || printf '0')"
+  n=$((n + 1))
+  printf '%s' "$n" > "$STATE/paste_count" 2>/dev/null || true
+  if [ "$(cat "$STATE/pane_command" 2>/dev/null)" = codex ]; then
+    placeholder="[Pasted Content ${#text} chars]"
+  else
+    lines=$(printf '%s' "$text" | tr -cd '\n\r' | wc -c | tr -d ' ')
+    if [ "$lines" -eq 0 ]; then
+      placeholder="[Pasted text #$n]"
+    else
+      placeholder="[Pasted text #$n +$lines lines]"
+    fi
+  fi
+  [ "$FAKE_TMUX_PASTE_PLACEHOLDER" != faint ] || placeholder=$'\033[2m'"$placeholder"$'\033[0m'
+  printf '%s' "$placeholder" >> "$STATE/input_display" 2>/dev/null || true
 }
 
 # `tmux -S <socket> <command>` selects a server before the subcommand. The fake
@@ -471,8 +541,14 @@ case "${1:-}" in
           "$STATE/pane_identity" \
           "$STATE/plan_mode" "$STATE/submit_keys.log" "$STATE/codex_loading" \
           "$STATE/plan_keys_remaining" "$STATE/plan_key_ignored.log" "$STATE/sparkle_frame" \
+          "$STATE/dialog_open" "$STATE/dialog_opened" "$STATE/dialog_answers" \
+          "$STATE/input_display" "$STATE/paste_count" "$STATE/slow_clear" "$STATE/slow_clear_row" \
           2>/dev/null || true
     rm -f "$STATE"/buf-* 2>/dev/null || true
+    if [ "${FAKE_TMUX_DIALOG:-}" = launch ]; then
+      : > "$STATE/dialog_open" 2>/dev/null || true
+      : > "$STATE/dialog_opened" 2>/dev/null || true
+    fi
     printf '%s' "${FAKE_TMUX_ENTER_ABSORB:-0}" > "$STATE/absorb" 2>/dev/null || true
     printf '%s' "$nw_bootstrap" > "$STATE/bootstrap_file"
     printf '%s' "$nw_cwd" > "$STATE/pane_cwd"
@@ -980,6 +1056,13 @@ case "${1:-}" in
       : # dropped paste: logged above, but never reaches the input box
     elif [ "$bracketed" = true ]; then
       printf '%s' "$content" >> "$STATE/input" 2>/dev/null || true   # one literal block
+      if [ "$launched" = true ]; then
+        _show_paste_placeholder "$content"
+        if [ "${FAKE_TMUX_DIALOG:-}" = paste ] && [ ! -f "$STATE/dialog_opened" ]; then
+          : > "$STATE/dialog_open" 2>/dev/null || true
+          : > "$STATE/dialog_opened" 2>/dev/null || true
+        fi
+      fi
     else
       _paste_keys "$content"                                        # non-bracketed = keys
     fi
@@ -1108,6 +1191,17 @@ PY_ENDPOINT
       printf '%s\n' "${FAKE_TMUX_MANGLE_LINE:-zsh: command not found: laude}"
     fi
     pane_agent="$(cat "$STATE/pane_command" 2>/dev/null || printf '')"
+    # An open dialog is all the screen shows (FAKE_TMUX_DIALOG): its cursor row
+    # carries the composer's glyph and an ASCII space, as the recorded ones do.
+    if [ -f "$STATE/dialog_open" ]; then
+      if [ "$pane_agent" = codex ]; then
+        printf '  Would you like to run the following command?\n  $ rm -rf build\n\342\200\272 1. Yes, proceed\n  2. No, and tell Codex what to do differently\n'
+      else
+        printf '%s\n' '──────────────────────────────────────────' ' Bash command' '   rm -rf build' \
+          ' Do you want to proceed?' '❯ 1. Yes' '  2. No' '──────────────────────────────────────────'
+      fi
+      exit 0
+    fi
     if [ "$pane_agent" = codex ]; then
       if [ "${FAKE_TMUX_CODEX_SPARKLE:-}" = 1 ]; then
         # SH-694: Codex 0.154.0's Astra "sparkle" — Braille dots before AND after
@@ -1188,6 +1282,14 @@ EOF
     # can observe receipt (row present) and submission (row gone). Empty box ⇒ no
     # extra output ⇒ base fixture is byte-identical to the pre-#82 fake.
     inp="$(cat "$STATE/input" 2>/dev/null || printf '')"
+    # A collapsed paste shows its placeholder, not its text (FAKE_TMUX_PASTE_PLACEHOLDER).
+    [ ! -s "$STATE/input_display" ] || inp="$(cat "$STATE/input_display")"
+    # A slow screen still shows the submitted row (FAKE_TMUX_SLOW_CLEAR).
+    slow="$(cat "$STATE/slow_clear" 2>/dev/null || printf '0')"
+    if [ -z "$inp" ] && [ "${slow:-0}" -gt 0 ] 2>/dev/null; then
+      inp="$(cat "$STATE/slow_clear_row" 2>/dev/null || printf '')"
+      printf '%s' "$((slow - 1))" > "$STATE/slow_clear" 2>/dev/null || true
+    fi
     if [ -n "$inp" ]; then
       if [ "$pane_agent" = codex ]; then
         printf '\342\200\272 %s\n' "$inp"

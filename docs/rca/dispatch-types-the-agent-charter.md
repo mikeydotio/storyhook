@@ -119,7 +119,9 @@ claim back on *any* unconfirmed handoff is wrong: if readiness was confirmed and
 *submission* was not, the charter may already be in front of a live agent, and releasing the
 story returns it to the ready list for a second dispatch to claim — two agents, one story.
 Only the `undelivered` leg rolls back, and that leg is provably safe **only because** Enter is
-no longer pressed before receipt.
+no longer pressed before receipt. (SH-799 later narrowed that receipt from "any text" to *this*
+prompt, and `undelivered` now means exactly "no submit key was sent"; see
+`docs/rca/sh-780-notify-submit-on-dialog.md`.)
 
 **Verdict: REDESIGN**, with the narrow patch landing now. Readiness by screen-scrape is not a
 contract — `READY_PATTERN` already carries four alternatives because the footer keeps changing.
