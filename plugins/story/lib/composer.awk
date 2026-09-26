@@ -3,10 +3,12 @@
 # Input: a tmux capture of an agent pane, from `capture-pane -p -e` so that
 # character attributes arrive as SGR sequences. A plain capture reads the same,
 # minus the attribute rule below.
-# Environment: COMPOSER_GLYPH, the provider's prompt glyph (required).
+# Environment: COMPOSER_GLYPH, the provider's prompt glyph (required);
+# COMPOSER_KEEP_FAINT, when non-empty, keeps faint characters too.
 # Output: the text of the ACTIVE composer row -- the last line that bears the
 # glyph -- after that line's first glyph, with every escape sequence removed and
-# every character drawn faint (SGR 2) left out.
+# every character drawn faint (SGR 2) left out unless COMPOSER_KEEP_FAINT says
+# otherwise.
 # Exit status: 0 when some line bears the glyph, 1 when none does. Any other
 # status is a failure of this program and answers nothing (input_state, in
 # lib/session.sh, reads it as "unknown").
@@ -27,6 +29,7 @@ BEGIN {
     esc = sprintf("%c", 27)
     bel = sprintf("%c", 7)
     glyph = ENVIRON["COMPOSER_GLYPH"]
+    keep_faint = (ENVIRON["COMPOSER_KEEP_FAINT"] != "")
     faint = 0
     found = 0
     answer = ""
@@ -72,7 +75,7 @@ END {
 
 # visible(s) — s is drawn text in the current attributes. Before this line's
 # first glyph it is only searched for the glyph (whatever its attributes);
-# after it, it is kept unless it is faint.
+# after it, it is kept unless it is faint and faint text is not kept.
 function visible(s,    at) {
     if (!seen) {
         at = index(s, glyph)
@@ -81,7 +84,7 @@ function visible(s,    at) {
         seen = 1
         s = substr(s, at + length(glyph))
     }
-    if (!faint)
+    if (!faint || keep_faint)
         line_text = line_text s
 }
 

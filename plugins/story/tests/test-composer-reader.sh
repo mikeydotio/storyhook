@@ -115,6 +115,74 @@ for locale in C en_US.UTF-8; do
     "$locale: the last row with a glyph is the composer, even when that glyph is faint"
 done
 
+# ---- strict: no composer row is not an idle composer --------------------------
+# Plain input_state keeps reading "no row" as "empty" (a submitted prompt may
+# leave none). Before storyhook TYPES, it asks the strict question: a screen
+# with no composer row (a full-screen view, a mode with another prompt) is
+# "absent", and nothing is typed into it.
+strict_state() {
+  printf "$3" >"$CAPTURE_FILE"
+  (export LC_ALL="$1"; READY_PROMPT_GLYPH="$2"; EMPTY_INPUT_PATTERN=''; input_state %1 strict)
+}
+for locale in C en_US.UTF-8; do
+  assert_eq "$(strict_state "$locale" '❯' "  a transcript view
+  (no prompt)
+")" absent \
+    "$locale: strict: no composer row is absent"
+  assert_eq "$(state "$locale" '❯' "  a transcript view
+  (no prompt)
+")" empty \
+    "$locale: plain: no composer row still reads empty"
+  assert_eq "$(strict_state "$locale" '❯' "$claude_ghost")" empty "$locale: strict: an idle composer is empty"
+  assert_eq "$(strict_state "$locale" '❯' "$(row 'draft')")" text "$locale: strict: a draft is text"
+done
+
+# ---- composer_holds: the composer shows THIS prompt ---------------------------
+# "Any text" was the receipt, and a dialog's cursor row is text too. The
+# signature is the prompt's first line (at most 20 bytes), or the placeholder
+# the provider puts in the input when it collapses a long paste (Claude:
+# "[Pasted text #N +M lines]", Codex: "[Pasted Content N chars]", both read from
+# the 2026-09 binaries). Faint text counts here: a placeholder's styling is not
+# the question, whether the input holds our paste is.
+holds() {  # holds <locale> <glyph> <placeholder pattern> <capture> <text>
+  printf "$4" >"$CAPTURE_FILE"
+  (export LC_ALL="$1"; READY_PROMPT_GLYPH="$2"; PASTE_PLACEHOLDER_PATTERN="$3"
+   if composer_holds %1 "$5"; then printf holds; else printf no; fi)
+}
+remediation=$(printf 'CENTRAL VERIFICATION RED: the gate failed.\nFix the existing PR.')
+claude_ph="$CLAUDE_PASTE_PLACEHOLDER_PATTERN"
+codex_ph="$CODEX_PASTE_PLACEHOLDER_PATTERN"
+for locale in C en_US.UTF-8; do
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$(row 'CENTRAL VERIFICATION RED: the gate failed.')" "$remediation")" holds \
+    "$locale: the prompt's first line is on the row"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$(row 'CENTRAL VERIFICATION RED: the gate f')" "$remediation")" holds \
+    "$locale: a row that wraps after the signature still holds"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$(row '[Pasted text #1 +12 lines]')" "$remediation")" holds \
+    "$locale: Claude's collapsed paste"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$(row '[Pasted text #3]')" "$remediation")" holds \
+    "$locale: Claude's collapsed single-line paste"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$(row '\033[2m[Pasted text #1 +3 lines]\033[0m')" "$remediation")" holds \
+    "$locale: a faint placeholder is still our paste"
+  assert_eq "$(holds "$locale" '›' "$codex_ph" "\342\200\272 [Pasted Content 1234 chars]\n  ? for shortcuts\n" "$remediation")" holds \
+    "$locale: Codex's collapsed paste"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$(row '  CENTRAL VERIFICATION RED')" "$(printf '  CENTRAL VERIFICATION RED\tx')")" holds \
+    "$locale: leading blanks and a tab do not break the signature"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$(row '\303\234berpr\303\274fung der \303\204nderung')" "$(printf '\303\234berpr\303\274fung der \303\204nderung')")" holds \
+    "$locale: a non-ASCII first line holds"
+  # Not our paste: nothing may be submitted.
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$claude_ghost" "$remediation")" no "$locale: a ghost suggestion"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "${claude_rule}${dialog_row}" "$remediation")" no "$locale: a dialog row"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$(row '')" "$remediation")" no "$locale: an empty composer"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "  no composer here\n" "$remediation")" no "$locale: no composer row"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$(row 'fix the flaky test')" "$remediation")" no "$locale: a person's draft"
+  assert_eq "$(holds "$locale" '❯' "$claude_ph" "$(row 'x [Pasted text #1 +3 lines]')" "$remediation")" no \
+    "$locale: a placeholder after a draft is not our paste alone"
+  assert_eq "$(holds "$locale" '›' "$codex_ph" "\342\200\272 [Pasted text #1 +3 lines]\n" "$remediation")" no \
+    "$locale: one provider's placeholder is not the other's"
+done
+assert_eq "$(COMPOSER_AWK=/nonexistent/composer.awk holds C '❯' "$claude_ph" "$(row 'CENTRAL VERIFICATION RED')" "$remediation" 2>/dev/null)" no \
+  "a failing reader holds nothing"
+
 # A reader that fails has not read an empty composer.
 assert_eq "$(COMPOSER_AWK=/nonexistent/composer.awk state C '❯' "$(row '')" 2>/dev/null)" unknown \
   "a failing reader is unknown, never empty"

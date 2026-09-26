@@ -83,6 +83,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/plugin-identity.sh"
 #   SEND_RETRIES             send_prompt_confirmed
 #   SUBMIT_KEY               send_prompt_confirmed
 #   EMPTY_INPUT_PATTERN      input_state (provider-rendered empty placeholder)
+#   PASTE_PLACEHOLDER_PATTERN composer_holds (provider's collapsed-paste input)
 #   PASTE_SETTLE_DELAY       paste_prompt
 #   CAPTURE_LINES            capture_pane_transcript (default only — callers
 #                            may pass an explicit override as its $2)
@@ -341,12 +342,13 @@ strip_composer_decoration() {
 # at source time, beside this file.
 COMPOSER_AWK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/composer.awk"
 
-# composer_row_text <content> — echo the text of the ACTIVE input row (the LAST
-# line bearing READY_PROMPT_GLYPH) after that row's FIRST glyph: escape
-# sequences removed, faint characters left out, box border, Braille decoration
-# and NBSP padding normalised. Returns 0 when a row bears the glyph, 1 when none
-# does, and anything else when the reader itself failed (then nothing is
-# echoed and nothing may be concluded).
+# composer_row_text <content> [keep-faint] — echo the text of the ACTIVE input
+# row (the LAST line bearing READY_PROMPT_GLYPH) after that row's FIRST glyph:
+# escape sequences removed, faint characters left out (kept when a second
+# argument is given), box border, Braille decoration and NBSP padding
+# normalised. Returns 0 when a row bears the glyph, 1 when none does, and
+# anything else when the reader itself failed (then nothing is echoed and
+# nothing may be concluded).
 #
 # The input row, NOT the pane's last non-blank line: the real TUI (and the test
 # fixtures) render a FOOTER *below* the input box, so the last non-blank line is
@@ -359,7 +361,8 @@ COMPOSER_AWK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/composer.awk"
 # that rule.
 composer_row_text() {
   local tail status=0
-  tail=$(printf '%s\n' "$1" | COMPOSER_GLYPH="$READY_PROMPT_GLYPH" LC_ALL=C awk -f "$COMPOSER_AWK") \
+  tail=$(printf '%s\n' "$1" \
+    | COMPOSER_GLYPH="$READY_PROMPT_GLYPH" COMPOSER_KEEP_FAINT="${2:-}" LC_ALL=C awk -f "$COMPOSER_AWK") \
     || status=$?
   [ "$status" -le 1 ] || return "$status"
   tail=${tail//│/}                       # strip the box border (literal, mb-safe)
@@ -374,16 +377,24 @@ input_box_text() {
   composer_row_text "$1" || true
 }
 
-# input_state <pane> — "text" (box holds unsubmitted input) | "empty" (idle box) |
-# "unknown" (capture or reader failed). "unknown" is DISTINCT from "empty" so a
-# transient failure can never be misread as a submission confirmation, nor as
-# an idle composer that storyhook may type into. The capture carries attributes
-# (-e) so that faint placeholder text is not read as input (composer_row_text).
+# input_state <pane> [strict] — "text" (box holds unsubmitted input) | "empty"
+# (idle box) | "unknown" (capture or reader failed) | "absent" (strict only: no
+# row bears the glyph). "unknown" is DISTINCT from "empty" so a transient
+# failure can never be misread as a submission confirmation, nor as an idle
+# composer that storyhook may type into. Without "strict", a screen with no
+# composer row reads "empty", as a submission that leaves no row must; a caller
+# about to TYPE asks "strict", because a screen with no composer is no evidence
+# of an idle one (SH-780). The capture carries attributes (-e) so that faint
+# placeholder text is not read as input (composer_row_text).
 input_state() {
   local content box_text status=0
   content=$(tmux capture-pane -p -e -t "$1" 2>/dev/null) || { printf 'unknown'; return; }
   box_text=$(composer_row_text "$content") || status=$?
   [ "$status" -le 1 ] || { printf 'unknown'; return; }
+  if [ "$status" -eq 1 ] && [ "${2:-}" = strict ]; then
+    printf 'absent'
+    return
+  fi
   case "$box_text" in
     *[![:space:]]*)
       if [ -n "${EMPTY_INPUT_PATTERN:-}" ] \
@@ -395,6 +406,49 @@ input_state() {
       ;;
     *) printf 'empty' ;;
   esac
+}
+
+# The placeholders a provider puts in its INPUT, in place of a long paste, as
+# anchored ERE (read from the provider binaries, 2026-09: Claude Code 2.1.283's
+# `[Pasted text #${n} +${lines} lines]`, and `[Pasted text #${n}]` for one line;
+# Codex 0.157.0's `[Pasted Content ${chars} chars]`). configure_agent selects
+# one as PASTE_PLACEHOLDER_PATTERN; STORY_PASTE_PLACEHOLDER_PATTERN overrides it
+# when a provider changes its wording, which composer_holds would otherwise
+# report as a paste that never arrived (it fails closed).
+CLAUDE_PASTE_PLACEHOLDER_PATTERN='^\[Pasted text #[0-9]+( \+[0-9]+ lines)?\]'
+CODEX_PASTE_PLACEHOLDER_PATTERN='^\[Pasted Content [0-9]+ chars\]'
+
+# composer_holds <pane> <text> — 0 only when the composer row shows <text> as
+# its input: the row begins with <text>'s signature (its first line, without
+# leading blanks, cut at its first control character, at most 20 bytes,
+# without trailing blanks), or the whole input is the provider's collapsed-
+# paste placeholder (PASTE_PLACEHOLDER_PATTERN). 1 otherwise, and when the
+# capture or the reader fails.
+#
+# A receipt of "any text" cannot tell our prompt from a dialog's cursor row
+# (`❯ 1. Yes`), and a submit key sent to that row approves the dialog on the
+# person's behalf (SH-780). Faint text is kept here: whether the input holds our
+# paste is the question, not how the provider styles it.
+composer_holds() {
+  local content row
+  content=$(tmux capture-pane -p -e -t "$1" 2>/dev/null) || return 1
+  row=$(composer_row_text "$content" keep-faint) || return 1
+  # Bytes, not characters: both sides are cut and compared the same way.
+  (
+    export LC_ALL=C
+    local text="$2" sig
+    sig=${text%%$'\n'*}
+    sig=${sig%%$'\r'*}
+    sig=${sig#"${sig%%[![:space:]]*}"}
+    sig=${sig%%[[:cntrl:]]*}
+    sig=${sig:0:20}
+    sig=${sig%"${sig##*[![:space:]]}"}
+    row=${row#"${row%%[![:space:]]*}"}
+    [ -n "$sig" ] && [ "${row#"$sig"}" != "$row" ] && exit 0
+    [ -n "${PASTE_PLACEHOLDER_PATTERN:-}" ] \
+      && printf '%s' "$row" | grep -Eq -- "${PASTE_PLACEHOLDER_PATTERN}[[:space:]]*\$" && exit 0
+    exit 1
+  )
 }
 
 # poll_input <pane> <text|empty> — poll input_state up to CONFIRM_ATTEMPTS times,
