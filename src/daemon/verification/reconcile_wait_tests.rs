@@ -50,15 +50,14 @@ fn submitted(ctx: &Ctx<'_, SqliteStore>, title: &str, priority: Priority, url: &
 /// The process records the daemon runners journaled under `logs`. Each child
 /// they start is journaled with a `child=<pid>` context.
 fn child_records(logs: &Path) -> Vec<String> {
-    let days = match std::fs::read_dir(logs) {
+    let days = match crate::daemon::activity::day_files(logs) {
         Ok(days) => days,
         // The first record creates the directory: nothing was journaled.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(error) => panic!("reading journal {}: {error}", logs.display()),
     };
     let mut records = Vec::new();
-    for day in days {
-        let path = day.expect("a journal directory entry").path();
+    for path in days {
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
         records.extend(
