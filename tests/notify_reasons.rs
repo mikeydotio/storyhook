@@ -228,18 +228,18 @@ fn key_senders(relative: &str, source: &str) -> Vec<(String, String)> {
             }
             continue;
         }
-        if let Some(name) = line.strip_suffix("() {") {
-            if !name.contains(' ') {
-                function = name.to_string();
-            }
+        if let Some(name) = line.strip_suffix("() {")
+            && !name.contains(' ')
+        {
+            function = name.to_string();
         }
         if code.starts_with('#') {
             continue;
         }
-        if let Some(at) = code.find("tmux send-keys") {
-            if !code[..at].contains('"') {
-                found.push((relative.to_string(), function.clone()));
-            }
+        if let Some(at) = code.find("tmux send-keys")
+            && !code[..at].contains('"')
+        {
+            found.push((relative.to_string(), function.clone()));
         }
     }
     found
