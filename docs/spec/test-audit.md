@@ -168,6 +168,24 @@ Projected `make test` at budget 8: fmt and clippy about 45 s, core about 694 s,
 contracts about 550 s (warm schedule), build about 33 s, plugin about 400 s:
 **about 29 minutes, from about 53**.
 
+### The first pooled gate
+
+The central verifier's first run with both pools (PR 865, 2026-09-26):
+rust-suite 727 s, rust-contracts 615 s, plugin 412 s. About 31 minutes of
+`make test`, against about 53 minutes before.
+
+It also found the class the pool was always going to expose: a test that
+asserts on machine-wide process state. `orphan_check`'s postlude collects every
+storeless daemon the user owns (SH-493, on purpose), and one of its tests
+required the postlude to be completely silent. A daemon from a binary running
+beside it made the postlude speak. The assertion now requires silence only
+about the fixture's own processes. The reverse direction is accepted rather
+than fenced: a sibling binary's daemon that outlives its store for 10 s can be
+collected by `orphan_check`, which is what every gate's postlude already does
+to other worktrees' leftovers. If that ever shows up as a failure in the
+sibling, run `orphan_check` alone after the pool, the Rust counterpart of the
+plugin runner's serial lane.
+
 ## Roadmap to 15 minutes
 
 What this story leaves, in order of leverage. Each is a story related to
