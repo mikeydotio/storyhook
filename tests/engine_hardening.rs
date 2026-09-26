@@ -509,14 +509,18 @@ fn missing_or_retyped_scope_halts_without_losing_status_or_recovery_controls() {
                     .acknowledged_at
                     .is_some()
             );
-            // Empty halted runs can be stopped immediately without any cleanup
-            // authority. Occupied runs retain the existing lease requirement.
-            if !occupied {
-                assert_eq!(
-                    engine.stop(&run, true).unwrap().run.state,
-                    EngineRunState::Finished
-                );
-            }
+            // Empty halted runs stop immediately without any cleanup authority.
+            // This fake's dispatch returns no cleanup lease, so the occupied
+            // lane is released with its work kept rather than wedging the
+            // run (SH-774); any helper call would be unscripted and panic.
+            let stopped = engine.stop(&run, true).unwrap();
+            assert_eq!(stopped.run.state, EngineRunState::Finished);
+            assert!(
+                stopped
+                    .lanes
+                    .iter()
+                    .all(|lane| lane.state == storyhook::store::EngineLaneState::Idle)
+            );
         }
     }
 }

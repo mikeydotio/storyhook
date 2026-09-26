@@ -450,6 +450,10 @@ irreversible state graceful and immediate stop produce; graceful stop becomes
 resets run-owned in-progress stories, discarding their windows, worktrees and
 local branches before restoring their prior eligible open state. Verifying or
 closed stories are detached without resource or story mutations (SH-706).
+Stop Now is idempotent and always converges (SH-774): a repeated request, or
+one for a finished run, returns the current run; a lane it can never reset is
+released with its work kept; a lane whose story another cleanup owns waits for
+that owner.
 
 ### Where the dispatch subprocess runs
 
@@ -2097,8 +2101,9 @@ Stop Now's original resource-preserving behavior: the explicitly cancelled
 run resets its occupied in-progress stories, including retained quarantined
 lanes. Verifying and closed stories leave the run without any state or
 resource change. Successful dispatch persists the exact creation-time lease;
-legacy occupied work without a lease is retained with a diagnostic. Dispatch
-already in progress must settle before reset reserves its target.
+occupied work without a lease keeps its story claim and resources with a
+diagnostic, and its lane is released (SH-774). Dispatch already in progress
+must settle before reset reserves its target.
 
 `engine_resets` persists a unique token, project/story, run/lane, lease,
 restoration destination and latest failure. Reservation and verification
@@ -2122,6 +2127,55 @@ and remove the reservation. Relationships, labels and history remain.
 Partial failure retains the reservation and contextual diagnostics, processes
 independent targets, and leaves the run draining without creating a story
 block. Retry accepts already absent resources but rejects changed ownership.
+
+### SH-774 — Stop Now always converges (as built)
+
+A retry of Stop Now can succeed only if the next attempt can change the
+outcome. SH-774 found lanes where no attempt could, and a run that stayed
+draining forever. Only one live run per project is allowed, so that run also
+blocked the project's next Full Auto run. `reset_now` now maps every occupied
+lane to exactly one `StopTarget`, and no target refuses forever:
+
+| Lane | Target | Effect |
+|---|---|---|
+| Idle, or story left the active state or closed | Settled | Lane idles (unchanged SH-706 rule) |
+| Leased, story active | Reset | Leased helper cleanup (SH-706) |
+| No cleanup lease (refused dispatch, breaker halt, pre-lease lane) | Settled | Lane released; story keeps its claim and resources; awaiting set if empty; comment names card reset |
+| Story purged, or its ID no longer parses | Settled | Lane released with a diagnostic |
+| Story owned by a card reset, native `story reset` or dropped cleanup | Deferred | Lane unchanged, success, run still draining; the owner leaves the story non-active or closed, and the next attempt releases the lane |
+| Dispatching, dispatcher dead | Settled | Released as leaseless; a card-reset-owned orphan is freed, not deferred |
+
+The lease stays the only authority for destructive cleanup: a lane without
+one is never cleaned automatically. The operator uses Reset on the card for
+that story.
+
+Request handling:
+
+- **Idempotent.** Stop Now takes the per-run lock first, then records the
+  intent in one transaction with the caller-worktree refusal. A busy lock
+  returns the current run with success; the owner, or the next steady
+  reconcile, finishes the durable intent. A finished run returns unchanged.
+  The lock stays ahead of the intent write, because that write wakes the
+  daemon, which could otherwise take the lock and turn a single request's
+  `finished` into `draining`.
+- **No self-wake.** The run record is written only when state, stop reason
+  or acknowledgement changes. The change watcher compares whole run records,
+  so an `updated_at`-only rewrite made each failed retry wake the next.
+- **Live versus dead dispatch.** `fill_idle_lanes` holds a per-run dispatch
+  lock (`<store>.dispatch-<hex run id>.lock`, next to the reset lock) from
+  before its first claim until each claimed lane has its post-dispatch
+  record. Stop Now waits for a dispatching lane only while that lock is
+  busy. A free lock proves the dispatcher died, so the lane is an orphan.
+  The post-dispatch lane write is a compare-and-swap against the claimed
+  lane.
+- **Dispatch failure is atomic.** A refused or failed dispatch sets the
+  story's awaiting reason and quarantines the lane in one `write_stories`
+  transaction (kind `dispatch-refused`; a failure reads `dispatch failed:
+  <error>`). It counts toward the breaker. It no longer leaves a lane
+  dispatching.
+
+Out of scope, filed separately: Stop Now on a halted run while another run of
+the project is live (the one-live-run index refuses Halted→Draining).
 Restart preserves pending explicit cancellation during startup and resumes
 cleanup in the first steady pass, once helper callbacks can be served. Normal
 and stale reconciliation cannot quarantine or free stop-owned targets.

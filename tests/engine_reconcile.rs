@@ -1611,6 +1611,214 @@ fn three_dispatch_refusals_halt_immediately_on_the_third() {
     assert_eq!(lane.outcome.as_deref(), Some("dispatch-refused"));
 }
 
+/// SH-774: a dispatch that failed outright (here a helper timeout) was
+/// propagated with `?`, leaving the lane dispatching with the story claimed
+/// forever. It is now quarantined like a refusal, with the failure as the
+/// story's awaiting reason, and it counts toward the breaker.
+#[test]
+fn a_failed_dispatch_is_quarantined_and_counted_like_a_refusal() {
+    let fixture = ServiceFixture::new();
+    new_story(&fixture, "fails at dispatch", &[]);
+    let run_id = started_run(&fixture, &FakeDispatcher::default(), 1);
+    let failing = FakeDispatcher::new([DispatcherStep::DispatchFailure(
+        "story.sh timed out after 180s".into(),
+    )]);
+
+    let report = reconcile_at(&fixture, &failing, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.quarantined, [(0, HardStopKind::DispatchRefused)]);
+    assert_eq!(streak(&fixture, &run_id), 1);
+    // As after a refusal, a running pass then frees the quarantined lane;
+    // the story keeps its claim and says why.
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Idle);
+    assert_eq!(lane.outcome.as_deref(), Some("dispatch-refused"));
+    assert_eq!(lane.outcome_detail.as_deref(), Some("SH-1"));
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), storyhook::store::ids::StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "in-progress");
+    assert_eq!(
+        row.awaiting.as_deref(),
+        Some("dispatch failed: story.sh timed out after 180s")
+    );
+}
+
+/// SH-774: a card reset reserved while the engine dispatched made the
+/// refusal's awaiting write fail ("reset in progress"), which left the lane
+/// dispatching forever: observation skips a story under reset, and the card
+/// reset's own quiesce then waited on that lane. The reset owns the story
+/// now, so the refusal frees the lane instead of quarantining it.
+#[test]
+fn a_dispatch_refused_after_a_card_reset_reserved_its_story_releases_the_lane() {
+    use storyhook::error::AppError;
+    use storyhook::service::engine::{DispatchRequest, Dispatcher, UnclaimRequest, WindowProbe};
+    use storyhook::service::story_reset::StoryResetService;
+
+    struct ReservesThenRefuses<'a> {
+        fixture: &'a ServiceFixture,
+    }
+    impl Dispatcher for ReservesThenRefuses<'_> {
+        fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
+            StoryResetService::new(&self.fixture.ctx())
+                .reserve(&request.story, &request.story)
+                .unwrap();
+            Ok(DispatchOutcome::from_payload(
+                serde_json::json!({"ok": false, "display": "refused after the reset"}),
+            ))
+        }
+        fn unclaim(&self, _: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
+            panic!("the engine never unclaims here")
+        }
+        fn probe_window(&self, _: &str) -> WindowProbe {
+            panic!("no lane is observed")
+        }
+        fn kill_window(&self, _: &str) -> Result<(), AppError> {
+            panic!("no window is proven owned")
+        }
+        fn census(&self) -> WindowCensus {
+            WindowCensus::Counted { windows: vec![] }
+        }
+    }
+
+    let fixture = ServiceFixture::new();
+    new_story(&fixture, "reset while dispatching", &[]);
+    let run_id = started_run(&fixture, &FakeDispatcher::default(), 1);
+    let ctx = fixture.ctx();
+    let dispatcher = ReservesThenRefuses { fixture: &fixture };
+
+    let report = EngineService::new(&ctx, &dispatcher)
+        .reconcile(&run_id)
+        .unwrap();
+
+    assert!(report.quarantined.is_empty(), "{:?}", report.quarantined);
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Idle);
+    assert_eq!(
+        lane.outcome_detail.as_deref(),
+        Some("refused after the reset")
+    );
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), storyhook::store::ids::StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert!(row.awaiting.is_none(), "the card reset owns the story");
+}
+
+/// SH-774: the post-dispatch lane write was unconditional, so a dispatch
+/// result could bring back a lane that another writer had released while
+/// the helper ran. It is now a compare-and-swap, and a lost race fails loud
+/// with the unowned window and worktree named.
+#[test]
+fn a_dispatch_result_never_overwrites_a_lane_released_meanwhile() {
+    use storyhook::error::AppError;
+    use storyhook::service::engine::{DispatchRequest, Dispatcher, UnclaimRequest, WindowProbe};
+
+    struct ReleasedMeanwhile<'a> {
+        fixture: &'a ServiceFixture,
+        run_id: String,
+    }
+    impl Dispatcher for ReleasedMeanwhile<'_> {
+        fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
+            let mut lane = lane_at(self.fixture, &self.run_id, 0);
+            lane.state = EngineLaneState::Idle;
+            lane.story_id = None;
+            lane.dispatched_at = None;
+            lane.outcome = Some("released elsewhere".into());
+            self.fixture
+                .store()
+                .write(|tx| tx.put_engine_lane(&lane))
+                .unwrap();
+            Ok(DispatchOutcome::from_payload(serde_json::json!({
+                "ok": true,
+                "window_name": request.story,
+                "worktree_path": "/owned/late",
+            })))
+        }
+        fn unclaim(&self, _: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
+            panic!("the engine never unclaims here")
+        }
+        fn probe_window(&self, _: &str) -> WindowProbe {
+            panic!("no lane is observed")
+        }
+        fn kill_window(&self, _: &str) -> Result<(), AppError> {
+            panic!("no window is proven owned")
+        }
+        fn census(&self) -> WindowCensus {
+            WindowCensus::Counted { windows: vec![] }
+        }
+    }
+
+    let fixture = ServiceFixture::new();
+    new_story(&fixture, "late result", &[]);
+    let run_id = started_run(&fixture, &FakeDispatcher::default(), 1);
+    let ctx = fixture.ctx();
+    let dispatcher = ReleasedMeanwhile {
+        fixture: &fixture,
+        run_id: run_id.clone(),
+    };
+
+    let error = EngineService::new(&ctx, &dispatcher)
+        .reconcile(&run_id)
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("changed while story `SH-1` dispatched"),
+        "{error}"
+    );
+    assert!(error.contains("/owned/late"), "{error}");
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Idle);
+    assert_eq!(lane.outcome.as_deref(), Some("released elsewhere"));
+}
+
+/// SH-774: the breaker leaves the third refused lane quarantined, with its
+/// story claimed and no cleanup lease. Stop Now on that halted run failed on
+/// every attempt ("cannot reset legacy lane"); it now releases the lane,
+/// keeps the refused story's claim and diagnosis, and finishes the run.
+#[test]
+fn stop_now_after_the_breaker_trips_on_refusals_finishes() {
+    let fixture = ServiceFixture::new();
+    for title in ["first", "second", "third"] {
+        new_story(&fixture, title, &[]);
+    }
+    let run_id = started_run(&fixture, &FakeDispatcher::default(), 1);
+    for expected in 1..=3 {
+        let refused = FakeDispatcher::new([DispatcherStep::Dispatch(
+            DispatchOutcome::from_payload(serde_json::json!({
+                "ok": false,
+                "display": format!("refusal {expected}")
+            })),
+        )]);
+        reconcile_at(&fixture, &refused, &run_id, FIXTURE_NOW);
+    }
+    assert_eq!(lane_at(&fixture, &run_id, 0).cleanup_lease, None);
+
+    let ctx = fixture.ctx();
+    // Any helper call would be unscripted, and the fake would panic.
+    let stopped = EngineService::new(&ctx, &FakeDispatcher::default())
+        .stop(&run_id, true)
+        .unwrap();
+
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    assert_eq!(lane_at(&fixture, &run_id, 0).state, EngineLaneState::Idle);
+    let third = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), storyhook::store::ids::StoryNo::new(3)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(third.state, "in-progress");
+    assert!(
+        third.awaiting.as_deref().unwrap().contains("refusal 3"),
+        "{:?}",
+        third.awaiting
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The breaker
 // ---------------------------------------------------------------------------
