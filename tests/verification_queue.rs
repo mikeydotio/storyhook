@@ -9,13 +9,16 @@ mod output_reporting;
 #[path = "verification_queue/human_only.rs"]
 mod human_only;
 
+#[path = "verification_queue/reconcile_hold.rs"]
+mod reconcile_hold;
+
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
-    NotifyDelivery, ResumePlan, ShellVerificationActuator, SubmissionFailure, TickResult,
-    VerificationActivity, VerificationActuator, VerificationGuard, VerificationOutcome,
+    NotifyDelivery, ReconcileWait, ResumePlan, ShellVerificationActuator, SubmissionFailure,
+    TickResult, VerificationActivity, VerificationActuator, VerificationGuard, VerificationOutcome,
     journal_path, resume_plan, tick_with, tick_with_activity, tick_with_reconciliation,
 };
 use storyhook::daemon::verification_progress::{VerificationStatus, publish_once, status_snapshot};
@@ -1305,7 +1308,7 @@ fn a_superseded_attempt_records_its_withdrawal_naming_the_replacement_generation
             &activity,
             &inflight,
             fixture.project(),
-            |_| Ok(None),
+            |_| Ok(ReconcileWait::Ended),
         )
         .unwrap(),
         TickResult::Returned
@@ -1778,7 +1781,7 @@ fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
                 &activity,
                 &inflight,
                 fixture.project(),
-                |_| Ok(None),
+                |_| Ok(ReconcileWait::Ended),
             )
             .unwrap(),
             TickResult::Returned
@@ -2229,7 +2232,10 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
             assert_eq!(ordered[0].story_id, *waiting);
             Ok(ordered
                 .into_iter()
-                .find(|candidate| candidate.story_id == held))
+                .find(|candidate| candidate.story_id == held)
+                .map_or(ReconcileWait::Ended, |candidate| {
+                    ReconcileWait::Resubmitted(Box::new(candidate))
+                }))
         },
     )
     .unwrap();
@@ -2300,7 +2306,7 @@ fn a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue(
                 assert_eq!(row.state, "in-progress");
                 assert_eq!(row.awaiting, None, "a re-dispatched story is never parked");
                 waited.lock().unwrap().push(reserved.story_id.clone());
-                Ok(None)
+                Ok(ReconcileWait::Ended)
             },
         )
         .unwrap(),
@@ -2477,7 +2483,7 @@ fn a_paste_that_fails_after_a_successful_redispatch_is_recorded_not_parked() {
             fixture.project(),
             |_| {
                 *entered.lock().unwrap() = true;
-                Ok(None)
+                Ok(ReconcileWait::Ended)
             },
         )
         .unwrap(),
@@ -6452,7 +6458,7 @@ fn a_conflict_hold_in_one_project_does_not_hold_the_other() {
                 gadgets,
             )?;
             *other_drained_during_hold.lock().unwrap() = Some(drained);
-            Ok(None)
+            Ok(ReconcileWait::Ended)
         },
     )
     .unwrap();

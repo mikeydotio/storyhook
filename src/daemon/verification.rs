@@ -28,8 +28,8 @@ pub mod status;
 use crate::process::Cancellation;
 pub use crate::process::Cancellation as VerificationCancellation;
 pub use control::VerificationControlState;
-pub use reconcile_hold::wait_for_reconciled_candidate;
 use reconcile_hold::wait_for_reconciled_candidate_cancellable;
+pub use reconcile_hold::{HoldRelease, ReconcileWait, wait_for_reconciled_candidate};
 
 use super::bus::{Change, ChangeBus};
 use super::lifecycle::{CurrentRequest, InFlight};
@@ -569,6 +569,9 @@ pub struct ResumePlan {
 
 /// The prefix of the story comment written before a resume re-dispatch.
 pub const VERIFICATION_RESUME_PREFIX: &str = "CENTRAL VERIFICATION RESUME —";
+/// The prefix of the story comment written when a conflict-reconcile hold
+/// releases the project's queue before the story resubmitted (SH-770).
+pub const VERIFICATION_HOLD_RELEASED_PREFIX: &str = "CENTRAL VERIFICATION HOLD RELEASED —";
 /// Process boundary for repository verification and agent-session control.
 pub trait VerificationActuator: Send + Sync {
     /// Pushes the candidate's leased branch and leaves exactly one open pull
@@ -1776,7 +1779,7 @@ pub fn tick_with_activity<S: Store, A: VerificationActuator>(
     project: ProjectId,
 ) -> Result<TickResult, AppError> {
     tick_with_reconciliation(store, env, actuator, activity, inflight, project, |_| {
-        Ok(None)
+        Ok(ReconcileWait::Ended)
     })
 }
 
@@ -1804,7 +1807,7 @@ pub fn tick_with_reconciliation<S, A, W>(
 where
     S: Store,
     A: VerificationActuator,
-    W: FnMut(&VerificationCandidate) -> Result<Option<VerificationCandidate>, AppError>,
+    W: FnMut(&VerificationCandidate) -> Result<ReconcileWait, AppError>,
 {
     tick_with_bus(
         store,
@@ -1834,7 +1837,7 @@ fn tick_with_bus<S, A, W>(
 where
     S: Store,
     A: VerificationActuator,
-    W: FnMut(&VerificationCandidate) -> Result<Option<VerificationCandidate>, AppError>,
+    W: FnMut(&VerificationCandidate) -> Result<ReconcileWait, AppError>,
 {
     let queue = VerificationQueue::new(store);
     if store
@@ -2338,8 +2341,13 @@ where
                     if !remediation_started {
                         return Ok(TickResult::Returned);
                     }
-                    let Some(resubmitted) = wait_for_resubmission(&candidate)? else {
-                        return Ok(TickResult::Returned);
+                    let resubmitted = match wait_for_resubmission(&candidate)? {
+                        ReconcileWait::Resubmitted(resubmitted) => *resubmitted,
+                        ReconcileWait::Ended => return Ok(TickResult::Returned),
+                        ReconcileWait::Released(release) => {
+                            record_hold_released(&ctx, &candidate, &release)?;
+                            return Ok(TickResult::Returned);
+                        }
                     };
                     if resubmitted.project != candidate.project
                         || resubmitted.story_id != candidate.story_id
@@ -3112,6 +3120,42 @@ fn interruption_comment(now: &str, position: &str) -> String {
     format!(
         "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — INTERRUPTED\nThe verifier was stopped while this attempt ran. The gate judged nothing. The attempt restarts from the beginning when the verifier resumes.\n\nAttempt position:\n{}",
         crate::text_lint::quote_evidence(position),
+    )
+}
+
+/// Records why a conflict-reconcile hold released the project's queue
+/// (SH-770): an activity event, and a story comment that names the cause.
+///
+/// The comment names the returned generation, so a second release of the
+/// same story for the same cause is its own record rather than a duplicate
+/// that [`comment_once`] would drop.
+fn record_hold_released(
+    ctx: &Ctx<'_, impl Store>,
+    candidate: &VerificationCandidate,
+    release: &HoldRelease,
+) -> Result<(), AppError> {
+    let cause = release.describe();
+    super::activity::emit(
+        "WARN",
+        "verifier",
+        "event",
+        &format!("project={} {}", candidate.project_slug, candidate.story_id),
+        &format!("reconcile hold released: {cause}"),
+    );
+    comment_once(ctx, candidate, &hold_released_comment(candidate, release))
+}
+
+fn hold_released_comment(candidate: &VerificationCandidate, release: &HoldRelease) -> String {
+    let generation = candidate.verifying_generation.map_or_else(
+        || "unknown".to_string(),
+        |generation| generation.to_string(),
+    );
+    format!(
+        "{VERIFICATION_HOLD_RELEASED_PREFIX} the verifier no longer holds the {project} queue for {id} (returned generation {generation}). Other stories can now be verified. {next} If {id} moves back to verifying, it joins the queue in priority order.\n\nCause:\n{}",
+        crate::text_lint::quote_evidence(&release.describe()),
+        project = candidate.project_slug,
+        id = candidate.story_id,
+        next = release.next_step(),
     )
 }
 

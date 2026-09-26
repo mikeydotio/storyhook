@@ -358,8 +358,8 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     ///
     /// Each call resolves the registered checkout's origin with `git` when a
     /// candidate links a pull request. A loop that reads on every wake and
-    /// needs only generation identity must use
-    /// [`Self::current_generation_for`] instead (SH-769).
+    /// needs only generation identity must use [`Self::hold_view`] instead
+    /// (SH-769).
     pub fn ordered_for(&self, project: ProjectId) -> Result<Vec<VerificationCandidate>, AppError> {
         let mut candidates = self.store.read(|tx| ordered_candidates_for(tx, project))?;
         self.validate_origins(&mut candidates);
@@ -377,26 +377,38 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             .find(|current| current.story_id == candidate.story_id))
     }
 
-    /// The `verifying_generation` that [`Self::current_for`] would report for
-    /// this story, read from the store alone (SH-769).
+    /// Everything a conflict-reconcile hold reads on one pass (SH-770), from
+    /// one store transaction that starts no process (SH-769): the reserved
+    /// story's queued `verifying_generation` and its own facts.
     ///
-    /// Queue membership is the same, because both read
-    /// [`ordered_candidates_for`]. But no checkout origin is resolved, so no
-    /// process starts. This is the read for a loop that watches generation
-    /// identity only. It answers with a generation rather than a candidate, so
-    /// a pull request that was never checked against the origin cannot leave
-    /// the queue: anything that acts on a candidate takes it from
-    /// [`Self::current_for`].
-    pub(crate) fn current_generation_for(
-        &self,
-        candidate: &VerificationCandidate,
-    ) -> Result<Option<GlobalSeq>, AppError> {
-        Ok(self
-            .store
-            .read(|tx| ordered_candidates_for(tx, candidate.project))?
-            .into_iter()
-            .find(|current| current.story_id == candidate.story_id)
-            .and_then(|current| current.verifying_generation))
+    /// Queue membership is the same as [`Self::current_for`]'s, because both
+    /// read [`ordered_candidates_for`], but no checkout origin is resolved.
+    /// It answers with a generation rather than a candidate, so a pull request
+    /// that was never checked against the origin cannot leave the queue:
+    /// anything that acts on a candidate takes it from [`Self::current_for`].
+    /// One transaction, so a resubmission and the facts it changed are never
+    /// seen half-applied.
+    pub(crate) fn hold_view(&self, reserved: &VerificationCandidate) -> Result<HoldView, AppError> {
+        Ok(self.store.read(|tx| {
+            let Some(project) = tx.project(reserved.project)? else {
+                return Ok(HoldView::default());
+            };
+            let index = super::query::story_map(tx, project.id)?;
+            let generation = ordered_candidates_in(tx, &project, &index)?
+                .into_iter()
+                .find(|current| current.story_id == reserved.story_id)
+                .and_then(|current| current.verifying_generation);
+            let number = StoryNo::parse_id(&project.prefix, &reserved.story_id)?;
+            let story = match (tx.story(project.id, number)?, index.get(&reserved.story_id)) {
+                (Some(row), Some(snapshot)) => Some(HeldStory {
+                    permitted: human::permits_row(tx, &row, reserved)?,
+                    blocked: blocked_reason(snapshot, &index),
+                    state: row.state,
+                }),
+                _ => None,
+            };
+            Ok::<_, StoreError>(HoldView { generation, story })
+        })?)
     }
 
     // Resolve after the transaction closes: subprocess deadlines must not hold
@@ -1272,6 +1284,50 @@ pub(crate) fn ordered_candidates_for(
         }
         None => Ok(Vec::new()),
     }
+}
+
+/// One pass of a conflict-reconcile hold's store reads
+/// ([`VerificationQueue::hold_view`], SH-770).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HoldView {
+    /// The reserved story's queued `verifying_generation`, as
+    /// [`VerificationQueue::current_for`] would report it.
+    pub(crate) generation: Option<GlobalSeq>,
+    /// The reserved story, or `None` when it or its project is gone.
+    pub(crate) story: Option<HeldStory>,
+}
+
+/// The reserved story's facts that say whether its reconcile can still end
+/// in a resubmission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HeldStory {
+    /// Whether the `human-only` label still permits the verifier to act
+    /// ([`human::permits`]).
+    pub(crate) permitted: bool,
+    /// Why the story cannot proceed, when [`crate::domain::is_blocked`] says so.
+    pub(crate) blocked: Option<String>,
+    /// The story's current state slug.
+    pub(crate) state: String,
+}
+
+/// Why an open story cannot proceed, in the words that blocked it, or `None`
+/// when [`crate::domain::is_blocked`] says it can.
+fn blocked_reason(
+    snapshot: &crate::domain::StorySnapshot,
+    index: &std::collections::BTreeMap<String, crate::domain::StorySnapshot>,
+) -> Option<String> {
+    if !crate::domain::is_blocked(snapshot, index) {
+        return None;
+    }
+    if let Some(awaiting) = &snapshot.awaiting {
+        return Some(awaiting.clone());
+    }
+    let blockers = crate::domain::transition::open_blockers(snapshot, index);
+    Some(if blockers.is_empty() {
+        format!("state `{}`", snapshot.state)
+    } else {
+        format!("blocked by {}", blockers.join(", "))
+    })
 }
 
 /// [`ordered_candidates_for`] over a story index the caller already built in

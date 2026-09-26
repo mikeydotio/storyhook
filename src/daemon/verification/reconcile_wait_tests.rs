@@ -177,7 +177,7 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
             .recv_timeout(CONTROL_DEADLINE)
             .expect("cancellation ends the idle wait");
         assert!(
-            idle_result.unwrap().is_none(),
+            idle_result.unwrap() == ReconcileWait::Ended,
             "a cancelled wait returns no candidate"
         );
         assert_eq!(idle_git, 0, "an idle reconcile wait must build no git");
@@ -194,9 +194,9 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
         let (resumed, total_git) = resumed_rx
             .recv_timeout(CONTROL_DEADLINE)
             .expect("the resubmission ends the wait promptly");
-        let resumed = resumed
-            .unwrap()
-            .expect("the reserved story's resubmission wakes its waiter");
+        let ReconcileWait::Resubmitted(resumed) = resumed.unwrap() else {
+            panic!("the reserved story's resubmission wakes its waiter");
+        };
         assert_eq!(resumed.story_id, held);
         assert!(resumed.verifying_generation.is_some());
         assert_ne!(resumed.verifying_generation, reserved.verifying_generation);
@@ -253,7 +253,7 @@ fn the_store_only_generation_read_agrees_with_the_validated_queue() {
         .cloned()
         .expect("the verifying story is queued");
     assert!(
-        queue.current_generation_for(&template).unwrap().is_some(),
+        queue.hold_view(&template).unwrap().generation.is_some(),
         "a queued story reports its generation"
     );
     for id in [&verifying, &human, &returned, &unknown] {
@@ -266,7 +266,7 @@ fn the_store_only_generation_read_agrees_with_the_validated_queue() {
             .find(|candidate| &candidate.story_id == id)
             .and_then(|candidate| candidate.verifying_generation);
         assert_eq!(
-            queue.current_generation_for(&probe).unwrap(),
+            queue.hold_view(&probe).unwrap().generation,
             validated,
             "{id}: the store-only read must report what the validated queue reports"
         );

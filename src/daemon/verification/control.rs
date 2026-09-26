@@ -647,7 +647,7 @@ mod tests {
                     .recv_timeout(Duration::from_secs(5))
                     .unwrap()
                     .unwrap()
-                    .is_none()
+                    == ReconcileWait::Ended
             );
         });
         assert_eq!(

@@ -8,9 +8,9 @@ use std::thread;
 use storyhook::daemon::bus::{Change, ChangeBus};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
-    NotifyDelivery, ResumePlan, SubmissionFailure, TickResult, VERIFICATION_IDLE_TIMEOUT,
-    VerificationActivity, VerificationActuator, VerificationOutcome, tick_with_activity,
-    wait_for_reconciled_candidate,
+    NotifyDelivery, ReconcileWait, ResumePlan, SubmissionFailure, TickResult,
+    VERIFICATION_IDLE_TIMEOUT, VerificationActivity, VerificationActuator, VerificationOutcome,
+    tick_with_activity, wait_for_reconciled_candidate,
 };
 use storyhook::domain::Priority;
 use storyhook::error::AppError;
@@ -357,11 +357,13 @@ fn reconciliation_wait_ignores_other_work_and_wakes_for_its_reserved_story() {
             .set_state(&held, "verifying", None, Some("in-progress"), None)
             .unwrap();
         bus.publish(Change::Project("fixture".into()));
-        let resumed = result_rx
+        let ReconcileWait::Resubmitted(resumed) = result_rx
             .recv_timeout(lifecycle::CONTROL_DEADLINE)
             .unwrap()
             .unwrap()
-            .expect("the reserved story must wake its waiter");
+        else {
+            panic!("the reserved story must wake its waiter");
+        };
         assert_eq!(resumed.story_id, held);
         assert_ne!(resumed.verifying_generation, reserved.verifying_generation);
     });
@@ -402,7 +404,7 @@ fn reconciliation_wait_stops_without_a_resubmission() {
                 .recv_timeout(lifecycle::CONTROL_DEADLINE)
                 .unwrap()
                 .unwrap()
-                .is_none(),
+                == ReconcileWait::Ended,
             "shutdown must cancel the reservation wait without a candidate"
         );
     });
