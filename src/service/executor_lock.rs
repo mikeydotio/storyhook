@@ -28,7 +28,7 @@ impl Drop for ExecutorLock<'_> {
                 "reset",
                 "event",
                 &self.path.display().to_string(),
-                &format!("could not release reset controller lock: {error}"),
+                &format!("could not release controller lock: {error}"),
             );
         }
     }

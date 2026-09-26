@@ -84,23 +84,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     }
 
     pub(super) fn reset_now(&self, run_id: &RunId) -> Result<RunView, AppError> {
-        // The inode remains after unlock: replacing/removing a lock file would
-        // let two workers hold different locks for the same logical run.
-        let key: String = run_id.bytes().map(|b| format!("{b:02x}")).collect();
-        let lock_path = self
-            .ctx
-            .env()
-            .store_path()
-            .with_extension(format!("reset-{key}.lock"));
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .map_err(|e| {
-                AppError::Storage(format!("opening reset lock {}: {e}", lock_path.display()))
-            })?;
+        let (lock_path, lock) = run_lock_file(self.ctx.env(), "reset", run_id)?;
         // A busy lock means another Stop Now already owns this run's cleanup.
         // This request still records the same durable intent below, so the
         // owner, or the next steady reconcile, finishes it; a duplicate has
@@ -472,6 +456,30 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         );
         Ok(())
     }
+}
+
+/// Opens one of a run's controller lock files, next to the store.
+///
+/// The inode remains after unlock: replacing or removing a lock file would
+/// let two workers hold different locks for the same logical run, so the
+/// file is never deleted.
+pub(super) fn run_lock_file(
+    env: &Environment,
+    kind: &str,
+    run_id: &str,
+) -> Result<(PathBuf, std::fs::File), AppError> {
+    let key: String = run_id.bytes().map(|b| format!("{b:02x}")).collect();
+    let path = env
+        .store_path()
+        .with_extension(format!("{kind}-{key}.lock"));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| AppError::Storage(format!("opening {kind} lock {}: {e}", path.display())))?;
+    Ok((path, file))
 }
 
 /// The idle record of a lane Stop Now released without cleanup; the detail
