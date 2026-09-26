@@ -5459,9 +5459,45 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var text = pending ? "Updating verifier…" : mode === "draining" ? "Finishing inflight verification…"
       : mode === "stopping" ? "Stopping inflight verification…" : mode === "stopped" ? "Verifier stopped"
       : mode === "halted" ? "Verification needs acknowledgement" : "";
-    status.textContent = text;
-    status.hidden = !text;
+    // A verifier held for a story its own write took out of the queue is
+    // ordinary work (SH-768): it reads here, beside the mode, never as the
+    // attention banner.
+    var verifier = state.data && state.data.verifier;
+    var reservation = !pending && (mode === "running" || mode === "draining") &&
+      verifier && verifier.reservation;
+    // The line is a live region: rebuild it only when what it says changes,
+    // so the age that moves on every snapshot is left out, and nothing in it
+    // ticks (SH-549).
+    var fingerprint = JSON.stringify([text, reservation ? [reservation.story_id, reservation.reason,
+      reservation.reserved_at, reservation.queued_behind] : null]);
+    if (status.dataset.fingerprint !== fingerprint) {
+      status.dataset.fingerprint = fingerprint;
+      clear(status);
+      if (text) status.appendChild(document.createTextNode(text));
+      if (reservation) {
+        if (text) status.appendChild(document.createTextNode(" "));
+        status.appendChild(el("span", { class: "verification-reservation" },
+          verificationReservationParts(reservation)));
+      }
+    }
+    status.hidden = !text && !reservation;
     if (verificationMenuNode && (mode !== verificationMenuMode || !!pending)) closeVerificationMenu(true);
+  }
+
+  /** "Held for SH-12 · merge-conflict reconcile · since <time> · 1 queued". */
+  function verificationReservationParts(reservation) {
+    var reasons = {
+      reconcile: "merge-conflict reconcile",
+      remediation: "returning its diagnosis",
+      cleanup: "cleanup"
+    };
+    var queued = Number(reservation.queued_behind) || 0;
+    return [
+      "Held for ", reservation.story_id,
+      " · ", reasons[reservation.reason] || String(reservation.reason),
+      " · since ", timeNode(reservation.reserved_at, "second"),
+      " · ", queued + " queued"
+    ];
   }
 
   var verificationMenuNode = null;
