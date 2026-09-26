@@ -945,8 +945,9 @@ jq -n \
 
   printf '## Per test binary\n\n'
   printf 'Sampled %s time(s) each, invoked directly — what `cargo test` does, minus\n' "$TIMING_RUNS"
-  printf 'cargo'"'"'s own startup. Serial sum **%ss**; the gate beats that because cargo\n' "$BINARY_SUM"
-  printf 'overlaps binaries and each binary threads its own tests.\n\n'
+  printf 'cargo'"'"'s own startup. Serial sum **%ss**. One `cargo test` runs its binaries\n' "$BINARY_SUM"
+  printf 'one after another, each threading its own tests; the gate runs them side by\n'
+  printf 'side under a thread budget (`scripts/test-pool.py`, SH-783).\n\n'
   printf '| binary | kind | tests | median (s) | samples (s) |\n'
   printf '|---|---|---|---|---|\n'
   sort -t"$TAB" -k5,5gr "$WORK/timings.tsv" |
