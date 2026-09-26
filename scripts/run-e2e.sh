@@ -115,9 +115,12 @@ fi
 #
 # STORYHOOK_E2E_JOBS bounds the pool, and the selection is cut into
 # E2E_SLICES_PER_JOB slices per job, so one knob sets both. The defaults are
-# measured, not assumed: docs/spec/test-audit.md records the sweep.
+# measured, not assumed (docs/spec/test-audit.md records the sweep): 8 of 10
+# cores kept two free, where 12 bought 4% at twice the load flakes; two slices
+# per job let a freed slot take the next slice, where one per job left the
+# small projects holding whole slots.
 E2E_DEFAULT_JOBS=8
-E2E_SLICES_PER_JOB=1
+E2E_SLICES_PER_JOB=2
 # What a signalled slice's writers, and then its shells, each get to exit
 # before the pool kills them: `cleanup` below stops a daemon and removes a
 # seed in about a second.
