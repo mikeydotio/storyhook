@@ -290,7 +290,8 @@ fn a_starting_daemon_fixes_the_journal_and_reports_committed_journal_files() {
     let deadline = std::time::Instant::now() + STORY_COMMAND_DEADLINE;
     let warnings = loop {
         let status = project.json(&["daemon", "status"]);
-        let warnings = status["warnings"].as_array().unwrap().clone();
+        // The envelope omits an empty warnings list.
+        let warnings = status["warnings"].as_array().cloned().unwrap_or_default();
         if !warnings.is_empty() {
             break warnings;
         }
@@ -335,5 +336,5 @@ fn a_starting_daemon_fixes_the_journal_and_reports_committed_journal_files() {
 
     env.stop_daemon();
     let stopped = project.json(&["daemon", "status"]);
-    assert_eq!(stopped["warnings"], serde_json::json!([]), "{stopped}");
+    assert!(stopped.get("warnings").is_none(), "{stopped}");
 }
