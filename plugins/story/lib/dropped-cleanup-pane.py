@@ -55,14 +55,22 @@ def require_pane(target):
 
 
 def signal_known(owned, sig):
-    """Never send signals to a PID whose native incarnation differs."""
-    table = proc.processes()
+    """Never send signals to a PID whose native incarnation differs.
+
+    Liveness is native, so resuming a frozen closure cannot fail on a census.
+    Every process is tried before the first failure is raised.
+    """
+    failures = []
     for pid, identity in owned.items():
-        if proc.same_process(table, pid, identity):
-            try:
+        try:
+            if proc.alive(pid, identity):
                 os.kill(pid, sig)
-            except ProcessLookupError:
-                pass  # The next census proves the process has exited.
+        except ProcessLookupError:
+            pass  # The next observation proves the process has exited.
+        except OSError as error:
+            failures.append(f"PID {pid}: {error}")
+    if failures:
+        raise proc.CleanupError(f"could not send {signal.Signals(sig).name} to captured processes: {'; '.join(failures)}")
 
 
 def stop(target, path):
@@ -85,9 +93,9 @@ def stop(target, path):
             root = int(target["pid"])
             for _ in range(16):
                 table = proc.processes()
-                roots = {root} | {pid for pid, identity in owned.items() if proc.same_process(table, pid, identity)}
+                known = {pid for pid, identity in owned.items() if proc.alive(pid, identity)}
+                roots = {root} | known
                 tree = set().union(*(proc.descendants(table, pid) for pid in roots))
-                known = {pid for pid, identity in owned.items() if proc.same_process(table, pid, identity)}
                 new = tree - known
                 if not new:
                     break
@@ -99,7 +107,7 @@ def stop(target, path):
                     record["owned"] = owned
                     save(path, record)
                     # Evidence reaches disk before a signal can orphan or freeze a writer.
-                    if proc.same_process(proc.processes(), pid, identity):
+                    if proc.alive(pid, identity):
                         os.kill(pid, signal.SIGSTOP)
             else:
                 raise proc.CleanupError("cleanup process closure did not stabilize")
@@ -117,18 +125,16 @@ def stop(target, path):
                 proc.run("tmux", "-S", target["socket"], "kill-window", "-t", target["window"])
             signal_known(owned, signal.SIGKILL)
             deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                table = proc.processes()
-                if not any(proc.same_process(table, pid, identity) for pid, identity in owned.items()):
-                    break
+            # Observe before judging: a slow pass must not turn death into survival.
+            while any(proc.alive(pid, identity) for pid, identity in owned.items()):
+                if time.monotonic() >= deadline:
+                    raise proc.CleanupError("captured cleanup writers survived termination")
                 time.sleep(0.05)
-            else:
-                raise proc.CleanupError("captured cleanup writers survived termination")
             if panes(target):
                 raise proc.CleanupError("story window remains after cleanup")
             record["phase"] = "complete"
             save(path, record)
-        if panes(target) or any(proc.same_process(proc.processes(), pid, identity) for pid, identity in owned.items()):
+        if panes(target) or any(proc.alive(pid, identity) for pid, identity in owned.items()):
             raise proc.CleanupError("completed cleanup evidence no longer proves absence")
     finally:
         # Settled errors preserve a usable session; retry must freeze a fresh closure.

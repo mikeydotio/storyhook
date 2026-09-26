@@ -50,14 +50,37 @@ def descendants(table, root):
         found = expanded
 
 
-def same_process(table, pid, identity):
-    """Reject PID reuse while allowing normal reparenting during termination."""
-    if pid not in table or table[pid][1] != identity[1]:
-        return False
+def alive(pid, identity):
+    """Report whether a captured incarnation still runs, from its kernel identity alone.
+
+    The native start token names exactly one incarnation, so PID reuse and
+    normal reparenting need no process census. Nothing is spawned, so machine
+    load cannot turn this check into a failure (SH-766). An exited or zombie
+    process is gone; any other probe failure is raised.
+    """
     try:
         return process_identity(pid)["start"] == identity[2]
     except ProcessLookupError:
         return False  # Exit won the race with the native probe.
+
+
+def signal_known(owned, sig):
+    """Signal each captured incarnation that still runs, never a recycled PID.
+
+    Every process is tried before a failure is raised, so one unreadable
+    identity cannot leave the rest of a frozen tree stopped.
+    """
+    failures = []
+    for pid, identity in owned.items():
+        try:
+            if alive(pid, identity):
+                os.kill(pid, sig)
+        except ProcessLookupError:
+            pass  # Exit won the race with our signal; callers verify absence.
+        except OSError as error:
+            failures.append(f"PID {pid}: {error}")
+    if failures:
+        raise CleanupError(f"could not send {signal.Signals(sig).name} to captured processes: {'; '.join(failures)}")
 
 
 def require_launch_start(pid, expected_start):
@@ -104,7 +127,7 @@ def stop(pane, expected_pid, expected_start):
             table = processes()
         else:
             raise CleanupError("startup process tree did not stabilize before termination")
-        if expected_pid not in owned or not same_process(table, expected_pid, owned[expected_pid]):
+        if expected_pid not in owned or not alive(expected_pid, owned[expected_pid]):
             raise CleanupError("startup process identity changed during termination")
         if run("tmux", "display-message", "-p", "-t", pane, "#{pane_pid}") != str(expected_pid):
             raise CleanupError("pane was replaced during termination")
@@ -112,29 +135,17 @@ def stop(pane, expected_pid, expected_start):
         run("tmux", "kill-pane", "-t", pane)
         # This is pre-charter rollback, not an agent shutdown: no task work was
         # authorized. Frozen startup children must not outlive their deleted cwd.
-        table = processes()
-        for pid, identity in owned.items():
-            if same_process(table, pid, identity):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass  # Exit won the race with our signal; verified below.
+        signal_known(owned, signal.SIGKILL)
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            table = processes()
-            if not any(same_process(table, pid, identity) for pid, identity in owned.items()):
-                return
+        # Observe before judging: a slow pass must not turn death into survival.
+        while any(alive(pid, identity) for pid, identity in owned.items()):
+            if time.monotonic() >= deadline:
+                raise CleanupError("startup processes survived termination; preserved claim and worktree")
             time.sleep(0.05)
-        raise CleanupError("startup processes survived termination; preserved claim and worktree")
     finally:
-        # A failed tmux call must not leave a preserved diagnostic session frozen.
-        table = processes()
-        for pid, identity in owned.items():
-            if same_process(table, pid, identity):
-                try:
-                    os.kill(pid, signal.SIGCONT)
-                except ProcessLookupError:
-                    pass
+        # A failed probe must not leave a preserved diagnostic session frozen,
+        # and resuming must not depend on the census that may have failed.
+        signal_known(owned, signal.SIGCONT)
 
 
 if __name__ == "__main__":
