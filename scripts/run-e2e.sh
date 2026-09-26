@@ -237,14 +237,20 @@ run_one_project() {
   fi
 
   data_root="$(mktemp -d /private/tmp/story-e2e.XXXXXX)"
-  daemon_started=0
+  isolated=0
 
   cleanup() {
     local status=$?
     # A second signal here would abandon a half-stopped daemon and a
     # half-removed seed; the pool KILLs a cleanup that overruns its grace.
     trap '' TERM INT HUP
-    if [ "$daemon_started" = "1" ]; then
+    # Whenever this run's isolated store is in effect, and only then: before
+    # `storyhook_isolate` below, this environment still names the developer's
+    # real store. Not only after the explicit `daemon start`, because every
+    # `story` call in the seeding auto-starts this run's daemon well before
+    # it. Stopping is synchronous, and a no-op when nothing runs, so the
+    # removal below never races a daemon still writing its state home.
+    if [ "$isolated" = "1" ]; then
       "$story_bin" daemon stop >/dev/null 2>&1 || true
     fi
     # The fake's placeholder pane process is told below to outlive this whole
@@ -283,6 +289,7 @@ run_one_project() {
   # shellcheck source=test-env.sh
   . "$repo_root/scripts/test-env.sh"
   storyhook_isolate "$data_root"
+  isolated=1
 
   # The leased binary, for the specs' own CLI calls (SH-635). A spec that ran
   # Cargo's artifact directly would, after a rebuild, itself be the client
@@ -585,7 +592,6 @@ WRAPPER
   # not a formality.
   echo "run-e2e.sh: starting the daemon…" >&2
   start_output="$("$story_bin" daemon start 2>&1)"
-  daemon_started=1
   echo "$start_output" >&2
 
   # The daemon always binds loopback, and *additionally* binds its Tailscale

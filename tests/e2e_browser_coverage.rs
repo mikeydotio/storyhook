@@ -867,6 +867,60 @@ fn a_slices_cleanup_cannot_be_cut_short_by_a_second_signal() {
     );
 }
 
+/// Every `story` call in the seeding auto-starts this run's daemon, well
+/// before the explicit `daemon start`. A slice stopped while it seeds must
+/// still stop that daemon before removing its root: left running, the
+/// daemon lives until the outer script exits and then recreates its state
+/// directory inside the removed root on the way out (found by SH-792's
+/// mid-run TERM check, which left `home/.local/state` behind). The one
+/// condition is the isolation itself: before `storyhook_isolate`, a `daemon
+/// stop` would reach the developer's real store.
+#[test]
+fn a_slices_cleanup_stops_its_daemon_whenever_its_store_is_isolated() {
+    let runner = read("scripts/run-e2e.sh");
+    let cleanup = runner
+        .split_once("  cleanup() {")
+        .expect("run_one_project defines cleanup")
+        .1
+        .split_once("\n  }\n")
+        .expect("cleanup ends")
+        .0;
+    let guard = cleanup
+        .find("if [ \"$isolated\" = \"1\" ]; then")
+        .expect("cleanup stops the daemon only once the store is isolated");
+    let stop = cleanup
+        .find("\"$story_bin\" daemon stop")
+        .expect("cleanup stops the daemon");
+    let remove = cleanup
+        .find("rm -rf \"$data_root\"")
+        .expect("cleanup removes the data root");
+    assert!(
+        guard < stop && stop < remove,
+        "guard, stop, then removal: the daemon is stopped before its root goes"
+    );
+    assert!(
+        !cleanup.contains("daemon_started"),
+        "the stop must not wait for the explicit start: a daemon auto-started during \
+         seeding exists before any start is recorded"
+    );
+
+    let body = runner
+        .split_once("run_one_project() {")
+        .expect("run-e2e.sh defines run_one_project")
+        .1;
+    let isolate = body
+        .find("  storyhook_isolate \"$data_root\"\n  isolated=1\n")
+        .expect("the flag is raised on the line after the isolation, and nowhere else");
+    assert_eq!(body.matches("isolated=1").count(), 1);
+    let first_story_call = body
+        .find("\"$story_bin\" project new")
+        .expect("the seeding calls story");
+    assert!(
+        isolate < first_story_call,
+        "the store is isolated before the first story call can start a daemon"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 7. Stop-now's unclaim is not a second dispatch writer
 // ---------------------------------------------------------------------------
