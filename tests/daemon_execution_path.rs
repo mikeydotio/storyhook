@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use storyhook::daemon::{agent, lifecycle};
-use storyhook_test_support::{ChildGuard, TestEnv, story_binary};
+use storyhook_test_support::{ChildGuard, TestEnv, daemon_containment, story_binary};
 
 const MINIMAL_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
@@ -43,7 +43,7 @@ fn start(env: &TestEnv, plist: &str, apply_path: bool) -> ChildGuard {
     let args = agent::registered_args(plist).unwrap();
     let log = fs::File::create(env.home().join("serve.log")).unwrap();
     let mut cmd = Command::new(&args[0]);
-    cmd.env_clear();
+    cmd.env_clear().envs(daemon_containment());
     env.apply(&mut cmd);
     cmd.args(&args[1..])
         .env("PATH", MINIMAL_PATH)
