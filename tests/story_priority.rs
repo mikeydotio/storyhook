@@ -271,6 +271,13 @@ fn json_carries_the_blocker_floor_only_while_it_raises_the_story() {
         .find(|row| row["id"] == "SH-1")
         .expect("SH-1 is ready");
     assert_eq!(row["blocker_floor"], "critical", "{context}");
+    let unraised = context["ready_stories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "SH-3")
+        .expect("SH-3 is ready");
+    assert!(unraised.get("blocker_floor").is_none(), "{context}");
 
     // The floor lasts only as long as the blockage: dropping the dependent
     // (a blocked story cannot finish) ends it.

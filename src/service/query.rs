@@ -723,15 +723,22 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
                 "by_type": type_counts,
                 "blocked_count": blocked.len(),
                 "ready_count": ready_count,
-                "ready_stories": ready.iter().map(|view| serde_json::json!({
-                    "id": view.story.id,
-                    "title": view.story.title,
-                    "state": view.story.state,
-                    "priority": view.story.priority.as_str(),
-                    "blocker_floor": view.blocker_floor.as_ref().map(Priority::as_str),
-                    "complexity": view.story.complexity.as_str(),
-                    "complexity_assessed": view.story.complexity_assessed,
-                })).collect::<Vec<_>>(),
+                "ready_stories": ready.iter().map(|view| {
+                    let mut row = serde_json::json!({
+                        "id": view.story.id,
+                        "title": view.story.title,
+                        "state": view.story.state,
+                        "priority": view.story.priority.as_str(),
+                        "complexity": view.story.complexity.as_str(),
+                        "complexity_assessed": view.story.complexity_assessed,
+                    });
+                    // Absent, not null, when nothing raises the story — the
+                    // same shape `StoryView.blocker_floor` serializes to.
+                    if let Some(floor) = &view.blocker_floor {
+                        row["blocker_floor"] = floor.as_str().into();
+                    }
+                    row
+                }).collect::<Vec<_>>(),
             });
             return Ok(serde_json::to_string_pretty(&document).unwrap_or_default());
         }
