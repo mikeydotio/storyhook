@@ -100,7 +100,9 @@ def reconcile(session, directory, binary):
             reap_temporary(session, rows, owner)
             return
         old = matches[0] if matches else None
-        window = allocate(session, ".verification-" + uuid.uuid4().hex, owner, reader)
+        # A period is a tmux pane delimiter even with exact window-name matching.
+        # The initial ownership stamp must resolve this name before mark() runs.
+        window = allocate(session, "verification-pending-" + uuid.uuid4().hex, owner, reader)
         try:
             mark(window, owner)
             # Recheck immutable evidence immediately before retiring the old reader.
@@ -128,7 +130,7 @@ def rollback(window, original):
 def reap_temporary(session, rows, owner):
     """Only retire interrupted allocations after a permanent view exists."""
     for row in rows:
-        if (row[1].startswith(".verification-") and row[5] == owner
+        if (row[1].startswith(("verification-pending-", ".verification-")) and row[5] == owner
                 and len([other for other in rows if other[0] == row[0]]) == 1):
             current = [other for other in inventory(session) if other[0] == row[0]]
             if current == [row]:

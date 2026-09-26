@@ -29,6 +29,11 @@ command. An unrelated occupant or multiple panes named `verification` is a
 visible ownership conflict. Missing windows are created; dead or changed owned
 readers are replaced. A replacement is allocated and marked before retirement
 of the old exact window ID, whose evidence is checked again before removal.
+Creation and the first ownership tag run in one tmux command group. Staging
+names use `verification-pending-<uuid>`: a period is a pane delimiter even in
+an exact window target. Cleanup also accepts the old `.verification-` prefix,
+but only with matching ownership and unchanged inventory evidence. Inventory
+parsing preserves empty fields, including those on the final row.
 Failures are logged and retried on a later reconciliation tick. A successful
 reconcile is not journaled at all (SH-761): the helper runs under the
 project's own journal scope every five seconds, and announcing each child's

@@ -316,6 +316,74 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.reconcile()
         self.assertNotEqual(first, self.identity())
 
+    def test_budget_expiry_preserves_old_reader_and_next_pass_reaps_partial_replacement(self):
+        from unittest.mock import patch
+        from scripts.tests.test_verification_view_budget import program
+        self.reconcile()
+        first = self.identity()
+        self.tmux("set-option", "-w", "-t", first.split("|")[0], "@storyhook-reader", "%999:0")
+        view = program()
+        clock = [0.0]
+        run = subprocess.run
+
+        def answer(argv, **kwargs):
+            result = run(argv, **kwargs)
+            # Exhaust the real shared clock after allocation and its first identity read.
+            if argv[1] == "display-message":
+                clock[0] = view.BUDGET_SECONDS
+            return result
+
+        directory = self.root / "one" / "logs with spaces ' $(inert)"
+        with patch.dict(os.environ, self.env, clear=True), \
+                patch.object(view.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(view.subprocess, "run", side_effect=answer):
+            with self.assertRaises(RuntimeError) as failed:
+                view.reconcile("one", str(directory), str(self.reader))
+        self.assertIn("operation budget", str(failed.exception))
+        self.assertIn("cleanup", str(failed.exception))
+        self.assertEqual(first, self.identity())
+        self.assertIn("verification-pending-", self.tmux("list-windows", "-t", "=one", "-F", "#{window_name}"))
+        self.reconcile()
+        self.assertNotEqual(first, self.identity())
+        self.assertEqual(self.tmux("list-windows", "-t", "=one", "-F", "#{window_name}"), "verification")
+
+    def test_allocation_owns_only_the_new_window_before_mark_can_run(self):
+        import hashlib
+        from unittest.mock import patch
+        from scripts.tests.test_verification_view_budget import program
+        # Both names could be mistaken for an interrupted allocation. Neither is ours.
+        self.tmux("new-session", "-d", "-s", "one", "-n", ".verification-user", str(self.reader), "fixture")
+        self.tmux("new-window", "-d", "-t", "=one:", "-n", "verification-pending-user", str(self.reader), "fixture")
+        before = self.tmux("list-windows", "-t", "=one", "-F", "#{window_id}|#{window_name}|#{@storyhook-journal}")
+        view = program()
+        clock = [0.0]
+        run = subprocess.run
+        allocated = []
+
+        def answer(argv, **kwargs):
+            result = run(argv, **kwargs)
+            if argv[1] == "new-window":
+                allocated.append(result.stdout.strip())
+                clock[0] = view.BUDGET_SECONDS
+            return result
+
+        directory = self.root / "one" / "logs with spaces ' $(inert)"
+        with patch.dict(os.environ, self.env, clear=True), \
+                patch.object(view.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(view.subprocess, "run", side_effect=answer):
+            with self.assertRaisesRegex(RuntimeError, "operation budget"):
+                view.reconcile("one", str(directory), str(self.reader))
+        self.assertEqual(len(allocated), 1)
+        owner = hashlib.sha256(os.fsencode(directory.resolve())).hexdigest()
+        self.assertEqual(self.tmux("show-options", "-wv", "-t", allocated[0], "@storyhook-journal"), owner)
+        after = self.tmux("list-windows", "-t", "=one", "-F", "#{window_id}|#{window_name}|#{@storyhook-journal}")
+        self.assertEqual("\n".join(after.splitlines()[:2]), before)
+        self.reconcile()
+        after = self.tmux("list-windows", "-t", "=one", "-F", "#{window_id}|#{window_name}|#{@storyhook-journal}")
+        self.assertEqual("\n".join(after.splitlines()[:2]), before)
+        self.assertEqual(len(after.splitlines()), 3)
+        self.assertNotIn(allocated[0] + "|", after)
+
     @unittest.skipUnless(sys.platform == "darwin", "native macOS forkpty regression")
     def test_native_allocation_failure_preserves_server_and_other_reader(self):
         self.reconcile()
