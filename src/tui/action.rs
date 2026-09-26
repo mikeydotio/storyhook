@@ -60,6 +60,8 @@ pub enum Action {
         priority: Option<Priority>,
         labels: Vec<String>,
         description: Option<String>,
+        /// Story ids the new story is blocked by (SH-779).
+        blocked_by: Vec<String>,
     },
     MoveStory {
         id: String,

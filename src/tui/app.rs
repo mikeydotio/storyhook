@@ -569,6 +569,7 @@ fn create_story_mutation(
     labels: &[String],
     description: Option<&str>,
     complexity: Option<crate::domain::Complexity>,
+    blocked_by: &[String],
 ) -> Result<(String, Vec<String>), AppError> {
     let response = invoke(
         invoker,
@@ -583,7 +584,7 @@ fn create_story_mutation(
             // SH-175's draft flag has no TUI surface — the story scoped it to
             // the CLI and web dashboard only.
             draft: false,
-            blocked_by: Vec::new(),
+            blocked_by: blocked_by.to_vec(),
         },
     )?;
     match response {
@@ -842,6 +843,7 @@ fn dispatch(
             priority,
             labels,
             description,
+            blocked_by,
         } => {
             let result = create_story_mutation(
                 invoker,
@@ -850,6 +852,7 @@ fn dispatch(
                 &labels,
                 description.as_deref(),
                 complexity,
+                &blocked_by,
             );
             match result {
                 Ok((id, warnings)) => {
@@ -1578,7 +1581,7 @@ mod tests {
     }
 
     fn seed_story(invoker: &dyn Invoker, title: &str) -> String {
-        create_story_mutation(invoker, title, None, &[], None, None)
+        create_story_mutation(invoker, title, None, &[], None, None, &[])
             .unwrap()
             .0
     }
@@ -1621,7 +1624,7 @@ mod tests {
         let invoker = fixture.invoker();
 
         let (id, warnings) =
-            create_story_mutation(&invoker, "Defaulted story", None, &[], None, None)
+            create_story_mutation(&invoker, "Defaulted story", None, &[], None, None, &[])
                 .expect("creating with the default priority succeeds");
 
         assert!(warnings.is_empty(), "no warning expected: {warnings:?}");
@@ -1649,6 +1652,7 @@ mod tests {
             &[],
             None,
             None,
+            &[],
         )
         .expect("creating with a stated priority succeeds");
 
@@ -1665,13 +1669,44 @@ mod tests {
         let invoker = fixture.invoker();
         for level in crate::domain::Complexity::ALL {
             let (id, _) =
-                create_story_mutation(&invoker, "Complexity", None, &[], None, Some(level))
+                create_story_mutation(&invoker, "Complexity", None, &[], None, Some(level), &[])
                     .unwrap();
             let data = DataStore::load(&invoker).unwrap();
             let story = data.find_story(&id).unwrap();
             assert_eq!(story.complexity, level);
             assert!(story.complexity_assessed);
         }
+    }
+
+    /// SH-779: the form's blockers reach the same atomic create the CLI's
+    /// `--blocked-by` does — the edge is on the new story when it is returned.
+    #[test]
+    fn creating_a_story_with_blockers_files_it_blocked() {
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
+        let blocker = seed_story(&invoker, "The blocker");
+
+        let (id, _) = create_story_mutation(
+            &invoker,
+            "Waits",
+            None,
+            &[],
+            None,
+            None,
+            std::slice::from_ref(&blocker),
+        )
+        .expect("creating a blocked story");
+
+        let data = DataStore::load(&invoker).unwrap();
+        let story = data.find_story(&id).unwrap();
+        assert!(
+            story
+                .relationships
+                .iter()
+                .any(|r| r.relation == "blocked-by" && r.other_id == blocker),
+            "{:?}",
+            story.relationships
+        );
     }
 
     // =======================================================================
