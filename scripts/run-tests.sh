@@ -60,6 +60,18 @@ cd "$(dirname "$0")/.."
 
 gate_progress_case_path="${STORYHOOK_GATE_PROGRESS_PATH:-release gate/rust-suite}"
 
+# How many libtest threads may run at once across an `--only` battery's
+# binaries (SH-783). 0 keeps one `cargo test` invocation, which runs the
+# binaries one after another. Checked before the lock below, so a bad value is
+# refused without first waiting behind somebody else's suite.
+thread_budget="${STORYHOOK_TEST_THREAD_BUDGET:-0}"
+case "$thread_budget" in
+('' | *[!0-9]*)
+    echo "run-tests.sh: STORYHOOK_TEST_THREAD_BUDGET must be a non-negative integer, got '$thread_budget'" >&2
+    exit 2
+    ;;
+esac
+
 # THE MACHINE-WIDE `gate` LOCK -- SH-457, decision D4 of
 # `docs/spec/full-auto-engine.md`.
 #
@@ -155,6 +167,10 @@ else
         exec bash scripts/machine-lock.sh gate -- bash "$self" "$@"
 fi
 
+# Consumed, not inherited: a test binary that drives this script as a fixture
+# must take the path its own case chose, not the outer battery's.
+unset STORYHOOK_TEST_THREAD_BUDGET
+
 only_mode=0
 run_docs=1
 only_names=()
@@ -245,6 +261,7 @@ print("\t".join(matches[0]))
 
 storyhook_test_args=()
 lib_packages=()
+lib_names=()
 workspace_test_packages=()
 workspace_test_names=()
 discovery_activity="discovering tests"
@@ -266,6 +283,7 @@ if [ "$only_mode" -eq 1 ] && [ "${#only_names[@]}" -gt 0 ]; then
             workspace_test_names+=("$name")
         else
             lib_packages+=("$pkg")
+            lib_names+=("$name")
         fi
     done
 fi
@@ -412,6 +430,60 @@ gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" pas
 # `tests/battery_completion.rs` covers each executing and discovery path.
 cargo_test_flags=(--no-fail-fast)
 
+# THE POOL -- SH-783. Cargo runs the binaries of one `cargo test` invocation
+# one after another, so a battery took the SUM of its binaries' run times:
+# 330 binaries, about 1,730 s of the gate. With a thread budget, every selected
+# target is first built once here, under the diagnostics adapter, so a compile
+# error is still reported as one (gate-legs.sh --confirm-shared) and no two
+# jobs ever compile at once. Then `scripts/test-pool.py` runs one `cargo test`
+# per binary, admitting binaries while their test threads fit the budget, and
+# writes each binary's output to the terminal and to $log in the order given
+# here -- so the ledger, the verifier's failure summary and doctest attribution
+# see the same shape as the serial run. Doctests stay serial, after it.
+run_pool() {
+    local build_status=0 i common
+    local pool=(python3 "$script_dir/test-pool.py" --budget "$thread_budget" --log "$log" --work "$data_root/pool")
+    if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
+        run_leg cargo test "${cargo_test_flags[@]}" --no-run -p storyhook "${storyhook_test_args[@]}" "$@" || build_status=$?
+    fi
+    i=0
+    while [ "$i" -lt "${#workspace_test_packages[@]}" ]; do
+        run_leg cargo test "${cargo_test_flags[@]}" --no-run -p "${workspace_test_packages[$i]}" --test "${workspace_test_names[$i]}" "$@" || build_status=$?
+        i=$((i + 1))
+    done
+    i=0
+    while [ "$i" -lt "${#lib_packages[@]}" ]; do
+        run_leg cargo test "${cargo_test_flags[@]}" --no-run -p "${lib_packages[$i]}" --lib "$@" || build_status=$?
+        i=$((i + 1))
+    done
+    [ "$build_status" -eq 0 ] || return "$build_status"
+
+    # Where the pool remembers each binary's run time, to start the longest
+    # first next time: shared by every worktree of this clone, like receipts.
+    if common="$(git rev-parse --git-common-dir 2>/dev/null)"; then
+        pool+=(--durations "$common/storyhook/test-durations.tsv")
+    fi
+    if [ -n "$(gate_progress_journal)" ]; then
+        pool+=(--progress "$gate_progress_case_path")
+    fi
+    i=1
+    while [ "$i" -lt "${#storyhook_test_args[@]}" ]; do
+        pool+=(--job storyhook test "${storyhook_test_args[$i]}")
+        i=$((i + 2))
+    done
+    i=0
+    while [ "$i" -lt "${#workspace_test_packages[@]}" ]; do
+        pool+=(--job "${workspace_test_packages[$i]}" test "${workspace_test_names[$i]}")
+        i=$((i + 1))
+    done
+    i=0
+    while [ "$i" -lt "${#lib_packages[@]}" ]; do
+        pool+=(--job "${lib_packages[$i]}" lib "${lib_names[$i]}")
+        i=$((i + 1))
+    done
+    "${pool[@]}" -- "$@"
+}
+
 status=0
 
 if [ "$only_mode" -eq 0 ]; then
@@ -419,6 +491,8 @@ if [ "$only_mode" -eq 0 ]; then
 else
     if [ "${#only_names[@]}" -eq 0 ]; then
         echo "run-tests.sh: --only given with no binaries -- nothing to run" >&2
+    elif [ "$thread_budget" -gt 0 ]; then
+        run_pool "$@" || status=$?
     else
 
         if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
