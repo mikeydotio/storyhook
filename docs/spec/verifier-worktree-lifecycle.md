@@ -260,7 +260,13 @@ always reports is still refused. Diagnosis and sightings:
 attempt filename, pinned tree/base/head, execution state and observed status.
 The supervisor publishes through `verifier_state.save` before the first
 post-exit census. An exec-error pipe distinguishes launch refusal from a command
-that exits 125; signal-range statuses remain unjudged. Neither result-file
+that exits 125; signal-range statuses remain unjudged. Since SH-785 the gate
+leader first execs the class tools, which exec a launcher in
+`verifier-owner.py`; the launcher writes `exec` to the pipe and then execs the
+gate, or writes `failed` and exits 125 if anything stops that exec. The
+supervisor reads the pipe once, without blocking, after the leader exits, and
+counts the gate as launched only for a report of exactly `exec`. An empty report
+means a class tool died before the launcher, which is also a launch failure. Neither result-file
 location reaches the arbitrary gate. Records persist independently of the
 speculative lease and do not alter recovery authority.
 

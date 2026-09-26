@@ -1,6 +1,7 @@
 //! Native provider interruption must release an owned gate only after quiescence.
 use std::path::Path;
 use std::process::Command;
+use storyhook::daemon::block_delivery::{NOTIFY_TERM_GRACE, NOTIFY_TIMEOUT};
 use storyhook_test_support::{TestEnv, git};
 
 #[test]
@@ -45,6 +46,11 @@ fn native_interrupt_quiesces_gate_and_preserves_session() {
         .arg(&worktree)
         .arg(project.slug())
         .env("PYTHONDONTWRITEBYTECODE", "1")
+        // The fixture is never stricter with notify than the daemon is (SH-766).
+        .env(
+            "STORYHOOK_TEST_NOTIFY_BOUND_SECS",
+            (NOTIFY_TIMEOUT + NOTIFY_TERM_GRACE).as_secs().to_string(),
+        )
         .output()
         .unwrap();
     assert!(

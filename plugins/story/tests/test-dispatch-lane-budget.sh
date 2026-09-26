@@ -88,8 +88,8 @@ export STORY_TEST_FAKE_TMUX="$TESTS_DIR/fakes/tmux"
 export STORYHOOK_DISPATCH_SCRIPT="$engine_root/dispatch.sh"
 # Keep synthetic provider processes alive through the bounded fill, then
 # terminate their exact fixture-owned windows even when an assertion fails.
-dispatch_timeout=$(sed -n 's/^pub const DISPATCH_TIMEOUT: Duration = Duration::from_secs(\([0-9]*\));/\1/p' "$TESTS_DIR/../../../src/service/engine.rs")
-[ -n "$dispatch_timeout" ] || fail_test "engine fixture: cannot derive dispatch deadline"
+dispatch_timeout=$(rust_duration_secs src/service/engine.rs DISPATCH_TIMEOUT) \
+  || fail_test "engine fixture: cannot derive dispatch deadline"
 export STORY_TEST_PANE_LIFETIME=$((6 * dispatch_timeout))
 cleanup_engine() {
   local status=$? terminal

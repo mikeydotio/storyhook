@@ -358,6 +358,25 @@ its existing hook enrollment before delegating to the same portable core.
 Receipt format, shared project storage, private preflight state and objects,
 tree-drift refusal, tier ordering, and atomic publication are unchanged.
 
+**The gate runs at the verifier's scheduling class (SH-785).** A gate runs
+for minutes beside agent sessions, hooks and the daemon, and at their class a
+long gate starves them until hooks time out. `verifier-owner.py gate` starts
+every gate session clamped to utility QoS on macOS (`taskpolicy -c utility`,
+which also lowers the I/O tier) and at `nice -n 10` with `ionice -c2 -n7` on
+Linux. Every descendant inherits it: each leg of `make test`, `swift test`,
+an `xcodebuild` build. It never uses `-b` or `-c background`, which confine a
+gate to the efficiency cores. Only the gate session gets the class: its
+supervisor, `merge-watch.sh`, `verify-pr.sh` and the Git and GitHub work keep
+the daemon's own, so the supervisor's reap windows do not stretch with the
+gate's load. The class belongs to the verifier; no project configures it.
+Three limits. Processes launchd starts on the gate's behalf (the simulator's
+`launchd_sim`, `testmanagerd`) are not descendants and do not inherit it.
+darwin-BG (`taskpolicy -b`, launchd `ProcessType = Background`) is not lifted
+by a QoS clamp, so a daemon started that way runs gates lower still — the
+daemon's own class is SH-784's. A platform with no class chosen for it, or a
+host missing a class tool, is refused by name before the gate is marked
+started; the gate never falls back to its caller's class.
+
 SH-683 adds shared lifecycle ownership before verifier preflight and speculative
 execution. Interrupted recovery preserves the checkout, private index and
 objects together; ambiguous writers prevent repair and remain infrastructure
@@ -772,6 +791,34 @@ empty. A started gate with no recorded exit is still an interrupted gate and
 still refused. The mechanism and its decisions are in
 `docs/spec/verifier-worktree-lifecycle.md`, "Exited-session reaping — SH-695",
 and `docs/rca/sh-695-exited-gate-orphan-halt.md`.
+
+### SH-785 — every gate runs at the verifier's scheduling class
+
+The class is described under "The gate" above. How it is applied: the gate
+leader execs the class tools (`/usr/sbin/taskpolicy`, or `nice` and `ionice`
+resolved to absolute paths before the gate is marked started), and they exec a
+launcher in `verifier-owner.py`, which execs the gate. The pid never changes,
+so the recorded gate session is the gate's. The story named two other places
+and both were rejected: the daemon's spawn of `verify-pr.sh` and the exec in
+`merge-watch.sh` would each clamp the reaping supervisor as well.
+
+A plain wrapper in front of the gate argv was also rejected, because it breaks
+SH-702's launch-failure verdict. `taskpolicy` exits 66 for a missing program
+and runs a shebang-less file through `sh`; `nice` exits 127. Each of those
+would have read as a red gate. The launcher keeps Python's `execvpe` as the
+only launch authority, and reports on the SH-702 pipe (see
+`verifier-worktree-lifecycle.md`, "Completed execution and failed cleanup").
+
+The acceptance test starts its gate supervisor under `taskpolicy -c
+background`. After this change the installed verifier clamps storyhook's own
+gate to utility, and no descendant can shed an inherited clamp, so a test that
+only read "utility" would pass with the class deleted. A later `-c` clamp
+replaces an earlier one, though (measured: background then utility reads QoS
+0x11), so under a background supervisor only the verifier's own clamp lifts the
+gate to utility. The two measurements the story asked for (idle gate wall time,
+and interactive latency during a gate, each with and without the class) need
+full gate runs on an idle machine with this change installed. They are filed as
+their own story.
 
 ### SH-651 — queue age follows the latest submission
 

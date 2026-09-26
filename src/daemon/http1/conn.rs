@@ -517,6 +517,13 @@ fn serve_one_connection<F>(stream: TcpStream, limits: Limits, _permit: Permit, h
 where
     F: Fn(Request),
 {
+    // One thread per accepted connection (SH-177), which makes this the
+    // single place that covers every request-serving thread the daemon has,
+    // whichever listener or (for a late tailnet bind) which background
+    // thread created it — the top of `serve_one_connection` is entered
+    // exactly once per thread, unlike the handler closure it calls, which
+    // runs again for each request a kept-alive connection carries (SH-784).
+    super::super::qos::WorkClass::Serving.enter();
     // Every request/response this daemon exchanges is small (see
     // `crate::api::http::MAX_BODY_BYTES`) and answered as one write, so
     // Nagle's algorithm only ever adds latency here, never saves a packet.

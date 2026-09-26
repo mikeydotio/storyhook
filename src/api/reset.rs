@@ -118,6 +118,12 @@ impl ResetController {
             let bus = bus.clone();
             let name = format!("reset-{}", reset.token);
             if let Err(error) = std::thread::Builder::new().name(name).spawn(move || {
+                // Spawned from an already-`Serving` per-connection thread
+                // (`reset::intercept` runs on it), but a reset itself can run
+                // long and is background-shaped work, not the request/
+                // response itself, so it must not inherit the elevated class
+                // (SH-784).
+                crate::daemon::qos::WorkClass::Housekeeping.enter();
                 let entry = controller.inflight.enter();
                 entry.name(crate::daemon::lifecycle::CurrentRequest {
                     request_id: target.token.clone(), command: "story-reset".into(), project: Some(project.clone()), pid: std::process::id(), started_at: controller.env.now(), served_deadline_secs: 600, cwd: controller.env.home().to_path_buf(),

@@ -296,6 +296,15 @@ exit "$status""#,
     assert_eq!(out.stdout, b"child-owned");
 }
 
+/// One run with every routing selector set to a hostile parent value covers
+/// every subset of them. `github_without_credentials` is an unconditional
+/// `env -u` of a fixed list, so the child's environment does not depend on
+/// which selectors the parent set, and
+/// `test_children_cannot_inherit_orchestration_selectors` proves each one is
+/// stripped. The eight-way subset loop this replaces ran the same child eight
+/// times, about four minutes of gate time (SH-783). The unset-parent case runs
+/// in the plugin leg and in
+/// `service::verification::tests::real_submission_receipts_report_verified_heads_in_central_comments`.
 #[test]
 fn sanitized_submission_receipts_match_remote_heads_for_all_parent_selectors() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -313,58 +322,48 @@ fn sanitized_submission_receipts_match_remote_heads_for_all_parent_selectors() {
             "https://github.com/parent/orchestration.git",
         ],
     );
-    let selectors = [
-        ("STORY_BIN", binary.to_str().unwrap()),
-        ("STORYHOOK_GITHUB_AUTHORITY", authority.to_str().unwrap()),
-        (
+    // The fixture requires caller-owned receipt files inside /tmp.
+    let receipts = tempfile::NamedTempFile::new_in("/tmp").unwrap();
+    let out = Command::new("bash")
+        .args([
+            "-c",
+            r#"source "$1"; github_without_credentials bash "$2""#,
+            "fixture",
+        ])
+        .arg(root.join("scripts/github-access.sh"))
+        .arg(root.join("plugins/story/tests/test-submit-head-reporting.sh"))
+        .env(
+            "CARGO_TARGET_DIR",
+            binary.parent().unwrap().parent().unwrap(),
+        )
+        .env("SH713_RECEIPTS_PATH", receipts.path())
+        .env("STORY_BIN", binary)
+        .env("STORYHOOK_GITHUB_AUTHORITY", &authority)
+        .env(
             "STORYHOOK_GITHUB_EXPECTED",
             "github.com/parent/orchestration",
-        ),
-    ];
-    for mask in 0..8 {
-        // The fixture requires caller-owned receipt files inside /tmp.
-        let receipts = tempfile::NamedTempFile::new_in("/tmp").unwrap();
-        let mut command = Command::new("bash");
-        command
-            .args([
-                "-c",
-                r#"source "$1"; github_without_credentials bash "$2""#,
-                "fixture",
-            ])
-            .arg(root.join("scripts/github-access.sh"))
-            .arg(root.join("plugins/story/tests/test-submit-head-reporting.sh"))
-            .env(
-                "CARGO_TARGET_DIR",
-                binary.parent().unwrap().parent().unwrap(),
-            )
-            .env("SH713_RECEIPTS_PATH", receipts.path());
-        for (index, (name, value)) in selectors.iter().enumerate() {
-            command.env_remove(name);
-            if mask & (1 << index) != 0 {
-                command.env(name, value);
-            }
-        }
-        let out = command.output().unwrap();
-        assert!(
-            out.status.success(),
-            "mask={mask}: {}\n{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
+        )
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let records = fs::read_to_string(receipts.path()).unwrap();
+    let records: Vec<serde_json::Value> = records
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 6);
+    for record in records {
+        assert_eq!(record["receipt"]["ok"], true, "{record}");
+        assert_eq!(
+            record["receipt"]["pull_request"]["head_oid"], record["expected_head"],
+            "{record}"
         );
-        let records = fs::read_to_string(receipts.path()).unwrap();
-        let records: Vec<serde_json::Value> = records
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        assert_eq!(records.len(), 6, "mask={mask}");
-        for record in records {
-            assert_eq!(record["receipt"]["ok"], true, "mask={mask}: {record}");
-            assert_eq!(
-                record["receipt"]["pull_request"]["head_oid"], record["expected_head"],
-                "mask={mask}: {record}"
-            );
-            assert_eq!(record["expected_head"].as_str().unwrap().len(), 40);
-        }
+        assert_eq!(record["expected_head"].as_str().unwrap().len(), 40);
     }
 }
 

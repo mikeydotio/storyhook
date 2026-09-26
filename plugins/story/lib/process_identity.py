@@ -1,6 +1,7 @@
 """Read native process incarnation and executable evidence on macOS and Linux."""
 
 import ctypes
+import errno
 import os
 from pathlib import Path
 import sys
@@ -20,7 +21,12 @@ class BsdInfo(ctypes.Structure):
 
 
 def process_identity(pid):
-    """Return kernel-backed identity; an unavailable or dead process raises OSError."""
+    """Return kernel-backed identity; a dead process raises ProcessLookupError.
+
+    Exit, a zombie that its parent has not reaped, and a missing /proc entry
+    all mean the incarnation is gone, so callers can tell exit apart from a
+    probe that failed (any other OSError, such as a denied read).
+    """
     if type(pid) is not int or pid <= 1:
         raise ValueError("invalid process ID")
     if sys.platform == "darwin":
@@ -32,8 +38,10 @@ def process_identity(pid):
         size = ctypes.sizeof(info)
         if lib.proc_pidinfo(pid, 3, 0, ctypes.byref(info), size) != size:
             raise OSError(ctypes.get_errno(), f"cannot read process {pid} incarnation")
-        if info.pid != pid or info.status == 5:
-            raise OSError(f"process {pid} is not live")
+        if info.status == 5:  # SZOMB: exited, awaiting its parent's wait().
+            raise ProcessLookupError(errno.ESRCH, f"process {pid} is not live")
+        if info.pid != pid:
+            raise OSError(f"process {pid} returned the identity of process {info.pid}")
         path = ctypes.create_string_buffer(4096)
         if lib.proc_pidpath(pid, path, len(path)) <= 0:
             raise OSError(ctypes.get_errno(), f"cannot read process {pid} executable")
@@ -41,11 +49,19 @@ def process_identity(pid):
         executable = os.fsdecode(path.value)
     elif sys.platform.startswith("linux"):
         # comm may contain spaces or ')'; stat fields start after its last ')'.
-        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-        if len(fields) < 20 or fields[0] in ("Z", "X"):
-            raise OSError(f"process {pid} is not live")
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        except FileNotFoundError:
+            raise ProcessLookupError(errno.ESRCH, f"process {pid} is not live") from None
+        if fields and fields[0] in ("Z", "X"):
+            raise ProcessLookupError(errno.ESRCH, f"process {pid} is not live")
+        if len(fields) < 20:
+            raise OSError(f"process {pid} has a malformed /proc stat record")
         start = f"linux:{fields[19]}"
-        executable = os.readlink(f"/proc/{pid}/exe")
+        try:
+            executable = os.readlink(f"/proc/{pid}/exe")
+        except FileNotFoundError:
+            raise ProcessLookupError(errno.ESRCH, f"process {pid} exited during identity capture") from None
     else:
         raise OSError(f"process identity is unsupported on {sys.platform}")
     if not os.path.isabs(executable):

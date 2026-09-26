@@ -169,6 +169,52 @@ if sys.argv[1] == 'recover':
         self.assertEqual(result["result"], "tests-failed", result)
         self.assertEqual(result["exit_status"], 125)
 
+    # -- SH-785: the class tools stand between the supervisor and the gate --
+
+    def test_gate_without_a_shebang_is_a_launch_failure(self):
+        """The class tools must not change what counts as a runnable gate.
+
+        taskpolicy's own spawn runs such a file through sh; the supervisor's
+        execvpe refuses it. The gate is argv[0] here, not a `bash -c` script,
+        because bash would run the file itself and hide the difference.
+        """
+        gate = self.fx.root / "no-shebang-gate"
+        gate.write_text("exit 0\n")
+        gate.chmod(0o755)
+        result = self.gate(0, command=[str(gate)])
+        self.assertEqual(result["result"], "infrastructure-failure", result)
+
+    def test_class_tool_that_dies_before_the_launcher_is_a_launch_failure(self):
+        """An empty launch report is not a gate that ran and failed."""
+        self.inject("verifier-owner.py",
+                    'def gate_class(platform=None, path=None, classes=None):\n'
+                    '    return ["/usr/bin/false"]\n')
+        result = self.gate(0)
+        self.assertEqual(result["result"], "infrastructure-failure", result)
+
+    def test_launcher_fault_of_any_kind_is_a_launch_failure(self):
+        """The launcher already reported LAUNCHING; any failure after it must still say so."""
+        self.inject("verifier-owner.py",
+                    'if sys.argv[1:2] == ["launch"]:\n'
+                    '    def _refused_exec(*arguments):\n'
+                    '        raise ValueError("SH-785 injected launcher fault")\n'
+                    '    os.execvpe = _refused_exec\n')
+        result = self.gate(0)
+        self.assertEqual(result["result"], "infrastructure-failure", result)
+        self.assertIn("SH-785 injected launcher fault", result["detail"])
+
+    def test_unclassed_platform_refuses_before_the_gate_starts(self):
+        """No gate runs at a class nobody chose, and the refusal names the platform."""
+        self.inject("verifier-owner.py",
+                    '_chosen_class = gate_class\n'
+                    'def gate_class(platform=None, path=None, classes=GATE_CLASS):\n'
+                    '    return _chosen_class("plan9", path, classes)\n')
+        result = self.gate(0)
+        self.assertEqual(result["result"], "infrastructure-failure", result)
+        self.assertIn("plan9", result["detail"])
+        owner = json.loads(next((self.fx.common / "storyhook/verifier-lifecycle").glob("*.owner")).read_text())
+        self.assertFalse(owner["gate_started"], owner)
+
     def test_terminated_gate_is_unjudged(self):
         """SH-692 still excludes actual command signal termination."""
         result = self.gate(143, script="kill -TERM $$")

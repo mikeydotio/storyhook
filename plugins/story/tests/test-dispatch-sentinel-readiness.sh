@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# plugin-runner: serial -- the late-sentinel negative case races a 2 s wall-clock
+# sentinel against a 5-poll budget; concurrent siblings stretch each poll.
 # SH-231 (SH-227 R2): wait_ready_sentinel itself, the mechanics that don't fit
 # test-dispatch-occupant-gate.sh's before/after framing (that file's Family A
 # and E cover the reason-taxonomy shift; this file covers the two failure

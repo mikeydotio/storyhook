@@ -127,6 +127,7 @@ fn a_subscriber_seeded_with_a_dead_daemon_never_spawns_one() {
         store_path: dir.path().join("store.db"),
         tailnet: None,
         cookie_name: "storyhook_unused".to_string(),
+        owner: None,
     };
 
     let environment = storyhook::env::Environment::at(dir.path());

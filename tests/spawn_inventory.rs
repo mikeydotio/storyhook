@@ -132,7 +132,7 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // unbounded lifetime to inherit. Landed unclassified because SH-690's gate
     // was terminated before this contract ran (SH-692); classified in SH-693.
     ("src/daemon/block_delivery.rs", "\"bash\"", Kind::Waited),
-    ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
+    ("src/daemon/launchd.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
     // Centralized verification waits for bounded bash orchestration commands.

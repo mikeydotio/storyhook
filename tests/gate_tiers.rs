@@ -690,3 +690,122 @@ fn no_bump_call_site_uses_the_subcommand_that_gathers() {
         );
     }
 }
+
+/// The suites in `files` (path, text) that no runner in `files` names.
+///
+/// A suite is a `plugins/story/tests/test*.py` with a `__main__` entry. A
+/// runner is a plugin-leg wrapper (`plugins/story/tests/test-*.sh`) or a Rust
+/// test source under `tests/`, and only its code counts: a comment that names
+/// a suite runs nothing. Opt-in `probe_*` and `eval_*` tools are not suites:
+/// they contact real providers on purpose and are run by hand.
+fn unreached_plugin_suites(files: &[(String, String)]) -> Vec<String> {
+    let runners: Vec<String> = files
+        .iter()
+        .filter(|(path, _)| {
+            (path.starts_with("plugins/story/tests/test-") && path.ends_with(".sh"))
+                || (path.starts_with("tests/") && path.ends_with(".rs"))
+        })
+        .map(|(_, text)| {
+            text.lines()
+                .filter(|line| {
+                    let line = line.trim_start();
+                    !line.starts_with("//") && !line.starts_with('#')
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect();
+    files
+        .iter()
+        .filter_map(|(path, text)| {
+            let name = path.strip_prefix("plugins/story/tests/")?;
+            (name.starts_with("test")
+                && name.ends_with(".py")
+                && !name.contains('/')
+                && text.contains("__main__")
+                && !runners.iter().any(|runner| runner.contains(name)))
+            .then(|| path.clone())
+        })
+        .collect()
+}
+
+/// Every plugin Python suite reaches a gate runner (SH-766).
+///
+/// The plugin leg runs only `test-*.sh` wrappers, so a Python suite that no
+/// wrapper or Rust test names never runs and proves nothing.
+/// `test-dropped-cleanup-pane.py` covered the dropped-cleanup helper that way
+/// from its first commit until SH-766 found it. The scan reads tracked files,
+/// the artifact that ships, never a list copied into this test.
+#[test]
+fn every_plugin_python_suite_is_named_by_a_gate_runner() {
+    let listed = Command::new("git")
+        .args(["ls-files", "-z", "--", "plugins/story/tests", "tests"])
+        .current_dir(checkout())
+        .output()
+        .expect("git ls-files must run in the checkout");
+    assert!(listed.status.success(), "git ls-files failed: {listed:?}");
+    let files: Vec<(String, String)> = String::from_utf8(listed.stdout)
+        .expect("tracked paths are UTF-8")
+        .split('\0')
+        .filter(|path| path.ends_with(".py") || path.ends_with(".sh") || path.ends_with(".rs"))
+        .map(|path| {
+            let text = std::fs::read_to_string(checkout().join(path))
+                .unwrap_or_else(|error| panic!("{path} must be readable: {error}"));
+            (path.to_string(), text)
+        })
+        .collect();
+    assert!(
+        files
+            .iter()
+            .any(|(path, _)| path == "plugins/story/tests/test-agent-identity.py"),
+        "the plugin suites were not read; this scan proved nothing"
+    );
+    let orphans = unreached_plugin_suites(&files);
+    assert!(
+        orphans.is_empty(),
+        "plugin Python suites that no gate runner names never run; add a \
+         plugins/story/tests/test-*.sh wrapper or a Rust test for each:\n{}",
+        orphans.join("\n")
+    );
+}
+
+/// Positive control for [`unreached_plugin_suites`]: it flags an unnamed
+/// suite and accepts a named suite, a helper module and an opt-in probe.
+#[test]
+fn the_plugin_suite_scan_flags_an_unnamed_suite_only() {
+    let file = |path: &str, text: &str| (path.to_string(), text.to_string());
+    let files = [
+        file(
+            "plugins/story/tests/test-orphan.py",
+            "if __name__ == \"__main__\":\n",
+        ),
+        file(
+            "plugins/story/tests/test-named.py",
+            "if __name__ == \"__main__\":\n",
+        ),
+        file(
+            "plugins/story/tests/test_by_rust.py",
+            "unittest.main() # __main__\n",
+        ),
+        file("plugins/story/tests/test_module.py", "def helper(): pass\n"),
+        file(
+            "plugins/story/tests/probe_live.py",
+            "if __name__ == \"__main__\":\n",
+        ),
+        file(
+            "plugins/story/tests/test-named.sh",
+            "python3 \"$TESTS_DIR/test-named.py\"\n",
+        ),
+        file("plugins/story/tests/lib.sh", "test-orphan.py\n"),
+        file("plugins/story/tests/test-other.sh", "# test-orphan.py\n"),
+        file("tests/fence.rs", "/// `test-orphan.py` never ran\n"),
+        file(
+            "tests/support/runner.rs",
+            "\"plugins/story/tests/test_by_rust.py\"\n",
+        ),
+    ];
+    assert_eq!(
+        unreached_plugin_suites(&files),
+        ["plugins/story/tests/test-orphan.py"]
+    );
+}

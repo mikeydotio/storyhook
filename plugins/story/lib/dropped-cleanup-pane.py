@@ -13,6 +13,7 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("pane_processes", Path(__file__).with_name("stop-dispatch-pane.py"))
 proc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(proc)
+import probe_budget  # noqa: E402  (loaded by proc; the same operation deadline)
 
 
 def save(path, record):
@@ -36,8 +37,7 @@ def panes(target):
         return []
     command = ["tmux", "-S", target["socket"], "list-panes", "-a", "-F",
                "#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}"]
-    output = subprocess.run(command, capture_output=True, text=True, timeout=5,
-                            pass_fds=proc.inherited_fds())
+    output = probe_budget.run(command, capture_output=True, text=True, pass_fds=proc.inherited_fds())
     if output.returncode:
         if not output.stdout and output.stderr.strip() == f"no server running on {target['socket']}":
             return []
@@ -52,17 +52,6 @@ def require_pane(target):
     if panes(target) != [expected]:
         raise proc.CleanupError("cleanup pane identity changed")
     proc.require_launch_start(int(target["pid"]), target["start"])
-
-
-def signal_known(owned, sig):
-    """Never send signals to a PID whose native incarnation differs."""
-    table = proc.processes()
-    for pid, identity in owned.items():
-        if proc.same_process(table, pid, identity):
-            try:
-                os.kill(pid, sig)
-            except ProcessLookupError:
-                pass  # The next census proves the process has exited.
 
 
 def stop(target, path):
@@ -81,13 +70,13 @@ def stop(target, path):
     try:
         if record["phase"] == "census":
             require_pane(target)
-            signal_known(owned, signal.SIGSTOP)
+            proc.signal_known(owned, signal.SIGSTOP)
             root = int(target["pid"])
             for _ in range(16):
                 table = proc.processes()
-                roots = {root} | {pid for pid, identity in owned.items() if proc.same_process(table, pid, identity)}
+                known = {pid for pid, identity in owned.items() if proc.alive(pid, identity)}
+                roots = {root} | known
                 tree = set().union(*(proc.descendants(table, pid) for pid in roots))
-                known = {pid for pid, identity in owned.items() if proc.same_process(table, pid, identity)}
                 new = tree - known
                 if not new:
                     break
@@ -99,7 +88,7 @@ def stop(target, path):
                     record["owned"] = owned
                     save(path, record)
                     # Evidence reaches disk before a signal can orphan or freeze a writer.
-                    if proc.same_process(proc.processes(), pid, identity):
+                    if proc.alive(pid, identity):
                         os.kill(pid, signal.SIGSTOP)
             else:
                 raise proc.CleanupError("cleanup process closure did not stabilize")
@@ -115,31 +104,29 @@ def stop(target, path):
                 # Kernel identity is checked before killing the window, as well as each PID.
                 proc.require_launch_start(int(target["pid"]), target["start"])
                 proc.run("tmux", "-S", target["socket"], "kill-window", "-t", target["window"])
-            signal_known(owned, signal.SIGKILL)
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                table = proc.processes()
-                if not any(proc.same_process(table, pid, identity) for pid, identity in owned.items()):
-                    break
+            proc.signal_known(owned, signal.SIGKILL)
+            # Observe before judging: a slow pass must not turn death into survival.
+            while any(proc.alive(pid, identity) for pid, identity in owned.items()):
+                if probe_budget.remaining() <= 0:
+                    raise proc.CleanupError("captured cleanup writers survived termination")
                 time.sleep(0.05)
-            else:
-                raise proc.CleanupError("captured cleanup writers survived termination")
             if panes(target):
                 raise proc.CleanupError("story window remains after cleanup")
             record["phase"] = "complete"
             save(path, record)
-        if panes(target) or any(proc.same_process(proc.processes(), pid, identity) for pid, identity in owned.items()):
+        if panes(target) or any(proc.alive(pid, identity) for pid, identity in owned.items()):
             raise proc.CleanupError("completed cleanup evidence no longer proves absence")
     finally:
         # Settled errors preserve a usable session; retry must freeze a fresh closure.
         if record["phase"] == "census":
-            signal_known(owned, signal.SIGCONT)
+            proc.signal_known(owned, signal.SIGCONT)
 
 
 if __name__ == "__main__":
     try:
         target = json.loads(sys.argv[1])
-        stop(target, Path(sys.argv[2]))
+        with probe_budget.operation():
+            stop(target, Path(sys.argv[2]))
     except (proc.CleanupError, OSError, ValueError, KeyError, IndexError, subprocess.TimeoutExpired) as error:
         print(json.dumps({"ok": False, "error": str(error)}))
         sys.exit(1)

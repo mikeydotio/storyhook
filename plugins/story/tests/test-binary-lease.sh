@@ -58,14 +58,18 @@ case "$(basename "$(dirname "$outer_resolved")")" in
   *) fail_test "lease: this test's lease is not owned by this test's pid $$: $outer_resolved" ;;
 esac
 
-before="$(ls -1d "$lease_root"/*/ 2>/dev/null | wc -l | tr -d ' ')"
-nested_resolved="$(bash -c 'source "$1"; command -v story' _ "$TESTS_DIR/lib.sh")"
-after="$(ls -1d "$lease_root"/*/ 2>/dev/null | wc -l | tr -d ' ')"
+# The nested instance counts the entries named for its OWN pid, while it is
+# still alive to own them. Counting the whole root before and after raced every
+# concurrent suite and pooled sibling script that leases the same artifact or
+# sweeps a dead lease in between (SH-783); a lease this instance minted is
+# named `<its pid>-<nonce>`, and no sweeper takes a live owner's entry.
+minted_file="$(mktemp /tmp/story-test-lease-minted.XXXXXX)"
+_TMP_REPOS+=("$minted_file")
+nested_resolved="$(bash -c 'source "$1"; command -v story; ls -1d "$2/$$"-*/ 2>/dev/null | wc -l | tr -d " " >"$3"' \
+  _ "$TESTS_DIR/lib.sh" "$lease_root" "$minted_file")"
 assert_eq "$nested_resolved" "$outer_resolved" \
   "lease: a nested instance sharing the home resolves the OUTER lease, not one of its own"
-# Counted before and after rather than asserted equal to 1: concurrent suites
-# lease the same artifact and their entries sit in the same root.
-assert_eq "$after" "$before" \
+assert_eq "$(cat "$minted_file")" "0" \
   "lease: a nested instance minted no lease entry of its own"
 
 # A nested instance runs whichever `story` its caller arranged, and a caller

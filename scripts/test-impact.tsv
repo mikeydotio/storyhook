@@ -11,6 +11,7 @@ block_interrupt	:(glob)plugins/story/lib/*
 block_interrupt	plugins/story/bin/story.sh
 block_interrupt	scripts/gate-progress.sh
 block_interrupt	scripts/machine-lock.sh
+block_interrupt	scripts/tests/load_grace.py
 block_interrupt	tests/support/block_interrupt.py
 block_interrupt	tests/support/interrupt_capture.py
 block_notice_paths	:(glob)**/*
@@ -137,6 +138,9 @@ obviation_startup	:(glob)**/*
 orphan_check	:(glob)**/*
 plugin_contract	:(glob)**/*
 plugin_install	:(glob)**/*
+plugin_runner	plugins/story/tests/run-tests.sh
+plugin_runner	scripts/gate-progress.sh
+plugin_runner	scripts/test-env.sh
 plugin_skill_determinism	:(glob)**/*
 portable_receipt	:(glob)scripts/*
 portable_receipt	build.rs

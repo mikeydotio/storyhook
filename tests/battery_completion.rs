@@ -20,6 +20,12 @@
 //! which execute nothing — must stay exactly as they are.
 //!
 //! The workspace regressions cover package resolution and ambiguous target names.
+//!
+//! The pooled cases (SH-783) drive the same fixture with
+//! `STORYHOOK_TEST_THREAD_BUDGET` set: binaries that can only pass side by side
+//! prove the pool runs them together, the per-binary blocks and the ledger
+//! prove each one's output still arrives whole and in order, and a cancelled
+//! run proves the pool's binaries go with it.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -144,6 +150,10 @@ impl Fixture {
             .env_remove("STORYHOOK_GATE_PROGRESS")
             .env_remove("STORYHOOK_GATE_PROGRESS_PATH")
             .env_remove("STORYHOOK_COMPILER_DIAGNOSTICS")
+            .env_remove("STORYHOOK_TEST_THREAD_BUDGET")
+            // The outer battery sets it; a case about the runner must see only
+            // what the runner itself sets.
+            .env_remove("PYTHONDONTWRITEBYTECODE")
             // A jobserver inherited from the `make` running this suite names
             // descriptors this child does not have.
             .env_remove("MAKEFLAGS")
@@ -304,4 +314,214 @@ esac
             "a discovery call executes nothing and must not change: {line}"
         );
     }
+}
+
+/// A test file whose one case passes only while the binary named `other`
+/// runs at the same time: it announces itself in `$BARRIER_DIR`, then waits
+/// for `other` to do the same.
+fn meets(me: &str, other: &str) -> String {
+    format!(
+        r#"#[test]
+fn {me}_meets_{other}() {{
+    let dir = std::path::PathBuf::from(std::env::var("BARRIER_DIR").unwrap());
+    std::fs::write(dir.join("{me}"), "").unwrap();
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !dir.join("{other}").exists() {{
+        assert!(std::time::Instant::now() < give_up, "{me} never ran beside {other}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }}
+}}
+"#
+    )
+}
+
+/// Each binary's `test … ok|FAILED` lines, keyed by the `Running` line they
+/// follow, in the order the `Running` lines appeared.
+fn blocks(output: &str) -> Vec<(String, Vec<String>)> {
+    let mut blocks: Vec<(String, Vec<String>)> = Vec::new();
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("     Running tests/") {
+            let name = rest.split(".rs").next().unwrap_or(rest).to_string();
+            blocks.push((name, Vec::new()));
+        } else if (line.starts_with("test ")
+            && (line.ends_with(" ok") || line.ends_with(" FAILED")))
+            && let Some((_, cases)) = blocks.last_mut()
+        {
+            cases.push(line.to_string());
+        }
+    }
+    blocks
+}
+
+/// SH-783: with a thread budget the battery's binaries run at the same time,
+/// and each binary's output still reaches the terminal and the ledger whole,
+/// in the order the battery named them, whatever order they finished in.
+#[test]
+fn a_pooled_battery_runs_its_binaries_together_and_keeps_each_ones_output_whole() {
+    let fixture = Fixture::new();
+    fixture.write("tests/alpha.rs", &meets("alpha", "beta"));
+    fixture.write("tests/beta.rs", &meets("beta", "alpha"));
+    // Finishes last, so a report in completion order would move its block.
+    fixture.write(
+        "tests/first.rs",
+        "#[test]\nfn first_fails() {\n    std::thread::sleep(std::time::Duration::from_secs(2));\n    \
+         panic!(\"the first binary of the battery is red on purpose\");\n}\n",
+    );
+    let barrier = fixture.path().join("barrier");
+    fs::create_dir(&barrier).expect("fixture: the barrier dir");
+
+    let out = fixture
+        .run_tests(&[
+            "--only-no-doc",
+            "alpha",
+            "beta",
+            "first",
+            "second",
+            "--",
+            "--test-threads=1",
+        ])
+        .env("STORYHOOK_TEST_THREAD_BUDGET", "4")
+        .env("BARRIER_DIR", &barrier)
+        .output()
+        .expect("running the battery");
+    let output = combined(&out);
+
+    assert_eq!(
+        out.status.code(),
+        Some(101),
+        "a red binary makes the pooled battery fail as cargo would\n{output}"
+    );
+    assert_eq!(
+        blocks(&String::from_utf8_lossy(&out.stdout)),
+        [
+            ("alpha".into(), vec!["test alpha_meets_beta ... ok".into()]),
+            ("beta".into(), vec!["test beta_meets_alpha ... ok".into()]),
+            ("first".into(), vec!["test first_fails ... FAILED".into()]),
+            ("second".into(), vec!["test second_passes ... ok".into()]),
+        ],
+        "every binary ran, alpha and beta at the same time, and each one's \
+         output is whole and in the battery's order\n{output}"
+    );
+    let ledger = fixture.ledger();
+    for row in [
+        "alpha\talpha_meets_beta\tPASS",
+        "beta\tbeta_meets_alpha\tPASS",
+        "first\tfirst_fails\tFAIL",
+        "second\tsecond_passes\tPASS",
+    ] {
+        assert!(ledger.contains(row), "ledger lacks {row:?}\n{ledger}");
+    }
+}
+
+/// Whether `pid` is still running rather than gone or a zombie.
+fn pid_running(pid: &str) -> bool {
+    let out = Command::new("ps")
+        .args(["-o", "state=", "-p", pid])
+        .output()
+        .expect("running ps");
+    let state = String::from_utf8_lossy(&out.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
+}
+
+/// SH-783: cancelling a pooled battery through its gate lock takes the test
+/// binaries it is running with it, as the serial run's cancellation does
+/// (`tests/gate_lock.rs`).
+#[test]
+fn terminating_a_pooled_battery_reaps_the_binaries_it_is_running() {
+    let fixture = Fixture::new();
+    let pids = fixture.path().join("pids");
+    fs::create_dir(&pids).expect("fixture: the pid dir");
+    for name in ["slow_a", "slow_b"] {
+        fixture.write(
+            &format!("tests/{name}.rs"),
+            &format!(
+                r#"#[test]
+fn {name}_waits() {{
+    let dir = std::path::PathBuf::from(std::env::var("PID_DIR").unwrap());
+    std::fs::write(dir.join("{name}"), std::process::id().to_string()).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(300));
+}}
+"#
+            ),
+        );
+    }
+    let mut runner = storyhook_test_support::ChildGuard::spawn(
+        fixture
+            .run_tests(&[
+                "--only-no-doc",
+                "slow_a",
+                "slow_b",
+                "--",
+                "--test-threads=1",
+            ])
+            .env("STORYHOOK_TEST_THREAD_BUDGET", "4")
+            .env("PID_DIR", &pids)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()),
+    )
+    .expect("spawning the battery");
+
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(240);
+    let files = [pids.join("slow_a"), pids.join("slow_b")];
+    while !files.iter().all(|file| file.exists()) {
+        assert!(
+            std::time::Instant::now() < give_up,
+            "both pooled binaries never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let test_pids: Vec<String> = files
+        .iter()
+        .map(|file| fs::read_to_string(file).expect("a pid"))
+        .collect();
+
+    let status = Command::new("kill")
+        .args(["-TERM", &runner.pid().to_string()])
+        .status()
+        .expect("signalling the battery");
+    assert!(status.success());
+    runner.wait_within(std::time::Duration::from_secs(120), || {
+        "the pooled battery did not exit after SIGTERM".into()
+    });
+
+    let survivors: Vec<&String> = test_pids.iter().filter(|pid| pid_running(pid)).collect();
+    assert!(
+        survivors.is_empty(),
+        "test binaries outlived their cancelled battery: {survivors:?}"
+    );
+}
+
+/// SH-783: a battery never writes Python bytecode into the checkout it tests.
+/// A `__pycache__/` appearing mid-run is an untracked package file, which
+/// makes every later cargo invocation rerun build.rs -- one per binary under
+/// the pool.
+#[test]
+fn a_battery_never_writes_python_bytecode_into_its_checkout() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.path().join("pymodules")).expect("fixture: pymodules/");
+    fixture.write("pymodules/sh783_probe.py", "VALUE = 1\n");
+    fixture.write(
+        "tests/pyimport.rs",
+        r#"#[test]
+fn imports_a_checkout_module() {
+    let out = std::process::Command::new("python3")
+        .args(["-c", "import sys; sys.path.insert(0, 'pymodules'); import sh783_probe"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+"#,
+    );
+
+    let out = fixture
+        .run_tests(&["--only-no-doc", "pyimport", "--", "--test-threads=1"])
+        .output()
+        .expect("running the battery");
+
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(
+        !fixture.path().join("pymodules/__pycache__").exists(),
+        "the battery wrote Python bytecode into the checkout it tests"
+    );
 }

@@ -40,7 +40,11 @@
 //!
 //! Every shim is spawned with the **exact argv shape**
 //! [`spawn_child`](../src/daemon/lifecycle.rs) builds for a real daemon:
-//! `--store-path <p> daemon --serve --port <n>`. That is deliberate — it
+//! `--store-path <p> daemon --serve --port <n> --owner <o>` (SH-784 added the
+//! trailing `--owner`; the detection script matches on the substring
+//! `" daemon --serve"` alone, so it is immune either way — this fixture keeps
+//! pace only so it stays a faithful positive control, not because the script
+//! needs it to). That is deliberate — it
 //! makes every case here double as the positive control the plan calls for:
 //! if the script's pattern ever stops matching production's actual shape
 //! (the SH-113 hazard), a refusal that should fire does not, and the test
@@ -303,7 +307,7 @@ fn write_executable(path: &Path, body: &str) {
 }
 
 /// The argv shape `spawn_child` (`src/daemon/lifecycle.rs`) actually builds:
-/// `<exe> --store-path <store> daemon --serve --port <port>`.
+/// `<exe> --store-path <store> daemon --serve --port <port> --owner <owner>`.
 ///
 /// `store` decides which of the script's two classes the process falls into,
 /// and every caller here has to mean one of them (SH-493). A store that
@@ -321,6 +325,8 @@ fn spawn_matching(exe: &Path, store: &Path) -> ChildGuard {
             "--serve",
             "--port",
             "0",
+            "--owner",
+            "fork-test-build",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -533,11 +539,40 @@ fn a_process_that_exits_on_its_own_within_the_grace_period_is_never_reported() {
         "a self-exiting shim must not fail the postlude\nstderr: {err}"
     );
     assert!(
-        err.trim().is_empty(),
+        without_the_abandoned_class(&err).trim().is_empty(),
         "the postlude must say nothing about a process that exited on its own — \
          only a process this run actually had to signal is a leak\nstderr: {err}"
     );
     drop(guard);
+}
+
+/// `stderr` without the abandoned-store report, which is about every storeless
+/// daemon this user owns, not about this fixture (SH-493 made that class
+/// machine-wide on purpose). Another test binary running beside this one in
+/// the pooled gate, another worktree's suite, or an agent's targeted run can
+/// own one, and collecting it is the script working: SH-783's first pooled
+/// gate failed this file's silence claim on exactly that. What remains must
+/// still be silent, so a report about THIS checkout's processes fails as
+/// before.
+fn without_the_abandoned_class(err: &str) -> String {
+    let mut kept = Vec::new();
+    let mut in_survivor_table = false;
+    for line in err.lines() {
+        if let Some(message) = line.strip_prefix("check-no-orphan-servers: ") {
+            in_survivor_table = message.starts_with("abandoned-store daemon(s) survived SIGKILL");
+            if in_survivor_table
+                || message.contains("serving a store that no longer exists")
+                || message.contains("nothing here depends on them being gone")
+            {
+                continue;
+            }
+        } else if in_survivor_table {
+            // `report`'s `ps` table under the survivor heading.
+            continue;
+        }
+        kept.push(line);
+    }
+    kept.join("\n")
 }
 
 /// The preflight is unchanged: no grace period, no killing, refuse and name
@@ -995,22 +1030,44 @@ fn a_daemon_on_a_vanished_store_is_collected_wherever_its_binary_lives() {
 /// makes this run's verification a lie. This class is provably nobody's, and
 /// there can be hundreds of them at once from other worktrees — failing a run
 /// over a mess it did not make is the SH-306 pressure exactly.
+///
+/// Each phase gets its OWN abandoned daemon (SH-783). With one daemon shared
+/// by all three, the preflight collected it and `postlude` and `check` then
+/// scanned nothing, so their half of this claim was never exercised. Every
+/// daemon starts on a store that exists, so an earlier phase's scan leaves it
+/// alone; its store is removed only just before its own phase runs. Age is
+/// `ps`'s view of the process, not of the store, so the one shared wait still
+/// makes all three old enough.
 #[test]
 fn collecting_an_abandoned_daemon_never_fails_the_phase() {
     let _serial = serialize_aged_global_process_case();
     let fixture = Fixture::new_while_aged_global_process_is_leased();
     let packaged = fixture.helper("package/story", SLEEPS_UNTIL_KILLED);
-    let child = spawn_matching(&packaged, &fixture.missing_store());
-    let _guard = child;
+    let phases = ["preflight", "postlude", "check"];
+    let daemons: Vec<(ChildGuard, PathBuf)> = phases
+        .iter()
+        .map(|phase| {
+            let store = fixture.path().join(format!("{phase}-store.db"));
+            std::fs::write(&store, b"removed just before its phase scans")
+                .expect("fixture: creating a store that exists until its phase");
+            (spawn_matching(&packaged, &store), store)
+        })
+        .collect();
     wait_until_old_enough();
 
-    for phase in ["preflight", "postlude", "check"] {
+    for (phase, (daemon, store)) in phases.iter().zip(&daemons) {
+        std::fs::remove_file(store).expect("fixture: abandoning this phase's daemon");
         let out = fixture.run_while_aged_global_process_is_leased(&[phase]);
+        let err = stderr(&out);
         assert!(
             out.status.success(),
             "`{phase}` must collect an abandoned daemon rather than refuse over \
-             one\nstderr: {}",
-            stderr(&out)
+             one\nstderr: {err}"
+        );
+        assert!(
+            !pid_running(daemon.pid()),
+            "`{phase}` must collect the abandoned daemon it found, not merely \
+             succeed\nstderr: {err}"
         );
     }
 

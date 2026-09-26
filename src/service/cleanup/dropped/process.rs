@@ -5,6 +5,12 @@ use crate::store::{DroppedCleanup, Store};
 use std::process::Command;
 use std::time::Duration;
 
+/// How long `dropped-cleanup-pane.py` may run before it is killed, with no
+/// SIGTERM first. The helper's per-operation probe budget
+/// (`plugins/story/lib/probe_budget.py`) must end well inside it, or the kill
+/// could land while the helper holds processes frozen.
+const CLEANUP_HELPER_TIMEOUT: Duration = Duration::from_secs(45);
+
 /// Pins a live pane incarnation before cleanup can reserve or signal it.
 pub(super) fn capture(report: &ResourceReport) -> Result<Option<String>, AppError> {
     let Some(pane) = &report.pane else {
@@ -74,6 +80,10 @@ pub(super) fn stop<S: Store>(
             "workspace_ownership.py",
             include_str!("../../../../plugins/story/lib/workspace_ownership.py"),
         ),
+        (
+            "probe_budget.py",
+            include_str!("../../../../plugins/story/lib/probe_budget.py"),
+        ),
     ] {
         std::fs::write(bundle.path().join(name), source)?;
     }
@@ -92,7 +102,7 @@ pub(super) fn stop<S: Store>(
     workspace.dispatch_command(&mut command);
     let output = crate::process::run_captured_quiescent(
         command,
-        Duration::from_secs(45),
+        CLEANUP_HELPER_TIMEOUT,
         crate::process::TerminationPolicy::Kill,
     )
     .map_err(|e| AppError::Validation(format!("dropped pane cleanup uncertain: {}", e.detail())))?;
@@ -110,4 +120,22 @@ pub(super) fn stop<S: Store>(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CLEANUP_HELPER_TIMEOUT;
+
+    /// The cleanup helper's probe budget leaves a third of its kill bound for
+    /// interpreter start and exit under load, so its own cleanup resumes any
+    /// frozen process before the kill, which has no SIGTERM first (SH-766).
+    #[test]
+    fn helper_probe_budget_ends_inside_the_cleanup_bound() {
+        let budget = crate::process::plugin_probe_budget();
+        assert!(
+            budget * 3 <= CLEANUP_HELPER_TIMEOUT * 2,
+            "probe budget {budget:?} is more than two thirds of CLEANUP_HELPER_TIMEOUT \
+             {CLEANUP_HELPER_TIMEOUT:?}"
+        );
+    }
 }

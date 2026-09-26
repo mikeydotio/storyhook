@@ -149,6 +149,15 @@ STORYHOOK_MAKE_NO_EXEC := $(strip \
 # symptom of overshooting is a stall, not a failure. The lever is threads, never
 # scope.
 #
+# SH-783 did: the bound is now per battery, not per binary. Cargo ran one
+# invocation's binaries one after another, so four threads meant one binary at a
+# time and a leg took the sum of its binaries. `scripts/run-rust-battery.sh`
+# sets STORYHOOK_TEST_THREAD_BUDGET=8, the most test threads of ALL the
+# battery's binaries in flight at once (`scripts/test-pool.py`), and
+# `--test-threads=4` became each binary's own cap within it. Measured at 16 the
+# core battery failed on seconds-scale production bounds under load, which is
+# why it is 8 (`docs/spec/test-audit.md`).
+#
 # `gate-receipt.sh` brackets the run the way check-no-orphan-servers does, and
 # the two phases are not interchangeable (SH-306). The preflight ENROLS this
 # clone -- it sets core.hooksPath so git's own pre-push hook enforces the gate,

@@ -46,10 +46,17 @@ pub fn start(env: &Environment, port: Option<u16>) -> Result<DaemonInfo, AppErro
     lifecycle::start(&env)
 }
 
-/// Gracefully replaces the running daemon while preserving its loopback port.
+/// Gracefully replaces the running daemon, preferring its loopback port.
 ///
 /// The lifecycle layer owns serialization, draining, and replacement health;
-/// this command surface deliberately adds no force or port override.
+/// this command surface deliberately adds no force or port override. The
+/// preference is a guarantee only for a forked replacement, which carries an
+/// explicit `--port`; a launchd-owned replacement cannot (its plist's
+/// `ProgramArguments` are fixed at install time), and instead recovers the
+/// port on a best-effort basis from `bind_preferred`'s own port-hint sidecar
+/// (SH-784's council-amended design, verdict on `story show SH-784`) — a
+/// port taken by something else in the interim, or a store's first-ever
+/// bind, falls back to the ordinary preferred/OS-assigned resolution.
 pub fn restart(env: &Environment) -> Result<lifecycle::RestartedDaemon, AppError> {
     lifecycle::restart(env)
 }
@@ -138,17 +145,47 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
     Ok(with_reclaimable(
         env,
         format!(
-            "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}\n{}\n{}",
+            "storyhook daemon {} running at {} (PID {}){}{}\n\n{}\n{}\n{}\n{}",
             info.display_version(),
             info.local_url(),
             info.pid,
             staleness,
+            describe_owner(&info),
             lifecycle::describe_paths(env),
             crate::daemon::backup::describe(env),
             crate::daemon::backup::describe_maintenance(env),
             agent::report(env)
         ),
     ))
+}
+
+/// Renders `info`'s [`lifecycle::DaemonOwner`] for `status` (SH-784): how
+/// this daemon came to exist, and — since a requested `WorkClass::Serving`
+/// class only ever has an observable effect on a launchd-owned daemon,
+/// measured on this story — what that means for its serving threads. Omitted
+/// entirely for `owner: None`, the shape a pre-SH-784 build's portfile always
+/// has: there is nothing true to say about a fact an older build never
+/// recorded, the same reasoning [`DaemonInfo::owner`]'s own doc gives.
+fn describe_owner(info: &DaemonInfo) -> String {
+    match &info.owner {
+        None => String::new(),
+        Some(lifecycle::DaemonOwner::Launchd { label }) => format!(
+            "\nowner        launchd agent ({label}) — serving threads run at USER_INITIATED"
+        ),
+        Some(lifecycle::DaemonOwner::Forked { parent_pid, reason }) => {
+            let why = match reason {
+                lifecycle::ForkReason::TestBuild => "a test build".to_string(),
+                lifecycle::ForkReason::NoAgentInstalled => {
+                    "no launchd agent installed — run `story daemon install`".to_string()
+                }
+                lifecycle::ForkReason::Manual => "started manually".to_string(),
+            };
+            format!(
+                "\nowner        forked by PID {parent_pid} ({why}) — serving threads run at \
+                 their inherited default class"
+            )
+        }
+    }
 }
 
 /// `status`'s body plus the one line naming reclaimable runtime directories,
@@ -436,9 +473,7 @@ fn apply(
 /// — never [`agent::LAUNCHD_LABEL`] directly — so a non-default store's install
 /// can never boot out the default store's running agent.
 fn bootstrap_via_launchctl(plan: &Plan) -> Result<Option<String>, AppError> {
-    bootstrap_with_launchctl(plan, &|args| {
-        std::process::Command::new("launchctl").args(args).output()
-    })
+    bootstrap_with_launchctl(plan, &super::launchd::run)
 }
 
 fn bootstrap_with_launchctl(
@@ -575,22 +610,14 @@ fn uninstall_with(
 /// `bootout` this store's own agent — never always the default store's.
 fn bootout_via_launchctl(label: &str) -> Option<String> {
     let target = format!("gui/{}/{label}", user_id());
-    bootout_warning(
-        &target,
-        std::process::Command::new("launchctl")
-            .args(["bootout", &target])
-            .output(),
-    )
+    bootout_warning(&target, super::launchd::run(&["bootout", &target]))
 }
-
-/// launchctl maps its BOOTSTRAP_UNKNOWN_SERVICE result to process status 113.
-const LAUNCHCTL_SERVICE_NOT_FOUND: i32 = 113;
 
 fn bootout_warning(target: &str, result: std::io::Result<Output>) -> Option<String> {
     let output = match result {
         Ok(output)
             if output.status.success()
-                || output.status.code() == Some(LAUNCHCTL_SERVICE_NOT_FOUND) =>
+                || output.status.code() == Some(super::launchd::LAUNCHCTL_SERVICE_NOT_FOUND) =>
         {
             return None;
         }
@@ -725,6 +752,59 @@ mod tests {
             reported.contains(&env.daemon_file().display().to_string()),
             "a status that does not say where it looked is unactionable: {reported}"
         );
+    }
+
+    /// A minimal, otherwise-inert `DaemonInfo` for exercising `describe_owner`
+    /// directly — the fields besides `owner` are fixed placeholders `describe_owner`
+    /// never reads.
+    fn info_with_owner(owner: Option<lifecycle::DaemonOwner>) -> DaemonInfo {
+        DaemonInfo {
+            pid: 1,
+            port: 4321,
+            version: "0.0.0".to_string(),
+            build_number: None,
+            protocol: lifecycle::PROTOCOL,
+            exe: PathBuf::from("/bin/story"),
+            exe_mtime: 0,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            token: "t".to_string(),
+            store_path: PathBuf::from("/tmp/store.db"),
+            tailnet: None,
+            cookie_name: String::new(),
+            owner,
+        }
+    }
+
+    /// A pre-SH-784 portfile's `owner: None` must render nothing — there is
+    /// no true fact an older build recorded to show.
+    #[test]
+    fn describe_owner_is_silent_for_an_older_portfile() {
+        assert_eq!(describe_owner(&info_with_owner(None)), "");
+    }
+
+    #[test]
+    fn describe_owner_names_the_launchd_label_and_its_raised_class() {
+        let owner = lifecycle::DaemonOwner::Launchd {
+            label: "io.mikey.storyhook.daemon".to_string(),
+        };
+        let described = describe_owner(&info_with_owner(Some(owner)));
+        assert!(
+            described.contains("io.mikey.storyhook.daemon"),
+            "{described}"
+        );
+        assert!(described.contains("USER_INITIATED"), "{described}");
+    }
+
+    #[test]
+    fn describe_owner_names_the_forking_parent_and_the_reason() {
+        let owner = lifecycle::DaemonOwner::Forked {
+            parent_pid: 4242,
+            reason: lifecycle::ForkReason::NoAgentInstalled,
+        };
+        let described = describe_owner(&info_with_owner(Some(owner)));
+        assert!(described.contains("4242"), "{described}");
+        assert!(described.contains("story daemon install"), "{described}");
+        assert!(described.contains("inherited default class"), "{described}");
     }
 
     #[test]
