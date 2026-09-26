@@ -83,7 +83,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/plugin-identity.sh"
 #   SEND_RETRIES             send_prompt_confirmed
 #   SUBMIT_KEY               send_prompt_confirmed
 #   EMPTY_INPUT_PATTERN      input_state (provider-rendered empty placeholder)
-#   PASTE_SETTLE_DELAY       paste_text, paste_prompt
+#   PASTE_SETTLE_DELAY       paste_prompt
 #   CAPTURE_LINES            capture_pane_transcript (default only — callers
 #                            may pass an explicit override as its $2)
 #   WORKTREE_IGNORE_PATH     worktree_ignore_status, append_worktree_ignore
@@ -814,16 +814,6 @@ prompt_accepted() {
   esac
 }
 
-# paste_text <pane> <text> — literal-paste <text>, then SETTLE so a bracketed
-# paste closes before any Enter. Used for typing a SINGLE-LINE command into a
-# SHELL, where bracketed paste isn't guaranteed; the multi-line-safe prompt send
-# uses paste_prompt below. Sends NO Enter. Returns non-zero if the paste send
-# itself failed.
-paste_text() {
-  tmux send-keys -t "$1" -l "$2" 2>/dev/null || return 1
-  sleep "$PASTE_SETTLE_DELAY"
-}
-
 # paste_prompt <pane> <text> <buffer> — deliver <text> into a Claude TUI as ONE
 # bracketed paste, so an embedded newline stays TEXT instead of submitting the
 # prompt at its first line (`send-keys -l` sends a newline as a literal Enter).
@@ -831,8 +821,8 @@ paste_text() {
 # (bracketed-paste markers → the TUI buffers the whole paste and never submits
 # mid-way) and -d (delete the private buffer after). No -r: tmux's default
 # LF→CR matches what a real terminal sends on a human paste. Sends NO Enter; the
-# settle preserves the settle-before-Enter invariant. Only the PROMPT uses this —
-# the launch send types a single-line command into a shell and keeps paste_text.
+# settle preserves the settle-before-Enter invariant. Only the PROMPT is typed:
+# the launch command is exec'd into the pane, never typed (SH-230).
 # Returns non-zero if either tmux stage failed (caller then skips its receipt
 # poll and retries).
 paste_prompt() {
