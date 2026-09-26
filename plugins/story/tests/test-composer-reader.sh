@@ -40,4 +40,15 @@ for locale in C en_US.UTF-8; do
     empty "$locale: NBSP alone is padding, however much of it"
 done
 
+# ---- the composer's text starts at its FIRST glyph ---------------------------
+# The row's own prompt glyph comes first. A draft that ends in the glyph
+# character (a person quoting the prompt, say) is still a draft; reading from
+# the LAST glyph made it an empty composer.
+for locale in C en_US.UTF-8; do
+  assert_eq "$(state "$locale" '❯' "${claude_rule}\342\235\257\302\240the prompt looks like \342\235\257\n${claude_rule}${claude_footer}")" \
+    text "$locale: a draft that ends in the glyph is text"
+  assert_eq "$(state "$locale" '›' "\342\200\272 quote \342\200\272\n  ? for shortcuts\n")" \
+    text "$locale: the same for Codex's glyph"
+done
+
 finish

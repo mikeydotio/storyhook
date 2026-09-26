@@ -337,16 +337,18 @@ strip_composer_decoration() {
   printf '%s' "$1" | LC_ALL=C sed -E -e "$COMPOSER_DECORATION_EXPR" -e "$COMPOSER_PADDING_EXPR"
 }
 
-# input_box_text <content> — echo the trailing text of the ACTIVE input row (the
-# LAST line bearing READY_PROMPT_GLYPH), box padding stripped. The input row, NOT
-# the pane's last non-blank line: the real TUI (and the test fixtures) render a
-# FOOTER *below* the input box, so the last non-blank line is the footer and never
-# the prompt.
+# input_box_text <content> — echo the text of the ACTIVE input row (the LAST line
+# bearing READY_PROMPT_GLYPH) after that row's FIRST glyph, box padding stripped.
+# The input row, NOT the pane's last non-blank line: the real TUI (and the test
+# fixtures) render a FOOTER *below* the input box, so the last non-blank line is
+# the footer and never the prompt. The first glyph, not the last: the row's own
+# prompt comes first, and a draft that ends in the glyph character is still a
+# draft (SH-780).
 input_box_text() {
   local content="$1" row tail
   row=$(printf '%s\n' "$content" | grep -F -- "$READY_PROMPT_GLYPH" | tail -1) || row=""
   [ -n "$row" ] || { printf ''; return 0; }
-  tail=${row##*"$READY_PROMPT_GLYPH"}   # everything after the last glyph
+  tail=${row#*"$READY_PROMPT_GLYPH"}    # everything after the first glyph
   tail=${tail//│/}                       # strip the box border (literal, mb-safe)
   tail=$(strip_composer_decoration "$tail")   # then any animated decoration (SH-694)
   printf '%s' "$tail"
