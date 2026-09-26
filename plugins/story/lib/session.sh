@@ -200,9 +200,14 @@ resolve_wname() {
 # An optional Git runner lets submission use its noninteractive credential
 # boundary; generic observations use HTTPS/gh or explicitly file-only transport.
 default_branch() {
-  local out name runner="${1:-origin_git}"
-  if ! out=$("$runner" ls-remote --symref origin HEAD 2>&1); then
-    printf 'default_branch: origin did not answer: %s\n' "$out" >&2
+  local out name status=0 how runner="${1:-origin_git}"
+  out=$("$runner" ls-remote --symref origin HEAD 2>&1) || status=$?
+  if [ "$status" -ne 0 ]; then
+    # A transport killed by a signal prints nothing, so its status is the only
+    # evidence of how it ended (SH-799).
+    how="exit status $status"
+    [ "$status" -le 128 ] || how="killed by signal $((status - 128))"
+    printf 'default_branch: origin did not answer (%s): %s\n' "$how" "$out" >&2
     return 1
   fi
   name=$(printf '%s\n' "$out" \
