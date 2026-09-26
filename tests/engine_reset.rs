@@ -453,6 +453,50 @@ fn reservation_identity_is_immutable_but_failure_diagnostics_can_change() {
     );
 }
 
+/// SH-774: every failed Stop Now retry rewrote the run's `updated_at`. The
+/// daemon's change watcher compares whole run records, so each retry
+/// published a project change that woke the next retry at once.
+#[test]
+fn a_repeated_failing_stop_now_does_not_rewrite_the_run_record() {
+    use storyhook::service::{Clock, Ctx};
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::new([
+        DispatcherStep::ResetFailure("first cleanup failure".into()),
+        DispatcherStep::ResetFailure("second cleanup failure".into()),
+    ]);
+    let run = setup(&fixture, &fake, "todo");
+    let at = |instant: &str| {
+        Ctx::new(
+            fixture.store(),
+            fixture.project(),
+            fixture.cwd(),
+            fixture.env().clone(),
+        )
+        .clock(Clock::Fixed(instant.into()))
+    };
+    let first = at("2026-09-25T23:10:37Z");
+    assert!(EngineService::new(&first, &fake).stop(&run, true).is_err());
+    let recorded = fixture
+        .store()
+        .read(|tx| tx.engine_run(&run))
+        .unwrap()
+        .unwrap();
+    assert_eq!(recorded.updated_at, "2026-09-25T23:10:37Z");
+
+    let later = at("2026-09-25T23:10:38Z");
+    assert!(EngineService::new(&later, &fake).stop(&run, true).is_err());
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.engine_run(&run))
+            .unwrap()
+            .unwrap(),
+        recorded,
+        "a retry that changes no run fact must not write the run record"
+    );
+    assert_eq!(fake.calls().len(), 2, "both attempts ran the helper");
+}
+
 #[test]
 fn stop_from_inside_a_target_refuses_before_scheduling_background_cleanup() {
     let fixture = ServiceFixture::new();

@@ -132,11 +132,17 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     EngineRunState::Halted,
                 ],
             )?;
+            let before = run.clone();
             run.state = EngineRunState::Draining;
             if run.stop_reason.as_deref() != Some(OPERATOR_STOPPED_NOW) {
                 run.acknowledged_at = None;
             }
             run.stop_reason = Some(OPERATOR_STOPPED_NOW.into());
+            // The change watcher compares whole run records: rewriting only
+            // `updated_at` on a retry would wake the next retry at once.
+            if run == before {
+                return Ok(());
+            }
             run.updated_at = now.clone();
             tx.update_engine_run(&run)
         })?;
