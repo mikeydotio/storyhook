@@ -238,6 +238,7 @@ impl Component for Dashboard {
             theme.section_header,
         )));
         let ready = ready_stories(&state.data);
+        let floors = state.data.blocker_floors();
         if ready.is_empty() {
             lines.push(Line::from(Span::styled("    (none)", theme.section_count)));
         } else {
@@ -245,7 +246,12 @@ impl Component for Dashboard {
             let ready_start = lines.len();
             for (i, story) in ready.iter().take(5).enumerate() {
                 let is_selected = self.is_ready_story_selected(state, i);
-                lines.push(render_story_line(story, is_selected, &theme));
+                lines.push(render_story_line(
+                    story,
+                    floors.floor(story),
+                    is_selected,
+                    &theme,
+                ));
             }
             let _ = ready_start; // used for cursor tracking
         }
@@ -262,7 +268,12 @@ impl Component for Dashboard {
         } else {
             for (i, story) in recent.iter().take(5).enumerate() {
                 let is_selected = self.is_recent_story_selected(state, i);
-                lines.push(render_story_line(story, is_selected, &theme));
+                lines.push(render_story_line(
+                    story,
+                    floors.floor(story),
+                    is_selected,
+                    &theme,
+                ));
             }
         }
         lines.push(Line::from(""));
@@ -353,16 +364,28 @@ impl Dashboard {
     }
 }
 
-/// Render a story as a dashboard line.
-fn render_story_line<'a>(story: &StorySnapshot, is_selected: bool, theme: &Theme) -> Line<'a> {
+/// The glyph and style a priority level draws with on a dashboard line.
+fn priority_glyph(priority: &Priority, theme: &Theme) -> (&'static str, ratatui::style::Style) {
+    match priority {
+        Priority::Critical => ("!!!", theme.priority_critical),
+        Priority::High => ("!!", theme.priority_high),
+        Priority::Medium => ("!", theme.priority_medium),
+        Priority::Low => (".", theme.priority_low),
+        Priority::None => ("", theme.section_count),
+    }
+}
+
+/// Render a story as a dashboard line. A blocker `floor` (SH-788) follows
+/// the stored glyph in parentheses, as the CLI prints `low (critical)`, so a
+/// `.` story that sorts above `!!!` ones in the Ready panel says why.
+fn render_story_line<'a>(
+    story: &StorySnapshot,
+    floor: Option<&Priority>,
+    is_selected: bool,
+    theme: &Theme,
+) -> Line<'a> {
     let cursor_mark = if is_selected { "  > " } else { "    " };
-    let priority_sym = match story.priority {
-        Priority::Critical => "!!! ",
-        Priority::High => "!!  ",
-        Priority::Medium => "!   ",
-        Priority::Low => ".   ",
-        Priority::None => "    ",
-    };
+    let (own_sym, own_style) = priority_glyph(&story.priority, theme);
 
     let mut spans = vec![
         Span::styled(
@@ -377,17 +400,17 @@ fn render_story_line<'a>(story: &StorySnapshot, is_selected: bool, theme: &Theme
         Span::raw(" "),
         Span::styled(story.title.clone(), theme.story_title),
         Span::raw("  "),
-        Span::styled(
-            priority_sym.to_string(),
-            match story.priority {
-                Priority::Critical => theme.priority_critical,
-                Priority::High => theme.priority_high,
-                Priority::Medium => theme.priority_medium,
-                Priority::Low => theme.priority_low,
-                Priority::None => theme.section_count,
-            },
-        ),
+        Span::styled(own_sym.to_string(), own_style),
     ];
+    match floor {
+        Some(floor) => {
+            let (floor_sym, floor_style) = priority_glyph(floor, theme);
+            spans.push(Span::styled(format!("({floor_sym})"), floor_style));
+            spans.push(Span::raw(" "));
+        }
+        // The old fixed four-column glyph cell, trailing pad included.
+        None => spans.push(Span::raw(" ".repeat(4 - own_sym.len()))),
+    }
 
     if is_selected {
         for span in &mut spans {
@@ -852,6 +875,36 @@ mod tests {
             ["SH-1"],
             "the dependent waits on an open blocker; the blocker itself is free"
         );
+    }
+
+    /// SH-788: a dashboard line shows the blocker floor after the stored
+    /// glyph, so a `.` story ranked above `!!!` ones says why.
+    #[test]
+    fn a_story_line_shows_its_blocker_floor_after_its_own_glyph() {
+        let theme = Theme::from_env();
+        let story = make_snapshot(
+            "SH-1",
+            "todo",
+            "Blocker",
+            Priority::Low,
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        let text = |line: Line| -> String {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        };
+        let floored = text(render_story_line(
+            &story,
+            Some(&Priority::Critical),
+            false,
+            &theme,
+        ));
+        assert!(floored.ends_with("  .(!!!) "), "{floored:?}");
+        let plain = text(render_story_line(&story, None, false, &theme));
+        assert!(plain.ends_with("  .   "), "{plain:?}");
     }
 
     /// SH-788: the panel ranks the way `story next` does, so a low blocker

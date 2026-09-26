@@ -119,6 +119,15 @@ pub struct StoryView {
     /// field is additive and changes nothing for them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_state: Option<String>,
+    /// The more urgent level this story sorts at while it blocks more urgent
+    /// open work: its blocker floor ([`crate::domain::BlockerFloors`],
+    /// SH-788). `None` when no floor raises it, from a view built without
+    /// the whole project (`query::bare_view`, `transfer::import_project`),
+    /// or from an older daemon; each means "use `story.priority`", as
+    /// `display_state`'s `None` means "use `story.state`". Not on
+    /// [`StorySnapshot`], for the reason `head_global_seq` gives below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker_floor: Option<Priority>,
     /// The change-feed position of the event this story's row was folded from
     /// (`stories.head_global_seq`, SH-336) — the exact tiebreak for a recency
     /// ordering, since every storyhook timestamp is RFC3339 at one-second
@@ -1557,11 +1566,15 @@ fn render_human(response: &Response) -> String {
                 } else {
                     " [flagged]"
                 };
-                let priority = if story.story.priority != Priority::None {
-                    format!(" ({})", story.story.priority.as_str())
-                } else {
-                    String::new()
-                };
+                let priority =
+                    if story.story.priority != Priority::None || story.blocker_floor.is_some() {
+                        format!(
+                            " ({})",
+                            priority_label(&story.story.priority, story.blocker_floor.as_ref())
+                        )
+                    } else {
+                        String::new()
+                    };
                 let type_badge = match story.story.story_type.as_deref() {
                     Some(t) => format!(" [{}]", t),
                     None => " [Default]".to_string(),
@@ -2165,6 +2178,17 @@ pub fn render_delete_plan(plan: &DeletePlan) -> String {
     body
 }
 
+/// A priority as every human-readable surface prints it: the stored level,
+/// then the blocker floor in parentheses while one raises it (SH-788) —
+/// `high`, or `high (critical)`.
+#[must_use]
+pub fn priority_label(own: &Priority, floor: Option<&Priority>) -> String {
+    match floor {
+        Some(floor) => format!("{} ({})", own.as_str(), floor.as_str()),
+        None => own.as_str().to_string(),
+    }
+}
+
 fn render_story(view: &StoryView) -> String {
     let story = &view.story;
     let mut body = String::new();
@@ -2189,8 +2213,16 @@ fn render_story(view: &StoryView) -> String {
     } else {
         ""
     };
+    // The blocker floor is always the last parenthetical (SH-788), so a
+    // legacy unassessed `none` reads `none (not assessed) (low)`: the first
+    // qualifies the stored level, the second is the level it sorts at.
+    let floor = view
+        .blocker_floor
+        .as_ref()
+        .map(|floor| format!(" ({})", floor.as_str()))
+        .unwrap_or_default();
     body.push_str(&format!(
-        "priority: {}{assessment}\n",
+        "priority: {}{assessment}{floor}\n",
         story.priority.as_str()
     ));
     body.push_str(&format!(
@@ -2368,8 +2400,12 @@ fn render_summary(summary: &SummaryView) -> String {
     if !summary.ready_stories.is_empty() {
         body.push_str("ready stories:\n");
         for view in &summary.ready_stories {
-            let priority = if view.story.priority != Priority::None {
-                format!(" ({})", view.story.priority.as_str())
+            let priority = if view.story.priority != Priority::None || view.blocker_floor.is_some()
+            {
+                format!(
+                    " ({})",
+                    priority_label(&view.story.priority, view.blocker_floor.as_ref())
+                )
             } else {
                 String::new()
             };
@@ -2698,11 +2734,17 @@ fn build_table_rows(
     is_ready_fn: &dyn Fn(&str) -> bool,
     is_blocked_fn: &dyn Fn(&str) -> bool,
 ) -> String {
+    // Effective level first, as every other priority-ordered surface sorts
+    // (SH-788): a floored story sits among the level it sorts at.
+    let effective = |view: &StoryView| {
+        view.blocker_floor
+            .clone()
+            .unwrap_or_else(|| view.story.priority.clone())
+    };
     let mut sorted: Vec<&StoryView> = stories.iter().collect();
     sorted.sort_by(|a, b| {
-        a.story
-            .priority
-            .cmp(&b.story.priority)
+        effective(a)
+            .cmp(&effective(b))
             .then_with(|| a.story.state.cmp(&b.story.state))
             .then_with(|| a.story.title.cmp(&b.story.title))
     });
@@ -2718,7 +2760,7 @@ fn build_table_rows(
             ""
         };
 
-        let priority_cls = match s.priority {
+        let priority_cls = match effective(view) {
             Priority::Critical => "priority-critical",
             Priority::High => "priority-high",
             Priority::Medium => "priority-medium",
@@ -2743,10 +2785,76 @@ fn build_table_rows(
             html_escape(&s.id),
             html_escape(&s.title),
             html_escape(&s.state),
-            html_escape(s.priority.as_str()),
+            html_escape(&priority_label(&s.priority, view.blocker_floor.as_ref())),
         ));
     }
     html
+}
+
+#[cfg(test)]
+mod priority_label_tests {
+    use super::*;
+
+    /// A view as the wire carries it, from JSON, so the fixture names only
+    /// the fields this label reads.
+    fn view(priority: &str, assessed: bool, floor: Option<&str>) -> StoryView {
+        let mut story = serde_json::json!({
+            "id": "SH-1",
+            "title": "Legacy",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "state": "todo",
+            "superstate": "OPEN",
+            "priority": priority,
+        });
+        if assessed {
+            story["priority_assessed"] = serde_json::Value::Bool(true);
+        }
+        let mut view = serde_json::json!({ "story": story });
+        if let Some(floor) = floor {
+            view["blocker_floor"] = serde_json::Value::from(floor);
+        }
+        serde_json::from_value(view).expect("a view")
+    }
+
+    #[test]
+    fn the_label_is_the_stored_level_then_the_floor() {
+        assert_eq!(priority_label(&Priority::High, None), "high");
+        assert_eq!(
+            priority_label(&Priority::High, Some(&Priority::Critical)),
+            "high (critical)"
+        );
+    }
+
+    /// SH-788: the floor is always the LAST parenthetical, so the legacy
+    /// "not assessed" note stays attached to the stored level it explains.
+    #[test]
+    fn show_puts_a_legacy_assessment_note_before_the_floor() {
+        let body = render_story(&view("none", false, Some("low")));
+        assert!(
+            body.contains("priority: none (not assessed) (low)\n"),
+            "{body}"
+        );
+        let body = render_story(&view("none", false, None));
+        assert!(body.contains("priority: none (not assessed)\n"), "{body}");
+    }
+
+    /// A list line omits an unraised `none`, but a floored one must show, or
+    /// the list would hide why the story sorts where it does.
+    #[test]
+    fn a_list_line_shows_a_floored_none() {
+        let list = |view| {
+            render_human(&Response::Stories {
+                views: vec![view],
+                message: None,
+                warnings: Vec::new(),
+            })
+        };
+        let line = list(view("none", true, Some("high")));
+        assert!(line.contains("SH-1 [todo] (none (high))"), "{line}");
+        let line = list(view("none", true, None));
+        assert!(line.contains("SH-1 [todo] Legacy"), "{line}");
+    }
 }
 
 #[cfg(test)]

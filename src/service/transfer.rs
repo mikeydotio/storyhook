@@ -745,6 +745,9 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                     stale_info: None,
                     progress: None,
                     display_state: None,
+                    // Like `display_state`, a project-wide fact this bare
+                    // echo does not compute: `story list`/`show` report it.
+                    blocker_floor: None,
                     // A real row read backs this import, unlike `bare_view`'s
                     // no-row-read case, so the exact recency tiebreak (SH-336)
                     // is available for free.

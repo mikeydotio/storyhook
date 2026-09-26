@@ -16,6 +16,7 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::help_topics;
+use crate::output::priority_label;
 use crate::store::{ReadOps, Store, StoryQuery};
 
 use super::Ctx;
@@ -181,11 +182,13 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
             ready.len()
         ));
 
-        if let Some(next) = highest_priority(ready, &stories) {
-            let priority = if next.priority == Priority::None {
+        let ranking = ReadyRanking::new(&stories);
+        if let Some(next) = highest_priority(ready, &ranking) {
+            let floor = ranking.floors().floor(next);
+            let priority = if next.priority == Priority::None && floor.is_none() {
                 String::new()
             } else {
-                format!(" ({})", next.priority.as_str())
+                format!(" ({})", priority_label(&next.priority, floor))
             };
             message.push_str(&format!(
                 "  Next: {} — {}{}\n",
@@ -417,14 +420,13 @@ fn write_sentinel(cwd: &std::path::Path, sentinel: &DispatchSentinel) -> Result<
 /// every count to go on saying so. It is just nobody's next assignment.
 fn highest_priority<'a>(
     ready: Vec<&'a StorySnapshot>,
-    stories: &BTreeMap<String, StorySnapshot>,
+    ranking: &ReadyRanking<'_, BTreeMap<String, StorySnapshot>>,
 ) -> Option<&'a StorySnapshot> {
     let mut sorted: Vec<&StorySnapshot> = ready
         .into_iter()
         .filter(|story| !crate::domain::is_human_only(story))
         .collect();
-    let ranking = ReadyRanking::new(stories);
-    sorted.sort_by(|a, b| ready_order(a, b, &ranking));
+    sorted.sort_by(|a, b| ready_order(a, b, ranking));
     sorted.into_iter().next()
 }
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::cli::Invocation;
-use crate::domain::{self, ReadyRanking, StateDef, StorySnapshot, SuperState};
+use crate::domain::{self, BlockerFloors, ReadyRanking, StateDef, StorySnapshot, SuperState};
 use crate::error::AppError;
 use crate::invoke::{InvokeRequest, Invoker};
 use crate::output::{ProjectSnapshotView, Response};
@@ -178,6 +178,12 @@ impl DataStore {
     /// Find a story by ID.
     pub fn find_story(&self, id: &str) -> Option<&StorySnapshot> {
         self.stories.iter().find(|story| story.id == id)
+    }
+
+    /// Every story's blocker floor (SH-788), over the same stories — drafts
+    /// included — that readiness and ranking read.
+    pub fn blocker_floors(&self) -> BlockerFloors {
+        self.readiness().ranking().floors().clone()
     }
 
     /// Total number of open stories.

@@ -115,6 +115,7 @@ fn view(story: StorySnapshot) -> StoryView {
         stale_info: None,
         progress: None,
         display_state: None,
+        blocker_floor: None,
         head_global_seq: None,
     }
 }
@@ -154,7 +155,8 @@ fn maximal_view() -> StoryView {
                     other_id: "SH-3".to_string(),
                 },
             ],
-            priority: Priority::Critical,
+            // Low, so the blocker floor below is one it could really carry.
+            priority: Priority::Low,
             labels: vec!["backend".to_string(), "api".to_string()],
             story_type: Some("spike".to_string()),
             description: Some("Multi\nline\tdescription with ünïcödé".to_string()),
@@ -208,6 +210,7 @@ fn maximal_view() -> StoryView {
             children_total: 5,
         }),
         display_state: Some("in-progress".to_string()),
+        blocker_floor: Some(Priority::Critical),
         head_global_seq: Some(GlobalSeq::new(7)),
     }
 }
