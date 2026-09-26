@@ -62,6 +62,25 @@
 //! a process group bounds *who you can kill*, but giving the child a file
 //! instead of a pipe removes the wait entirely, and only the second works when
 //! what the child leaves behind is not yours to kill.
+//!
+//! # The second question: does the wait end? (SH-815)
+//!
+//! The kinds above ask whether a *descendant* can hold the caller. SH-815 was
+//! the child itself: `codex plugin list --json`, run by the daemon through a
+//! bare `.output()` to find the verifier's helper, never got past its own
+//! launch, and the verifier waited for as long as the daemon lived. No
+//! descendant was involved, the row said `Reads` correctly, and the site
+//! passed this classification with no deadline at all.
+//!
+//! So a new site has to answer two questions, and the failure message asks
+//! both: which kind it is, and what ends the wait when the child never does.
+//! A child that a person waits on can be interrupted by that person. One that
+//! a daemon thread waits on needs a deadline that stops its whole process
+//! group: `crate::process`'s `run_captured*` family is the shared way, and
+//! `plugin::provider_cli` is the one door for provider CLIs. The column is not
+//! written into [`INVENTORY`] because a row keys a constructor rather than a
+//! wait: `env::git_env`'s one constructor serves bounded and unbounded callers
+//! alike, so a per-row answer would be prose that no test could check.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -383,6 +402,12 @@ fn every_way_storyhook_starts_a_process_is_classified() {
                       leaves behind is not yours to kill.\n\
            Detached — it outlives you, so it must inherit nothing: see\n\
                       daemon::lifecycle::spawn_child and tests/daemon_fd_hygiene.rs.\n\
+         \n\
+         Then say what ends the wait if the child never exits. A daemon thread\n\
+         needs a deadline that stops the child's whole process group: use\n\
+         crate::process's run_captured* family, and plugin::provider_cli for\n\
+         claude or codex. SH-815 is a codex launch, with no deadline, that held\n\
+         the verifier for as long as the daemon lived.\n\
          \n\
          This is not a rule about how to spawn. It is the classification step that\n\
          was skipped when the daemon spawn was written, and SH-94 is what that cost."
