@@ -3048,6 +3048,10 @@ cmd_list() {
 
 cmd_create() {
   local title="" desc="" desc_file="" stype="" priority="" complexity="" labels=""
+  # SH-779: blockers ride in the one `story new` call, so the story is never
+  # ready -- and never claimable by a Full Auto run -- before its blocked-by
+  # edges exist. A later `story relate` would be a second write with a gap.
+  local -a blocked_by=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --title)            title="${2:-}";      shift 2 || fail "--title needs a value." ;;
@@ -3057,10 +3061,12 @@ cmd_create() {
       --complexity)       complexity="${2:-}"; shift 2 || fail "--complexity needs a value." ;;
       --priority)         priority="${2:-}";   shift 2 || fail "--priority needs a value." ;;
       --label|--labels)   labels="${2:-}";     shift 2 || fail "--label needs a value." ;;
-      *) fail "unknown argument \`$1\` — usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--complexity low|medium|high] [--label <csv>]" ;;
+      --blocked-by)       [ -n "${2:-}" ] || fail "--blocked-by needs a story id."
+                          blocked_by+=("$2"); shift 2 ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--complexity low|medium|high] [--label <csv>] [--blocked-by <id> ...]" ;;
     esac
   done
-  [ -n "$title" ] || fail "usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--complexity low|medium|high] [--label <csv>]"
+  [ -n "$title" ] || fail "usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--complexity low|medium|high] [--label <csv>] [--blocked-by <id> ...]"
 
   # A description reaches the CLI as ONE argv element. `story new` has no
   # --description-file (unlike `gh issue create --body-file`), so the skill
@@ -3080,10 +3086,15 @@ cmd_create() {
   [ -n "$complexity" ] && args+=(--complexity "$complexity")
   [ -n "$labels" ]   && args+=(--labels "$labels")
   [ -n "$desc" ]     && args+=(--description "$desc")
+  local blocker blocked_desc=""
+  for blocker in "${blocked_by[@]+"${blocked_by[@]}"}"; do
+    args+=(--blocked-by "$blocker")
+    blocked_desc="$blocked_desc --blocked-by $blocker"
+  done
 
   if [ -n "$DRY_RUN" ]; then
     jq -n --arg title "$title" --argjson cmds \
-      "$(printf '%s\n' "story ${args[*]:0:1} <title>${stype:+ --type $stype}${priority:+ --priority $priority}${complexity:+ --complexity $complexity}${labels:+ --labels $labels}${desc:+ --description <text>}" | jq -R -s 'split("\n")|map(select(length>0))')" '
+      "$(printf '%s\n' "story ${args[*]:0:1} <title>${stype:+ --type $stype}${priority:+ --priority $priority}${complexity:+ --complexity $complexity}${labels:+ --labels $labels}${blocked_desc}${desc:+ --description <text>}" | jq -R -s 'split("\n")|map(select(length>0))')" '
       {ok:true, dry_run:true, title:$title, commands:$cmds,
        display:("[story] DRY RUN — would create a story titled: " + $title)}'
     return 0
@@ -5654,5 +5665,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | submit <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] [--story <id>] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] [--blocked-by <id> ...] | complete <plan|execute> <story-id> | reap <story-id> | submit <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] [--story <id>] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac
