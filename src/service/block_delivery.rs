@@ -12,6 +12,23 @@ use std::collections::BTreeMap;
 /// The exact operator-supplied prompt, never synthesized or paraphrased.
 pub const UNBLOCK_PROMPT: &str = "Your story experienced a temporary block, which has been lifted. The environment and dev branch may have changed. Please reread your story, its comments, and its relationships to understand the changes, and adjust your work accordingly. If the change is significant, resetting & rebasing the worktree and restarting the story may be appropriate.";
 
+/// Whether a derivation checks stories that newly enter `verifying` as submissions.
+///
+/// A choice every caller of [`derive_block_edges`] states, rather than an
+/// `Option` it could leave empty by accident: the Git evidence a submission
+/// check needs has to be read before the write transaction opens, and reading
+/// it costs four bounded subprocesses (`continuation::current_submission`).
+pub(crate) enum SubmissionGate<'e> {
+    /// An ordinary service mutation. A story that newly enters `verifying` is
+    /// checked against this evidence; `None` means the project had no
+    /// continuation records when the evidence would have been read.
+    Check(Option<&'e Result<SubmissionEvidence, AppError>>),
+    /// The transaction completes, relabels or repairs existing history — a
+    /// verifier landing moves a story out of `verifying`, never into it — and
+    /// so submits nothing. The submission check does not apply.
+    NotASubmission,
+}
+
 struct State {
     blocked: bool,
     active: bool,
@@ -62,13 +79,10 @@ fn snapshot(tx: &impl ReadOps, project: ProjectId) -> Result<BTreeMap<StoryNo, S
 /// its own write instead. Intermediate states inside `f` are never delivered:
 /// only the project as it stood before `f` and as `f` leaves it are compared.
 /// No external operation may run here, because SQLite owns the write lock.
-///
-/// `submission` is the Git evidence a story newly entering `verifying` is
-/// checked against; it has to be read before the write opens.
 pub(crate) fn derive_block_edges<W: WriteOps, T>(
     tx: &mut W,
     project: ProjectId,
-    submission: Option<&Result<SubmissionEvidence, AppError>>,
+    gate: SubmissionGate<'_>,
     f: impl FnOnce(&mut W) -> Result<T, StoreError>,
 ) -> Result<T, StoreError> {
     let before = snapshot(tx, project)?;
@@ -79,13 +93,16 @@ pub(crate) fn derive_block_edges<W: WriteOps, T>(
         let Some(previous) = before.get(&story) else {
             continue;
         };
-        if !previous.verifying && next.verifying {
+        if !previous.verifying
+            && next.verifying
+            && let SubmissionGate::Check(evidence) = &gate
+        {
             super::continuation::check_submission(
                 tx,
                 project,
                 story,
                 previous.sequence,
-                submission,
+                *evidence,
             )?;
         }
         // Pending authority belongs to one effective block episode. A
@@ -133,8 +150,14 @@ impl<S: Store> Ctx<'_, S> {
         // failure matters only if this mutation actually submits managed work.
         let submission_head =
             has_continuations.then(|| super::continuation::current_submission(self.cwd()));
-        self.store()
-            .write(|tx| derive_block_edges(tx, self.project(), submission_head.as_ref(), f))
+        self.store().write(|tx| {
+            derive_block_edges(
+                tx,
+                self.project(),
+                SubmissionGate::Check(submission_head.as_ref()),
+                f,
+            )
+        })
     }
 }
 

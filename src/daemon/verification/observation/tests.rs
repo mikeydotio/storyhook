@@ -534,3 +534,55 @@ fn landing_completion_requires_the_admitted_human_revision() {
             .unwrap()
     );
 }
+
+/// SH-772: the daemon's landing door records the Resume of every active story
+/// it unblocks, exactly as every other story mutation does.
+#[test]
+fn landing_completion_resumes_the_dependents_it_unblocks() {
+    use crate::service::RelationService;
+    use crate::service::landing::{LandingAdmission, VerifiedSubmission};
+    use crate::store::BlockAction;
+    let f = Fixture::new();
+    let c = candidate(&f);
+    let ctx = f.ctx();
+    let dependent = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "Waiting on the submission".into(),
+            ..NewStoryInput::default()
+        })
+        .unwrap()
+        .id;
+    StoryService::new(&ctx)
+        .set_state(&dependent, "in-progress", None, None, None)
+        .unwrap();
+    RelationService::new(&ctx)
+        .relate(&dependent, "blocked-by", &c.story_id, false)
+        .unwrap();
+    let queue = VerificationQueue::new(f.store());
+    let fresh = queue.ordered_for(f.project).unwrap().remove(0);
+    let certificate = VerifiedSubmission {
+        head: "a".repeat(40),
+        tree: "b".repeat(40),
+        gate: "gate".into(),
+    };
+    let LandingAdmission::Admitted(intent) =
+        queue.begin_landing(&ctx, &fresh, &certificate).unwrap()
+    else {
+        panic!("expected admission")
+    };
+    assert!(
+        queue
+            .complete_landing_for(&ctx, &fresh, &intent, "merged")
+            .unwrap()
+    );
+    let story = crate::store::StoryNo::parse_id("SH", &dependent).unwrap();
+    let actions: Vec<BlockAction> = f
+        .store
+        .read(|tx| tx.block_deliveries(f.project))
+        .unwrap()
+        .into_iter()
+        .filter(|delivery| delivery.story == story)
+        .map(|delivery| delivery.action)
+        .collect();
+    assert_eq!(actions, [BlockAction::Interrupt, BlockAction::Resume]);
+}
