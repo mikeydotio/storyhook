@@ -1072,6 +1072,9 @@ dispatch_ready_note() {
     bootstrap-plan-unconfirmed)
       printf 'Codex initialization failed (bootstrap-plan-unconfirmed): Plan mode could not be confirmed before the task-free initialization turn (%s). Nothing was typed into that pane' "$PLAN_MODE_REASON"
       ;;
+    bootstrap-undelivered)
+      printf 'Codex initialization failed (bootstrap-undelivered): %s. No initialization turn ran' "$(send_prompt_note)"
+      ;;
     bootstrap-submit-unconfirmed)
       printf 'Codex initialization failed (bootstrap-submit-unconfirmed): the task-free initialization turn was pasted, but the input row never read as empty within the confirmation window, so its submission could not be confirmed from the screen. The turn may still have reached Codex and run its SessionStart hook; it authorizes no work and carries no story instructions. Check `pane_tail` for a decorated or unexpected composer row: Codex 0.154.0 animates the idle placeholder of an Astra model unless the launch passes `-c tui.animations=false`'
       ;;

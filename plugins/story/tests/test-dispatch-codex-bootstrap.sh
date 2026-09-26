@@ -119,6 +119,33 @@ case "$(jqf "$out" .display)" in *"hook identity"*) fail_test "unconfirmed: the 
 assert_eq "$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')" todo \
   "unconfirmed: claim rolled back"
 
+# bootstrap-undelivered (SH-799): a dialog opens with the initialization paste.
+# No receipt of THIS prompt, so no Tab -- and the refusal must not say the turn
+# "was pasted" and awaits a screen read, as submit-unconfirmed does: no key was
+# sent, so no initialization turn ran.
+FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-undelivered.XXXXXX)
+_TMP_REPOS+=("$FAKE_TMUX_STATE")
+id=$(new_story "$repo" "Undelivered initialization")
+out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
+  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
+  STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
+  FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_DIALOG=paste \
+  FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
+  bash "$SCRIPT" dispatch "$id" --auto)
+assert_eq "$(jqf "$out" .ok)" false "undelivered: refused"
+assert_eq "$(jqf "$out" .reason)" pane-not-ready "undelivered: pane-not-ready"
+assert_eq "$(jqf "$out" .wait_ready_reason)" bootstrap-undelivered "undelivered: reason"
+assert_eq "$(jqf "$out" .bootstrap_phase)" not-started "undelivered: no initialization turn ran"
+assert_eq "$(cat "$FAKE_TMUX_STATE/submit_keys.log" 2>/dev/null | wc -l | tr -d ' ')" 0 "undelivered: no Tab was sent"
+assert_eq "$([ -f "$FAKE_TMUX_STATE/dialog_answers" ] && echo answered || echo untouched)" untouched \
+  "undelivered: the dialog was not answered"
+assert_contains "$(jqf "$out" .display)" "bootstrap-undelivered" "undelivered: the display names its phase"
+assert_contains "$(jqf "$out" .display)" "no submit key was sent" "undelivered: the display says no key was sent"
+case "$(jqf "$out" .display)" in *"was pasted, but the input row"*) fail_test "undelivered: the display must not claim a pasted, unconfirmed turn" ;; esac
+assert_eq "$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')" todo \
+  "undelivered: claim rolled back"
+
 # bootstrap-plan-unconfirmed: the TUI keeps discarding Shift+Tab; nothing is typed.
 FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-plan.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
