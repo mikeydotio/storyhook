@@ -223,12 +223,16 @@ pub enum DispatchReason {
     /// The tmux pane could not be confirmed to be running the launch binary
     /// within the readiness gate's timeout (I1 DISPATCH-PROVEN-OCCUPANT).
     PaneNotReady,
-    /// The pane was confirmed ready, but the pasted prompt never reached its
-    /// input box — nothing was submitted (I2 SUBMIT-AFTER-RECEIPT).
+    /// The pane was confirmed ready, but no submit key was sent: no idle
+    /// composer was seen, the prompt never showed in it, or it showed
+    /// something other than this prompt (a dialog). The prompt may still sit
+    /// unsent in the composer, so the pane is stopped before the claim is
+    /// released (I2 SUBMIT-AFTER-RECEIPT; SH-799). `delivery_detail` in the
+    /// payload says which.
     HandoffUndelivered,
-    /// The prompt reached the input box, but submission was never
-    /// confirmed. The claim and worktree are left in place: the agent may
-    /// already be working.
+    /// The prompt reached the input box and a submit key was sent, but
+    /// submission was never confirmed. The claim and worktree are left in
+    /// place: the agent may already be working.
     HandoffUnconfirmed,
     /// Recoverable resources exist, but the caller did not authorize replacing
     /// the abandoned provider process or inheriting its work.
@@ -2772,11 +2776,12 @@ mod tests {
         assert_eq!(payload.unwrap()["reason"], "pane-not-ready");
     }
 
-    /// Every reason `story.sh`'s `dispatch` command can actually emit
-    /// (`refuse`/`refuse_with` call sites in `plugins/story/bin/
-    /// story.sh` and `lib/session.sh`), pinned so a renamed reason string on
-    /// either side is caught here rather than silently degrading to
-    /// [`DispatchReason::Other`].
+    /// Every reason with a named [`DispatchReason`] variant, read from its
+    /// exact wire spelling, so a renamed reason string on either side is
+    /// caught here rather than silently degrading to [`DispatchReason::Other`].
+    /// The dispatch helper emits more reasons than these (`claim-state-missing`,
+    /// `plan-mode-unconfirmed`, `dispatch-comment-failed` and others); they are
+    /// kept verbatim as [`DispatchReason::Other`] by design.
     #[test]
     fn classify_reads_every_known_reason() {
         let cases = [
