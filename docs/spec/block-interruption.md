@@ -108,3 +108,35 @@ interrupt now only decides how the session is named:
 Every Unreached or Uncertain Resume records the operator's remedy.
 `every_session_registration_first_revokes_pending_deliveries_under_the_lock` in
 `tests/block_delivery_paths.rs` pins the revocation property the rule rests on.
+
+### Every resume types only into an idle composer (SH-780)
+
+SH-772 guarded only `--registered-session`. The `--expected-target` resume, and
+the verifier's remediation (`notify <id> <message>`), still pasted and pressed
+the submit key without looking. A Claude or Codex dialog draws its cursor with
+the composer's glyph (`❯ 1. Yes`), so that key approved a permission or a plan
+for the person. An interrupt's Escape does not make the screen safe: the agent
+may open a dialog later, and a provider may restore the interrupted prompt into
+the composer. See `docs/rca/sh-780-notify-submit-on-dialog.md`.
+
+Every form that types a prompt now runs one block in `cmd_notify`:
+
+1. `input_state <pane> strict` must read `empty`: a composer is drawn and holds
+   only faint placeholder text. Otherwise `composer-busy`, and nothing is typed.
+2. Paste, then `poll_composer_holds`: the composer must show this prompt (its
+   first line, or the provider's collapsed-paste placeholder), not just any
+   text. Otherwise `delivery-failed`, and no submit key.
+3. Revalidate the identity (`pane-changed`).
+4. Read `composer_holds` again before the submit key and before each re-send.
+
+The composer reader (`lib/composer.awk`, used by `input_state`) reads
+`capture-pane -e`. Faint text is not input: Claude's predicted next prompt and
+Codex's placeholder are drawn faint, and read as a draft before. NBSP padding
+(Claude's `❯` is followed by U+00A0) reads as a space in every locale. Doubt
+resolves to `text`, so storyhook does not type.
+
+`tests/notify_reasons.rs` lists every place the plugin presses a key in a pane
+(`KEY_SENDERS`) and pins `cmd_notify`'s single guarded delivery. A remaining
+window, not closed: a dialog that opens in the milliseconds between the last
+`composer_holds` read and the key. SH-799 applies the same receipt to dispatch
+(`send_prompt_confirmed`).

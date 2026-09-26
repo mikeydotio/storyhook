@@ -37,6 +37,9 @@ identity from a window name, a generic process name, or a SessionStart sentinel.
 - Recheck pane, process incarnation, executable, worktree, and provider before
   registration and before delivery. Send one bracketed-paste message with the
   configured provider submit key. Do not retry an uncertain delivery.
+- Type only into a composer that is drawn and reads idle, and send the submit
+  key only while the composer shows the message (SH-780). A dialog's cursor row
+  uses the composer's glyph, so a submit key there approves the dialog.
 - Missing, ambiguous, changed, or unavailable live evidence is `NotAbsent`.
   Such evidence permits neither delivery nor respawn. Preserve positively
   established dead-agent resume, including legacy window tags.

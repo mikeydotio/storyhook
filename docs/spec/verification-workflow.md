@@ -222,12 +222,17 @@ which finds the story's tmux window and either pastes the diagnosis and presses
 submit, or refuses by name: `pane-unavailable` (no window), `pane-dead` (the
 pane's process has exited under `remain-on-exit`), `pane-changed` (something
 else runs there), `pane-provider-unknown` (the window carries no Storyhook
-provider tag), `pane-query-failed` (tmux could not be asked) or
-`delivery-failed` (a live pane refused the paste). The daemon classifies those
-slugs through one exhaustive table, `NOTIFY_REFUSALS`, into **absent** (the
-first three) and **not absent** (the last three); `tests/notify_reasons.rs`
-derives the helper's slugs from `cmd_notify`'s own literals and demands
-set-equality with the table.
+provider tag), `pane-query-failed` (tmux could not be asked),
+`composer-busy` (the agent's composer holds a draft or a dialog, or none is
+drawn; nothing was typed) or `delivery-failed` (the paste did not show in the
+composer, or its submission was not confirmed). Since SH-780 the paste goes
+only into a composer that reads idle, and the submit key only while the
+composer shows the diagnosis: a dialog's cursor row reads like composer text,
+and a submit key there approves the dialog for the person. The daemon
+classifies the slugs through one exhaustive table, `NOTIFY_REFUSALS`, into
+**absent** (`pane-unavailable`, `pane-dead`) and **not absent** (every other
+slug); `tests/notify_reasons.rs` derives the helper's slugs from `cmd_notify`'s
+own literals and demands set-equality with the table.
 
 **If the paste succeeded, the verifier holds.** `wait_for_reconciled_candidate`
 keeps the project's worker reserved for that story — every other project's

@@ -511,8 +511,10 @@ pub enum AgentPresence {
 /// answering (SH-626: a probe that could not run has not answered no), and
 /// `pane-changed` is conflicting live identity, not proof of absence (SH-677).
 /// `delivery-failed` is a paste refused by a pane that passed every liveness
-/// gate, so the agent is presumed live. `composer-busy` (SH-772) is a live,
-/// registered session whose composer did not read idle, so nothing was typed.
+/// gate, so the agent is presumed live. `composer-busy` (SH-772, SH-780) is a
+/// live session whose composer did not read idle (a draft, a dialog, or no
+/// composer drawn), so nothing was typed; every form that types a prompt can
+/// emit it, the remediation included.
 pub const NOTIFY_REFUSALS: [(&str, AgentPresence); 12] = [
     ("resource-query-failed", AgentPresence::NotAbsent),
     ("resource-identity-unsafe", AgentPresence::NotAbsent),
