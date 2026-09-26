@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# plugin-runner: serial -- FAKE_TMUX_PANE_LIFETIME=5 is a wall-clock budget the
+# case must finish its kill-window proof inside; concurrent siblings stretch it.
 # SH-263: the fake tmux's state directory is NAMED BY THE CALLER, always.
 #
 # The fake holds every byte of its model -- the input buffer, the `launched`
