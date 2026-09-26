@@ -77,6 +77,11 @@ pub mod provenance;
 pub mod complexity;
 pub use complexity::Complexity;
 
+/// The derived level a story sorts at while it blocks more urgent open work
+/// (SH-788).
+pub mod blocker_floor;
+pub use blocker_floor::BlockerFloors;
+
 /// Sniffing and naming an attachment's media type from its own bytes
 /// (SH-315).
 ///
@@ -2978,17 +2983,31 @@ pub fn compute_display_state(
 pub trait StoryIndex {
     /// The story `id` names, if this index carries it.
     fn story(&self, id: &str) -> Option<&StorySnapshot>;
+
+    /// Every story this index carries, in id order.
+    ///
+    /// [`BlockerFloors::compute`] walks the whole index from here, so the
+    /// floors and the lookups a ranking makes come from one story set.
+    fn stories(&self) -> impl Iterator<Item = &StorySnapshot>;
 }
 
 impl StoryIndex for BTreeMap<String, StorySnapshot> {
     fn story(&self, id: &str) -> Option<&StorySnapshot> {
         self.get(id)
     }
+
+    fn stories(&self) -> impl Iterator<Item = &StorySnapshot> {
+        self.values()
+    }
 }
 
 impl StoryIndex for BTreeMap<&str, &StorySnapshot> {
     fn story(&self, id: &str) -> Option<&StorySnapshot> {
         self.get(id).copied()
+    }
+
+    fn stories(&self) -> impl Iterator<Item = &StorySnapshot> {
+        self.values().copied()
     }
 }
 
