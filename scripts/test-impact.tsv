@@ -137,6 +137,9 @@ obviation_startup	:(glob)**/*
 orphan_check	:(glob)**/*
 plugin_contract	:(glob)**/*
 plugin_install	:(glob)**/*
+plugin_runner	plugins/story/tests/run-tests.sh
+plugin_runner	scripts/gate-progress.sh
+plugin_runner	scripts/test-env.sh
 plugin_skill_determinism	:(glob)**/*
 portable_receipt	:(glob)scripts/*
 portable_receipt	build.rs
