@@ -22,6 +22,7 @@ ceiling, ignored child death, and a restarted settlement deadline each turned
 its corresponding HarnessObservation case red.
 """
 
+import io
 import json
 import os
 import shlex
@@ -33,6 +34,9 @@ import subprocess
 import tempfile
 import unittest
 from unittest import mock
+
+sys.dont_write_bytecode = True
+import load_grace
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 
@@ -46,6 +50,13 @@ MARGIN = 5
 # immediately, so this generosity costs time only for a live stalled fixture.
 MILESTONE_DEADLINE = 3 * int(CLEANUP_BUDGET_MS) / 1000 + MARGIN
 POLL_INTERVAL = 0.01
+# SH-347's recorded tolerance for any one graced wait. The whole Python suite
+# is one Rust test inside the gate, whose silence watchdog is about 29 minutes,
+# so a real hang must fail as a case well before that (SH-767).
+PATIENCE_CEILING = 15 * 60
+# Startup patience, the largest allowance, reaches the ceiling at this grace.
+# Every allowance scales by the same grace, so their order never changes.
+MAX_GRACE = PATIENCE_CEILING / MILESTONE_DEADLINE
 # An injected census this many times the reaping eighth: the kill's own census
 # then spans the whole window, as a loaded ps did in the PR 857 gate (SH-767).
 CENSUS_OVERRUN = 1.25
@@ -56,6 +67,8 @@ class VerifierLifecycle(unittest.TestCase):
 
     # Set by setUp; an observation-only harness has no repository.
     common = None
+    # Sampled by setUp; an observation-only harness runs at the idle values.
+    grace = 1.0
 
     def setUp(self):
         """Create two published commits in an isolated repository."""
@@ -72,6 +85,7 @@ class VerifierLifecycle(unittest.TestCase):
                     "STORYHOOK_STORE_PATH": str(self.root / "store.db"),
                     "STORYHOOK_LOCK_DIR": str(self.root / "locks"),
                     "STORYHOOK_VERIFIER_MIRROR": "0", "TMPDIR": "/tmp"}
+        self.sample_grace()
         self.set_cleanup_budget(CLEANUP_BUDGET_MS)
         self.git("init", "-q", "-b", "main")
         self.git("config", "user.name", "Lifecycle Fixture")
@@ -93,7 +107,7 @@ class VerifierLifecycle(unittest.TestCase):
     def command(self, *args, cwd=None, check=True):
         """Run real commands with bounded waits and fixture-only environment."""
         result = subprocess.run(args, cwd=cwd or self.repo, env=self.env,
-                                capture_output=True, text=True, timeout=MILESTONE_DEADLINE)
+                                capture_output=True, text=True, timeout=self.milestone_deadline)
         if check:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
@@ -290,6 +304,7 @@ class VerifierLifecycle(unittest.TestCase):
 
     def _wait_publication(self, path, child, log, *, pid_record):
         started = time.monotonic()
+        patience = self.patience(self.milestone_deadline, started)
         content = None
 
         def published():
@@ -319,27 +334,57 @@ class VerifierLifecycle(unittest.TestCase):
                 value = published()
                 if value:
                     return value
-            elapsed = time.monotonic() - started
-            if status is not None or elapsed >= MILESTONE_DEADLINE:
+            now = time.monotonic()
+            elapsed = now - started
+            if status is not None or patience.expired(now):
                 reason = f"exited {status}" if status is not None else "deadline expired"
                 # pread leaves the child's shared log offset untouched.
                 evidence = os.pread(log.fileno(), os.fstat(log.fileno()).st_size, 0).decode(errors="replace")
                 self.fail(f"child pid={child.pid} {reason} before publishing {path}; "
-                          f"elapsed={elapsed:.3f}s allowance={MILESTONE_DEADLINE}s "
+                          f"elapsed={elapsed:.3f}s allowance={patience.allowance}s "
                           f"load={os.getloadavg()} content={content!r}\n{evidence}")
             time.sleep(POLL_INTERVAL)
 
-    def set_cleanup_budget(self, milliseconds):
-        """Supply a valid fixture budget while preserving its input spelling."""
-        self.assertTrue(milliseconds.isascii() and milliseconds.isdecimal())
-        self.assertTrue(4000 <= int(milliseconds) <= 99999999)
-        self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = milliseconds
-        self.budget = int(milliseconds) / 1000
+    def sample_grace(self):
+        """Grace this case once by measured contention (SH-767).
+
+        Production reads its cleanup budget once, at launch, so the budget a
+        case hands over is a snapshot; only the harness's own waits resample.
+        """
+        ratio = load_grace.contention()
+        self.grace = load_grace.multiplier(ratio, MAX_GRACE)
+        if self.grace > 1:
+            print(f"{self.id()}: {load_grace.describe(ratio, self.grace)}", file=sys.stderr)
+
+    def set_cleanup_budget(self, milliseconds, graced=True):
+        """Supply a valid fixture budget, graced by this case's contention.
+
+        Leading zeros survive grace, so they still reach verify-pr.sh's
+        decimal normalization; graced=False hands the spelling over unchanged.
+        """
+        def assert_valid(value):
+            # The same policy verify-pr.sh and verifier-owner.py enforce.
+            self.assertTrue(value.isascii() and value.isdecimal() and len(value) <= 8, value)
+            self.assertTrue(4000 <= int(value) <= 99999999, value)
+        assert_valid(milliseconds)
+        spelled = load_grace.graced_spelling(milliseconds, self.grace) if graced else milliseconds
+        assert_valid(spelled)
+        self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"] = spelled
+        self.budget = int(spelled) / 1000
 
     @property
     def settle_timeout(self):
-        """Allow the supplied cancellation ladder plus scheduling/reap margin."""
-        return self.budget + MARGIN
+        """Allow the supplied cancellation ladder plus a margin graced like it."""
+        return self.budget + MARGIN * self.grace
+
+    @property
+    def milestone_deadline(self):
+        """Startup and synchronous-command patience, graced like every allowance."""
+        return MILESTONE_DEADLINE * self.grace
+
+    def patience(self, allowance, started):
+        """Start a harness wait that extends while contention rises (SH-347)."""
+        return load_grace.Patience(allowance, self.grace, MAX_GRACE, started)
 
     def evidence(self, log):
         """Collect the child's own log and every gate attempt log for a failure.
@@ -384,37 +429,44 @@ class VerifierLifecycle(unittest.TestCase):
         running; the record is final only once every recorded session is quiet.
         """
         started = time.monotonic()
-        deadline = started + self.settle_timeout
-        try:
-            child.wait(timeout=max(0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            self.settle_failure(f"verifier pid={child.pid} did not finish cancellation",
-                                log, started, self.settle_timeout)
+        patience = self.patience(self.settle_timeout, started)
+        while True:
+            try:
+                child.wait(timeout=patience.remaining(time.monotonic()))
+                break
+            except subprocess.TimeoutExpired:
+                if patience.expired(time.monotonic()):
+                    self.settle_failure(f"verifier pid={child.pid} did not finish cancellation",
+                                        log, started, patience.allowance)
         while True:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
                 break
-            if time.monotonic() >= deadline:
+            if patience.expired(time.monotonic()):
                 self.settle_failure(f"gate session pid={pid} survived cancellation",
-                                    log, started, self.settle_timeout)
+                                    log, started, patience.allowance)
             time.sleep(POLL_INTERVAL)
         while True:
             members = [member for sid in sessions() for member in self.session_pids(sid)]
             if not members:
                 return
-            if time.monotonic() >= deadline:
+            if patience.expired(time.monotonic()):
                 self.settle_failure(f"recorded sessions still have members {members}",
-                                    log, started, self.settle_timeout)
+                                    log, started, patience.allowance)
             time.sleep(POLL_INTERVAL)
 
     def wait_settled(self, child, log):
         """Wait one settlement allowance for a supervised child, failing with evidence."""
         started = time.monotonic()
-        try:
-            return child.wait(timeout=self.settle_timeout)
-        except subprocess.TimeoutExpired:
-            self.settle_failure(f"child pid={child.pid} did not settle", log, started, self.settle_timeout)
+        patience = self.patience(self.settle_timeout, started)
+        while True:
+            try:
+                return child.wait(timeout=patience.remaining(time.monotonic()))
+            except subprocess.TimeoutExpired:
+                if patience.expired(time.monotonic()):
+                    self.settle_failure(f"child pid={child.pid} did not settle",
+                                        log, started, patience.allowance)
 
     def spawn(self, *args):
         """Own a child and regular log files so survivors cannot hold pipes open."""
@@ -1000,7 +1052,7 @@ while True:
             "def release(fd, data):\n"
             "    result=write(fd,data)\n"
             "    if data==b'1':\n"
-            f"        deadline=time.monotonic()+{MILESTONE_DEADLINE!r}\n"
+            f"        deadline=time.monotonic()+{self.milestone_deadline!r}\n"
             "        while not Path(" + repr(str(ready)) + ").exists():\n"
             "            if time.monotonic()>deadline: raise RuntimeError('gate never ready')\n"
             "            time.sleep(.01)\n"
@@ -1150,6 +1202,25 @@ while True:
         self.assertTrue(owner["completed"], owner)
         self.assertIsNone(owner["session"], owner)
 
+    def test_supplied_budget_reaches_supervision_in_decimal(self):
+        """The spelling a case supplies reaches every supervisor normalized.
+
+        "08000" is not octal, so a lost 10# stops the ungraced gate; graced to
+        "032000" it is valid octal, so a lost 10# would deliver 13312 (SH-767).
+        A passing gate never escalates, so neither run depends on load.
+        """
+        seen = self.root / "budget-seen"
+        script = f'printf %s "$STORYHOOK_VERIFIER_CLEANUP_GRACE_MS" > {shlex.quote(str(seen))}'
+        for grace, graced, spelled, delivered in ((1.0, False, "08000", "8000"),
+                                                  (4.0, True, "032000", "32000")):
+            with self.subTest(grace=grace):
+                self.grace = grace
+                self.set_cleanup_budget("08000", graced=graced)
+                self.assertEqual(self.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"], spelled)
+                verdict = self.gate_verdict(script)
+                self.assertEqual(verdict["result"], "gate-passed", verdict)
+                self.assertEqual(seen.read_text(), delivered)
+
     def recorded_leader_exit(self, alive):
         """Rewrite the record as a gate supervisor that died mid-reap leaves it."""
         self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
@@ -1240,7 +1311,7 @@ while True:
              "trap '' TERM; echo $$ > " + shlex.quote(str(leader)) + "; sleep 300 & echo $! > "
              + shlex.quote(str(orphan)) + "; exit 5"],
             cwd=self.repo, env=self.env, stdout=verdict_file, stderr=diagnostics)
-        self.addCleanup(child.wait, timeout=MILESTONE_DEADLINE)
+        self.addCleanup(child.wait, timeout=self.milestone_deadline)
         self.addCleanup(lambda: child.poll() is None and child.kill())
         orphan_pid = self.wait_pid(orphan, child, diagnostics)
         self.addCleanup(lambda: self.stop_pid(orphan_pid))
@@ -1250,11 +1321,11 @@ while True:
         # is a quarter of the budget for the gate session (SH-686).
         zombie_seen = []
         started = time.monotonic()
-        deadline = started + self.settle_timeout
+        patience = self.patience(self.settle_timeout, started)
         while child.poll() is None:
-            if time.monotonic() >= deadline:
+            if patience.expired(time.monotonic()):
                 self.settle_failure("supervisor did not settle the exited leader",
-                                    diagnostics, started, self.settle_timeout)
+                                    diagnostics, started, patience.allowance)
             if self.process_state(leader_pid).startswith("Z"):
                 zombie_seen.append(time.monotonic())
             time.sleep(.01)
@@ -1303,6 +1374,10 @@ class HarnessObservation(unittest.TestCase):
         self.harness.env = dict(os.environ)
         self.harness.set_cleanup_budget(CLEANUP_BUDGET_MS)
         self.addCleanup(self.harness.doCleanups)
+        # Observation is pinned at idle; ContentionGrace owns contention.
+        idle = mock.patch.object(load_grace, "contention", return_value=0.5)
+        idle.start()
+        self.addCleanup(idle.stop)
 
     def test_pid_reader_waits_for_empty_and_partial_records(self):
         """The writer completes only after the reader observes pending content."""
@@ -1462,11 +1537,18 @@ class HarnessObservation(unittest.TestCase):
         (attempts / "pr-1-tree-attempt.abc").write_text("attempt evidence")
         (attempts / "pr-1-tree-attempt.abc.compiler.jsonl").write_text("compiler noise")
         child = mock.Mock(pid=12345)
-        child.wait.side_effect = subprocess.TimeoutExpired("fixture", self.harness.settle_timeout)
+        now = [0]
+
+        def times_out(timeout):
+            now[0] += timeout
+            raise subprocess.TimeoutExpired("fixture", timeout)
+
+        child.wait.side_effect = times_out
         with tempfile.TemporaryFile() as log:
             log.write(b"wrapper evidence")
             log.flush()
-            with self.assertRaisesRegex(AssertionError, "did not settle") as failure:
+            with mock.patch.object(time, "monotonic", side_effect=lambda: now[0]), \
+                 self.assertRaisesRegex(AssertionError, "did not settle") as failure:
                 self.harness.wait_settled(child, log)
         for evidence in ("12345", "wrapper evidence", "attempt evidence",
                          "allowance=" + str(self.harness.settle_timeout), "load="):
@@ -1510,6 +1592,144 @@ class HarnessObservation(unittest.TestCase):
         self.harness.doCleanups()
         child.kill.assert_called_once()
         child.wait.assert_called_once_with(timeout=original_timeout)
+
+
+class ContentionGrace(unittest.TestCase):
+    """Pin the SH-347 grace policy the harness applies under contention (SH-767)."""
+
+    def harness(self, grace):
+        """An observation-only harness at a chosen grace."""
+        harness = VerifierLifecycle()
+        harness.env = {}
+        harness.grace = grace
+        return harness
+
+    def test_contention_is_one_minute_load_per_core(self):
+        """The reading is runnable threads per core; an unobtainable one is None."""
+        with mock.patch.object(os, "getloadavg", return_value=(48, 37, 20)), \
+             mock.patch.object(load_grace, "cores", return_value=10):
+            self.assertEqual(load_grace.contention(), 4.8)
+        with mock.patch.object(os, "getloadavg", side_effect=OSError("unobtainable")):
+            self.assertIsNone(load_grace.contention())
+
+    def test_cores_prefer_the_process_count_and_never_reach_zero(self):
+        """An affinity-limited count wins; older interpreters fall back."""
+        for process_count, machine_count, expected in ((4, 10, 4), (None, 10, 10), (None, None, 1)):
+            with self.subTest(process_count=process_count, machine_count=machine_count), \
+                 mock.patch.object(os, "process_cpu_count", return_value=process_count, create=True), \
+                 mock.patch.object(os, "cpu_count", return_value=machine_count):
+                self.assertEqual(load_grace.cores(), expected)
+        with mock.patch.object(os, "process_cpu_count", None, create=True), \
+             mock.patch.object(os, "cpu_count", return_value=6):
+            self.assertEqual(load_grace.cores(), 6)
+
+    def test_multiplier_is_exactly_one_without_contention(self):
+        """At or below one thread per core every allowance is its idle value."""
+        for ratio in (None, 0, 0.5, 1):
+            with self.subTest(ratio=ratio):
+                self.assertEqual(load_grace.multiplier(ratio, MAX_GRACE), 1.0)
+
+    def test_multiplier_follows_contention_up_to_the_ceiling(self):
+        """Above contention the grace is the ratio, capped so no wait passes 15 minutes."""
+        self.assertEqual(load_grace.multiplier(4.8, MAX_GRACE), 4.8)
+        self.assertEqual(load_grace.multiplier(1000, MAX_GRACE), MAX_GRACE)
+        self.assertAlmostEqual(MILESTONE_DEADLINE * MAX_GRACE, PATIENCE_CEILING)
+
+    def test_graced_spelling_keeps_leading_zeros_and_whole_milliseconds(self):
+        """Grace scales the value only; its spelling still exercises normalization."""
+        for milliseconds, grace, expected in (("30000", 1.0, "30000"), ("08000", 1.0, "08000"),
+                                              ("08000", 4.0, "032000"), ("16000", 1.5, "24000"),
+                                              ("8000", 4.8, "38400"), ("4000", 1.0001, "4001"),
+                                              ("0004000", 2.0, "0008000")):
+            with self.subTest(milliseconds=milliseconds, grace=grace):
+                self.assertEqual(load_grace.graced_spelling(milliseconds, grace), expected)
+        for milliseconds in ("30000", "16000", "8000", "08000", "4000"):
+            with self.subTest(ceiling=milliseconds):
+                self.assertLessEqual(len(load_grace.graced_spelling(milliseconds, MAX_GRACE)), 8)
+
+    def test_description_names_the_reading_and_the_grace(self):
+        """A grace nobody can see is a verdict that depends on unreported state."""
+        with mock.patch.object(load_grace, "cores", return_value=10):
+            described = load_grace.describe(4.8, 4.8)
+            for text in ("contention=4.80", "cores=10", "multiplier=4.80"):
+                self.assertIn(text, described)
+            self.assertIn("contention=unavailable", load_grace.describe(None, 1.0))
+
+    def test_patience_reads_no_load_before_its_allowance(self):
+        """An unexpired wait costs no reading and reports what is left."""
+        patience = load_grace.Patience(10, 1.0, MAX_GRACE, 100)
+        with mock.patch.object(load_grace, "contention", side_effect=AssertionError("resampled early")):
+            self.assertFalse(patience.expired(109.99))
+            self.assertEqual(patience.remaining(104), 6)
+            self.assertEqual(patience.remaining(120), 0)
+
+    def test_patience_expires_when_contention_has_not_risen(self):
+        """A reading at or below the granted grace neither extends nor shrinks."""
+        for granted, ratio in ((1.0, 0.5), (2.0, 1.5), (2.0, 2.0)):
+            with self.subTest(granted=granted, ratio=ratio), \
+                 mock.patch.object(load_grace, "contention", return_value=ratio):
+                patience = load_grace.Patience(10 * granted, granted, MAX_GRACE, 0)
+                self.assertTrue(patience.expired(10 * granted))
+                self.assertEqual(patience.allowance, 10 * granted)
+
+    def test_patience_extends_in_proportion_and_says_so(self):
+        """Rising contention resets the deadline before it fires, never silently."""
+        patience = load_grace.Patience(10, 1.0, MAX_GRACE, 0)
+        with mock.patch.object(load_grace, "contention", return_value=3.0), \
+             mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+            self.assertFalse(patience.expired(10))
+        self.assertEqual(patience.allowance, 30)
+        self.assertIn("load-grace", stderr.getvalue())
+        self.assertIn("30.000", stderr.getvalue())
+        with mock.patch.object(load_grace, "contention", return_value=2.0):
+            self.assertFalse(patience.expired(29))
+            self.assertTrue(patience.expired(30))
+        self.assertEqual(patience.allowance, 30)
+
+    def test_patience_extension_stops_at_the_ceiling(self):
+        """No reading can extend one wait past the recorded 15-minute tolerance."""
+        patience = load_grace.Patience(MILESTONE_DEADLINE, 1.0, MAX_GRACE, 0)
+        with mock.patch.object(load_grace, "contention", return_value=1000), \
+             mock.patch.object(sys, "stderr", new_callable=io.StringIO):
+            self.assertFalse(patience.expired(MILESTONE_DEADLINE))
+            self.assertAlmostEqual(patience.allowance, PATIENCE_CEILING)
+            self.assertTrue(patience.expired(PATIENCE_CEILING))
+
+    def test_contended_case_scales_every_allowance_together(self):
+        """Budget, settlement and startup patience keep their order under grace."""
+        harness = self.harness(4.8)
+        harness.set_cleanup_budget("8000")
+        self.assertEqual(harness.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"], "38400")
+        self.assertEqual(harness.budget, 38.4)
+        self.assertAlmostEqual(harness.settle_timeout, 38.4 + MARGIN * 4.8)
+        self.assertAlmostEqual(harness.milestone_deadline, MILESTONE_DEADLINE * 4.8)
+        self.assertGreater(harness.milestone_deadline, harness.settle_timeout)
+        self.assertGreater(harness.settle_timeout, harness.budget)
+        harness.set_cleanup_budget("08000", graced=False)
+        self.assertEqual(harness.env["STORYHOOK_VERIFIER_CLEANUP_GRACE_MS"], "08000")
+        self.assertEqual(harness.budget, 8.0)
+        self.assertAlmostEqual(harness.settle_timeout, 8.0 + MARGIN * 4.8)
+
+    def test_budgets_outside_production_policy_are_refused(self):
+        """The fixture refuses what verify-pr.sh and verifier-owner.py refuse."""
+        harness = self.harness(1.0)
+        for milliseconds in ("", "0", "3999", "wat", "1.5", "123456789", "\u0661\u0662\u0660\u0660\u0660"):
+            with self.subTest(milliseconds=milliseconds), self.assertRaises(AssertionError):
+                harness.set_cleanup_budget(milliseconds)
+        with self.assertRaises(AssertionError):
+            self.harness(MAX_GRACE).set_cleanup_budget("99999999")
+
+    def test_sampling_is_silent_at_idle_and_named_under_contention(self):
+        """A case graced by load says so once, with the reading that caused it."""
+        for ratio, grace, named in ((0.5, 1.0, False), (None, 1.0, False), (4.8, 4.8, True)):
+            harness = self.harness(1.0)
+            with self.subTest(ratio=ratio), \
+                 mock.patch.object(load_grace, "contention", return_value=ratio), \
+                 mock.patch.object(load_grace, "cores", return_value=10), \
+                 mock.patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+                harness.sample_grace()
+                self.assertEqual(harness.grace, grace)
+                self.assertEqual("multiplier=4.80" in stderr.getvalue(), named)
 
 
 if __name__ == "__main__":
