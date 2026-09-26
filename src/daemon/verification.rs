@@ -1895,11 +1895,14 @@ where
                         env.clone(),
                     )
                     .no_hooks(true);
-                    if !observation::human_permits(store, candidate)?
-                        || !queue.complete_landing_for(&ctx, candidate, &intent, &detail)?
-                    {
+                    if !observation::human_permits(store, candidate)? {
                         return Ok(TickResult::Returned);
                     }
+                    let pending = active.reserve(ReservationReason::Cleanup, env.now());
+                    if !queue.complete_landing_for(&ctx, candidate, &intent, &detail)? {
+                        return Ok(TickResult::Returned);
+                    }
+                    pending.retire();
                     match actuator.reap(candidate) {
                         Ok(()) => record_cleanup_complete(&ctx, candidate)?,
                         Err(error) => record_cleanup_required(&ctx, candidate, &error)?,
@@ -1963,7 +1966,15 @@ where
             env.clone(),
         )
         .no_hooks(true);
-        let Some(_active) = activity.try_acquire(store, &candidate, env.now())? else {
+        // A completed story is never queued, so its slot is admitted already
+        // reserved for the cleanup it exists to do (SH-768).
+        let Some(_active) = activity.admit(
+            store,
+            &candidate,
+            env.now(),
+            Some(ReservationReason::Cleanup),
+        )?
+        else {
             return Ok(if queue.human_permits(&candidate)? {
                 TickResult::Stopped
             } else {
@@ -2272,6 +2283,7 @@ where
                         LandingOutcome::Merged {
                             detail: landing_detail,
                         } => {
+                            let pending = active.reserve(ReservationReason::Cleanup, env.now());
                             if !queue.complete_landing_for(
                                 &ctx,
                                 &candidate,
@@ -2280,6 +2292,7 @@ where
                             )? {
                                 return Ok(TickResult::Returned);
                             }
+                            pending.retire();
                         }
                         LandingOutcome::NotAttempted { detail } => {
                             queue.release_unattempted_landing(&intent)?;

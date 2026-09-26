@@ -469,3 +469,137 @@ fn a_failed_delivery_after_a_resubmission_continues_with_the_new_generation() {
     }
     assert!(activity.active_for(fixture.project()).is_none());
 }
+
+#[test]
+fn a_certified_landing_reserves_the_verifier_while_it_reaps() {
+    let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "lands", Priority::Low, PR_ONE);
+    let landed = VerificationQueue::new(fixture.store())
+        .next()
+        .unwrap()
+        .unwrap()
+        .verifying_generation;
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = StatusProbe::new(
+        &fixture,
+        &activity,
+        [VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "landed".into(),
+            gate: GateCommand::DEFAULT.into(),
+        }],
+    );
+
+    let result = tick_with_activity(
+        fixture.store(),
+        fixture.env(),
+        &actuator,
+        &activity,
+        &inflight,
+        fixture.project(),
+    )
+    .unwrap();
+
+    assert_eq!(result, TickResult::Completed);
+    let probes = actuator.probes();
+    assert_eq!(probes.len(), 1);
+    assert_eq!(probes[0].0, "reap");
+    assert_reserved(&probes[0].1, &id, ReservationReason::Cleanup, "certified");
+    assert_eq!(probes[0].1.reservation.as_ref().unwrap().generation, landed);
+    assert!(activity.active_for(fixture.project()).is_none());
+}
+
+#[test]
+fn a_recovered_landing_reserves_the_verifier_while_it_reaps() {
+    use storyhook::service::landing::{LandingAdmission, VerifiedSubmission};
+    let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "landed before a restart", Priority::Low, PR_ONE);
+    let queue = VerificationQueue::new(fixture.store());
+    assert!(matches!(
+        queue
+            .begin_landing(
+                &fixture.ctx(),
+                &queue.next().unwrap().unwrap(),
+                &VerifiedSubmission {
+                    head: "a".repeat(40),
+                    tree: "b".repeat(40),
+                    gate: GateCommand::DEFAULT.into(),
+                },
+            )
+            .unwrap(),
+        LandingAdmission::Admitted(_)
+    ));
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = StatusProbe::new(&fixture, &activity, []);
+
+    let result = tick_with_activity(
+        fixture.store(),
+        fixture.env(),
+        &actuator,
+        &activity,
+        &inflight,
+        fixture.project(),
+    )
+    .unwrap();
+
+    assert_eq!(result, TickResult::Completed);
+    let probes = actuator.probes();
+    assert_eq!(probes.len(), 1);
+    assert_eq!(probes[0].0, "reap");
+    assert_reserved(&probes[0].1, &id, ReservationReason::Cleanup, "recovered");
+}
+
+#[test]
+fn a_cleanup_retry_is_admitted_already_reserved() {
+    let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "landed before a crash", Priority::High, PR_ONE);
+    let root = scratch_dir();
+    fixture.append_cleanup_lease(&id, lease_for(root.path(), &id));
+    let ctx = fixture.ctx();
+    StoryService::new(&ctx)
+        .comment(
+            &id,
+            &format!(
+                "{VERIFICATION_GREEN_PREFIX} merge tree `abc123` passed `make test` and pull request {PR_ONE} landed."
+            ),
+        )
+        .unwrap();
+    VerificationQueue::new(fixture.store())
+        .record_merged(&ctx, &id, PR_ONE)
+        .unwrap();
+    let env = Environment::at(root.path());
+    std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(env.clone());
+    let activity = VerificationActivity::new();
+    let actuator = StatusProbe::new(&fixture, &activity, []);
+
+    let result = tick_with_activity(
+        fixture.store(),
+        &env,
+        &actuator,
+        &activity,
+        &inflight,
+        fixture.project(),
+    )
+    .unwrap();
+
+    assert_eq!(result, TickResult::Completed);
+    let probes = actuator.probes();
+    assert_eq!(probes.len(), 1);
+    assert_eq!(probes[0].0, "reap");
+    assert_reserved(
+        &probes[0].1,
+        &id,
+        ReservationReason::Cleanup,
+        "cleanup retry",
+    );
+    assert!(probes[0].1.verifying.is_empty());
+}

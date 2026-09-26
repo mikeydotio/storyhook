@@ -2734,11 +2734,13 @@ Inspect and control this project's centralized verifier.
 
   A story that the verifier returns keeps the verifier reserved while its
   diagnosis goes to the agent (remediation). After a merge conflict it stays
-  reserved until the story resubmits (reconcile). status reports this as
-  reservation (story, generation, reason, reserved_at, age, queued behind).
-  It is normal work, not missing evidence, and the silence clock does not run
-  while the verifier is reserved. A remediation reservation that lasts longer
-  than the deadlines of its helpers is overdue and gives a warning.
+  reserved until the story resubmits (reconcile). A completed story keeps it
+  reserved while its worktree and window are removed (cleanup). status
+  reports this as reservation (story, generation, reason, reserved_at, age,
+  queued behind). It is normal work, not missing evidence, and the silence
+  clock does not run while the verifier is reserved. A remediation or cleanup
+  reservation that lasts longer than the deadlines of its helpers is overdue
+  and gives a warning.
 
   A project fault releases verifier ownership after cleanup. The managed agent
   decides scope before edits, preserves required gate coverage, tests new and

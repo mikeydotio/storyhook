@@ -188,6 +188,19 @@ impl VerificationActivity {
         candidate: &VerificationCandidate,
         started_at: String,
     ) -> Result<Option<VerificationGuard>, AppError> {
+        self.admit(store, candidate, started_at, None)
+    }
+
+    /// [`Self::try_acquire`] for a candidate the verifying queue never holds:
+    /// the slot is published already carrying `reservation`, retired, so no
+    /// status read sees it without the reason it exists.
+    pub(super) fn admit(
+        &self,
+        store: &impl Store,
+        candidate: &VerificationCandidate,
+        started_at: String,
+        reservation: Option<ReservationReason>,
+    ) -> Result<Option<VerificationGuard>, AppError> {
         // Avoid even taking the filesystem lock for an already-reserved story.
         // Admission checks again after locking to close the read/acquire race.
         if !store.read(|tx| crate::service::verification::human::permits(tx, candidate))? {
@@ -246,13 +259,18 @@ impl VerificationActivity {
             Ok((allowed, request_id, retry_origin))
         })?;
         Ok(allowed.then(|| {
+            let reservation = reservation.map(|reason| Reservation {
+                reason,
+                reserved_at: started_at.clone(),
+                retired: true,
+            });
             let mut guard =
                 self.acquire_locked(&mut slots, candidate, started_at, attempt_id, retry_origin);
             guard.recovery_request_id = request_id;
-            slots
-                .get_mut(&candidate.project)
-                .expect("just acquired")
-                .workspace = workspace.map(Arc::new);
+            // Assigned under the lock already held: the registry mutex is not reentrant.
+            let slot = slots.get_mut(&candidate.project).expect("just acquired");
+            slot.workspace = workspace.map(Arc::new);
+            slot.reservation = reservation;
             guard
         }))
     }

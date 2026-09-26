@@ -32,6 +32,8 @@ pub enum ReservationReason {
     Reconcile,
     /// Returned for repair; held while the diagnosis reaches the agent.
     Remediation,
+    /// Completed; held while the story's worktree, branch and window are reaped.
+    Cleanup,
 }
 
 impl ReservationReason {
@@ -41,6 +43,7 @@ impl ReservationReason {
         match self {
             Self::Reconcile => "merge-conflict reconcile until it resubmits",
             Self::Remediation => "delivery of its returned diagnosis",
+            Self::Cleanup => "cleanup of its worktree and window",
         }
     }
 
@@ -54,6 +57,8 @@ impl ReservationReason {
             // A paste, a resume re-dispatch, and a second paste, plus one wake
             // of store work around them.
             Self::Remediation => Some(CONTROL_VERB_CEILING * 3 + RECOVERY_WAKE),
+            // One reap, plus one wake of store work around it.
+            Self::Cleanup => Some(CONTROL_VERB_CEILING + RECOVERY_WAKE),
         }
     }
 }
@@ -454,11 +459,17 @@ mod tests {
     fn only_a_bounded_reservation_becomes_overdue() {
         // A paste, a resume re-dispatch and a second paste, each at its full
         // production deadline, must never read as overdue.
-        let delivery = 3 * (crate::service::engine::DISPATCH_TIMEOUT + RECOVERY_WAKE);
-        assert!(ReservationReason::Remediation.overdue_after().unwrap() > delivery);
+        let verb = crate::service::engine::DISPATCH_TIMEOUT + RECOVERY_WAKE;
+        assert!(ReservationReason::Remediation.overdue_after().unwrap() > 3 * verb);
+        // One reap at its full production deadline.
+        assert!(ReservationReason::Cleanup.overdue_after().unwrap() > verb);
         assert_eq!(ReservationReason::Reconcile.overdue_after(), None);
 
-        for reason in [ReservationReason::Remediation, ReservationReason::Reconcile] {
+        for reason in [
+            ReservationReason::Remediation,
+            ReservationReason::Cleanup,
+            ReservationReason::Reconcile,
+        ] {
             let board = Board::new();
             let held = board.story("Held", Some("verifying"));
             let activity = VerificationActivity::new();
