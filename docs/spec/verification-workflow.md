@@ -231,9 +231,12 @@ set-equality with the table.
 
 **If the paste succeeded, the verifier holds.** `wait_for_reconciled_candidate`
 keeps the project's worker reserved for that story — every other project's
-worker is unaffected (SH-648) — and re-observes the queue on every change-bus wake until the same story presents a **newer**
+worker is unaffected (SH-648) — and re-reads the store on every change-bus
+wake and every 100 ms until the same story presents a **newer**
 `verifying_generation` — the agent's resubmission — then transfers the
-reservation to it and continues in the same tick. Other arrivals cannot take
+reservation to it and continues in the same tick. A pass reads the store
+alone and starts no process; the checkout origin is validated once, for the
+resubmission it returns (SH-769). Other arrivals cannot take
 the slot; a daemon stop ends the wait without manufacturing a candidate. This
 is step 2's "wait, holding the queue", and it is pinned by
 `tests/verification_queue.rs` (the reservation, the generation check, and that
@@ -649,6 +652,39 @@ Tests: `tests/verification_queue.rs`
 `a_lease_less_green_landing_records_that_no_retry_is_possible`); the
 existing cleanup fixtures now record the lease `story move verifying` would
 have, so they model a state production can reach.
+
+### SH-769 — the reservation wait reads the store alone
+
+`wait_for_reconciled_candidate` runs a pass on every bus wake and every
+100 ms. Each pass read `VerificationQueue::ordered_for`, and that read
+validates every queued pull request against the checkout origin — two
+`Repository::resolve` calls, each a `git rev-parse` and a `git config`. With
+one other story with a PR in `verifying`, moshtail's MT-12 reservation
+(v3.0.3) journaled 302, 1553, 983 and 946 child records a minute, against
+about 8 with the queue empty, until the reservation transferred.
+
+**A pass now reads `VerificationQueue::current_generation_for`**: the same
+membership (`ordered_candidates_for`), no origin resolution, and a
+generation rather than a candidate, so a pull request nobody validated never
+leaves the queue. Only when it shows a newer generation does the waiter call
+the validated `current_for`, once, and it checks the answer again because
+the story can move between the two reads. The returned candidate is still
+validated, so `refresh_authority` finds it current. `ordered_for`'s doc now
+states the cost. Caching the origin for the whole wait was rejected: a
+reconcile can wait tens of minutes, and the returned candidate would be
+judged against an origin that old.
+
+The one other loop over validated reads, the gate's authority observer in
+`observation::verify`, stays as it is: it reads only on its own project's
+changes, `Catalog`, `Resync` and the 30 s `RECOVERY_WAKE`, and its
+`pull_request` comparison is what revokes an attempt whose origin changed.
+
+Tests: `src/daemon/verification/reconcile_wait_tests.rs` counts what an idle
+wait starts through two seams — the thread's activity journal and a
+test-build `git` tally in `git_env::command` — and requires both to see the
+one validation on return, so their zeros are not vacuous
+(`a_reconcile_wait_starts_no_process_until_its_story_resubmits`,
+`the_store_only_generation_read_agrees_with_the_validated_queue`).
 
 ### SH-691 — the base is asked of origin, and landing checks it
 

@@ -351,6 +351,11 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     /// drains them (SH-648). A queued candidate's position and wait are
     /// computed from this list, never re-derived from a second query that
     /// could race the one the worker itself used.
+    ///
+    /// Each call resolves the registered checkout's origin with `git` when a
+    /// candidate links a pull request. A loop that reads on every wake and
+    /// needs only generation identity must use
+    /// [`Self::current_generation_for`] instead (SH-769).
     pub fn ordered_for(&self, project: ProjectId) -> Result<Vec<VerificationCandidate>, AppError> {
         let mut candidates = self.store.read(|tx| ordered_candidates_for(tx, project))?;
         self.validate_origins(&mut candidates);
@@ -368,8 +373,31 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             .find(|current| current.story_id == candidate.story_id))
     }
 
+    /// The `verifying_generation` that [`Self::current_for`] would report for
+    /// this story, read from the store alone (SH-769).
+    ///
+    /// Queue membership is the same, because both read
+    /// [`ordered_candidates_for`]. But no checkout origin is resolved, so no
+    /// process starts. This is the read for a loop that watches generation
+    /// identity only. It answers with a generation rather than a candidate, so
+    /// a pull request that was never checked against the origin cannot leave
+    /// the queue: anything that acts on a candidate takes it from
+    /// [`Self::current_for`].
+    pub(crate) fn current_generation_for(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<Option<GlobalSeq>, AppError> {
+        Ok(self
+            .store
+            .read(|tx| ordered_candidates_for(tx, candidate.project))?
+            .into_iter()
+            .find(|current| current.story_id == candidate.story_id)
+            .and_then(|current| current.verifying_generation))
+    }
+
     // Resolve after the transaction closes: subprocess deadlines must not hold
-    // the store lock. Each call has a fresh project-scoped authority snapshot.
+    // the store lock. Each call has a fresh project-scoped authority snapshot,
+    // which costs `git` children on every call: never run it per wake (SH-769).
     fn validate_origins(&self, candidates: &mut [VerificationCandidate]) {
         let mut origins = std::collections::BTreeMap::new();
         for candidate in candidates {
