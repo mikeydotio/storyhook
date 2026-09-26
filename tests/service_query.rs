@@ -303,7 +303,7 @@ fn next_walks_blockers_and_reprioritizes_each_unblocked_frontier() {
 
 /// SH-788: the floor travels down a whole chain. SH-1 blocks SH-2, which
 /// blocks the critical SH-3; both blockers sort at critical, ahead of the
-/// unrelated high SH-4. When SH-3 closes, the blockage ends and so does the
+/// unrelated high SH-4. When SH-3 is dropped, the blockage ends and so does the
 /// floor: the two blockers fall back to their own low level, behind SH-4.
 #[test]
 fn next_ranks_a_whole_blocking_chain_at_its_most_urgent_dependent_until_it_closes() {
@@ -341,8 +341,10 @@ fn next_ranks_a_whole_blocking_chain_at_its_most_urgent_dependent_until_it_close
         ]
     );
 
+    // A story cannot finish while blocked, so the dependent closes by
+    // being abandoned.
     stories
-        .set_state(&critical, "done", None, None, None)
+        .set_state(&critical, "dropped", None, None, None)
         .expect("closing the critical dependent");
     let released = query(&fixture, |service| service.next(usize::MAX, None));
     assert_eq!(

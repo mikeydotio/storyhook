@@ -156,9 +156,10 @@ fn a_submission_blocking_more_urgent_work_drains_at_its_blocker_floor() {
         ]
     );
 
-    // The floor lasts only as long as the blockage.
+    // The floor lasts only as long as the blockage: abandoning the waiting
+    // story (it cannot finish while blocked) ends it.
     StoryService::new(&fixture.ctx())
-        .set_state(&waiting, "done", None, None, None)
+        .set_state(&waiting, "dropped", None, None, None)
         .unwrap();
     let ordered = VerificationQueue::new(fixture.store()).ordered().unwrap();
     assert_eq!(
