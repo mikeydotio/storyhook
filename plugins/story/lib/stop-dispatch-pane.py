@@ -10,6 +10,7 @@ import sys
 import time
 
 sys.dont_write_bytecode = True
+import probe_budget
 from process_identity import process_identity
 from workspace_ownership import inherited_fds
 
@@ -19,8 +20,8 @@ class CleanupError(Exception):
 
 
 def run(*args):
-    """Run a bounded probe and preserve its diagnostic on failure."""
-    result = subprocess.run(args, capture_output=True, text=True, timeout=5, check=False, pass_fds=inherited_fds())
+    """Run a probe within its operation budget and preserve its diagnostic on failure."""
+    result = probe_budget.run(args, capture_output=True, text=True, check=False, pass_fds=inherited_fds())
     if result.returncode:
         raise CleanupError(f"{' '.join(args)}: {result.stderr.strip() or result.returncode}")
     return result.stdout.strip()
@@ -136,10 +137,9 @@ def stop(pane, expected_pid, expected_start):
         # This is pre-charter rollback, not an agent shutdown: no task work was
         # authorized. Frozen startup children must not outlive their deleted cwd.
         signal_known(owned, signal.SIGKILL)
-        deadline = time.monotonic() + 5
         # Observe before judging: a slow pass must not turn death into survival.
         while any(alive(pid, identity) for pid, identity in owned.items()):
-            if time.monotonic() >= deadline:
+            if probe_budget.remaining() <= 0:
                 raise CleanupError("startup processes survived termination; preserved claim and worktree")
             time.sleep(0.05)
     finally:
@@ -152,7 +152,8 @@ if __name__ == "__main__":
     try:
         if len(sys.argv) != 4:
             raise CleanupError("expected pane, PID, and captured launch start token")
-        stop(sys.argv[1], int(sys.argv[2]), sys.argv[3])
+        with probe_budget.operation():
+            stop(sys.argv[1], int(sys.argv[2]), sys.argv[3])
     except (CleanupError, OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(json.dumps({"ok": False, "error": str(error)}))
         sys.exit(1)

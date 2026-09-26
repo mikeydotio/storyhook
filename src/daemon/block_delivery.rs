@@ -24,6 +24,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// How long one `story.sh notify` delivery may run before it is terminated.
+///
+/// Each plugin helper it runs bounds its probes by one per-operation budget
+/// (`plugins/story/lib/probe_budget.py`), which must end inside this bound.
 pub const NOTIFY_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// How long a terminated notify helper may run its own cleanup before SIGKILL.
@@ -505,5 +508,22 @@ pub(crate) fn poll(store: &impl Store, env: &Environment, bus: &ChangeBus, stop:
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod probe_budget_tests {
+    use super::NOTIFY_TIMEOUT;
+
+    /// A notify helper's probe budget leaves a third of the notify bound for
+    /// interpreter start and exit under load, so the helper can resume what
+    /// it froze before the daemon terminates it (SH-766).
+    #[test]
+    fn helper_probe_budget_ends_inside_the_notify_bound() {
+        let budget = crate::process::plugin_probe_budget();
+        assert!(
+            budget * 3 <= NOTIFY_TIMEOUT * 2,
+            "probe budget {budget:?} is more than two thirds of NOTIFY_TIMEOUT {NOTIFY_TIMEOUT:?}"
+        );
     }
 }

@@ -13,6 +13,7 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("pane_processes", Path(__file__).with_name("stop-dispatch-pane.py"))
 proc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(proc)
+import probe_budget  # noqa: E402  (loaded by proc; the same operation deadline)
 
 
 def save(path, record):
@@ -36,8 +37,7 @@ def panes(target):
         return []
     command = ["tmux", "-S", target["socket"], "list-panes", "-a", "-F",
                "#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}"]
-    output = subprocess.run(command, capture_output=True, text=True, timeout=5,
-                            pass_fds=proc.inherited_fds())
+    output = probe_budget.run(command, capture_output=True, text=True, pass_fds=proc.inherited_fds())
     if output.returncode:
         if not output.stdout and output.stderr.strip() == f"no server running on {target['socket']}":
             return []
@@ -105,10 +105,9 @@ def stop(target, path):
                 proc.require_launch_start(int(target["pid"]), target["start"])
                 proc.run("tmux", "-S", target["socket"], "kill-window", "-t", target["window"])
             proc.signal_known(owned, signal.SIGKILL)
-            deadline = time.monotonic() + 5
             # Observe before judging: a slow pass must not turn death into survival.
             while any(proc.alive(pid, identity) for pid, identity in owned.items()):
-                if time.monotonic() >= deadline:
+                if probe_budget.remaining() <= 0:
                     raise proc.CleanupError("captured cleanup writers survived termination")
                 time.sleep(0.05)
             if panes(target):
@@ -126,7 +125,8 @@ def stop(target, path):
 if __name__ == "__main__":
     try:
         target = json.loads(sys.argv[1])
-        stop(target, Path(sys.argv[2]))
+        with probe_budget.operation():
+            stop(target, Path(sys.argv[2]))
     except (proc.CleanupError, OSError, ValueError, KeyError, IndexError, subprocess.TimeoutExpired) as error:
         print(json.dumps({"ok": False, "error": str(error)}))
         sys.exit(1)

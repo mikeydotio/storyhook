@@ -17,6 +17,13 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("pane_processes", Path(__file__).with_name("stop-dispatch-pane.py"))
 proc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(proc)
+import probe_budget  # noqa: E402  (loaded by proc; the same operation deadline)
+
+# Seconds the gate owner's own TERM trap gets to clean up its group before
+# this controller freezes and kills the captured tree. machine-lock.sh needs
+# two lock polls (TERMINATION_GRACE_SECS, 2 s) plus reaping; escalating is
+# safe, only less gentle, so this is policy rather than a probe bound.
+GATE_TERM_GRACE = 5
 
 
 def cancelled(signum, _frame):
@@ -125,7 +132,7 @@ def interrupt(pane, provider, expected):
         # The lock owner's existing TERM trap does normal group cleanup first.
         # Each wait observes before it judges its deadline, so a slow pass
         # cannot turn an exit into escalation or into a refusal.
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + min(GATE_TERM_GRACE, probe_budget.remaining())
         while survivors(owned) and time.monotonic() < deadline:
             time.sleep(.05)
         if survivors(owned):
@@ -134,9 +141,8 @@ def interrupt(pane, provider, expected):
             # and retain the guard until a fresh observation proves quiescence.
             freeze(owned, {})
             proc.signal_known(owned, signal.SIGKILL)
-        deadline = time.monotonic() + 5
         while survivors(owned):
-            if time.monotonic() >= deadline:
+            if probe_budget.remaining() <= 0:
                 raise proc.CleanupError("gate children survived cancellation; ownership guard retained")
             time.sleep(.05)
         for guard, pid, started in guards:
@@ -159,12 +165,13 @@ def interrupt(pane, provider, expected):
 if __name__ == "__main__":
     try:
         operation, pane, provider = sys.argv[1:4]
-        if operation == "target":
-            print(target(pane, provider))
-        elif operation == "interrupt":
-            print(interrupt(pane, provider, sys.argv[4]))
-        else:
-            raise proc.CleanupError(f"unknown operation: {operation}")
+        with probe_budget.operation():
+            if operation == "target":
+                print(target(pane, provider))
+            elif operation == "interrupt":
+                print(interrupt(pane, provider, sys.argv[4]))
+            else:
+                raise proc.CleanupError(f"unknown operation: {operation}")
     except (proc.CleanupError, OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

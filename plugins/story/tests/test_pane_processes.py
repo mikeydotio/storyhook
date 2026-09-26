@@ -19,8 +19,11 @@ sys.path.insert(0, str(LIB))
 spec = importlib.util.spec_from_file_location("pane_processes", LIB / "stop-dispatch-pane.py")
 proc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(proc)
+import probe_budget  # noqa: E402  (the same module object the helpers use)
 
 CENSUS = ["ps", "-axo", "pid=,ppid=,stat=,lstart="]
+# The bare per-probe bound SH-766 retires; a census slower than this failed.
+RETIRED_PROBE_BOUND = 5
 # Fixture processes publish their PID within this many seconds at idle.
 FIXTURE_START_SECONDS = 5
 
@@ -29,6 +32,24 @@ def stopped(pid):
     """Report whether ps shows this process stopped by a signal."""
     state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
     return state.strip().startswith("T")
+
+
+def install_slow_census(bindir, scratch):
+    """Put a ps on PATH that delays the census once, as machine load does.
+
+    Writing seconds to the returned file delays the next census, and only
+    that one; every other ps call runs the real ps at once.
+    """
+    real = shutil.which("ps")
+    delay = scratch / "census-delay"
+    shim = bindir / "ps"
+    shim.write_text("#!/bin/sh\n"
+                    f"if [ \"$*\" = {shlex.quote(' '.join(CENSUS[1:]))} ] && [ -f {shlex.quote(str(delay))} ]; then\n"
+                    f"  seconds=$(cat {shlex.quote(str(delay))}); rm -f {shlex.quote(str(delay))}; sleep \"$seconds\"\n"
+                    "fi\n"
+                    f"exec {shlex.quote(real)} \"$@\"\n")
+    shim.chmod(0o755)
+    return delay
 
 
 class PaneFixture(unittest.TestCase):
@@ -48,6 +69,7 @@ class PaneFixture(unittest.TestCase):
         self.assertTrue(tmux, "tmux is required; this regression must not skip")
         bindir = self.path / "bin"
         bindir.mkdir()
+        self.delay = install_slow_census(bindir, self.path)
         wrapper = bindir / "tmux"
         # The helper addresses the caller's server; pin it to this private one.
         wrapper.write_text(f"#!/bin/sh\nexec {shlex.quote(tmux)} -S {shlex.quote(str(self.socket))} \"$@\"\n")
@@ -128,6 +150,66 @@ class StopTests(PaneFixture):
         self.assertFalse(stopped(self.child), "the frozen descendant stayed stopped after a failed census")
         self.assertIn(self.pane, self.tmux("list-panes", "-a", "-F", "#{pane_id}"),
                       "an uncertain stop must preserve the pane")
+
+    def test_a_census_slower_than_the_retired_bound_completes(self):
+        """The helper entry point gives a slow census its budget, not a bare 5 s (SH-766)."""
+        self.delay.write_text(str(RETIRED_PROBE_BOUND + 0.5))
+        started = time.monotonic()
+        result = subprocess.run([sys.executable, str(LIB / "stop-dispatch-pane.py"), self.pane, str(self.pid), self.start],
+                                capture_output=True, text=True, timeout=probe_budget.BUDGET_SECONDS * 2)
+        self.assertEqual(result.stdout.strip(), '{"ok": true}', result.stdout + result.stderr)
+        self.assertFalse(self.delay.exists(), "the census was never delayed")
+        self.assertGreater(time.monotonic() - started, RETIRED_PROBE_BOUND)
+        self.assertFalse(self.running(self.child, self.child_start), "the grouped descendant survived")
+
+
+class BudgetTests(unittest.TestCase):
+    """One deadline per operation bounds every probe inside it (SH-766)."""
+
+    def setUp(self):
+        root = tempfile.TemporaryDirectory(prefix="probe-budget-", dir="/tmp")
+        self.addCleanup(root.cleanup)
+        self.path = Path(root.name)
+        bindir = self.path / "bin"
+        bindir.mkdir()
+        self.delay = install_slow_census(bindir, self.path)
+        environment = patch.dict(os.environ, {"PATH": f"{bindir}:{os.environ['PATH']}"})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_a_probe_that_outlives_its_budget_names_its_evidence(self):
+        """The timeout says which probe, how long it had, and how loaded the machine was."""
+        self.delay.write_text("3")
+        with probe_budget.operation(budget=1):
+            with self.assertRaises(probe_budget.ProbeTimeout) as raised:
+                proc.processes()
+        error = raised.exception
+        self.assertIsInstance(error, subprocess.TimeoutExpired, "existing handlers must still catch it")
+        self.assertLessEqual(error.timeout, 1)
+        text = str(error)
+        for evidence in (" ".join(CENSUS), "1s operation budget", "load average"):
+            self.assertIn(evidence, text)
+
+    def test_a_spent_budget_refuses_before_spawning(self):
+        """No probe starts once its operation has no time left."""
+        marker = self.path / "spawned"
+        with probe_budget.operation(budget=0.01):
+            time.sleep(0.05)
+            self.assertEqual(probe_budget.remaining(), 0)
+            with self.assertRaises(probe_budget.ProbeTimeout) as raised:
+                proc.run("sh", "-c", f"touch {shlex.quote(str(marker))}")
+        self.assertEqual(raised.exception.timeout, 0)
+        self.assertFalse(marker.exists(), "a probe ran after its budget was spent")
+
+    def test_a_nested_operation_keeps_the_outer_deadline(self):
+        """An inner operation cannot extend the time its caller granted."""
+        with probe_budget.operation(budget=2):
+            with probe_budget.operation(budget=probe_budget.BUDGET_SECONDS):
+                self.assertLessEqual(probe_budget.remaining(), 2)
+
+    def test_a_probe_outside_an_operation_gets_one_whole_budget(self):
+        """Library callers without an operation still get a finite, named bound."""
+        self.assertEqual(probe_budget.remaining(), probe_budget.BUDGET_SECONDS)
 
 
 if __name__ == "__main__":
