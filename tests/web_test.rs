@@ -24,6 +24,7 @@ use storyhook::api::http::CSP;
 use storyhook::cli::parse_invocation;
 use storyhook::daemon::lifecycle::CONTROL_DEADLINE;
 use storyhook::daemon::serve::BoundAddress;
+use storyhook::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
 use storyhook::env::Environment;
 use storyhook::invoke::{dispatch, dispatch_unscoped};
 use storyhook::service::Ctx;
@@ -8973,6 +8974,18 @@ fn a_bindable_non_loopback_ip() -> std::net::IpAddr {
 /// `CONTROL_DEADLINE` (5s) and failed. Green after: the read lock is cloned
 /// out and released immediately, so an open SSE connection can no longer
 /// block anything.
+/// How long [`a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection`]
+/// waits for its shimmed tailnet bind: three probe windows.
+///
+/// That test starts its daemon with `STORYHOOK_TAILNET_REPROBE_*_MS`
+/// overrides, so a missed probe is retried within 200ms rather than after the
+/// production 2s backoff. A probe that overruns [`TAILNET_PROBE_TIMEOUT`] under
+/// gate load therefore costs one window, and this tolerates two such misses
+/// before calling the bind absent. The bare 5s it replaces was shorter than
+/// one miss plus that backoff plus the retry, and failed the gate on a tree
+/// with no defect (SH-788's first central verification).
+const LATE_BIND_DEADLINE: Duration = Duration::from_secs(TAILNET_PROBE_TIMEOUT.as_secs() * 3);
+
 #[test]
 fn a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection() {
     let _sse_guard = sse_test_lock();
@@ -8989,8 +9002,13 @@ fn a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection() {
     entries.extend(std::env::split_paths(&env.path_with_binary()));
     let path = std::env::join_paths(entries).expect("joining PATH");
 
+    // Fast retries, as `tailnet_rebind.rs` configures them: a probe that
+    // overruns under load is retried at once rather than after the production
+    // backoff (see `LATE_BIND_DEADLINE`).
     env.story(dir.path())
         .env("PATH", &path)
+        .env("STORYHOOK_TAILNET_REPROBE_INITIAL_MS", "50")
+        .env("STORYHOOK_TAILNET_REPROBE_CAP_MS", "200")
         .args(["web", "start"])
         .assert()
         .success();
@@ -9008,14 +9026,14 @@ fn a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection() {
     // Confirm the premise: the bind must land while the SSE connection
     // above is still open, or this test proves nothing about the ordering
     // it exists to pin.
-    let bind_deadline = Instant::now() + Duration::from_secs(5);
+    let bind_deadline = Instant::now() + LATE_BIND_DEADLINE;
     loop {
         if env.daemon().is_some_and(|i| i.tailnet.is_some()) {
             break;
         }
         assert!(
             Instant::now() < bind_deadline,
-            "the daemon never bound the shimmed tailnet identity within 5s"
+            "the daemon never bound the shimmed tailnet identity within {LATE_BIND_DEADLINE:?}"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
