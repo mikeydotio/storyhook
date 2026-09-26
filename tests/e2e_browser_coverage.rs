@@ -582,6 +582,7 @@ fn project_blocks_and_selector_read_this_configs_own_shape() {
             "mobile-webkit",
             "untrusted-origin-chromium",
             "fractional-firefox",
+            "node",
         ],
         "project_blocks() parsed {names:?} out of the live config -- either a project was \
          added/removed/reordered, or the parser's anchor no longer matches the file's shape"
@@ -637,10 +638,9 @@ fn the_untrusted_origin_spec_has_one_project() {
     );
 }
 
-/// The desktop pair's one exclusion list: phone-subject specs plus the two
+/// The desktop pair's one exclusion list: phone-subject specs plus the three
 /// partitions that each belong to a single dedicated project.
-const DESKTOP_EXCLUDED_SPECS_LINE: &str =
-    "const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS, FRACTIONAL_SPECS];";
+const DESKTOP_EXCLUDED_SPECS_LINE: &str = "const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS, FRACTIONAL_SPECS, NODE_SPECS];";
 
 /// SH-762: a layout width strictly between two whole CSS pixels is what
 /// exposed the gap between `(min-width: 769px)` and `(max-width: 768px)`, and
@@ -686,6 +686,144 @@ fn the_fractional_width_specs_have_one_project() {
         ),
         "the fractional-firefox project must drive Gecko at layout.css.devPixelsPerPx 1.1, the \
          preference that makes its viewport widths fractional"
+    );
+}
+
+/// SH-792 council verdict: a spec that never reaches a browser runs once, in
+/// the engine-free `node` project, instead of once per desktop engine. The
+/// project must refuse every browser launch -- the runtime half of the
+/// partition's guard -- and the launch probe must skip it rather than launch
+/// the engine it refuses.
+#[test]
+fn the_page_less_specs_have_one_engine_free_project() {
+    let config_text = read("e2e/playwright.config.ts");
+    let blocks = project_blocks(&config_text);
+    assert!(
+        config_text.contains("const NODE_SPECS = /\\.node\\.spec\\.ts$/;")
+            && config_text.contains(DESKTOP_EXCLUDED_SPECS_LINE),
+        "the page-less specs must be one named pattern that the desktop pair excludes"
+    );
+    let selecting: Vec<&str> = blocks
+        .iter()
+        .filter(|(_, body)| body.contains("NODE_SPECS"))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        selecting,
+        vec!["node"],
+        "only the node project may name the page-less pattern; found {selecting:?}"
+    );
+    let node = &blocks
+        .iter()
+        .find(|(name, _)| name == "node")
+        .unwrap_or_else(|| panic!("the config names no node project"))
+        .1;
+    assert_eq!(
+        selector(node),
+        Some(("testMatch", "NODE_SPECS".to_string()))
+    );
+    assert!(
+        node.contains("launchOptions: { executablePath: ENGINE_FREE_EXECUTABLE } },")
+            && node.contains("metadata: { engineFree: true },"),
+        "the node project must launch no browser (a nonexistent executable) and say so in its \
+         metadata"
+    );
+    assert!(
+        config_text.contains(
+            "const ENGINE_FREE_EXECUTABLE = \"/engine-free-project/node-specs-must-not-launch-a-browser\";"
+        ),
+        "the refusal must name why it refuses in the launch error it produces"
+    );
+    let probe = read("e2e/launch-probe.ts");
+    let skip = probe
+        .find("?.engineFree) {")
+        .expect("the launch probe skips an engine-free project");
+    let launch = probe
+        .find("playwright[engine].launch(")
+        .expect("the launch probe launches");
+    assert!(skip < launch, "the skip comes before any launch");
+}
+
+/// Browser fixtures a spec can ask Playwright for.
+const BROWSER_FIXTURES: [&str; 4] = ["page", "context", "browser", "browserName"];
+
+/// Whether a spec's source destructures a browser fixture in any `({ … })`
+/// parameter list -- a test, a hook, or a fixture. Coarse on purpose: an
+/// object literal that happens to name `page` reads as a request, which can
+/// only keep a page-less file in the desktop pair (a wasted duplicate run),
+/// never push a browser-driving file out of it.
+fn requests_a_browser_fixture(source: &str) -> bool {
+    let mut rest = source;
+    while let Some(at) = rest.find("({") {
+        let after = &rest[at + 2..];
+        let Some(end) = after.find('}') else { break };
+        if after[..end]
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|word| BROWSER_FIXTURES.contains(&word))
+        {
+            return true;
+        }
+        rest = &after[end..];
+    }
+    false
+}
+
+#[test]
+fn the_browser_fixture_scanner_reads_the_shapes_specs_use() {
+    for requesting in [
+        "test(\"t\", async ({ page }) => {});",
+        "test.beforeEach(async ({ page, request }) => {});",
+        "test(\"t\", async ({ context }) => {});",
+        "test(\"t\", async ({ browserName, page: p }) => {});",
+        "base.extend({ x: async ({ browser }, use) => {} });",
+    ] {
+        assert!(requests_a_browser_fixture(requesting), "{requesting}");
+    }
+    for page_less in [
+        "test(\"t\", async () => { expect(parse(\"#fff\")).toBe(1); });",
+        "test(\"t\", async ({}, testInfo) => {});",
+        "test(\"t\", async ({ request }) => {});",
+        "const pageSize = 3; test(\"paging\", () => {});",
+    ] {
+        assert!(!requests_a_browser_fixture(page_less), "{page_less}");
+    }
+}
+
+/// The static half of the page-less partition's guard (SH-792 council): a
+/// desktop-pair spec that requests no browser fixture runs byte-identically on
+/// both engines, so it belongs in `*.node.spec.ts`. Membership is derived from
+/// each file's own fixture use, never from a list.
+#[test]
+fn a_desktop_pair_spec_that_requests_no_browser_is_a_node_spec() {
+    let specs_dir = repo_root().join("e2e/specs");
+    let mut page_less = Vec::new();
+    let mut node_specs = 0;
+    for entry in std::fs::read_dir(&specs_dir).expect("e2e/specs is readable") {
+        let path = entry.expect("a spec entry").path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if !name.ends_with(".spec.ts") {
+            continue;
+        }
+        if name.ends_with(".node.spec.ts") {
+            node_specs += 1;
+            continue;
+        }
+        let desktop_pair = !(name.ends_with(".mobile.spec.ts")
+            || name.ends_with(".fractional.spec.ts")
+            || name == "untrusted-origin-cookie.spec.ts");
+        if desktop_pair {
+            let source = std::fs::read_to_string(&path).expect("a readable spec");
+            if !requests_a_browser_fixture(&source) {
+                page_less.push(name);
+            }
+        }
+    }
+    assert!(node_specs >= 1, "the node partition exists");
+    assert!(
+        page_less.is_empty(),
+        "these desktop specs request no page, context or browser, so a second engine runs \
+         them identically: rename each to *.node.spec.ts so the engine-free project runs it \
+         once: {page_less:?}"
     );
 }
 
@@ -1221,7 +1359,7 @@ fn the_runner_hands_the_lease_to_the_specs_before_the_daemon_starts() {
 /// the mandatory isolated store with mode=ro and parameterized identity queries.
 const AUDITED_SQLITE_COMMANDS: [(&str, &str); 2] = [
     (
-        "e2e/specs/cleanup-delivery-barrier.spec.ts",
+        "e2e/specs/cleanup-delivery-barrier.node.spec.ts",
         r#"execFileSync("python3", ["-c", `
 import sqlite3, sys
 with sqlite3.connect(sys.argv[1]) as db:

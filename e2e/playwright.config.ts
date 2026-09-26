@@ -42,8 +42,9 @@ if (loadGraceEnabled()) {
  * `hasTouch` — rather than the dashboard's behavior in general. One
  * pattern, referenced by both pairs below, so ordinary specs stay exhaustive
  * and disjoint by construction: every ordinary spec file matches it or it
- * doesn't. Two further partitions each belong to one dedicated project, and
- * both desktop projects exclude them. SH-321's untrusted-origin spec needs
+ * doesn't. Three further partitions each belong to one dedicated project, and
+ * both desktop projects exclude them (the third, `*.node.spec.ts`, is described
+ * at NODE_SPECS below). SH-321's untrusted-origin spec needs
  * daemon and browser configuration that would invalidate every ordinary
  * project's fixture. SH-762's `*.fractional.spec.ts` specs need a layout
  * width that is not a whole CSS pixel, which only the Gecko project below
@@ -58,7 +59,20 @@ const OPEN_PR_CHIP_SPECS = /open-pr-chip\.spec\.ts$/;
 const VERIFICATION_LAYOUT_SPECS = /verification-layout\.spec\.ts$/;
 const UNTRUSTED_ORIGIN_SPECS = /untrusted-origin-cookie\.spec\.ts$/;
 const FRACTIONAL_SPECS = /\.fractional\.spec\.ts$/;
-const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS, FRACTIONAL_SPECS];
+/**
+ * Specs that never reach a browser -- plain function and harness contracts
+ * that request no page, context or browser (SH-792). A second engine runs them
+ * as a byte-identical Node execution, so they run once, in the engine-free
+ * project below. Membership is derived, not declared: `tests/e2e_browser_coverage.rs`
+ * fails any desktop-pair spec that requests no browser fixture, and the
+ * engine-free project refuses to launch a browser, so a spec that does need
+ * one fails loud there instead of silently losing an engine. Council verdict
+ * recorded on SH-792.
+ */
+const NODE_SPECS = /\.node\.spec\.ts$/;
+const DESKTOP_EXCLUDED_SPECS = [MOBILE_SPECS, UNTRUSTED_ORIGIN_SPECS, FRACTIONAL_SPECS, NODE_SPECS];
+/** Where the engine-free project "finds" its browser: nowhere, by name. */
+const ENGINE_FREE_EXECUTABLE = "/engine-free-project/node-specs-must-not-launch-a-browser";
 const UNTRUSTED_ORIGIN_HOST = "storyhook.e2e.test";
 const MOBILE_OR_ENGINE_SPECS = [MOBILE_SPECS, ENGINE_SPECS, OPEN_PR_CHIP_SPECS, VERIFICATION_LAYOUT_SPECS];
 
@@ -222,6 +236,18 @@ export default defineConfig({
       name: "fractional-firefox",
       use: { ...devices["Desktop Firefox"], launchOptions: { firefoxUserPrefs: { "layout.css.devPixelsPerPx": "1.1" } } },
       testMatch: FRACTIONAL_SPECS,
+    },
+    {
+      // The `*.node.spec.ts` partition (SH-792): specs that never reach a
+      // browser, run once instead of once per engine. Any route to a browser
+      // -- a page, context or browser fixture, a hook, a helper -- launches
+      // from an executable that does not exist, so a browser-driving spec
+      // filed here fails loud rather than quietly running on no engine at all.
+      // `metadata.engineFree` is what `./launch-probe.ts` reads to skip it.
+      name: "node",
+      use: { ...devices["Desktop Chrome"], launchOptions: { executablePath: ENGINE_FREE_EXECUTABLE } },
+      metadata: { engineFree: true },
+      testMatch: NODE_SPECS,
     },
   ],
 });
