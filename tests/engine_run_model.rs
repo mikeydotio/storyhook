@@ -1603,6 +1603,93 @@ fn a_deferred_lane_does_not_hide_another_lanes_failure() {
     assert_eq!(fake.calls().len(), 1, "the later lane was attempted");
 }
 
+/// Writes lane 0 of `run` in the shape a dispatcher that died mid-dispatch
+/// leaves: the story claimed, the lane dispatching, no cleanup lease.
+fn orphan_dispatch(fixture: &ServiceFixture, run: &str, story: &str) {
+    let mut lane = fixture
+        .store()
+        .read(|tx| tx.engine_lanes(run))
+        .unwrap()
+        .remove(0);
+    lane.state = EngineLaneState::Dispatching;
+    lane.story_id = Some(story.to_string());
+    lane.dispatched_at = Some(FIXTURE_NOW.to_string());
+    fixture
+        .store()
+        .write(|tx| tx.put_engine_lane(&lane))
+        .unwrap();
+}
+
+/// SH-774: a lane left dispatching by a dispatcher that died (daemon exit
+/// mid-dispatch, or a lost write) made every Stop Now wait the full 180 s
+/// for a lease that could never come, then fail; on the daemon's engine
+/// thread that wait also starved every other project's run. The dispatch
+/// lock proves the dispatcher is gone, so the orphan is released at once.
+#[test]
+fn stop_now_releases_an_orphaned_dispatching_lane_without_waiting() {
+    let fixture = ServiceFixture::new();
+    let story = active_reset_story(&fixture, "dispatcher died");
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    orphan_dispatch(&fixture, &run.id, &story);
+
+    let started = std::time::Instant::now();
+    let stopped = engine.stop(&run.id, true).unwrap();
+
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "waited {:?} for a dead dispatch",
+        started.elapsed()
+    );
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "in-progress");
+    let awaiting = row.awaiting.unwrap();
+    assert!(
+        awaiting.contains("dispatch ended without recording a result"),
+        "{awaiting}"
+    );
+    assert!(fake.calls().is_empty());
+}
+
+/// SH-774: a card reset waits for dispatching lanes to settle, and Stop Now
+/// defers to a card reset. For an orphaned dispatch neither would ever move.
+/// Stop Now frees that lane, the one write the card-reset guard allows, and
+/// leaves the story to the card reset.
+#[test]
+fn stop_now_frees_an_orphaned_dispatch_that_a_card_reset_waits_on() {
+    use storyhook::service::story_reset::StoryResetService;
+    let fixture = ServiceFixture::new();
+    let story = active_reset_story(&fixture, "dispatcher died");
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(1)).unwrap();
+    orphan_dispatch(&fixture, &run.id, &story);
+    StoryResetService::new(&ctx)
+        .reserve(&story, &story)
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let stopped = engine.stop(&run.id, true).unwrap();
+
+    assert!(started.elapsed() < Duration::from_secs(30));
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    let reset = fixture
+        .store()
+        .read(|tx| tx.story_reset(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert!(!reset.completed, "the card reset still owns the story");
+    assert!(fake.calls().is_empty());
+}
+
 #[test]
 fn immediate_stop_detaches_verification_without_calling_a_cleanup_helper() {
     let fixture = ServiceFixture::new();

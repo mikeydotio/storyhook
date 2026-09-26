@@ -30,6 +30,7 @@ use crate::lane_budget::WindowCensus;
 #[cfg(test)]
 use crate::process::read_capture;
 use crate::process::{CaptureError, Captured, run_captured};
+use crate::service::executor_lock::ExecutorLock;
 use crate::store::ids::GlobalSeq;
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
@@ -1913,6 +1914,27 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             Some(self.dispatcher.census())
         };
 
+        if idle.is_empty() {
+            return Ok(hard_stops);
+        }
+        // Held from before the first claim until each claimed lane has its
+        // post-dispatch record. A Stop Now that can take this lock knows that
+        // no dispatcher is alive, so a lane still dispatching is an orphan it
+        // may release instead of waiting for it (SH-774). The kernel releases
+        // the lock if this process dies mid-dispatch.
+        let (dispatch_path, dispatch_file) =
+            reset::run_lock_file(self.ctx.env(), "dispatch", run_id)?;
+        let _dispatching = match ExecutorLock::acquire(&dispatch_file, &dispatch_path) {
+            Ok(guard) => guard,
+            // Another dispatcher is filling this run; it owns this pass.
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(hard_stops),
+            Err(error) => {
+                return Err(AppError::Storage(format!(
+                    "locking dispatch controller {} for engine run `{run_id}`: {error}",
+                    dispatch_path.display()
+                )));
+            }
+        };
         for lane in idle {
             let dispatched_at = self.ctx.now();
             let mut working = lane.clone();
@@ -1994,7 +2016,28 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         cleanup_lease_from_payload(&outcome.payload, slug, &story).ok();
                     live.outcome = None;
                     live.outcome_detail = None;
-                    self.ctx.store().write(|tx| tx.put_engine_lane(&live))?;
+                    // Compare-and-swap: a dispatch result must never bring back
+                    // a lane that another writer released meanwhile.
+                    let applied = self.ctx.store().write(|tx| {
+                        if !tx
+                            .engine_lanes(run_id)?
+                            .iter()
+                            .any(|current| current == &working)
+                        {
+                            return Ok(false);
+                        }
+                        tx.put_engine_lane(&live)?;
+                        Ok(true)
+                    })?;
+                    if !applied {
+                        return Err(AppError::Storage(format!(
+                            "engine run `{run_id}` lane {} changed while story `{story}` \
+                             dispatched; its new window {} and worktree {} have no lane",
+                            lane.lane_index,
+                            live.window_name.as_deref().unwrap_or("unknown"),
+                            live.worktree_path.as_deref().unwrap_or("unknown"),
+                        )));
+                    }
                     report.filled.push((lane.lane_index, story));
                     continue;
                 }
@@ -2251,11 +2294,20 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         self.reset_now(run_id)
     }
 
+    /// Waits until no lane is mid-dispatch, then returns the lanes.
+    ///
+    /// A dispatching lane has no cleanup lease until its dispatch returns.
+    /// Its dispatcher holds the run's dispatch lock for that whole time, so
+    /// taking the lock proves the dispatch is dead (SH-774): the lanes read
+    /// under it are final, and Stop Now releases the orphan. Before this,
+    /// an orphan made every attempt wait the full 180 s bound and fail.
     fn stop_lanes_after_dispatch(
         &self,
         run_id: &RunId,
         deadline: Instant,
     ) -> Result<Vec<EngineLaneRecord>, AppError> {
+        let (dispatch_path, dispatch_file) =
+            reset::run_lock_file(self.ctx.env(), "dispatch", run_id)?;
         loop {
             let lanes = self.ctx.store().read(|tx| tx.engine_lanes(run_id))?;
             let Some(dispatching) = lanes.iter().find(|lane| {
@@ -2263,6 +2315,19 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             }) else {
                 return Ok(lanes);
             };
+            match ExecutorLock::acquire(&dispatch_file, &dispatch_path) {
+                // The run is stopping, so no new claim can follow the release.
+                Ok(_no_dispatcher) => {
+                    return Ok(self.ctx.store().read(|tx| tx.engine_lanes(run_id))?);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => {
+                    return Err(AppError::Storage(format!(
+                        "locking dispatch controller {} for engine run `{run_id}`: {error}",
+                        dispatch_path.display()
+                    )));
+                }
+            }
             if Instant::now() >= deadline {
                 return Err(AppError::Storage(format!(
                     "engine run `{run_id}` could not immediately stop lane {} story `{}`: dispatch did not publish its cleanup lease within {}s",

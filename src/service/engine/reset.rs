@@ -300,6 +300,23 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             };
             let number = row.story_no;
             if let Some(owner) = super::super::story_reset::foreign_owner(tx, project, number)? {
+                // A card reset waits for dispatching lanes to settle, and this
+                // one's dispatcher is dead (the dispatch lock proved it).
+                // Freeing it is the one lane write the card-reset guard allows,
+                // and it lets that reset finish instead of both waiting.
+                if lane.state == EngineLaneState::Dispatching
+                    && tx
+                        .story_reset(project, number)?
+                        .is_some_and(|reset| !reset.completed)
+                {
+                    let detail = format!(
+                        "Full Auto Stop Now released run `{}` lane {}: its dispatch ended without \
+                         a result, and {owner} owns story `{id}`.",
+                        lane.run_id, lane.lane_index,
+                    );
+                    put_or_retire_idle_lane(tx, &released_lane(&lane, &now, detail))?;
+                    return Ok(StopTarget::Settled);
+                }
                 return Ok(StopTarget::Deferred(owner));
             }
             if let Some(reset) = tx.engine_reset(project, number)? {
@@ -329,8 +346,15 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 // Only the lease proves which window, worktree and branch this
                 // run created (SH-706). Without it the work is kept, claimed
                 // and explained, and the lane is released.
+                // A dispatching lane reaches here only after the dispatch lock
+                // proved its dispatcher dead (daemon exit or a lost write).
+                let cause = if lane.state == EngineLaneState::Dispatching {
+                    "Its dispatch ended without recording a result, so the lane"
+                } else {
+                    "The lane"
+                };
                 let detail = format!(
-                    "Full Auto Stop Now released run `{}` lane {} ({}) without cleanup. The lane \
+                    "Full Auto Stop Now released run `{}` lane {} ({}) without cleanup. {cause} \
                      has no cleanup lease, so Stop Now cannot prove which window, worktree and \
                      branch the run created. The story stays claimed and its resources stay in \
                      place. Examine them, then use Reset on the story card (`story reset {id}`) \

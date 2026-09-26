@@ -1708,6 +1708,74 @@ fn a_dispatch_refused_after_a_card_reset_reserved_its_story_releases_the_lane() 
     assert!(row.awaiting.is_none(), "the card reset owns the story");
 }
 
+/// SH-774: the post-dispatch lane write was unconditional, so a dispatch
+/// result could bring back a lane that another writer had released while
+/// the helper ran. It is now a compare-and-swap, and a lost race fails loud
+/// with the unowned window and worktree named.
+#[test]
+fn a_dispatch_result_never_overwrites_a_lane_released_meanwhile() {
+    use storyhook::error::AppError;
+    use storyhook::service::engine::{DispatchRequest, Dispatcher, UnclaimRequest, WindowProbe};
+
+    struct ReleasedMeanwhile<'a> {
+        fixture: &'a ServiceFixture,
+        run_id: String,
+    }
+    impl Dispatcher for ReleasedMeanwhile<'_> {
+        fn dispatch(&self, request: DispatchRequest) -> Result<DispatchOutcome, AppError> {
+            let mut lane = lane_at(self.fixture, &self.run_id, 0);
+            lane.state = EngineLaneState::Idle;
+            lane.story_id = None;
+            lane.dispatched_at = None;
+            lane.outcome = Some("released elsewhere".into());
+            self.fixture
+                .store()
+                .write(|tx| tx.put_engine_lane(&lane))
+                .unwrap();
+            Ok(DispatchOutcome::from_payload(serde_json::json!({
+                "ok": true,
+                "window_name": request.story,
+                "worktree_path": "/owned/late",
+            })))
+        }
+        fn unclaim(&self, _: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
+            panic!("the engine never unclaims here")
+        }
+        fn probe_window(&self, _: &str) -> WindowProbe {
+            panic!("no lane is observed")
+        }
+        fn kill_window(&self, _: &str) -> Result<(), AppError> {
+            panic!("no window is proven owned")
+        }
+        fn census(&self) -> WindowCensus {
+            WindowCensus::Counted { windows: vec![] }
+        }
+    }
+
+    let fixture = ServiceFixture::new();
+    new_story(&fixture, "late result", &[]);
+    let run_id = started_run(&fixture, &FakeDispatcher::default(), 1);
+    let ctx = fixture.ctx();
+    let dispatcher = ReleasedMeanwhile {
+        fixture: &fixture,
+        run_id: run_id.clone(),
+    };
+
+    let error = EngineService::new(&ctx, &dispatcher)
+        .reconcile(&run_id)
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("changed while story `SH-1` dispatched"),
+        "{error}"
+    );
+    assert!(error.contains("/owned/late"), "{error}");
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Idle);
+    assert_eq!(lane.outcome.as_deref(), Some("released elsewhere"));
+}
+
 /// SH-774: the breaker leaves the third refused lane quarantined, with its
 /// story claimed and no cleanup lease. Stop Now on that halted run failed on
 /// every attempt ("cannot reset legacy lane"); it now releases the lane,
