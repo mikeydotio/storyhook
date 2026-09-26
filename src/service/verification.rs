@@ -1265,68 +1265,81 @@ pub(crate) fn ordered_candidates_for(
     tx: &impl ReadOps,
     project: ProjectId,
 ) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
-    let mut candidates = Vec::new();
-    if let Some(project) = tx.project(project)? {
-        let intents = tx.landing_intents()?;
-        let index = super::query::story_map(tx, project.id)?;
-        let floors = crate::domain::BlockerFloors::compute(&index);
-        let checkout = tx.checkout_path(project.id)?;
-        let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
-        let resets = tx.story_resets(project.id)?;
-        let observed = super::project_recovery::observed_generations(tx, project.id)?;
-        for row in rows {
-            if crate::domain::is_human_only(&row.snapshot)
-                || row.snapshot.awaiting.is_some()
-                || resets.contains_key(&row.story_no)
-                || tx.engine_reset(project.id, row.story_no)?.is_some()
-                || tx
-                    .story_reset(project.id, row.story_no)?
-                    .is_some_and(|reset| !reset.completed)
-            {
-                continue;
-            }
-            let links = tx
-                .open_pr_links_for_story(project.id, row.story_no)?
-                .into_iter()
-                .filter(|link| link.close_on_merge)
-                .collect::<Vec<_>>();
-            let pull_request = match (&checkout, links.as_slice()) {
-                (None, _) => Err(VerificationProblem::MissingCheckout),
-                (Some(_), [link]) => Ok(link.clone()),
-                (Some(_), []) => Err(VerificationProblem::MissingPullRequest),
-                (Some(_), many) => Err(VerificationProblem::MultiplePullRequests(
-                    many.iter().map(|link| link.url.clone()).collect(),
-                )),
-            };
-            let entry = verifying_entry(tx, project.id, row.story_no)?;
-            let (verifying_since, verifying_generation) = entry
-                .map(|(at, generation)| (Some(at), Some(generation)))
-                .unwrap_or((None, None));
-            if verifying_generation
-                .is_some_and(|generation| observed.contains(&(row.story_no, generation)))
-            {
-                continue;
-            }
-            candidates.push(VerificationCandidate {
-                blocked_by: crate::domain::transition::open_blockers(&row.snapshot, &index),
-                landing_pending: intents
-                    .iter()
-                    .any(|i| i.project == project.id && i.story == row.story_no),
-                project: project.id,
-                project_slug: project.slug.clone(),
-                story_id: row.story_no.to_id(&project.prefix),
-                title: row.title,
-                priority: floors.effective(&row.snapshot),
-                created_at: row.created_at,
-                verifying_since,
-                verifying_generation,
-                blocking_revision: blocking_revision(tx, project.id, row.story_no)?,
-                human_only_revision: human::revision(tx, project.id, row.story_no)?,
-                checkout: checkout.clone().unwrap_or_default(),
-                cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
-                pull_request,
-            });
+    match tx.project(project)? {
+        Some(project) => {
+            let index = super::query::story_map(tx, project.id)?;
+            ordered_candidates_in(tx, &project, &index)
         }
+        None => Ok(Vec::new()),
+    }
+}
+
+/// [`ordered_candidates_for`] over a story index the caller already built in
+/// the same transaction, so a reader that needs both builds it once.
+fn ordered_candidates_in(
+    tx: &impl ReadOps,
+    project: &crate::store::ProjectRecord,
+    index: &std::collections::BTreeMap<String, crate::domain::StorySnapshot>,
+) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
+    let mut candidates = Vec::new();
+    let intents = tx.landing_intents()?;
+    let floors = crate::domain::BlockerFloors::compute(index);
+    let checkout = tx.checkout_path(project.id)?;
+    let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
+    let resets = tx.story_resets(project.id)?;
+    let observed = super::project_recovery::observed_generations(tx, project.id)?;
+    for row in rows {
+        if crate::domain::is_human_only(&row.snapshot)
+            || row.snapshot.awaiting.is_some()
+            || resets.contains_key(&row.story_no)
+            || tx.engine_reset(project.id, row.story_no)?.is_some()
+            || tx
+                .story_reset(project.id, row.story_no)?
+                .is_some_and(|reset| !reset.completed)
+        {
+            continue;
+        }
+        let links = tx
+            .open_pr_links_for_story(project.id, row.story_no)?
+            .into_iter()
+            .filter(|link| link.close_on_merge)
+            .collect::<Vec<_>>();
+        let pull_request = match (&checkout, links.as_slice()) {
+            (None, _) => Err(VerificationProblem::MissingCheckout),
+            (Some(_), [link]) => Ok(link.clone()),
+            (Some(_), []) => Err(VerificationProblem::MissingPullRequest),
+            (Some(_), many) => Err(VerificationProblem::MultiplePullRequests(
+                many.iter().map(|link| link.url.clone()).collect(),
+            )),
+        };
+        let entry = verifying_entry(tx, project.id, row.story_no)?;
+        let (verifying_since, verifying_generation) = entry
+            .map(|(at, generation)| (Some(at), Some(generation)))
+            .unwrap_or((None, None));
+        if verifying_generation
+            .is_some_and(|generation| observed.contains(&(row.story_no, generation)))
+        {
+            continue;
+        }
+        candidates.push(VerificationCandidate {
+            blocked_by: crate::domain::transition::open_blockers(&row.snapshot, index),
+            landing_pending: intents
+                .iter()
+                .any(|i| i.project == project.id && i.story == row.story_no),
+            project: project.id,
+            project_slug: project.slug.clone(),
+            story_id: row.story_no.to_id(&project.prefix),
+            title: row.title,
+            priority: floors.effective(&row.snapshot),
+            created_at: row.created_at,
+            verifying_since,
+            verifying_generation,
+            blocking_revision: blocking_revision(tx, project.id, row.story_no)?,
+            human_only_revision: human::revision(tx, project.id, row.story_no)?,
+            checkout: checkout.clone().unwrap_or_default(),
+            cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
+            pull_request,
+        });
     }
     sort_candidates(&mut candidates);
     Ok(candidates)
