@@ -13,10 +13,10 @@ import unittest
 sys.dont_write_bytecode = True
 from test_verifier_lifecycle import VerifierLifecycle
 
-# A fixture command can consume the production cleanup budget plus scheduling
-# overhead; all fixtures own their processes and never touch the real tmux server.
+# The smallest budget production accepts, graced by contention like every
+# lifecycle budget; all fixtures own their processes and never touch the real
+# tmux server.
 CLEANUP_MS = 4000
-PATIENCE = CLEANUP_MS / 1000 + 30
 
 
 class VerdictPreservation(unittest.TestCase):
