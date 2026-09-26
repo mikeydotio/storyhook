@@ -1438,7 +1438,10 @@ fn immediate_stop_releases_a_leaseless_lane_and_preserves_its_story() {
             .is_none(),
         "no cleanup identity is invented"
     );
-    assert!(fake.calls().is_empty(), "no helper touches unproven resources");
+    assert!(
+        fake.calls().is_empty(),
+        "no helper touches unproven resources"
+    );
 }
 
 /// SH-774: the incident's lane was quarantined by a refused dispatch, so its
@@ -1548,7 +1551,9 @@ fn stop_now_defers_to_a_card_reset_and_finishes_after_it() {
     let engine = EngineService::new(&ctx, &fake);
     let run = engine.start(start_request(1)).unwrap();
     occupy(&fixture, &run.id, 0, &story, "/owned/card");
-    let card = StoryResetService::new(&ctx).reserve(&story, &story).unwrap();
+    let card = StoryResetService::new(&ctx)
+        .reserve(&story, &story)
+        .unwrap();
 
     let deferred = engine.stop(&run.id, true).unwrap();
 
@@ -1587,7 +1592,9 @@ fn a_deferred_lane_does_not_hide_another_lanes_failure() {
     let run = engine.start(start_request(2)).unwrap();
     occupy(&fixture, &run.id, 0, &owned, "/owned/card");
     occupy(&fixture, &run.id, 1, &failing, "/owned/failing");
-    StoryResetService::new(&ctx).reserve(&owned, &owned).unwrap();
+    StoryResetService::new(&ctx)
+        .reserve(&owned, &owned)
+        .unwrap();
 
     let error = engine.stop(&run.id, true).unwrap_err().to_string();
 

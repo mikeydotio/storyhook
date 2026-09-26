@@ -800,7 +800,10 @@ fn stop_now_during_a_dispatch_that_is_then_refused_finishes_the_run() {
         .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
         .unwrap()
         .unwrap();
-    assert_eq!(row.state, "in-progress", "the refused story keeps its claim");
+    assert_eq!(
+        row.state, "in-progress",
+        "the refused story keeps its claim"
+    );
     assert!(
         row.awaiting.as_deref().unwrap().contains(REFUSAL),
         "the dispatch refusal stays the diagnosis: {:?}",
