@@ -64,6 +64,8 @@ pub(crate) mod runtime_file {
     pub const LOG_ROTATED: &str = "daemon.log.1";
     /// [`super::Environment::daemon_port_hint`].
     pub const PORT_HINT: &str = "daemon.port-hint";
+    /// [`super::Environment::journal_hygiene_file`].
+    pub const JOURNAL_HYGIENE: &str = "journal-hygiene.json";
 }
 
 /// The port the daemon prefers, and the one the dashboard bookmark names.
@@ -426,6 +428,13 @@ impl Environment {
     /// (SH-143).
     pub fn daemon_attempt(&self) -> PathBuf {
         self.daemon_state_dir().join("daemon.attempt.json")
+    }
+
+    /// Where the running daemon publishes which registered checkouts track
+    /// journal files in git (SH-771). The daemon removes it at start, before
+    /// its portfile, and rewrites it after every hygiene sweep.
+    pub fn journal_hygiene_file(&self) -> PathBuf {
+        self.daemon_state_dir().join(runtime_file::JOURNAL_HYGIENE)
     }
 
     /// Where a daemon started in the background writes its diagnostics.

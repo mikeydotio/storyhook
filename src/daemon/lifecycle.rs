@@ -1217,6 +1217,14 @@ pub fn run<S: crate::store::Store>(
     enter_stable_working_directory(env)?;
     let _pidfile = claim_pidfile(env)?;
     let _activity = crate::daemon::activity::start(env);
+    // Before the portfile: once this daemon is discoverable, any journal
+    // hygiene findings a status reader sees are its own (SH-771).
+    if let Err(error) = crate::daemon::activity::hygiene::reset(env) {
+        eprintln!(
+            "warning: storyhook could not clear the previous daemon's journal findings at {}: {error}",
+            env.journal_hygiene_file().display()
+        );
+    }
     crate::daemon::crash::harvest(env);
 
     // Before serving anything: one global database is one global blast radius,

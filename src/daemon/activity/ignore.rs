@@ -8,7 +8,7 @@
 //! the ignore file itself. Git gives a deeper ignore file precedence over
 //! every shallower one, so the repository's own rules cannot re-include the
 //! journal. Files already in the index stay tracked whatever an ignore file
-//! says; the daemon's hygiene sweep reports those.
+//! says; [`super::hygiene`] reports those.
 //!
 //! Every writer calls [`prepare`] before it opens a journal file, so no
 //! journal file exists in a directory that git can see. Every writer means

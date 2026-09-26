@@ -3,6 +3,7 @@
 //! activity. File-backed observers never wait for a descendant to close a pipe.
 
 pub(crate) mod context;
+pub(crate) mod hygiene;
 mod ignore;
 mod observe;
 mod view;
