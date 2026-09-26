@@ -79,6 +79,13 @@
 //! Its one exemption names the story that owns the redesign, and it fails
 //! as soon as the exempt file no longer needs it.
 //!
+//! # One load reading in the Rust harness (SH-806)
+//!
+//! Harness *patience* is graced by measured contention through
+//! `storyhook_test_support::load_grace`, the Rust port of the SH-347 policy.
+//! Only that module may read the load average, and its ceiling is pinned to
+//! the Python port's.
+//!
 //! # Derived, not hand-listed, and its own positive control
 //!
 //! Every tracked `tests/*.rs` file is read via `git ls-files`, the same
@@ -747,4 +754,75 @@ fn python_scanner_accepts_names_derivations_and_comment_lines() {
     ] {
         assert!(bare_python_ceilings(source).is_empty(), "{source}");
     }
+}
+
+/// The one Rust file that may read the machine's load average (SH-806).
+///
+/// The SH-347 grace is one policy with one reading: a second reader would be
+/// a second opinion about how patient to be, the drift SH-136 names. The
+/// browser suite fences its own copy the same way
+/// (`tests/e2e_load_grace.rs::only_load_grace_reads_the_machines_own_load_average`).
+const LOAD_READER: &str = "crates/storyhook-test-support/src/load_grace.rs";
+
+/// Whether `source` reads the load average itself, outside comments.
+///
+/// The call's name is assembled at run time so this file never matches its
+/// own scan.
+fn reads_load_average(source: &str) -> bool {
+    without_rust_comments(source).contains(&["getload", "avg("].concat())
+}
+
+#[test]
+fn only_load_grace_reads_the_load_average_in_the_rust_harness() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut corpus = tracked_test_files(root, "tests/*.rs");
+    corpus.extend(tracked_test_files(
+        root,
+        "crates/storyhook-test-support/src/*.rs",
+    ));
+    assert!(
+        corpus.contains_key(LOAD_READER),
+        "{LOAD_READER} was not read; this scan proved nothing"
+    );
+    let readers: Vec<&str> = corpus
+        .iter()
+        .filter(|(_, source)| reads_load_average(source))
+        .map(|(path, _)| path.as_str())
+        .collect();
+    assert_eq!(
+        readers,
+        [LOAD_READER],
+        "a Rust harness wait that needs the contention reading takes it from \
+         storyhook_test_support::load_grace (contention, Patience, graced_now), never from the \
+         OS itself"
+    );
+}
+
+#[test]
+fn the_load_reader_scan_sees_a_call_and_ignores_prose() {
+    let call = format!(
+        "let read = unsafe {{ libc::{}(averages.as_mut_ptr(), 1) }};",
+        ["getload", "avg"].concat()
+    );
+    assert!(reads_load_average(&call));
+    let prose = format!("// {}(3) is documented here", ["getload", "avg"].concat());
+    assert!(!reads_load_average(&prose));
+}
+
+#[test]
+fn the_rust_and_python_harnesses_share_sh_347s_ceiling() {
+    assert_eq!(
+        storyhook_test_support::load_grace::PATIENCE_CEILING,
+        std::time::Duration::from_secs(15 * 60),
+        "SH-347's user determination names 15 minutes for any one graced wait"
+    );
+    let python = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tests/load_grace.py"),
+    )
+    .expect("the Python port of the same policy");
+    assert!(
+        python.contains("PATIENCE_CEILING = 15 * 60\n"),
+        "scripts/tests/load_grace.py must keep the same ceiling as the Rust port; \
+         e2e/load-grace.ts is pinned by tests/e2e_load_grace.rs"
+    );
 }

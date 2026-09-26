@@ -47,6 +47,7 @@ mod git_identity;
 mod github;
 mod hooks_manifest;
 mod legacy_tree;
+pub mod load_grace;
 mod project;
 mod pty;
 mod real_store;
