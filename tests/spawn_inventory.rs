@@ -229,12 +229,14 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // rather than assumed — a future `--version` that consulted the daemon
     // would move this row to `Detached`'s problem, not leave it unchanged.
     ("src/install_status.rs", "&spelling", Kind::Reads),
-    // `plugin::run_provider` — the selected provider CLI (`claude` or `codex`).
-    // Classified as `Reads` because install/uninstall captures both streams to
-    // report the provider's exact failure. The availability probe sharing this
-    // constructor uses null streams and `.status()`, so the more restrictive
-    // classification covers every call made through it.
-    ("src/plugin.rs", "target.executable(", Kind::Reads),
+    // `plugin::provider_cli` — every run of a provider CLI (`claude` or
+    // `codex`). `Waited` since SH-815: it goes through the shared
+    // `run_captured_answer`, so stdout and stderr are files rather than pipes,
+    // the child has its own process group, and `PROVIDER_CLI_TIMEOUT` stops
+    // that whole group. Until then it was `Reads` through a bare `.output()`
+    // with no deadline, and a `codex plugin list` that never passed its own
+    // launch held the central verifier for as long as the daemon lived.
+    ("src/plugin/provider_cli.rs", "program", Kind::Waited),
     // `plugin::run_helper` — the Codex stable-launcher bridge. The helper
     // inherits the caller's streams and is waited to completion with
     // `.status()`, so there is no output pipe whose EOF a descendant could

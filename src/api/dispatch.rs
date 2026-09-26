@@ -1681,24 +1681,24 @@ fn resolve_dispatch_script_from_for_agent(
     release_root: Option<PathBuf>,
     dev_root: Option<PathBuf>,
     agent: DispatchAgent,
-    codex_root: &dyn Fn(&Path) -> Option<PathBuf>,
+    codex_root: &dyn Fn(&Path) -> Result<Option<PathBuf>, crate::error::AppError>,
 ) -> Result<PathBuf, String> {
     if let Some(configured) = configured {
-        let path = PathBuf::from(configured);
-        return if path.is_file() {
-            check_dispatch_protocol(path)
-        } else {
-            Err(format!(
-                "STORYHOOK_DISPATCH_SCRIPT names `{}`, which is not a file",
-                path.display()
-            ))
-        };
+        return configured_script(configured);
     }
+    // A Codex registry that could not be read falls through like an empty
+    // one. It is named only if nothing else resolves: the daemon journal
+    // already records the failed run, and the projection is the same bytes.
+    let mut unread = None;
     let installed = home.and_then(|home| match agent {
         DispatchAgent::Claude => installed_plugin_script(&home),
-        DispatchAgent::Codex => codex_root(&home)
-            .map(|root| root.join("bin/story.sh"))
-            .filter(|script| script.is_file()),
+        DispatchAgent::Codex => match codex_root(&home) {
+            Ok(root) => codex_registry_script(root),
+            Err(error) => {
+                unread = Some(error);
+                None
+            }
+        },
     });
     if let Some(path) = installed {
         return check_dispatch_protocol(path);
@@ -1713,10 +1713,32 @@ fn resolve_dispatch_script_from_for_agent(
     }
     Err(format!(
         "could not find plugins/story/bin/story.sh for agent `{}` -- install it with \
-             `story plugin install {}` or set STORYHOOK_DISPATCH_SCRIPT",
+             `story plugin install {}` or set STORYHOOK_DISPATCH_SCRIPT{}",
         agent.as_str(),
-        agent.as_str()
+        agent.as_str(),
+        unread
+            .map(|error| format!(" (Codex's plugin registry could not be read: {error})"))
+            .unwrap_or_default()
     ))
+}
+
+/// The operator's `STORYHOOK_DISPATCH_SCRIPT`, protocol-checked, or why not.
+fn configured_script(configured: String) -> Result<PathBuf, String> {
+    let path = PathBuf::from(configured);
+    if path.is_file() {
+        check_dispatch_protocol(path)
+    } else {
+        Err(format!(
+            "STORYHOOK_DISPATCH_SCRIPT names `{}`, which is not a file",
+            path.display()
+        ))
+    }
+}
+
+/// The helper inside the plugin root Codex's registry names, if it is there.
+fn codex_registry_script(root: Option<PathBuf>) -> Option<PathBuf> {
+    root.map(|root| root.join("bin/story.sh"))
+        .filter(|script| script.is_file())
 }
 
 /// The Claude-only, no-release-projection shape most resolution tests need;
@@ -1741,7 +1763,7 @@ fn resolve_dispatch_script_from(
 /// The Codex registry probe for a Claude resolution: resolving for Claude
 /// must never start `codex`, so a call here fails the test that made it.
 #[cfg(test)]
-fn claude_never_asks_codex(_: &Path) -> Option<PathBuf> {
+fn claude_never_asks_codex(_: &Path) -> Result<Option<PathBuf>, crate::error::AppError> {
     panic!("a Claude resolution must never run the Codex registry probe")
 }
 
@@ -3670,7 +3692,7 @@ mod tests {
             Some(_root.path().to_path_buf()),
             None,
             DispatchAgent::Codex,
-            &|_: &Path| None,
+            &|_: &Path| Ok(None),
         );
         assert_eq!(
             resolved.expect("the projection must resolve for codex"),
@@ -3695,10 +3717,49 @@ mod tests {
             DispatchAgent::Codex,
             &|asked: &Path| {
                 assert_eq!(asked, home.path(), "the probe reads the resolved home");
-                Some(registry_root.clone())
+                Ok(Some(registry_root.clone()))
             },
         );
         assert_eq!(resolved.unwrap(), registry_script);
+    }
+
+    /// A Codex registry that cannot be read (SH-815: `codex plugin list`
+    /// that never answered) falls through to the projection like an empty
+    /// one, so a stuck Codex does not stop a dispatch the projection serves.
+    #[test]
+    fn resolve_dispatch_script_falls_through_a_codex_registry_that_could_not_be_read() {
+        let home = storyhook_test_support::scratch_dir();
+        let (_root, script) = fake_release_projection(Some(REQUIRED_DISPATCH_PROTOCOL));
+        let resolved = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(_root.path().to_path_buf()),
+            None,
+            DispatchAgent::Codex,
+            &|_: &Path| Err(crate::error::AppError::Storage("probe stalled".into())),
+        );
+        assert_eq!(resolved.unwrap(), script);
+    }
+
+    /// With nothing else to resolve, the unread registry is the reason, so
+    /// the error names it rather than only suggesting an install.
+    #[test]
+    fn resolve_dispatch_script_names_a_codex_registry_that_could_not_be_read() {
+        let home = storyhook_test_support::scratch_dir();
+        let message = resolve_dispatch_script_from_for_agent(
+            None,
+            Some(home.path().to_path_buf()),
+            None,
+            None,
+            DispatchAgent::Codex,
+            &|_: &Path| Err(crate::error::AppError::Storage("probe stalled".into())),
+        )
+        .expect_err("nothing resolves");
+        assert!(message.contains("story plugin install codex"), "{message}");
+        assert!(
+            message.ends_with("(Codex's plugin registry could not be read: probe stalled)"),
+            "{message}"
+        );
     }
 
     #[test]
