@@ -151,6 +151,9 @@ impl Fixture {
             .env_remove("STORYHOOK_GATE_PROGRESS_PATH")
             .env_remove("STORYHOOK_COMPILER_DIAGNOSTICS")
             .env_remove("STORYHOOK_TEST_THREAD_BUDGET")
+            // The outer battery sets it; a case about the runner must see only
+            // what the runner itself sets.
+            .env_remove("PYTHONDONTWRITEBYTECODE")
             // A jobserver inherited from the `make` running this suite names
             // descriptors this child does not have.
             .env_remove("MAKEFLAGS")
@@ -486,5 +489,39 @@ fn {name}_waits() {{
     assert!(
         survivors.is_empty(),
         "test binaries outlived their cancelled battery: {survivors:?}"
+    );
+}
+
+/// SH-783: a battery never writes Python bytecode into the checkout it tests.
+/// A `__pycache__/` appearing mid-run is an untracked package file, which
+/// makes every later cargo invocation rerun build.rs -- one per binary under
+/// the pool.
+#[test]
+fn a_battery_never_writes_python_bytecode_into_its_checkout() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.path().join("pymodules")).expect("fixture: pymodules/");
+    fixture.write("pymodules/sh783_probe.py", "VALUE = 1\n");
+    fixture.write(
+        "tests/pyimport.rs",
+        r#"#[test]
+fn imports_a_checkout_module() {
+    let out = std::process::Command::new("python3")
+        .args(["-c", "import sys; sys.path.insert(0, 'pymodules'); import sh783_probe"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+"#,
+    );
+
+    let out = fixture
+        .run_tests(&["--only-no-doc", "pyimport", "--", "--test-threads=1"])
+        .output()
+        .expect("running the battery");
+
+    assert!(out.status.success(), "{}", combined(&out));
+    assert!(
+        !fixture.path().join("pymodules/__pycache__").exists(),
+        "the battery wrote Python bytecode into the checkout it tests"
     );
 }

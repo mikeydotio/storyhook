@@ -209,6 +209,14 @@ storyhook_isolate "$data_root"
 
 export INSTA_UPDATE=no
 
+# The same rule for Python (SH-783): the run never writes into the checkout it
+# tests. The verifier and release suites run Python that imports modules from
+# scripts/ and tests/, and each import would leave a __pycache__/ beside them.
+# Cargo counts every untracked, unignored file in the package as an input of
+# build.rs (which declares no rerun-if, on purpose), so every later cargo
+# invocation of the run -- one per binary under the pool -- reruns it.
+export PYTHONDONTWRITEBYTECODE=1
+
 # Every leg's combined output is relayed to the terminal and copied here by
 # `activity-run.py`, so `scripts/test-delta.sh` can record the per-test
 # red/green ledger at the end regardless of which mode ran or how many Cargo

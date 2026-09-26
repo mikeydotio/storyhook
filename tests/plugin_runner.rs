@@ -84,6 +84,8 @@ impl Suite {
             .env("STORYHOOK_PLUGIN_JOBS", jobs)
             .env("FIXTURE_SHARED", self.shared())
             .env_remove("STORYHOOK_GATE_PROGRESS")
+            // Set by the outer battery; the runner must set it for itself.
+            .env_remove("PYTHONDONTWRITEBYTECODE")
             .stdin(Stdio::null());
         command
     }
@@ -389,4 +391,30 @@ fn children_never_inherit_the_callers_tmux_server() {
         .expect("running the plugin runner");
 
     assert!(out.status.success(), "{}", stdout(&out));
+}
+
+/// A script's Python never writes bytecode into the checkout under test
+/// (SH-783): story.sh imports its helpers from plugins/story/lib, and each run
+/// used to leave a `__pycache__/` there.
+#[test]
+fn scripts_never_write_python_bytecode_into_the_checkout() {
+    let suite = Suite::new();
+    let modules = suite.root.path().join("plugins/story/lib");
+    fs::create_dir_all(&modules).expect("fixture: the lib dir");
+    fs::write(modules.join("sh783_probe.py"), "VALUE = 1\n").expect("fixture: a module");
+    suite.script(
+        "a",
+        &format!(
+            "python3 -c 'import sys; sys.path.insert(0, \"{}\"); import sh783_probe'",
+            modules.display()
+        ),
+    );
+
+    let out = suite.run("1");
+
+    assert!(out.status.success(), "{}", stdout(&out));
+    assert!(
+        !modules.join("__pycache__").exists(),
+        "a plugin script wrote Python bytecode into the checkout"
+    );
 }

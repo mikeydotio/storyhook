@@ -76,6 +76,11 @@ runner_root="$(mktemp -d /tmp/storyhook-plugin-run.XXXXXX)"
 . "$TESTS_DIR/../../../scripts/test-env.sh"
 storyhook_isolate --home "$runner_root"
 
+# story.sh imports its Python helpers from plugins/story/lib; without this each
+# run leaves a __pycache__/ in the checkout under test (SH-783). The Rust
+# batteries' runner, scripts/run-tests.sh, sets the same thing for the same reason.
+export PYTHONDONTWRITEBYTECODE=1
+
 # Nothing ever starts a daemon under this root, so deleting it is not deleting
 # a store from under one -- the case each test's own teardown handles for its
 # own root (lib.sh's `_cleanup`).
