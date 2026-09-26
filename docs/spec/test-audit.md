@@ -141,7 +141,10 @@ Measured 2026-09-26 under one hold of the machine `gate` lock (per-binary cap
 ² 17 binaries were failed by the pool's own guard for compiling after the
 pre-build: Python imports were writing `__pycache__/` into the checkout, which
 reruns `build.rs` on the next cargo invocation. Fixed at the origin
-(`PYTHONDONTWRITEBYTECODE` in both runners, `__pycache__/` ignored).
+(`PYTHONDONTWRITEBYTECODE` in both runners, `__pycache__/` ignored, and the
+`sys.dont_write_bytecode` guard added to `plugins/story/lib/continuation_runtime.py`,
+the one plugin entry point story.sh starts outside the runners' environment
+that lacked it; `tests/plugin_contract.rs` now requires the guard in all of them).
 
 **The default is 8** (decision D7 on the story). At 16 the core battery failed
 on production timing bounds under load: `lane_budget`'s 3 s tmux census (six
