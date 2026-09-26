@@ -22,8 +22,9 @@ sampled from the 10-run flake census:
 ## Per test binary
 
 Sampled 3 time(s) each, invoked directly — what `cargo test` does, minus
-cargo's own startup. Serial sum **19.090s**; the gate beats that because cargo
-overlaps binaries and each binary threads its own tests.
+cargo's own startup. Serial sum **19.090s**. One `cargo test` runs its binaries
+one after another, each threading its own tests; the gate runs them side by
+side under a thread budget (`scripts/test-pool.py`, SH-783).
 
 | binary | kind | tests | median (s) | samples (s) |
 |---|---|---|---|---|

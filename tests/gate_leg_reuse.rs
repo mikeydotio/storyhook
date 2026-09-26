@@ -431,6 +431,42 @@ fn a_browser_edit_reruns_only_browser_and_checkout_contracts() {
     }
 }
 
+/// The Rust batteries' pool driver (SH-783) decides how every binary runs,
+/// so an edit to it must not let a cached Rust verdict stand -- and must not
+/// throw away the verdicts it cannot affect.
+#[test]
+fn a_test_pool_edit_reruns_only_the_rust_batteries() {
+    let repo = Repo::new();
+    repo.write("scripts/test-pool.py", "# pool fixture\n");
+    repo.git(&["add", "scripts/test-pool.py"]);
+    let labels = [
+        "fmt",
+        "clippy",
+        "rust-suite",
+        "rust-contracts",
+        "build",
+        "plugin",
+        "e2e",
+    ];
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "seeding {label}: {out:?}");
+    }
+
+    repo.write("scripts/test-pool.py", "# edited pool fixture\n");
+
+    for label in labels {
+        let out = repo.run_leg(label, true);
+        assert!(out.status.success(), "retrying {label}: {out:?}");
+        let expected = usize::from(matches!(label, "rust-suite" | "rust-contracts")) + 1;
+        assert_eq!(
+            repo.executions(label),
+            expected,
+            "a pool edit invalidated the wrong battery: {label}"
+        );
+    }
+}
+
 #[test]
 fn a_dashboard_edit_reruns_only_contract_build_and_browser_batteries() {
     let repo = Repo::new();

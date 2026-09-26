@@ -130,7 +130,7 @@ is_input() {
                 return 0
             fi
             ;;
-        (tests/* | scripts/run-tests.sh | scripts/run-rust-battery.sh | scripts/rust-test-targets.sh) return 0 ;;
+        (tests/* | scripts/run-tests.sh | scripts/test-pool.py | scripts/run-rust-battery.sh | scripts/rust-test-targets.sh) return 0 ;;
         esac
         ;;
     (rust-contracts)

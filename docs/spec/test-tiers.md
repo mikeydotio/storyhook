@@ -244,6 +244,33 @@ Regression coverage executes the production Make recipes and accumulator with
 controlled leaves, the Cargo adapter against real tiny Rust crates, and the
 existing verifier summary, receipt, orphan-cleanup, tier and reuse contracts.
 
+### As built: a leg's own independent work runs concurrently (SH-783)
+
+SH-701 keeps the LEGS in order. Inside two of them, the work was just as
+serial and had no reason to be: Cargo runs the binaries of one `cargo test`
+invocation one after another, and the plugin runner ran its scripts one after
+another. By 2026-09-25 that put `make test` at about 53 minutes. The audit and
+its measurements are `docs/spec/test-audit.md`.
+
+- **plugin.** `plugins/story/tests/run-tests.sh` keeps up to
+  `STORYHOOK_PLUGIN_JOBS` scripts running (default 4; 1 restores the old order).
+  A `# plugin-runner: serial` line puts a script in a lane that runs alone
+  after the pool. The report keeps its line format and one fixed order, the
+  runner alone writes the gate journal, and a signal takes every running
+  script's process tree with it (`tests/plugin_runner.rs`).
+- **rust-suite, rust-contracts.** With `STORYHOOK_TEST_THREAD_BUDGET` above 0
+  (`scripts/run-rust-battery.sh` sets the gate's default), `run-tests.sh`
+  builds every selected target once and `scripts/test-pool.py` runs one
+  `cargo test` per binary while their test threads fit the budget. Each
+  binary's capture reaches the terminal and the ledger whole and in battery
+  order, so SH-697's reading side is unchanged; `--no-fail-fast` stays on
+  every executing call. `--test-threads=4` is now each binary's cap; the
+  budget, 8 by default, bounds the threads of the whole battery. At 16 the
+  core battery failed on seconds-scale production bounds under load, so 8 it
+  is (`tests/battery_completion.rs`; measurements in the audit).
+
+The legs themselves stay serial, for SH-701's reasons.
+
 ## Merge commits reach the gate a different way (SH-396)
 
 Everything above assumes the gate is reached by a **push**: `.githooks/pre-

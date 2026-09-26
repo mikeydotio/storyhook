@@ -237,3 +237,55 @@ fn story_sh_reads_story_done_state_only_to_refuse_it() {
         "story.sh no longer refuses STORY_DONE_STATE by name; a set knob would be silently ignored"
     );
 }
+
+/// Every plugin Python file that imports a sibling module sets
+/// `sys.dont_write_bytecode` before the first such import (SH-783).
+///
+/// The installed plugin runs from a provider's plugin cache and, under test,
+/// from this checkout; an entry point without the guard writes `__pycache__/`
+/// into whichever it runs from. `continuation_runtime.py` did, on every
+/// dispatch registration, and story.sh starts it with an environment the test
+/// runners' `PYTHONDONTWRITEBYTECODE` does not reach. The rest of
+/// `plugins/story/lib` already carried the guard; this makes it the rule.
+#[test]
+fn plugin_python_never_writes_bytecode_beside_its_modules() {
+    let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/lib");
+    let modules: Vec<String> = std::fs::read_dir(&lib)
+        .expect("reading plugins/story/lib")
+        .map(|entry| entry.expect("a lib entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "py"))
+        .filter_map(|path| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .filter(|stem| !stem.contains('-'))
+        .collect();
+    assert!(
+        modules.len() > 3,
+        "found only {modules:?}; the scan is broken, not the package"
+    );
+
+    let mut unguarded = Vec::new();
+    for entry in std::fs::read_dir(&lib).expect("reading plugins/story/lib") {
+        let path = entry.expect("a lib entry").path();
+        if path.extension().is_none_or(|ext| ext != "py") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("reading a plugin module");
+        let first_sibling_import = text.lines().position(|line| {
+            let words: Vec<&str> = line.split_whitespace().collect();
+            matches!(words.as_slice(), ["import" | "from", module, ..] if modules.iter().any(|m| m == module))
+        });
+        if let Some(at) = first_sibling_import {
+            let guarded = text
+                .lines()
+                .take(at)
+                .any(|line| line.trim() == "sys.dont_write_bytecode = True");
+            if !guarded {
+                unguarded.push(path.file_name().unwrap().to_string_lossy().into_owned());
+            }
+        }
+    }
+    assert!(
+        unguarded.is_empty(),
+        "{unguarded:?} import a sibling module without `sys.dont_write_bytecode = True` \
+         before it, so running them writes __pycache__/ into the plugin they run from"
+    );
+}

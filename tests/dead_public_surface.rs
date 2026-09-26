@@ -28,7 +28,7 @@
 //! - `pub(crate)` and `pub(super)` are out of scope on purpose — those are
 //!   exactly what rustc's own `dead_code` lint already covers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 /// One `pub` item definition: its name, and where it was found.
@@ -134,30 +134,81 @@ fn references_on_line(line: &str, name: &str, skip: Option<usize>) -> bool {
 
 /// Whether `definition` has at least one call site outside its own
 /// declaration, anywhere in `sources`.
+///
+/// The reference scan for names [`ReferenceIndex`] cannot answer (those with
+/// a non-ASCII character), and the specification the index must agree with.
 fn has_a_reference(definition: &Definition, sources: &BTreeMap<String, String>) -> bool {
     for (file, text) in sources {
         for (idx, line) in text.lines().enumerate() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            if is_comment_line(line) {
                 continue;
             }
             let is_definition_line = file == &definition.file && idx + 1 == definition.line;
-            if is_definition_line {
-                // The definition line itself may reference the name more than
-                // once only by coincidence (it never does, for the item
-                // shapes this scan matches) — treat every occurrence on this
-                // specific line as the declaration, not a call site.
-                let bare = line.replace(&definition.name, "");
-                if bare.len() != line.len() - definition.name.len() {
-                    continue;
-                }
-            }
             if references_on_line(line, &definition.name, None) && !is_definition_line {
                 return true;
             }
         }
     }
     false
+}
+
+/// A line this scan never counts a reference on: a `//` comment, or the body
+/// line of a `/* … */` block.
+fn is_comment_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("//") || trimmed.starts_with('*')
+}
+
+/// Where each defined name occurs as a whole identifier on a non-comment
+/// line, built in one pass over the sources.
+///
+/// Rescanning every source line once per definition (what [`has_a_reference`]
+/// does) is quadratic: about 2,000 definitions against 355,000 lines took this
+/// binary 53 s of gate time (SH-783). An ASCII identifier appears as a whole
+/// word under [`references_on_line`]'s boundary rule exactly when it is a
+/// maximal run of `[A-Za-z0-9_]` bytes, so tokenizing each line once gives the
+/// same answer.
+struct ReferenceIndex<'a> {
+    /// Up to two distinct `(file, line)` locations per name. Two are enough:
+    /// a definition is referenced when any location differs from its own.
+    locations: HashMap<&'a str, Vec<(&'a str, usize)>>,
+}
+
+impl<'a> ReferenceIndex<'a> {
+    /// Indexes every ASCII name in `definitions` across `sources`.
+    fn build(sources: &'a BTreeMap<String, String>, definitions: &'a [Definition]) -> Self {
+        let mut locations: HashMap<&'a str, Vec<(&'a str, usize)>> = definitions
+            .iter()
+            .filter(|d| d.name.is_ascii())
+            .map(|d| (d.name.as_str(), Vec::new()))
+            .collect();
+        for (file, text) in sources {
+            for (idx, line) in text.lines().enumerate() {
+                if is_comment_line(line) {
+                    continue;
+                }
+                let location = (file.as_str(), idx + 1);
+                for token in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                    if let Some(seen) = locations.get_mut(token)
+                        && seen.len() < 2
+                        && !seen.contains(&location)
+                    {
+                        seen.push(location);
+                    }
+                }
+            }
+        }
+        Self { locations }
+    }
+
+    /// Whether `definition` is referenced anywhere but its own line, or
+    /// `None` when its name is not ASCII and the index cannot say.
+    fn has_a_reference(&self, definition: &Definition) -> Option<bool> {
+        let own = (definition.file.as_str(), definition.line);
+        self.locations
+            .get(definition.name.as_str())
+            .map(|seen| seen.iter().any(|location| *location != own))
+    }
 }
 
 /// A `pub` item with no call site anywhere in this repository's tracked Rust
@@ -182,9 +233,14 @@ fn every_pub_item_has_a_call_site() {
         definitions.len()
     );
 
+    let index = ReferenceIndex::build(&sources, &definitions);
     let orphans: Vec<String> = definitions
         .iter()
-        .filter(|d| !has_a_reference(d, &sources))
+        .filter(|d| {
+            !index
+                .has_a_reference(d)
+                .unwrap_or_else(|| has_a_reference(d, &sources))
+        })
         .map(|d| format!("{} ({}:{})", d.name, d.file, d.line))
         .collect();
 

@@ -44,7 +44,7 @@ Separate release findings fixed in `2ad0586c3` (PR fixtures) and `9b277ab8e` (ca
 | Executable contract | Location |
 |---|---|
 | `test_children_cannot_inherit_orchestration_selectors` | `tests/github_shell.rs:245` |
-| `sanitized_submission_receipts_match_remote_heads_for_all_parent_selectors` — all eight combinations | `tests/github_shell.rs:300` |
+| `sanitized_submission_receipts_match_remote_heads_for_all_parent_selectors` — every selector set at once; the child environment does not depend on the subset (SH-783) | `tests/github_shell.rs:309` |
 | `plugin_and_verifier_ship_the_same_thin_adapter` | `tests/github_shell.rs:225` |
 | `test_preflight_does_not_receive_orchestration_selectors` | `tests/support/release_observer.py:79` |
 
