@@ -1401,7 +1401,7 @@ pub fn restart(env: &Environment) -> Result<RestartedDaemon, AppError> {
         // `LaunchdLauncher` replacement cannot carry a per-invocation port at
         // all — its plist is fixed — so it recovers `stopped.port` only when
         // `bind_preferred`'s own port-hint sidecar still names it (SH-784,
-        // council decision on `.council/sh784-restart-port-launchd/`).
+        // council-amended design, verdict on `story show SH-784`).
         let replacement_env = env.clone().daemon_port(stopped.port);
         let running = launch_daemon(&replacement_env)?;
         Ok(RestartedDaemon { stopped, running })

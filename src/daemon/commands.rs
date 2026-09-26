@@ -54,9 +54,9 @@ pub fn start(env: &Environment, port: Option<u16>) -> Result<DaemonInfo, AppErro
 /// explicit `--port`; a launchd-owned replacement cannot (its plist's
 /// `ProgramArguments` are fixed at install time), and instead recovers the
 /// port on a best-effort basis from `bind_preferred`'s own port-hint sidecar
-/// (SH-784, `.council/sh784-restart-port-launchd/DECISION.md`) — a port taken
-/// by something else in the interim, or a store's first-ever bind, falls back
-/// to the ordinary preferred/OS-assigned resolution.
+/// (SH-784's council-amended design, verdict on `story show SH-784`) — a
+/// port taken by something else in the interim, or a store's first-ever
+/// bind, falls back to the ordinary preferred/OS-assigned resolution.
 pub fn restart(env: &Environment) -> Result<lifecycle::RestartedDaemon, AppError> {
     lifecycle::restart(env)
 }

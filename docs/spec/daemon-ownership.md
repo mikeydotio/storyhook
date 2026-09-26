@@ -2,7 +2,7 @@
 
 Design of record for **SH-784**. Approved by Mikey 2026-09-25; this document
 records the approved design plus the operational decisions implementation
-added, including one amended by council vote (`.council/sh784-restart-port-launchd/`).
+added, including one amended by council vote (verdict on `story show SH-784`).
 
 ## The problem
 
@@ -126,10 +126,10 @@ it.
 
 ### Restart's port: a per-store hint, not a bare documented limitation
 
-**Amended by council vote** (3-0, unanimous;
-`.council/sh784-restart-port-launchd/DECISION.md`). The original plan
-recommendation — accept that a launchd-owned restart cannot preserve a
-non-default port, document it, build nothing new — was factually incomplete:
+**Amended by council vote** (3-0, unanimous; verdict recorded on `story show
+SH-784`). The original plan recommendation — accept that a launchd-owned
+restart cannot preserve a non-default port, document it, build nothing new
+— was factually incomplete:
 `default_daemon_port_for_store` returns `preferred_port = 0`
 **unconditionally** for every non-default store, so for a launchd-owned
 *named* store the gap is not a rare corner case, it is the deterministic
