@@ -692,3 +692,126 @@ fn stop_now_retries_after_workspace_delivery_and_retires_old_pending_authority()
 
 #[path = "engine_reset/quiescent.rs"]
 mod quiescent;
+
+/// SH-774 incident replay (run 22e4276a, 2026-09-25). Stop Now arrives while
+/// the engine is still dispatching and waits for that dispatch. The operator
+/// presses Abandon run meanwhile, which sends a duplicate Stop Now. The
+/// dispatch is then refused: the lane is quarantined with its story claimed
+/// and no cleanup lease. The duplicate must succeed, and the first Stop Now
+/// must finish the run without inventing cleanup for the refused story.
+#[test]
+fn stop_now_during_a_dispatch_that_is_then_refused_finishes_the_run() {
+    use std::sync::{Mutex, mpsc};
+    use std::time::{Duration, Instant};
+    use storyhook::error::AppError;
+    use storyhook::lane_budget::WindowCensus;
+    use storyhook::service::engine::{
+        DISPATCH_TIMEOUT, DispatchRequest, Dispatcher, UnclaimRequest, WindowProbe,
+    };
+    use storyhook::store::EngineReset;
+
+    const REFUSAL: &str = "could not confirm Codex is running in window `SH-1`";
+    struct Refusing {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl Dispatcher for Refusing {
+        fn dispatch(&self, _: DispatchRequest) -> Result<DispatchOutcome, AppError> {
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(DISPATCH_TIMEOUT)
+                .unwrap();
+            Ok(DispatchOutcome::from_payload(
+                serde_json::json!({"ok": false, "display": REFUSAL}),
+            ))
+        }
+        fn unclaim(&self, _: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
+            panic!("Stop Now must not unclaim")
+        }
+        fn kill_window(&self, _: &str) -> Result<(), AppError> {
+            panic!("no window is proven owned")
+        }
+        fn census(&self) -> WindowCensus {
+            WindowCensus::Counted { windows: vec![] }
+        }
+        fn probe_window(&self, _: &str) -> WindowProbe {
+            panic!("the only lane is dispatching, so nothing is probed")
+        }
+        fn reset(
+            &self,
+            _: EngineReset,
+            _: std::os::fd::BorrowedFd<'_>,
+        ) -> Result<DispatchOutcome, AppError> {
+            panic!("a refused dispatch has no lease, so nothing may be reset")
+        }
+    }
+
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "Refused at dispatch".into(),
+            ..NewStoryInput::default()
+        })
+        .unwrap();
+    let (entered, dispatching) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let refusing = Refusing {
+        entered,
+        release: Mutex::new(released),
+    };
+    let engine = EngineService::new(&ctx, &refusing);
+    let run = engine
+        .start(StartRequest {
+            scope: EngineScope::Project,
+            lanes: 1,
+            agent: EngineAgent::Codex,
+            model: None,
+            effort: None,
+            speed: None,
+        })
+        .unwrap()
+        .id;
+    std::thread::scope(|scope| {
+        let filler = scope.spawn(|| engine.reconcile(&run));
+        dispatching.recv_timeout(DISPATCH_TIMEOUT).unwrap();
+        let owner = scope.spawn(|| engine.stop(&run, true));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while engine.status(Some(&run)).unwrap().pop().unwrap().run.state
+            != EngineRunState::Draining
+        {
+            assert!(Instant::now() < deadline, "Stop Now never recorded");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let duplicate = engine.stop(&run, true).unwrap();
+        assert_eq!(duplicate.run.state, EngineRunState::Draining);
+
+        release.send(()).unwrap();
+        filler.join().unwrap().unwrap();
+        let stopped = owner.join().unwrap().unwrap();
+        assert_eq!(stopped.run.state, EngineRunState::Finished);
+        assert_eq!(stopped.lanes[0].state, EngineLaneState::Idle);
+    });
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "in-progress", "the refused story keeps its claim");
+    assert!(
+        row.awaiting.as_deref().unwrap().contains(REFUSAL),
+        "the dispatch refusal stays the diagnosis: {:?}",
+        row.awaiting
+    );
+    assert!(
+        row.snapshot
+            .comments
+            .last()
+            .unwrap()
+            .text
+            .contains("no cleanup lease")
+    );
+}

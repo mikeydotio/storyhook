@@ -1611,6 +1611,49 @@ fn three_dispatch_refusals_halt_immediately_on_the_third() {
     assert_eq!(lane.outcome.as_deref(), Some("dispatch-refused"));
 }
 
+/// SH-774: the breaker leaves the third refused lane quarantined, with its
+/// story claimed and no cleanup lease. Stop Now on that halted run failed on
+/// every attempt ("cannot reset legacy lane"); it now releases the lane,
+/// keeps the refused story's claim and diagnosis, and finishes the run.
+#[test]
+fn stop_now_after_the_breaker_trips_on_refusals_finishes() {
+    let fixture = ServiceFixture::new();
+    for title in ["first", "second", "third"] {
+        new_story(&fixture, title, &[]);
+    }
+    let run_id = started_run(&fixture, &FakeDispatcher::default(), 1);
+    for expected in 1..=3 {
+        let refused = FakeDispatcher::new([DispatcherStep::Dispatch(
+            DispatchOutcome::from_payload(serde_json::json!({
+                "ok": false,
+                "display": format!("refusal {expected}")
+            })),
+        )]);
+        reconcile_at(&fixture, &refused, &run_id, FIXTURE_NOW);
+    }
+    assert_eq!(lane_at(&fixture, &run_id, 0).cleanup_lease, None);
+
+    let ctx = fixture.ctx();
+    // Any helper call would be unscripted, and the fake would panic.
+    let stopped = EngineService::new(&ctx, &FakeDispatcher::default())
+        .stop(&run_id, true)
+        .unwrap();
+
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    assert_eq!(lane_at(&fixture, &run_id, 0).state, EngineLaneState::Idle);
+    let third = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), storyhook::store::ids::StoryNo::new(3)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(third.state, "in-progress");
+    assert!(
+        third.awaiting.as_deref().unwrap().contains("refusal 3"),
+        "{:?}",
+        third.awaiting
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The breaker
 // ---------------------------------------------------------------------------

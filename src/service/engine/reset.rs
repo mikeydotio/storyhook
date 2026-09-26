@@ -47,8 +47,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             let prefix = project_prefix(tx, project)?;
             for lane in tx.engine_lanes(run_id)? {
                 if let Some(id) = &lane.story_id {
-                    let (number, row) = resolve_story(tx, project, &prefix, id)?;
-                    if let Some(reset) = tx.engine_reset(project, number)?
+                    // A purged story cannot hold this token; it must not
+                    // refuse the authorization of every other lane.
+                    let Some(row) = optional_lane_story(tx, project, &prefix, id)? else {
+                        continue;
+                    };
+                    if let Some(reset) = tx.engine_reset(project, row.story_no)?
                         && reset.token == token
                         && reset.run_id == run_id
                         && reset.lane_index == lane.lane_index
@@ -130,7 +134,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 .ok_or_else(|| StoreError::Invariant("project has no active state".into()))?.slug.clone();
             for lane in tx.engine_lanes(run_id)? {
                 if let (Some(id), Some(lease)) = (&lane.story_id, &lane.cleanup_lease) {
-                    let (_, row) = resolve_story(tx, project, &prefix, id)?;
+                    let Some(row) = optional_lane_story(tx, project, &prefix, id)? else {
+                        continue;
+                    };
                     if row.state == active && caller.starts_with(&lease.worktree_path) {
                         return Err(StoreError::Invariant(format!("cannot reset calling worktree for story `{id}`; invoke Stop Now from outside its worktree")));
                     }
@@ -245,8 +251,16 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         self.one_view(run_id)
     }
 
+    /// Reserves one occupied lane's leased reset, or releases a lane that
+    /// Stop Now can never reset.
+    ///
+    /// `None` means the lane is idle now. A lane without a cleanup lease, or
+    /// whose story no longer exists, is released without cleanup (SH-774):
+    /// no retry can produce the missing proof of ownership, so refusing it
+    /// kept the run draining forever and blocked the project's next run.
     fn reserve_reset(&self, observed: &EngineLaneRecord) -> Result<Option<EngineReset>, AppError> {
-        Ok(self.ctx.store().write(|tx| {
+        let now = self.ctx.now();
+        Ok(self.ctx.write_stories(|tx| {
             let project = self.ctx.project();
             let lane = tx
                 .engine_lanes(&observed.run_id)?
@@ -261,7 +275,17 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             }
             let prefix = project_prefix(tx, project)?;
             let id = lane.story_id.as_deref().expect("occupied lane");
-            let (number, row) = resolve_story(tx, project, &prefix, id)?;
+            let Some(row) = optional_lane_story(tx, project, &prefix, id)? else {
+                let detail = format!(
+                    "Full Auto Stop Now released run `{}` lane {} without cleanup: story `{id}` \
+                     no longer exists, so there is no story to restore. Any window, worktree \
+                     or branch of that story stays in place.",
+                    lane.run_id, lane.lane_index,
+                );
+                put_or_retire_idle_lane(tx, &released_lane(&lane, &now, detail))?;
+                return Ok(None);
+            };
+            let number = row.story_no;
             super::super::story_reset::refuse_reserved(tx, project, number)?;
             if let Some(reset) = tx.engine_reset(project, number)? {
                 if reset.run_id != lane.run_id
@@ -282,15 +306,48 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             if row.state != active || row.snapshot.superstate == SuperState::Closed {
                 // Verification, closure and an ordinary external unclaim all
                 // transfer authority away from this engine attempt.
-                let idle = idle_lane(&lane.run_id, lane.lane_index, &self.ctx.now());
+                let idle = idle_lane(&lane.run_id, lane.lane_index, &now);
                 put_or_retire_idle_lane(tx, &idle)?;
                 return Ok(None);
             }
-            let lease = lane.cleanup_lease.clone().ok_or_else(|| {
-                StoreError::Invariant(format!(
-                    "story `{id}` has no cleanup lease; cannot reset legacy lane"
-                ))
-            })?;
+            let Some(lease) = lane.cleanup_lease.clone() else {
+                // Only the lease proves which window, worktree and branch this
+                // run created (SH-706). Without it the work is kept, claimed
+                // and explained, and the lane is released.
+                let detail = format!(
+                    "Full Auto Stop Now released run `{}` lane {} ({}) without cleanup. The lane \
+                     has no cleanup lease, so Stop Now cannot prove which window, worktree and \
+                     branch the run created. The story stays claimed and its resources stay in \
+                     place. Examine them, then use Reset on the story card (`story reset {id}`) \
+                     to discard them, or dispatch the story again to continue.",
+                    lane.run_id,
+                    lane.lane_index,
+                    lane.state.as_str(),
+                );
+                let mut events = Vec::new();
+                if row.awaiting.is_none() {
+                    events.push(StoryEvent::StoryAwaitingSet {
+                        at: now.clone(),
+                        awaiting: detail.clone(),
+                    });
+                }
+                events.push(StoryEvent::StoryCommentAdded {
+                    at: now.clone(),
+                    text: detail.clone(),
+                });
+                super::super::append_and_fold(
+                    tx,
+                    project,
+                    number,
+                    &prefix,
+                    &states,
+                    ExpectedSeq::Exact(row.head_seq),
+                    &events,
+                    self.ctx.provenance(),
+                )?;
+                put_or_retire_idle_lane(tx, &released_lane(&lane, &now, detail))?;
+                return Ok(None);
+            };
             let events: Vec<_> = tx
                 .events_for(project, number)?
                 .iter()
@@ -384,6 +441,15 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         );
         Ok(())
     }
+}
+
+/// The idle record of a lane Stop Now released without cleanup; the detail
+/// says why and what the operator can do next.
+fn released_lane(lane: &EngineLaneRecord, now: &str, detail: String) -> EngineLaneRecord {
+    let mut idle = idle_lane(&lane.run_id, lane.lane_index, now);
+    idle.outcome = Some(OPERATOR_STOPPED_NOW.into());
+    idle.outcome_detail = Some(detail);
+    idle
 }
 
 /// A helper's success is evidence only when every required postcondition holds.

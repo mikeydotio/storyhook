@@ -1377,34 +1377,160 @@ fn immediate_stop_retries_only_failed_targets_and_retains_reservation_identity()
     assert_eq!(fake.calls().len(), 3);
 }
 
+/// Occupies lane 0 of `run` with `story` and then removes its cleanup lease:
+/// the shape a refused dispatch leaves, and the shape of pre-SH-706 lanes.
+fn occupy_without_lease(fixture: &ServiceFixture, run: &str, story: &str, state: EngineLaneState) {
+    occupy(fixture, run, 0, story, "/preserved/SH-13");
+    let mut lane = fixture
+        .store()
+        .read(|tx| tx.engine_lanes(run))
+        .unwrap()
+        .into_iter()
+        .find(|lane| lane.lane_index == 0)
+        .unwrap();
+    lane.state = state;
+    lane.cleanup_lease = None;
+    fixture
+        .store()
+        .write(|tx| tx.put_engine_lane(&lane))
+        .unwrap();
+}
+
+/// SH-774 (reverses the SH-706 legacy-lane refusal): a lane without a cleanup
+/// lease can never be reset, because no retry produces the missing proof of
+/// ownership. Refusing it kept the run draining forever (run 22e4276a,
+/// 2026-09-25). Stop Now now releases the lane and keeps the work: the claim,
+/// the resources, and a diagnosis on the story.
 #[test]
-fn immediate_stop_refuses_a_legacy_lane_without_inventing_cleanup_identity() {
+fn immediate_stop_releases_a_leaseless_lane_and_preserves_its_story() {
     let fixture = ServiceFixture::new();
     let fake = FakeDispatcher::default();
     let ctx = fixture.ctx();
     let service = EngineService::new(&ctx, &fake);
     let run = service.start(start_request(1)).unwrap();
     let story = active_reset_story(&fixture, "legacy");
-    occupy(&fixture, &run.id, 0, &story, "/preserved/SH-13");
-    let mut lane = fixture
+    occupy_without_lease(&fixture, &run.id, &story, EngineLaneState::Working);
+
+    let stopped = service.stop(&run.id, true).unwrap();
+
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    assert_eq!(stopped.lanes[0].state, EngineLaneState::Idle);
+    assert_eq!(
+        stopped.lanes[0].outcome.as_deref(),
+        Some("operator-stopped-now")
+    );
+    let detail = stopped.lanes[0].outcome_detail.clone().unwrap();
+    assert!(detail.contains("no cleanup lease"), "{detail}");
+    assert!(detail.contains(&format!("story reset {story}")), "{detail}");
+    let row = fixture
         .store()
-        .read(|tx| tx.engine_lanes(&run.id))
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
         .unwrap()
-        .pop()
         .unwrap();
-    lane.cleanup_lease = None;
-    fixture
+    assert_eq!(row.state, "in-progress", "the claim is preserved");
+    assert_eq!(row.awaiting.as_deref(), Some(detail.as_str()));
+    assert_eq!(row.snapshot.comments.last().unwrap().text, detail);
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.engine_reset(fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .is_none(),
+        "no cleanup identity is invented"
+    );
+    assert!(fake.calls().is_empty(), "no helper touches unproven resources");
+}
+
+/// SH-774: the incident's lane was quarantined by a refused dispatch, so its
+/// story already says why. Releasing the lane adds a comment and keeps that
+/// first diagnosis as the awaiting reason.
+#[test]
+fn immediate_stop_keeps_an_existing_quarantine_diagnosis() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let service = EngineService::new(&ctx, &fake);
+    let run = service.start(start_request(1)).unwrap();
+    let story = active_reset_story(&fixture, "refused");
+    occupy_without_lease(&fixture, &run.id, &story, EngineLaneState::Quarantined);
+    StoryService::new(&ctx)
+        .set_awaiting(&story, "could not confirm Codex is running")
+        .unwrap();
+
+    let stopped = service.stop(&run.id, true).unwrap();
+
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    let row = fixture
         .store()
-        .write(|tx| tx.put_engine_lane(&lane))
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
         .unwrap();
-
-    let error = service.stop(&run.id, true).unwrap_err().to_string();
-
-    assert!(error.contains("no cleanup lease"), "{error}");
-    let retained = service.status(Some(&run.id)).unwrap().pop().unwrap();
-    assert_eq!(retained.run.state, EngineRunState::Draining);
-    assert_eq!(retained.lanes[0].state, EngineLaneState::Working);
+    assert_eq!(row.state, "in-progress");
+    assert_eq!(
+        row.awaiting.as_deref(),
+        Some("could not confirm Codex is running")
+    );
+    let comment = &row.snapshot.comments.last().unwrap().text;
+    assert!(comment.contains("lane 0 (quarantined)"), "{comment}");
     assert!(fake.calls().is_empty());
+}
+
+/// SH-774: a lane whose story was purged has no story to restore. Refusing
+/// it failed Stop Now forever, and its failed lookup also refused the
+/// helper's authorization (`engine reset-target`) for every other lane.
+#[test]
+fn immediate_stop_releases_a_lane_whose_story_was_deleted() {
+    let fixture = ServiceFixture::new();
+    let doomed = active_reset_story(&fixture, "deleted mid-run");
+    let kept = active_reset_story(&fixture, "still owned");
+    let fake = FakeDispatcher::new([DispatcherStep::Reset]);
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(2)).unwrap();
+    engine.pause(&run.id).unwrap();
+    occupy(&fixture, &run.id, 0, &doomed, "/owned/doomed");
+    occupy(&fixture, &run.id, 1, &kept, "/owned/kept");
+    StoryService::new(&ctx).delete(&doomed).unwrap();
+
+    let stopped = engine.stop(&run.id, true).unwrap();
+
+    assert_eq!(stopped.run.state, EngineRunState::Finished);
+    let released = &stopped.lanes[0];
+    assert_eq!(released.state, EngineLaneState::Idle);
+    let detail = released.outcome_detail.as_deref().unwrap();
+    assert!(detail.contains("no longer exists"), "{detail}");
+    assert_eq!(fake.calls().len(), 1, "the leased lane still resets");
+    let row = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(2)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "todo");
+}
+
+/// SH-774: the leased helper authorizes itself through `engine reset-target`,
+/// which scans every lane of the run. One lane whose story no longer
+/// resolves failed that scan, so no other lane's helper could run.
+#[test]
+fn reset_authorization_skips_a_lane_whose_story_is_gone() {
+    let fixture = ServiceFixture::new();
+    let kept = active_reset_story(&fixture, "still owned");
+    let fake = FakeDispatcher::new([DispatcherStep::ResetFailure("hold".into())]);
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    let run = engine.start(start_request(2)).unwrap();
+    engine.pause(&run.id).unwrap();
+    occupy(&fixture, &run.id, 0, &kept, "/owned/kept");
+    assert!(engine.stop(&run.id, true).is_err());
+    let token = fixture
+        .store()
+        .read(|tx| tx.engine_reset(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap()
+        .token;
+    occupy(&fixture, &run.id, 1, "SH-99", "/owned/gone");
+
+    assert_eq!(engine.reset_target(&run.id, &token).unwrap().token, token);
 }
 
 #[test]
