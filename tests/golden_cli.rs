@@ -40,7 +40,7 @@
 //! unreviewable and pins nothing the human form does not.
 
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook::daemon::block_delivery::IDLE_POLL;
 use storyhook::store::{BlockAction, DeliveryStatus, ReadOps, Store};
@@ -275,7 +275,7 @@ fn settled(project: &Project<'_>, story: &str, delivery: i64, expected: Delivery
     let project_id = project.project_id(&store);
     let story_no = project.story_no(&store, story);
     let bound = IDLE_POLL * 10;
-    let deadline = Instant::now() + bound;
+    let mut deadline = storyhook_test_support::load_grace::Patience::new(bound);
     let record = loop {
         let record = store
             .read(|tx| tx.block_deliveries(project_id))
@@ -292,8 +292,8 @@ fn settled(project: &Project<'_>, story: &str, delivery: i64, expected: Delivery
             break record;
         }
         assert!(
-            Instant::now() < deadline,
-            "block delivery #{delivery} for {story} did not settle within {bound:?}; the corpus \
+            !deadline.expired(),
+            "{deadline}; block delivery #{delivery} for {story} did not settle; the corpus \
              cannot be snapshotted while a delivery is in flight: {record:?}"
         );
         std::thread::sleep(Duration::from_millis(25));

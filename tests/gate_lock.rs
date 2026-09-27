@@ -81,7 +81,7 @@ use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook_test_support::{ChildGuard, scratch_dir};
 use tempfile::TempDir;
@@ -147,16 +147,13 @@ fn time_to_reach_the_lock() -> Duration {
 
 /// Blocks until `path` no longer exists, or panics.
 fn wait_for_gone(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
-    while Instant::now() < deadline {
-        if !path.exists() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!(
-        "{} was still there after the allowed poll cycles",
-        path.display()
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(
+            lock_poll_secs() * WAIT_POLLS_ALLOWED,
+        )),
+        Duration::from_millis(20),
+        || format!("{} was still present", path.display()),
+        || (!path.exists()).then_some(()),
     );
 }
 
@@ -186,21 +183,19 @@ fn pid_running(pid: u32) -> bool {
 /// Existence alone is weaker: shell redirection creates the file before
 /// `printf` writes its bytes.
 fn wait_for_pid(pidfile: &Path) -> u32 {
-    let deadline = Instant::now() + Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
-    while Instant::now() < deadline {
-        if let Some(pid) = std::fs::read_to_string(pidfile)
-            .ok()
-            .and_then(|text| text.trim().parse::<u32>().ok())
-            .filter(|pid| *pid > 0)
-        {
-            return pid;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!(
-        "{} never published a positive pid within the allowed poll cycles",
-        pidfile.display()
-    );
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(
+            lock_poll_secs() * WAIT_POLLS_ALLOWED,
+        )),
+        Duration::from_millis(20),
+        || format!("{} never published a positive pid", pidfile.display()),
+        || {
+            std::fs::read_to_string(pidfile)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+                .filter(|pid| *pid > 0)
+        },
+    )
 }
 
 #[test]

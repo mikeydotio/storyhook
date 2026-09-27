@@ -59,15 +59,13 @@ fn run_bounded(
 }
 
 /// Blocks until `ready`, or fails the test.
-fn wait_for(what: &str, deadline: Duration, ready: impl Fn() -> bool) {
-    let start = Instant::now();
-    while start.elapsed() < deadline {
-        if ready() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    panic!("timed out after {deadline:?} waiting for {what}");
+fn wait_for(what: &str, idle: Duration, ready: impl Fn() -> bool) {
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(idle),
+        Duration::from_millis(25),
+        || format!("waiting for {what}"),
+        || ready().then_some(()),
+    );
 }
 
 /// A slow command sitting inside its hook does not block an unrelated
@@ -127,7 +125,7 @@ fn a_slow_command_does_not_block_another_client() {
     run_bounded(
         baseline_cmd,
         "baseline `story list`",
-        Duration::from_secs(15),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(15)),
     );
     let baseline = alone.elapsed();
 
@@ -159,7 +157,7 @@ fn a_slow_command_does_not_block_another_client() {
     let concurrent_output = run_bounded(
         concurrent_cmd,
         "concurrent `story list`",
-        Duration::from_secs(HOOK_SLEEP_SECS),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(HOOK_SLEEP_SECS)),
     );
     let concurrent = started.elapsed();
 
@@ -216,7 +214,7 @@ fn a_hook_that_calls_story_never_queues_behind_its_own_parent() {
     // hook configuration above.
     env.stop_daemon();
 
-    let deadline = Duration::from_secs(20);
+    let deadline = storyhook_test_support::load_grace::graced_now(Duration::from_secs(20));
     let outer: Vec<_> = (0..3)
         .map(|n| {
             let mut cmd = env.raw_story(project.path());

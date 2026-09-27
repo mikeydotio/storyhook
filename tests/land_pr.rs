@@ -372,14 +372,12 @@ fn validate_base(repo: &LandRepo, stated: &str, metadata: &str) -> Output {
 }
 
 fn wait_for(path: &Path) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        if path.exists() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    panic!("{} did not appear", path.display());
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(std::time::Duration::from_secs(10)),
+        std::time::Duration::from_millis(20),
+        || format!("{} did not appear", path.display()),
+        || path.exists().then_some(()),
+    );
 }
 
 #[test]

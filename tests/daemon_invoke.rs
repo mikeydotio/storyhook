@@ -198,8 +198,8 @@ fn hooks_still_fire_through_the_daemon() {
     let out = via_daemon(&env, dir.path(), &["new", "Fire the hook"]);
     assert!(out.status.success(), "{out:?}");
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && !marker.exists() {
+    let mut patience = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(5));
+    while !marker.exists() && !patience.expired() {
         std::thread::sleep(Duration::from_millis(25));
     }
     assert!(

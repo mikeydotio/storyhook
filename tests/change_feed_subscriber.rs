@@ -7,7 +7,7 @@
 //! auto-spawning another exactly as an ordinary `story` command does — which
 //! needs `CARGO_BIN_EXE_story`, a real binary only an integration test has.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook::daemon::subscribe::Subscriber;
 use storyhook_test_support::{TestEnv, scratch_dir};
@@ -21,15 +21,20 @@ impl Drop for DaemonGuard<'_> {
     }
 }
 
-fn wait_for(what: &str, deadline: Duration, ready: impl Fn() -> bool) {
-    let start = Instant::now();
-    while start.elapsed() < deadline {
-        if ready() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    panic!("timed out after {deadline:?} waiting for {what}");
+fn wait_for(what: &str, idle: Duration, ready: impl Fn() -> bool) {
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(idle),
+        Duration::from_millis(25),
+        || format!("waiting for {what}"),
+        || ready().then_some(()),
+    );
+}
+
+#[test]
+fn a_ready_observation_wins_even_when_the_waiter_has_no_time_left() {
+    // Models a waiter first scheduled after its allowance. The old helper
+    // checked elapsed time before observing and falsely reported a timeout.
+    wait_for("an already published result", Duration::ZERO, || true);
 }
 
 /// A subscriber survives its daemon being stopped and a fresh one taking its
@@ -66,16 +71,11 @@ fn a_subscriber_survives_its_daemon_restarting() {
     // rather than asserted on the first `Some` alone: either path (the
     // `Reload`-triggered reconnect or the eventual close-triggered one)
     // ends at the same place, a live connection to the new daemon.
-    let mut resynced = false;
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline && !resynced {
-        if subscriber.poll(Duration::from_millis(500)).is_some() {
-            resynced = true;
-        }
-    }
-    assert!(
-        resynced,
-        "the subscriber never reported a change after its daemon restarted"
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(15)),
+        Duration::ZERO,
+        || "the subscriber never reported a change after its daemon restarted".into(),
+        || subscriber.poll(Duration::from_millis(500)),
     );
 
     // The replacement connection is not merely open -- it is subscribed.
@@ -86,16 +86,11 @@ fn a_subscriber_survives_its_daemon_restarting() {
         .assert()
         .success();
 
-    let mut reported = false;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline && !reported {
-        if subscriber.poll(Duration::from_millis(500)).is_some() {
-            reported = true;
-        }
-    }
-    assert!(
-        reported,
-        "a write made through the replacement daemon must reach the subscriber"
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10)),
+        Duration::ZERO,
+        || "a write through the replacement daemon never reached the subscriber".into(),
+        || subscriber.poll(Duration::from_millis(500)),
     );
 }
 

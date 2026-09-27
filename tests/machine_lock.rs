@@ -370,17 +370,11 @@ fn a_dead_pid() -> u32 {
 /// (SH-394): what is being waited for is one observation cycle of the lock,
 /// so the bound is a multiple of that cycle.
 fn wait_for(path: &Path) {
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
-    while std::time::Instant::now() < deadline {
-        if path.exists() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    panic!(
-        "{} never appeared within the allowed poll cycles",
-        path.display()
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(poll_ceiling()),
+        std::time::Duration::from_millis(20),
+        || format!("{} never appeared", path.display()),
+        || (path.exists()).then_some(()),
     );
 }
 
@@ -388,15 +382,12 @@ fn wait_for(path: &Path) {
 /// cycle so a failed process-group reap turns one case red instead of hanging
 /// this test binary.
 fn wait_for_process_exit(pid: u32) {
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
-    while std::time::Instant::now() < deadline {
-        if !pid_running(pid) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    panic!("process {pid} survived the machine-lock cleanup ceiling");
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(poll_ceiling()),
+        std::time::Duration::from_millis(20),
+        || format!("process {pid} never exited"),
+        || (!pid_running(pid)).then_some(()),
+    );
 }
 
 /// How many of the script's own poll cycles a fixture may spend waiting for a

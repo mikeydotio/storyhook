@@ -1,6 +1,6 @@
 //! The reset HTTP contract exercises the production daemon and real store.
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use storyhook::service::{NewStoryInput, StoryService};
 use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, WriteOps};
 use storyhook_test_support::{ServiceFixture, serve};
@@ -83,7 +83,7 @@ fn reset_requires_auth_and_confirmation_then_polls_a_scoped_durable_receipt() {
     let handle = body["reset"]["handle"].as_str().unwrap();
     let poll_url = format!("{url}/{handle}");
     assert_eq!(agent.get(&poll_url).call().unwrap().status(), 401);
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut patience = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
     loop {
         let mut response = agent
             .get(&poll_url)
@@ -96,7 +96,10 @@ fn reset_requires_auth_and_confirmation_then_polls_a_scoped_durable_receipt() {
             break;
         }
         assert_ne!(body["reset"]["state"], "error", "{body}");
-        assert!(Instant::now() < deadline, "reset never finished: {body}");
+        assert!(
+            !patience.expired(),
+            "{patience}; reset never finished: {body}"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(

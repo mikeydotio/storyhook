@@ -79,21 +79,34 @@ fn start(env: &TestEnv) -> DaemonInfo {
 
 /// Blocks until `ready`, or fails the test.
 fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if ready() {
-            return;
-        }
-        std::thread::sleep(WAIT_POLL);
-    }
-    panic!("timed out waiting for {what}");
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(5)),
+        WAIT_POLL,
+        || format!("timed out waiting for {what}"),
+        || ready().then_some(()),
+    );
 }
 
 /// PID retirement can lag the pidfile lock's release during kernel teardown.
 fn wait_for_process_exit(pid: u32, start_time: Option<&str>) {
-    wait_for(
-        &format!("process {pid} incarnation {start_time:?} to exit"),
-        || !lifecycle::process_identity_is_live(pid, start_time),
+    wait_for_process_exit_with_patience(
+        pid,
+        start_time,
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(5)),
+    );
+}
+
+/// The timeout proof supplies a literal allowance independently of machine load.
+fn wait_for_process_exit_with_patience(
+    pid: u32,
+    start_time: Option<&str>,
+    patience: storyhook_test_support::load_grace::Patience,
+) {
+    storyhook_test_support::load_grace::wait_for(
+        patience,
+        WAIT_POLL,
+        || format!("timed out waiting for process {pid} incarnation {start_time:?} to exit"),
+        || (!lifecycle::process_identity_is_live(pid, start_time)).then_some(()),
     );
 }
 
@@ -156,7 +169,15 @@ fn process_exit_observation_waits_for_reaping_after_pidfile_release() {
 fn process_exit_observation_rejects_a_live_process() {
     let pid = std::process::id();
     let token = lifecycle::process_start_time(pid).expect("the test process's native identity");
-    wait_for_process_exit(pid, Some(&token));
+    wait_for_process_exit_with_patience(
+        pid,
+        Some(&token),
+        storyhook_test_support::load_grace::Patience::starting_at(
+            Duration::ZERO,
+            Instant::now(),
+            || None,
+        ),
+    );
 }
 
 /// How often [`wait_for`] re-asks its question.

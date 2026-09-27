@@ -260,9 +260,10 @@ fn a_gate_terminated_by_signal_is_infrastructure_never_red() {
         0,
         "signalling the gate leaf"
     );
-    let out = verifier.wait_with_output_within(Duration::from_secs(120), || {
-        "the verifier did not classify its terminated gate".to_string()
-    });
+    let out = verifier
+        .wait_with_output_within(load_grace::graced_now(Duration::from_secs(120)), || {
+            "the verifier did not classify its terminated gate".to_string()
+        });
     assert_ok(
         &out,
         "a terminated gate is still answered with a classified verdict",
@@ -345,9 +346,10 @@ fn a_terminated_verifier_reports_the_termination_and_leaves_no_completion_record
         0,
         "signalling the verifier's process group"
     );
-    let out = verifier.wait_with_output_within(Duration::from_secs(120), || {
-        "the terminated verifier did not finish its bounded cleanup".to_string()
-    });
+    let out = verifier
+        .wait_with_output_within(load_grace::graced_now(Duration::from_secs(120)), || {
+            "the terminated verifier did not finish its bounded cleanup".to_string()
+        });
     // machine-lock re-raises the signal on itself once its group is reaped,
     // so the outer status is a truthful signal death, never a fabricated 0.
     assert_eq!(
@@ -898,9 +900,10 @@ fn foreign_gate_lifecycle_preserves_completed_exit_when_cleanup_is_signalled() {
         let verifier_shell: i32 = fs::read_to_string(&restoring).unwrap().parse().unwrap();
         assert_eq!(unsafe { libc::kill(verifier_shell, libc::SIGTERM) }, 0);
         fs::write(&release, "continue restoration\n").unwrap();
-        let result = verifier.wait_with_output_within(Duration::from_secs(120), || {
-            "the signalled cleanup did not report the completed gate".to_owned()
-        });
+        let result = verifier
+            .wait_with_output_within(load_grace::graced_now(Duration::from_secs(120)), || {
+                "the signalled cleanup did not report the completed gate".to_owned()
+            });
         let payload: serde_json::Value = serde_json::from_slice(&result.stdout)
             .unwrap_or_else(|error| panic!("{error}: {} / {}", stdout(&result), stderr(&result)));
         assert_eq!(payload["exit_status"], exit_status, "{payload}");
