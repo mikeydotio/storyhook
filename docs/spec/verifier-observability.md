@@ -63,13 +63,18 @@ the existing local-time helpers in client-rendered prose.
 
 An owner that keeps its slot after its own write took the owned generation out
 of the queue declares a reservation (SH-768). The reason is `reconcile` (a merge
-conflict, until the story resubmits), `remediation` (a returned diagnosis being
+conflict, until the story resubmits or its reconcile stops, SH-770), `remediation` (a returned diagnosis being
 delivered) or `cleanup` (a completed story being reaped). The snapshot reports it
 as `reservation`, which gives the story, generation, reason, `reserved_at`, age
 and the number of stories queued behind it. A reservation is ordinary work: no
 evidence error, and no silence clock, because no gate runs. `remediation` and
 `cleanup` are overdue past a bound derived from the production control-verb
-deadlines; `reconcile` has no bound (SH-770). An absence that the owner did not
+deadlines, counted from `reserved_at`. `reconcile` is overdue when its hold has
+reported no activity for longer than `STALL_CEILING_SECS` plus one
+`RECOVERY_WAKE`. The hold releases at the ceiling, so passing it means the
+release did not fire. The count starts at the hold's latest reported activity,
+never at `reserved_at`, because a live reconcile holds for as long as it runs
+(SH-770 decision D1, applied by SH-827). An absence that the owner did not
 declare is still unavailable evidence. A declaration that the queue contradicts
 is also unavailable evidence. The field is omitted when absent, so older
 payloads decode unchanged.

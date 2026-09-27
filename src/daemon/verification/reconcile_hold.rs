@@ -116,6 +116,10 @@ pub struct HoldWatch<'a> {
     pub probe_every: Duration,
     /// Longest silence on both channels that a live agent can show.
     pub stall_ceiling: Duration,
+    /// Told the latest activity the stall rule judges, once per change, so
+    /// status can see a hold that stopped releasing (SH-770 decision D1, as
+    /// SH-827 applied it to SH-768's reservation bound).
+    pub on_activity: Option<&'a (dyn Fn(SystemTime) + Sync)>,
 }
 
 impl<'a> HoldWatch<'a> {
@@ -129,6 +133,7 @@ impl<'a> HoldWatch<'a> {
             clock: &SystemTime::now,
             probe_every: super::RECOVERY_WAKE,
             stall_ceiling: Duration::from_secs(STALL_CEILING_SECS),
+            on_activity: None,
         }
     }
 }
@@ -213,6 +218,24 @@ impl AgentWatch {
             Ok(elapsed) => elapsed >= every,
             Err(_) => true,
         }
+    }
+
+    /// The latest activity the stall rule credits: the change feed's last
+    /// move (the hold's start until then) or the latest probe's pane output,
+    /// whichever is later. A pane stamp in the future is no evidence (SH-372),
+    /// as it is to [`Self::observation`]. When the pane channel is unknown the
+    /// store alone decides, and no later than this instant plus the ceiling.
+    fn last_activity(&self, now: SystemTime) -> SystemTime {
+        let output = match &self.window {
+            Some(WindowProbe::Alive {
+                last_output_at: Some(stamp),
+            }) => u64::try_from(*stamp)
+                .ok()
+                .map(|stamp| UNIX_EPOCH + Duration::from_secs(stamp))
+                .filter(|stamp| *stamp <= now),
+            _ => None,
+        };
+        output.map_or(self.moved_at, |output| output.max(self.moved_at))
     }
 
     fn record_probe(&mut self, window: WindowProbe, now: SystemTime) {
@@ -314,6 +337,7 @@ pub(super) fn wait_for_reconciled_candidate_cancellable(
         generation.is_some() && generation != reserved.verifying_generation
     };
     let mut agent = AgentWatch::new((watch.clock)());
+    let mut published = None;
     loop {
         if stop.load(Ordering::Relaxed) || cancellation.is_cancelled() {
             return Ok(ReconcileWait::Ended);
@@ -342,6 +366,14 @@ pub(super) fn wait_for_reconciled_candidate_cancellable(
         }
         let now = (watch.clock)();
         agent.observe_story(story.head_seq, now);
+        // Once per change, not per pass: the hook takes the registry lock.
+        let activity = agent.last_activity(now);
+        if published != Some(activity) {
+            published = Some(activity);
+            if let Some(publish) = watch.on_activity {
+                publish(activity);
+            }
+        }
         if let Some(release) = agent_release(&agent.observation(now), watch.stall_ceiling.as_secs())
         {
             return Ok(ReconcileWait::Released(release));
@@ -531,6 +563,64 @@ mod tests {
         );
         agent.observe_story(GlobalSeq::new(7), later);
         assert_eq!(agent.observation(later).store_silent_secs, Some(0));
+    }
+
+    /// The published activity is the instant the stall rule counts from, so
+    /// the status bound (that instant plus ceiling and one wake) can only be
+    /// passed by a hold that failed to release.
+    #[test]
+    fn the_published_activity_is_the_later_channel_the_stall_rule_credits() {
+        let start = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let at = |secs: u64| UNIX_EPOCH + Duration::from_secs(secs);
+        let mut agent = AgentWatch::new(start);
+        agent.observe_story(GlobalSeq::ZERO, start);
+        assert_eq!(agent.last_activity(start), start, "the hold's start");
+
+        let now = at(1_000_900);
+        agent.record_probe(
+            WindowProbe::Alive {
+                last_output_at: Some(1_000_600),
+            },
+            now,
+        );
+        assert_eq!(agent.last_activity(now), at(1_000_600), "pane output");
+        agent.observe_story(GlobalSeq::new(3), at(1_000_700));
+        assert_eq!(agent.last_activity(now), at(1_000_700), "a story event");
+
+        for (window, why) in [
+            (
+                WindowProbe::Alive {
+                    last_output_at: Some(1_000_950),
+                },
+                "a stamp in the future is no evidence",
+            ),
+            (
+                WindowProbe::Alive {
+                    last_output_at: None,
+                },
+                "a live pane with no stamp states nothing",
+            ),
+            (
+                WindowProbe::Unanswered {
+                    detail: "tmux timed out".into(),
+                },
+                "an unanswered probe leaves the store to decide",
+            ),
+            (
+                WindowProbe::Gone {
+                    detail: "gone".into(),
+                },
+                "a gone pane leaves the store to decide",
+            ),
+        ] {
+            agent.record_probe(window, now);
+            assert_eq!(agent.last_activity(now), at(1_000_700), "{why}");
+            assert_eq!(
+                agent.observation(now).store_silent_secs,
+                Some(200),
+                "{why}: the stall rule counts from the same instant"
+            );
+        }
     }
 
     #[test]

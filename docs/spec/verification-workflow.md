@@ -831,7 +831,16 @@ drop compare.
 - `remediation` and `cleanup` have bounds, derived from the production
   control-verb deadline (`DISPATCH_TIMEOUT` plus the `RECOVERY_WAKE` grace).
   A reservation older than its bound warns, so a wedged helper stays visible.
-- `reconcile` has no bound: SH-770 decides whether to add one.
+- `reconcile` had no bound here: SH-770 decided it. SH-827 applied that
+  decision when it merged SH-768 after SH-770. The bound is inactivity, not
+  age: `STALL_CEILING_SECS` plus one `RECOVERY_WAKE`, counted from the
+  latest activity the hold reports (`HoldWatch::on_activity`, stored as
+  `Reservation::last_activity_at`), or from `reserved_at` before the hold
+  starts. The hold releases at the ceiling, so a reconcile reads overdue only
+  when its release did not fire. An age bound was rejected: a live reconcile
+  holds past several ceilings
+  (`a_live_agent_holds_past_several_ceilings_and_is_verified_first_on_resubmission`),
+  and an age bound would bring back the false warning SH-768 removed.
 
 The CLI prints `Attempt X: S reserved for … since …; N queued behind` in
 place of "gate on". The verifying column's status line shows

@@ -3438,13 +3438,25 @@ fn poll_project_verification(
                              cancellation: &Cancellation| {
                     actuator.probe_agent(candidate, lease, cancellation)
                 };
+                // Status bounds the Reconcile reservation by this activity,
+                // so a hold that stops releasing is visible (SH-770 D1).
+                let publish = |at: std::time::SystemTime| {
+                    activity.record_hold_activity(
+                        reserved,
+                        chrono::DateTime::<chrono::Utc>::from(at)
+                            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    );
+                };
                 wait_for_reconciled_candidate_cancellable(
                     store,
                     &subscription,
                     stop,
                     reserved,
                     &activity.cancellation_for(project),
-                    &HoldWatch::production(&probe),
+                    &HoldWatch {
+                        on_activity: Some(&publish),
+                        ..HoldWatch::production(&probe)
+                    },
                 )
             },
         );

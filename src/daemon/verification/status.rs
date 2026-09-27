@@ -157,16 +157,21 @@ pub(crate) fn snapshot(
         evidence_error =
             Some("evidence age unavailable (missing timestamp or clock moved backwards)".into());
     }
+    // Counted from the holder's latest activity, not from the declaration:
+    // a live reconcile legitimately outlasts any age (SH-770 decision D1).
+    let idle = reservation.and_then(|reservation| {
+        let bound = reservation.reason.overdue_after()?;
+        let idle = elapsed_secs(reservation.idle_since(), &now)
+            .filter(|idle| *idle > bound.as_secs())?;
+        Some((idle, bound))
+    });
     let reservation = reservation.zip(active).map(|(reservation, active)| {
         VerifierReservation::project(active, reservation, &statuses, &now)
     });
-    let overdue = reservation.as_ref().and_then(|reservation| {
-        let bound = reservation.reason.overdue_after()?;
-        let age = reservation
-            .age_seconds
-            .filter(|age| *age > bound.as_secs())?;
-        Some((reservation, age, bound))
-    });
+    let overdue = reservation
+        .as_ref()
+        .zip(idle)
+        .map(|(reservation, (idle, bound))| (reservation, idle, bound));
     let warning = if let Some(i) = incident
         .as_ref()
         .filter(|i| incident_is_current && i.halted)
@@ -191,9 +196,9 @@ pub(crate) fn snapshot(
             project.slug,
             error.replace(['\n', '\r'], " ")
         ))
-    } else if let Some((reservation, age, bound)) = overdue {
+    } else if let Some((reservation, idle, bound)) = overdue {
         Some(format!(
-            "{} verifier reserved for {} ({}) for {age}s, beyond its {}s ceiling; story verifier status; story daemon logs",
+            "{} verifier reserved for {} ({}), idle {idle}s, beyond its {}s ceiling; story verifier status; story daemon logs",
             project.slug,
             reservation.story_id,
             reservation.reason.describe(),

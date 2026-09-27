@@ -263,6 +263,7 @@ impl VerificationActivity {
                 reason,
                 reserved_at: started_at.clone(),
                 retired: true,
+                last_activity_at: None,
             });
             let mut guard =
                 self.acquire_locked(&mut slots, candidate, started_at, attempt_id, retry_origin);

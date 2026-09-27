@@ -106,9 +106,28 @@ struct Driver<'a> {
     bus: &'a ChangeBus,
     events: Receiver<Event>,
     every: Duration,
+    /// Every activity instant the hold published, oldest first.
+    published: &'a Mutex<Vec<SystemTime>>,
 }
 
 impl Driver<'_> {
+    /// How long the hold has published no activity: what status measures the
+    /// Reconcile reservation's bound from (SH-770 D1, applied by SH-827).
+    fn idle(&self) -> Duration {
+        let last = *self
+            .published
+            .lock()
+            .unwrap()
+            .last()
+            .expect("a hold publishes its start before its first probe");
+        self.clock.now().duration_since(last).unwrap_or_default()
+    }
+
+    /// The status bound on [`Self::idle`]: the ceiling plus one wake.
+    fn overdue_after(&self) -> Duration {
+        Duration::from_secs(STALL_CEILING_SECS) + self.every
+    }
+
     /// Moves the clock one probe interval and waits for what that made due:
     /// `true` for a probe, `false` when the hold ended instead.
     fn step(&self) -> bool {
@@ -132,13 +151,6 @@ impl Driver<'_> {
             );
         }
         probes
-    }
-
-    /// Steps `count` times and requires every step to probe: the hold holds.
-    fn holds_for(&self, count: usize) {
-        for step in 0..count {
-            assert!(self.step(), "the hold ended at step {step} of {count}");
-        }
     }
 }
 
@@ -173,8 +185,11 @@ fn watched_wait(
         }
         clock.now()
     };
+    let published = Mutex::new(Vec::new());
+    let publish = |at: SystemTime| published.lock().unwrap().push(at);
     let watch = HoldWatch {
         clock: &now,
+        on_activity: Some(&publish),
         ..HoldWatch::production(&probe)
     };
     let (finished, finish) = channel::<()>();
@@ -183,6 +198,7 @@ fn watched_wait(
         bus: &bus,
         events: received,
         every: watch.probe_every,
+        published: &published,
     };
     thread::scope(|scope| {
         let stop = &stop;
@@ -600,6 +616,12 @@ fn a_silent_agent_releases_the_hold_only_past_the_stall_ceiling() {
     board.tick_holding(&actuator, |reserved| {
         let (result, probes) = watched_wait(&board.fixture, reserved, &clock, &stale, |driver| {
             driver.until_ended(intervals_per_ceiling() + 1);
+            // A hold that releases never reads overdue in status.
+            assert!(
+                driver.idle() <= driver.overdue_after(),
+                "released {:?} after its last activity",
+                driver.idle()
+            );
         });
         assert_eq!(
             probes,
@@ -664,7 +686,15 @@ fn a_live_agent_holds_past_several_ceilings_and_is_verified_first_on_resubmissio
     let result = board.tick_holding(&actuator, |reserved| {
         let (ended, _) = watched_wait(&board.fixture, reserved, &clock, &writing, |driver| {
             submitted(&board.fixture, "urgent arrival", Priority::Critical, PR_TWO);
-            driver.holds_for(3 * intervals_per_ceiling());
+            for step in 0..3 * intervals_per_ceiling() {
+                assert!(driver.step(), "the hold ended at step {step}");
+                // Hours of live work, and status never calls it overdue.
+                assert!(
+                    driver.idle() <= driver.overdue_after(),
+                    "step {step}: idle {:?}",
+                    driver.idle()
+                );
+            }
             StoryService::new(&board.fixture.ctx())
                 .set_state(&held, "verifying", None, Some("in-progress"), None)
                 .unwrap();

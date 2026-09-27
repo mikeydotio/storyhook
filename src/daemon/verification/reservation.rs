@@ -11,10 +11,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActiveVerification, RECOVERY_WAKE, VerificationGuard};
+use super::{ActiveVerification, RECOVERY_WAKE, VerificationActivity, VerificationGuard};
 use crate::daemon::verification_progress::{StoryVerificationStatus, VerificationStatus};
 use crate::service::VerificationCandidate;
-use crate::service::engine::DISPATCH_TIMEOUT;
+use crate::service::engine::{DISPATCH_TIMEOUT, STALL_CEILING_SECS};
 use crate::store::GlobalSeq;
 
 /// Longest one control verb (notify, re-dispatch, reap) runs under the
@@ -47,13 +47,18 @@ impl ReservationReason {
         }
     }
 
-    /// Age past which the reservation outlived every deadline of the work it
-    /// holds for, so it is overdue; `None` when only the agent can end it.
+    /// Time without activity past which the reservation outlived every
+    /// deadline of the work it holds for, so it is overdue. It is measured
+    /// from [`Reservation::idle_since`].
     #[must_use]
     pub fn overdue_after(self) -> Option<Duration> {
         match self {
-            // Ended by a resubmission; whether that wait gets a bound is SH-770.
-            Self::Reconcile => None,
+            // A live reconcile holds for as long as it runs (SH-770 decision
+            // D1). Its hold releases once the story and the pane are both
+            // silent past the stall ceiling, and it reports its activity, so
+            // passing the ceiling plus one wake (a probe in flight and the
+            // pass around it) means the release did not fire.
+            Self::Reconcile => Some(Duration::from_secs(STALL_CEILING_SECS) + RECOVERY_WAKE),
             // A paste, a resume re-dispatch, and a second paste, plus one wake
             // of store work around them.
             Self::Remediation => Some(CONTROL_VERB_CEILING * 3 + RECOVERY_WAKE),
@@ -72,6 +77,18 @@ pub(crate) struct Reservation {
     /// pending declaration precedes that write: it may explain an absence,
     /// never a presence.
     pub(crate) retired: bool,
+    /// The latest activity the holder's own release rule credits, when the
+    /// holder reports one (the SH-770 reconcile hold does).
+    pub(crate) last_activity_at: Option<String>,
+}
+
+impl Reservation {
+    /// Where [`ReservationReason::overdue_after`] counts from: the holder's
+    /// latest reported activity, else the declaration. A reconcile is reserved
+    /// at its return, before delivery; its hold reports only once it starts.
+    pub(crate) fn idle_since(&self) -> &str {
+        self.last_activity_at.as_deref().unwrap_or(&self.reserved_at)
+    }
 }
 
 /// One registry read of a project's slot, taken under the registry lock.
@@ -131,6 +148,7 @@ impl VerificationGuard {
                 reason,
                 reserved_at,
                 retired: false,
+                last_activity_at: None,
             });
         });
         PendingReservation {
@@ -161,6 +179,30 @@ impl VerificationGuard {
             .filter(|slot| slot.active == self.active)
         {
             update(&mut slot.reservation);
+        }
+    }
+}
+
+impl VerificationActivity {
+    /// Records the latest activity a reconcile hold credits for `reserved`
+    /// (SH-770), so status measures the Reconcile bound from it.
+    ///
+    /// Only the slot that still owns that exact generation under a Reconcile
+    /// reservation changes: a transferred, replaced or released slot ignores
+    /// a late report. Takes the registry lock alone, never a store
+    /// transaction (the SH-768 lock order).
+    pub(crate) fn record_hold_activity(&self, reserved: &VerificationCandidate, at: String) {
+        let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(reservation) = slots
+            .get_mut(&reserved.project)
+            .filter(|slot| {
+                slot.active.story_id == reserved.story_id
+                    && slot.active.generation == reserved.verifying_generation
+            })
+            .and_then(|slot| slot.reservation.as_mut())
+            .filter(|reservation| reservation.reason == ReservationReason::Reconcile)
+        {
+            reservation.last_activity_at = Some(at);
         }
     }
 }
@@ -235,7 +277,8 @@ impl VerifierReservation {
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use super::{ReservationReason, VerifierReservation};
+    use super::{ReservationReason, STALL_CEILING_SECS, VerifierReservation};
+    use std::time::Duration;
     use crate::service::{Clock, NewStoryInput, RelationService};
     use storyhook_test_support::ServiceFixture;
 
@@ -456,14 +499,19 @@ mod tests {
     }
 
     #[test]
-    fn only_a_bounded_reservation_becomes_overdue() {
+    fn a_reservation_becomes_overdue_only_past_its_bound() {
         // A paste, a resume re-dispatch and a second paste, each at its full
         // production deadline, must never read as overdue.
         let verb = crate::service::engine::DISPATCH_TIMEOUT + RECOVERY_WAKE;
         assert!(ReservationReason::Remediation.overdue_after().unwrap() > 3 * verb);
         // One reap at its full production deadline.
         assert!(ReservationReason::Cleanup.overdue_after().unwrap() > verb);
-        assert_eq!(ReservationReason::Reconcile.overdue_after(), None);
+        // A hold that went quiet releases at the stall ceiling, judged once
+        // per wake (SH-770 decision D1).
+        assert_eq!(
+            ReservationReason::Reconcile.overdue_after(),
+            Some(Duration::from_secs(STALL_CEILING_SECS) + RECOVERY_WAKE)
+        );
 
         for reason in [
             ReservationReason::Remediation,
@@ -476,30 +524,113 @@ mod tests {
             let guard = activity.acquire(&board.candidate(&held), T0.into());
             board.move_to(&held, "in-progress");
             guard.reserve(reason, T0.into()).retire();
-            let bound = reason
-                .overdue_after()
-                .map_or(7 * 24 * 60 * 60, |bound| bound.as_secs());
-            let bound = i64::try_from(bound).unwrap();
+            let ceiling = reason.overdue_after().unwrap();
+            let bound = i64::try_from(ceiling.as_secs()).unwrap();
 
             let at_bound = board.status_at(&activity, &after(bound));
             assert_eq!(at_bound.warning, None, "{reason:?}: {at_bound:?}");
             let past = board.status_at(&activity, &after(bound + 1));
             assert_eq!(past.evidence_error, None, "{reason:?}");
-            match reason.overdue_after() {
-                Some(ceiling) => assert!(
-                    past.warning
-                        .as_deref()
-                        .is_some_and(|warning| warning.contains(&format!(
-                            "{held} ({}) for {}s, beyond its {}s ceiling",
-                            reason.describe(),
-                            bound + 1,
-                            ceiling.as_secs()
-                        ))),
-                    "{past:?}"
-                ),
-                None => assert_eq!(past.warning, None, "{reason:?}: {past:?}"),
-            }
+            assert!(
+                past.warning
+                    .as_deref()
+                    .is_some_and(|warning| warning.contains(&format!(
+                        "{held} ({}), idle {}s, beyond its {}s ceiling",
+                        reason.describe(),
+                        bound + 1,
+                        ceiling.as_secs()
+                    ))),
+                "{past:?}"
+            );
         }
+    }
+
+    /// A live reconcile runs for as long as it needs (SH-770): its bound
+    /// counts from the hold's latest reported activity, never from the
+    /// declaration, and only the exact owner's Reconcile slot takes a report.
+    #[test]
+    fn a_reconcile_is_overdue_only_after_its_hold_reports_no_activity() {
+        let board = Board::new();
+        let held = board.story("Reconciling", Some("verifying"));
+        let candidate = board.candidate(&held);
+        let activity = VerificationActivity::new();
+        let guard = activity.acquire(&candidate, T0.into());
+        board.move_to(&held, "in-progress");
+        guard
+            .reserve(ReservationReason::Reconcile, T0.into())
+            .retire();
+        let bound = i64::try_from(
+            ReservationReason::Reconcile
+                .overdue_after()
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+
+        // Hours of live work: each report moves the start of the bound.
+        let active_at = 5 * bound;
+        activity.record_hold_activity(&candidate, after(active_at));
+        let live = board.status_at(&activity, &after(active_at + bound));
+        assert_eq!(live.warning, None, "{live:?}");
+        assert!(
+            live.reservation
+                .as_ref()
+                .and_then(|reservation| reservation.age_seconds)
+                .is_some_and(|age| age > u64::try_from(bound).unwrap()),
+            "the age shown is still the whole hold: {live:?}"
+        );
+        let quiet = board.status_at(&activity, &after(active_at + bound + 1));
+        assert!(
+            quiet
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains(&format!("idle {}s", bound + 1))),
+            "{quiet:?}"
+        );
+
+        // A report for another generation or another story changes nothing.
+        let mut stale = candidate.clone();
+        stale.verifying_generation = None;
+        activity.record_hold_activity(&stale, after(active_at + bound));
+        let mut other = candidate.clone();
+        other.story_id = "SH-999999".into();
+        activity.record_hold_activity(&other, after(active_at + bound));
+        assert!(
+            board
+                .status_at(&activity, &after(active_at + bound + 1))
+                .warning
+                .is_some(),
+            "a report that is not the owner's must not refresh the bound"
+        );
+    }
+
+    /// Only a Reconcile hold reports activity: the helper deadlines that bound
+    /// remediation and cleanup run from the declaration.
+    #[test]
+    fn a_hold_report_does_not_touch_another_reason() {
+        let board = Board::new();
+        let held = board.story("Returned", Some("verifying"));
+        let candidate = board.candidate(&held);
+        let activity = VerificationActivity::new();
+        let guard = activity.acquire(&candidate, T0.into());
+        board.move_to(&held, "in-progress");
+        guard
+            .reserve(ReservationReason::Remediation, T0.into())
+            .retire();
+        let bound = i64::try_from(
+            ReservationReason::Remediation
+                .overdue_after()
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap();
+        activity.record_hold_activity(&candidate, after(bound));
+        assert!(
+            board
+                .status_at(&activity, &after(bound + 1))
+                .warning
+                .is_some()
+        );
     }
 
     #[test]
