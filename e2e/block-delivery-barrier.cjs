@@ -1,11 +1,32 @@
-const { execFileSync } = require("node:child_process");
+const { execFile } = require("node:child_process");
 const { isAbsolute } = require("node:path");
 
-/** Read one exact fixture story and its durable effects in a single snapshot.
- * mode=ro must not create a store when isolation is missing or misspelled. */
-function readBlockDeliverySnapshot(storePath, project, story) {
-  if (!storePath || !isAbsolute(storePath)) throw new Error("cleanup requires an absolute isolated STORYHOOK_STORE_PATH");
-  return JSON.parse(execFileSync("python3", ["-c", `
+/** A snapshot read that the barrier's bound killed before it answered (SH-765).
+ * Separate from every other read failure: this one says nothing about the
+ * store, only that the machine did not start and run python3 in time. */
+class SnapshotReadTimeout extends Error {
+  /** Record which read ran out, and the bound it had. */
+  constructor(project, story, boundMs, stderr) {
+    super(`the block-delivery snapshot read for ${project}/${story} did not finish within its ${boundMs}ms bound` +
+      (stderr ? `; stderr: ${stderr.trim()}` : ""));
+    this.name = "SnapshotReadTimeout";
+    this.project = project;
+    this.story = story;
+    this.boundMs = boundMs;
+  }
+}
+
+/** Read one exact fixture story and its durable effects in a single snapshot,
+ * killing python3 at `boundMs`. Asynchronous so the Playwright worker's timers
+ * (the load-grace watchdog, expect.poll's deadline) keep running while a slow
+ * machine starts python3. mode=ro must not create a store when isolation is
+ * missing or misspelled. */
+function readBlockDeliverySnapshot(storePath, project, story, boundMs) {
+  return new Promise((resolve, reject) => {
+    if (!storePath || !isAbsolute(storePath)) throw new Error("cleanup requires an absolute isolated STORYHOOK_STORE_PATH");
+    // Node treats timeout 0 as no bound at all, and rejects fractions.
+    if (!Number.isSafeInteger(boundMs) || boundMs < 1) throw new Error(`the snapshot read bound must be a positive whole number of milliseconds, got ${String(boundMs)}`);
+    const child = execFile("python3", ["-c", `
 import json, pathlib, sqlite3, sys
 path, project, story = sys.argv[1:]
 with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
@@ -23,7 +44,21 @@ with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
         WHERE project_id=? AND story_no=? ORDER BY id
     """, (identity[0], identity[5])).fetchall()
     print(json.dumps({"identity": identity, "deliveries": deliveries}))
-`, storePath, project, story], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "pipe"] }));
+`, storePath, project, story], { encoding: "utf8", timeout: boundMs }, (error, stdout, stderr) => {
+      if (error?.killed) return reject(new SnapshotReadTimeout(project, story, boundMs, stderr));
+      if (error) {
+        return reject(new Error(`the block-delivery snapshot read for ${project}/${story} failed ` +
+          `(exit ${error.code}, signal ${error.signal}): ${String(stderr).trim()}`, { cause: error }));
+      }
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (parseError) {
+        reject(new Error(`the block-delivery snapshot read for ${project}/${story} printed no JSON: ${stdout}`, { cause: parseError }));
+      }
+    });
+    // The payload reads nothing from stdin; close it rather than hold a pipe.
+    child.stdin?.end();
+  });
 }
 
 /** Require explicit terminal acknowledgement; disappearing rows are not success.
@@ -70,4 +105,4 @@ class BlockDeliveryBarrier {
   }
 }
 
-module.exports = { BlockDeliveryBarrier, readBlockDeliverySnapshot };
+module.exports = { BlockDeliveryBarrier, SnapshotReadTimeout, readBlockDeliverySnapshot };

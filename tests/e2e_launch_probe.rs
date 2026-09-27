@@ -123,11 +123,13 @@ fn the_launch_probe_is_wired_into_every_project_run() {
     let config = read("e2e/playwright.config.ts");
     let runner = read("scripts/run-e2e.sh");
 
+    // The probe runs first: a dead browser is refused before anything else
+    // in the run does work. The fixture baseline follows it (SH-765).
     assert_eq!(
         top_level_setting(&config, "globalSetup"),
-        Some("\"./launch-probe.ts\""),
-        "e2e/playwright.config.ts must name ./launch-probe.ts as its globalSetup; without it a \
-         browser that cannot start fails every test in a project at Playwright's launch \
+        Some("[\"./launch-probe.ts\", \"./fixture-baseline.ts\"]"),
+        "e2e/playwright.config.ts must run ./launch-probe.ts as its first globalSetup; without \
+         it a browser that cannot start fails every test in a project at Playwright's launch \
          timeout, one worker at a time, and reads as that many tree failures (SH-627)"
     );
     assert!(

@@ -468,3 +468,171 @@ fn only_the_shared_helper_pauses_the_pages_clock() {
          ./support, which resumes in a `finally`."
     );
 }
+
+// ---------------------------------------------------------------------------
+// The baseline outlives a worker (SH-765)
+// ---------------------------------------------------------------------------
+
+/// The fixture baseline is captured once per run, before any worker exists.
+///
+/// It used to be module state in `support.ts`, captured lazily the first time
+/// a spec asked. A failed test stops its worker. The next worker imported
+/// `support.ts` again and took a new baseline with the failed test's stray
+/// already in it. The stray then became "fixture" for the rest of the run:
+/// SH-765 saw one cleanup timeout reported as "2 Drafts" in every later test
+/// that counted Alpha's drafts. The run's global setup is the only point that
+/// is both pristine and shared by every worker.
+#[test]
+fn the_fixture_baseline_is_captured_once_per_run_before_any_worker() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |relative: &str| {
+        std::fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|e| panic!("reading {relative}: {e}"))
+    };
+    let support = read("e2e/specs/support.ts");
+    let config = read("e2e/playwright.config.ts");
+    let setup = read("e2e/fixture-baseline.ts");
+
+    assert!(
+        !support.contains("fixtureBaselines")
+            && !support.contains("new Map<string, Set<string>>()"),
+        "support.ts must not keep a per-worker fixture baseline: a restarted worker would \
+         capture the failed test's stray into it (SH-765)"
+    );
+    let cleanup = support
+        .split_once("export function cleanUpCreatedStories(")
+        .expect("support.ts defines cleanUpCreatedStories")
+        .1;
+    let cleanup = &cleanup[..cleanup.find("\n}\n").expect("the function body ends")];
+    assert!(
+        cleanup.contains("removeStrays(request, projectName, fixtureBaseline(projectName))"),
+        "the cleanup must compare against the run's baseline, read when the hook runs"
+    );
+    assert!(
+        config.contains("globalSetup: [\"./launch-probe.ts\", \"./fixture-baseline.ts\"],"),
+        "e2e/playwright.config.ts must run e2e/fixture-baseline.ts as a global setup, after \
+         the launch probe"
+    );
+    assert!(
+        setup.contains("export const FIXTURE_BASELINE_ENV = \"E2E_FIXTURE_BASELINE\";")
+            && setup.contains("process.env[FIXTURE_BASELINE_ENV] = JSON.stringify("),
+        "the global setup hands the baseline to every worker through the environment, which \
+         Playwright forks each worker with"
+    );
+}
+
+/// The quoted names in `support.ts`'s `CLEANED_PROJECTS` literal.
+fn cleaned_projects(support: &str) -> Vec<String> {
+    let list = support
+        .split_once("export const CLEANED_PROJECTS: readonly string[] = [")
+        .expect("support.ts declares CLEANED_PROJECTS")
+        .1;
+    let list = &list[..list.find("];").expect("the CLEANED_PROJECTS literal ends")];
+    list.split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The project one `cleanUpCreatedStories(<argument>)` call registers: a
+/// string literal, or a `const NAME = "..."` in the same spec. Anything else
+/// fails here rather than escaping the parity check below (SH-765: a constant
+/// argument once hid Delta from a literal-only scan).
+fn registered_project(relative: &str, text: &str, argument: &str) -> String {
+    let argument = argument.trim();
+    if let Some(literal) = argument.strip_prefix('"').and_then(|a| a.strip_suffix('"')) {
+        return literal.to_string();
+    }
+    let declaration = format!("const {argument} = \"");
+    let value = text.split_once(&declaration).unwrap_or_else(|| {
+        panic!(
+            "{relative}: cleanUpCreatedStories({argument}) names neither a string literal nor \
+             a `const {argument} = \"...\"` in the same file, so its project cannot be checked"
+        )
+    });
+    value.1[..value.1.find('"').expect("a closed project name")].to_string()
+}
+
+#[test]
+fn registered_project_reads_literals_and_same_file_constants() {
+    assert_eq!(
+        registered_project("a", "", "\"Alpha Project\""),
+        "Alpha Project"
+    );
+    assert_eq!(
+        registered_project("b", "const SCRATCH = \"Delta Project\";", "SCRATCH"),
+        "Delta Project"
+    );
+    let unresolved = std::panic::catch_unwind(|| registered_project("c", "", "projectName"));
+    assert!(
+        unresolved.is_err(),
+        "an unresolvable argument must fail the scan"
+    );
+}
+
+/// A new worker removes earlier strays before its first test runs any hook
+/// (SH-765).
+///
+/// A failed cleanup is the only way a stray outlives its test, and a failed
+/// test always stops its worker. So the `fixtureHeal` auto fixture, which
+/// runs once per worker process, is exactly where strays are found. Auto
+/// fixtures resolve before the first `beforeEach` (Playwright 1.63 runs hooks
+/// with the "test" fixture set). The heal covers exactly the projects that
+/// specs register cleanup for: extending the per-test cleanup to a worker's
+/// start must not start deleting in a project (Gamma, Engine) that no cleanup
+/// touches.
+#[test]
+fn a_new_worker_heals_exactly_the_cleaned_projects_before_any_hook() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let support = std::fs::read_to_string(root.join("e2e/specs/support.ts"))
+        .expect("reading e2e/specs/support.ts");
+
+    let fixture = support
+        .split_once("  fixtureHeal: [")
+        .expect("support.ts's `test` declares the fixtureHeal fixture")
+        .1;
+    let fixture = &fixture[..fixture.find("\n  ],").expect("the fixtureHeal entry ends")];
+    for needle in [
+        "async ({ request, loadGrace }, use, testInfo) => {",
+        "if (!workerHealed) {",
+        "await healAtWorkerStart(testInfo.project.outputDir, testInfo, () => healFixtureProjects(request));",
+        "{ auto: true }",
+    ] {
+        assert!(
+            fixture.contains(needle),
+            "fixtureHeal must run the heal once per worker, as an auto fixture, under the \
+             load-grace watchdog: missing {needle:?}"
+        );
+    }
+
+    let cleaned = cleaned_projects(&support);
+    assert!(
+        cleaned.len() >= 2,
+        "CLEANED_PROJECTS parse found {cleaned:?}; the scan below would prove nothing"
+    );
+    let mut registered: Vec<String> = all_specs(root)
+        .iter()
+        .flat_map(|(relative, text)| {
+            text.match_indices("cleanUpCreatedStories(")
+                .map(|(at, needle)| {
+                    let rest = &text[at + needle.len()..];
+                    registered_project(
+                        relative,
+                        text,
+                        &rest[..rest.find(')').expect("a closed call")],
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    registered.sort();
+    registered.dedup();
+    let mut expected = cleaned.clone();
+    expected.sort();
+    assert_eq!(
+        registered, expected,
+        "CLEANED_PROJECTS must name exactly the projects specs register cleanUpCreatedStories \
+         for: the heal covers these and nothing else"
+    );
+}

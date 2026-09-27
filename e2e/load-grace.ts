@@ -154,6 +154,20 @@ export function resetTestBudget(
 }
 
 /**
+ * The harness's patience for one wait it expects to succeed, sampled when the
+ * wait begins (SH-765): {@link BASE_EXPECT_TIMEOUT_MS} graced by the current
+ * (or supplied) contention, or the bare base when grace is disabled
+ * (`E2E_LOAD_GRACE=0`). `expect.timeout` is graded once, when the config is
+ * evaluated. A wait that must also bound its own subprocess needs the
+ * patience it is actually granted, so it samples at the moment it starts.
+ * Same clamp as {@link gracedBudget}: at most `MAX_GRACE_MULTIPLIER` times
+ * the base.
+ */
+export function gracedPatience(ratio: number = contention()): number {
+  return loadGraceEnabled() ? gracedBudget(BASE_EXPECT_TIMEOUT_MS, ratio) : BASE_EXPECT_TIMEOUT_MS;
+}
+
+/**
  * A one-line, human-readable summary of the grace decision at a given
  * moment -- used both at config-evaluation time (`playwright.config.ts`) and
  * by the per-test watchdog (`support.ts`), so every reader of either sees

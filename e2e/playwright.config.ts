@@ -92,7 +92,10 @@ export default defineConfig({
   // browser that cannot start costs that bound PER TEST and reads as that
   // many tree failures -- 45 x 180 s after this machine's WindowServer crash
   // (SH-627). The probe pays it once, and says what it found by name.
-  globalSetup: "./launch-probe.ts",
+  // Then capture the fixture baseline every worker's cleanup compares against
+  // (./fixture-baseline.ts, SH-765): once per run, before any worker, so a
+  // worker restarted after a failure cannot take a stray in as "fixture".
+  globalSetup: ["./launch-probe.ts", "./fixture-baseline.ts"],
   // The second reporter is the SH-524 gate progress journal's Playwright
   // side (./gate-progress-reporter.ts) — inert by construction whenever
   // $STORYHOOK_GATE_PROGRESS is unset, so an ordinary run is unaffected.
