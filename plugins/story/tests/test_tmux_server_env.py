@@ -259,6 +259,9 @@ class PrivateServerTests(unittest.TestCase):
         reader = self.root / "reader"
         reader.write_text("#!/bin/sh\nexec sleep 300\n")
         reader.chmod(0o700)
+        # SH-771: the daemon prepares the journal directory before it runs
+        # the view, and the view refuses one that is absent.
+        (self.root / "logs").mkdir()
         viewed = subprocess.run(["python3", "-c", VIEW_PROGRAM, "fixture", str(self.root / "logs"), str(reader)],
                                 env=self.poisoned, capture_output=True, text=True, timeout=DEADLINE)
         self.assertEqual(viewed.returncode, 0, viewed.stderr)
