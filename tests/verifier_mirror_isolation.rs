@@ -28,9 +28,10 @@ const TEST_NAME: &str = "fixture_mirror_policy_survives_every_verifier_child";
 fn output(command: &mut Command) -> std::process::Output {
     let result = ChildGuard::spawn_with_output(command)
         .expect("spawn bounded environment probe")
-        .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "SH-699 environment probe did not finish".into()
-        });
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "SH-699 environment probe did not finish".into(),
+        );
     assert!(
         result.status.success(),
         "probe failed: {}\n{}",

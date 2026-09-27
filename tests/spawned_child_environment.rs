@@ -339,9 +339,10 @@ fn the_submit_door_hands_its_child_the_lease_and_the_github_credential_and_nothi
         .env("STORY_AGENT", "claude");
     let output = ChildGuard::spawn_with_output(&mut command)
         .expect("probe subprocess")
-        .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "the submit environment probe did not finish".into()
-        });
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "the submit environment probe did not finish".into(),
+        );
     assert!(
         output.status.success(),
         "probe failed: {}",

@@ -315,7 +315,9 @@ fn stale_probe_and_duplicate_stop_cannot_compete_with_the_reset_owner() {
             self.probe_release
                 .lock()
                 .unwrap()
-                .recv_timeout(DISPATCH_TIMEOUT)
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    DISPATCH_TIMEOUT,
+                ))
                 .unwrap();
             WindowProbe::Gone {
                 detail: "old observation: agent exited".into(),
@@ -332,7 +334,9 @@ fn stale_probe_and_duplicate_stop_cannot_compete_with_the_reset_owner() {
             self.reset_release
                 .lock()
                 .unwrap()
-                .recv_timeout(DISPATCH_TIMEOUT)
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    DISPATCH_TIMEOUT,
+                ))
                 .unwrap();
             Ok(DispatchOutcome::from_payload(
                 serde_json::json!({"ok":true,"token":request.token,"lease":request.lease,
@@ -356,10 +360,20 @@ fn stale_probe_and_duplicate_stop_cannot_compete_with_the_reset_owner() {
     let ctx = fixture.ctx();
     let engine = EngineService::new(&ctx, &held);
     std::thread::scope(|scope| {
+        let release_probe = release_probe;
+        let release_reset = release_reset;
         let observer = scope.spawn(|| engine.reconcile(&run));
-        probe_started.recv_timeout(DISPATCH_TIMEOUT).unwrap();
+        probe_started
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                DISPATCH_TIMEOUT,
+            ))
+            .unwrap();
         let owner = scope.spawn(|| engine.stop(&run, true));
-        reset_started.recv_timeout(DISPATCH_TIMEOUT).unwrap();
+        reset_started
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                DISPATCH_TIMEOUT,
+            ))
+            .unwrap();
         // SH-774: a duplicate cannot compete, and it is not a failure either:
         // the owner already holds the durable intent it would record.
         let duplicate = engine.stop(&run, true).unwrap();
@@ -721,7 +735,9 @@ fn stop_now_during_a_dispatch_that_is_then_refused_finishes_the_run() {
             self.release
                 .lock()
                 .unwrap()
-                .recv_timeout(DISPATCH_TIMEOUT)
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    DISPATCH_TIMEOUT,
+                ))
                 .unwrap();
             Ok(DispatchOutcome::from_payload(
                 serde_json::json!({"ok": false, "display": REFUSAL}),
@@ -775,8 +791,13 @@ fn stop_now_during_a_dispatch_that_is_then_refused_finishes_the_run() {
         .unwrap()
         .id;
     std::thread::scope(|scope| {
+        let release = release;
         let filler = scope.spawn(|| engine.reconcile(&run));
-        dispatching.recv_timeout(DISPATCH_TIMEOUT).unwrap();
+        dispatching
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                DISPATCH_TIMEOUT,
+            ))
+            .unwrap();
         let owner = scope.spawn(|| engine.stop(&run, true));
         // The owner records the intent before it waits for the dispatch;
         // bound the poll by the same production deadline it waits under.

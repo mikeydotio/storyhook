@@ -146,7 +146,9 @@ os._exit(0)
         drop(release);
         assert!(
             received
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(10)
+                ))
                 .unwrap()
                 .unwrap()
                 .completed

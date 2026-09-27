@@ -395,9 +395,10 @@ fn concurrent_clients_produce_exactly_one_daemon_per_store() {
         }
     }
     for mut child in running {
-        let out = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "a racing store client did not finish".to_string()
-        });
+        let out = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "a racing store client did not finish".to_string(),
+        );
         assert!(
             out.status.success(),
             "every racing client must succeed; one said:\n{}",

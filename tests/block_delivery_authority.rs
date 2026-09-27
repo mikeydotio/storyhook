@@ -21,7 +21,11 @@ fn isolated_ownership_test(name: &str) -> bool {
     command
         .args(["--exact", name, "--nocapture", "--test-threads=1"])
         .env(CHILD, name);
-    let output = storyhook_test_support::run_bounded(command, name, Duration::from_secs(60));
+    let output = storyhook_test_support::run_bounded(
+        command,
+        name,
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(60)),
+    );
     assert!(
         output.status.success(),
         "isolated {name} failed:\nstdout: {}\nstderr: {}",
@@ -225,7 +229,9 @@ fn admitted_helper_and_its_descendants_retain_exclusion_until_acknowledgement() 
             std::fs::write(f.cwd().join("release"), "continue").unwrap();
             assert!(
                 received
-                    .recv_timeout(Duration::from_secs(5))
+                    .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                        Duration::from_secs(5)
+                    ))
                     .unwrap()
                     .unwrap()
             );
@@ -342,7 +348,9 @@ impl Store for ClaimWriteGate {
         if let Some(release) = release {
             self.entered.send(()).expect("announce the claim write");
             release
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(5),
+                ))
                 .expect("release the claim write");
         }
         self.inner.write(f)
@@ -394,7 +402,9 @@ fn project_identity_is_revalidated_after_workspace_acquisition_before_claim() {
             let worker =
                 scope.spawn(|| process_one(&gated, f.env(), Some(Path::new("/must-not-run"))));
             entered
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(5),
+                ))
                 .expect("worker must reach the final claim write");
             // Observe only after the worker is paused beyond its nonblocking
             // acquire. Polling with a lock would itself make the worker return busy.

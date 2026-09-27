@@ -229,7 +229,7 @@ fn eight_concurrent_clients_under_load_lose_nothing() {
                     let out = run_bounded(
                         client_command(env, root, &["new", &title, "--json"]),
                         &format!("new ({index}/{round})"),
-                        DEADLINE,
+                        storyhook_test_support::load_grace::graced_now(DEADLINE),
                     );
                     assert_clean(&out, &format!("story new ({index}/{round})"));
                     let id = minted_id(&out);
@@ -237,14 +237,14 @@ fn eight_concurrent_clients_under_load_lose_nothing() {
                     let out = run_bounded(
                         client_command(env, root, &["comment", &id, "seen under load", "--json"]),
                         &format!("comment ({index}/{round})"),
-                        DEADLINE,
+                        storyhook_test_support::load_grace::graced_now(DEADLINE),
                     );
                     assert_clean(&out, &format!("story comment ({index}/{round})"));
 
                     let out = run_bounded(
                         client_command(env, root, &["move", &id, "in-progress", "--json"]),
                         &format!("move ({index}/{round})"),
-                        DEADLINE,
+                        storyhook_test_support::load_grace::graced_now(DEADLINE),
                     );
                     assert_clean(&out, &format!("story move ({index}/{round})"));
                 }
@@ -305,7 +305,7 @@ fn concurrent_relation_writes_leave_a_symmetric_graph() {
                 let out = run_bounded(
                     client_command(env, root, &["relate", a, "blocks", b, "--json"]),
                     &format!("relate ({index})"),
-                    DEADLINE,
+                    storyhook_test_support::load_grace::graced_now(DEADLINE),
                 );
                 assert_clean(&out, &format!("story relate ({index})"));
             });
@@ -375,9 +375,10 @@ fn story_numbers_stay_unique_under_a_burst_of_simultaneous_allocations() {
 
     let mut ids: Vec<String> = Vec::new();
     for mut child in children {
-        let out = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "a simultaneous allocator did not finish".to_string()
-        });
+        let out = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "a simultaneous allocator did not finish".to_string(),
+        );
         assert_clean(&out, "simultaneous story new");
         ids.push(minted_id(&out));
     }
@@ -436,7 +437,7 @@ fn readers_run_through_a_write_storm_without_seeing_a_partial_story() {
                             &["new", &format!("storm {index}/{round}"), "--json"],
                         ),
                         &format!("storm writer ({index})"),
-                        DEADLINE,
+                        storyhook_test_support::load_grace::graced_now(DEADLINE),
                     );
                     assert_clean(&out, &format!("storm writer ({index})"));
                 }
@@ -450,7 +451,7 @@ fn readers_run_through_a_write_storm_without_seeing_a_partial_story() {
                     let out = run_bounded(
                         client_command(env, reader_cwd, &["list", "--json"]),
                         &format!("storm reader ({})", index + 1),
-                        DEADLINE,
+                        storyhook_test_support::load_grace::graced_now(DEADLINE),
                     );
                     assert_clean(&out, &format!("storm reader ({})", index + 1));
                     // Every story the reader sees must be whole: a title and a

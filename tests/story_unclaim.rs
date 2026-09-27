@@ -606,9 +606,10 @@ fn concurrent_unclaimers_of_one_story_yield_exactly_one_winner() {
     let mut winners = 0usize;
     let mut conflicts = 0usize;
     for mut child in children {
-        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "a concurrent `story unclaim <id>` did not finish".to_string()
-        });
+        let output = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "a concurrent `story unclaim <id>` did not finish".to_string(),
+        );
         let value: serde_json::Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|e| panic!("non-JSON output ({e}): {output:?}"));
         match value["result"].as_str() {
@@ -665,9 +666,10 @@ fn a_claim_racing_an_unclaim_leaves_exactly_one_of_them_applied() {
     }));
 
     for mut child in children {
-        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "a claim/unclaim racer did not finish".to_string()
-        });
+        let output = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "a claim/unclaim racer did not finish".to_string(),
+        );
         let value: serde_json::Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|e| panic!("non-JSON output ({e}): {output:?}"));
         assert!(

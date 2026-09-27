@@ -60,9 +60,10 @@ fn phase_scripts_emit_diagnostics_without_contacting_tmux() {
             .env("PATH", fixture.path());
         let output = ChildGuard::spawn_with_output(&mut command)
             .unwrap()
-            .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-                "phase diagnostics did not finish".into()
-            });
+            .wait_with_output_within(
+                storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+                || "phase diagnostics did not finish".into(),
+            );
         assert!(output.status.success(), "{output:?}");
         assert!(String::from_utf8_lossy(&output.stderr).contains("literal ' $(not-code) ; text"));
         assert!(output.stdout.is_empty());

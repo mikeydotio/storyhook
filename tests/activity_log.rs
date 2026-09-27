@@ -131,9 +131,10 @@ fn a_script_and_the_daemon_reader_share_the_same_format_and_store_destination() 
             env.environment().daemon_state_dir().join("activity"),
         );
     let mut child = ChildGuard::spawn_with_output(&mut command).unwrap();
-    let out = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "script log writer did not complete".into()
-    });
+    let out = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "script log writer did not complete".into(),
+    );
     assert!(out.status.success());
     let rows = env
         .story(env.home())

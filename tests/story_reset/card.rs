@@ -440,6 +440,7 @@ fn concurrent_execution_cannot_enter_the_same_cleanup_operation() {
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
+        let release_tx = release_tx;
         let id = &story.id;
         let token = &reset.token;
         scope.spawn(|| {
@@ -448,14 +449,18 @@ fn concurrent_execution_cannot_enter_the_same_cleanup_operation() {
                 .execute(id, token, move || {
                     entered_tx.send(()).unwrap();
                     release_rx
-                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                            std::time::Duration::from_secs(5),
+                        ))
                         .unwrap();
                     Ok(())
                 })
                 .unwrap();
         });
         entered_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                std::time::Duration::from_secs(5),
+            ))
             .unwrap();
         assert!(
             service

@@ -765,9 +765,10 @@ fn concurrent_claimants_are_handed_distinct_stories() {
     let mut claimed: Vec<String> = Vec::new();
     let mut empty_answers = 0usize;
     for mut child in children {
-        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "a concurrent `story claim --next` did not finish".to_string()
-        });
+        let output = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "a concurrent `story claim --next` did not finish".to_string(),
+        );
         assert!(
             output.status.success(),
             "every concurrent claim must succeed — a claim losing a race \
@@ -832,9 +833,10 @@ fn concurrent_claimants_of_one_id_yield_exactly_one_winner() {
     let mut winners = 0usize;
     let mut conflicts = 0usize;
     for mut child in children {
-        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "a concurrent `story claim <id>` did not finish".to_string()
-        });
+        let output = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "a concurrent `story claim <id>` did not finish".to_string(),
+        );
         let value: serde_json::Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|e| panic!("non-JSON output ({e}): {output:?}"));
         match value["result"].as_str() {

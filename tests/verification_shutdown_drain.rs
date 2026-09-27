@@ -87,7 +87,9 @@ impl VerificationActuator for BlockingActuator {
         self.release
             .lock()
             .expect("locking the release channel")
-            .recv_timeout(lifecycle::CONTROL_DEADLINE)
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                lifecycle::CONTROL_DEADLINE,
+            ))
             .expect("the test must release the blocked verifier");
         VerificationOutcome::InfrastructureFailure {
             detail: "deterministic fixture outcome".into(),
@@ -140,6 +142,7 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
     };
 
     let (in_flight_during_verify, result, high) = thread::scope(|scope| {
+        let release_tx = release_tx;
         let worker = scope.spawn(|| {
             tick_with_activity(
                 fixture.store(),
@@ -153,7 +156,9 @@ fn verification_is_published_as_in_flight_until_its_outcome_is_recorded() {
 
         assert_eq!(
             entered_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    lifecycle::CONTROL_DEADLINE
+                ))
                 .expect("the verifier must reach its blocking actuator"),
             low
         );
@@ -250,6 +255,7 @@ fn resubmission_transfers_the_single_in_flight_reservation_between_generations()
     };
 
     thread::scope(|scope| {
+        let release_tx = release_tx;
         let worker = scope.spawn(|| {
             tick_with_activity(
                 fixture.store(),
@@ -262,7 +268,9 @@ fn resubmission_transfers_the_single_in_flight_reservation_between_generations()
         });
         assert_eq!(
             entered_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    lifecycle::CONTROL_DEADLINE
+                ))
                 .unwrap(),
             story_id
         );
@@ -287,7 +295,9 @@ fn resubmission_transfers_the_single_in_flight_reservation_between_generations()
         release_tx.send(()).unwrap();
         assert_eq!(
             entered_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    lifecycle::CONTROL_DEADLINE
+                ))
                 .unwrap(),
             story_id
         );
@@ -358,7 +368,9 @@ fn reconciliation_wait_ignores_other_work_and_wakes_for_its_reserved_story() {
             .unwrap();
         bus.publish(Change::Project("fixture".into()));
         let resumed = result_rx
-            .recv_timeout(lifecycle::CONTROL_DEADLINE)
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                lifecycle::CONTROL_DEADLINE,
+            ))
             .unwrap()
             .unwrap()
             .expect("the reserved story must wake its waiter");
@@ -399,7 +411,9 @@ fn reconciliation_wait_stops_without_a_resubmission() {
         bus.publish(Change::Reload);
         assert!(
             result_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    lifecycle::CONTROL_DEADLINE
+                ))
                 .unwrap()
                 .unwrap()
                 .is_none(),
