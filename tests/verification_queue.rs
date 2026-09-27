@@ -6031,12 +6031,54 @@ fn next_entry(
     entered: &std::sync::mpsc::Receiver<storyhook::store::ProjectId>,
     what: &str,
 ) -> storyhook::store::ProjectId {
+    next_entry_with_patience(entered, what, Patience::new(WORKER_PATIENCE))
+}
+
+fn next_entry_with_patience(
+    entered: &std::sync::mpsc::Receiver<storyhook::store::ProjectId>,
+    what: &str,
+    patience: Patience,
+) -> storyhook::store::ProjectId {
     load_grace::wait_for(
-        Patience::new(WORKER_PATIENCE),
+        patience,
         WORKER_POLL,
         || what.to_string(),
-        || entered.try_recv().ok(),
+        || match entered.try_recv() {
+            Ok(value) => Some(value),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("{what}: channel disconnected")
+            }
+        },
     )
+}
+
+#[test]
+#[should_panic(expected = "worker observation: channel disconnected")]
+fn a_disconnected_worker_is_reported_without_waiting_for_patience() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    drop(sender);
+    next_entry_with_patience(
+        &receiver,
+        "worker observation",
+        Patience::starting_at(Duration::ZERO, Instant::now(), || None),
+    );
+}
+
+#[test]
+fn a_buffered_worker_entry_wins_over_disconnect_and_expiry() {
+    let fixture = ServiceFixture::new();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    sender.send(fixture.project()).unwrap();
+    drop(sender);
+    assert_eq!(
+        next_entry_with_patience(
+            &receiver,
+            "worker observation",
+            Patience::starting_at(Duration::ZERO, Instant::now(), || None),
+        ),
+        fixture.project()
+    );
 }
 
 /// An actuator that holds one project's verification open until released,
