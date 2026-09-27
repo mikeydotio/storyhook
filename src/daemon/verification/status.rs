@@ -163,7 +163,10 @@ pub(crate) fn snapshot(
         let bound = reservation.reason.overdue_after()?;
         let idle =
             elapsed_secs(reservation.idle_since(), &now).filter(|idle| *idle > bound.as_secs())?;
-        Some((idle, bound))
+        // Only a reported activity measures idleness; before one, the count
+        // is plain time since the declaration and is worded as such.
+        let measured = reservation.last_activity_at.is_some();
+        Some((idle, bound, measured))
     });
     let reservation = reservation.zip(active).map(|(reservation, active)| {
         VerifierReservation::project(active, reservation, &statuses, &now)
@@ -171,7 +174,7 @@ pub(crate) fn snapshot(
     let overdue = reservation
         .as_ref()
         .zip(idle)
-        .map(|(reservation, (idle, bound))| (reservation, idle, bound));
+        .map(|(reservation, (idle, bound, measured))| (reservation, idle, bound, measured));
     let warning = if let Some(i) = incident
         .as_ref()
         .filter(|i| incident_is_current && i.halted)
@@ -196,9 +199,14 @@ pub(crate) fn snapshot(
             project.slug,
             error.replace(['\n', '\r'], " ")
         ))
-    } else if let Some((reservation, idle, bound)) = overdue {
+    } else if let Some((reservation, seconds, bound, measured)) = overdue {
+        let span = if measured {
+            format!(", idle {seconds}s")
+        } else {
+            format!(" for {seconds}s")
+        };
         Some(format!(
-            "{} verifier reserved for {} ({}), idle {idle}s, beyond its {}s ceiling; story verifier status; story daemon logs",
+            "{} verifier reserved for {} ({}){span}, beyond its {}s ceiling; story verifier status; story daemon logs",
             project.slug,
             reservation.story_id,
             reservation.reason.describe(),

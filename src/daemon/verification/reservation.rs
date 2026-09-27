@@ -537,7 +537,7 @@ mod tests {
                 past.warning
                     .as_deref()
                     .is_some_and(|warning| warning.contains(&format!(
-                        "{held} ({}), idle {}s, beyond its {}s ceiling",
+                        "{held} ({}) for {}s, beyond its {}s ceiling",
                         reason.describe(),
                         bound + 1,
                         ceiling.as_secs()
