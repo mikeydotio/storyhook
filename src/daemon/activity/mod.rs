@@ -8,6 +8,7 @@ mod ignore;
 mod observe;
 mod view;
 pub(crate) mod window;
+mod window_requests;
 
 pub use ignore::{IGNORE_FILE, JOURNAL_IGNORE};
 pub(crate) use observe::OutputWatch;

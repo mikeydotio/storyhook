@@ -21,7 +21,10 @@ import tmux_server_env as policy  # noqa: E402  (the path above is the import ro
 LAUNCHER = PLUGIN / "lib/tmux-launch.py"
 ENV_CLI = PLUGIN / "lib/tmux-env.py"
 # The daemon runs the view as this exact composition (src/daemon/activity/window.rs).
-VIEW_PROGRAM = (PLUGIN / "lib/tmux_server_env.py").read_text() + "\n" + (REPO / "scripts/verification-view.py").read_text()
+VIEW_PROGRAM = ((PLUGIN / "lib/probe_budget.py").read_text()
+                + "\nprobe_run = run\nprobe_operation = operation\n"
+                + (PLUGIN / "lib/tmux_server_env.py").read_text() + "\n"
+                + (REPO / "scripts/verification-view.py").read_text())
 # Bounds one private tmux server operation, including its startup and a loaded
 # macOS PTY allocation. It is a liveness ceiling, never a performance claim.
 DEADLINE = 15

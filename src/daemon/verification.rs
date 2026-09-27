@@ -120,6 +120,7 @@ pub struct VerificationRetryOrigin {
 /// progress publisher and the HTTP dispatcher.
 #[derive(Clone, Default)]
 pub struct VerificationActivity {
+    view_requests: super::activity::window::Requests,
     active: Arc<Mutex<BTreeMap<ProjectId, VerificationSlot>>>,
     bus: ChangeBus,
 }
@@ -900,12 +901,8 @@ impl ShellVerificationActuator {
         let scope = super::activity::context::enter(
             super::activity::context::LogContext::candidate(candidate, &attempt),
         );
-        if candidate.checkout.is_absolute() && candidate.checkout.is_dir() {
-            super::activity::window::open(
-                &self.env,
-                &candidate.project_slug,
-                &super::activity::project_journal(&candidate.checkout),
-            );
+        if self.env.verifier_mirror_enabled() {
+            self.activity.view_requests.request(candidate.project);
         }
         scope
     }
@@ -3276,7 +3273,7 @@ pub(crate) fn poll_verification(
 ) {
     std::thread::scope(|scope| {
         scope.spawn(|| super::project_recovery::poll(store, env, bus, stop, activity));
-        scope.spawn(|| super::activity::window::poll(store, env, stop));
+        scope.spawn(|| super::activity::window::poll(store, env, stop, &activity.view_requests));
         poll_verification_with(store, env, bus, stop, activity, inflight, |_| {
             ShellVerificationActuator::new(env.clone()).with_activity(activity.clone())
         });

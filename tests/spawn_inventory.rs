@@ -141,6 +141,13 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // The journal view helper has file-backed capture and a bounded process
     // group. Its tmux pane reads logs independently and holds no output pipe.
     ("src/daemon/activity/window.rs", "\"python3\"", Kind::Waited),
+    // SH-808 unit fixtures use the production file-backed capture boundary:
+    // cancellation or VIEW_RECONCILE_TIMEOUT kills the whole helper group.
+    (
+        "src/daemon/activity/window_tests.rs",
+        "\"sh\"",
+        Kind::Waited,
+    ),
     // `block_delivery::process_one` — the agent helper (`story.sh notify`),
     // asked to interrupt or resume a dispatched agent (SH-690). `Waited`: it
     // runs through the shared `run_captured_with_termination`, so stdout and

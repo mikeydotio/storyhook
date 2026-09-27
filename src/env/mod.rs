@@ -255,6 +255,13 @@ impl Environment {
         self.verifier_mirror_enabled
     }
 
+    /// Enable the mirror explicitly in library fixtures that own their process boundary.
+    #[cfg(test)]
+    pub(crate) fn with_test_verifier_mirror(mut self) -> Self {
+        self.verifier_mirror_enabled = true;
+        self
+    }
+
     /// The variables a child that will run `story` needs in order to resolve
     /// **this** environment rather than its own process's (SH-633).
     ///
