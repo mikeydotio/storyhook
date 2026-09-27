@@ -15,7 +15,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook_test_support::{ChildGuard, scratch_dir};
 use tempfile::TempDir;
@@ -117,10 +117,14 @@ fn verdicts(out: &Output) -> Vec<(String, String)> {
 
 /// A script that announces itself, then waits for `partner` to announce.
 fn waits_for(partner: &str) -> String {
+    let allowance =
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(OVERLAP_PATIENCE_SECS))
+            .as_secs_f64()
+            .ceil() as u64;
     format!(
         r#"me="$(basename "$0" .sh)"
 touch "$FIXTURE_SHARED/$me.started"
-deadline=$((SECONDS + {OVERLAP_PATIENCE_SECS}))
+deadline=$((SECONDS + {allowance}))
 while [ ! -e "$FIXTURE_SHARED/test-{partner}.started" ]; do
   [ "$SECONDS" -lt "$deadline" ] || {{ echo "never overlapped with {partner}"; exit 1; }}
   sleep 0.1
@@ -330,13 +334,18 @@ wait"#,
     )
     .expect("spawning the plugin runner");
 
-    let give_up = Instant::now() + Duration::from_secs(OVERLAP_PATIENCE_SECS);
+    let mut patience = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(
+        OVERLAP_PATIENCE_SECS,
+    ));
     let pid_files = [
         suite.shared().join("test-a.pids"),
         suite.shared().join("test-b.pids"),
     ];
     while !pid_files.iter().all(|file| file.exists()) {
-        assert!(Instant::now() < give_up, "both scripts never started");
+        assert!(
+            !patience.expired(),
+            "{patience}; both scripts never started"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
     let pids: Vec<String> = pid_files
@@ -355,9 +364,10 @@ wait"#,
         .status()
         .expect("signalling the runner");
     assert!(status.success());
-    let exit = runner.wait_within(Duration::from_secs(OVERLAP_PATIENCE_SECS), || {
-        "the runner did not exit after SIGTERM".into()
-    });
+    let exit = runner.wait_within(
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(OVERLAP_PATIENCE_SECS)),
+        || "the runner did not exit after SIGTERM".into(),
+    );
 
     assert!(
         exit.signal() == Some(15) || exit.code() == Some(143),

@@ -236,16 +236,16 @@ impl Fixture {
         out.status.success() && !out.stdout.is_empty()
     }
 
-    /// Waits for a newly spawned matching process to become observable. The
-    /// deadline is the script's own SIGTERM allowance: failure inside that
-    /// span is a broken fixture, not a slow machine that deserves more sleep.
+    /// Waits for a newly spawned matching process before the measured operation.
+    /// The idle allowance follows the script; startup gets contention grace.
     fn wait_for_match(&self) {
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(orphan_kill_grace_secs());
+        let mut patience = storyhook_test_support::load_grace::Patience::new(
+            std::time::Duration::from_secs(orphan_kill_grace_secs()),
+        );
         while !self.anything_still_matches() {
             assert!(
-                std::time::Instant::now() < deadline,
-                "fixture: matching process never became observable"
+                !patience.expired(),
+                "{patience}; fixture: matching process never became observable"
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }

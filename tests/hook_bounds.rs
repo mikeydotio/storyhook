@@ -120,9 +120,9 @@ fn fire_bounded(command: &str, payload: &str, timeout_seconds: u64) -> Duration 
         let _ = tx.send(started.elapsed());
     });
 
-    rx.recv_timeout(PATIENCE).unwrap_or_else(|_| {
+    rx.recv_timeout(storyhook_test_support::load_grace::graced_now(PATIENCE)).unwrap_or_else(|error| {
         panic!(
-            "`fire_hook` has not returned after {PATIENCE:?} for the hook `{label}`.\n\
+            "`fire_hook` has not returned for the hook `{label}`: {error} (idle allowance {PATIENCE:?}).\n\
              The hook's own timeout is {timeout_seconds}s, so the wait is bounded by \
              something other than the promise storyhook made — a grandchild holding a \
              pipe end is the way that happens."
@@ -292,8 +292,8 @@ fn a_hook_may_background_work_that_outlives_it() {
         "firing took {elapsed:?}; it should not wait for backgrounded work"
     );
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !marker.exists() && Instant::now() < deadline {
+    let mut patience = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(5));
+    while !marker.exists() && !patience.expired() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(

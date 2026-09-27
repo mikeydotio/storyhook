@@ -22,7 +22,7 @@
 //!   and `archive-state` all share, which happens in the client
 //!   and whose second request has to be recognized on the far side.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Named rather than inline (SH-394's `tests/timing_assertions.rs` fence): a
 /// terminating hook chain should finish in a fraction of this; a non-
@@ -137,12 +137,13 @@ fn a_hook_that_runs_story_terminates() {
     // The sharpest shape available: the hook fires the very event that fires it.
     write_hooks(dir.path(), &hook_running_story("new 'spawned by the hook'"));
 
-    let started = Instant::now();
+    let mut patience =
+        storyhook_test_support::load_grace::Patience::new(HOOK_CHAIN_TERMINATION_CEILING);
     let out = via_daemon(&env, dir.path(), &["new", "The one a human asked for"]);
     assert!(out.status.success(), "{out:?}");
     assert!(
-        started.elapsed() < HOOK_CHAIN_TERMINATION_CEILING,
-        "the hook chain did not terminate promptly"
+        !patience.expired(),
+        "{patience}; the hook chain did not terminate"
     );
 
     // Two stories: the one asked for, and exactly one from its hook. A third

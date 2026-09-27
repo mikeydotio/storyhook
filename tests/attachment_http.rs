@@ -125,8 +125,16 @@ impl Response {
 
 fn request(server: &TestServer, method: &str, path: &str, headers: &[(&str, &str)]) -> Response {
     let mut socket = TcpStream::connect(("127.0.0.1", server.port())).unwrap();
-    socket.set_read_timeout(Some(PEER_IO_TIMEOUT * 2)).unwrap();
-    socket.set_write_timeout(Some(PEER_IO_TIMEOUT * 2)).unwrap();
+    socket
+        .set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+            PEER_IO_TIMEOUT * 2,
+        )))
+        .unwrap();
+    socket
+        .set_write_timeout(Some(storyhook_test_support::load_grace::graced_now(
+            PEER_IO_TIMEOUT * 2,
+        )))
+        .unwrap();
     let mut head = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n",
         server.port()

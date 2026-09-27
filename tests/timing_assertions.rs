@@ -106,6 +106,9 @@ use std::path::Path;
 
 use storyhook_test_support::without_rust_comments;
 
+#[path = "timing_assertions/waits.rs"]
+mod waits;
+
 /// The `Duration` constructors this scan recognizes.
 const DURATION_CTORS: [&str; 4] = [
     "Duration::from_secs(",

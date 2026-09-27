@@ -1,0 +1,380 @@
+{
+  "crates/storyhook-test-support/src/crash.rs": {
+    ".wait_within(ARMED_DEATH_DEADLINE": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "After the client returns, armed death must follow DELIVERY_BACKSTOP plus the fixed reap margin; startup and client completion are separately graced."
+    },
+    "Instant::now()>=give_up_at": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "wait_for_reaped_daemon_lock consumes an absolute bound supplied by its caller. Real cleanup and positive controls pass graced margin; the expiry regression injects an already expired instant."
+    }
+  },
+  "crates/storyhook-test-support/src/load_grace.rs": {
+    "started.elapsed()>=IDLE*3": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "wait_for_returns_what_became_ready_under_grace delays its result until three idle allowances have passed to prove that the graced wait survives the idle limit."
+    }
+  },
+  "crates/storyhook-test-support/src/pty.rs": {
+    ".timeout(Duration::from_millis(300)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "PTY timeout enforcement and early-child-exit regressions inject 300/400 ms; their ten-second observation ceiling covers spawn and cleanup and is not load-scaled."
+    },
+    ".timeout(Duration::from_millis(400)": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "PTY timeout enforcement and early-child-exit regressions inject 300/400 ms; their ten-second observation ceiling covers spawn and cleanup and is not load-scaled."
+    },
+    "Instant::now()+limit": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Pty::expect, Pty::wait and watchdog honor the supplied duration literally. The PTY default is already graced; explicit overrides and watchdog callers are classified separately."
+    },
+    "Instant::now()+self.timeout": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "Pty::expect, Pty::wait and watchdog honor the supplied duration literally. The PTY default is already graced; explicit overrides and watchdog callers are classified separately."
+    },
+    "Instant::now()<deadline": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "Pty::expect, Pty::wait and watchdog honor the supplied duration literally. The PTY default is already graced; explicit overrides and watchdog callers are classified separately."
+    },
+    "Instant::now()>=deadline=>": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Pty::expect, Pty::wait and watchdog honor the supplied duration literally. The PTY default is already graced; explicit overrides and watchdog callers are classified separately."
+    },
+    "started.elapsed()<DEADLINE_ENFORCED_CEILING": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "PTY timeout enforcement and early-child-exit regressions inject 300/400 ms; their ten-second observation ceiling covers spawn and cleanup and is not load-scaled."
+    },
+    "watchdog(Duration::from_millis(50)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "a_disarmed_watchdog_does_not_fire drops the guard before waiting past its injected 50 ms deadline; scaling that stimulus would make the proof vacuous."
+    }
+  },
+  "crates/storyhook-test-support/src/server.rs": {
+    ".recv_timeout(deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "ChildGuard waits and pipe drains, run_bounded, and http_status_line honor their caller-supplied literal deadline; proof and patience callers are classified separately."
+    },
+    ".recv_timeout(remaining": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "ChildGuard waits and pipe drains, run_bounded, and http_status_line honor their caller-supplied literal deadline; proof and patience callers are classified separately."
+    },
+    ".set_read_timeout(Some(timeout)": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "ChildGuard waits and pipe drains, run_bounded, and http_status_line honor their caller-supplied literal deadline; proof and patience callers are classified separately."
+    },
+    ".wait_with_output_within(deadline": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The child, pipe-drain and bounded-command timeout regressions inject a 300 ms deadline and assert enforcement within that deadline times seven. No contention multiplier may weaken these tests."
+    },
+    ".wait_within(deadline": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The child, pipe-drain and bounded-command timeout regressions inject a 300 ms deadline and assert enforcement within that deadline times seven. No contention multiplier may weaken these tests."
+    },
+    "Instant::now()+deadline": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "ChildGuard waits and pipe drains, run_bounded, and http_status_line honor their caller-supplied literal deadline; proof and patience callers are classified separately."
+    },
+    "Instant::now()>=give_up_at": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "ChildGuard waits and pipe drains, run_bounded, and http_status_line honor their caller-supplied literal deadline; proof and patience callers are classified separately."
+    },
+    "run_bounded(deadline": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The child, pipe-drain and bounded-command timeout regressions inject a 300 ms deadline and assert enforcement within that deadline times seven. No contention multiplier may weaken these tests."
+    },
+    "started.elapsed()<give_up_ceiling": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "The child, pipe-drain and bounded-command timeout regressions inject a 300 ms deadline and assert enforcement within that deadline times seven. No contention multiplier may weaken these tests."
+    }
+  },
+  "tests/activity_script.rs": {
+    ".wait_with_output_within(deadline": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "Both descendant-held-output regressions must return within the hook timeout ceiling while the descendant is still held; post-release readiness is separately graced."
+    }
+  },
+  "tests/attachment_upload.rs": {
+    ".set_read_timeout(Some(PEER_IO_TIMEOUT/2)": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "Bad request heads and revoked tokens must be rejected before waiting for a body: half of PEER_IO_TIMEOUT detects entering the body read."
+    }
+  },
+  "tests/block_delivery_authority.rs": {
+    ".recv_timeout(Duration::from_millis(150)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The 150 ms receive is a negative observation: no acknowledgement may arrive while descendants still own effects."
+    }
+  },
+  "tests/change_watcher_engine.rs": {
+    ".recv(Duration::ZERO": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "Subscription::recv(Duration::ZERO) drains notices that are already published; it never waits for progress."
+    }
+  },
+  "tests/cli_deadline.rs": {
+    "started.elapsed()<ORDINARY_COMMAND_CEILING": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "After an abandoned client, the next command must not wait through SPAWN_LOCK_DEADLINE on a leaked lock. ORDINARY_COMMAND_CEILING is a fixed fraction of that deadline."
+    }
+  },
+  "tests/daemon_concurrency.rs": {
+    ".recv_timeout(deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The command helper uses its supplied bound literally. Its callers grace the whole command once; concurrent result receives share the remainder of one graced allowance."
+    },
+    ".recv_timeout(remaining": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The command helper uses its supplied bound literally. Its callers grace the whole command once; concurrent result receives share the remainder of one graced allowance."
+    }
+  },
+  "tests/daemon_lifecycle.rs": {
+    "Instant::now()+Duration::from_millis(500)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The 500/750 ms windows repeatedly prove that an unforced stop or restart does not finish or admit a successor while accepted work remains held. They are negative observations."
+    },
+    "Instant::now()+Duration::from_millis(750)": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "The 500/750 ms windows repeatedly prove that an unforced stop or restart does not finish or admit a successor while accepted work remains held. They are negative observations."
+    },
+    "Instant::now()<start_watch": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The 500/750 ms windows repeatedly prove that an unforced stop or restart does not finish or admit a successor while accepted work remains held. They are negative observations."
+    },
+    "Instant::now()<watched_until": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "The 500/750 ms windows repeatedly prove that an unforced stop or restart does not finish or admit a successor while accepted work remains held. They are negative observations."
+    }
+  },
+  "tests/daemon_timeouts.rs": {
+    ".recv_timeout(CHURN": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "CHURN is the publication/receive cadence of the measurement driver. Scaling it would make the fixture produce the silence that the client must detect."
+    },
+    ".recv_timeout(Duration::from_secs(10)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The client must end its wait after the driven progress record stops moving; this fixed observation is distinct from the graced allowance for obtaining a valid measurement."
+    },
+    ".recv_timeout(Duration::from_secs(3)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A negative observation of the pr-check client while its long-operation record is frozen; the observation window must not be load-scaled."
+    },
+    "Instant::now()+budget": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The measurement-driver regression injects a one-second budget and proves it terminates even when no settled stretch occurs."
+    },
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The driver honors its caller-supplied absolute deadline. Normal measurements use one graced CHURN_PATIENCE budget; expiry regressions supply literal short or expired deadlines."
+    },
+    "Instant::now()>=deadline": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "The driver honors its caller-supplied absolute deadline. Normal measurements use one graced CHURN_PATIENCE budget; expiry regressions supply literal short or expired deadlines."
+    },
+    "ifclean_since.elapsed()>=stretch": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A clean stretch is measured against the injected client deadline; scaling the duration would alter the liveness experiment."
+    },
+    "started.elapsed()<REFUSED_CONNECTION_CEILING": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A refused connection must fail before the fixed observation ceiling, instead of entering a network timeout."
+    }
+  },
+  "tests/doctor.rs": {
+    ".busy_timeout(std::time::Duration::from_secs(5)": {
+      "count": 4,
+      "kind": "fixture",
+      "reason": "This SQLite busy_timeout configures a production-shaped direct connection used to plant or inspect test data. It is an input to the database, not an outer harness wait."
+    }
+  },
+  "tests/e2e_provider_doubles.rs": {
+    "run_bounded(SHELL_DEADLINE": {
+      "count": 3,
+      "kind": "proof",
+      "reason": "Actual double invocations must fit twice the production TMUX_TIMEOUT (shell layer plus fake); generation of the fixture itself is separately graced."
+    }
+  },
+  "tests/engine_reset.rs": {
+    "Instant::now()+DISPATCH_TIMEOUT": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Stop Now must record Draining while the held dispatch remains inside its literal production DISPATCH_TIMEOUT; later release/join synchronization is separately graced."
+    },
+    "Instant::now()<deadline": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Stop Now must record Draining while the held dispatch remains inside its literal production DISPATCH_TIMEOUT; later release/join synchronization is separately graced."
+    }
+  },
+  "tests/engine_reset/quiescent.rs": {
+    ".recv_timeout(Duration::from_millis(500)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A 500 ms negative receive proves reset cannot acknowledge while its effect child is held; the positive post-release receive is graced."
+    }
+  },
+  "tests/engine_run_model.rs": {
+    "started.elapsed()<DISPATCH_TIMEOUT": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "Orphaned dispatch cleanup must not spend DISPATCH_TIMEOUT waiting for a process that is already dead."
+    }
+  },
+  "tests/error_contract.rs": {
+    ".busy_timeout(std::time::Duration::from_secs(30)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "The direct SQLite connection sets a lock policy to plant the production LockTimeout case; the acquisition notification is separately graced."
+    },
+    ".recv(": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The fixture holds its write lock until its caller sends release or drops the sender. This is an owned barrier, not an observation with an independent deadline."
+    }
+  },
+  "tests/illegal_state_pair.rs": {
+    ".busy_timeout(std::time::Duration::from_secs(5)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "This SQLite busy_timeout configures a production-shaped direct connection used to plant or inspect test data. It is an input to the database, not an outer harness wait."
+    }
+  },
+  "tests/machine_lock.rs": {
+    ".wait_within(poll_ceiling()": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The signal regression must reap the wrapper below the wrapped sleep of 60 seconds. Scaling poll_ceiling could let a deferred shell trap pass after the sleep finishes."
+    }
+  },
+  "tests/orphan_check.rs": {
+    "start.elapsed()<no_grace_period_ceiling()": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A clean fixture must return before the script would spend its TERM grace period; no_grace_period_ceiling derives from that production constant."
+    }
+  },
+  "tests/project_recovery/worker.rs": {
+    "std::time::Instant::now()+std::time::Duration::from_secs(PROVIDER_DELAY_SECS/3)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "After provider readiness, cancellation must complete within one third of the named thirty-second provider delay. Readiness is a separate graced wait."
+    },
+    "std::time::Instant::now()<deadline": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "After provider readiness, cancellation must complete within one third of the named thirty-second provider delay. Readiness is a separate graced wait."
+    }
+  },
+  "tests/service_project_set_prefix.rs": {
+    "std::time::Instant::now()+hold": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "watch_while_holding measures the entire caller-supplied write-lock hold, including absence of an early copy. Both outcomes must hold the lock for the same literal duration."
+    },
+    "std::time::Instant::now()<deadline": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "watch_while_holding measures the entire caller-supplied write-lock hold, including absence of an early copy. Both outcomes must hold the lock for the same literal duration."
+    }
+  },
+  "tests/story_hard_delete.rs": {
+    ".busy_timeout(std::time::Duration::from_secs(5)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "This SQLite busy_timeout configures a production-shaped direct connection used to plant or inspect test data. It is an input to the database, not an outer harness wait."
+    }
+  },
+  "tests/story_reset/quiescent.rs": {
+    ".recv_timeout(Duration::from_millis(500)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A 500 ms negative receive proves reset cannot acknowledge while its effect child is held; the positive post-release receive is graced."
+    }
+  },
+  "tests/tailnet_startup.rs": {
+    "http_status_line(ANSWER_AFTER_ACCEPT": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "ANSWER_AFTER_ACCEPT is shorter than TAILNET_PROBE_TIMEOUT: a listener that accepts must answer before a wedged tailscale probe could complete. Binding readiness is separately graced."
+    }
+  },
+  "tests/verification_queue.rs": {
+    "Instant::now()+Duration::from_secs(2)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "recorded_pid is an optional post-kill observation. A helper killed before publication legitimately leaves no PID; the timeout ladder repeats that attempt. This window must not turn absence into a mandatory readiness wait."
+    },
+    "Instant::now()<ready_by": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "recorded_pid is an optional post-kill observation. A helper killed before publication legitimately leaves no PID; the timeout ladder repeats that attempt. This window must not turn absence into a mandatory readiness wait."
+    }
+  },
+  "tests/verification_shutdown_drain.rs": {
+    ".recv_timeout(lifecycle::CONTROL_DEADLINE/10": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "An unrelated project wake must not release the reservation; CONTROL_DEADLINE/10 is a negative receive window."
+    }
+  },
+  "tests/web_test.rs": {
+    ".set_read_timeout(Some(Duration::from_millis(200))": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "The 200 ms socket timeout is an SSE polling quantum. Overall arrival and quiet backstop have their own graced patience."
+    },
+    "last_activity.elapsed()<=quiet_for": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "quiet_for measures silence after the first event for debounce coalescing; scaling it would change which events count as one burst."
+    },
+    "start.elapsed()<OPEN_SSE_CEILING": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "OPEN_SSE_CEILING proves an open event stream does not block ordinary serving; it derives from PEER_IO_TIMEOUT."
+    },
+    "started.elapsed()<TAILNET_SETTLE_DEADLINE": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Loopback startup must not spend the tailnet settle deadline waiting for an interface that never exists."
+    }
+  }
+}

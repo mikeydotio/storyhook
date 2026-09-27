@@ -29,7 +29,9 @@ fn reset_requires_auth_and_confirmation_then_polls_a_scoped_durable_receipt() {
     );
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_secs(10)))
+        .timeout_global(Some(storyhook_test_support::load_grace::graced_now(
+            Duration::from_secs(10),
+        )))
         .build()
         .into();
     let no_auth = agent

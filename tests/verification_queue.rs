@@ -2694,14 +2694,11 @@ wait
         // The observer can also be delayed beyond the verifier's idle window.
         // Keep progress live until both registration and child setup are seen.
         thread::sleep(Duration::from_millis(1500));
-        let ready_by = Instant::now() + storyhook_test_support::STORY_COMMAND_DEADLINE;
+        let mut patience = Patience::new(storyhook_test_support::STORY_COMMAND_DEADLINE);
         let (active, child_ready) = loop {
             let active = lifecycle::read_owned_processes(&daemon_env);
             let child_ready = checkout.path().join("stubborn-child-pid").is_file();
-            if (!active.is_empty() && child_ready)
-                || running.is_finished()
-                || Instant::now() >= ready_by
-            {
+            if (!active.is_empty() && child_ready) || running.is_finished() || patience.expired() {
                 break (active, child_ready);
             }
             thread::sleep(Duration::from_millis(10));
@@ -2743,8 +2740,8 @@ wait
         .unwrap()
         .parse()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < deadline {
+    let mut patience = Patience::new(Duration::from_secs(2));
+    while unsafe { libc::kill(pid, 0) } == 0 && !patience.expired() {
         thread::sleep(Duration::from_millis(10));
     }
     assert_ne!(
@@ -3552,8 +3549,8 @@ fn recorded_pid(pid_path: &std::path::Path) -> Option<i32> {
 }
 
 fn assert_process_stopped(pid: i32) {
-    let stopped_by = Instant::now() + Duration::from_secs(2);
-    while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < stopped_by {
+    let mut patience = Patience::new(Duration::from_secs(2));
+    while unsafe { libc::kill(pid, 0) } == 0 && !patience.expired() {
         thread::sleep(Duration::from_millis(10));
     }
     assert_ne!(

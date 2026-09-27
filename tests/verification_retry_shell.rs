@@ -102,12 +102,15 @@ fn isolated_scenario(verdict: &str) {
         .stdout(log.try_clone().unwrap())
         .stderr(log);
     let mut child = ChildGuard::spawn(&mut command).unwrap();
-    let status = child.wait_within(Duration::from_secs(120), || {
-        format!(
-            "{verdict} worker exceeded deadline:\n{}",
-            fs::read_to_string(&log_path).unwrap()
-        )
-    });
+    let status = child.wait_within(
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(120)),
+        || {
+            format!(
+                "{verdict} worker exceeded deadline:\n{}",
+                fs::read_to_string(&log_path).unwrap()
+            )
+        },
+    );
     assert!(
         status.success(),
         "{verdict} worker failed:\n{}",

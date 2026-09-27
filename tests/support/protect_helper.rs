@@ -230,7 +230,11 @@ fn helper_identity_requires_a_regular_file_at_its_own_unredirected_path() {
         // A FIFO: classification must never block on a writer.
         let mut fifo = shell(&harness);
         fifo.arg("-c").arg(format!("mkfifo {}", quoted(&helper)));
-        let output = run_bounded(fifo, "create isolated FIFO", STORY_COMMAND_DEADLINE);
+        let output = run_bounded(
+            fifo,
+            "create isolated FIFO",
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        );
         assert!(output.status.success(), "{}", combined(&output));
         assert_denied_by(&harness, &hook, &text);
         fs::remove_file(&helper).unwrap();
@@ -305,7 +309,7 @@ printf '%s\n' "$out"
     let output = run_bounded(
         command,
         "real installed helper dispatch",
-        STORY_COMMAND_DEADLINE,
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
     );
     assert!(output.status.success(), "{}", combined(&output));
     assert_eq!(

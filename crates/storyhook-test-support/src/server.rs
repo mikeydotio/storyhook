@@ -692,6 +692,7 @@ pub fn run_bounded(mut cmd: Command, what: &str, deadline: Duration) -> Output {
 mod tests {
     use super::*;
     use crate::env::TestEnv;
+    use crate::load_grace;
     use storyhook::store::{ReadOps, Store};
 
     #[test]
@@ -919,7 +920,7 @@ mod tests {
         let (env, store, _slug) = served_project();
 
         let port = serve(store, &env.environment()).port();
-        let line = http_status_line(port, Duration::from_secs(5));
+        let line = http_status_line(port, load_grace::graced_now(Duration::from_secs(5)));
         assert!(
             line.as_deref().is_some_and(|l| l.contains("200")),
             "serve() must not return until the server actually answers; got {line:?}"
@@ -931,7 +932,11 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "printf ok; exit 3"]);
 
-        let out = run_bounded(cmd, "printf ok", Duration::from_secs(5));
+        let out = run_bounded(
+            cmd,
+            "printf ok",
+            load_grace::graced_now(Duration::from_secs(5)),
+        );
         assert_eq!(out.stdout, b"ok");
         assert_eq!(out.status.code(), Some(3));
     }
@@ -945,9 +950,10 @@ mod tests {
         ]);
         let mut child = ChildGuard::spawn_with_output(&mut cmd).expect("spawning noisy child");
 
-        let out = child.wait_with_output_within(Duration::from_secs(5), || {
-            "the noisy child did not finish".to_string()
-        });
+        let out = child
+            .wait_with_output_within(load_grace::graced_now(Duration::from_secs(5)), || {
+                "the noisy child did not finish".to_string()
+            });
 
         assert_eq!(out.stdout.len(), 1_048_576);
         assert_eq!(out.stderr, b"problem");
@@ -965,9 +971,10 @@ mod tests {
             .write_all(b"done")
             .expect("writing cat stdin");
 
-        let out = child.wait_with_output_within(Duration::from_secs(5), || {
-            "cat did not observe stdin closing".to_string()
-        });
+        let out = child
+            .wait_with_output_within(load_grace::graced_now(Duration::from_secs(5)), || {
+                "cat did not observe stdin closing".to_string()
+            });
 
         assert_eq!(out.stdout, b"done");
     }

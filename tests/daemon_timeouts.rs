@@ -128,7 +128,7 @@ fn within_patience<T: Send + 'static>(what: &str, call: impl FnOnce() -> T + Sen
     std::thread::spawn(move || {
         let _ = tx.send(call());
     });
-    match rx.recv_timeout(PATIENCE) {
+    match rx.recv_timeout(storyhook_test_support::load_grace::graced_now(PATIENCE)) {
         Ok(value) => value,
         Err(_) => panic!(
             "`{what}` had not returned after {:?}. A daemon call with no timeout \
@@ -182,7 +182,7 @@ fn explicit_lifecycle_observation_rejects_a_silent_peer() {
     ] {
         env.story(dir.path())
             .args(args)
-            .timeout(PATIENCE)
+            .timeout(storyhook_test_support::load_grace::graced_now(PATIENCE))
             .assert()
             .failure()
             .stderr(predicates::str::contains("local daemon"))
@@ -210,7 +210,7 @@ fn status_rejects_a_port_with_no_listener() {
     .unwrap();
     env.story(dir.path())
         .args(["daemon", "status"])
-        .timeout(PATIENCE)
+        .timeout(storyhook_test_support::load_grace::graced_now(PATIENCE))
         .assert()
         .failure()
         .stderr(predicates::str::contains("local daemon"));
@@ -636,7 +636,7 @@ mod exchange {
         std::fs::create_dir_all(env.daemon_state_dir()).expect("the daemon directory");
 
         let started = Instant::now();
-        let deadline = started + CHURN_PATIENCE;
+        let deadline = started + storyhook_test_support::load_grace::graced_now(CHURN_PATIENCE);
         let mut disturbed: Vec<Duration> = Vec::new();
         while Instant::now() < deadline {
             // A fresh client per attempt: a client that has already answered
@@ -732,7 +732,7 @@ mod exchange {
             &env,
             &rx,
             DRIVEN * 8,
-            Instant::now() + CHURN_PATIENCE,
+            Instant::now() + storyhook_test_support::load_grace::graced_now(CHURN_PATIENCE),
             move |n| if n == 4 { absent } else { Duration::ZERO },
         );
 
@@ -778,13 +778,15 @@ mod exchange {
             &env,
             &rx,
             DRIVEN * 8,
-            Instant::now() + CHURN_PATIENCE,
+            Instant::now() + storyhook_test_support::load_grace::graced_now(CHURN_PATIENCE),
             |n| {
                 if n == 4 {
                     return DRIVEN * 2;
                 }
                 if n == 5 {
-                    let result = client_rx.recv_timeout(PATIENCE).unwrap();
+                    let result = client_rx
+                        .recv_timeout(storyhook_test_support::load_grace::graced_now(PATIENCE))
+                        .unwrap();
                     assert!(result.is_err(), "a silent peer cannot answer: {result:?}");
                     delayed = Some(result);
                 }
@@ -818,7 +820,7 @@ mod exchange {
             &env,
             &rx,
             stretch,
-            Instant::now() + CHURN_PATIENCE,
+            Instant::now() + storyhook_test_support::load_grace::graced_now(CHURN_PATIENCE),
             move |n| if n == 4 { absent } else { Duration::ZERO },
         );
         assert!(
@@ -830,7 +832,7 @@ mod exchange {
             &env,
             &fresh_rx,
             stretch,
-            Instant::now() + CHURN_PATIENCE,
+            Instant::now() + storyhook_test_support::load_grace::graced_now(CHURN_PATIENCE),
             |_| Duration::ZERO,
         );
         assert!(matches!(fresh, Churned::HeldOut), "{fresh:?}");
@@ -906,7 +908,7 @@ mod exchange {
             &env,
             &rx,
             DRIVEN * 8,
-            Instant::now() + CHURN_PATIENCE,
+            Instant::now() + storyhook_test_support::load_grace::graced_now(CHURN_PATIENCE),
             |_| Duration::ZERO,
         );
         assert!(

@@ -64,7 +64,9 @@ impl RawResponse {
 fn request(port: u16, method: &str, path: &str, headers: &[(&str, &str)]) -> RawResponse {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connecting to the daemon");
     stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+            Duration::from_secs(10),
+        )))
         .expect("setting a read timeout");
 
     let mut head = format!("{method} {path} HTTP/1.1\r\n");

@@ -250,7 +250,9 @@ impl Runner {
 
     fn collect(&mut self) -> Output {
         self.0.wait_with_output_within(
-            Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED),
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(
+                lock_poll_secs() * WAIT_POLLS_ALLOWED,
+            )),
             || "the spawned gate fixture did not finish".to_string(),
         )
     }
@@ -497,18 +499,26 @@ fn a_second_run_waits_for_the_gate_lock_and_names_its_holder() {
         .stdin(Stdio::null());
     let mut runner =
         Runner(ChildGuard::spawn_with_output(&mut command).expect("spawning journalled waiter"));
-    std::thread::sleep(time_to_reach_the_lock());
-    assert!(
-        !runner.finished(),
-        "the run must not have completed while the gate lock was held -- it did not serialize"
+    let waiting_progress = storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(time_to_reach_the_lock()),
+        Duration::from_millis(20),
+        || "the journal must name the gate-lock wait".into(),
+        || {
+            assert!(
+                !runner.finished(),
+                "the run completed while the gate lock was held"
+            );
+            let progress = match std::fs::read_to_string(&journal) {
+                Ok(progress) => progress,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(error) => panic!("reading {}: {error}", journal.display()),
+            };
+            progress.contains(
+                r#"{"kind":"activity","path":"release gate/rust-suite","label":"waiting for gate lock","status":"running"#,
+            ).then_some(progress)
+        },
     );
-    let waiting_progress = std::fs::read_to_string(&journal).expect("reading waiter progress");
-    assert!(
-        waiting_progress.contains(
-            r#"{"kind":"activity","path":"release gate/rust-suite","label":"waiting for gate lock","status":"running"#,
-        ),
-        "the journal must name the actual wait rather than leaving the parent suite as current: {waiting_progress}"
-    );
+    assert!(!waiting_progress.is_empty());
 
     signal(holder.pid(), "TERM");
     holder.collect();

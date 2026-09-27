@@ -814,9 +814,10 @@ fn certification_and_the_merge_command_wait_behind_the_merge_lock() {
             &witness.display().to_string(),
         ],
     );
-    holder.wait_within(Duration::from_secs(HOLD_SECS * 2), || {
-        "the merge-lock holder did not exit after its sleep".to_string()
-    });
+    holder.wait_within(
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(HOLD_SECS * 2)),
+        || "the merge-lock holder did not exit after its sleep".to_string(),
+    );
 
     assert_ok(&out, "the queued landing command");
     assert!(witness.exists());

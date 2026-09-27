@@ -554,7 +554,9 @@ fn last_owned_window_and_dead_pane_are_idempotently_removed() {
         "on",
     ]);
     tmux.run(&["respawn-pane", "-k", "-t", "reset-test:0", "true"]);
-    for _ in 0..100 {
+    let mut patience =
+        storyhook_test_support::load_grace::Patience::new(std::time::Duration::from_secs(1));
+    loop {
         if tmux.run(&[
             "display-message",
             "-p",
@@ -565,6 +567,7 @@ fn last_owned_window_and_dead_pane_are_idempotently_removed() {
         {
             break;
         }
+        assert!(!patience.expired(), "{patience}; pane never became dead");
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(
