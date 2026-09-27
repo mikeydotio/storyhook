@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook::daemon::bus::{Change, ChangeBus};
 use storyhook::daemon::lifecycle::{InFlight, read_owned_processes};
@@ -50,12 +50,13 @@ fn marker(f: &ServiceFixture, c: &VerificationCandidate, suffix: &str) -> PathBu
     PathBuf::from(format!("{}.{suffix}", journal_path(f.env(), c).display()))
 }
 
-fn wait_for(description: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(8);
-    while !ready() {
-        assert!(Instant::now() < deadline, "{description}");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(8)),
+        Duration::from_millis(10),
+        || format!("waiting for {what}"),
+        || ready().then_some(()),
+    );
 }
 
 struct StopOnDrop<'a> {
