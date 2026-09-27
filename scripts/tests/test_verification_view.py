@@ -383,6 +383,8 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
             return result
 
         directory = self.root / "one" / "logs with spaces ' $(inert)"
+        # SH-771: the daemon prepares the journal directory before any view.
+        directory.mkdir(parents=True, exist_ok=True)
         with patch.dict(os.environ, self.env, clear=True), \
                 patch.object(view.time, "monotonic", side_effect=lambda: clock[0]), \
                 patch.object(view.subprocess, "run", side_effect=answer):
