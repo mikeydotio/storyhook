@@ -11,6 +11,12 @@ Restate the braindump in one sentence so the user can see what you heard.
 
 ## 2. Search first
 
+Read `story help scope-rubric` before filing a prerequisite or blocking the
+current story. Adopt actionable work into the current story, with a comment
+and expanded acceptance criteria. Preserve real dependencies and work owned
+by another active session. Continue this filing flow only when a separate
+story is appropriate or the user explicitly requests one.
+
 `story search "<key terms>"` and `story list --ready` for anything this could
 already be. If an open story already covers it, say so and offer the
 alternative to filing — **adopt** (comment the finding on the existing story,

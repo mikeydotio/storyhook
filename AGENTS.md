@@ -128,6 +128,8 @@ story graph --blocked-by SH-1   # trace why a story is blocked
 ## During execution
 
 - Before starting: `story move SH-<n> in-progress`
+- Read `story help scope-rubric` before filing a prerequisite or blocking the
+  current story. Adopt work you can do within the story; preserve real dependencies.
 - When blocked by another story: `story block SH-<n> --on SH-<blocker> "reason"`
   — records a real `blocked-by` edge, which clears itself when the blocker
   closes. A reason alone (no `--on`) is free text that never clears itself;

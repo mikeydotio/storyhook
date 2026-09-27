@@ -507,6 +507,10 @@ label delimiter, even inside a single --label value — a label can
 never contain one. Labels are stored lowercase; case variants name
 the same label.
 
+Before filing a prerequisite or blocking the current story, read
+'story help scope-rubric'. Adopt work you can do within that story;
+file a separate dependency only when the rubric calls for it.
+
 --draft creates the story as a draft: it claims an id like any other
 story, but is excluded from 'story next'/'--ready' and shown inline
 in 'story list' with a [draft] badge (or filter to drafts-only with
@@ -1746,6 +1750,10 @@ story block <id> "<reason>"
 Mark a story as blocked. Blocked stories are excluded from 'story
 next' results and highlighted in listings.
 
+Before filing a prerequisite or blocking the current story, read
+'story help scope-rubric'. Adopt work you can do within that story;
+retain a real dependency or external hold when you cannot do the work.
+
 Two ways to say why, and they behave differently:
 
   --on <blocker>   Records a `blocked-by` edge onto <blocker> — a
@@ -2138,6 +2146,26 @@ Adopting does not weaken two hats. Two hats governs COMMITS, not
 stories or pull requests — a behaviour fix and a refactor still never
 share a commit. What changes is only that one story, and one pull
 request, can now cover more than the single thing it started as.
+
+== Before you create a blocker ==
+
+Before filing a blocker for your current story, check whether you can
+do the prerequisite within your authorized work. Adopt an actionable
+prerequisite into the current story, even when it is in another module.
+Do not file a new story and block your current story on it merely to
+transfer work you can do yourself.
+
+First, comment the finding and expand the acceptance criteria on the
+current story. Apply the scope exceptions and context rules below.
+When you can fix it now, give it its own commit and regression test,
+then continue the original work. When context is short, retain the
+expanded scope and hand it off; do not create a dependency to defer it.
+
+Preserve real dependencies and external holds. Do not take over another
+active session, and do not remove existing dependency edges as a shortcut
+to adoption. Work owned by that session remains a real dependency unless
+its ownership is explicitly transferred. Adoption grants no new access
+or authority and does not override an obviation-review hold.
 
 == Does it belong to this story? ==
 
