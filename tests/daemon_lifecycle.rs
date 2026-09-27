@@ -22,6 +22,9 @@ use storyhook_test_support::{
     scratch_dir, story_binary,
 };
 
+#[path = "daemon_lifecycle/restart_budget.rs"]
+mod restart_budget;
+
 /// Whether `info` describes a daemon running the `story` binary this build
 /// produced.
 ///

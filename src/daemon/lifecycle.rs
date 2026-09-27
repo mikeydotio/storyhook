@@ -1203,7 +1203,9 @@ fn native_parent_pid() -> u32 {
 /// harvest whatever residue that lock's previous holder left (SH-287),
 /// reconcile durable Full Auto state, bind loopback, publish the portfile, then
 /// serve. Publication comes after reconciliation so no client can claim work
-/// against pre-restart lane state. Only a background thread inside `serve`
+/// against pre-restart lane state. External lane probes share one startup
+/// budget; unanswered lanes retain ownership and get fresh progress clocks.
+/// Only a background thread inside `serve`
 /// probes the tailnet (SH-186).
 ///
 /// `owner_flag` is `daemon --serve`'s own `--owner` argument, resolved by
@@ -1246,9 +1248,9 @@ pub fn run<S: crate::store::Store>(
     }
 
     // Synchronous and ahead of the portfile: a discoverable successor has
-    // already classified every lane left by its predecessor. This pass never
-    // fills idle lanes or finishes runs; the steady poller is released only
-    // after the server reaches readiness.
+    // already reconciled the store facts for every lane left by its predecessor.
+    // External probes share one budget (SH-809); exhaustion preserves unknown
+    // lanes for the steady poller, which is released only after readiness.
     crate::daemon::engine::reconcile_restart_tick(store, env);
 
     let (listeners, bound) = bind_preferred(env)?;

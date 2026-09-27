@@ -466,6 +466,20 @@ second, differently-behaved door onto the same script.
 
 ### The restart pass (D11, SH-466)
 
+The daemon completes store reconciliation before publishing its portfile.
+External lane probes share one absolute, monotonic `TMUX_TIMEOUT` deadline
+(three seconds) across every project and run (SH-809). Adopted-lane identity
+and activity queries share that same deadline. Each subprocess gets only
+the remaining allowance; after expiry no further probe is started.
+An exhausted budget is `Unanswered`, never evidence of a dead lane: ownership
+is retained and progress clocks are reseeded, while durable completion,
+blocking, and verification facts keep their ordinary precedence. The first
+steady pass retries observations with its ordinary per-probe timeout.
+This removes the lane-count multiple of external waits inside the client's
+five-second startup deadline; it does not bound OS scheduling, backup or
+database latency. Publication ordering, capture cleanup, and wire formats
+are unchanged.
+
 Before any run resumes claiming, one extra pass runs once per live run, over
 every project the store knows about (`ReadOps::live_engine_runs`, deliberately
 machine-wide for exactly this). It differs from the ordinary pass in only two

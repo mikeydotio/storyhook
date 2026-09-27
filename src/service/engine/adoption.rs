@@ -2,7 +2,9 @@
 use crate::domain::StoryCleanupLease;
 use crate::error::AppError;
 use crate::store::EngineAgent;
+use std::ffi::OsStr;
 use std::path::Path;
+use std::time::Instant;
 
 pub use crate::store::AdoptedIdentity;
 
@@ -45,10 +47,23 @@ fn refusal(detail: impl Into<String>) -> AppError {
     AppError::Validation(format!("engine adopt: {}", detail.into()))
 }
 
-fn capture(mut command: Command, args: &[&str], context: &str) -> Result<String, AppError> {
+fn capture(
+    mut command: Command,
+    args: &[&str],
+    context: &str,
+    deadline: Option<Instant>,
+) -> Result<String, AppError> {
     command.args(args);
-    let captured = run_captured(command, super::TMUX_TIMEOUT)
-        .map_err(|error| refusal(format!("{context}: {}", error.detail())))?;
+    let timeout = super::probe_timeout_at(deadline, Instant::now())
+        .map_err(|detail| refusal(format!("{context}: {detail}")))?;
+    let captured = run_captured(command, timeout).map_err(|error| {
+        let budget = if deadline.is_some() {
+            format!(" (remaining startup probe budget: {timeout:?})")
+        } else {
+            String::new()
+        };
+        refusal(format!("{context}: {}{budget}", error.detail()))
+    })?;
     if !captured.status.success() {
         return Err(refusal(format!(
             "{context}: {}",
@@ -70,6 +85,7 @@ impl DispatchInspector for LiveDispatchInspector {
             git_env::command(checkout),
             &["worktree", "list", "--porcelain", "-z"],
             "list registered worktrees",
+            None,
         )?;
         let mut matching = Vec::new();
         for path in inventory
@@ -105,20 +121,24 @@ impl DispatchInspector for LiveDispatchInspector {
         {
             return Err(refusal(format!("{story}: repository mismatch")));
         }
-        inspect_lease(lease)
+        inspect_lease(lease, None, OsStr::new("tmux"))
     }
 }
 
-fn tmux(lease: &StoryCleanupLease) -> Command {
-    let mut command = Command::new("tmux");
+fn tmux(lease: &StoryCleanupLease, program: &OsStr) -> Command {
+    let mut command = Command::new(program);
     crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
     command.arg("-S").arg(&lease.tmux.socket_path);
     command
 }
 
-fn inspect_lease(lease: StoryCleanupLease) -> Result<InspectedDispatch, AppError> {
+fn inspect_lease(
+    lease: StoryCleanupLease,
+    deadline: Option<Instant>,
+    program: &OsStr,
+) -> Result<InspectedDispatch, AppError> {
     let listing = capture(
-        tmux(&lease),
+        tmux(&lease, program),
         &[
             "list-panes",
             "-a",
@@ -126,6 +146,7 @@ fn inspect_lease(lease: StoryCleanupLease) -> Result<InspectedDispatch, AppError
             "#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_dead}\t#{window_id}\t#{pane_current_path}\t#{@storyhook-agent}\t#{pane_active}",
         ],
         "inspect leased tmux server",
+        deadline,
     )?;
     let rows: Vec<Vec<&str>> = listing
         .lines()
@@ -208,19 +229,23 @@ fn inspect_lease(lease: StoryCleanupLease) -> Result<InspectedDispatch, AppError
 }
 
 /// Observes an adopted process on its captured server, never an ambient server.
-pub(super) fn probe(lane: &EngineLaneRecord) -> WindowProbe {
+pub(super) fn probe(
+    lane: &EngineLaneRecord,
+    deadline: Option<Instant>,
+    program: &OsStr,
+) -> WindowProbe {
     let Some(lease) = lane.cleanup_lease.clone() else {
         return WindowProbe::Unanswered {
             detail: "adopted lane lost cleanup lease".into(),
         };
     };
-    match inspect_lease(lease) {
+    match inspect_lease(lease, deadline, program) {
         Ok(found)
             if lane.pane_id.as_deref() == Some(&found.pane_id)
                 && lane.adopted_identity.as_ref() == Some(&found.identity) =>
         {
             let activity = capture(
-                tmux(&found.lease),
+                tmux(&found.lease, program),
                 &[
                     "display-message",
                     "-p",
@@ -229,6 +254,7 @@ pub(super) fn probe(lane: &EngineLaneRecord) -> WindowProbe {
                     "#{window_activity}",
                 ],
                 "read pane activity",
+                deadline,
             );
             match activity {
                 Ok(at) => WindowProbe::Alive {
