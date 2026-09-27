@@ -174,7 +174,8 @@ pub(crate) fn run_captured_private(
 /// exit. A periodic reconcile whose success is the steady state would
 /// otherwise fill the very window it keeps alive. Timeouts still record an
 /// ERROR, and the caller keeps the captured stderr for its own report.
-#[cfg(test)]
+/// For a child with no owner stop to observe, such as the journal hygiene
+/// sweep's bounded `git ls-files` (SH-771).
 pub(crate) fn run_captured_quiet(
     command: Command,
     timeout: Duration,
