@@ -72,9 +72,9 @@ evidence error, and no silence clock, because no gate runs. `remediation` and
 deadlines, counted from `reserved_at`. `reconcile` is overdue when its hold has
 reported no activity for longer than `STALL_CEILING_SECS` plus one
 `RECOVERY_WAKE`. The hold releases at the ceiling, so passing it means the
-release did not fire. The count starts at the hold's latest reported activity,
-never at `reserved_at`, because a live reconcile holds for as long as it runs
-(SH-770 decision D1, applied by SH-827). An absence that the owner did not
+release did not fire. The count starts at `reserved_at` until the hold reports
+its start, then at the hold's latest reported activity, because a live
+reconcile holds for as long as it runs (SH-770 decision D1, applied by SH-827). An absence that the owner did not
 declare is still unavailable evidence. A declaration that the queue contradicts
 is also unavailable evidence. The field is omitted when absent, so older
 payloads decode unchanged.

@@ -16,8 +16,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use storyhook::daemon::bus::{Change, ChangeBus};
 use storyhook::daemon::lifecycle::CONTROL_DEADLINE;
 use storyhook::daemon::verification::{
-    GONE_CONFIRMATIONS, HoldRelease, HoldWatch, ReconcileWait, VERIFICATION_HOLD_RELEASED_PREFIX,
-    VerificationCancellation, wait_for_reconciled_candidate,
+    GONE_CONFIRMATIONS, HoldRelease, HoldWatch, ReconcileWait, ReservationReason,
+    VERIFICATION_HOLD_RELEASED_PREFIX, VerificationCancellation, wait_for_reconciled_candidate,
 };
 use storyhook::service::RelationService;
 use storyhook::service::engine::{STALL_CEILING_SECS, WindowProbe};
@@ -123,9 +123,12 @@ impl Driver<'_> {
         self.clock.now().duration_since(last).unwrap_or_default()
     }
 
-    /// The status bound on [`Self::idle`]: the ceiling plus one wake.
+    /// The status bound on [`Self::idle`], read from its owner rather than
+    /// copied, so a change to the production bound changes what this proves.
     fn overdue_after(&self) -> Duration {
-        Duration::from_secs(STALL_CEILING_SECS) + self.every
+        ReservationReason::Reconcile
+            .overdue_after()
+            .expect("a reconcile reservation is bounded")
     }
 
     /// Moves the clock one probe interval and waits for what that made due:
