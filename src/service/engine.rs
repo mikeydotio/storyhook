@@ -9,6 +9,9 @@
 pub mod adoption;
 pub mod reset;
 
+#[cfg(test)]
+mod restart_probe_tests;
+
 use std::ffi::OsString;
 #[cfg(test)]
 use std::fs::File;
@@ -463,6 +466,19 @@ pub fn classify(
 /// budget bounds a wedged server without inventing another patience value.
 pub const TMUX_TIMEOUT: Duration = crate::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
 
+/// The remaining startup allowance, or the ordinary per-probe bound. Keeping
+/// one absolute deadline prevents a nested adopted-lane probe from renewing it.
+fn probe_timeout_at(deadline: Option<Instant>, now: Instant) -> Result<Duration, String> {
+    let remaining = deadline.map_or(TMUX_TIMEOUT, |until| {
+        until.saturating_duration_since(now).min(TMUX_TIMEOUT)
+    });
+    if remaining.is_zero() {
+        Err("startup probe budget exhausted; lane liveness is unknown".into())
+    } else {
+        Ok(remaining)
+    }
+}
+
 /// The one `display-message` format the liveness probe asks a lane's pane
 /// for: its pid, its foreground command, whether tmux itself considers the
 /// pane dead, and when the window last wrote to its pty (`#{window_activity}`,
@@ -627,6 +643,7 @@ pub struct ShellDispatcher {
     story_sh_path: PathBuf,
     env: Environment,
     tmux_program: OsString,
+    probe_deadline: Option<Instant>,
 }
 
 impl ShellDispatcher {
@@ -636,7 +653,15 @@ impl ShellDispatcher {
             story_sh_path: story_sh_path.into(),
             env,
             tmux_program: OsString::from("tmux"),
+            probe_deadline: None,
         }
+    }
+
+    /// Shares the daemon restart sweep's deadline across all lane subprobes.
+    #[must_use]
+    pub(crate) fn with_probe_deadline(mut self, deadline: Instant) -> Self {
+        self.probe_deadline = Some(deadline);
+        self
     }
 
     fn tmux(&self) -> Command {
@@ -662,13 +687,25 @@ impl ShellDispatcher {
             command.arg("-S").arg(socket);
         }
         command.args(["display-message", "-p", "-t", window, WINDOW_PROBE_FORMAT]);
-        let captured = match run_captured(command, TMUX_TIMEOUT) {
+        let timeout = match probe_timeout_at(self.probe_deadline, Instant::now()) {
+            Ok(timeout) => timeout,
+            Err(detail) => {
+                return WindowProbe::Unanswered {
+                    detail: format!("{window}: {detail}"),
+                };
+            }
+        };
+        let captured = match run_captured(command, timeout) {
             Ok(captured) => captured,
             Err(CaptureError::Timeout(_)) => {
                 return WindowProbe::Unanswered {
                     detail: format!(
-                        "tmux did not answer the liveness probe for `{window}` within {}s",
-                        TMUX_TIMEOUT.as_secs()
+                        "tmux did not answer the liveness probe for `{window}` within {timeout:?}{}",
+                        if self.probe_deadline.is_some() {
+                            " (remaining startup probe budget)"
+                        } else {
+                            ""
+                        }
                     ),
                 };
             }
@@ -806,7 +843,7 @@ impl Dispatcher for ShellDispatcher {
 
     fn probe_lane(&self, lane: &EngineLaneRecord, window: &str) -> WindowProbe {
         if lane.adopted_identity.is_some() {
-            return adoption::probe(lane);
+            return adoption::probe(lane, self.probe_deadline, &self.tmux_program);
         }
         self.probe_window_at(
             window,
@@ -3367,6 +3404,7 @@ mod tests {
             story_sh_path: root.join("story.sh"),
             env: Environment::at(root.join("home")),
             tmux_program: tmux_program.as_os_str().to_owned(),
+            probe_deadline: None,
         }
     }
 
