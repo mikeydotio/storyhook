@@ -42,10 +42,31 @@ fn unix(time: SystemTime) -> Option<i64> {
         .and_then(|since| i64::try_from(since.as_secs()).ok())
 }
 
+/// How often a patient receive looks again at its channel and its patience.
+const RECEIVE_POLL: Duration = Duration::from_millis(25);
+
+/// Receives from `receiver` within [`CONTROL_DEADLINE`], graced by machine
+/// contention (SH-806). Every wait in this harness is patience for something
+/// expected to happen (a hold thread that probes, starts or ends), never proof
+/// that something did not, so a bare deadline only measures the scheduler: at
+/// a load average of about 190 on 10 cores, three runs in a row failed a
+/// different hold test each at a bare 5 s wait (found by SH-827). Each pass
+/// receives before it judges the clock, so a message that arrived while this
+/// thread was starved still counts (SH-766).
+fn recv_patiently<T>(receiver: &Receiver<T>) -> Result<T, RecvTimeoutError> {
+    let mut patience = load_grace::Patience::new(CONTROL_DEADLINE);
+    loop {
+        match receiver.recv_timeout(RECEIVE_POLL) {
+            Err(RecvTimeoutError::Timeout) if !patience.expired() => {}
+            received => return received,
+        }
+    }
+}
+
 /// Changes the store with `act`, then runs the production wait for
 /// `reserved` with a live agent. A hold that never ends is stopped after
-/// [`CONTROL_DEADLINE`], so it fails the caller's assertion instead of
-/// hanging the suite.
+/// [`CONTROL_DEADLINE`], graced by contention ([`recv_patiently`]), so it
+/// fails the caller's assertion instead of hanging the suite.
 fn wait_after(
     fixture: &ServiceFixture,
     reserved: &VerificationCandidate,
@@ -59,10 +80,7 @@ fn wait_after(
     thread::scope(|scope| {
         let stop = &stop;
         scope.spawn(move || {
-            if matches!(
-                finished.recv_timeout(CONTROL_DEADLINE),
-                Err(RecvTimeoutError::Timeout)
-            ) {
+            if matches!(recv_patiently(&finished), Err(RecvTimeoutError::Timeout)) {
                 stop.store(true, Ordering::Relaxed);
             }
         });
@@ -136,7 +154,7 @@ impl Driver<'_> {
     fn step(&self) -> bool {
         self.clock.advance(self.every);
         self.bus.publish(Change::Ping);
-        match self.events.recv_timeout(CONTROL_DEADLINE) {
+        match recv_patiently(&self.events) {
             Ok(Event::Probed) => true,
             Ok(Event::Ended) => false,
             Err(error) => panic!("the hold neither probed nor ended after one interval: {error}"),
@@ -209,9 +227,7 @@ fn watched_wait(
             // A driver that fails stops the hold at once, or the scope would
             // wait on a hold that nothing will end.
             let driven = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                start
-                    .recv_timeout(CONTROL_DEADLINE)
-                    .expect("the hold reads its clock when it starts");
+                recv_patiently(&start).expect("the hold reads its clock when it starts");
                 drive(&driver);
             }));
             if let Err(failure) = driven {
@@ -220,10 +236,7 @@ fn watched_wait(
             }
             // A hold still running after its driver is done fails the
             // caller's assertion instead of hanging the suite.
-            if matches!(
-                finish.recv_timeout(CONTROL_DEADLINE),
-                Err(RecvTimeoutError::Timeout)
-            ) {
+            if matches!(recv_patiently(&finish), Err(RecvTimeoutError::Timeout)) {
                 stop.store(true, Ordering::Relaxed);
             }
         });
