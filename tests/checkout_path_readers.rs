@@ -51,6 +51,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "reader supervision chooses journal directories for already-enumerated store projects; paths never determine project identity",
     ),
     (
+        "src/daemon/activity/window_tests.rs",
+        "view fixtures set, replace, and clear the selected project's checkout to verify catalog authority and activation; they never resolve project identity from a path",
+    ),
+    (
         "src/daemon/project_recovery.rs",
         "recovery delivery chooses its working directory after selecting each durable project id",
     ),
