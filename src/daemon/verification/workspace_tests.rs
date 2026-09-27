@@ -114,7 +114,8 @@ fn remediation_reuses_verifier_lock_without_parking_or_interrupting_agent() {
         &actuator,
         &candidate,
         diagnosis,
-        &activity.cancellation_for(project),
+        &guard,
+        ReservationReason::Remediation,
     )
     .unwrap();
     let row = store

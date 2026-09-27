@@ -276,6 +276,24 @@ fn recovery_response(f: &storyhook_test_support::ServiceFixture) -> Response {
     ))
 }
 
+/// `status` with its owner holding a conflict reconcile (SH-768), the
+/// populated side of the nullable `reservation` field.
+fn reserved(
+    status: &storyhook::daemon::verification::status::VerifierStatus,
+) -> storyhook::daemon::verification::status::VerifierStatus {
+    use storyhook::daemon::verification::{ReservationReason, VerifierReservation};
+    let mut status = status.clone();
+    status.reservation = Some(VerifierReservation {
+        story_id: "SH-1".into(),
+        generation: Some(storyhook::store::GlobalSeq::new(7)),
+        reason: ReservationReason::Reconcile,
+        reserved_at: "2026-01-01T00:00:00Z".into(),
+        age_seconds: Some(5),
+        queued_behind: 1,
+    });
+    status
+}
+
 /// Every `Response` variant, in both its empty and its populated shape where
 /// the renderers treat those differently (`Stories`, `Issues` and
 /// `PhaseList` all have dedicated "nothing here" branches).
@@ -289,6 +307,10 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         (
             "verifier_status",
             Response::VerifierStatus(Box::new(status.clone())),
+        ),
+        (
+            "verifier_status_reserved",
+            Response::VerifierStatus(Box::new(reserved(&status))),
         ),
         (
             "with_verifier",

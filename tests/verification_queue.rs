@@ -12,6 +12,9 @@ mod human_only;
 #[path = "verification_queue/reconcile_hold.rs"]
 mod reconcile_hold;
 
+#[path = "verification_queue/reservation_status.rs"]
+mod reservation_status;
+
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};

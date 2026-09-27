@@ -141,3 +141,41 @@ test("overdue evidence warning is visible outside the verifier column", async ({
   await expect(banner).toContainText("no progress evidence for 61s");
   await expect(banner).toContainText("story verifier status");
 });
+
+test("a reserved verifier reads as activity in its column, not as attention", async ({ page, request }) => {
+  const slug = await projectSlug(request, "Alpha Project");
+  let mode = "running";
+  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.verification_incident = null;
+    data.verification_control = { state: mode };
+    data.verifier = {
+      ...data.verifier,
+      control: mode,
+      warning: null,
+      recovery: { acknowledgement: null, request: null },
+      reservation: {
+        story_id: "ALPHA-7",
+        generation: 42,
+        reason: "reconcile",
+        reserved_at: "2026-01-01T00:00:00Z",
+        age_seconds: 540,
+        queued_behind: 2,
+      },
+    };
+    await route.fulfill({ response, json: data });
+  });
+  await page.reload();
+  const status = page.locator('.column[data-state="verifying"] .verification-control-status');
+  await expect(status).toBeVisible();
+  await expect(status).toContainText("Held for ALPHA-7 · merge-conflict reconcile · since");
+  await expect(status).toContainText("2 queued");
+  await expect(status.locator("time")).toHaveAttribute("datetime", "2026-01-01T00:00:00Z");
+  await expect(page.locator("#verification-banner-region")).toBeHidden();
+
+  mode = "draining";
+  await page.reload();
+  await expect(status).toContainText("Finishing inflight verification…");
+  await expect(status).toContainText("Held for ALPHA-7");
+});
