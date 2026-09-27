@@ -708,6 +708,12 @@ pub struct DaemonInfo {
     /// already give.
     #[serde(default)]
     pub owner: Option<DaemonOwner>,
+    /// The actual process PATH at startup, not the observing client's PATH.
+    ///
+    /// Absent for older metadata and for an unset or non-UTF-8 environment.
+    /// These cases mean unknown; they must not prevent daemon startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_path: Option<String>,
 }
 
 impl DaemonInfo {
@@ -1020,6 +1026,7 @@ pub fn info_for(
         // every other caller (crash-report fixtures, restart's own tests)
         // has no launcher to report and is correctly served by `None`.
         owner: None,
+        execution_path: std::env::var("PATH").ok(),
     })
 }
 
@@ -4002,6 +4009,7 @@ mod tests {
             tailnet: None,
             cookie_name: "storyhook_test".to_string(),
             owner: None,
+            execution_path: None,
         };
         assert!(!info.is_this_binary());
     }
@@ -4026,6 +4034,7 @@ mod tests {
             tailnet: None,
             cookie_name: "storyhook_test".to_string(),
             owner: None,
+            execution_path: None,
         };
         assert!(
             !info.is_this_binary(),

@@ -107,6 +107,33 @@ fn it_reports_the_installed_set_on_an_ordinary_machine() {
     }
 }
 
+#[test]
+fn it_reports_a_stopped_daemon_without_starting_one() {
+    let env = TestEnv::isolated();
+    env.stop_daemon();
+    let report = text(
+        &env.story(env.home())
+            .args(["doctor", "install"])
+            .output()
+            .unwrap(),
+    );
+    assert!(report.contains("daemon PATH"), "{report}");
+    assert!(report.contains("not running"), "{report}");
+    assert!(!storyhook::daemon::lifecycle::is_live(&env.environment()));
+}
+
+#[test]
+fn it_reports_a_legacy_agents_missing_path() {
+    let env = TestEnv::isolated();
+    let path = storyhook::daemon::agent::path(&env.environment());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, "<plist><dict><key>ProgramArguments</key><array><string>/installed/story</string></array></dict></plist>").unwrap();
+    let report = doctor_install(&env);
+    assert!(report.contains("agent PATH"), "{report}");
+    assert!(report.contains("no explicit PATH"), "{report}");
+    assert!(report.contains("story daemon install"), "{report}");
+}
+
 /// The `binary` row used to answer `ok` whenever the `story` on `$PATH` was
 /// the one running — which the harness arranges by putting the build
 /// directory first on `$PATH`, exactly the SH-630 invocation. The binary under
@@ -211,12 +238,10 @@ fn the_summary_never_tells_anyone_to_revert_their_work() {
             .expect("running `story doctor install`"),
     );
 
-    // The whole doctrine of this verb in one assertion: a change sitting in a
-    // checkout is aimed at the next release, so the remedy is always the
-    // release. A detector that advised throwing the work away would be worse
-    // than no detector.
+    // Installation or environment drift never calls for throwing checkout
+    // work away. Each finding names its own remedy.
     assert!(
-        report.contains("never to revert"),
+        report.contains("do not revert"),
         "the summary must say the work survives:\n{report}"
     );
     assert!(

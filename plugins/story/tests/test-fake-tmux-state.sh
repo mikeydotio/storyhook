@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# plugin-runner: serial -- FAKE_TMUX_PANE_LIFETIME=5 is a wall-clock budget the
-# case must finish its kill-window proof inside; concurrent siblings stretch it.
 # SH-263: the fake tmux's state directory is NAMED BY THE CALLER, always.
 #
 # The fake holds every byte of its model -- the input buffer, the `launched`
@@ -39,9 +37,7 @@ source "$(dirname "$0")/lib.sh"
 FAKE_TMUX="$TESTS_DIR/fakes/tmux"
 LEGACY_SHARED_STATE=/tmp/issue-faketmux
 
-# Keep the placeholder alive long enough to prove kill-window, rather than its
-# natural timeout, ends the pane process recorded by this fake.
-export FAKE_TMUX_PANE_LIFETIME=5
+# Use lib.sh's graced lifetime: this proves explicit termination, not expiry.
 
 pane_cwd="$(mktemp -d /tmp/story-test-tmux-cwd.XXXXXX)"
 _TMP_REPOS+=("$pane_cwd")
@@ -64,6 +60,10 @@ engine_probe() {
 assert_eq "$(occupant)" "claude" "the launch's own occupant is claude"
 launched_pid="$(pane_pid)"
 [ -n "$launched_pid" ] || fail_test "the launch recorded no pane pid"
+# A delayed observer must still see a live pane for the explicit kill proof.
+# This outlives the retired local five-second lifetime (SH-819).
+retired_lifetime=5
+sleep "$((retired_lifetime + 1))"
 # The fourth field is the window's last-output stamp (SH-657): a freshly
 # opened window answers "now" unless a test planted an older time.
 printf '1789066115' > "$FAKE_TMUX_STATE/window_activity"

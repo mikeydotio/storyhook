@@ -103,6 +103,12 @@ dashboard address for sharing; local status does not confirm remote reachability
   story daemon gc [--force]
   story daemon logs [--directory PATH] [--follow] [--json]
 
+install captures only PATH from the current shell into the login agent. PATH
+must contain nonempty absolute directories. Reinstall from the desired shell
+environment after changing tool locations, then restart the daemon. Run
+`story doctor install` to compare the saved PATH with the running daemon's PATH
+and check tool lookup. It does not start a daemon or run tool-version probes.
+
 gc reclaims the runtime directories under <state home>/daemons/ whose store no
 longer exists. It removes a directory only when everything inside it proves the
 store: the recorded store path hashes back to the directory's own name, the
