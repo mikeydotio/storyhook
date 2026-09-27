@@ -152,6 +152,8 @@ story graph --blocked-by {prefix}-1   # trace why a story is blocked
 ## During execution
 
 - Before starting: `story move {prefix}-<n> in-progress`
+- Read `story help scope-rubric` before filing a prerequisite or blocking the
+  current story. Adopt work you can do within the story; preserve real dependencies.
 - When blocked by another story: `story block {prefix}-<n> --on {prefix}-<blocker> "reason"`
   — records a real `blocked-by` edge, which clears itself when the blocker
   closes. A reason alone (no `--on`) is free text that never clears itself;
@@ -269,6 +271,8 @@ to manage tasks.
 - Use `story handoff --since 2h` to summarize work at session end.
 - Found a second problem while working? Prefer adopting it into the story you
   are on over filing a new one — run `story help scope-rubric` before you file.
+- Read `story help scope-rubric` before filing a prerequisite or blocking the
+  current story. Adopt work you can do within the story; preserve real dependencies.
 
 ## Commands
 
