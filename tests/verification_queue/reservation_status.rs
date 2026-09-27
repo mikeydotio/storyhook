@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use storyhook::daemon::bus::ChangeBus;
 use storyhook::daemon::verification::status::VerifierStatus;
 use storyhook::daemon::verification::{
-    ReservationReason, VerifierReservation, wait_for_reconciled_candidate,
+    HoldWatch, ReservationReason, VerifierReservation, wait_for_reconciled_candidate,
 };
 
 /// A status read at `now`, as `story verifier status` takes it.
@@ -132,7 +132,15 @@ fn a_conflict_reservation_reads_as_activity_for_the_whole_wait() {
                         .set_state(&held, "verifying", None, Some("in-progress"), None)
                         .unwrap();
                 });
-                wait_for_reconciled_candidate(fixture.store(), &subscription, &stop, reserved)
+                // SH-770 gave the wait an agent watch; a live agent keeps the
+                // hold until the resubmission, which is what this test reads.
+                wait_for_reconciled_candidate(
+                    fixture.store(),
+                    &subscription,
+                    &stop,
+                    reserved,
+                    &HoldWatch::production(&super::reconcile_hold::live_agent),
+                )
             })
         },
     )
