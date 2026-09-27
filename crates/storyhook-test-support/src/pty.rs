@@ -185,12 +185,15 @@ impl Pty {
             master,
             child: Some(child),
             transcript: String::new(),
-            timeout: EXPECT_TIMEOUT,
+            timeout: crate::load_grace::graced_now(EXPECT_TIMEOUT),
             label: label.to_string(),
         }
     }
 
-    /// Uses `timeout` for subsequent [`expect`](Self::expect)s.
+    /// Uses the literal `timeout` for subsequent expects and waits.
+    ///
+    /// Explicit proof deadlines are not graced. Patience callers pass
+    /// [`crate::load_grace::graced_now`]; the default already uses it.
     #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
