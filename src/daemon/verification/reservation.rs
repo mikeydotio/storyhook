@@ -87,7 +87,9 @@ impl Reservation {
     /// latest reported activity, else the declaration. A reconcile is reserved
     /// at its return, before delivery; its hold reports only once it starts.
     pub(crate) fn idle_since(&self) -> &str {
-        self.last_activity_at.as_deref().unwrap_or(&self.reserved_at)
+        self.last_activity_at
+            .as_deref()
+            .unwrap_or(&self.reserved_at)
     }
 }
 
@@ -278,8 +280,8 @@ impl VerifierReservation {
 mod tests {
     use super::super::*;
     use super::{ReservationReason, STALL_CEILING_SECS, VerifierReservation};
-    use std::time::Duration;
     use crate::service::{Clock, NewStoryInput, RelationService};
+    use std::time::Duration;
     use storyhook_test_support::ServiceFixture;
 
     const T0: &str = "2026-01-01T00:00:00Z";

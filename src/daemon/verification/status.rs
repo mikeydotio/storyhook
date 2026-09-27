@@ -161,8 +161,8 @@ pub(crate) fn snapshot(
     // a live reconcile legitimately outlasts any age (SH-770 decision D1).
     let idle = reservation.and_then(|reservation| {
         let bound = reservation.reason.overdue_after()?;
-        let idle = elapsed_secs(reservation.idle_since(), &now)
-            .filter(|idle| *idle > bound.as_secs())?;
+        let idle =
+            elapsed_secs(reservation.idle_since(), &now).filter(|idle| *idle > bound.as_secs())?;
         Some((idle, bound))
     });
     let reservation = reservation.zip(active).map(|(reservation, active)| {
