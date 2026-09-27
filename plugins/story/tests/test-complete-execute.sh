@@ -143,7 +143,7 @@ wfl=$(mk_dispatched "$repo" "$fl")
 (cd "$repo" && git worktree lock ".claude/worktrees/$wfl") >/dev/null 2>&1
 out=$(cd "$repo" && bash "$SCRIPT" complete execute "$fl" --force 2>&1)
 assert_eq "$(jqf "$out" '.removed.worktrees|length')" "0" "force-locked: still not removed"
-assert_contains "$(jqf "$out" '.skipped|join(" ")')" "locked" "force-locked: still reported locked"
+assert_contains "$(jqf "$out" '.skipped|join(" ")')" "locked" "force-locked: still reported locked; response: $out"
 [ -d "$repo/.claude/worktrees/$wfl" ] || fail_test "force-locked: worktree was removed"
 assert_contains "$(cd "$repo" && git worktree list --porcelain)" "locked" "force-locked: still locked"
 
@@ -171,7 +171,7 @@ assert_eq "$(cd "$repo" && story show "$nc" --json | jq -r '.story.story.superst
 ncl=$(new_story "$repo" "No clean")
 wncl=$(mk_dispatched "$repo" "$ncl")
 out=$(cd "$repo" && bash "$SCRIPT" complete execute "$ncl" --no-clean 2>&1)
-assert_eq "$(jqf "$out" .closed)" "true" "--no-clean: closed"
+assert_eq "$(jqf "$out" .closed)" "true" "--no-clean: closed; response: $out"
 assert_eq "$(jqf "$out" '.removed.worktrees|length')" "0" "--no-clean: nothing removed"
 [ -d "$repo/.claude/worktrees/$wncl" ] || fail_test "--no-clean: worktree was removed anyway"
 
