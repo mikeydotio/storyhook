@@ -26,7 +26,7 @@ for count in 0 4 6 12; do
   out=$(dry --next)
   assert_eq "$(jqf "$out" .ok)" true "$count sessions: next dispatch proceeds"
   out=$(dry "$id" --resume)
-  assert_eq "$(jqf "$out" .ok)" true "$count sessions: fresh resume proceeds"
+  assert_eq "$(jqf "$out" .ok)" true "$count sessions: fresh resume proceeds: $out; stderr: $(cat "$FAKE_TMUX_STATE/stderr")"
   out=$(dry "$id" --auto --full-auto)
   assert_eq "$(jqf "$out" .ok)" true "$count sessions: engine dispatch proceeds"
 done
