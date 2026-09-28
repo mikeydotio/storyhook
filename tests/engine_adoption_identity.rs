@@ -126,7 +126,8 @@ impl Dispatch {
             "off",
         ]));
         dispatch.write_lease();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut deadline =
+            storyhook_test_support::load_grace::Patience::new(std::time::Duration::from_secs(5));
         loop {
             let command = output(dispatch.tmux().args([
                 "display-message",
@@ -139,8 +140,8 @@ impl Dispatch {
                 break;
             }
             assert!(
-                std::time::Instant::now() < deadline,
-                "agent executable never became visible: {command}"
+                !deadline.expired(),
+                "{deadline}; agent executable never became visible: {command}"
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }

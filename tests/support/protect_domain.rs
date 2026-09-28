@@ -166,7 +166,7 @@ assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" todo 'reset 
         let output = run_bounded(
             command,
             "real installed domain operations",
-            STORY_COMMAND_DEADLINE,
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
         );
         assert!(output.status.success(), "{}", combined(&output));
     }
@@ -183,7 +183,7 @@ fn resource_guard_contract() {
     let output = run_bounded(
         command,
         "artifact resource contract",
-        STORY_COMMAND_DEADLINE,
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
     );
     assert!(output.status.success(), "{}", combined(&output));
 }
@@ -212,7 +212,7 @@ fn installed_hook_admits_literal_reports_without_changing_installations() {
     let output = run_bounded(
         command,
         "installed-hook literal report",
-        STORY_COMMAND_DEADLINE,
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
     );
     assert!(output.status.success(), "{}", combined(&output));
     assert_eq!(fs::read_to_string(report).unwrap(), body);

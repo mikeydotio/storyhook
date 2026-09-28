@@ -17,7 +17,7 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook::api::dispatch::REQUIRED_DISPATCH_PROTOCOL;
 use storyhook::daemon::lifecycle::{self, DaemonInfo};
@@ -186,7 +186,7 @@ fn poll_until_finished(
     story: &str,
     handle: &str,
 ) -> serde_json::Value {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut patience = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(5));
     loop {
         let record = body_json(
             get_dispatch(info, token, project, story, handle)
@@ -196,8 +196,8 @@ fn poll_until_finished(
         if record["state"] != "running" {
             return record;
         }
-        if Instant::now() > deadline {
-            panic!("dispatch {handle} did not finish within 5s: {record}");
+        if patience.expired() {
+            panic!("dispatch {handle} did not finish: {record}; {patience}");
         }
         std::thread::sleep(Duration::from_millis(25));
     }

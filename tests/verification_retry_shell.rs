@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
@@ -102,12 +102,15 @@ fn isolated_scenario(verdict: &str) {
         .stdout(log.try_clone().unwrap())
         .stderr(log);
     let mut child = ChildGuard::spawn(&mut command).unwrap();
-    let status = child.wait_within(Duration::from_secs(120), || {
-        format!(
-            "{verdict} worker exceeded deadline:\n{}",
-            fs::read_to_string(&log_path).unwrap()
-        )
-    });
+    let status = child.wait_within(
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(120)),
+        || {
+            format!(
+                "{verdict} worker exceeded deadline:\n{}",
+                fs::read_to_string(&log_path).unwrap()
+            )
+        },
+    );
     assert!(
         status.success(),
         "{verdict} worker failed:\n{}",
@@ -306,7 +309,8 @@ raise SystemExit(status)
     let result = thread::scope(|scope| {
         let running = scope.spawn(tick);
         let release = GateRelease(root.join("gate-release"));
-        let deadline = Instant::now() + Duration::from_secs(40);
+        let mut deadline =
+            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(40));
         while !root.join("gate-ready").exists() {
             if running.is_finished() {
                 panic!(
@@ -318,8 +322,8 @@ raise SystemExit(status)
                 );
             }
             assert!(
-                Instant::now() < deadline,
-                "real retry gate never became ready"
+                !deadline.expired(),
+                "{deadline}; real retry gate never became ready"
             );
             thread::sleep(Duration::from_millis(10));
         }

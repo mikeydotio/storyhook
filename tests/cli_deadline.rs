@@ -24,9 +24,11 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 /// itself.
 const DEADLINE_GIVE_UP_CEILING: Duration = Duration::from_secs(10);
 
-/// Named for the same reason: an ordinary command with nothing held must
-/// start and finish well inside this, whatever the machine's ambient load.
-const ORDINARY_COMMAND_CEILING: Duration = Duration::from_secs(5);
+/// A sixth of the spawn-lock deadline: an ordinary command after abandonment
+/// must not wait out a lock that the earlier client left behind. This is a
+/// fixed proof of cleanup, not whole-operation scheduling patience.
+const ORDINARY_COMMAND_CEILING: Duration =
+    Duration::from_secs(storyhook::daemon::lifecycle::SPAWN_LOCK_DEADLINE.as_secs() / 6);
 
 /// Opens (creating if needed) and exclusively locks `env`'s daemon spawn
 /// lock, simulating another client mid-spawn. Unlocking is the caller's job;

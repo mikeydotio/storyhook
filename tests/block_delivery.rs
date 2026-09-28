@@ -325,7 +325,7 @@ fi
 #[test]
 fn cli_block_and_unblock_reach_the_daemon_delivery_worker() {
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use storyhook_test_support::TestEnv;
     let env = TestEnv::isolated();
     struct Stop<'a>(&'a TestEnv);
@@ -382,28 +382,29 @@ fi
         .args(["block", "BLK-1", "temporary repair"])
         .assert()
         .success();
-    let interrupt_deadline = Instant::now() + Duration::from_secs(8);
+    let mut interrupt_deadline =
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(8));
     while !p.path().join("native-interrupt").exists() {
         assert!(
             !p.path().join("ambient-story-called").exists(),
             "block delivery invoked the ambient CLI instead of its daemon's executable"
         );
         assert!(
-            Instant::now() < interrupt_deadline,
-            "daemon never claimed the block episode"
+            !interrupt_deadline.expired(),
+            "{interrupt_deadline}; daemon never claimed the block episode"
         );
         std::thread::sleep(Duration::from_millis(25));
     }
     p.story().args(["unblock", "BLK-1"]).assert().success();
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut deadline = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(8));
     while !p.path().join("resume-prompt").exists() {
         assert!(
             !p.path().join("ambient-story-called").exists(),
             "block delivery invoked the ambient CLI instead of its daemon's executable"
         );
         assert!(
-            Instant::now() < deadline,
-            "daemon never delivered the queued effects"
+            !deadline.expired(),
+            "{deadline}; daemon never delivered the queued effects"
         );
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -625,7 +626,7 @@ const FAKE_CODEX_HANG_SECS: u64 = 30;
 #[test]
 fn block_delivery_never_waits_on_a_provider_cli_to_find_its_helper() {
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use storyhook_test_support::TestEnv;
     let env = TestEnv::isolated();
     struct Stop<'a>(&'a TestEnv);
@@ -688,11 +689,11 @@ fi
         .args(["block", "BLK-1", "temporary repair"])
         .assert()
         .success();
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut deadline = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(8));
     while !p.path().join("native-interrupt").exists() {
         assert!(
-            Instant::now() < deadline,
-            "the daemon never delivered the interrupt; codex was asked: {:?}",
+            !deadline.expired(),
+            "{deadline}; the daemon never delivered the interrupt; codex was asked: {:?}",
             std::fs::read_to_string(&invocations).ok()
         );
         std::thread::sleep(Duration::from_millis(25));

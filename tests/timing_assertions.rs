@@ -41,11 +41,9 @@
 //! Only a comparison whose ENTIRE compared quantity is the bare constructor —
 //! immediately preceded by a comparison operator, or immediately followed by
 //! one — is flagged. `baseline * 4 + Duration::from_millis(500)`
-//! (`tests/daemon_concurrency.rs`) is not: the literal there is a small
-//! additive margin on an already self-calibrated quantity, not the ceiling
-//! itself, and [`the_analyzer_does_not_flag_a_margin_added_to_a_named_or_
-//! calibrated_quantity`] pins that distinction directly against the real
-//! line so a future edit to the scanner cannot re-widen it by accident.
+//! (the former `tests/daemon_concurrency.rs` comparison) is not: its literal
+//! is an additive margin, not the ceiling itself. The scanner test retains
+//! that syntax example; it does not establish that a timing claim is sound.
 //!
 //! # The same rule, one process boundary over (SH-643)
 //!
@@ -105,6 +103,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use storyhook_test_support::without_rust_comments;
+
+#[path = "timing_assertions/waits.rs"]
+mod waits;
 
 /// The `Duration` constructors this scan recognizes.
 const DURATION_CTORS: [&str; 4] = [
@@ -372,9 +373,8 @@ fn the_scanner_does_not_flag_a_named_constant_or_a_derived_expression() {
     );
 }
 
-/// `tests/daemon_concurrency.rs`'s own line, verbatim, pinned directly rather
-/// than reconstructed — so a future change to either the scanner or that
-/// line is caught by name, not just by shape.
+/// The former concurrency comparison remains a scanner shape example.
+/// Accepting this syntax does not establish that its timing claim is sound.
 #[test]
 fn the_analyzer_does_not_flag_a_margin_added_to_a_named_or_calibrated_quantity() {
     let margin = "    concurrent < baseline * 4 + Duration::from_millis(500),\n";

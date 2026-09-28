@@ -281,9 +281,10 @@ impl Holder {
             .args(["-TERM", &self.child.pid().to_string()])
             .status()
             .expect("signalling the holder");
-        self.child.wait_within(poll_ceiling(), || {
-            "the lock holder did not die of the SIGTERM sent to release it".to_string()
-        });
+        self.child.wait_within(
+            storyhook_test_support::load_grace::graced_now(poll_ceiling()),
+            || "the lock holder did not die of the SIGTERM sent to release it".to_string(),
+        );
     }
 }
 
@@ -359,9 +360,10 @@ fn a_dead_pid() -> u32 {
     command.stdout(Stdio::null()).stderr(Stdio::null());
     let mut child = ChildGuard::spawn(&mut command).expect("spawning a process to reap");
     let pid = child.pid();
-    child.wait_within(poll_ceiling(), || {
-        "the short-lived pid fixture did not exit".to_string()
-    });
+    child.wait_within(
+        storyhook_test_support::load_grace::graced_now(poll_ceiling()),
+        || "the short-lived pid fixture did not exit".to_string(),
+    );
     pid
 }
 
@@ -370,17 +372,11 @@ fn a_dead_pid() -> u32 {
 /// (SH-394): what is being waited for is one observation cycle of the lock,
 /// so the bound is a multiple of that cycle.
 fn wait_for(path: &Path) {
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
-    while std::time::Instant::now() < deadline {
-        if path.exists() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    panic!(
-        "{} never appeared within the allowed poll cycles",
-        path.display()
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(poll_ceiling()),
+        std::time::Duration::from_millis(20),
+        || format!("{} never appeared", path.display()),
+        || (path.exists()).then_some(()),
     );
 }
 
@@ -388,15 +384,12 @@ fn wait_for(path: &Path) {
 /// cycle so a failed process-group reap turns one case red instead of hanging
 /// this test binary.
 fn wait_for_process_exit(pid: u32) {
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
-    while std::time::Instant::now() < deadline {
-        if !pid_running(pid) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    panic!("process {pid} survived the machine-lock cleanup ceiling");
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(poll_ceiling()),
+        std::time::Duration::from_millis(20),
+        || format!("process {pid} never exited"),
+        || (!pid_running(pid)).then_some(()),
+    );
 }
 
 /// How many of the script's own poll cycles a fixture may spend waiting for a
@@ -544,7 +537,7 @@ impl ProgressFeeder {
         flag: &AtomicBool,
         pause: std::time::Duration,
     ) -> FeederStop {
-        let give_up_at = std::time::Instant::now() + poll_ceiling();
+        let mut patience = storyhook_test_support::load_grace::Patience::new(poll_ceiling());
         loop {
             if sentinel() {
                 return FeederStop::SentinelReached;
@@ -560,7 +553,7 @@ impl ProgressFeeder {
                     if flag.load(Ordering::SeqCst) {
                         return FeederStop::RunEnded;
                     }
-                    if std::time::Instant::now() >= give_up_at {
+                    if patience.expired() {
                         return FeederStop::Patience;
                     }
                     file.write_all(FEEDER_LINE.as_bytes())
@@ -1228,11 +1221,14 @@ fn two_holders_of_one_name_serialize() {
         0,
         "the waiter must eventually run: {second:?}"
     );
-    first.wait_within(poll_ceiling(), || {
-        "the first `gate` holder (slow.sh) never exited, so the lock it holds was never \
+    first.wait_within(
+        storyhook_test_support::load_grace::graced_now(poll_ceiling()),
+        || {
+            "the first `gate` holder (slow.sh) never exited, so the lock it holds was never \
          released"
-            .to_string()
-    });
+                .to_string()
+        },
+    );
 
     let seen = std::fs::read_to_string(&trace).expect("reading the trace");
     assert_eq!(
@@ -1299,9 +1295,10 @@ fn two_different_names_do_not_serialize() {
     command.stdin(Stdio::null());
     let mut second =
         ChildGuard::spawn_with_output(&mut command).expect("spawning the other-name command");
-    let second = second.wait_with_output_within(poll_ceiling(), || {
-        "the other-name command never exited while `gate` was held".to_string()
-    });
+    let second = second.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(poll_ceiling()),
+        || "the other-name command never exited while `gate` was held".to_string(),
+    );
     assert_eq!(code(&second), 0, "the other name must not wait: {second:?}");
 
     let seen = std::fs::read_to_string(&trace).expect("reading the trace");
@@ -1314,9 +1311,10 @@ fn two_different_names_do_not_serialize() {
         .expect("the holder's stdin was piped")
         .write_all(b"release\n")
         .expect("releasing the holder");
-    let first = first.wait_with_output_within(poll_ceiling(), || {
-        "the `gate` holder (slow.sh) never exited".to_string()
-    });
+    let first = first.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(poll_ceiling()),
+        || "the `gate` holder (slow.sh) never exited".to_string(),
+    );
     assert_eq!(
         code(&first),
         0,
@@ -1343,10 +1341,13 @@ fn a_waiter_names_the_holder_and_how_long_it_waited() {
     let holder = holder.trim().to_string();
 
     let second = fixture.run(&["gate", "--", "true"]);
-    first.wait_within(poll_ceiling(), || {
-        "the first `gate` holder never exited, though the waiter below it already got the lock"
-            .to_string()
-    });
+    first.wait_within(
+        storyhook_test_support::load_grace::graced_now(poll_ceiling()),
+        || {
+            "the first `gate` holder never exited, though the waiter below it already got the lock"
+                .to_string()
+        },
+    );
 
     let err = stderr(&second);
     assert!(
@@ -1538,11 +1539,14 @@ fn max_wait_elapsing_refuses_without_running_or_stealing() {
             && progress.contains(r#""label":"waiting for gate lock","status":"failed""#),
         "a refused acquisition must close its visible activity as failed: {progress}"
     );
-    first.wait_within(poll_ceiling(), || {
-        "the `gate` holder (sleep 5) never exited, so the waiter above gave up against a lock \
+    first.wait_within(
+        storyhook_test_support::load_grace::graced_now(poll_ceiling()),
+        || {
+            "the `gate` holder (sleep 5) never exited, so the waiter above gave up against a lock \
          nothing was ever going to release"
-            .to_string()
-    });
+                .to_string()
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1605,9 +1609,10 @@ fn a_signal_releases_the_lock_and_takes_the_command_with_it() {
         "the wrapper must die OF the signal, so its status is a truthful 128+signal rather than a fabricated one: {status:?}"
     );
 
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
-    while fixture.lock("gate").exists() && std::time::Instant::now() < deadline {
+    let mut patience = storyhook_test_support::load_grace::Patience::new(
+        std::time::Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED),
+    );
+    while fixture.lock("gate").exists() && !patience.expired() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(
@@ -2322,9 +2327,10 @@ fn watchdog_timer_cannot_outlive_inherited_workspace_ownership() {
         .arg(fixture.path());
     let output = ChildGuard::spawn_with_output(&mut command)
         .expect("starting the real watchdog lifetime regression")
-        .wait_with_output_within(2 * poll_ceiling(), || {
-            "watchdog or its timer retained workspace authority after completion".to_string()
-        });
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(2 * poll_ceiling()),
+            || "watchdog or its timer retained workspace authority after completion".to_string(),
+        );
     assert!(
         output.status.success(),
         "{}\n{}",

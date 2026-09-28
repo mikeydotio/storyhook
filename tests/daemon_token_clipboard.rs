@@ -40,7 +40,10 @@ use storyhook_test_support::{DaemonGuard, Pty, TestEnv, Watchdog, scratch_dir, w
 /// daemon start plus one command. Generous against the sporadic multi-second
 /// stall `EXPECT_TIMEOUT` documents, not against the work itself.
 fn guard() -> Watchdog {
-    watchdog("daemon_token_clipboard", Duration::from_secs(90))
+    watchdog(
+        "daemon_token_clipboard",
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(90)),
+    )
 }
 
 /// A `STORYHOOK_CLIPBOARD_CMD` that records what it was handed.

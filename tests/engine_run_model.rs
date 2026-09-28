@@ -1034,7 +1034,9 @@ impl Store for WriteGateStore {
             self.release
                 .lock()
                 .expect("write gate release mutex")
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(5),
+                ))
                 .expect("release gated engine write");
         }
         let result = self.inner.write(f);
@@ -1043,7 +1045,9 @@ impl Store for WriteGateStore {
             self.release
                 .lock()
                 .expect("write gate release mutex")
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(5),
+                ))
                 .expect("release gated engine write");
         }
         result
@@ -1093,6 +1097,7 @@ fn stop_linearizes_before_the_next_engine_claim_and_prevents_late_dispatch() {
     let dispatch = FakeDispatcher::default();
 
     let reconcile = std::thread::scope(|scope| {
+        let release_claim = release_claim;
         let run_id = run.id.clone();
         let ctx = Ctx::new(
             &gated_store,
@@ -1106,7 +1111,9 @@ fn stop_linearizes_before_the_next_engine_claim_and_prevents_late_dispatch() {
             scope.spawn(move || EngineService::new(&ctx, &worker_dispatch).reconcile(&run_id));
 
         claim_entered
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(5),
+            ))
             .expect("reconcile reached the claim transaction boundary");
         let stop_ctx = fixture.ctx();
         let stop_dispatcher = FakeDispatcher::default();
@@ -1161,6 +1168,7 @@ fn a_claim_and_its_dispatching_lane_become_visible_in_one_commit() {
     ))]);
 
     let atomic_view = std::thread::scope(|scope| {
+        let release_reconcile = release_reconcile;
         let run_id = run.id.clone();
         let ctx = Ctx::new(
             &gated_store,
@@ -1174,7 +1182,9 @@ fn a_claim_and_its_dispatching_lane_become_visible_in_one_commit() {
             scope.spawn(move || EngineService::new(&ctx, &worker_dispatch).reconcile(&run_id));
 
         claim_committed
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(5),
+            ))
             .expect("reconcile committed its claim transaction");
         let story = fixture
             .store()

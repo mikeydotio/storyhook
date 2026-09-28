@@ -82,21 +82,34 @@ fn start(env: &TestEnv) -> DaemonInfo {
 
 /// Blocks until `ready`, or fails the test.
 fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if ready() {
-            return;
-        }
-        std::thread::sleep(WAIT_POLL);
-    }
-    panic!("timed out waiting for {what}");
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(5)),
+        WAIT_POLL,
+        || format!("timed out waiting for {what}"),
+        || ready().then_some(()),
+    );
 }
 
 /// PID retirement can lag the pidfile lock's release during kernel teardown.
 fn wait_for_process_exit(pid: u32, start_time: Option<&str>) {
-    wait_for(
-        &format!("process {pid} incarnation {start_time:?} to exit"),
-        || !lifecycle::process_identity_is_live(pid, start_time),
+    wait_for_process_exit_with_patience(
+        pid,
+        start_time,
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(5)),
+    );
+}
+
+/// The timeout proof supplies a literal allowance independently of machine load.
+fn wait_for_process_exit_with_patience(
+    pid: u32,
+    start_time: Option<&str>,
+    patience: storyhook_test_support::load_grace::Patience,
+) {
+    storyhook_test_support::load_grace::wait_for(
+        patience,
+        WAIT_POLL,
+        || format!("timed out waiting for process {pid} incarnation {start_time:?} to exit"),
+        || (!lifecycle::process_identity_is_live(pid, start_time)).then_some(()),
     );
 }
 
@@ -142,9 +155,10 @@ fn process_exit_observation_waits_for_reaping_after_pidfile_release() {
     );
     let reaper = std::thread::spawn(move || {
         std::thread::sleep(WAIT_POLL * 4);
-        let out = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "the retirement fixture must exit".into()
-        });
+        let out = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "the retirement fixture must exit".into(),
+        );
         assert!(out.status.success());
     });
     let observed = std::panic::catch_unwind(|| wait_for_process_exit(pid, None));
@@ -159,7 +173,15 @@ fn process_exit_observation_waits_for_reaping_after_pidfile_release() {
 fn process_exit_observation_rejects_a_live_process() {
     let pid = std::process::id();
     let token = lifecycle::process_start_time(pid).expect("the test process's native identity");
-    wait_for_process_exit(pid, Some(&token));
+    wait_for_process_exit_with_patience(
+        pid,
+        Some(&token),
+        storyhook_test_support::load_grace::Patience::starting_at(
+            Duration::ZERO,
+            Instant::now(),
+            || None,
+        ),
+    );
 }
 
 /// How often [`wait_for`] re-asks its question.
@@ -748,14 +770,16 @@ fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
 
     std::fs::File::create(&gate).expect("opening the gate");
 
-    let stopped = stop.wait_within(STORY_COMMAND_DEADLINE, || {
-        "`daemon stop` did not finish after the in-flight hook was released".to_string()
-    });
+    let stopped = stop.wait_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "`daemon stop` did not finish after the in-flight hook was released".to_string(),
+    );
     assert!(stopped.success(), "`daemon stop` must succeed: {stopped}");
 
-    let served = client.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "the in-flight comment did not finish after its hook was released".to_string()
-    });
+    let served = client.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "the in-flight comment did not finish after its hook was released".to_string(),
+    );
     assert!(
         served.status.success(),
         "the in-flight comment must have been served to completion rather than \
@@ -883,18 +907,20 @@ fn restart_drains_in_flight_work_before_starting_the_successor() {
     }
 
     std::fs::File::create(&gate).expect("opening the gate");
-    let served = client.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "the in-flight comment did not finish after its hook was released".to_string()
-    });
+    let served = client.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "the in-flight comment did not finish after its hook was released".to_string(),
+    );
     assert!(
         served.status.success(),
         "restart abandoned accepted work ({}): {}",
         served.status,
         String::from_utf8_lossy(&served.stderr)
     );
-    let restarted = restart.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "daemon restart did not finish after accepted work drained".to_string()
-    });
+    let restarted = restart.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "daemon restart did not finish after accepted work drained".to_string(),
+    );
     assert!(
         restarted.status.success(),
         "restart failed: {}",
@@ -903,9 +929,10 @@ fn restart_drains_in_flight_work_before_starting_the_successor() {
 
     let successor = env.daemon().expect("the successor daemon");
     assert_ne!(successor.token, predecessor.token);
-    let started = concurrent_start.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "concurrent daemon start did not adopt the successor".to_string()
-    });
+    let started = concurrent_start.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "concurrent daemon start did not adopt the successor".to_string(),
+    );
     assert!(
         started.status.success(),
         "concurrent start failed: {}",
@@ -1021,9 +1048,10 @@ fn a_forced_stop_kills_a_daemon_that_is_still_draining() {
     // The killed daemon's socket closes underneath it — this client fails
     // fast rather than waiting out its own deadline. Its exact error is not
     // this test's concern, only that it is reaped rather than left running.
-    let _ = child.wait_within(STORY_COMMAND_DEADLINE, || {
-        "the client whose daemon was force-stopped did not exit".to_string()
-    });
+    let _ = child.wait_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "the client whose daemon was force-stopped did not exit".to_string(),
+    );
 
     // What --force abandoned is not just gone — it is ledgered, and `story
     // doctor abandoned` is how a human reviews and clears it.
@@ -1096,9 +1124,10 @@ fn a_forced_stop_kills_the_registered_verifier_group_and_its_descendant() {
         .assert()
         .success();
     let elapsed = started.elapsed();
-    let _ = verifier.wait_within(FORCE_DEADLINE, || {
-        "the verifier leader did not exit after forced shutdown".to_string()
-    });
+    let _ = verifier.wait_within(
+        storyhook_test_support::load_grace::graced_now(FORCE_DEADLINE),
+        || "the verifier leader did not exit after forced shutdown".to_string(),
+    );
 
     assert!(
         elapsed <= FORCE_DEADLINE,
@@ -1235,9 +1264,10 @@ fn ordinary_stop_reports_daemon_and_verifier_before_draining() {
     unsafe {
         libc::kill(-(verifier_pid as i32), libc::SIGKILL);
     }
-    let _ = verifier.wait_within(FORCE_DEADLINE, || {
-        "the ordinary-stop diagnostic fixture did not exit during cleanup".to_string()
-    });
+    let _ = verifier.wait_within(
+        storyhook_test_support::load_grace::graced_now(FORCE_DEADLINE),
+        || "the ordinary-stop diagnostic fixture did not exit during cleanup".to_string(),
+    );
 }
 
 /// The backups are reported by `daemon status` rather than by `doctor`: a
@@ -1384,9 +1414,10 @@ fn a_daemon_that_panics_is_classified_as_panicked_on_the_next_start() {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut panicking = ChildGuard::spawn(&mut command).expect("spawning a daemon armed to panic");
-    let status = panicking.wait_within(STORY_COMMAND_DEADLINE, || {
-        "the panicking daemon did not exit".to_string()
-    });
+    let status = panicking.wait_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "the panicking daemon did not exit".to_string(),
+    );
     assert!(
         !status.success(),
         "a daemon that panics on its own thread must not exit successfully: {status:?}"
@@ -1930,16 +1961,12 @@ fn a_running_command_is_published_and_retracted() {
     let mut child = ChildGuard::spawn(&mut slow).expect("spawning the slow command");
 
     let environment = env.environment();
-    let mut seen = None;
-    for _ in 0..100 {
-        if let Some(record) = lifecycle::read_inflight(&environment).into_iter().next() {
-            seen = Some(record);
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    let record = seen.expect("the daemon must publish the command it is running");
+    let record = storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10)),
+        Duration::from_millis(100),
+        || "the daemon must publish the command it is running".into(),
+        || lifecycle::read_inflight(&environment).into_iter().next(),
+    );
     assert_eq!(
         record.command, "comment",
         "the record must name the command, which is what chooses its deadline"
@@ -1953,9 +1980,10 @@ fn a_running_command_is_published_and_retracted() {
         "the record must carry the pid, because it is the only remedy that works"
     );
 
-    child.wait_within(STORY_COMMAND_DEADLINE, || {
-        "the slow command did not finish".to_string()
-    });
+    child.wait_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "the slow command did not finish".to_string(),
+    );
 
     // And it is retracted, which is a signal in its own right: a client's clock
     // resets on the record disappearing exactly as on it changing.

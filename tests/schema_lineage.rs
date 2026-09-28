@@ -437,7 +437,7 @@ fn unconstrained_legacy_receipt_tables_refuse_without_writing() {
 #[test]
 fn concurrent_released_upgrader_switching_lineage_is_reclassified_under_write_lock() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     static CONTENDED: AtomicBool = AtomicBool::new(false);
 
@@ -463,8 +463,9 @@ fn concurrent_released_upgrader_switching_lineage_is_reclassified_under_write_lo
     std::thread::scope(|scope| {
         let backup_dir = dir.path().join("concurrent-backups");
         let upgrade = scope.spawn(move || migrate::run(&current, migrate::MIGRATIONS, &backup_dir));
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !CONTENDED.load(Ordering::Acquire) && Instant::now() < deadline {
+        let mut patience =
+            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(5));
+        while !CONTENDED.load(Ordering::Acquire) && !patience.expired() {
             std::thread::sleep(Duration::from_millis(1));
         }
         let saw_contention = CONTENDED.load(Ordering::Acquire);

@@ -122,7 +122,7 @@ impl Fixture {
         run_bounded(
             cmd,
             "e2e_list_selection against the fake playwright",
-            SHELL_DEADLINE,
+            storyhook_test_support::load_grace::graced_now(SHELL_DEADLINE),
         )
     }
 
@@ -134,7 +134,11 @@ impl Fixture {
             .arg("e2e-selection-under-test")
             .arg(self.library())
             .current_dir(self.root.path());
-        run_bounded(cmd, body, SHELL_DEADLINE)
+        run_bounded(
+            cmd,
+            body,
+            storyhook_test_support::load_grace::graced_now(SHELL_DEADLINE),
+        )
     }
 
     fn recorded_argv(&self) -> Vec<String> {

@@ -661,12 +661,12 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
         .assert()
         .success();
 
-    let settle_deadline = Instant::now() + TAILNET_SETTLE_DEADLINE;
+    let mut patience = storyhook_test_support::load_grace::Patience::new(TAILNET_SETTLE_DEADLINE);
     let info = loop {
         let info = env
             .daemon()
             .expect("the daemon published a portfile after binding");
-        if info.tailnet.is_some() || Instant::now() >= settle_deadline {
+        if info.tailnet.is_some() || patience.expired() {
             break info;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -8530,7 +8530,9 @@ fn sse_status_line(port: u16, request_line: &str) -> String {
     let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
         .expect("connecting to /api/events");
     stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+            Duration::from_secs(2),
+        )))
         .unwrap();
     write!(stream, "{request_line}").expect("writing the SSE request line");
     let mut line = String::new();
@@ -9166,14 +9168,14 @@ fn a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection() {
     // Confirm the premise: the bind must land while the SSE connection
     // above is still open, or this test proves nothing about the ordering
     // it exists to pin.
-    let bind_deadline = Instant::now() + LATE_BIND_DEADLINE;
+    let mut patience = storyhook_test_support::load_grace::Patience::new(LATE_BIND_DEADLINE);
     loop {
         if env.daemon().is_some_and(|i| i.tailnet.is_some()) {
             break;
         }
         assert!(
-            Instant::now() < bind_deadline,
-            "the daemon never bound the shimmed tailnet identity within {LATE_BIND_DEADLINE:?}"
+            !patience.expired(),
+            "{patience}; the daemon never bound the shimmed tailnet identity"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -9409,13 +9411,8 @@ fn connect_sse(port: u16, token: &str) -> std::io::BufReader<std::net::TcpStream
     // connection and then says nothing at all: without a deadline this loop
     // retried forever and took the whole suite down with it (it holds the SSE
     // lock while it waits), turning a diagnosable failure into a hang.
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut patience = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(15));
     loop {
-        assert!(
-            Instant::now() < deadline,
-            "127.0.0.1:{port} accepted the /api/events connection but never sent a response \
-             head — the listener is bound but not serving"
-        );
         let mut line = String::new();
         // A per-read timeout surfaces as an `Err`, not an `Ok(0)`, so retry
         // on timeout rather than treating it as a closed connection.
@@ -9428,6 +9425,11 @@ fn connect_sse(port: u16, token: &str) -> std::io::BufReader<std::net::TcpStream
                     || e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(e) => panic!("reading the SSE response head: {e}"),
         }
+        assert!(
+            !patience.expired(),
+            "{patience}; 127.0.0.1:{port} accepted the /api/events connection but never sent a response \
+             head — the listener is bound but not serving"
+        );
     }
     reader
 }
@@ -9443,7 +9445,12 @@ fn read_sse_until(
     timeout: Duration,
 ) -> String {
     let mut acc = Vec::new();
-    read_sse_into_until(reader, &mut acc, needle, Instant::now() + timeout);
+    read_sse_into_until(
+        reader,
+        &mut acc,
+        needle,
+        storyhook_test_support::load_grace::Patience::new(timeout),
+    );
     String::from_utf8_lossy(&acc).into_owned()
 }
 
@@ -9454,10 +9461,10 @@ fn read_sse_into_until(
     reader: &mut std::io::BufReader<std::net::TcpStream>,
     acc: &mut Vec<u8>,
     needle: &str,
-    deadline: Instant,
+    mut patience: storyhook_test_support::load_grace::Patience,
 ) -> bool {
     let mut open = true;
-    while open && Instant::now() < deadline && !String::from_utf8_lossy(acc).contains(needle) {
+    while open && !String::from_utf8_lossy(acc).contains(needle) && !patience.expired() {
         open = !matches!(read_sse_chunk(reader, acc), SseRead::Closed);
     }
     open
@@ -9533,11 +9540,16 @@ fn read_sse_until_quiet_after(
     overall_timeout: Duration,
 ) -> String {
     let mut acc = Vec::new();
-    let mut open = read_sse_into_until(reader, &mut acc, first, Instant::now() + overall_timeout);
+    let mut open = read_sse_into_until(
+        reader,
+        &mut acc,
+        first,
+        storyhook_test_support::load_grace::Patience::new(overall_timeout),
+    );
 
-    let quiet_backstop = Instant::now() + overall_timeout;
+    let mut quiet_backstop = storyhook_test_support::load_grace::Patience::new(overall_timeout);
     let mut last_activity = Instant::now();
-    while open && Instant::now() < quiet_backstop && last_activity.elapsed() <= quiet_for {
+    while open && !quiet_backstop.expired() && last_activity.elapsed() <= quiet_for {
         match read_sse_chunk(reader, &mut acc) {
             SseRead::Bytes => last_activity = Instant::now(),
             SseRead::Idle => {}

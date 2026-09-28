@@ -15,7 +15,7 @@ fn json(project: &Project<'_>, args: &[&str]) -> serde_json::Value {
 /// Finishes the claim's asynchronous delivery before testing resource-free reset.
 fn settle_claim_resume(project: &Project<'_>, id: &str) {
     use fs4::FileExt;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use storyhook::daemon::block_delivery::IDLE_POLL;
     use storyhook::store::{BlockAction, DeliveryStatus, ReadOps, Store};
 
@@ -29,7 +29,7 @@ fn settle_claim_resume(project: &Project<'_>, id: &str) {
         .filter(|delivery| delivery.story == number && delivery.action == BlockAction::Resume)
         .max_by_key(|delivery| delivery.id)
         .expect("claim from blocked must enqueue its resume intent");
-    let deadline = Instant::now() + IDLE_POLL * 10;
+    let mut deadline = storyhook_test_support::load_grace::Patience::new(IDLE_POLL * 10);
     let settled = loop {
         let record = store
             .read(|tx| tx.block_deliveries(project_id))
@@ -46,8 +46,8 @@ fn settle_claim_resume(project: &Project<'_>, id: &str) {
             break record;
         }
         assert!(
-            Instant::now() < deadline,
-            "claim resume did not settle: {record:?}"
+            !deadline.expired(),
+            "{deadline}; claim resume did not settle: {record:?}"
         );
         std::thread::sleep(Duration::from_millis(10));
     };
@@ -83,8 +83,8 @@ fn settle_claim_resume(project: &Project<'_>, id: &str) {
             Ok(()) => break,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(
-                    Instant::now() < deadline,
-                    "settled resume still owns {}: {settled:?}",
+                    !deadline.expired(),
+                    "{deadline}; settled resume still owns {}: {settled:?}",
                     path.display()
                 );
                 std::thread::sleep(Duration::from_millis(10));
@@ -554,7 +554,9 @@ fn last_owned_window_and_dead_pane_are_idempotently_removed() {
         "on",
     ]);
     tmux.run(&["respawn-pane", "-k", "-t", "reset-test:0", "true"]);
-    for _ in 0..100 {
+    let mut patience =
+        storyhook_test_support::load_grace::Patience::new(std::time::Duration::from_secs(1));
+    loop {
         if tmux.run(&[
             "display-message",
             "-p",
@@ -565,6 +567,7 @@ fn last_owned_window_and_dead_pane_are_idempotently_removed() {
         {
             break;
         }
+        assert!(!patience.expired(), "{patience}; pane never became dead");
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(

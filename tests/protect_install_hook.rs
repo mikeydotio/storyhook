@@ -84,8 +84,11 @@ fn quoted_heredoc_reports_treat_installed_paths_as_literal_content() {
     assert_eq!(ask(&data, &heredoc_payload(&text, dir.path(), true)), "{}");
     let mut command = Command::new("bash");
     command.current_dir(dir.path()).args(["-c", &text]);
-    let output =
-        storyhook_test_support::run_bounded(command, "literal heredoc execution", HOOK_DEADLINE);
+    let output = storyhook_test_support::run_bounded(
+        command,
+        "literal heredoc execution",
+        storyhook_test_support::load_grace::graced_now(HOOK_DEADLINE),
+    );
     assert!(output.status.success());
     assert_eq!(
         std::fs::read_to_string(dir.path().join("report.md")).unwrap(),
@@ -211,9 +214,10 @@ fn ask_with_path(data_home: &std::path::Path, payload: &str, path: Option<&str>)
         .expect("stdin")
         .write_all(payload.as_bytes())
         .expect("writing the payload");
-    let out = child.wait_with_output_within(HOOK_DEADLINE, || {
-        "the protect-install hook did not finish".to_string()
-    });
+    let out = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(HOOK_DEADLINE),
+        || "the protect-install hook did not finish".to_string(),
+    );
     assert!(
         out.status.success(),
         "the hook must always exit 0 — a nonzero exit is not how a decision is \

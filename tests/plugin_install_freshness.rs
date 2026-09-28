@@ -78,9 +78,10 @@ fn successful_provider_response_cannot_hide_stale_enabled_helper() {
         .env(storyhook::plugin::guard::OVERRIDE_VAR, "1");
     let output = ChildGuard::spawn_with_output(&mut command)
         .expect("running isolated production plugin installer")
-        .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "isolated plugin installer did not finish".into()
-        });
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "isolated plugin installer did not finish".into(),
+        );
     let diagnostic = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),

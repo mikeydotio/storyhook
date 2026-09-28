@@ -97,6 +97,7 @@ else:
     let mut command = Command::new("python3");
     env.apply(&mut command);
     let started = Instant::now();
+    let mut patience = storyhook_test_support::load_grace::Patience::new(FIXTURE_MILESTONE_CEILING);
     command
         .arg(hook)
         .current_dir(dir.path())
@@ -117,10 +118,7 @@ else:
         .unwrap();
     drop(hook_stdin);
     while !capture_marker.exists() {
-        assert!(
-            started.elapsed() < FIXTURE_MILESTONE_CEILING,
-            "capture did not run"
-        );
+        assert!(!patience.expired(), "{patience}; capture did not run");
         std::thread::sleep(Duration::from_millis(20));
     }
     let capture_elapsed = started.elapsed();
@@ -142,15 +140,13 @@ else:
         {
             break (started.elapsed(), status);
         }
-        assert!(
-            started.elapsed() < FIXTURE_MILESTONE_CEILING,
-            "request not admitted"
-        );
+        assert!(!patience.expired(), "{patience}; request not admitted");
         std::thread::sleep(Duration::from_millis(20));
     };
-    let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "Stop hook did not return after the two-second client deadline".into()
-    });
+    let output = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "Stop hook did not return after the two-second client deadline".into(),
+    );
     let hook_elapsed = started.elapsed();
     assert!(
         capture_elapsed < admission_elapsed,
@@ -161,7 +157,10 @@ else:
         "admission must precede lost reply"
     );
     assert!(hook_elapsed >= STOP_FEEDBACK_FLOOR, "{hook_elapsed:?}");
-    assert!(hook_elapsed < FIXTURE_MILESTONE_CEILING, "{hook_elapsed:?}");
+    assert!(
+        !patience.expired(),
+        "{patience}; Stop hook took {hook_elapsed:?}"
+    );
     eprintln!(
         "fixture capture {capture_elapsed:?}; admission {admission_elapsed:?}; Stop reply {hook_elapsed:?}; injected post-commit delay {POST_COMMIT_REPLY_DELAY:?}"
     );
@@ -205,9 +204,10 @@ else:
         )
         .unwrap();
     drop(duplicate_stdin);
-    let duplicate = duplicate.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "duplicate continuation request did not return".into()
-    });
+    let duplicate = duplicate.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "duplicate continuation request did not return".into(),
+    );
     assert!(
         duplicate.status.success(),
         "{}",

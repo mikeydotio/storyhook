@@ -295,9 +295,10 @@ fn concurrent_runs_over_one_commit_still_produce_one_link() {
         })
         .collect();
     for child in &mut children {
-        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "a concurrent commit-sync did not finish".to_string()
-        });
+        let output = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "a concurrent commit-sync did not finish".to_string(),
+        );
         assert!(
             output.status.success(),
             "a concurrent commit-sync failed: {:?}",

@@ -86,7 +86,10 @@ fn start(env: &TestEnv) -> DaemonInfo {
 /// to look stalled.
 fn hold_stalled_invoke(port: u16, content_length: usize, sent: &[u8]) -> TcpStream {
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-    s.set_write_timeout(Some(PROBE_DEADLINE)).ok();
+    s.set_write_timeout(Some(storyhook_test_support::load_grace::graced_now(
+        PROBE_DEADLINE,
+    )))
+    .ok();
     let head = format!(
         "POST /api/v1/invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {content_length}\r\n\r\n"
     );
@@ -109,7 +112,10 @@ fn hold_stalled_authenticated_invoke(
     sent: &[u8],
 ) -> TcpStream {
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-    s.set_write_timeout(Some(PROBE_DEADLINE)).ok();
+    s.set_write_timeout(Some(storyhook_test_support::load_grace::graced_now(
+        PROBE_DEADLINE,
+    )))
+    .ok();
     let head = format!(
         "POST /api/v1/invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Storyhook-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {content_length}\r\n\r\n"
     );
@@ -126,8 +132,14 @@ fn hold_stalled_authenticated_invoke(
 fn hello_elapsed(port: u16, token: &str) -> Result<(Duration, u16), String> {
     let t0 = Instant::now();
     let mut s = TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
-    s.set_read_timeout(Some(PROBE_DEADLINE)).ok();
-    s.set_write_timeout(Some(PROBE_DEADLINE)).ok();
+    s.set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+        PROBE_DEADLINE,
+    )))
+    .ok();
+    s.set_write_timeout(Some(storyhook_test_support::load_grace::graced_now(
+        PROBE_DEADLINE,
+    )))
+    .ok();
     write!(
         s,
         "GET /api/v1/hello HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Storyhook-Token: {token}\r\nConnection: close\r\n\r\n"
@@ -229,7 +241,11 @@ fn an_unauthenticated_invoke_is_refused_without_its_body() {
     let info = start(&env);
 
     let mut attacker = hold_stalled_invoke(info.port, 65000, b"x");
-    attacker.set_read_timeout(Some(PROBE_DEADLINE)).ok();
+    attacker
+        .set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+            PROBE_DEADLINE,
+        )))
+        .ok();
 
     let mut buf = [0u8; 32];
     let n = attacker
@@ -252,7 +268,11 @@ fn a_chunked_body_that_never_arrives_does_not_stop_the_daemon() {
     let info = start(&env);
 
     let mut attacker = TcpStream::connect(("127.0.0.1", info.port)).expect("connect");
-    attacker.set_write_timeout(Some(PROBE_DEADLINE)).ok();
+    attacker
+        .set_write_timeout(Some(storyhook_test_support::load_grace::graced_now(
+            PROBE_DEADLINE,
+        )))
+        .ok();
     write!(
         attacker,
         "POST /api/v1/invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n"
@@ -320,7 +340,11 @@ fn stalled_connections_past_the_cap_are_refused_without_growing_the_daemon() {
     // guarantees a multi-header response arrives in a single TCP segment,
     // and under the full suite's load it routinely does not.
     let mut extra = TcpStream::connect(("127.0.0.1", info.port)).expect("connect");
-    extra.set_read_timeout(Some(PROBE_DEADLINE)).ok();
+    extra
+        .set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+            PROBE_DEADLINE,
+        )))
+        .ok();
     let mut reader = BufReader::new(&mut extra);
     let mut status_line = String::new();
     reader

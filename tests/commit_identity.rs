@@ -92,9 +92,10 @@ impl Repo {
         )
         .unwrap();
         child.stdin().unwrap().write_all(record.as_bytes()).unwrap();
-        child.wait_with_output_within(EXPECT_TIMEOUT, || {
-            "identity checker did not finish after receiving its ref record".to_string()
-        })
+        child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(EXPECT_TIMEOUT),
+            || "identity checker did not finish after receiving its ref record".to_string(),
+        )
     }
 
     fn approve(&self, role: &str, name: &str, email: &str) {

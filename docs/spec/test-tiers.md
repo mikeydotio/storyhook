@@ -1056,7 +1056,11 @@ Known limits, stated rather than hidden:
 - The ceiling applies to each wait. An outer wait that encloses graced waits
   uses `graced_now` on a larger base, so the two scale together until both
   reach the ceiling.
-- The remaining `tests/*.rs` waits are not yet moved to this module (SH-810).
+- SH-810 extends the census to nested integration modules and shared support.
+  Existing patience bounds use this module; proof and fixture timing remain
+  literal. `tests/timing_assertions/waits.rs` rejects new, changed or stale raw
+  bounds against an exact classified inventory. See
+  [Rust harness patience](rust-harness-patience.md) for the census and fence limits.
 
 ## A failed cleanup is one red (SH-765)
 

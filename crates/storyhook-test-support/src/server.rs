@@ -158,18 +158,39 @@ pub fn try_serve_on(
         }
     });
 
-    match rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(Ok(server)) => {
+    match wait_for_report(rx, Duration::from_secs(10), crate::load_grace::contention) {
+        Ok(server) => {
             // `ready` fires before the accept loops are spawned, so "bound" and
             // "accepting" are genuinely different moments and this wait is not
             // made redundant by the report.
             wait_for_server(server.port());
             Ok(server)
         }
-        Ok(Err(e)) => Err(e),
-        Err(_) => {
-            Err("a test server neither became ready nor reported a failure within 10s".to_string())
+        Err(e) => Err(e),
+    }
+}
+
+/// Receives the server's own readiness report; the sampler is local to this wait.
+fn wait_for_report<T>(
+    rx: mpsc::Receiver<Result<T, String>>,
+    idle: Duration,
+    sample: impl Fn() -> Option<f64> + 'static,
+) -> Result<T, String> {
+    let mut patience = crate::load_grace::Patience::starting_at(idle, Instant::now(), sample);
+    loop {
+        match rx.try_recv() {
+            Ok(report) => return report,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err("test server readiness channel disconnected before its report".into());
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
         }
+        if patience.expired() {
+            return Err(format!(
+                "test server neither became ready nor reported a failure: {patience}"
+            ));
+        }
+        std::thread::sleep(REAP_POLL);
     }
 }
 
@@ -219,7 +240,11 @@ impl Drop for DaemonGuard {
             command.env(name, value);
         }
         command.args(["web", "stop"]);
-        let _ = run_bounded(command, "web stop", STOP_DEADLINE);
+        let _ = run_bounded(
+            command,
+            "web stop",
+            crate::load_grace::graced_now(STOP_DEADLINE),
+        );
     }
 }
 
@@ -513,18 +538,17 @@ impl Drop for ChildGuard {
 /// **Chosen, not derived or calibrated** — in the sense
 /// `src/daemon/lifecycle.rs` uses those words for the production deadlines.
 /// The wait is over a process binding a loopback socket plus a one-time
-/// filesystem-watcher registration, and no legitimate slow case exists: across
-/// a full run its ~141 calls land at 0ms all but three times, worst 4ms.
+/// filesystem-watcher registration. The original idle measurement put its
+/// ~141 calls at 0ms all but three times, worst 4ms. Scheduler contention can
+/// delay that work, so this is now the idle allowance passed to load grace.
 ///
 /// Deliberately *not* an import of the daemon's `SPAWN_DEADLINE`, despite the
 /// equal value. That one bounds a daemon coming up; this waits on a test HTTP
 /// server binding a socket. An import would assert a relationship that does not
 /// exist, and the two would then be wrong together (SH-140).
 ///
-/// The value is not the interesting part and has never needed to move — both
-/// times this fired, it was right. What was wrong was the message, which named
-/// the duration instead of the condition, and so reported an FSEvents pathology
-/// as a mass of unexplained server failures.
+/// Diagnostics name the condition and the granted patience; an FSEvents
+/// pathology must not appear as a mass of unexplained server failures.
 pub(crate) const ACCEPT_DEADLINE: Duration = Duration::from_secs(5);
 
 /// How often the deadline above is retried. Short enough that a ready listener
@@ -543,24 +567,16 @@ pub fn wait_for_server(port: u16) {
 /// (loopback-only) isn't a reliable proxy for "the tailnet listener is
 /// accepting requests too" under load.
 pub fn wait_for_addr(addr: &str) {
-    let start = Instant::now();
-    loop {
-        if TcpStream::connect(addr).is_ok() {
-            return;
-        }
-        if start.elapsed() > ACCEPT_DEADLINE {
-            panic!(
-                "{addr} never began accepting connections. This is a 'never', not a 'slow': \
-                 the bound is {ACCEPT_DEADLINE:?} against an observed 0-4ms across ~141 calls \
-                 per run, and raising it cannot help, because both things that have ever \
-                 caused it are unbounded. It has fired twice and been right twice — once on a \
-                 server that had genuinely bound nothing (SH-110), and once on a machine whose \
-                 FSEventStreamStart was serialized behind a huge target/debug/deps. Check \
-                 `ls target/debug/deps | wc -l` (see Cargo.toml) before suspecting this test."
-            );
-        }
-        std::thread::sleep(ACCEPT_POLL);
-    }
+    crate::load_grace::wait_for(
+        crate::load_grace::Patience::new(ACCEPT_DEADLINE),
+        ACCEPT_POLL,
+        || {
+            format!(
+                "{addr} never began accepting connections; check server startup and filesystem-watcher registration"
+            )
+        },
+        || TcpStream::connect(addr).ok(),
+    );
 }
 
 /// The port the daemon with pid `pid` bound, once it has published one.
@@ -676,7 +692,47 @@ pub fn run_bounded(mut cmd: Command, what: &str, deadline: Duration) -> Output {
 mod tests {
     use super::*;
     use crate::env::TestEnv;
+    use crate::load_grace;
     use storyhook::store::{ReadOps, Store};
+
+    #[test]
+    fn server_readiness_extends_when_load_rises_before_the_report() {
+        let (tx, rx) = mpsc::channel();
+        let first = std::cell::Cell::new(true);
+        let report = wait_for_report(rx, Duration::from_millis(20), move || {
+            if first.replace(false) {
+                Some(1.0)
+            } else {
+                tx.send(Ok(7)).unwrap();
+                Some(1e12)
+            }
+        });
+        assert_eq!(report, Ok(7), "readiness must survive the idle allowance");
+    }
+
+    #[test]
+    fn server_readiness_keeps_failure_and_disconnect_distinct() {
+        let (tx, rx) = mpsc::channel::<Result<(), String>>();
+        tx.send(Err("bind failed".into())).unwrap();
+        drop(tx);
+        assert_eq!(
+            wait_for_report(rx, Duration::ZERO, || None),
+            Err("bind failed".into())
+        );
+
+        let (tx, rx) = mpsc::channel::<Result<(), String>>();
+        drop(tx);
+        let error = wait_for_report(rx, Duration::ZERO, || None).unwrap_err();
+        assert!(error.contains("disconnected"), "{error}");
+    }
+
+    #[test]
+    fn server_readiness_timeout_carries_the_patience() {
+        let (_tx, rx) = mpsc::channel::<Result<(), String>>();
+        let error = wait_for_report(rx, Duration::ZERO, || None).unwrap_err();
+        assert!(error.contains("test server"), "{error}");
+        assert!(error.contains("contention=unavailable"), "{error}");
+    }
 
     /// A private environment, its store, and one project in it.
     ///
@@ -864,7 +920,7 @@ mod tests {
         let (env, store, _slug) = served_project();
 
         let port = serve(store, &env.environment()).port();
-        let line = http_status_line(port, Duration::from_secs(5));
+        let line = http_status_line(port, load_grace::graced_now(Duration::from_secs(5)));
         assert!(
             line.as_deref().is_some_and(|l| l.contains("200")),
             "serve() must not return until the server actually answers; got {line:?}"
@@ -876,7 +932,11 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "printf ok; exit 3"]);
 
-        let out = run_bounded(cmd, "printf ok", Duration::from_secs(5));
+        let out = run_bounded(
+            cmd,
+            "printf ok",
+            load_grace::graced_now(Duration::from_secs(5)),
+        );
         assert_eq!(out.stdout, b"ok");
         assert_eq!(out.status.code(), Some(3));
     }
@@ -890,9 +950,10 @@ mod tests {
         ]);
         let mut child = ChildGuard::spawn_with_output(&mut cmd).expect("spawning noisy child");
 
-        let out = child.wait_with_output_within(Duration::from_secs(5), || {
-            "the noisy child did not finish".to_string()
-        });
+        let out = child
+            .wait_with_output_within(load_grace::graced_now(Duration::from_secs(5)), || {
+                "the noisy child did not finish".to_string()
+            });
 
         assert_eq!(out.stdout.len(), 1_048_576);
         assert_eq!(out.stderr, b"problem");
@@ -910,9 +971,10 @@ mod tests {
             .write_all(b"done")
             .expect("writing cat stdin");
 
-        let out = child.wait_with_output_within(Duration::from_secs(5), || {
-            "cat did not observe stdin closing".to_string()
-        });
+        let out = child
+            .wait_with_output_within(load_grace::graced_now(Duration::from_secs(5)), || {
+                "cat did not observe stdin closing".to_string()
+            });
 
         assert_eq!(out.stdout, b"done");
     }

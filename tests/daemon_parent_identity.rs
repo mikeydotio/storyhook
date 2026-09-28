@@ -6,7 +6,7 @@
 //! fixture constructs that identity mismatch directly instead of waiting for
 //! the kernel to reuse a pid.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook::daemon::lifecycle::{self, StopMode};
 use storyhook_test_support::{ChildGuard, TestEnv, scratch_dir};
@@ -41,8 +41,8 @@ fn a_reused_parent_pid_does_not_keep_a_test_daemon_alive() {
     let daemon = env
         .daemon()
         .expect("the daemon must publish its identity before parent monitoring starts");
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while lifecycle::is_live(&env.environment()) && Instant::now() < deadline {
+    let mut patience = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(2));
+    while lifecycle::is_live(&env.environment()) && !patience.expired() {
         std::thread::sleep(Duration::from_millis(25));
     }
 

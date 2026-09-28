@@ -124,7 +124,7 @@ impl Fixture {
                 .env("STORYHOOK_GATE_PROGRESS_PATH", "release gate/rust-suite");
         }
         let mut waiter = ChildGuard::spawn(&mut cmd).unwrap();
-        let deadline = Instant::now() + SPAWN_DEADLINE;
+        let mut patience = storyhook_test_support::load_grace::Patience::new(SPAWN_DEADLINE);
         loop {
             let output = fs::read_to_string(&stderr).unwrap();
             assert!(
@@ -142,8 +142,8 @@ impl Fixture {
                 return (waiter, stderr);
             }
             assert!(
-                Instant::now() < deadline,
-                "waiter never reported contention: {output}; log: {:?}",
+                !patience.expired(),
+                "{patience}; waiter never reported contention: {output}; log: {:?}",
                 self.log()
             );
             std::thread::sleep(Duration::from_millis(20));
@@ -208,22 +208,17 @@ impl Fixture {
                 c
             },
             "clock reading",
-            secs(SLEEP * 10.0),
+            storyhook_test_support::load_grace::graced_now(secs(SLEEP * 10.0)),
         );
         String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
     }
 
     fn wait_for_starts(&self, n: usize, within: Duration) {
-        let give_up = Instant::now() + within;
-        while Instant::now() < give_up {
-            if self.log().iter().filter(|(k, ..)| k == "start").count() >= n {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!(
-            "{n} compiles did not start within {within:?}: {:?}",
-            self.log()
+        storyhook_test_support::load_grace::wait_for(
+            storyhook_test_support::load_grace::Patience::new(within),
+            Duration::from_millis(20),
+            || format!("{n} compiles never started: {:?}", self.log()),
+            || (self.log().iter().filter(|(k, ..)| k == "start").count() >= n).then_some(()),
         );
     }
 }
@@ -251,7 +246,10 @@ fn never_more_than_k_compiles_overlap_and_the_bound_bit() {
     // python starts, never a number about this machine.
     let deadline = secs(SLEEP * n as f64 * 2.0);
     for child in &mut children {
-        let out = child.wait_with_output_within(deadline, || format!("log: {:?}", fx.log()));
+        let out = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(deadline),
+            || format!("log: {:?}", fx.log()),
+        );
         assert!(
             out.status.success(),
             "{}",
@@ -295,7 +293,11 @@ fn a_probe_without_a_crate_name_takes_no_slot_and_is_never_queued() {
 
     let mut probe = fx.wrapper(1);
     probe.arg(fx.path().join("rustc")).arg("-vV");
-    let out = run_bounded(probe, "rustc -vV through the wrapper", SPAWN_DEADLINE);
+    let out = run_bounded(
+        probe,
+        "rustc -vV through the wrapper",
+        storyhook_test_support::load_grace::graced_now(SPAWN_DEADLINE),
+    );
     assert!(
         out.status.success(),
         "{}",
@@ -321,7 +323,10 @@ fn rustcs_exit_status_and_pid_are_the_wrappers_own_because_it_execs() {
     cmd.env("FAKE_RUSTC_EXIT", "3");
     let mut child = ChildGuard::spawn_with_output(&mut cmd).unwrap();
     let pid = child.pid();
-    let out = child.wait_with_output_within(secs(SLEEP * 10.0), || format!("{:?}", fx.log()));
+    let out = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(secs(SLEEP * 10.0)),
+        || format!("{:?}", fx.log()),
+    );
     assert_eq!(
         out.status.code(),
         Some(3),
@@ -343,7 +348,10 @@ fn a_sigkilled_holder_frees_its_slot_with_no_reclaim_path() {
     let (mut waiter, stderr_path) = fx.waiting_compile(None);
     // SAFETY: this test owns the still-running holder and its PID.
     assert_eq!(unsafe { libc::kill(holder.pid() as i32, libc::SIGKILL) }, 0);
-    let status = waiter.wait_within(SPAWN_DEADLINE, || format!("{:?}", fx.log()));
+    let status = waiter.wait_within(
+        storyhook_test_support::load_grace::graced_now(SPAWN_DEADLINE),
+        || format!("{:?}", fx.log()),
+    );
     let stderr = fs::read_to_string(stderr_path).unwrap();
     assert!(status.success(), "{stderr}");
     assert!(
@@ -361,7 +369,11 @@ fn an_unusable_slot_root_fails_open_loudly_and_the_compile_still_runs() {
     fs::write(&blocker, "").unwrap();
     let mut cmd = fx.compile(2, "unbounded", 0.0);
     cmd.env("STORYHOOK_LOCK_DIR", &blocker);
-    let out = run_bounded(cmd, "compile under an unusable root", secs(SLEEP * 10.0));
+    let out = run_bounded(
+        cmd,
+        "compile under an unusable root",
+        storyhook_test_support::load_grace::graced_now(secs(SLEEP * 10.0)),
+    );
     assert!(
         out.status.success(),
         "{}",
@@ -381,7 +393,11 @@ fn k_derives_from_the_machines_own_performance_core_count() {
     let fx = Fixture::new();
     let mut cmd = fx.wrapper(1);
     cmd.env_remove("STORYHOOK_BUILD_SLOTS").arg("--plan");
-    let out = run_bounded(cmd, "rustc-slot.py --plan", secs(SLEEP * 10.0));
+    let out = run_bounded(
+        cmd,
+        "rustc-slot.py --plan",
+        storyhook_test_support::load_grace::graced_now(secs(SLEEP * 10.0)),
+    );
     assert!(
         out.status.success(),
         "{}",
@@ -397,7 +413,7 @@ fn k_derives_from_the_machines_own_performance_core_count() {
                 c
             },
             "sysctl",
-            secs(SLEEP * 10.0),
+            storyhook_test_support::load_grace::graced_now(secs(SLEEP * 10.0)),
         );
         (
             String::from_utf8_lossy(&sysctl.stdout)
@@ -407,7 +423,11 @@ fn k_derives_from_the_machines_own_performance_core_count() {
             "hw.perflevel0.logicalcpu",
         )
     } else {
-        let nproc = run_bounded(Command::new("nproc"), "nproc", secs(SLEEP * 10.0));
+        let nproc = run_bounded(
+            Command::new("nproc"),
+            "nproc",
+            storyhook_test_support::load_grace::graced_now(secs(SLEEP * 10.0)),
+        );
         (
             String::from_utf8_lossy(&nproc.stdout)
                 .trim()
@@ -433,7 +453,10 @@ fn a_wait_is_reported_on_stderr_and_to_a_set_journal_and_nowhere_when_unset() {
     let journal = fx.path().join("progress.ndjson");
     let (mut waiter, stderr_path) = fx.waiting_compile(Some(&journal));
     holder.stdin().unwrap().write_all(b"release\n").unwrap();
-    let status = waiter.wait_within(SPAWN_DEADLINE, || format!("{:?}", fx.log()));
+    let status = waiter.wait_within(
+        storyhook_test_support::load_grace::graced_now(SPAWN_DEADLINE),
+        || format!("{:?}", fx.log()),
+    );
     let stderr = fs::read_to_string(stderr_path).unwrap();
     assert!(status.success(), "{stderr}");
     assert!(
@@ -476,7 +499,10 @@ fn a_wait_is_reported_on_stderr_and_to_a_set_journal_and_nowhere_when_unset() {
     fx2.wait_for_starts(1, SPAWN_DEADLINE);
     let (mut waiter2, stderr_path) = fx2.waiting_compile(None);
     holder2.stdin().unwrap().write_all(b"release\n").unwrap();
-    let status = waiter2.wait_within(SPAWN_DEADLINE, || format!("{:?}", fx2.log()));
+    let status = waiter2.wait_within(
+        storyhook_test_support::load_grace::graced_now(SPAWN_DEADLINE),
+        || format!("{:?}", fx2.log()),
+    );
     assert!(status.success());
     assert!(fs::read_to_string(stderr_path).unwrap().contains("waited"));
     assert!(!fx2.path().join("progress.ndjson").exists());
@@ -594,13 +620,19 @@ fn a_holder_waits_for_release_even_when_the_waiter_starts_late() {
     );
     let (mut waiter, stderr) = fx.waiting_compile(None);
     holder.stdin().unwrap().write_all(b"release\n").unwrap();
-    let out = holder.wait_with_output_within(storyhook::daemon::lifecycle::SPAWN_DEADLINE, || {
-        format!("{:?}", fx.log())
-    });
+    let out = holder.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(
+            storyhook::daemon::lifecycle::SPAWN_DEADLINE,
+        ),
+        || format!("{:?}", fx.log()),
+    );
     assert!(out.status.success());
     assert!(
         waiter
-            .wait_within(SPAWN_DEADLINE, || format!("{:?}", fx.log()))
+            .wait_within(
+                storyhook_test_support::load_grace::graced_now(SPAWN_DEADLINE),
+                || format!("{:?}", fx.log())
+            )
             .success()
     );
     assert!(fs::read_to_string(stderr).unwrap().contains("waited"));

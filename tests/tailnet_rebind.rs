@@ -23,7 +23,7 @@
 use std::ffi::OsString;
 use std::net::{IpAddr, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook_test_support::{TestEnv, reserve_port, slug_at, wait_for_addr, wait_for_server};
 
@@ -134,15 +134,15 @@ fn a_daemon_that_missed_its_tailnet_bind_self_heals_without_a_restart() {
 
     // The daemon must notice on its own, without a restart, within the fast
     // retry cadence configured above.
-    let started = Instant::now();
+    let mut patience = storyhook_test_support::load_grace::Patience::new(REBIND_DEADLINE);
     let healed = loop {
         if let Some(bind) = env.daemon().and_then(|info| info.tailnet) {
             break bind;
         }
         assert!(
-            started.elapsed() < REBIND_DEADLINE,
-            "the daemon never self-healed its tailnet bind after tailscale became reachable \
-             (SH-146) within {REBIND_DEADLINE:?}"
+            !patience.expired(),
+            "{patience}; the daemon never self-healed its tailnet bind after tailscale became reachable \
+             (SH-146)"
         );
         std::thread::sleep(Duration::from_millis(50));
     };

@@ -25,7 +25,7 @@ use std::fs;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook_test_support::{ChildGuard, run_bounded, scratch_dir_named};
 use tempfile::TempDir;
@@ -98,7 +98,7 @@ impl Fixture {
         run_bounded(
             self.command(body),
             "an e2e-pool scenario",
-            SCENARIO_DEADLINE,
+            storyhook_test_support::load_grace::graced_now(SCENARIO_DEADLINE),
         )
     }
 }
@@ -638,11 +638,11 @@ e2e_pool_run 2 1 slice A B C
 echo returned > "$M/returned""#;
 
 fn wait_for(fx: &Fixture, markers: &[&str], deadline: Duration) {
-    let start = Instant::now();
+    let mut patience = storyhook_test_support::load_grace::Patience::new(deadline);
     while !markers.iter().all(|m| fx.exists(m)) {
         assert!(
-            start.elapsed() < deadline,
-            "markers {markers:?} never all appeared (STARTUP_DEADLINE)"
+            !patience.expired(),
+            "{patience}; markers {markers:?} never all appeared (STARTUP_DEADLINE)"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -673,12 +673,15 @@ fn signal_stops_writers_first_and_re_raises(signal: &str, number: i32) {
         .status()
         .expect("sending the signal");
     assert!(sent.success());
-    let status = child.wait_within(SCENARIO_DEADLINE, || {
-        format!(
-            "the pool did not exit after its {signal} (SCENARIO_DEADLINE):\n{}",
-            fx.read("stderr")
-        )
-    });
+    let status = child.wait_within(
+        storyhook_test_support::load_grace::graced_now(SCENARIO_DEADLINE),
+        || {
+            format!(
+                "the pool did not exit after its {signal} (SCENARIO_DEADLINE):\n{}",
+                fx.read("stderr")
+            )
+        },
+    );
     let stderr = fx.read("stderr");
 
     assert!(

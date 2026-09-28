@@ -230,6 +230,7 @@ fn absent_original_agent_without_managed_resources_is_held_not_replaced() {
 
 #[test]
 fn policy_monitor_cancels_live_delivery_and_retains_transient_reservations() {
+    const PROVIDER_DELAY_SECS: u64 = 30;
     for stop in [false, true] {
         let f = fixture();
         let candidate = submitted(&f, "cancelled assessment");
@@ -239,7 +240,10 @@ fn policy_monitor_cancels_live_delivery_and_retains_transient_reservations() {
             .observe(&candidate, &fault(), "observed")
             .unwrap()
             .unwrap();
-        let actuator = helper(&f, r#"{"ok":true,"delay":30}"#);
+        let actuator = helper(
+            &f,
+            &serde_json::json!({"ok":true,"delay":PROVIDER_DELAY_SECS}).to_string(),
+        );
         std::thread::scope(|scope| {
             let operation = scope.spawn(|| {
                 process_one(
@@ -250,14 +254,15 @@ fn policy_monitor_cancels_live_delivery_and_retains_transient_reservations() {
                     &AtomicBool::new(false),
                 )
             });
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut patience = storyhook_test_support::load_grace::Patience::new(
+                std::time::Duration::from_secs(10),
+            );
             while !candidate.checkout.join("recovery-calls").exists() {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "provider did not start"
-                );
+                assert!(!patience.expired(), "{patience}; provider did not start");
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(PROVIDER_DELAY_SECS / 3);
             if stop {
                 f.store()
                     .write(|tx| tx.put_verification_enabled(f.project(), false))

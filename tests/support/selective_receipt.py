@@ -5,7 +5,11 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/tests"))
+import load_grace
 
 
 def executable(path, text):
@@ -88,7 +92,8 @@ fi
     def run(self, args, expected=0, extra=None):
         env = self.env | (extra or {})
         out = subprocess.run(args, cwd=self.root, env=env, text=True,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             timeout=load_grace.patience(30, load_grace.contention()))
         if expected is not None:
             assert out.returncode == expected, (args, out.returncode, out.stdout, out.stderr)
         return out

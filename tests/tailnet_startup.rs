@@ -63,7 +63,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
 use storyhook_test_support::{
@@ -199,14 +199,14 @@ fn a_wedged_tailscale_cli_leaves_no_accepting_but_silent_window() {
         .env("PATH", &path);
     let guard = ChildGuard::spawn(&mut command).expect("spawning the dashboard");
 
-    let connect_deadline = Instant::now() + Duration::from_secs(10);
+    let mut patience = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
     loop {
         if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
             break;
         }
         assert!(
-            Instant::now() < connect_deadline,
-            "the dashboard never bound {port} at all, wedged tailscale or not"
+            !patience.expired(),
+            "{patience}; the dashboard never bound {port} at all, wedged tailscale or not"
         );
         std::thread::sleep(Duration::from_millis(25));
     }

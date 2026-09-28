@@ -1,7 +1,7 @@
 //! SH-642: the CLI control path wakes the real daemon without a timer tick.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook::api::dispatch::REQUIRED_DISPATCH_PROTOCOL;
 use storyhook::store::{EngineRunState, ReadOps, SqliteStore, Store, WriteOps};
@@ -18,7 +18,7 @@ fn command(env: &TestEnv, cwd: &Path, args: &[&str]) -> serde_json::Value {
 }
 
 fn finished(store: &SqliteStore, id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut patience = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
     loop {
         let run = store.read(|tx| tx.engine_run(id)).unwrap().unwrap();
         if run.state == EngineRunState::Finished {
@@ -26,8 +26,8 @@ fn finished(store: &SqliteStore, id: &str) {
             return;
         }
         assert!(
-            Instant::now() < deadline,
-            "CLI control did not wake reconciliation: {run:?}"
+            !patience.expired(),
+            "{patience}; CLI control did not wake reconciliation: {run:?}"
         );
         std::thread::sleep(Duration::from_millis(10));
     }

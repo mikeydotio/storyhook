@@ -14,12 +14,10 @@
 //! `a_running_command_is_published_and_retracted` established: an event hook
 //! is the only way to hold a real request open long enough to look at it.
 
-use std::io::Write;
 use std::process::Stdio;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use storyhook::daemon::lifecycle;
 use storyhook_test_support::{ChildGuard, TestEnv};
 
 /// Stops whatever daemon `env` is running, even if the test panics first.
@@ -59,131 +57,89 @@ fn run_bounded(
 }
 
 /// Blocks until `ready`, or fails the test.
-fn wait_for(what: &str, deadline: Duration, ready: impl Fn() -> bool) {
-    let start = Instant::now();
-    while start.elapsed() < deadline {
-        if ready() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    panic!("timed out after {deadline:?} waiting for {what}");
+fn wait_for(what: &str, idle: Duration, ready: impl Fn() -> bool) {
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(idle),
+        Duration::from_millis(25),
+        || format!("waiting for {what}"),
+        || ready().then_some(()),
+    );
 }
 
-/// A slow command sitting inside its hook does not block an unrelated
-/// client's `story list` — the story's own measured defect, self-calibrated
-/// per `tests/daemon_lifecycle.rs::four_clients_behind_a_wedged_daemon_share_one_attempt`:
-/// a hard-coded second count is a claim about the machine running this test;
-/// a multiple of a measurement taken moments earlier on the same machine is a
-/// claim about the shape.
+/// An unrelated client completes while a hook remains held until explicit release.
 #[test]
 fn a_slow_command_does_not_block_another_client() {
-    // Wide on purpose (SH-394): the property under test is "queued vs.
-    // concurrent", a binary distinction, not "fast" vs. "slow". A hook that
-    // sleeps only a few seconds leaves too thin a gap between "the daemon is
-    // working normally under load" and "a client queued behind this hook" —
-    // this machine can run three-to-four concurrent worktree suites, and a
-    // correctly-concurrent `story list` competing with them for CPU could
-    // plausibly cost a few seconds on its own. Widening the hook's sleep
-    // rather than tightening the assertion below keeps the two cases
-    // unmistakable however loaded the machine is; it costs this one test
-    // real wall-clock, which is cheap next to a flake.
-    const HOOK_SLEEP_SECS: u64 = 30;
+    check_concurrent_client(Duration::ZERO);
+}
 
+/// Scheduling delay must not turn concurrent dispatch into a false failure.
+#[test]
+fn a_delayed_observer_still_proves_concurrent_dispatch() {
+    check_concurrent_client(Duration::from_secs(1));
+}
+
+fn check_concurrent_client(observer_delay: Duration) {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let environment = env.environment();
-
     let project = env.project().prefix("PB").build();
-    std::fs::create_dir_all(project.path().join(".storyhook")).expect("the hooks directory");
-    let mut hooks = std::fs::File::create(project.path().join(".storyhook/hooks.toml"))
-        .expect("writing hooks.toml");
-    hooks
-        .write_all(
-            format!(
-                "[settings]\ntimeout_seconds = 60\n\n\
-                 [on_comment]\ncommand = \"sleep {HOOK_SLEEP_SECS}\"\ntimeout_seconds = 60\n"
-            )
-            .as_bytes(),
-        )
-        .expect("writing the hook");
-    drop(hooks);
+    let hooks_dir = project.path().join(".storyhook");
+    std::fs::create_dir_all(&hooks_dir).expect("the hooks directory");
+    // The hook cannot complete by itself. Its timeout is only a cleanup
+    // backstop; the final marker proves it accepted our explicit release.
+    std::fs::write(
+        hooks_dir.join("hold.sh"),
+        "#!/bin/sh\nset -eu\n: > .storyhook/entered\n\
+         while [ ! -f .storyhook/release ]; do sleep 0.025; done\n\
+         : > .storyhook/released\n",
+    )
+    .unwrap();
+    std::fs::write(
+        hooks_dir.join("hooks.toml"),
+        format!(
+            "[on_comment]\ncommand = \"sh .storyhook/hold.sh\"\ntimeout_seconds = {}\n",
+            storyhook::event_hooks::HOOK_TIMEOUT_CEILING_SECS
+        ),
+    )
+    .unwrap();
     env.story(project.path())
         .args(["new", "a story"])
         .assert()
         .success();
 
-    // Warm the binary first: macOS's first-exec Mach-O validation can cost
-    // tens of seconds on the very first invocation, which would otherwise be
-    // charged to the baseline measurement below.
-    env.raw_story(project.path())
-        .arg("--version")
-        .output()
-        .expect("warming the binary");
-
-    let mut baseline_cmd = env.raw_story(project.path());
-    baseline_cmd.args(["list", "--json"]);
-    let alone = Instant::now();
-    run_bounded(
-        baseline_cmd,
-        "baseline `story list`",
-        Duration::from_secs(15),
-    );
-    let baseline = alone.elapsed();
-
     let mut slow = env.raw_story(project.path());
     slow.args(["comment", "PB-1", "trip the hook"]);
-    // Held, never waited for: once the assertions below have their answer the
-    // hook's remaining sleep proves nothing. Dropping this kills the client,
-    // then `DaemonGuard` force-stops the daemon. Waiting the hook out cost
-    // this binary about 25 s of gate time per run (SH-783).
-    let _slow = ChildGuard::spawn(&mut slow).expect("spawning the slow command");
+    let mut slow = ChildGuard::spawn_with_output(&mut slow).expect("spawning the slow command");
+    wait_for("the hook to enter its hold", Duration::from_secs(5), || {
+        hooks_dir.join("entered").exists()
+    });
 
-    wait_for(
-        "the daemon to publish the slow comment as in flight",
-        Duration::from_secs(5),
-        || {
-            lifecycle::read_inflight(&environment)
-                .iter()
-                .any(|r| r.command == "comment")
-        },
-    );
-
+    // Model an observer that loses CPU after the hook enters. This delay is
+    // fixture stimulus, never a deadline or a claim about production speed.
+    std::thread::sleep(observer_delay);
     let mut concurrent_cmd = env.raw_story(project.path());
     concurrent_cmd.args(["list", "--json"]);
-    let started = Instant::now();
-    // Above the correctness assertion's own ceiling (HOOK_SLEEP_SECS / 2)
-    // rather than below it (SH-394) — this is a "did it deadlock" backstop,
-    // and it must not fire first on ordinary load and preempt the assertion
-    // below, which names the actual property and reports it more precisely.
     let concurrent_output = run_bounded(
         concurrent_cmd,
-        "concurrent `story list`",
-        Duration::from_secs(HOOK_SLEEP_SECS),
+        "concurrent `story list` while the hook is held",
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
     );
-    let concurrent = started.elapsed();
-
     assert!(
         concurrent_output.status.success(),
         "the concurrent `story list` must succeed: {concurrent_output:?}"
     );
-    // A claim about the shape (queued vs. concurrent), not about this
-    // machine's absolute speed.
     assert!(
-        concurrent < baseline * 4 + Duration::from_millis(500),
-        "a concurrent `story list` (took {concurrent:?}) must not be inflated by an \
-         unrelated slow command; baseline alone was {baseline:?}"
+        slow.try_wait().is_none(),
+        "the hook's command must still be held"
     );
-    // And a claim about the hook itself: the hook sleeps HOOK_SLEEP_SECS, so
-    // a `story list` that queued behind it would take at least that long.
-    // Half of that (SH-394) is still comfortably below "queued", and leaves
-    // most of a 30-second budget for the concurrent command's own cost under
-    // load, instead of the 2-second ceiling this used to be measured against
-    // a 3-second hook.
+    std::fs::write(hooks_dir.join("release"), "").unwrap();
+    let slow_output = slow.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(15)),
+        || "the held hook did not complete after release".into(),
+    );
+    assert!(slow_output.status.success(), "{slow_output:?}");
     assert!(
-        concurrent < Duration::from_secs(HOOK_SLEEP_SECS / 2),
-        "`story list` took {concurrent:?} — it queued behind the {HOOK_SLEEP_SECS}s hook \
-         instead of running concurrently with it"
+        hooks_dir.join("released").exists(),
+        "the hook must exit through release, not through its timeout"
     );
 }
 
@@ -216,7 +172,7 @@ fn a_hook_that_calls_story_never_queues_behind_its_own_parent() {
     // hook configuration above.
     env.stop_daemon();
 
-    let deadline = Duration::from_secs(20);
+    let deadline = storyhook_test_support::load_grace::graced_now(Duration::from_secs(20));
     let outer: Vec<_> = (0..3)
         .map(|n| {
             let mut cmd = env.raw_story(project.path());

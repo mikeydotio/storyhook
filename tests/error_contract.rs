@@ -143,7 +143,9 @@ fn cases() -> Vec<Case> {
                     conn.execute_batch("ROLLBACK").expect("releasing the lock");
                 });
                 acquired_rx
-                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                        std::time::Duration::from_secs(10),
+                    ))
                     .expect("the holder thread never acquired the store's write lock");
 
                 // `new` is a write, so it needs the lock; a read like `show`

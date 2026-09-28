@@ -131,9 +131,10 @@ fn a_script_and_the_daemon_reader_share_the_same_format_and_store_destination() 
             env.environment().daemon_state_dir().join("activity"),
         );
     let mut child = ChildGuard::spawn_with_output(&mut command).unwrap();
-    let out = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "script log writer did not complete".into()
-    });
+    let out = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "script log writer did not complete".into(),
+    );
     assert!(out.status.success());
     let rows = env
         .story(env.home())
@@ -287,7 +288,7 @@ fn a_starting_daemon_fixes_the_journal_and_reports_committed_journal_files() {
 
     // Any store command starts the daemon, and its first sweep is its start.
     project.run(&["list"]).success();
-    let deadline = std::time::Instant::now() + STORY_COMMAND_DEADLINE;
+    let mut patience = storyhook_test_support::load_grace::Patience::new(STORY_COMMAND_DEADLINE);
     let warnings = loop {
         let status = project.json(&["daemon", "status"]);
         // The envelope omits an empty warnings list.
@@ -296,7 +297,7 @@ fn a_starting_daemon_fixes_the_journal_and_reports_committed_journal_files() {
             break warnings;
         }
         assert!(
-            std::time::Instant::now() < deadline,
+            !patience.expired(),
             "no journal warning on daemon status: {status}"
         );
         std::thread::sleep(std::time::Duration::from_millis(50));

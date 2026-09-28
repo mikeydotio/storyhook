@@ -372,14 +372,12 @@ fn validate_base(repo: &LandRepo, stated: &str, metadata: &str) -> Output {
 }
 
 fn wait_for(path: &Path) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::time::Instant::now() < deadline {
-        if path.exists() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    panic!("{} did not appear", path.display());
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(std::time::Duration::from_secs(10)),
+        std::time::Duration::from_millis(20),
+        || format!("{} did not appear", path.display()),
+        || path.exists().then_some(()),
+    );
 }
 
 #[test]
@@ -816,9 +814,10 @@ fn certification_and_the_merge_command_wait_behind_the_merge_lock() {
             &witness.display().to_string(),
         ],
     );
-    holder.wait_within(Duration::from_secs(HOLD_SECS * 2), || {
-        "the merge-lock holder did not exit after its sleep".to_string()
-    });
+    holder.wait_within(
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(HOLD_SECS * 2)),
+        || "the merge-lock holder did not exit after its sleep".to_string(),
+    );
 
     assert_ok(&out, "the queued landing command");
     assert!(witness.exists());

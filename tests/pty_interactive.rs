@@ -41,7 +41,10 @@ use storyhook_test_support::{Pty, TestEnv, Watchdog, watchdog};
 const FILE_BUDGET: Duration = Duration::from_secs(180);
 
 fn armed() -> Watchdog {
-    watchdog("tests/pty_interactive.rs", FILE_BUDGET)
+    watchdog(
+        "tests/pty_interactive.rs",
+        storyhook_test_support::load_grace::graced_now(FILE_BUDGET),
+    )
 }
 
 /// A directory inside the environment's scratch space, created but not
