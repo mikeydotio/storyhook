@@ -186,7 +186,7 @@ impl Harness {
         fs::create_dir_all(&home).expect("creating fixture home");
         fs::create_dir_all(&fake_bin).expect("creating fixture bin");
 
-        let built = PathBuf::from(env!("CARGO_BIN_EXE_story"));
+        let built = storyhook_test_support::story_binary().to_path_buf();
         let story = if packaged_binary {
             let copied = temp.path().join("package/story");
             fs::create_dir_all(copied.parent().unwrap()).expect("creating package directory");

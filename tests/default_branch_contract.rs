@@ -91,11 +91,11 @@ impl Fixture {
     }
 
     fn plugin(&self) -> Output {
-        self.plugin_with(Path::new(env!("CARGO_BIN_EXE_story")))
+        self.plugin_with(storyhook_test_support::story_binary())
     }
 
     fn bundle(&self) -> Output {
-        self.bundle_with(Path::new(env!("CARGO_BIN_EXE_story")))
+        self.bundle_with(storyhook_test_support::story_binary())
     }
 
     /// The plugin copy, with `story_bin` as the transport helper.
@@ -149,7 +149,7 @@ fn path_arg(path: &Path) -> String {
 }
 
 fn run(cwd: &Path, program: &str, args: &[&str]) -> Output {
-    run_with(cwd, program, args, Path::new(env!("CARGO_BIN_EXE_story")))
+    run_with(cwd, program, args, storyhook_test_support::story_binary())
 }
 
 fn run_with(cwd: &Path, program: &str, args: &[&str], story_bin: &Path) -> Output {

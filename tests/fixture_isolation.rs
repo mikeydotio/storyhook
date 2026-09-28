@@ -93,6 +93,24 @@ fn tracked_test_files() -> Vec<(String, String)> {
 }
 
 #[test]
+fn no_test_file_bypasses_the_binary_lease() {
+    let mutable_artifact = ["CARGO_BIN_EXE", "story"].join("_");
+    let offenders: Vec<String> = tracked_test_files()
+        .into_iter()
+        .filter(|(_, text)| {
+            storyhook_test_support::without_rust_comments(text).contains(&mutable_artifact)
+        })
+        .map(|(relative, _)| relative)
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "{offenders:?} use Cargo's mutable story artifact. It can disappear or be \
+         replaced during a concurrent build. Use storyhook_test_support::story_binary() \
+         for launches, STORY_BIN, generated scripts, and installation-copy sources."
+    );
+}
+
+#[test]
 fn no_test_file_reaches_the_binary_outside_the_harness() {
     let marker = marker();
     let offenders: Vec<String> = tracked_test_files()

@@ -128,7 +128,7 @@ printf '%s\n' '{"number":7,"state":"CLOSED","isDraft":false,"isCrossRepository":
     let outcome = ShellVerificationActuator::with_paths(
         daemon_env.clone(),
         env_root.path().join("unused-helper"),
-        env!("CARGO_BIN_EXE_story").into(),
+        storyhook_test_support::story_binary().into(),
     )
     .verify(&candidate, &pull_request);
 

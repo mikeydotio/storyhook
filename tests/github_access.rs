@@ -202,7 +202,7 @@ fn helper(root: &Path, arguments: &[&str], fake: Option<&str>) -> std::process::
         std::fs::write(bin.join("gh"), format!("#!/bin/sh\n{script}\n")).unwrap();
         std::fs::set_permissions(bin.join("gh"), std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    Command::new(env!("CARGO_BIN_EXE_story"))
+    Command::new(storyhook_test_support::story_binary())
         .env_clear()
         .envs(storyhook_test_support::daemon_containment())
         .env("HOME", root)
@@ -773,7 +773,7 @@ fn generic_observations_keep_filesystem_origins_off_the_network() {
     git(bare.path(), &["init", "--bare", "--quiet"]);
     let root = checkout(bare.path().to_str().unwrap());
     let call = || {
-        Command::new(env!("CARGO_BIN_EXE_story"))
+        Command::new(storyhook_test_support::story_binary())
             .args([
                 "github",
                 "observe",

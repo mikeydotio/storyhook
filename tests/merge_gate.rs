@@ -1741,7 +1741,7 @@ jq -e --arg fields "$5" '
         command
             .current_dir(self.path())
             .env("PATH", path)
-            .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+            .env("STORY_BIN", storyhook_test_support::story_binary())
             .env(
                 "STORYHOOK_CERTIFY_ONLY",
                 if certify_only { "1" } else { "0" },
@@ -1823,7 +1823,7 @@ fn run(cwd: &Path, program: &str, args: &[&str]) -> Output {
     Command::new(program)
         .args(args)
         .current_dir(cwd)
-        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("STORY_BIN", storyhook_test_support::story_binary())
         .env(
             "PATH",
             format!(
@@ -4071,7 +4071,9 @@ fn pointer_with_gate(gate: &str) -> String {
 fn inspect_snapshot(repo: &MergeRepo, base: &str, head: &str, tree: &str) -> Output {
     run(
         repo.path(),
-        env!("CARGO_BIN_EXE_story"),
+        storyhook_test_support::story_binary()
+            .to_str()
+            .expect("the fixture binary path is UTF-8"),
         &[
             "verifier",
             "gate-config",
@@ -4399,7 +4401,7 @@ impl MergeRepo {
             .arg(self.path().join("landing.attempted"))
             .current_dir(self.path())
             .env("PATH", path)
-            .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+            .env("STORY_BIN", storyhook_test_support::story_binary())
             .env("STORYHOOK_LOCK_DIR", self.path().join("locks"))
             .env("STORYHOOK_ACTIVITY_LOG_DIR", self.path().join("activity"))
             .envs(storyhook_test_support::daemon_containment())
@@ -4577,7 +4579,7 @@ fn private_repair_admission_precedes_gate_and_fails_closed() {
             "story-callback",
             &format!(
                 "if [ \"${{4:-}}\" != repair-admit ]; then exec '{}' \"$@\"; fi\nprintf '%s\\n' \"$@\" > '{}'\ncat <<'REPLY'\n{reply}\nREPLY\nexit {exit}",
-                env!("CARGO_BIN_EXE_story"), args.display()
+                storyhook_test_support::story_binary().display(), args.display()
             ),
         );
         let path = format!(

@@ -174,7 +174,7 @@ esac
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("SEMVER_CLI", self.repo.join("bin/semver"))
-            .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+            .env("STORY_BIN", storyhook_test_support::story_binary())
             .env("GH_CONFIG_DIR", self.scratch.path())
             .env("RELEASE_TEST_LOG", self.scratch.path().join("calls"));
         command
