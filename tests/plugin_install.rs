@@ -3,13 +3,16 @@
 //! the test's HOME, so these tests exercise command construction and failure
 //! handling without touching a developer's Codex or Claude configuration.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
-use storyhook_test_support::{daemon_containment, scratch_dir};
+use storyhook_test_support::load_grace::{Patience, wait_for};
+use storyhook_test_support::{ChildGuard, PORTFILE_DEADLINE, daemon_containment, scratch_dir};
 use tempfile::TempDir;
 
 #[path = "support/protect_domain.rs"]
@@ -164,6 +167,8 @@ exit 64
 "#;
 
 struct Harness {
+    // Fields drop in declaration order: reap the daemon before removing HOME.
+    daemon: RefCell<Option<ChildGuard>>,
     _temp: TempDir,
     root: PathBuf,
     home: PathBuf,
@@ -195,6 +200,7 @@ impl Harness {
         };
 
         Self {
+            daemon: RefCell::new(None),
             _temp: temp,
             root,
             home,
@@ -241,6 +247,13 @@ impl Harness {
     /// add an environment variable on top of the isolated set, never instead
     /// of it.
     fn run_with(&self, mut command: Command) -> Output {
+        self.configure_command(&mut command);
+        self.ensure_daemon();
+        command.output().expect("running story plugin command")
+    }
+
+    /// One environment for the owned daemon, direct commands, and launchers.
+    fn configure_command(&self, command: &mut Command) {
         let path = format!("{}:/usr/bin:/bin", self.fake_bin.display());
         let data = self.home.join("data");
         let config = self.home.join("config");
@@ -267,10 +280,81 @@ impl Harness {
             .envs(daemon_containment())
             // This harness owns its home, and the binary under test is a test
             // build: the plugin guard refuses it the verbs without this. Set
-            // on every child, so the daemon the first one spawns inherits it.
+            // on every child, including the explicitly owned daemon.
             .env(storyhook::plugin::guard::OVERRIDE_VAR, "1")
             .envs(preset);
-        command.output().expect("running story plugin command")
+    }
+
+    fn daemon_file(&self) -> PathBuf {
+        let store = storyhook::env::canonical_ish(&self.home.join("data/storyhook/store.db"))
+            .expect("resolving the fixture store");
+        self.home
+            .join("state/storyhook/daemons")
+            .join(storyhook::env::StoreLocation::key_for_path(&store))
+            .join("daemon.json")
+    }
+
+    fn daemon_diagnostics(&self) -> String {
+        let log = self.home.join("fixture-daemon.log");
+        format!(
+            "portfile: {}; log: {}\n{}",
+            self.daemon_file().display(),
+            log.display(),
+            fs::read_to_string(&log).unwrap_or_else(|error| format!("cannot read log: {error}"))
+        )
+    }
+
+    /// Provider assertions start after fixture readiness, outside the client's
+    /// production startup deadline. A failed setup still fails and reaps its child.
+    fn ensure_daemon(&self) {
+        let mut owned = self.daemon.borrow_mut();
+        if let Some(child) = owned.as_mut() {
+            let status = child.try_wait();
+            assert!(
+                status.is_none(),
+                "provider fixture daemon exited: {status:?}; {}",
+                self.daemon_diagnostics()
+            );
+            return;
+        }
+
+        let mut command = Command::new(&self.story);
+        command.args(["daemon", "--serve", "--port", "0"]);
+        self.configure_command(&mut command);
+        let log = fs::File::create(self.home.join("fixture-daemon.log"))
+            .expect("creating the fixture daemon log");
+        command
+            .stdin(Stdio::null())
+            .stdout(log.try_clone().expect("cloning the fixture daemon log"))
+            .stderr(log);
+        let mut child = ChildGuard::spawn(&mut command).expect("starting the fixture daemon");
+        let pid = child.pid();
+        let portfile = self.daemon_file();
+        wait_for(
+            Patience::new(PORTFILE_DEADLINE),
+            Duration::from_millis(25),
+            || {
+                format!(
+                    "provider fixture daemon {pid} did not publish; {}",
+                    self.daemon_diagnostics()
+                )
+            },
+            || {
+                let status = child.try_wait();
+                assert!(
+                    status.is_none(),
+                    "provider fixture daemon {pid} exited: {status:?}; {}",
+                    self.daemon_diagnostics()
+                );
+                let info = storyhook::daemon::lifecycle::read_info_at(&portfile)?;
+                assert_eq!(
+                    info.pid, pid,
+                    "the client must find the daemon this fixture owns"
+                );
+                Some(())
+            },
+        );
+        *owned = Some(child);
     }
 
     fn codex_log(&self) -> String {
@@ -363,17 +447,10 @@ impl Harness {
     /// does, and needs it just as much: the launcher's whole job is to exec
     /// the `story` this fixture put on its `PATH`.
     fn run_launcher(&self, args: &[&str]) -> Output {
-        let path = format!("{}:/usr/bin:/bin", self.fake_bin.display());
         let mut command = Command::new("bash");
-        command
-            .arg(self.codex_launcher())
-            .args(args)
-            .current_dir(&self.root)
-            .env_clear()
-            .env("HOME", &self.home)
-            .env("PATH", path)
-            .env("TMPDIR", self._temp.path())
-            .envs(daemon_containment());
+        command.arg(self.codex_launcher()).args(args);
+        self.configure_command(&mut command);
+        self.ensure_daemon();
         command.output().expect("running the stable Codex launcher")
     }
 
@@ -614,6 +691,65 @@ fn failures_after_the_removes(provider: &str) -> Vec<(&'static str, &'static str
         ],
         other => panic!("unknown provider {other}"),
     }
+}
+
+#[test]
+fn provider_fixture_owns_readiness_beyond_the_client_startup_deadline() {
+    let mut harness = Harness::for_provider("codex");
+    std::os::unix::fs::symlink(&harness.story, harness.home.join("real-story")).unwrap();
+    let delay = storyhook::daemon::lifecycle::SPAWN_DEADLINE.as_secs() + 1;
+    harness.install_fake(
+        "delayed-story",
+        &format!(
+            "#!/bin/sh\n\
+             if [ \"${{1:-}}\" = daemon ] && [ \"${{2:-}}\" = --serve ]; then\n\
+             printf '%s\\n' \"$$\" > \"$HOME/fixture-daemon-pid\"\n\
+             sleep {delay}\n\
+             fi\n\
+             exec \"$HOME/real-story\" \"$@\"\n"
+        ),
+    );
+    harness.story = harness.fake_bin.join("delayed-story");
+    std::os::unix::fs::symlink(&harness.story, harness.fake_bin.join("story")).unwrap();
+
+    let output = harness.run(&["plugin", "install", "codex"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    let pid = harness
+        .daemon
+        .borrow()
+        .as_ref()
+        .expect("the provider fixture must own its daemon before a command runs")
+        .pid();
+    assert_eq!(
+        fs::read_to_string(harness.home.join("fixture-daemon-pid"))
+            .expect("the fixture must use the delayed real-daemon wrapper")
+            .trim(),
+        pid.to_string()
+    );
+
+    harness.install_fake_plugin_helper("0.6.0", "#!/bin/sh\nexec story daemon status\n");
+    let launched = harness.run_launcher(&["context"]);
+    assert!(launched.status.success(), "{}", combined(&launched));
+    assert!(
+        combined(&launched).contains(&format!("PID {pid}")),
+        "the installed launcher must find the same owned daemon: {}",
+        combined(&launched)
+    );
+
+    let output = harness.run(&["plugin", "uninstall", "codex"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    assert_eq!(harness.daemon.borrow().as_ref().unwrap().pid(), pid);
+    let info = storyhook::daemon::lifecycle::read_info_at(&harness.daemon_file())
+        .expect("the client still finds the owned daemon");
+    assert_eq!(info.pid, pid);
+
+    let home = harness.home.clone();
+    drop(harness);
+    assert!(
+        !storyhook::daemon::lifecycle::pid_is_live(pid),
+        "fixture daemon leaked"
+    );
+    assert!(!home.exists(), "fixture HOME leaked");
 }
 
 #[test]
@@ -979,7 +1115,11 @@ fn registration_cleanup_failures_stop_before_the_release_source_is_added() {
     let output = harness.run(&["plugin", "install", "codex"]);
 
     assert!(!output.status.success());
-    assert!(combined(&output).contains("unrelated remove failure"));
+    assert!(
+        combined(&output).contains("unrelated remove failure"),
+        "{}",
+        combined(&output)
+    );
     let log = harness.codex_log();
     assert!(!log.contains("plugin marketplace remove"), "{log}");
     assert!(!log.contains("plugin marketplace add"), "{log}");
@@ -1424,7 +1564,11 @@ fn unrelated_codex_remove_failures_are_not_treated_as_absence() {
     harness.set_codex_mode("remove-fail");
     let output = harness.run(&["plugin", "uninstall", "codex"]);
     assert!(!output.status.success());
-    assert!(combined(&output).contains("unrelated remove failure"));
+    assert!(
+        combined(&output).contains("unrelated remove failure"),
+        "{}",
+        combined(&output)
+    );
     assert!(!harness.codex_log().contains("marketplace remove"));
 }
 
@@ -1622,7 +1766,11 @@ fn unrelated_claude_uninstall_failures_stop_before_marketplace_replacement() {
     let output = harness.run(&["plugin", "install", "claude"]);
 
     assert!(!output.status.success());
-    assert!(combined(&output).contains("unrelated uninstall failure"));
+    assert!(
+        combined(&output).contains("unrelated uninstall failure"),
+        "{}",
+        combined(&output)
+    );
     let log = harness.claude_log();
     assert!(!log.contains("plugin marketplace"), "{log}");
     assert!(!log.contains("plugin install"), "{log}");

@@ -150,9 +150,10 @@ fn both_deadline_modes_record_output_and_timeouts() {
     assert_eq!(captured.stdout, b"opaque-private-answer");
     assert_eq!(captured.stderr, b"opaque-private-error");
 
-    let journal = std::fs::read_dir(env.daemon_state_dir().join("activity"))
+    let journal = crate::daemon::activity::day_files(&env.daemon_state_dir().join("activity"))
         .unwrap()
-        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .into_iter()
+        .map(|day| std::fs::read_to_string(day).unwrap())
         .collect::<String>();
     assert!(
         !journal.contains("opaque-private"),

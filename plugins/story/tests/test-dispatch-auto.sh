@@ -23,7 +23,7 @@ dry() {
   (cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$id" "$@" 2>&1)
 }
 
-# --- attended path is untouched: byte-identical prompt, auto:false ---
+# --- attended default stays pinned, including the SH-824 scope pointer ---
 # A literal copy of PROMPT_TPL's default (story.sh) with <n> substituted —
 # this is the byte-identical regression pin SH-62's own acceptance criteria
 # demand for the no-flag path.
@@ -33,7 +33,7 @@ dry() {
 # treats as special -- see tests/test-charter-inert.sh for the invariant and
 # why it has to be structural. The pin itself is unchanged in kind: it still
 # asserts the attended prompt byte-for-byte, which is what catches drift.
-expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. Before implementation, run ‘story help obviation-review’ and ‘story load-context --story ${id}’, then follow the review procedure for every candidate. Repeat the review when resuming work. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story $id. Then, from inside this worktree, move the story with ‘story move $id verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move $id back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move $id done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them."
+expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. Before implementation, run ‘story help obviation-review’ and ‘story load-context --story ${id}’, then follow the review procedure for every candidate. Repeat the review when resuming work. Before filing a prerequisite or blocking $id, read ‘story help scope-rubric’. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story $id. Then, from inside this worktree, move the story with ‘story move $id verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move $id back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move $id done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them."
 
 out=$(dry)
 assert_eq "$(jqf "$out" .ok)" "true" "attended: ok:true"
@@ -173,6 +173,30 @@ for variant in "auto:$prompt" "solo:$solo_prompt"; do
                 "Record it immediately, before you resume the work"; do
     assert_contains "$text" "$needle" "$label: decision record requires '$needle'"
   done
+done
+
+# SH-824: check the delivered instructions for every built-in provider/charter.
+# A clause defined but absent from the composition must fail here too.
+for agent in claude codex; do
+  for council in on off; do
+    prerequisite_out=$(STORY_AGENT="$agent" STORY_COUNCIL="$council" dry --auto)
+    assert_eq "$(jqf "$prerequisite_out" .ok)" "true" "$agent/$council: rendered"
+    prerequisite_prompt=$(jqf "$prerequisite_out" .prompt)
+    for instruction in \
+      "Before filing a prerequisite or blocking $id, read ‘story help scope-rubric’" \
+      "Adopt actionable prerequisite work into $id" \
+      "Do not file a new blocker and leave $id waiting for work you can do" \
+      "Preserve external dependencies and work owned by another active session" \
+      "If you hit a hard stop you cannot resolve before submission" \
+      "story block $id"; do
+      assert_contains "$prerequisite_prompt" "$instruction" \
+        "$agent/$council: prerequisite adoption preserves real holds [$instruction]"
+    done
+  done
+  attended_out=$(STORY_AGENT="$agent" dry)
+  assert_contains "$(jqf "$attended_out" .prompt)" \
+    "Before filing a prerequisite or blocking $id, read ‘story help scope-rubric’" \
+    "$agent: attended scope review"
 done
 
 # The verifier, not the child, owns completion and teardown in both charters.

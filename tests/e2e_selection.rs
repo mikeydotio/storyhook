@@ -523,10 +523,12 @@ fn the_plan_listing_alone_runs_in_placeholder_mode() {
         "E2E_PLAN_LISTING appears once, scoped by `env` to the plan listing"
     );
 
-    let support = read_checkout_file("e2e/specs/support.ts");
-    let required_env = support
+    // SH-765 moved requiredEnv out of specs/support.ts so the runner-process
+    // global setup can share it; support.ts re-exports it.
+    let fixture_api = read_checkout_file("e2e/fixture-api.ts");
+    let required_env = fixture_api
         .split_once("export function requiredEnv(")
-        .expect("support.ts defines requiredEnv")
+        .expect("fixture-api.ts defines requiredEnv")
         .1
         .split_once("\n}\n")
         .expect("requiredEnv ends")

@@ -218,6 +218,47 @@ fn an_extension_is_never_silent() {
     );
 }
 
+/// The cleanup barrier is the third consumer of the grace policy (SH-765):
+/// its wait samples patience when it begins, and every python3 read inside
+/// it is bounded by what remains of that patience, not by a literal of its
+/// own. A patience above the base is reported on both channels, like the
+/// watchdog's extensions.
+#[test]
+fn the_cleanup_barrier_reports_its_grace_and_bounds_reads_by_what_remains() {
+    let support = read("e2e/specs/support.ts");
+    let wait = support
+        .split_once("export async function waitForStoryBlockDeliveries(")
+        .expect("support.ts defines the cleanup barrier's wait")
+        .1;
+    let wait = &wait[..wait.find("\n}\n").expect("the wait's body ends")];
+
+    let at = wait
+        .find("gracedPatience(ratio)")
+        .expect("the barrier's default patience is gracedPatience(), sampled when the wait begins");
+    let window: String = wait[at..].chars().take(600).collect();
+    assert!(
+        window.contains("annotations.push(") && window.contains("process.stderr.write("),
+        "a graced cleanup-barrier patience must be reported to stderr and as a test annotation: \
+         grace nobody can see is the SH-306 shape one layer up"
+    );
+    // One deadline owner: the poll itself is bounded only by the test
+    // (`timeout: 0`), so the wait's own patience error -- not a generic poll
+    // timeout racing the killed read -- reports a spent patience.
+    for needle in [
+        "const deadline = performance.now() + patience;",
+        "const remainingMs = Math.floor(deadline - performance.now());",
+        "if (remainingMs < 1) {",
+        "readBlockDeliverySnapshot(storePath, project, id, remainingMs)",
+        "timeout: 0,",
+    ] {
+        assert!(
+            wait.contains(needle),
+            "the cleanup barrier's reads must share one budget, owned by the wait (SH-765): \
+             missing {needle:?}"
+        );
+    }
+}
+
 #[test]
 fn watchdog_resets_from_now_without_moving_the_absolute_wall_clock_ceiling() {
     let module = read("e2e/load-grace.ts");

@@ -1052,7 +1052,7 @@ fn project_data_json<S: Store>(
 ) -> Result<String, AppError> {
     let now = ctx.now();
     let project = ctx.project();
-    verification_activity.read_project(ctx.store(), project, |tx, active, control| {
+    verification_activity.read_project(ctx.store(), project, |tx, owner, control| {
         Ok((|| -> Result<String, AppError> {
             let query = QueryService::new(tx, project, &now);
             let data = query.report_data()?;
@@ -1068,7 +1068,7 @@ fn project_data_json<S: Store>(
                     .push(link);
             }
             let (verifier, verification) =
-                crate::daemon::verification::status::snapshot(tx, ctx, active, control)?;
+                crate::daemon::verification::status::snapshot(tx, ctx, owner, control)?;
             let incident = verifier.incident.as_ref();
 
             // Drafts (SH-175) are excluded from `stories`: the board is a curated

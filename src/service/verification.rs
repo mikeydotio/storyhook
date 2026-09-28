@@ -358,8 +358,8 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
     ///
     /// Each call resolves the registered checkout's origin with `git` when a
     /// candidate links a pull request. A loop that reads on every wake and
-    /// needs only generation identity must use
-    /// [`Self::current_generation_for`] instead (SH-769).
+    /// needs only generation identity must use [`Self::hold_view`] instead
+    /// (SH-769).
     pub fn ordered_for(&self, project: ProjectId) -> Result<Vec<VerificationCandidate>, AppError> {
         let mut candidates = self.store.read(|tx| ordered_candidates_for(tx, project))?;
         self.validate_origins(&mut candidates);
@@ -377,26 +377,55 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
             .find(|current| current.story_id == candidate.story_id))
     }
 
-    /// The `verifying_generation` that [`Self::current_for`] would report for
-    /// this story, read from the store alone (SH-769).
+    /// Everything a conflict-reconcile hold reads on one pass (SH-770), from
+    /// one store transaction that starts no process (SH-769): the reserved
+    /// story's queued `verifying_generation` and its own facts.
     ///
-    /// Queue membership is the same, because both read
-    /// [`ordered_candidates_for`]. But no checkout origin is resolved, so no
-    /// process starts. This is the read for a loop that watches generation
-    /// identity only. It answers with a generation rather than a candidate, so
-    /// a pull request that was never checked against the origin cannot leave
-    /// the queue: anything that acts on a candidate takes it from
-    /// [`Self::current_for`].
-    pub(crate) fn current_generation_for(
+    /// Queue membership is the same as [`Self::current_for`]'s, because both
+    /// read [`ordered_candidates_for`], but no checkout origin is resolved.
+    /// It answers with a generation rather than a candidate, so a pull request
+    /// that was never checked against the origin cannot leave the queue:
+    /// anything that acts on a candidate takes it from [`Self::current_for`].
+    /// One transaction, so a resubmission and the facts it changed are never
+    /// seen half-applied.
+    pub(crate) fn hold_view(&self, reserved: &VerificationCandidate) -> Result<HoldView, AppError> {
+        Ok(self.store.read(|tx| {
+            let Some(project) = tx.project(reserved.project)? else {
+                return Ok(HoldView::default());
+            };
+            let index = super::query::story_map(tx, project.id)?;
+            let generation = ordered_candidates_in(tx, &project, &index)?
+                .into_iter()
+                .find(|current| current.story_id == reserved.story_id)
+                .and_then(|current| current.verifying_generation);
+            let number = StoryNo::parse_id(&project.prefix, &reserved.story_id)?;
+            let story = match (tx.story(project.id, number)?, index.get(&reserved.story_id)) {
+                (Some(row), Some(snapshot)) => Some(HeldStory {
+                    permitted: human::permits_row(tx, &row, reserved)?,
+                    blocked: blocked_reason(snapshot, &index),
+                    state: row.state,
+                    head_seq: row.head_global_seq,
+                }),
+                _ => None,
+            };
+            Ok::<_, StoreError>(HoldView { generation, story })
+        })?)
+    }
+
+    /// The cleanup lease the reserved story's latest submission recorded, read
+    /// from the store now rather than from the candidate's copy (SH-770): it
+    /// names the tmux server the story's agent pane lives on.
+    pub(crate) fn cleanup_lease_for(
         &self,
-        candidate: &VerificationCandidate,
-    ) -> Result<Option<GlobalSeq>, AppError> {
-        Ok(self
-            .store
-            .read(|tx| ordered_candidates_for(tx, candidate.project))?
-            .into_iter()
-            .find(|current| current.story_id == candidate.story_id)
-            .and_then(|current| current.verifying_generation))
+        reserved: &VerificationCandidate,
+    ) -> Result<Option<StoryCleanupLease>, AppError> {
+        Ok(self.store.read(|tx| {
+            let Some(project) = tx.project(reserved.project)? else {
+                return Ok(None);
+            };
+            let number = StoryNo::parse_id(&project.prefix, &reserved.story_id)?;
+            Ok::<_, StoreError>(latest_cleanup_lease(tx, project.id, number)?)
+        })?)
     }
 
     // Resolve after the transaction closes: subprocess deadlines must not hold
@@ -1265,68 +1294,128 @@ pub(crate) fn ordered_candidates_for(
     tx: &impl ReadOps,
     project: ProjectId,
 ) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
-    let mut candidates = Vec::new();
-    if let Some(project) = tx.project(project)? {
-        let intents = tx.landing_intents()?;
-        let index = super::query::story_map(tx, project.id)?;
-        let floors = crate::domain::BlockerFloors::compute(&index);
-        let checkout = tx.checkout_path(project.id)?;
-        let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
-        let resets = tx.story_resets(project.id)?;
-        let observed = super::project_recovery::observed_generations(tx, project.id)?;
-        for row in rows {
-            if crate::domain::is_human_only(&row.snapshot)
-                || row.snapshot.awaiting.is_some()
-                || resets.contains_key(&row.story_no)
-                || tx.engine_reset(project.id, row.story_no)?.is_some()
-                || tx
-                    .story_reset(project.id, row.story_no)?
-                    .is_some_and(|reset| !reset.completed)
-            {
-                continue;
-            }
-            let links = tx
-                .open_pr_links_for_story(project.id, row.story_no)?
-                .into_iter()
-                .filter(|link| link.close_on_merge)
-                .collect::<Vec<_>>();
-            let pull_request = match (&checkout, links.as_slice()) {
-                (None, _) => Err(VerificationProblem::MissingCheckout),
-                (Some(_), [link]) => Ok(link.clone()),
-                (Some(_), []) => Err(VerificationProblem::MissingPullRequest),
-                (Some(_), many) => Err(VerificationProblem::MultiplePullRequests(
-                    many.iter().map(|link| link.url.clone()).collect(),
-                )),
-            };
-            let entry = verifying_entry(tx, project.id, row.story_no)?;
-            let (verifying_since, verifying_generation) = entry
-                .map(|(at, generation)| (Some(at), Some(generation)))
-                .unwrap_or((None, None));
-            if verifying_generation
-                .is_some_and(|generation| observed.contains(&(row.story_no, generation)))
-            {
-                continue;
-            }
-            candidates.push(VerificationCandidate {
-                blocked_by: crate::domain::transition::open_blockers(&row.snapshot, &index),
-                landing_pending: intents
-                    .iter()
-                    .any(|i| i.project == project.id && i.story == row.story_no),
-                project: project.id,
-                project_slug: project.slug.clone(),
-                story_id: row.story_no.to_id(&project.prefix),
-                title: row.title,
-                priority: floors.effective(&row.snapshot),
-                created_at: row.created_at,
-                verifying_since,
-                verifying_generation,
-                blocking_revision: blocking_revision(tx, project.id, row.story_no)?,
-                human_only_revision: human::revision(tx, project.id, row.story_no)?,
-                checkout: checkout.clone().unwrap_or_default(),
-                cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
-                pull_request,
-            });
+    match tx.project(project)? {
+        Some(project) => {
+            let index = super::query::story_map(tx, project.id)?;
+            ordered_candidates_in(tx, &project, &index)
         }
+        None => Ok(Vec::new()),
+    }
+}
+
+/// One pass of a conflict-reconcile hold's store reads
+/// ([`VerificationQueue::hold_view`], SH-770).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HoldView {
+    /// The reserved story's queued `verifying_generation`, as
+    /// [`VerificationQueue::current_for`] would report it.
+    pub(crate) generation: Option<GlobalSeq>,
+    /// The reserved story, or `None` when it or its project is gone.
+    pub(crate) story: Option<HeldStory>,
+}
+
+/// The reserved story's facts that say whether its reconcile can still end
+/// in a resubmission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HeldStory {
+    /// Whether the `human-only` label still permits the verifier to act
+    /// ([`human::permits`]).
+    pub(crate) permitted: bool,
+    /// Why the story cannot proceed, when [`crate::domain::is_blocked`] says so.
+    pub(crate) blocked: Option<String>,
+    /// The story's current state slug.
+    pub(crate) state: String,
+    /// The story's change-feed position: it moves on every story event, so
+    /// it is the store channel of the stall judgment (SH-657).
+    pub(crate) head_seq: GlobalSeq,
+}
+
+/// Why an open story cannot proceed, in the words that blocked it, or `None`
+/// when [`crate::domain::is_blocked`] says it can.
+fn blocked_reason(
+    snapshot: &crate::domain::StorySnapshot,
+    index: &std::collections::BTreeMap<String, crate::domain::StorySnapshot>,
+) -> Option<String> {
+    if !crate::domain::is_blocked(snapshot, index) {
+        return None;
+    }
+    if let Some(awaiting) = &snapshot.awaiting {
+        return Some(awaiting.clone());
+    }
+    let blockers = crate::domain::transition::open_blockers(snapshot, index);
+    Some(if blockers.is_empty() {
+        format!("state `{}`", snapshot.state)
+    } else {
+        format!("blocked by {}", blockers.join(", "))
+    })
+}
+
+/// [`ordered_candidates_for`] over a story index the caller already built in
+/// the same transaction, so a reader that needs both builds it once.
+fn ordered_candidates_in(
+    tx: &impl ReadOps,
+    project: &crate::store::ProjectRecord,
+    index: &std::collections::BTreeMap<String, crate::domain::StorySnapshot>,
+) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
+    let mut candidates = Vec::new();
+    let intents = tx.landing_intents()?;
+    let floors = crate::domain::BlockerFloors::compute(index);
+    let checkout = tx.checkout_path(project.id)?;
+    let rows = tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))?;
+    let resets = tx.story_resets(project.id)?;
+    let observed = super::project_recovery::observed_generations(tx, project.id)?;
+    for row in rows {
+        if crate::domain::is_human_only(&row.snapshot)
+            || row.snapshot.awaiting.is_some()
+            || resets.contains_key(&row.story_no)
+            || tx.engine_reset(project.id, row.story_no)?.is_some()
+            || tx
+                .story_reset(project.id, row.story_no)?
+                .is_some_and(|reset| !reset.completed)
+        {
+            continue;
+        }
+        let links = tx
+            .open_pr_links_for_story(project.id, row.story_no)?
+            .into_iter()
+            .filter(|link| link.close_on_merge)
+            .collect::<Vec<_>>();
+        let pull_request = match (&checkout, links.as_slice()) {
+            (None, _) => Err(VerificationProblem::MissingCheckout),
+            (Some(_), [link]) => Ok(link.clone()),
+            (Some(_), []) => Err(VerificationProblem::MissingPullRequest),
+            (Some(_), many) => Err(VerificationProblem::MultiplePullRequests(
+                many.iter().map(|link| link.url.clone()).collect(),
+            )),
+        };
+        let entry = verifying_entry(tx, project.id, row.story_no)?;
+        let (verifying_since, verifying_generation) = entry
+            .map(|(at, generation)| (Some(at), Some(generation)))
+            .unwrap_or((None, None));
+        if verifying_generation
+            .is_some_and(|generation| observed.contains(&(row.story_no, generation)))
+        {
+            continue;
+        }
+        candidates.push(VerificationCandidate {
+            blocked_by: crate::domain::transition::open_blockers(&row.snapshot, index),
+            landing_pending: intents
+                .iter()
+                .any(|i| i.project == project.id && i.story == row.story_no),
+            project: project.id,
+            project_slug: project.slug.clone(),
+            story_id: row.story_no.to_id(&project.prefix),
+            title: row.title,
+            priority: floors.effective(&row.snapshot),
+            created_at: row.created_at,
+            verifying_since,
+            verifying_generation,
+            blocking_revision: blocking_revision(tx, project.id, row.story_no)?,
+            human_only_revision: human::revision(tx, project.id, row.story_no)?,
+            checkout: checkout.clone().unwrap_or_default(),
+            cleanup_lease: latest_cleanup_lease(tx, project.id, row.story_no)?,
+            pull_request,
+        });
     }
     sort_candidates(&mut candidates);
     Ok(candidates)

@@ -84,6 +84,53 @@ fn the_scope_topic_exists_and_names_itself() {
     );
 }
 
+#[test]
+fn prerequisites_are_adopted_without_erasing_real_holds() {
+    let body = get_help_topic(TOPIC).expect("scope rubric exists");
+    let prose = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    for instruction in [
+        "Before filing a blocker for your current story",
+        "Adopt an actionable prerequisite into the current story",
+        "even when it is in another module",
+        "Do not file a new story and block your current story on it",
+        "comment the finding and expand the acceptance criteria",
+        "Do not take over another active session",
+        "do not remove existing dependency edges",
+        "an external dependency, access you do not have",
+        "Context exhaustion alone is not a story block",
+        "Previously adopted work is assigned work in the next context",
+    ] {
+        assert!(
+            prose.contains(instruction),
+            "scope rubric lost: {instruction}"
+        );
+    }
+}
+
+#[test]
+fn filing_and_blocking_review_scope_before_giving_dependency_instructions() {
+    for topic in ["new", "block", "awaits"] {
+        let body = get_help_topic(topic).expect("filing/blocking topic exists");
+        let pointer = body.find(POINTER).expect("scope review pointer exists");
+        let usage = body.find("When to use:").expect("usage guidance exists");
+        assert!(
+            pointer < usage,
+            "{topic}: review scope before advising a block"
+        );
+        assert!(
+            body[..usage].contains("prerequisite"),
+            "{topic}: name the decision"
+        );
+    }
+}
+
+#[test]
+fn the_agent_guide_reviews_scope_before_blocking() {
+    let body = get_help_topic("agent-guide").expect("agent guide exists");
+    let prose = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(prose.contains("before filing a prerequisite or blocking the current story"));
+}
+
 /// Every story id in `text`, by shape: two or more capitals, a hyphen, digits.
 ///
 /// Copied from `tests/priority_rubric.rs::story_ids_in` rather than shared — this
@@ -234,6 +281,11 @@ fn every_scaffolded_instruction_file_points_at_the_rubric() {
             "scaffolded {name} tells an agent how to work a story but not what to do \
              with a problem it finds along the way; it must point at {POINTER}"
         );
+        let prose = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            prose.contains("before filing a prerequisite or blocking the current story"),
+            "scaffolded {name} must require the scope review before creating a blocker"
+        );
     }
 }
 
@@ -337,6 +389,11 @@ fn story_new_reference_searches_before_filing() {
         text.contains("Never file without an explicit"),
         "the search-first step must not weaken the human-confirmed nature of this \
          flow -- the user's explicit go-ahead still wins"
+    );
+    let prose = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        prose.contains("before filing a prerequisite or blocking the current story"),
+        "the filing flow must review prerequisites, not only duplicates"
     );
 }
 

@@ -52,6 +52,29 @@ fn log_context_uses_only_the_matching_story_and_generation_attempt() {
     );
 }
 
+#[test]
+fn log_scope_requests_a_view_without_creating_its_journal() {
+    let fixture = ServiceFixture::new();
+    let store = SqliteStore::open(fixture.store().path()).unwrap();
+    let project = ProjectId::new(fixture.project().get());
+    let env = Environment::at(fixture.cwd());
+    let mut candidate = candidate(&store, &env, project);
+    candidate.checkout = fixture.cwd().to_path_buf();
+    let activity = VerificationActivity::new();
+    let disabled = ShellVerificationActuator::new(env.clone()).with_activity(activity.clone());
+    drop(disabled.log_scope(&candidate));
+    assert!(activity.view_requests.take().is_empty());
+    let actuator = ShellVerificationActuator::new(env.with_test_verifier_mirror())
+        .with_activity(activity.clone());
+    drop(actuator.log_scope(&candidate));
+    drop(actuator.log_scope(&candidate));
+    assert_eq!(
+        activity.view_requests.take(),
+        std::collections::BTreeSet::from([project])
+    );
+    assert!(!candidate.checkout.join(".storyhook/logs").exists());
+}
+
 fn helper(root: &std::path::Path) -> PathBuf {
     let path = root.join("notify.sh");
     std::fs::write(
@@ -114,7 +137,8 @@ fn remediation_reuses_verifier_lock_without_parking_or_interrupting_agent() {
         &actuator,
         &candidate,
         diagnosis,
-        &activity.cancellation_for(project),
+        &guard,
+        ReservationReason::Remediation,
     )
     .unwrap();
     let row = store

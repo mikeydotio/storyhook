@@ -708,6 +708,12 @@ pub struct DaemonInfo {
     /// already give.
     #[serde(default)]
     pub owner: Option<DaemonOwner>,
+    /// The actual process PATH at startup, not the observing client's PATH.
+    ///
+    /// Absent for older metadata and for an unset or non-UTF-8 environment.
+    /// These cases mean unknown; they must not prevent daemon startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_path: Option<String>,
 }
 
 impl DaemonInfo {
@@ -1020,6 +1026,7 @@ pub fn info_for(
         // every other caller (crash-report fixtures, restart's own tests)
         // has no launcher to report and is correctly served by `None`.
         owner: None,
+        execution_path: std::env::var("PATH").ok(),
     })
 }
 
@@ -1196,7 +1203,9 @@ fn native_parent_pid() -> u32 {
 /// harvest whatever residue that lock's previous holder left (SH-287),
 /// reconcile durable Full Auto state, bind loopback, publish the portfile, then
 /// serve. Publication comes after reconciliation so no client can claim work
-/// against pre-restart lane state. Only a background thread inside `serve`
+/// against pre-restart lane state. External lane probes share one startup
+/// budget; unanswered lanes retain ownership and get fresh progress clocks.
+/// Only a background thread inside `serve`
 /// probes the tailnet (SH-186).
 ///
 /// `owner_flag` is `daemon --serve`'s own `--owner` argument, resolved by
@@ -1217,6 +1226,14 @@ pub fn run<S: crate::store::Store>(
     enter_stable_working_directory(env)?;
     let _pidfile = claim_pidfile(env)?;
     let _activity = crate::daemon::activity::start(env);
+    // Before the portfile: once this daemon is discoverable, any journal
+    // hygiene findings a status reader sees are its own (SH-771).
+    if let Err(error) = crate::daemon::activity::hygiene::reset(env) {
+        eprintln!(
+            "warning: storyhook could not clear the previous daemon's journal findings at {}: {error}",
+            env.journal_hygiene_file().display()
+        );
+    }
     crate::daemon::crash::harvest(env);
 
     // Before serving anything: one global database is one global blast radius,
@@ -1231,9 +1248,9 @@ pub fn run<S: crate::store::Store>(
     }
 
     // Synchronous and ahead of the portfile: a discoverable successor has
-    // already classified every lane left by its predecessor. This pass never
-    // fills idle lanes or finishes runs; the steady poller is released only
-    // after the server reaches readiness.
+    // already reconciled the store facts for every lane left by its predecessor.
+    // External probes share one budget (SH-809); exhaustion preserves unknown
+    // lanes for the steady poller, which is released only after readiness.
     crate::daemon::engine::reconcile_restart_tick(store, env);
 
     let (listeners, bound) = bind_preferred(env)?;
@@ -3994,6 +4011,7 @@ mod tests {
             tailnet: None,
             cookie_name: "storyhook_test".to_string(),
             owner: None,
+            execution_path: None,
         };
         assert!(!info.is_this_binary());
     }
@@ -4018,6 +4036,7 @@ mod tests {
             tailnet: None,
             cookie_name: "storyhook_test".to_string(),
             owner: None,
+            execution_path: None,
         };
         assert!(
             !info.is_this_binary(),

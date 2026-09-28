@@ -1357,6 +1357,10 @@ fn the_runner_hands_the_lease_to_the_specs_before_the_daemon_starts() {
 /// a helper does not remove it from this inventory. Neither payload can invoke
 /// Story CLI: setup writes only its private test database, and the reader opens
 /// the mandatory isolated store with mode=ro and parameterized identity queries.
+/// The reader is asynchronous (`execFile`, SH-765) and its bound is a name,
+/// `boundMs`: the time left of the cleanup wait's graced patience. The reader
+/// refuses an unusable bound before it spawns
+/// (`the_barrier_read_refuses_an_unusable_bound_before_it_spawns`).
 const AUDITED_SQLITE_COMMANDS: [(&str, &str); 2] = [
     (
         "e2e/specs/cleanup-delivery-barrier.node.spec.ts",
@@ -1371,11 +1375,11 @@ with sqlite3.connect(sys.argv[1]) as db:
         INSERT INTO stories VALUES(1,171,'created'),(1,172,'neighbor'),(2,171,'other');
         INSERT INTO block_deliveries VALUES(1,1,171,'interrupt','attempting'),(2,1,172,'interrupt','pending'),(3,2,171,'interrupt','pending');
     """)
-`, path], { timeout: 5_000, stdio: "pipe" })"#,
+`, path], { timeout: gracedPatience(), stdio: "pipe" })"#,
     ),
     (
         "e2e/block-delivery-barrier.cjs",
-        r#"execFileSync("python3", ["-c", `
+        r#"execFile("python3", ["-c", `
 import json, pathlib, sqlite3, sys
 path, project, story = sys.argv[1:]
 with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
@@ -1393,7 +1397,7 @@ with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
         WHERE project_id=? AND story_no=? ORDER BY id
     """, (identity[0], identity[5])).fetchall()
     print(json.dumps({"identity": identity, "deliveries": deliveries}))
-`, storePath, project, story], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "pipe"] })"#,
+`, storePath, project, story], { encoding: "utf8", timeout: boundMs }, "#,
     ),
 ];
 
@@ -1404,10 +1408,40 @@ enum E2eSubprocessOwner {
     AuditedSqlite(usize),
 }
 
+/// The two `node:child_process` calls this audit classifies. Both are direct
+/// calls: the synchronous form, and the asynchronous one the cleanup barrier's
+/// reader uses so the worker's timers keep running (SH-765). The anchors are
+/// disjoint, because `execFileSync(` does not contain `execFile(`.
+const SUBPROCESS_CALLS: [&str; 2] = ["execFileSync(", "execFile("];
+
+/// Byte offsets of every audited subprocess call in `code`, in file order.
+fn subprocess_call_offsets(code: &str) -> Vec<usize> {
+    let mut offsets: Vec<usize> = SUBPROCESS_CALLS
+        .iter()
+        .flat_map(|anchor| code.match_indices(anchor).map(|(offset, _)| offset))
+        .collect();
+    offsets.sort_unstable();
+    offsets
+}
+
+/// The expression an approved invocation passes as its process bound.
+fn approved_bound(approved: &str) -> &str {
+    let rest = approved
+        .split_once("timeout: ")
+        .expect("every audited command states a process bound")
+        .1;
+    let end = rest
+        .find([',', ' ', '}'])
+        .expect("the bound expression ends inside the options object");
+    &rest[..end]
+}
+
 /// Classify the exact call, never the mere presence of an approved interpreter.
 fn e2e_subprocess_owner(relative: &str, code: &str, offset: usize) -> Option<E2eSubprocessOwner> {
     let invocation = code.get(offset..)?;
-    let rest = invocation.strip_prefix("execFileSync(")?;
+    let rest = SUBPROCESS_CALLS
+        .iter()
+        .find_map(|anchor| invocation.strip_prefix(anchor))?;
     let first_arg = rest.split(',').next()?.trim();
     if first_arg == "storyBinary()" || code.contains(&format!("const {first_arg} = storyBinary();"))
     {
@@ -1430,9 +1464,17 @@ fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
             e2e_subprocess_owner("e2e/other-helper.cjs", approved, 0),
             None
         );
+        let bound = format!("timeout: {}", approved_bound(approved));
+        // Dropping the bound entirely, whichever side of it the comma sits on.
+        let unbounded = if approved.contains(&format!(", {bound}")) {
+            approved.replace(&format!(", {bound}"), "")
+        } else {
+            approved.replace(&format!("{bound}, "), "")
+        };
         for changed in [
             approved.replace("\"python3\"", "\"story\""),
-            approved.replace("5_000", "0"),
+            approved.replace(&bound, "timeout: 0"),
+            unbounded,
             approved.replace("[\"-c\",", "[\"-m\","),
             approved.replace(
                 "\nwith sqlite3.connect",
@@ -1455,6 +1497,59 @@ fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
     }
 }
 
+/// Whether a process bound is a bare millisecond literal (`5_000`, `15000`).
+fn is_bare_numeric(bound: &str) -> bool {
+    !bound.is_empty() && bound.chars().all(|c| c.is_ascii_digit() || c == '_')
+}
+
+/// SH-765: every process bound in this inventory is derived from the
+/// load-grace patience, never a bare literal. A fixed number of milliseconds
+/// is exactly the bound that failed under load (`spawnSync python3
+/// ETIMEDOUT` at load 727-900), so a re-audit that writes one back fails
+/// here, by name, rather than passing the exact-text match it was given.
+#[test]
+fn no_audited_command_carries_a_bare_numeric_bound() {
+    // Controls, so the predicate below cannot pass by seeing nothing.
+    assert!(is_bare_numeric("5_000") && is_bare_numeric("15000"));
+    assert!(!is_bare_numeric("boundMs") && !is_bare_numeric("gracedPatience()"));
+    for (path, approved) in AUDITED_SQLITE_COMMANDS {
+        let bound = approved_bound(approved);
+        assert!(
+            !is_bare_numeric(bound),
+            "{path}: the audited process bound `{bound}` is a bare literal. Derive it from \
+             the load-grace patience (gracedPatience(), or what remains of a wait's) (SH-765)"
+        );
+    }
+}
+
+/// The reader's bound is a name, so the audit pins the guard that keeps the
+/// name meaningful (SH-765). Node reads `timeout: 0` as "no bound at all" and
+/// throws on a fraction, so the guard must run before the spawn, inside the
+/// Promise executor, where a throw becomes the read's rejection.
+#[test]
+fn the_barrier_read_refuses_an_unusable_bound_before_it_spawns() {
+    let reader = without_comment_only_lines(&read("e2e/block-delivery-barrier.cjs"));
+    let signature = reader
+        .find("function readBlockDeliverySnapshot(storePath, project, story, boundMs) {")
+        .expect("the reader takes its bound from its caller");
+    let executor = reader[signature..]
+        .find("return new Promise((resolve, reject) => {")
+        .map(|at| signature + at)
+        .expect("the reader is asynchronous, so the worker's timers keep running");
+    let guard = reader[executor..]
+        .find("if (!Number.isSafeInteger(boundMs) || boundMs < 1) throw new Error(")
+        .map(|at| executor + at)
+        .expect("the reader refuses a bound that is not a positive whole number");
+    let spawn = reader[executor..]
+        .find("execFile(\"python3\"")
+        .map(|at| executor + at)
+        .expect("the reader spawns python3 inside its Promise");
+    assert!(
+        guard < spawn,
+        "the bound guard must run before python3 starts, or a zero bound spawns an unbounded read"
+    );
+}
+
 #[test]
 fn a_data_fixture_exception_cannot_authorize_another_subprocess() {
     let (path, approved) = AUDITED_SQLITE_COMMANDS[0];
@@ -1463,11 +1558,13 @@ fn a_data_fixture_exception_cannot_authorize_another_subprocess() {
         r#"execFileSync("/Users/example/.local/bin/story", ["show", "SH-1"]);"#,
         r#"execFileSync("python3", ["-c", "import subprocess; subprocess.run(['story'])"]);"#,
         r#"execFileSync("python3", ["-c", "print('unreviewed')"]);"#,
+        r#"execFile("python3", ["-c", "print('unreviewed')"], callback);"#,
+        r#"execFile("story", ["daemon", "stop"], callback);"#,
     ] {
         let code = format!("{approved};\n{unapproved}");
-        let calls: Vec<_> = code
-            .match_indices("execFileSync(")
-            .map(|(offset, _)| e2e_subprocess_owner(path, &code, offset))
+        let calls: Vec<_> = subprocess_call_offsets(&code)
+            .into_iter()
+            .map(|offset| e2e_subprocess_owner(path, &code, offset))
             .collect();
         assert_eq!(calls, [Some(E2eSubprocessOwner::AuditedSqlite(0)), None]);
     }
@@ -1531,12 +1628,12 @@ fn no_tracked_e2e_file_names_cargos_artifact_and_every_cli_call_goes_through_sto
     let mut audited = [0; AUDITED_SQLITE_COMMANDS.len()];
     for (relative, text) in &files {
         let code = without_comment_only_lines(text);
-        for (offset, _) in code.match_indices("execFileSync(") {
+        for offset in subprocess_call_offsets(&code) {
             match e2e_subprocess_owner(relative, &code, offset) {
                 Some(E2eSubprocessOwner::StoryLease) => checked += 1,
                 Some(E2eSubprocessOwner::AuditedSqlite(index)) => audited[index] += 1,
                 None => panic!(
-                    "{relative}: unowned execFileSync invocation at byte {offset}; Story CLI calls \
+                    "{relative}: unowned subprocess invocation at byte {offset}; Story CLI calls \
                      must use storyBinary() or a const bound to it. Only the exact reviewed \
                      SQLite data-fixture commands have separate authority (SH-635/SH-718)"
                 ),

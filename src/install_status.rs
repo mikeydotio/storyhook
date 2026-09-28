@@ -28,8 +28,8 @@
 //! reserved for a provider that left nothing behind.
 //!
 //! **It never says "revert."** A change sitting in the checkout is a change
-//! aimed at the next release, so the remedy named is always the release, never
-//! throwing the work away.
+//! aimed at the next release. Configuration findings name their own remedy;
+//! none asks the operator to throw checkout work away.
 //!
 //! # What this deliberately does NOT answer
 //!
@@ -59,6 +59,8 @@ use crate::plugin::PluginTarget;
 use crate::plugin::guard::Build;
 use crate::plugin::receipt::Receipt;
 use crate::plugin::registration::{config_path, configured_source};
+
+mod daemon;
 
 /// One line of the report.
 struct Row {
@@ -403,7 +405,7 @@ pub fn report() -> Result<String, AppError> {
     let env = Environment::from_process(None)?;
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
 
-    let rows = vec![
+    let mut rows = vec![
         Row::ok("running", crate::version::full()),
         installed_binary(),
         store_row(&env),
@@ -419,6 +421,7 @@ pub fn report() -> Result<String, AppError> {
         ),
         hook_row(),
     ];
+    rows.extend(daemon::rows(&env, &home));
 
     let mut out = String::new();
     let width = rows.iter().map(|r| r.label.len()).max().unwrap_or(0);
@@ -437,8 +440,7 @@ pub fn report() -> Result<String, AppError> {
             out,
             "\n{findings} finding(s). Nothing in your checkout is lost by any of them: \
              the checkout is the record and the installation is only a projection of a \
-             release. The remedy is to cut and install the next release, never to revert \
-             the work.\n"
+             release. Follow the remedy named with each finding; do not revert the work.\n"
         );
     }
     Ok(out)

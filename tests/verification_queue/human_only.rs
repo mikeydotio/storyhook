@@ -2,7 +2,7 @@
 
 use super::*;
 use storyhook::daemon::bus::ChangeBus;
-use storyhook::daemon::verification::{LandingOutcome, wait_for_reconciled_candidate};
+use storyhook::daemon::verification::{HoldWatch, LandingOutcome, wait_for_reconciled_candidate};
 use storyhook::service::landing::{LandingAdmission, VerifiedSubmission};
 use storyhook::store::LandingIntent;
 
@@ -227,7 +227,13 @@ fn human_reservation_releases_reconciliation_without_a_resubmission() {
         f.project(),
         |reserved| {
             reserve(&f, &id, true);
-            wait_for_reconciled_candidate(f.store(), &subscription, &stop, reserved)
+            wait_for_reconciled_candidate(
+                f.store(),
+                &subscription,
+                &stop,
+                reserved,
+                &HoldWatch::production(&super::reconcile_hold::live_agent),
+            )
         },
     )
     .unwrap();

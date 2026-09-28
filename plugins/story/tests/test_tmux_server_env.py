@@ -21,7 +21,10 @@ import tmux_server_env as policy  # noqa: E402  (the path above is the import ro
 LAUNCHER = PLUGIN / "lib/tmux-launch.py"
 ENV_CLI = PLUGIN / "lib/tmux-env.py"
 # The daemon runs the view as this exact composition (src/daemon/activity/window.rs).
-VIEW_PROGRAM = (PLUGIN / "lib/tmux_server_env.py").read_text() + "\n" + (REPO / "scripts/verification-view.py").read_text()
+VIEW_PROGRAM = ((PLUGIN / "lib/probe_budget.py").read_text()
+                + "\nprobe_run = run\nprobe_operation = operation\n"
+                + (PLUGIN / "lib/tmux_server_env.py").read_text() + "\n"
+                + (REPO / "scripts/verification-view.py").read_text())
 # Bounds one private tmux server operation, including its startup and a loaded
 # macOS PTY allocation. It is a liveness ceiling, never a performance claim.
 DEADLINE = 15
@@ -259,6 +262,9 @@ class PrivateServerTests(unittest.TestCase):
         reader = self.root / "reader"
         reader.write_text("#!/bin/sh\nexec sleep 300\n")
         reader.chmod(0o700)
+        # SH-771: the daemon prepares the journal directory before it runs
+        # the view, and the view refuses one that is absent.
+        (self.root / "logs").mkdir()
         viewed = subprocess.run(["python3", "-c", VIEW_PROGRAM, "fixture", str(self.root / "logs"), str(reader)],
                                 env=self.poisoned, capture_output=True, text=True, timeout=DEADLINE)
         self.assertEqual(viewed.returncode, 0, viewed.stderr)

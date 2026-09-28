@@ -9,13 +9,19 @@ mod output_reporting;
 #[path = "verification_queue/human_only.rs"]
 mod human_only;
 
+#[path = "verification_queue/reconcile_hold.rs"]
+mod reconcile_hold;
+
+#[path = "verification_queue/reservation_status.rs"]
+mod reservation_status;
+
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};
 use storyhook::daemon::lifecycle::{self, InFlight};
 use storyhook::daemon::verification::{
-    NotifyDelivery, ResumePlan, ShellVerificationActuator, SubmissionFailure, TickResult,
-    VerificationActivity, VerificationActuator, VerificationGuard, VerificationOutcome,
+    NotifyDelivery, ReconcileWait, ResumePlan, ShellVerificationActuator, SubmissionFailure,
+    TickResult, VerificationActivity, VerificationActuator, VerificationGuard, VerificationOutcome,
     journal_path, resume_plan, tick_with, tick_with_activity, tick_with_reconciliation,
 };
 use storyhook::daemon::verification_progress::{VerificationStatus, publish_once, status_snapshot};
@@ -41,12 +47,14 @@ use storyhook::store::{
     VerificationIncident, WriteOps,
 };
 use storyhook_test_support::ServiceFixture;
+use storyhook_test_support::load_grace::{self, Patience};
 use storyhook_test_support::{FIXTURE_NOW, scratch_dir, story_binary};
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::sync::mpsc::TryRecvError;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1305,7 +1313,7 @@ fn a_superseded_attempt_records_its_withdrawal_naming_the_replacement_generation
             &activity,
             &inflight,
             fixture.project(),
-            |_| Ok(None),
+            |_| Ok(ReconcileWait::Ended),
         )
         .unwrap(),
         TickResult::Returned
@@ -1778,7 +1786,7 @@ fn every_superseded_outcome_is_discarded_before_the_latest_generation_runs() {
                 &activity,
                 &inflight,
                 fixture.project(),
-                |_| Ok(None),
+                |_| Ok(ReconcileWait::Ended),
             )
             .unwrap(),
             TickResult::Returned
@@ -2229,7 +2237,10 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
             assert_eq!(ordered[0].story_id, *waiting);
             Ok(ordered
                 .into_iter()
-                .find(|candidate| candidate.story_id == held))
+                .find(|candidate| candidate.story_id == held)
+                .map_or(ReconcileWait::Ended, |candidate| {
+                    ReconcileWait::Resubmitted(Box::new(candidate))
+                }))
         },
     )
     .unwrap();
@@ -2300,7 +2311,7 @@ fn a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue(
                 assert_eq!(row.state, "in-progress");
                 assert_eq!(row.awaiting, None, "a re-dispatched story is never parked");
                 waited.lock().unwrap().push(reserved.story_id.clone());
-                Ok(None)
+                Ok(ReconcileWait::Ended)
             },
         )
         .unwrap(),
@@ -2477,7 +2488,7 @@ fn a_paste_that_fails_after_a_successful_redispatch_is_recorded_not_parked() {
             fixture.project(),
             |_| {
                 *entered.lock().unwrap() = true;
-                Ok(None)
+                Ok(ReconcileWait::Ended)
             },
         )
         .unwrap(),
@@ -6011,14 +6022,43 @@ fn second_project(fixture: &ServiceFixture) -> storyhook::store::ProjectId {
 
 const GADGETS_PR_ONE: &str = "https://github.com/acme/gadgets/pull/1";
 
+/// How long, at idle, a concurrency test here lets a verification worker take
+/// to reach its actuator, keeps a held verifier held while the test does its
+/// own work, or lets the workers take to drain. Patience for something the
+/// test expects, graced by contention through `load_grace` and extended at
+/// expiry (SH-810); never a production deadline. At idle each of these takes
+/// milliseconds, so the bound is generous: its one job is to turn a regression
+/// that serializes the projects, or a worker that never arrives, into a red
+/// instead of a hang.
+const WORKER_PATIENCE: Duration = Duration::from_secs(30);
+
+/// How often a [`WORKER_PATIENCE`] wait looks again.
+const WORKER_POLL: Duration = Duration::from_millis(10);
+
+/// The next project whose worker reached its actuator.
+fn next_entry(
+    entered: &std::sync::mpsc::Receiver<storyhook::store::ProjectId>,
+    what: &str,
+) -> storyhook::store::ProjectId {
+    load_grace::wait_for(
+        Patience::new(WORKER_PATIENCE),
+        WORKER_POLL,
+        || what.to_string(),
+        || entered.try_recv().ok(),
+    )
+}
+
 /// An actuator that holds one project's verification open until released,
-/// and lands every other project's on sight. Its `entered` channel names the
-/// project whose worker reached the blocking call, so a test can prove two
-/// workers are inside `verify` at once.
+/// and lands every other project's after `neighbour_delay`. Its `entered`
+/// channel names the project whose worker reached the blocking call, so a
+/// test can prove two workers are inside `verify` at once.
 struct ProjectGateActuator {
     held: storyhook::store::ProjectId,
     entered: std::sync::mpsc::Sender<storyhook::store::ProjectId>,
     release: Mutex<std::sync::mpsc::Receiver<()>>,
+    /// How long a project that is not held spends inside `verify`: a
+    /// neighbour tick as slow as a loaded gate makes it (SH-811).
+    neighbour_delay: Duration,
 }
 
 impl VerificationActuator for ProjectGateActuator {
@@ -6048,11 +6088,24 @@ impl VerificationActuator for ProjectGateActuator {
             .send(candidate.project)
             .expect("the test observes every entry");
         if candidate.project == self.held {
-            self.release
-                .lock()
-                .expect("locking the release channel")
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
-                .expect("the test must release the held verifier");
+            // Held until the test releases it, however long the test's own
+            // work takes under load; a test that fails drops its sender,
+            // which releases this at once rather than after the patience.
+            let release = self.release.lock().expect("locking the release channel");
+            load_grace::wait_for(
+                Patience::new(WORKER_PATIENCE),
+                WORKER_POLL,
+                || "the test must release the held verifier".to_string(),
+                || match release.try_recv() {
+                    Ok(()) => Some(()),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => {
+                        panic!("the test ended without releasing the held verifier")
+                    }
+                },
+            );
+        } else {
+            thread::sleep(self.neighbour_delay);
         }
         VerificationOutcome::Certified {
             head: "a".repeat(40),
@@ -6096,6 +6149,26 @@ impl VerificationActuator for ProjectGateActuator {
 /// visible as owned at the same instant.
 #[test]
 fn two_projects_verify_concurrently() {
+    verify_two_projects_concurrently(Duration::ZERO);
+}
+
+/// A neighbour tick longer than the 5 s no-work round trip
+/// (`lifecycle::CONTROL_DEADLINE`) the held verifier once borrowed as its
+/// wait: a loaded gate made gadgets' tick that slow, the held verifier gave up
+/// on its own, and the test went red with no defect (SH-811, PR 876).
+const SLOW_NEIGHBOUR_TICK: Duration = Duration::from_secs(6);
+
+/// The held verifier stays held for as long as the test's own work takes:
+/// its wait is patience for a release the test will send, not a deadline.
+#[test]
+fn a_held_verifier_outlasts_a_neighbour_slower_than_the_control_deadline() {
+    assert!(SLOW_NEIGHBOUR_TICK > lifecycle::CONTROL_DEADLINE);
+    verify_two_projects_concurrently(SLOW_NEIGHBOUR_TICK);
+}
+
+/// The D-B scenario, with gadgets spending `neighbour_delay` inside `verify`
+/// while widgets is held.
+fn verify_two_projects_concurrently(neighbour_delay: Duration) {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let widgets = fixture.project();
@@ -6118,9 +6191,13 @@ fn two_projects_verify_concurrently() {
         held: widgets,
         entered: entered_tx,
         release: Mutex::new(release_rx),
+        neighbour_delay,
     };
 
     let (widgets_result, gadgets_result) = thread::scope(|scope| {
+        // Owned by this closure, so a failing assertion drops it and
+        // releases the held verifier before the scope joins its worker.
+        let release_tx = release_tx;
         let widgets_worker = scope.spawn(|| {
             tick_with_activity(
                 fixture.store(),
@@ -6132,9 +6209,7 @@ fn two_projects_verify_concurrently() {
             )
         });
         assert_eq!(
-            entered_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
-                .expect("widgets' worker must reach its actuator"),
+            next_entry(&entered_rx, "widgets' worker must reach its actuator"),
             widgets
         );
 
@@ -6147,9 +6222,10 @@ fn two_projects_verify_concurrently() {
             gadgets,
         )
         .unwrap();
+        // gadgets' tick has returned, so its entry is already queued.
         assert_eq!(
             entered_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
+                .try_recv()
                 .expect("gadgets' worker must reach its actuator while widgets is held"),
             gadgets
         );
@@ -6209,16 +6285,18 @@ fn two_held_verifications_are_both_visible_as_owned() {
     std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
     let inflight = InFlight::new(fixture.env().clone());
     let mut gates = Vec::new();
+    let mut releases = Vec::new();
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     for project in [widgets, gadgets] {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
+        releases.push(release_tx);
         gates.push((
             project,
-            release_tx,
             ProjectGateActuator {
                 held: project,
                 entered: entered_tx.clone(),
                 release: Mutex::new(release_rx),
+                neighbour_delay: Duration::ZERO,
             },
         ));
     }
@@ -6227,9 +6305,12 @@ fn two_held_verifications_are_both_visible_as_owned() {
     let activity = &activity;
     let inflight = &inflight;
     thread::scope(|scope| {
+        // Owned by this closure, so a failing assertion drops them and
+        // releases both held verifiers before the scope joins its workers.
+        let releases = releases;
         let workers: Vec<_> = gates
             .iter()
-            .map(|(project, _, actuator)| {
+            .map(|(project, actuator)| {
                 scope.spawn(move || {
                     tick_with_activity(
                         fixture.store(),
@@ -6243,12 +6324,8 @@ fn two_held_verifications_are_both_visible_as_owned() {
             })
             .collect();
         let mut entered = vec![
-            entered_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
-                .unwrap(),
-            entered_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
-                .unwrap(),
+            next_entry(&entered_rx, "both workers must reach their actuators"),
+            next_entry(&entered_rx, "both workers must reach their actuators"),
         ];
         entered.sort();
         assert_eq!(entered, [widgets, gadgets]);
@@ -6259,7 +6336,7 @@ fn two_held_verifications_are_both_visible_as_owned() {
         assert!(published.iter().all(|entry| entry.command == "verify"));
         assert_ne!(published[0].request_id, published[1].request_id);
 
-        for (_, release, _) in &gates {
+        for release in &releases {
             release.send(()).unwrap();
         }
         for worker in workers {
@@ -6452,7 +6529,7 @@ fn a_conflict_hold_in_one_project_does_not_hold_the_other() {
                 gadgets,
             )?;
             *other_drained_during_hold.lock().unwrap() = Some(drained);
-            Ok(None)
+            Ok(ReconcileWait::Ended)
         },
     )
     .unwrap();
@@ -6561,13 +6638,20 @@ fn the_supervisor_runs_one_worker_per_project_and_follows_the_catalog() {
     /// Stops the supervisor when the scope unwinds, so an assertion that
     /// fails below turns this test red instead of joining a supervisor
     /// nobody told to stop (measured: without this, every mutation of the
-    /// supervisor hung the binary rather than failing the case).
+    /// supervisor hung the binary rather than failing the case). Dropping
+    /// the release senders frees every held verifier at once, rather than
+    /// after its patience.
     struct StopOnDrop<'a> {
         stop: &'a AtomicBool,
         bus: &'a ChangeBus,
+        releases: &'a Mutex<Vec<(storyhook::store::ProjectId, std::sync::mpsc::Sender<()>)>>,
     }
     impl Drop for StopOnDrop<'_> {
         fn drop(&mut self) {
+            self.releases
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
             self.stop.store(true, Ordering::Relaxed);
             self.bus.publish(Change::Catalog);
         }
@@ -6577,6 +6661,7 @@ fn the_supervisor_runs_one_worker_per_project_and_follows_the_catalog() {
         let _stop_on_unwind = StopOnDrop {
             stop: &stop,
             bus: &bus,
+            releases: &releases,
         };
         let supervisor = scope.spawn(|| {
             poll_verification_with(
@@ -6593,18 +6678,21 @@ fn the_supervisor_runs_one_worker_per_project_and_follows_the_catalog() {
                         held: project,
                         entered: entered_tx.clone(),
                         release: Mutex::new(release_rx),
+                        neighbour_delay: Duration::ZERO,
                     }
                 },
             );
         });
 
         let mut entered = vec![
-            entered_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
-                .unwrap(),
-            entered_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
-                .unwrap(),
+            next_entry(
+                &entered_rx,
+                "both projects' workers must reach their actuators",
+            ),
+            next_entry(
+                &entered_rx,
+                "both projects' workers must reach their actuators",
+            ),
         ];
         entered.sort();
         assert_eq!(
@@ -6626,9 +6714,10 @@ fn the_supervisor_runs_one_worker_per_project_and_follows_the_catalog() {
         );
         bus.publish(Change::Catalog);
         assert_eq!(
-            entered_rx
-                .recv_timeout(lifecycle::CONTROL_DEADLINE)
-                .expect("the catalog change must spawn sprockets' worker"),
+            next_entry(
+                &entered_rx,
+                "the catalog change must spawn sprockets' worker"
+            ),
             sprockets
         );
         assert_eq!(activity.active_all().len(), 3);
@@ -6637,14 +6726,16 @@ fn the_supervisor_runs_one_worker_per_project_and_follows_the_catalog() {
             release.send(()).unwrap();
         }
         // Every worker lands its story, then idles; stop drains them.
-        let deadline = Instant::now() + lifecycle::CONTROL_DEADLINE;
-        while Instant::now() < deadline && !activity.active_all().is_empty() {
-            thread::sleep(Duration::from_millis(20));
-        }
-        assert!(
-            activity.active_all().is_empty(),
-            "{:?}",
-            activity.active_all()
+        load_grace::wait_for(
+            Patience::new(WORKER_PATIENCE),
+            WORKER_POLL,
+            || {
+                format!(
+                    "every worker must land and go idle: {:?}",
+                    activity.active_all()
+                )
+            },
+            || activity.active_all().is_empty().then_some(()),
         );
         drop(_stop_on_unwind);
         supervisor.join().unwrap();

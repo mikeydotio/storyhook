@@ -103,6 +103,12 @@ dashboard address for sharing; local status does not confirm remote reachability
   story daemon gc [--force]
   story daemon logs [--directory PATH] [--follow] [--json]
 
+install captures only PATH from the current shell into the login agent. PATH
+must contain nonempty absolute directories. Reinstall from the desired shell
+environment after changing tool locations, then restart the daemon. Run
+`story doctor install` to compare the saved PATH with the running daemon's PATH
+and check tool lookup. It does not start a daemon or run tool-version probes.
+
 gc reclaims the runtime directories under <state home>/daemons/ whose store no
 longer exists. It removes a directory only when everything inside it proves the
 store: the recorded store path hashes back to the directory's own name, the
@@ -123,6 +129,10 @@ Use --store-path to inspect a different store, or --directory to read a project 
 The daemon maintains one verification window in each project-slug tmux session
 on the default server. Project logs live in the registered checkout at
 .storyhook/logs/YYYY-MM-DD.jsonl. Closed or failed readers are repaired.
+That directory ignores itself: storyhook keeps a .gitignore with the rule *
+in it, so git never lists the journal. If a repository already tracks
+journal files, daemon status and verifier status name the command that
+untracks them; storyhook never changes the index.
 STORYHOOK_VERIFIER_MIRROR=0 disables these views without disabling the journal.
 A missing tmux or Python 3 activity helper is non-fatal.
 
@@ -506,6 +516,10 @@ comma-separated list (both may be combined). Comma is always the
 label delimiter, even inside a single --label value — a label can
 never contain one. Labels are stored lowercase; case variants name
 the same label.
+
+Before filing a prerequisite or blocking the current story, read
+'story help scope-rubric'. Adopt work you can do within that story;
+file a separate dependency only when the rubric calls for it.
 
 --draft creates the story as a draft: it claims an id like any other
 story, but is excluded from 'story next'/'--ready' and shown inline
@@ -1746,6 +1760,10 @@ story block <id> "<reason>"
 Mark a story as blocked. Blocked stories are excluded from 'story
 next' results and highlighted in listings.
 
+Before filing a prerequisite or blocking the current story, read
+'story help scope-rubric'. Adopt work you can do within that story;
+retain a real dependency or external hold when you cannot do the work.
+
 Two ways to say why, and they behave differently:
 
   --on <blocker>   Records a `blocked-by` edge onto <blocker> — a
@@ -2138,6 +2156,26 @@ Adopting does not weaken two hats. Two hats governs COMMITS, not
 stories or pull requests — a behaviour fix and a refactor still never
 share a commit. What changes is only that one story, and one pull
 request, can now cover more than the single thing it started as.
+
+== Before you create a blocker ==
+
+Before filing a blocker for your current story, check whether you can
+do the prerequisite within your authorized work. Adopt an actionable
+prerequisite into the current story, even when it is in another module.
+Do not file a new story and block your current story on it merely to
+transfer work you can do yourself.
+
+First, comment the finding and expand the acceptance criteria on the
+current story. Apply the scope exceptions and context rules below.
+When you can fix it now, give it its own commit and regression test,
+then continue the original work. When context is short, retain the
+expanded scope and hand it off; do not create a dependency to defer it.
+
+Preserve real dependencies and external holds. Do not take over another
+active session, and do not remove existing dependency edges as a shortcut
+to adoption. Work owned by that session remains a real dependency unless
+its ownership is explicitly transferred. Adoption grants no new access
+or authority and does not override an obviation-review hold.
 
 == Does it belong to this story? ==
 
@@ -2732,6 +2770,19 @@ Inspect and control this project's centralized verifier.
   are distinct from infrastructure halts. Old payloads have no recovery rows.
   The dashboard reads the same snapshot. Use repair show for full evidence.
 
+  A story that the verifier returns keeps the verifier reserved while its
+  diagnosis goes to the agent (remediation). After a merge conflict it stays
+  reserved until the story resubmits or its reconcile stops, by the release
+  rules below (reconcile). A completed story keeps it reserved while its
+  worktree and window are removed (cleanup). status reports this as
+  reservation (story, generation, reason, reserved_at, age, queued behind).
+  It is normal work, not missing evidence, and the silence clock does not run
+  while the verifier is reserved. A remediation or cleanup reservation that
+  lasts longer than the deadlines of its helpers is overdue and gives a
+  warning. A reconcile reservation can last as long as its agent works. It is
+  overdue only when its hold reports no activity for longer than the stall
+  ceiling plus one wake, because the hold did not release.
+
   A project fault releases verifier ownership after cleanup. The managed agent
   decides scope before edits, preserves required gate coverage, tests new and
   impacted behavior, commits, and moves its repair to verifying as the last
@@ -2746,6 +2797,13 @@ Inspect and control this project's centralized verifier.
   start enables admission without clearing a halt. drain prevents new
   admission while owned work finishes. stop also cancels owned work.
   Starting while stopped work still owns an attempt is refused.
+
+  A merge conflict returns the story and holds this project's queue until
+  the story resubmits. The hold releases itself when the reconcile stops:
+  the story is blocked or leaves in-progress, its agent pane is gone on two
+  probes, or the story and the pane show no activity past the stall ceiling.
+  The story gets a CENTRAL VERIFICATION HOLD RELEASED comment. A later
+  resubmission joins the queue in priority order.
 
   ack validates the exact halted incident and enables admission atomically.
   --leave-stopped clears the incident but disables admission; start resumes it.
