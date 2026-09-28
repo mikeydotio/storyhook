@@ -400,6 +400,22 @@ daemon's own class is SH-784's. A platform with no class chosen for it, or a
 host missing a class tool, is refused by name before the gate is marked
 started; the gate never falls back to its caller's class.
 
+**A gate starts only with the disk its predecessors used (SH-822).** Every gate
+builds cold in the verifier worktree: `ensure` runs `git clean -ffdx` first. After
+each gate that runs, `record_gate_disk` (`scripts/verify-pr.sh`) appends `du -sk`
+of the gate worktree to `<common-dir>/storyhook/gate-disk-peaks` and keeps the last
+five. Before the next gate, `require_gate_disk` compares `df -Pk` free space on that
+worktree's volume with the largest kept sample. Less is a permanent local failure,
+refused by name before the gate starts, so the queue halts under D15 and no story
+is judged on a full disk; the operator frees space and acknowledges. With no
+sample yet there is no floor. A failed measurement is reported on stderr and never
+changes a verdict. Stated limits: volumes the gate writes elsewhere (`TMPDIR`
+fixtures) are not measured, and a gate that fills the disk partway through still
+fails as itself. Council decision D3 on SH-822 chose this over an engine admission
+probe: admission stays store-only (SH-672), and a halted queue stops verifying
+stories from draining, which closes Full Auto admission through the SH-822
+backlog bound.
+
 SH-683 adds shared lifecycle ownership before verifier preflight and speculative
 execution. Interrupted recovery preserves the checkout, private index and
 objects together; ambiguous writers prevent repair and remain infrastructure
