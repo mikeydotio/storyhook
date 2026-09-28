@@ -355,6 +355,39 @@ for (const key of ["Enter", "Space", "ArrowRight"]) {
   });
 }
 
+test("keyboard scrolling keeps focus until the mouse moves again", async ({ page }) => {
+  await card(page).locator(".card-actions-btn").click();
+  const actions = menu(page);
+  const status = parent(page);
+  const last = actions.locator(".ctxmenu-item").last();
+  await status.hover();
+  const box = await status.boundingBox();
+  if (!box) throw new Error("Set Status has no geometry");
+  const pointer = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await expect(submenuNamed(page, "Set status")).toBeVisible();
+  expect(await actions.evaluate(node => node.scrollHeight > node.clientHeight),
+    "End must scroll rows under the stationary pointer").toBe(true);
+  // Register before the key: resolving a locator concurrently with the key
+  // can miss the scroll. Observe rendering without changing menu behavior.
+  await actions.evaluate(node => {
+    node.addEventListener("scroll", () => requestAnimationFrame(() => {
+      requestAnimationFrame(() => node.setAttribute("data-test-scroll-settled", "true"));
+    }), { once: true });
+  });
+  await page.keyboard.press("End");
+  await expect(actions).toHaveAttribute("data-test-scroll-settled", "true");
+  await expect(last).toBeFocused();
+  await expect(page.locator(".ctxmenu-sub")).toHaveCount(0);
+  expect(await page.evaluate(point =>
+    document.elementFromPoint(point.x, point.y)?.closest(".ctxmenu-item")?.textContent,
+  pointer), "the scroll must put a different submenu parent under the mouse").toContain("Set Priority");
+
+  // A move within that same row must resume hover without needing to leave it.
+  await page.mouse.move(pointer.x + 1, pointer.y);
+  await expect(parent(page, "Set Priority")).toBeFocused();
+  await expect(submenuNamed(page, "Set priority")).toBeVisible();
+});
+
 test("hovered submenu supports dismissal, keyboard navigation and clean reopening", async ({ page }) => {
   const actions = card(page).locator(".card-actions-btn");
   for (const key of ["Escape", "ArrowLeft"]) {
