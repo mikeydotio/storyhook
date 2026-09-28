@@ -44,7 +44,7 @@ fn bundled_adapter_pins_enterprise_origin_and_rejects_foreign_authority() {
             .args(["-c", body, "fixture"])
             .arg(&adapter)
             .current_dir(&repo)
-            .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+            .env("STORY_BIN", storyhook_test_support::story_binary())
             .env("STORYHOOK_GITHUB_AUTHORITY", authority)
             .env(
                 "PATH",
@@ -133,7 +133,7 @@ fn verifier_keeps_host_authentication_diagnostics() {
         ])
         .current_dir(&repo)
         .envs(storyhook_test_support::daemon_containment())
-        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("STORY_BIN", storyhook_test_support::story_binary())
         .env("STORYHOOK_VERIFIER_MIRROR", "0")
         .env("STORYHOOK_LOCK_DIR", root.path().join("locks"))
         .env(
@@ -308,8 +308,13 @@ exit "$status""#,
 #[test]
 fn sanitized_submission_receipts_match_remote_heads_for_all_parent_selectors() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let binary = Path::new(env!("CARGO_BIN_EXE_story"));
+    let binary = storyhook_test_support::story_binary();
     let scratch = scratch_dir();
+    // The shell suite needs a Cargo-shaped source directory, independent of
+    // the process-owned lease path. Copy from the lease so Cargo cannot race it.
+    let target = scratch.path().join("target");
+    fs::create_dir_all(target.join("debug")).unwrap();
+    fs::copy(binary, target.join("debug/story")).unwrap();
     let authority = scratch.path().join("authority");
     fs::create_dir(&authority).unwrap();
     git(&authority, &["init", "-q"]);
@@ -332,10 +337,7 @@ fn sanitized_submission_receipts_match_remote_heads_for_all_parent_selectors() {
         ])
         .arg(root.join("scripts/github-access.sh"))
         .arg(root.join("plugins/story/tests/test-submit-head-reporting.sh"))
-        .env(
-            "CARGO_TARGET_DIR",
-            binary.parent().unwrap().parent().unwrap(),
-        )
+        .env("CARGO_TARGET_DIR", &target)
         .env("SH713_RECEIPTS_PATH", receipts.path())
         .env("STORY_BIN", binary)
         .env("STORYHOOK_GITHUB_AUTHORITY", &authority)
@@ -416,7 +418,7 @@ fn watch_refreshes_update_the_tracking_ref_read_by_their_plan() {
             )
             .arg("--plan")
             .current_dir(&checkout)
-            .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+            .env("STORY_BIN", storyhook_test_support::story_binary())
             .env(
                 "PATH",
                 format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),

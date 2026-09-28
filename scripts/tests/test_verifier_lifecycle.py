@@ -107,8 +107,26 @@ class VerifierLifecycle(unittest.TestCase):
 
     def command(self, *args, cwd=None, check=True):
         """Run real commands with bounded waits and fixture-only environment."""
-        result = subprocess.run(args, cwd=cwd or self.repo, env=self.env,
-                                capture_output=True, text=True, timeout=self.milestone_deadline)
+        patience = self.patience(self.milestone_deadline, time.monotonic())
+        with subprocess.Popen(args, cwd=cwd or self.repo, env=self.env,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+            try:
+                while True:
+                    try:
+                        stdout, stderr = process.communicate(timeout=patience.remaining(time.monotonic()))
+                        break
+                    except subprocess.TimeoutExpired:
+                        # communicate can resume the same child and pipes. Re-sample
+                        # rising contention, retaining one bounded start time.
+                        if patience.expired(time.monotonic()):
+                            raise
+            except BaseException:
+                process.kill()
+                # A descendant can still hold a pipe. Reap the direct child;
+                # TimeoutExpired already retains the captured diagnostics.
+                process.wait()
+                raise
+            result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
         if check:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
@@ -1379,6 +1397,41 @@ class HarnessObservation(unittest.TestCase):
         idle = mock.patch.object(load_grace, "contention", return_value=0.5)
         idle.start()
         self.addCleanup(idle.stop)
+
+    def test_command_extends_the_same_process_when_contention_rises(self):
+        """An expired startup snapshot does not kill a command under rising load."""
+        idle_allowance = MILESTONE_DEADLINE
+        process = mock.MagicMock(returncode=0)
+        process.__enter__.return_value = process
+        process.communicate.side_effect = [subprocess.TimeoutExpired("probe", idle_allowance), ("ok", "")]
+        with mock.patch.object(subprocess, "Popen", return_value=process) as launch, \
+             mock.patch.object(time, "monotonic", side_effect=[0, 0, idle_allowance, idle_allowance]), \
+             mock.patch.object(load_grace, "contention", return_value=2):
+            result = self.harness.command("probe")
+        self.assertEqual(result.stdout, "ok")
+        launch.assert_called_once()
+        process.kill.assert_not_called()
+        self.assertEqual(process.communicate.call_args_list,
+                         [mock.call(timeout=idle_allowance), mock.call(timeout=idle_allowance)])
+
+    def test_command_expiry_kills_and_reaps_without_restarting(self):
+        """A real hang retains its bounded failure and captured diagnostics."""
+        idle_allowance = MILESTONE_DEADLINE
+        process = mock.MagicMock()
+        process.__enter__.return_value = process
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired("probe", idle_allowance, output="out", stderr="err"),
+        ]
+        with mock.patch.object(subprocess, "Popen", return_value=process) as launch, \
+             mock.patch.object(time, "monotonic", side_effect=[0, 0, idle_allowance]):
+            with self.assertRaises(subprocess.TimeoutExpired) as error:
+                self.harness.command("probe")
+        launch.assert_called_once()
+        process.kill.assert_called_once()
+        self.assertEqual(process.communicate.call_count, 1)
+        process.wait.assert_called_once()
+        self.assertEqual(error.exception.output, "out")
+        self.assertEqual(error.exception.stderr, "err")
 
     def test_pid_reader_waits_for_empty_and_partial_records(self):
         """The writer completes only after the reader observes pending content."""

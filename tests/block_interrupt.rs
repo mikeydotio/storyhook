@@ -5,6 +5,21 @@ use storyhook::daemon::block_delivery::{NOTIFY_TERM_GRACE, NOTIFY_TIMEOUT};
 use storyhook_test_support::{TestEnv, git};
 
 #[test]
+fn interruption_waits_for_complete_pid_publications() {
+    let output = Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/test_pid_record.py"))
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("running PID publication regressions");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn interruption_capture_distinguishes_exit_from_probe_failure() {
     let output = Command::new("python3")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/interrupt_capture.py"))

@@ -700,7 +700,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn binary_snapshot_survives_atomic_source_replacement() {
+    fn binary_snapshot_survives_source_replacement_and_removal() {
         use std::os::unix::fs::MetadataExt as _;
 
         let fixture = crate::scratch_dir();
@@ -744,6 +744,12 @@ mod tests {
             snapshot, source,
             "returning Cargo's mutable artifact path leaves the producer conflict open"
         );
+        std::fs::remove_file(&source).expect("removing the fixture's mutable Cargo artifact");
+        let absent_source_output = std::process::Command::new(&snapshot)
+            .output()
+            .expect("running the lease while the Cargo artifact is absent");
+        assert!(absent_source_output.status.success());
+        assert_eq!(absent_source_output.stdout, b"fault-capable\n");
     }
 
     #[cfg(unix)]

@@ -166,7 +166,7 @@ fn update_downloads_smoke_tests_and_publishes_matching_source_metadata() {
     for valid in [false, true] {
         let dir = scratch_dir();
         let installed = dir.path().join("installed-story");
-        fs::copy(env!("CARGO_BIN_EXE_story"), &installed).unwrap();
+        fs::copy(storyhook_test_support::story_binary(), &installed).unwrap();
         let stage = dir.path().join("asset");
         fs::create_dir(&stage).unwrap();
         let replacement = b"#!/bin/sh\n[ \"$1\" = --help ]\n";

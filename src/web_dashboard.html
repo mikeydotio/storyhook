@@ -7255,21 +7255,41 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * present, is an opaque `{ariaLabel, items}` -- this function never reads
    * either field, only forwards the whole object to `openSubmenu` on click.
    * `hoverItem(row, entry, evt)`, when supplied, owns mouse hover behavior
-   * for every row and receives the `pointerenter` event for its position;
+   * for every row and receives the `pointermove` event for its position;
    * flat menus omit it and retain explicit activation. `closeMenu` is the
    * owning menu's own close function, run before an ordinary item's
    * `onSelect`. */
   function renderMenuNode(model, ariaLabel, closeMenu, openSubmenu, hoverItem) {
     var node = el("div", { class: "ctxmenu", role: "menu", "aria-label": ariaLabel }, []);
+    var hoveredItem = null;
+    var mousePosition = null;
+    if (hoverItem) {
+      // Keyboard focus can scroll a row under a stationary mouse, generating
+      // pointerenter and, in WebKit, pointermove at unchanged coordinates.
+      // Only actual mouse movement may take ownership back (SH-826).
+      bindTypedKeys(node, function() { hoveredItem = null; });
+      // Bubble after row handlers compare the prior position. Track separators
+      // too, and retain the leave position so returning to the same row works.
+      var rememberMousePosition = function(evt) {
+        if (evt.pointerType === "mouse") mousePosition = { x: evt.clientX, y: evt.clientY };
+      };
+      node.addEventListener("pointermove", rememberMousePosition);
+      node.addEventListener("pointerleave", function(evt) {
+        hoveredItem = null;
+        rememberMousePosition(evt);
+      });
+    }
     model.forEach(function(entry) {
       if (entry.separator) {
         node.appendChild(el("div", { class: "ctxmenu-sep", role: "separator" }, []));
         return;
       }
       var disabled = !!entry.disabled;
-      var onPointerEnter = hoverItem ? function(evt) {
-        // Touch synthesizes pointerenter before a tap; only a mouse previews.
-        if (evt.pointerType === "mouse") hoverItem(evt.currentTarget, entry, evt);
+      var onPointerMove = hoverItem ? function(evt) {
+        if (evt.pointerType !== "mouse" || hoveredItem === evt.currentTarget) return;
+        if (mousePosition && evt.clientX === mousePosition.x && evt.clientY === mousePosition.y) return;
+        hoveredItem = evt.currentTarget;
+        hoverItem(evt.currentTarget, entry, evt);
       } : null;
       if (entry.submenu) {
         var arrow = emojiIcon("submenu", { className: "disclosure-icon", direction: "right" });
@@ -7282,7 +7302,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           "aria-expanded": "false",
           "aria-disabled": disabled ? "true" : null,
           title: entry.title || null,
-          onPointerEnter: onPointerEnter,
+          onPointerMove: onPointerMove,
           onClick: function(evt) {
             evt.stopPropagation();
             if (disabled) return;
@@ -7304,7 +7324,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         tabIndex: -1,
         "aria-disabled": disabled ? "true" : null,
         title: disabledReason || entry.title || null,
-        onPointerEnter: onPointerEnter,
+        onPointerMove: onPointerMove,
         onClick: function() {
           if (disabled) return;
           closeMenu(false);
@@ -7367,7 +7387,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     storyMenuFocusIndex = focusMenuItem(storyMenuNode, items.indexOf(item), storyMenuFocusIndex);
   }
 
-  /** The story menu's `hoverItem` (see `renderMenuNode`): a mouse entering
+  /** The story menu's `hoverItem` (see `renderMenuNode`): a mouse moving into
    * row `item` previews it, unless the pointer is on its way to the open
    * submenu (`storySubmenuAim`), in which case the preview is held. No leave
    * handler closes the submenu: it is a DOM sibling and must survive travel

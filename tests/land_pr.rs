@@ -309,7 +309,7 @@ fn command(cwd: &Path, program: &str, args: &[&str]) -> Command {
     let mut cmd = Command::new(program);
     cmd.args(args)
         .current_dir(cwd)
-        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("STORY_BIN", storyhook_test_support::story_binary())
         .env("HOME", cwd)
         .env(
             "PATH",

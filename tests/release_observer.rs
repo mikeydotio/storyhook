@@ -7,7 +7,7 @@ fn release_observer_contracts() {
     let output = Command::new("python3")
         .args(["-B", "tests/support/release_observer.py"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("STORY_BIN", storyhook_test_support::story_binary())
         .output()
         .expect("run release observer contracts");
     assert!(

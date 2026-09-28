@@ -1044,9 +1044,9 @@ fn publish_with_scenario(scenario: &str) -> (Output, String) {
         .arg(fixture.path().join("scripts/release.sh"))
         .args(["--publish", "v9.9.9", "--yes"])
         .env("PATH", path)
-        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("STORY_BIN", storyhook_test_support::story_binary())
         .env("GH_CONFIG_DIR", fixture.path().join(".git/gh-fixture"))
-        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("STORY_BIN", storyhook_test_support::story_binary())
         .env("GH_CONFIG_DIR", fixture.path().join(".git/gh-fixture"))
         .output()
         .unwrap();
@@ -1075,7 +1075,7 @@ fn publish_refuses_a_non_version_before_calling_github() {
         .arg(fixture.path().join("scripts/release.sh"))
         .args(["--publish", "v9.9.9\") | .[]", "--yes"])
         .env("PATH", path)
-        .env("STORY_BIN", env!("CARGO_BIN_EXE_story"))
+        .env("STORY_BIN", storyhook_test_support::story_binary())
         .env("GH_CONFIG_DIR", fixture.path().join(".git/gh-fixture"))
         .output()
         .unwrap();
