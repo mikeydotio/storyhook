@@ -1461,6 +1461,8 @@ and upstream's own scaffolded roadmap (`src/service/templates.rs`) already
 named it as the very next work — "reconcile Full Auto lane accounting so
 `verifying` is an intentional handoff, not a stall or dead-window failure."
 
+*(Capacity accounting superseded by SH-822 below: the record is still held, but a verifying lane no longer counts against `--lanes`.)*
+
 **The lane is held, not freed, at the handoff.** A story in `verifying` still
 owns a live worktree and tmux window; the verifier reaps only after merge
 (`ShellVerificationActuator::reap`). Freeing the lane would let the engine
@@ -2876,3 +2878,47 @@ production wait with real bus notifications, and CLI start/resume through a
 real daemon. It covers lane-write feedback, overflow, deadline starvation,
 same-second controls, snapshot failure, removal/replacement, UI invalidation,
 and shutdown. Council decisions and the approved plan are retained on SH-642.
+
+### SH-822 — a verifying lane keeps its record but holds no capacity
+
+The operator asked that a story stop occupying a Full Auto lane once it moves
+to `verifying`. SH-521 held the lane until `done`, so a run stalled behind the
+serial verifier. The lane *record* stays: `resume_plan` still re-dispatches a
+returned story as that lane, the SH-650 deferral still protects a
+just-returned story, `finish_if_drained` still waits for the run's merges
+(D9), and Stop Now is unchanged. What changed is admission.
+
+`lane_admission` (`src/service/engine.rs`) runs inside the claim transaction
+and reads store rows only (SH-672). A dispatching or working lane is *active*
+unless its story is in `verifying`; a lane whose story cannot be read is
+active, and a story the verifier returns is active again. A running run admits
+while fewer than `lanes` lanes are active **and** it holds at most `lanes`
+verifying handoffs. The second bound is council decision D3 on SH-822: while
+the serial verifier is the bottleneck, a deeper queue adds work in progress,
+staleness and disk (each held worktree keeps its build products; 5-28 GB each
+on 2026-09-28), not landed stories. A one-lane run therefore overlaps one
+active story with one verifying handoff.
+
+When no idle lane is free, a claim takes an *overflow* lane at the lowest
+unused index below `2 x lanes`; together the two bounds keep at most
+`2 x lanes` occupied lanes after any admission. The slot is chosen in the claim
+transaction because `put_engine_lane` is an upsert: a slot picked from an
+earlier view could overwrite a lane another writer reserved. An overflow lane
+retires through `put_or_retire_idle_lane` when its story leaves. Adoption uses
+the same admission. A story returned for repair can take the run above its
+limit; admission then waits, the same rule as lowering `--lanes`.
+
+A pass that stops admitting names why (`AdmissionWait`: `lanes-full` or
+`verification-backlog`). `story engine status` shows `verifying` in a lane's
+state column and an `admission: waiting` line; HTTP lanes carry `verifying`
+and the run carries `admission_wait`; the dashboard counts only active lanes
+("N active · M verifying · target T lanes · waiting for verification") and
+marks a verifying lane on its strip and card chip. The census stays
+diagnostic and is asked only when a claim is possible.
+
+Tests: `tests/engine_reconcile.rs` (overflow fill, returned story, backlog
+bound, overflow retirement, status fields), `tests/engine_hardening.rs`
+(concurrent passes cannot take one overflow slot twice),
+`tests/engine_adoption.rs`, `tests/verification_queue.rs` (resume plan on an
+overflow lane), `src/output.rs` render tests, `tests/web_test.rs`, and
+`e2e/specs/engine.spec.ts`. Decisions D2, D3 and D3a are recorded on SH-822.

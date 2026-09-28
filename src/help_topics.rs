@@ -2677,8 +2677,9 @@ adopt
   and exact live provider pane. The entire batch must fit current capacity.
   Adoption preserves claims and agents. Identical retries consume no extra
   capacity. Adopted bindings release at verification, closure, or unclaim;
-  blocked or failed work is quarantined. Engine-created lanes retain their
-  existing verification ownership. Automatic adoption at start is not supported.
+  blocked or failed work is quarantined. An engine-created lane keeps its
+  record through verification but holds no capacity there (see start).
+  Automatic adoption at start is not supported.
 
 configure
   Changes only supplied settings on a running or paused run; at least one
@@ -2689,6 +2690,12 @@ configure
 start
   Starts a project-wide run, or narrows it to an epic's descendant
   subtree with --epic. --lanes defaults to 1 and accepts 1 through 255.
+  It limits active lanes. A lane whose story is in verifying keeps its
+  record, so the verifier can resume it as that lane, but it is not active.
+  A run holds at most --lanes such handoffs before it admits more work, and
+  a story the verifier returns is active again. New work can take an extra
+  lane beside a verifying one; that lane retires when its story leaves.
+  status names each verifying lane and why admission waits.
   --agent defaults to claude; codex selects a Codex lane instead. Model,
   effort, and speed are optional provider settings. They are stored on the
   run, reused by every lane, and shown by start and status. standard keeps
