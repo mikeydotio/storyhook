@@ -52,6 +52,7 @@ Repositories still carrying a `.storyhook/` tree migrate once with `story migrat
 skills/story/SKILL.md     the router — parses the verb, renders results
 skills/story-*/SKILL.md   nine standalone skills, each independently invocable
 adapters/                 provider-specific dispatch and lifecycle instructions
+agents/verifier.md        the Verifier Agent (Claude Code only; Codex plugins cannot declare agents)
 bin/story.sh              ALL deterministic work; one JSON object per run
 lib/session.sh            vendored tmux/worktree/readiness/git-safety core
 references/               protocols the router loads on demand
