@@ -6,6 +6,7 @@ pub(crate) mod context;
 pub(crate) mod hygiene;
 mod ignore;
 mod observe;
+mod verifier_agent;
 mod view;
 pub(crate) mod window;
 mod window_requests;

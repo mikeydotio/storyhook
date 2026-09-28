@@ -61,10 +61,9 @@ fn requests_resolve_the_current_catalog_without_requiring_an_existing_journal() 
         .write(|tx| tx.set_checkout_path(project, Some(fixture.cwd())))
         .unwrap();
     let views = registered_views(&store).unwrap();
-    assert!(
-        views.iter().any(|(id, _, directory)| *id == project
-            && *directory == fixture.cwd().join(".storyhook/logs"))
-    );
+    assert!(views.iter().any(|view| view.id == project
+        && view.journal == fixture.cwd().join(".storyhook/logs")
+        && view.checkout == fixture.cwd()));
     assert!(!fixture.cwd().join(".storyhook/logs").exists());
     store
         .write(|tx| tx.set_checkout_path(project, Some(&fixture.cwd().join("absent"))))
@@ -73,7 +72,7 @@ fn requests_resolve_the_current_catalog_without_requiring_an_existing_journal() 
         registered_views(&store)
             .unwrap()
             .iter()
-            .all(|(id, _, _)| *id != project)
+            .all(|view| view.id != project)
     );
     store
         .write(|tx| tx.set_checkout_path(project, None))
@@ -82,7 +81,7 @@ fn requests_resolve_the_current_catalog_without_requiring_an_existing_journal() 
         registered_views(&store)
             .unwrap()
             .iter()
-            .all(|(id, _, _)| *id != project)
+            .all(|view| view.id != project)
     );
 }
 
@@ -98,7 +97,7 @@ fn a_phase_request_activates_a_missing_journal_and_disabled_mirroring_does_nothi
     let env = Environment::at(fixture.cwd());
     let stop = AtomicBool::new(false);
     requests.request(project);
-    poll_with(&store, &env, &stop, &requests, |_, _, _, _| {
+    poll_with(&store, &env, &stop, &requests, |_, _, _, _, _| {
         panic!("disabled view")
     });
     let mut seen = Vec::new();
@@ -107,7 +106,7 @@ fn a_phase_request_activates_a_missing_journal_and_disabled_mirroring_does_nothi
         &env.with_test_verifier_mirror(),
         &stop,
         &requests,
-        |_, _, directory, stop| {
+        |_, _, directory, _, stop| {
             seen.push(directory.to_path_buf());
             assert!(!directory.exists());
             // Demand sent while the external operation runs must survive it.
@@ -134,7 +133,7 @@ fn a_failed_first_attempt_is_retried_without_a_journal_or_another_phase() {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            poll_with(&store, &env, &stop, &requests, |_, _, directory, _| {
+            poll_with(&store, &env, &stop, &requests, |_, _, directory, _, _| {
                 assert!(!directory.exists());
                 sender.send(()).unwrap();
             })

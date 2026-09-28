@@ -296,6 +296,15 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  fixed session and window and leaves a follower process \
                  running",
     },
+    Parameter {
+        name: "STORYHOOK_VERIFIER_AGENT",
+        disposition: Disposition::Literal("0"),
+        scope: Scope::Anywhere,
+        reason: "a real provider session: the verification window otherwise \
+                 starts `claude` with the Verifier Agent beside its reader, \
+                 a paid, network-bound process no fixture may own unless it \
+                 opts in with a fake provider on PATH",
+    },
 ];
 
 impl Parameter {

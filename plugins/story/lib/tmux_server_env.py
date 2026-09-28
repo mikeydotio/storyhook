@@ -35,7 +35,8 @@ GITHUB_CREDENTIALS = ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN",
 GITHUB_ROUTING = ("STORYHOOK_GITHUB_AUTHORITY", "STORYHOOK_GITHUB_EXPECTED")
 # Environment.child_vars() names, pinned equal by the same Rust unit test:
 # what a `story` run in a pane needs to reach its caller's store and daemon.
-PANE_SELECTORS = ("STORYHOOK_STORE_PATH", "XDG_STATE_HOME", "STORYHOOK_VERIFIER_MIRROR")
+PANE_SELECTORS = ("STORYHOOK_STORE_PATH", "XDG_STATE_HOME", "STORYHOOK_VERIFIER_MIRROR",
+                  "STORYHOOK_VERIFIER_AGENT")
 
 # Hook-scoped roots both provider hosts export to a plugin's hooks.
 PLUGIN_ROOTS = ("PLUGIN_ROOT", "PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA")

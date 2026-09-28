@@ -99,6 +99,7 @@ pub struct Environment {
     preferred_port: u16,
     busy_timeout: Duration,
     verifier_mirror_enabled: bool,
+    verifier_agent_enabled: bool,
 }
 
 impl Environment {
@@ -122,6 +123,8 @@ impl Environment {
     ///   [`DEFAULT_BUSY_TIMEOUT`].
     /// * `verifier_mirror_enabled` — false only when
     ///   `$STORYHOOK_VERIFIER_MIRROR` is exactly `0`; otherwise true.
+    /// * `verifier_agent_enabled` — false only when
+    ///   `$STORYHOOK_VERIFIER_AGENT` is exactly `0`; otherwise true (SH-822).
     ///
     /// `store_flag` is `None` everywhere except `main`, and that is correct
     /// rather than an oversight: `main` publishes the flag it was given into
@@ -173,6 +176,8 @@ impl Environment {
             busy_timeout,
             verifier_mirror_enabled: std::env::var_os("STORYHOOK_VERIFIER_MIRROR").as_deref()
                 != Some(OsStr::new("0")),
+            verifier_agent_enabled: std::env::var_os("STORYHOOK_VERIFIER_AGENT").as_deref()
+                != Some(OsStr::new("0")),
         })
     }
 
@@ -195,6 +200,7 @@ impl Environment {
             preferred_port: 0,
             busy_timeout: DEFAULT_BUSY_TIMEOUT,
             verifier_mirror_enabled: false,
+            verifier_agent_enabled: false,
         }
     }
 
@@ -262,6 +268,24 @@ impl Environment {
         self
     }
 
+    /// Whether the verification window may start its Verifier Agent pane, a
+    /// provider session (SH-822).
+    ///
+    /// Resolved once by [`Self::from_process`]; [`Self::at`] always disables
+    /// it, and the shared test environment sets it to `0`, so no fixture can
+    /// launch a real provider.
+    pub fn verifier_agent_enabled(&self) -> bool {
+        self.verifier_agent_enabled
+    }
+
+    /// Enable the agent pane explicitly in library fixtures that own their
+    /// process boundary and supply a fake provider.
+    #[cfg(test)]
+    pub(crate) fn with_test_verifier_agent(mut self) -> Self {
+        self.verifier_agent_enabled = true;
+        self
+    }
+
     /// The variables a child that will run `story` needs in order to resolve
     /// **this** environment rather than its own process's (SH-633).
     ///
@@ -315,6 +339,15 @@ impl Environment {
             (
                 "STORYHOOK_VERIFIER_MIRROR",
                 if self.verifier_mirror_enabled {
+                    "1"
+                } else {
+                    "0"
+                }
+                .into(),
+            ),
+            (
+                "STORYHOOK_VERIFIER_AGENT",
+                if self.verifier_agent_enabled {
                     "1"
                 } else {
                     "0"
@@ -1042,10 +1075,12 @@ mod tests {
             [
                 "STORYHOOK_STORE_PATH",
                 "XDG_STATE_HOME",
-                "STORYHOOK_VERIFIER_MIRROR"
+                "STORYHOOK_VERIFIER_MIRROR",
+                "STORYHOOK_VERIFIER_AGENT"
             ]
         );
         assert!(!env.verifier_mirror_enabled());
+        assert!(!env.verifier_agent_enabled());
 
         // The store moves with `with_store`; the state home does not, which is
         // what `with_store`'s own doc promises.
@@ -1059,6 +1094,7 @@ mod tests {
             env.state_home().parent().unwrap().as_os_str()
         );
         assert_eq!(vars["STORYHOOK_VERIFIER_MIRROR"], "0");
+        assert_eq!(vars["STORYHOOK_VERIFIER_AGENT"], "0");
         assert!(!moved.verifier_mirror_enabled());
     }
 
