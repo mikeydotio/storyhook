@@ -445,7 +445,7 @@ impl<S: Store, D: Dispatcher> EngineService<'_, S, D> {
                 }
                 if existing.is_none() { additions.push((row, dispatch)); }
             }
-            let slots = super::free_lane_slots(&run, &lanes);
+            let slots = super::lane_admission(tx, project, &run, &lanes, &now)?.slots;
             if additions.len() > slots.len() {
                 return Err(refusal(format!("insufficient capacity in run {run_id}; configure more lanes or wait for idle capacity")).into());
             }

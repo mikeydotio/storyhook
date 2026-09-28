@@ -18,7 +18,7 @@ mod store_support;
 use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget};
 use storyhook::lane_budget::WindowCensus;
 use storyhook::service::engine::{
-    BREAKER_TRIPPED, COMPLETED, ConfigureRequest, DispatchOutcome, EngineService,
+    AdmissionWait, BREAKER_TRIPPED, COMPLETED, ConfigureRequest, DispatchOutcome, EngineService,
     HOST_TOOL_CALL_CEILING_SECS, HardStopKind, LaneClassification, LaneObservation,
     OPERATOR_STOPPED, QUEUE_DRAINED, RECONCILE_TICK_SECS, ReconcilePass, STALL_CEILING_SECS,
     STALL_MARGIN, StartRequest, WindowProbe, classify,
@@ -760,6 +760,31 @@ fn occupy(fixture: &ServiceFixture, run_id: &str, index: u32, story: &str) {
         .unwrap();
 }
 
+/// Puts `story` into a new lane `index` beyond the run's configured lanes, as
+/// if a dispatch had filled an overflow lane (SH-822).
+fn occupy_overflow(fixture: &ServiceFixture, run_id: &str, index: u32, story: &str) {
+    let mut lane = lane_at(fixture, run_id, 0);
+    lane.lane_index = index;
+    lane.adopted_identity = None;
+    lane.cleanup_lease = None;
+    lane.pane_id = None;
+    lane.outcome = None;
+    lane.outcome_detail = None;
+    lane.probe_detail = None;
+    lane.state = EngineLaneState::Working;
+    lane.story_id = Some(story.to_string());
+    lane.window_name = Some(format!("story-{story}"));
+    lane.worktree_path = Some(format!("/tmp/wt/{story}"));
+    lane.dispatched_at = Some(FIXTURE_NOW.to_string());
+    lane.last_observed_at = FIXTURE_NOW.to_string();
+    lane.last_progress_seq = None;
+    lane.last_progress_at = None;
+    fixture
+        .store()
+        .write(|tx| tx.put_engine_lane(&lane))
+        .unwrap();
+}
+
 fn awaiting_of(fixture: &ServiceFixture, number: i64) -> Option<String> {
     fixture
         .store()
@@ -1400,6 +1425,185 @@ fn a_verifying_lane_does_not_block_other_lanes_from_filling() {
     let held_lane = lane_at(&fixture, &run_id, 0);
     assert_eq!(held_lane.state, EngineLaneState::Working);
     assert_eq!(held_lane.story_id.as_deref(), Some(held.as_str()));
+}
+
+/// SH-822: a verifying story keeps its lane record — the verifier's resume,
+/// the SH-650 deferral and drain still read it — but it no longer uses the
+/// run's capacity. A one-lane run fills an overflow lane beside it.
+#[test]
+fn a_verifying_story_frees_capacity_for_an_overflow_lane() {
+    let fixture = ServiceFixture::new();
+    let held = new_story(&fixture, "in verification", &[]);
+    let ready = new_story(&fixture, "claim me", &[]);
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{held}"),
+            alive: false,
+        },
+        DispatcherStep::Dispatch(DispatchOutcome::from_payload(serde_json::json!({
+            "ok": true,
+            "window_name": "SH-2",
+            "worktree_path": "/tmp/wt/SH-2"
+        }))),
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &held);
+    StoryService::new(&fixture.ctx())
+        .set_state(&held, "verifying", None, None, None)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.verifying, [0]);
+    assert_eq!(report.filled, [(1, ready.clone())]);
+    assert_eq!(
+        report.admission_wait,
+        Some(AdmissionWait::LanesFull),
+        "the new story fills the run's one active lane"
+    );
+    let held_lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(held_lane.state, EngineLaneState::Working);
+    assert_eq!(held_lane.story_id.as_deref(), Some(held.as_str()));
+    let overflow = lane_at(&fixture, &run_id, 1);
+    assert_eq!(overflow.state, EngineLaneState::Working);
+    assert_eq!(overflow.story_id.as_deref(), Some(ready.as_str()));
+}
+
+/// SH-822: a story the verifier returns for repair is active work again. It
+/// counts against capacity, so a run over its limit admits nothing until a
+/// lane frees — the same rule as lowering `--lanes` (SH-672).
+#[test]
+fn a_returned_story_counts_again_and_blocks_admission() {
+    let fixture = ServiceFixture::new();
+    let returned = new_story(&fixture, "returned for repair", &[]);
+    let overflow = new_story(&fixture, "claimed while it verified", &[]);
+    let waiting = new_story(&fixture, "waiting", &[]);
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{returned}"),
+            alive: true,
+        },
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{overflow}"),
+            alive: true,
+        },
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &returned);
+    occupy_overflow(&fixture, &run_id, 1, &overflow);
+    StoryService::new(&fixture.ctx())
+        .set_state(&returned, "verifying", None, None, None)
+        .unwrap();
+    StoryService::new(&fixture.ctx())
+        .set_state(&returned, "in-progress", None, None, None)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert!(report.verifying.is_empty());
+    assert!(report.filled.is_empty(), "{waiting} must wait: {report:?}");
+    assert_eq!(report.admission_wait, Some(AdmissionWait::LanesFull));
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, DispatcherCall::Dispatch(_))),
+        "an over-subscribed run must not dispatch"
+    );
+}
+
+/// SH-822, council D3: a run holds at most `lanes` stories that wait for
+/// central verification. A further claim would add work in progress, not
+/// landed stories, while the serial verifier is the bottleneck — and each
+/// held worktree keeps its build products. Admission waits, and says why.
+#[test]
+fn the_verifying_backlog_is_bounded_by_the_lane_count() {
+    let fixture = ServiceFixture::new();
+    let first = new_story(&fixture, "first handoff", &[]);
+    let second = new_story(&fixture, "second handoff", &[]);
+    let waiting = new_story(&fixture, "waiting", &[]);
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{first}"),
+            alive: false,
+        },
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{second}"),
+            alive: false,
+        },
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &first);
+    occupy_overflow(&fixture, &run_id, 1, &second);
+    for story in [&first, &second] {
+        StoryService::new(&fixture.ctx())
+            .set_state(story, "verifying", None, None, None)
+            .unwrap();
+    }
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.verifying, [0, 1]);
+    assert!(report.filled.is_empty(), "{waiting} must wait: {report:?}");
+    assert_eq!(
+        report.admission_wait,
+        Some(AdmissionWait::VerificationBacklog)
+    );
+    assert_eq!(
+        report.census, None,
+        "a pass that cannot admit anything does not ask tmux for a census"
+    );
+    assert_eq!(report.run_state, EngineRunState::Running);
+}
+
+/// SH-822: an overflow lane exists only while it holds a story. When that
+/// story completes, the lane retires; the run's configured lanes stay.
+#[test]
+fn an_overflow_lane_retires_when_its_story_completes() {
+    let fixture = ServiceFixture::new();
+    let held = new_story(&fixture, "in verification", &[]);
+    let finished = new_story(&fixture, "finished on the overflow lane", &[]);
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{held}"),
+            alive: false,
+        },
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{finished}"),
+            alive: false,
+        },
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &held);
+    occupy_overflow(&fixture, &run_id, 1, &finished);
+    StoryService::new(&fixture.ctx())
+        .set_state(&held, "verifying", None, None, None)
+        .unwrap();
+    StoryService::new(&fixture.ctx())
+        .set_state(&finished, "verifying", None, None, None)
+        .unwrap();
+    StoryService::new(&fixture.ctx())
+        .comment(
+            &finished,
+            "CENTRAL VERIFICATION GREEN — merge tree `abc123` passed `make test` and pull request https://github.com/acme/widgets/pull/2 landed.",
+        )
+        .unwrap();
+    StoryService::new(&fixture.ctx())
+        .set_state(&finished, "done", None, None, None)
+        .unwrap();
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.completed, [1]);
+    assert_eq!(report.verifying, [0]);
+    let indexes: Vec<u32> = fixture
+        .store()
+        .read(|tx| tx.engine_lanes(&run_id))
+        .unwrap()
+        .into_iter()
+        .map(|lane| lane.lane_index)
+        .collect();
+    assert_eq!(indexes, [0], "the overflow lane retires; lane 0 stays");
 }
 
 /// The handoff completes: once the verifier actually closes the story, the
