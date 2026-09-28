@@ -133,10 +133,23 @@ fn git(cwd: &Path, args: &[&str]) -> String {
 /// releases the real gate before the scoped verifier thread must join.
 struct GateRelease(PathBuf);
 
+impl GateRelease {
+    /// Publishes the gate's exit status whole. The fixture gate polls for
+    /// the file to exist and then reads it; `fs::write` creates the file
+    /// before it writes, so under load the gate read an empty status and
+    /// failed with a ValueError instead of the verdict this test chose
+    /// (SH-822's first gate). A rename makes the file appear with its bytes.
+    fn publish(&self, status: &str) {
+        let partial = self.0.with_extension("partial");
+        fs::write(&partial, status).expect("write the fixture gate release");
+        fs::rename(&partial, &self.0).expect("publish the fixture gate release");
+    }
+}
+
 impl Drop for GateRelease {
     fn drop(&mut self) {
         if !self.0.exists() {
-            fs::write(&self.0, "3").expect("release fixture gate during cleanup");
+            self.publish("3");
         }
     }
 }
@@ -411,7 +424,7 @@ raise SystemExit(status)
                 .as_ref(),
             Some(&incident)
         );
-        fs::write(&release.0, if verdict == "green" { "0" } else { "3" }).unwrap();
+        release.publish(if verdict == "green" { "0" } else { "3" });
         running.join().unwrap()
     });
     assert!(activity.active_for(f.project()).is_none());
@@ -455,4 +468,15 @@ raise SystemExit(status)
         assert_eq!(git(&checkout, &["rev-parse", "origin/main"]), base);
     }
     assert!(callback.calls() >= 2, "real gate never requested admission");
+}
+
+/// The published release is never visible without its status, and leaves no
+/// partial file behind.
+#[test]
+fn a_gate_release_appears_with_its_status() {
+    let root = storyhook_test_support::scratch_dir();
+    let release = GateRelease(root.path().join("gate-release"));
+    release.publish("0");
+    assert_eq!(fs::read_to_string(&release.0).unwrap(), "0");
+    assert!(!release.0.with_extension("partial").exists());
 }
