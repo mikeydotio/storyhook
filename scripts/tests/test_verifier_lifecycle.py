@@ -1400,28 +1400,30 @@ class HarnessObservation(unittest.TestCase):
 
     def test_command_extends_the_same_process_when_contention_rises(self):
         """An expired startup snapshot does not kill a command under rising load."""
+        idle_allowance = MILESTONE_DEADLINE
         process = mock.MagicMock(returncode=0)
         process.__enter__.return_value = process
-        process.communicate.side_effect = [subprocess.TimeoutExpired("probe", 95), ("ok", "")]
+        process.communicate.side_effect = [subprocess.TimeoutExpired("probe", idle_allowance), ("ok", "")]
         with mock.patch.object(subprocess, "Popen", return_value=process) as launch, \
-             mock.patch.object(time, "monotonic", side_effect=[0, 0, 95, 95]), \
+             mock.patch.object(time, "monotonic", side_effect=[0, 0, idle_allowance, idle_allowance]), \
              mock.patch.object(load_grace, "contention", return_value=2):
             result = self.harness.command("probe")
         self.assertEqual(result.stdout, "ok")
         launch.assert_called_once()
         process.kill.assert_not_called()
         self.assertEqual(process.communicate.call_args_list,
-                         [mock.call(timeout=95), mock.call(timeout=95)])
+                         [mock.call(timeout=idle_allowance), mock.call(timeout=idle_allowance)])
 
     def test_command_expiry_kills_and_reaps_without_restarting(self):
         """A real hang retains its bounded failure and captured diagnostics."""
+        idle_allowance = MILESTONE_DEADLINE
         process = mock.MagicMock()
         process.__enter__.return_value = process
         process.communicate.side_effect = [
-            subprocess.TimeoutExpired("probe", 95, output="out", stderr="err"),
+            subprocess.TimeoutExpired("probe", idle_allowance, output="out", stderr="err"),
         ]
         with mock.patch.object(subprocess, "Popen", return_value=process) as launch, \
-             mock.patch.object(time, "monotonic", side_effect=[0, 0, 95]):
+             mock.patch.object(time, "monotonic", side_effect=[0, 0, idle_allowance]):
             with self.assertRaises(subprocess.TimeoutExpired) as error:
                 self.harness.command("probe")
         launch.assert_called_once()
