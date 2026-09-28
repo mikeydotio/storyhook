@@ -1996,24 +1996,22 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             EngineScope::Epic(id) => Some(id.clone()),
             EngineScope::Project => None,
         };
-        let idle: Vec<EngineLaneRecord> = view
+        let idle = view
             .lanes
             .iter()
-            .filter(|lane| lane.state == EngineLaneState::Idle)
-            .cloned()
-            .collect();
+            .any(|lane| lane.state == EngineLaneState::Idle);
 
         // The census is diagnostic only (SH-672). Capacity belongs to this
         // run and is checked in the same transaction that reserves its lane.
         // Keep the subprocess outside that transaction so tmux cannot hold
         // the store's write lock while answering.
-        report.census = if idle.is_empty() {
-            None
-        } else {
+        report.census = if idle {
             Some(self.dispatcher.census())
+        } else {
+            None
         };
 
-        if idle.is_empty() {
+        if !idle {
             return Ok(hard_stops);
         }
         // Held from before the first claim until each claimed lane has its
@@ -2034,9 +2032,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 )));
             }
         };
-        for lane in idle {
+        // Each claim consumes one free slot, so the loop ends when the run
+        // has no capacity left, nothing is claimable, or a dispatch refuses.
+        loop {
             let dispatched_at = self.ctx.now();
-            let mut working = lane.clone();
+            let mut working = None;
+            let chosen_slot = std::cell::RefCell::new(None);
             let dispatch_configuration = std::cell::RefCell::new(None);
             let filters = ReadyQueueFilters {
                 phase: None,
@@ -2049,33 +2050,47 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     None,
                     |tx| {
                         let current = run_for_project(tx, slug, run_id)?;
-                        let lanes = tx.engine_lanes(run_id)?;
-                        let eligible = current.state == EngineRunState::Running
-                            && scope_is_available(tx, self.ctx.project(), &current.scope)?
-                            && occupied_run_lane_count(&lanes) < current.lanes as usize
-                            && lanes.iter().any(|candidate| candidate == &lane);
-                        if eligible {
-                            dispatch_configuration.replace(Some((
-                                current.agent,
-                                current.model,
-                                current.effort,
-                                current.speed,
-                            )));
+                        if current.state != EngineRunState::Running
+                            || !scope_is_available(tx, self.ctx.project(), &current.scope)?
+                        {
+                            return Ok(false);
                         }
-                        Ok(eligible)
+                        // Chosen in this transaction, never from the pass's
+                        // earlier view: `put_engine_lane` is an upsert, so a
+                        // slot picked outside it could overwrite a lane that
+                        // another writer reserved meanwhile (SH-822).
+                        let lanes = tx.engine_lanes(run_id)?;
+                        let Some(slot) = free_lane_slots(&current, &lanes).into_iter().next()
+                        else {
+                            return Ok(false);
+                        };
+                        chosen_slot.replace(Some(slot));
+                        dispatch_configuration.replace(Some((
+                            current.agent,
+                            current.model,
+                            current.effort,
+                            current.speed,
+                        )));
+                        Ok(true)
                     },
                     |tx, before, claimed| {
-                        working.state = EngineLaneState::Dispatching;
-                        working.story_id = Some(claimed.id.clone());
-                        working.dispatched_at = Some(dispatched_at.clone());
-                        working.last_observed_at = dispatched_at.clone();
-                        working.outcome = Some(before.state.clone());
-                        tx.put_engine_lane(&working)
+                        let mut lane = chosen_slot
+                            .take()
+                            .expect("an engine claim chooses its lane in its own transaction");
+                        lane.state = EngineLaneState::Dispatching;
+                        lane.story_id = Some(claimed.id.clone());
+                        lane.dispatched_at = Some(dispatched_at.clone());
+                        lane.last_observed_at = dispatched_at.clone();
+                        lane.outcome = Some(before.state.clone());
+                        tx.put_engine_lane(&lane)?;
+                        working = Some(lane);
+                        Ok(())
                     },
                 )?
             else {
                 break;
             };
+            let working = working.expect("a successful engine claim records its lane");
             let story = claimed.id.clone();
             let (agent, model, effort, speed) = dispatch_configuration
                 .into_inner()
@@ -2132,12 +2147,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         return Err(AppError::Storage(format!(
                             "engine run `{run_id}` lane {} changed while story `{story}` \
                              dispatched; its new window {} and worktree {} have no lane",
-                            lane.lane_index,
+                            working.lane_index,
                             live.window_name.as_deref().unwrap_or("unknown"),
                             live.worktree_path.as_deref().unwrap_or("unknown"),
                         )));
                     }
-                    report.filled.push((lane.lane_index, story));
+                    report.filled.push((working.lane_index, story));
                     continue;
                 }
                 // The script's own refusal, relayed verbatim rather than
@@ -2153,7 +2168,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         "ERROR",
                         "engine",
                         "event",
-                        &format!("run={run_id} lane={} story={story}", lane.lane_index),
+                        &format!("run={run_id} lane={} story={story}", working.lane_index),
                         &diagnosis,
                     );
                     diagnosis
@@ -2177,7 +2192,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             // through the shared helper (SH-472).
             self.fire_lane_quarantined_hook(
                 run_id,
-                lane.lane_index,
+                working.lane_index,
                 Some(story.as_str()),
                 HardStopKind::DispatchRefused,
                 Some(&diagnosis),
@@ -2186,9 +2201,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             );
             report
                 .quarantined
-                .push((lane.lane_index, HardStopKind::DispatchRefused));
+                .push((working.lane_index, HardStopKind::DispatchRefused));
             hard_stops.push(EngineQuarantineRecord {
-                lane_index: lane.lane_index,
+                lane_index: working.lane_index,
                 story_id: Some(story),
                 kind: HardStopKind::DispatchRefused.as_str().to_string(),
                 detail: Some(diagnosis),
@@ -2755,6 +2770,26 @@ fn observation_is_current(
     let story = lane.story_id.as_deref().expect("occupied lane has a story");
     let current = optional_lane_story(tx, project, &prefix, story)?;
     Ok(current.map(|row| row.head_global_seq.get()) == head_global_seq)
+}
+
+/// The lanes a claim may take now, lowest index first: one per unit of the
+/// run's spare capacity, and never more than the idle lanes it has.
+///
+/// Fill and adoption both call this inside the transaction that writes the
+/// chosen lane, so a slot is never taken from a stale view.
+pub(super) fn free_lane_slots(
+    run: &EngineRunRecord,
+    lanes: &[EngineLaneRecord],
+) -> Vec<EngineLaneRecord> {
+    let capacity = (run.lanes as usize).saturating_sub(occupied_run_lane_count(lanes));
+    let mut idle: Vec<EngineLaneRecord> = lanes
+        .iter()
+        .filter(|lane| lane.state == EngineLaneState::Idle)
+        .cloned()
+        .collect();
+    idle.sort_by_key(|lane| lane.lane_index);
+    idle.truncate(capacity);
+    idle
 }
 
 /// Counts this run's reservations and live work inside the claim transaction.
