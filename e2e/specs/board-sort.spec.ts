@@ -53,11 +53,13 @@ async function createStory(
   page: import("@playwright/test").Page,
   title: string,
   priority: string,
+  storyType = "normal",
 ) {
   await page.locator("#new-story-btn").click();
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-title").fill(title);
   await page.locator("#create-priority").selectOption(priority);
+  await page.locator("#create-type").selectOption(storyType);
   await page.locator("#create-submit").click();
   await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
   await expect(
@@ -187,8 +189,8 @@ async function closedAtOf(
 
 /** Adds a `parent-of` relation from whichever story's drawer is currently
  * open to `childId` -- same shape as `list-state-pill.spec.ts`'s own
- * `addChild`. Used by the "Next" test (SH-407) to make one card a real
- * epic, since only `has_children` is excluded from the ready queue. */
+ * `addChild`. The "Next" test gives its typed epic a child; the type,
+ * not this relation, excludes that epic from the ready queue. */
 async function addChild(
   page: import("@playwright/test").Page,
   childId: string,
@@ -414,10 +416,10 @@ test('choosing "Modified" reorders a column by last-touched time, not creation t
   await deleteStory(page, touched);
 });
 
-test('choosing "Next" ranks a column by the order story next would hand it out, sorting a parent last regardless of its own priority', async ({
+test('choosing "Next" ranks a column by the order story next would hand it out, sorting a typed epic last regardless of its own priority', async ({
   page,
 }) => {
-  const epic = "SH-305 sort test — next, epic (excluded, has a child)";
+  const epic = "SH-305 sort test — next, typed epic (excluded)";
   const child = "SH-305 sort test — next, epic's own child";
   const leaf = "SH-305 sort test — next, plain leaf, same priority as the epic";
 
@@ -425,7 +427,7 @@ test('choosing "Next" ranks a column by the order story next would hand it out, 
   // "Priority ↓" this pair would read [epic, leaf] (story-number tiebreak).
   // A passing assertion below, after switching to "Next", proves the epic
   // was excluded from the queue entirely rather than merely reordered.
-  await createStory(page, epic, "critical");
+  await createStory(page, epic, "critical", "epic");
   await createStory(page, leaf, "critical");
   await createStory(page, child, "low");
 
@@ -464,7 +466,7 @@ test('choosing "Next" ranks a column by the order story next would hand it out, 
   const titles = await ourColumnTitles(page, "todo");
   expect(
     titles.indexOf(epic),
-    "the epic (has_children) is never offered by story next, so it must sort last regardless of its own critical priority",
+    "the typed epic is never offered by story next, so it must sort last regardless of its own critical priority",
   ).toBe(titles.length - 1);
   expect(titles.indexOf(leaf)).toBeLessThan(titles.indexOf(epic));
   expect(titles.indexOf(child)).toBeLessThan(titles.indexOf(epic));
