@@ -186,7 +186,9 @@ impl Harness {
         fs::create_dir_all(&home).expect("creating fixture home");
         fs::create_dir_all(&fake_bin).expect("creating fixture bin");
 
-        let built = PathBuf::from(env!("CARGO_BIN_EXE_story"));
+        // Keep every fixture on the build leased by this test process, even
+        // if another Cargo invocation replaces its mutable output path.
+        let built = storyhook_test_support::story_binary().to_path_buf();
         let story = if packaged_binary {
             let copied = temp.path().join("package/story");
             fs::create_dir_all(copied.parent().unwrap()).expect("creating package directory");
@@ -691,6 +693,17 @@ fn failures_after_the_removes(provider: &str) -> Vec<(&'static str, &'static str
         ],
         other => panic!("unknown provider {other}"),
     }
+}
+
+/// The fixture must not launch Cargo's mutable artifact or copy from it.
+#[test]
+fn provider_fixture_uses_the_process_binary_lease() {
+    let harness = Harness::new(false);
+    assert_eq!(
+        harness.story,
+        storyhook_test_support::story_binary(),
+        "provider commands and daemon startup must use the process-owned binary lease"
+    );
 }
 
 #[test]

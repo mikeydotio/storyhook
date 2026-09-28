@@ -40,8 +40,8 @@ harness allowance, does not acquire a new timeout policy in this change.
 | test support `pty::Pty::spawn` | Default prompt and child completion allowance | `EXPECT_TIMEOUT`, 30 s | Default patience via `graced_now`; explicit override stays literal |
 | `change_feed_subscriber::wait_for` | Expected fixture state | Caller duration | Patience via `wait_for` |
 | `change_feed_subscriber::a_subscriber_survives_its_daemon_restarting` | Reconnect notification, then write notification | 15 s, 10 s | Patience; the subscriber's 500 ms poll is unchanged |
-| `daemon_concurrency::wait_for` | Slow request becomes visible | Caller duration | Patience via `wait_for` |
-| `daemon_concurrency::a_slow_command_does_not_block_another_client` | Baseline and concurrent commands complete | 15 s, `HOOK_SLEEP_SECS` | Patience via `graced_now`; elapsed-time comparisons unchanged |
+| `daemon_concurrency::wait_for` | Hook publishes its held state | Caller duration | Patience via `wait_for` |
+| `daemon_concurrency::a_slow_command_does_not_block_another_client` | Concurrent list and released hook complete | 30 s, 15 s | Patience via `graced_now`; ordering is proved by explicit hook release, not elapsed-time ratios |
 | `daemon_concurrency::a_hook_that_calls_story_never_queues_behind_its_own_parent` | Nested command workers finish | 20 s | One graced allowance shared by all receives |
 | `daemon_lifecycle::wait_for` | Lifecycle state or process retirement | 5 s | Patience via `wait_for`; negative observation loops unchanged |
 | `verification_withdrawal::wait_for` | Worker state reaches the expected transition | 8 s | Patience via `wait_for` |
@@ -183,3 +183,18 @@ The reported selective-gate helper timeout was outside the Rust source scan:
 now samples shared Python load grace for each command. A deterministic regression
 covers unknown, idle, busy and capped load, and preserves timeout errors. The
 `selective_gate` target runs that regression and the production receipt scenarios.
+
+## Second verification remediation
+
+The concurrency test used a baseline-times-four plus 500 ms assertion. The gate
+measured a 10 ms baseline and a 588 ms concurrent list, so it failed despite the
+30-second hook still being active. A one-second delayed observer reproduces that
+false failure. The test now holds the hook until list returns, releases it, and
+requires its successful release marker. The hook uses the production timeout
+ceiling unchanged; client and readiness allowances use load grace.
+
+The plugin fixture daemon died before readiness. macOS recorded a Gatekeeper
+rejection for the exact PID and mutable Cargo artifact path. The fixture now
+selects `story_binary()` for both direct execution and packaged copies. A
+regression rejects bypassing the shared binary lease. This does not retry a
+killed process or change OS security policy; an OS rejection still fails loudly.
