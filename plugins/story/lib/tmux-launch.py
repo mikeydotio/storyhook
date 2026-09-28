@@ -14,8 +14,8 @@ import sys
 # An installed plugin directory is not this process's to write into.
 sys.dont_write_bytecode = True
 import probe_budget
-from tmux_server_env import (GITHUB_CREDENTIALS, GITHUB_ROUTING, PANE_SELECTORS,
-                             client_environment, reports_no_server)
+from tmux_server_env import (GITHUB_CREDENTIALS, GITHUB_ROUTING, client_environment,
+                             pane_overrides, reports_no_server)
 
 PANE_COMMANDS = ("new-session", "new-window", "respawn-pane")
 
@@ -41,12 +41,10 @@ def main():
     """Retain the caller's lock here while the detached terminal boundary runs."""
     environment = os.environ.copy()
     environment.pop("STORY_WORKSPACE_LOCK_FD", None)
-    pane_environment = {name: "" for name in GITHUB_CREDENTIALS + GITHUB_ROUTING}
     # A daemon may select an immutable lease and a store. Do not replace that
     # choice with a server's stale value or strip it like a build/test child's
-    # selector; empty keeps each reader's own fallback (`${STORY_BIN:-story}`).
-    for name in ("STORY_BIN",) + PANE_SELECTORS:
-        pane_environment[name] = environment.get(name, "")
+    # selector.
+    overrides = pane_overrides(environment)
     # Store selectors stay in the client: an existing server ignores its
     # client's environment for new panes, and a starting one is allowlisted.
     for name in GITHUB_CREDENTIALS + GITHUB_ROUTING + ("STORY_BIN",):
@@ -56,8 +54,6 @@ def main():
     # server/session state. Empty STORY_BIN retains the shell adapter's fallback.
     for index, argument in enumerate(arguments):
         if argument in PANE_COMMANDS:
-            overrides = [part for name, value in pane_environment.items()
-                         for part in ("-e", name + "=" + value)]
             arguments[index + 1:index + 1] = overrides
             if argument == "new-session" and not server_answers(arguments[:index], environment):
                 environment = client_environment(os.environ)
