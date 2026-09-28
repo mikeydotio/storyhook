@@ -55,6 +55,45 @@ impl RawResponse {
     }
 }
 
+/// Keeps a failed single-use request visible without replaying it.
+fn write_request_head(stream: &mut TcpStream, head: &str, method: &str, path: &str) {
+    // Capture endpoints before the write: a disconnected socket can lose its
+    // peer address. Never print `head`, which contains the token or coupon.
+    let local = stream.local_addr();
+    let peer = stream.peer_addr();
+    stream.write_all(head.as_bytes()).unwrap_or_else(|error| {
+        panic!("writing {method} {path}: {error:?}; local={local:?}; peer={peer:?}")
+    });
+}
+
+#[test]
+fn request_write_failure_names_the_route_without_exposing_credentials() {
+    use std::net::{Shutdown, TcpListener};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut stream = TcpStream::connect(address).unwrap();
+    let (_peer, _) = listener.accept().unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
+    let failure = catch_unwind(AssertUnwindSafe(|| {
+        write_request_head(
+            &mut stream,
+            "POST /handoff/redeem HTTP/1.1\r\nAuthorization: secret-fixture-token\r\n\r\n",
+            "POST",
+            REDEEM_PATH,
+        );
+    }))
+    .expect_err("a closed socket must fail without replaying the request");
+    let message = failure.downcast_ref::<String>().expect("panic text");
+    assert!(
+        message.contains(&format!("POST {REDEEM_PATH}")),
+        "{message}"
+    );
+    assert!(message.contains(&address.to_string()), "{message}");
+    assert!(!message.contains("secret-fixture-token"), "{message}");
+}
+
 /// Sends one request with exactly the headers given — no more — and reads the
 /// whole response.
 ///
@@ -74,9 +113,7 @@ fn request(port: u16, method: &str, path: &str, headers: &[(&str, &str)]) -> Raw
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     head.push_str("Content-Length: 0\r\nConnection: close\r\n\r\n");
-    stream
-        .write_all(head.as_bytes())
-        .expect("writing the request");
+    write_request_head(&mut stream, &head, method, path);
     stream.flush().expect("flushing the request");
 
     let mut raw = Vec::new();

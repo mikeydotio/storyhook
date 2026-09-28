@@ -198,3 +198,26 @@ rejection for the exact PID and mutable Cargo artifact path. The fixture now
 selects `story_binary()` for both direct execution and packaged copies. A
 regression rejects bypassing the shared binary lease. This does not retry a
 killed process or change OS security policy; an OS rejection still fails loudly.
+
+## Third verification investigation
+
+Merge tree `994c5aa395916292a3ae6633519b5dad3f5ef3e0` failed one
+`handoff_endpoint` request write with macOS `ENOTCONN`. The target finished in
+0.73 seconds, which excludes expiry of the server's 30-second peer allowance.
+The report did not identify which request failed: arm, redeem, or cookie use.
+The relevant server, API, and test-support code matches this branch.
+
+The nine endpoint tests passed 100 consecutive runs with temporary server read
+error tracing (900 test executions). OS logs identify the process and listener
+but do not establish the cause of the loopback failure. The temporary server
+tracing was removed. The disconnect remains unexplained; these passes do not
+prove it is fixed.
+
+Request-write failures now report the method, route, original I/O error and both
+socket endpoints captured before the write. They exclude headers, tokens and
+coupons. A real socket with its write side shut down proves the old diagnostic
+omits the route and verifies the new diagnostic preserves context without
+printing credentials. This is a diagnostic regression, not a reproduction of
+the original disconnect. Requests are not retried: a failed write can already
+have delivered bytes, and coupon redemption is single-use. No production
+transport behavior or deadline changed.
