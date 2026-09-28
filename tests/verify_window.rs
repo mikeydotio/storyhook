@@ -17,6 +17,7 @@ fn project_readers_reconcile_and_fixture_servers_are_owned() {
             "-m",
             "unittest",
             "scripts.tests.test_verification_view",
+            "scripts.tests.test_verification_view_budget",
             "scripts.tests.test_cleanup_verifier_fixtures",
             "-v",
         ])

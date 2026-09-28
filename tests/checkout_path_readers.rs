@@ -51,6 +51,18 @@ const ALLOWED: &[(&str, &str)] = &[
         "reader supervision chooses journal directories for already-enumerated store projects; paths never determine project identity",
     ),
     (
+        "src/daemon/activity/hygiene.rs",
+        "the journal hygiene sweep chooses each already-enumerated store project's journal directory and git working directory; paths never determine project identity",
+    ),
+    (
+        "src/daemon/activity/hygiene_tests.rs",
+        "a sweep fixture writes the column to give its temporary project a checkout; it never reads it to resolve one",
+    ),
+    (
+        "src/daemon/activity/window_tests.rs",
+        "view fixtures set, replace, and clear the selected project's checkout to verify catalog authority and activation; they never resolve project identity from a path",
+    ),
+    (
         "src/daemon/project_recovery.rs",
         "recovery delivery chooses its working directory after selecting each durable project id",
     ),

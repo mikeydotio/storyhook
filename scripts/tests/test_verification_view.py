@@ -17,16 +17,21 @@ SCRIPT = Path(__file__).resolve().parents[1] / "verification-view.py"
 # The daemon runs the reconciler composed after the tmux server policy
 # (src/daemon/activity/window.rs); exercise exactly that program.
 POLICY = Path(__file__).resolve().parents[2] / "plugins/story/lib/tmux_server_env.py"
-PROGRAM = POLICY.read_text() + "\n" + SCRIPT.read_text()
-# The reconciler's own bound on one tmux client, read from the shipped script.
-RECONCILER_TIMEOUT = int(re.search(r"^TIMEOUT = (\d+)$", SCRIPT.read_text(), re.M).group(1))
-DEADLINE = 15  # Includes private server startup and loaded macOS PTY allocation.
+BUDGET = POLICY.with_name("probe_budget.py")
+PROGRAM = (BUDGET.read_text() + "\nprobe_run = run\nprobe_operation = operation\n"
+           + POLICY.read_text() + "\n" + SCRIPT.read_text())
+# The shipping operation budget also bounds a single client if it is first.
+RECONCILER_TIMEOUT = int(re.search(r"^BUDGET_SECONDS = (\d+)$", BUDGET.read_text(), re.M).group(1))
+DEADLINE = RECONCILER_TIMEOUT * 3 / 2  # The daemon outer bound, including startup/exit margin.
 # SH-347's ceiling for any one graced wait, as a cap on the multiplier of the
 # largest base here (the SH-767 D5 shape).
 MAX_GRACE = load_grace.PATIENCE_CEILING / DEADLINE
 # One reconciler tick whose only failure was a tmux client outlasting the
 # reconciler's per-call bound: what the daemon's next tick retries.
-TIMED_OUT = re.compile(r"^verification view: Command '\['tmux', .*\]' timed out after (\d+) seconds$")
+TIMED_OUT = re.compile(
+    r"^verification view: probe 'tmux .*' did not finish in its [0-9.]+s allowance "
+    r"\([0-9.]+s of a (\d+)s operation budget spent; 1-minute load average "
+    r"(?:[0-9.]+|unavailable) on (?:\d+|None) cores\)$")
 # Long enough for several refused readiness probes; only ever spent on a socket
 # that is known never to answer.
 REFUSAL_PATIENCE = 0.5
@@ -167,15 +172,19 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
             self.assertEqual(result.returncode, 0, diagnosis(f"tmux {args[0]}", result))
         return result.stdout.strip()
 
-    def reconcile(self, project="one", check=True):
+    def reconcile(self, project="one", check=True, prepared=True):
         """Run the production helper with literal hostile-path arguments.
 
         With check, a tick whose only failure was a tmux client outlasting the
         reconciler's own bound runs again while the machine is contended, as
         the daemon's next tick would (SH-806 D3); at idle that is a defect and
         fails at once. Without check, the caller judges exactly one tick.
+        Prepared, the journal directory exists first, as the daemon makes it
+        before it runs the view (SH-771).
         """
         directory = self.root / project / "logs with spaces ' $(inert)"
+        if prepared:
+            directory.mkdir(parents=True, exist_ok=True)
         argv = ["python3", "-c", PROGRAM, project, str(directory), str(self.reader)]
         patience = None
         while True:
@@ -252,15 +261,37 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         self.contention = lambda: None
         with self.assertRaises(self.failureException) as failed:
             self.reconcile()
-        self.assertIn(f"timed out after {RECONCILER_TIMEOUT} seconds", str(failed.exception))
+        self.assertIn(f"{RECONCILER_TIMEOUT}s operation budget spent", str(failed.exception))
 
     def test_disabled_mirror_does_not_even_probe_tmux(self):
         wrapper = self.root / "bin/tmux"
         wrapper.write_text('#!/bin/sh\nprintf called > "$HOME/called"\nexit 99\n')
         self.env["STORYHOOK_VERIFIER_MIRROR"] = "0"
-        self.reconcile()
+        self.reconcile(prepared=False)
         self.assertFalse((self.root / "called").exists())
         self.assertFalse((self.root / "one").exists())
+
+    def test_an_unprepared_journal_directory_fails_before_any_tmux_call(self):
+        # SH-771: the daemon creates the directory with its ignore file. A
+        # view that created it would leave .view.lock where git can see it.
+        wrapper = self.root / "bin/tmux"
+        wrapper.write_text('#!/bin/sh\nprintf called > "$HOME/called"\nexit 99\n')
+        result = self.reconcile(check=False, prepared=False)
+        self.assertEqual(result.returncode, 1, diagnosis("reconcile of one", result))
+        self.assertIn("absent; the daemon prepares it first", result.stderr)
+        self.assertFalse((self.root / "one").exists())
+        self.assertFalse((self.root / "called").exists())
+
+    def test_slow_tmux_call_succeeds_in_one_production_pass(self):
+        # SH-808: exceed the old 3 s per-client deadline without a harness retry.
+        wrapper = self.root / "bin/tmux"
+        held = self.root / "slow-call"
+        wrapper.write_text(wrapper.read_text().replace(
+            "exec ", f'if [ "$1" = list-sessions ] && [ ! -e "{held}" ]; then '
+            f': > "{held}"; sleep 4; fi\nexec ', 1))
+        result = self.reconcile(check=False)
+        self.assertEqual(result.returncode, 0, diagnosis("slow reconcile", result))
+        self.assertTrue(self.identity().startswith("@"))
 
     def test_interrupted_owned_allocation_is_reaped_without_replacing_healthy_view(self):
         self.reconcile()
@@ -299,6 +330,76 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         wrapper.write_text(original)
         self.reconcile()
         self.assertNotEqual(first, self.identity())
+
+    def test_budget_expiry_preserves_old_reader_and_next_pass_reaps_partial_replacement(self):
+        from unittest.mock import patch
+        from scripts.tests.test_verification_view_budget import program
+        self.reconcile()
+        first = self.identity()
+        self.tmux("set-option", "-w", "-t", first.split("|")[0], "@storyhook-reader", "%999:0")
+        view = program()
+        clock = [0.0]
+        run = subprocess.run
+
+        def answer(argv, **kwargs):
+            result = run(argv, **kwargs)
+            # Exhaust the real shared clock after allocation and its first identity read.
+            if argv[1] == "display-message":
+                clock[0] = view.BUDGET_SECONDS
+            return result
+
+        directory = self.root / "one" / "logs with spaces ' $(inert)"
+        with patch.dict(os.environ, self.env, clear=True), \
+                patch.object(view.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(view.subprocess, "run", side_effect=answer):
+            with self.assertRaises(RuntimeError) as failed:
+                view.reconcile("one", str(directory), str(self.reader))
+        self.assertIn("operation budget", str(failed.exception))
+        self.assertIn("cleanup", str(failed.exception))
+        self.assertEqual(first, self.identity())
+        self.assertIn("verification-pending-", self.tmux("list-windows", "-t", "=one", "-F", "#{window_name}"))
+        self.reconcile()
+        self.assertNotEqual(first, self.identity())
+        self.assertEqual(self.tmux("list-windows", "-t", "=one", "-F", "#{window_name}"), "verification")
+
+    def test_allocation_owns_only_the_new_window_before_mark_can_run(self):
+        import hashlib
+        from unittest.mock import patch
+        from scripts.tests.test_verification_view_budget import program
+        # Both names could be mistaken for an interrupted allocation. Neither is ours.
+        self.tmux("new-session", "-d", "-s", "one", "-n", ".verification-user", str(self.reader), "fixture")
+        self.tmux("new-window", "-d", "-t", "=one:", "-n", "verification-pending-user", str(self.reader), "fixture")
+        before = self.tmux("list-windows", "-t", "=one", "-F", "#{window_id}|#{window_name}|#{@storyhook-journal}")
+        view = program()
+        clock = [0.0]
+        run = subprocess.run
+        allocated = []
+
+        def answer(argv, **kwargs):
+            result = run(argv, **kwargs)
+            if argv[1] == "new-window":
+                allocated.append(result.stdout.strip())
+                clock[0] = view.BUDGET_SECONDS
+            return result
+
+        directory = self.root / "one" / "logs with spaces ' $(inert)"
+        # SH-771: the daemon prepares the journal directory before any view.
+        directory.mkdir(parents=True, exist_ok=True)
+        with patch.dict(os.environ, self.env, clear=True), \
+                patch.object(view.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(view.subprocess, "run", side_effect=answer):
+            with self.assertRaisesRegex(RuntimeError, "operation budget"):
+                view.reconcile("one", str(directory), str(self.reader))
+        self.assertEqual(len(allocated), 1)
+        owner = hashlib.sha256(os.fsencode(directory.resolve())).hexdigest()
+        self.assertEqual(self.tmux("show-options", "-wv", "-t", allocated[0], "@storyhook-journal"), owner)
+        after = self.tmux("list-windows", "-t", "=one", "-F", "#{window_id}|#{window_name}|#{@storyhook-journal}")
+        self.assertEqual("\n".join(after.splitlines()[:2]), before)
+        self.reconcile()
+        after = self.tmux("list-windows", "-t", "=one", "-F", "#{window_id}|#{window_name}|#{@storyhook-journal}")
+        self.assertEqual("\n".join(after.splitlines()[:2]), before)
+        self.assertEqual(len(after.splitlines()), 3)
+        self.assertNotIn(allocated[0] + "|", after)
 
     @unittest.skipUnless(sys.platform == "darwin", "native macOS forkpty regression")
     def test_native_allocation_failure_preserves_server_and_other_reader(self):
@@ -347,6 +448,14 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         row = dict(at=now.isoformat(), level="INFO", source="fixture-helper", stream="stderr",
                    pid=1, context=f"project={slug} VIEW-1 attempt=live", message="LIVE_PROJECT_OUTPUT")
         path.write_text(json.dumps(row) + "\n")
+        # Hold one call past 3 s and a later call so the pass exceeds 5 s.
+        wrapper = self.root / "bin/tmux"
+        prefix = ""
+        for verb, delay in (("list-sessions", 4), ("set-option", 2)):
+            held = self.root / f"daemon-slow-{verb}"
+            prefix += (f'if [ "$1" = {verb} ] && [ ! -e "{held}" ]; then '
+                       f': > "{held}"; sleep {delay}; fi\n')
+        wrapper.write_text(wrapper.read_text().replace("exec ", prefix + "exec ", 1))
         diagnostics = self.root / "daemon.err"
         with diagnostics.open("wb") as error:
             daemon = subprocess.Popen([binary, "--store-path", os.environ["STORY_VIEW_TEST_STORE"],
@@ -369,6 +478,13 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
                 time.sleep(.05)
 
         first = wait_for_view()
+        # SH-771: the daemon found this journal directory without an ignore
+        # file, as every checkout journaled before SH-771 is, and fixed it.
+        self.assertIn("*", (directory / ".gitignore").read_text().splitlines())
+        # SH-808: the first real daemon pass exceeded both historical bounds.
+        startup_records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        self.assertFalse([row for row in startup_records if row["level"] in ("ERROR", "WARN")
+                          and "reader" in row["context"]], startup_records)
         self.tmux("kill-window", "-t", first.split("|")[0])
         second = wait_for_view(first)
         self.assertNotEqual(first, second)

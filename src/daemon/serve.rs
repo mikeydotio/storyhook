@@ -388,6 +388,17 @@ where
                 crate::daemon::github_poll::poll_github(store, &env, &stop)
             });
         }
+        // SH-771: every registered checkout's journal directory ignores
+        // itself, and a checkout whose index tracks journal files is
+        // reported. The first sweep is this daemon's start.
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                crate::daemon::activity::hygiene::poll(store, &env, &stop)
+            });
+        }
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();

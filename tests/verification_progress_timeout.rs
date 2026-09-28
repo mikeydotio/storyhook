@@ -230,19 +230,62 @@ fn output_chatter_does_not_keep_a_stalled_verifier_alive() {
 
 #[test]
 fn a_live_machine_lock_wait_can_outlive_the_idle_budget() {
+    live_lock_wait(0.0, Duration::ZERO);
+}
+
+#[test]
+fn a_live_lock_wait_tolerates_fixture_startup_under_contention() {
+    // A controlled scheduler delay exceeds the old three-second allowance.
+    live_lock_wait(3.0, IDLE * 4);
+}
+
+fn live_lock_wait(minimum_contention: f64, startup_delay: Duration) {
     // The production lock observes identity once per second. Give it three
-    // observations per idle window, then hold it for two whole windows.
-    let idle = IDLE * 3;
+    // observations per idle window, graced for subprocess scheduling. The
+    // holder must outlive the SAME window, or renewal would go untested.
+    let idle = storyhook_test_support::load_grace::Patience::starting_at(
+        IDLE * 3,
+        std::time::Instant::now(),
+        move || {
+            Some(
+                storyhook_test_support::load_grace::contention()
+                    .unwrap_or(1.0)
+                    .max(minimum_contention),
+            )
+        },
+    )
+    .allowance();
     let script = format!(
-        "set -eu\nexport STORYHOOK_LOCK_DIR=\"$PWD/locks\"\nunset STORYHOOK_MACHINE_LOCKS\n\
+        "set -eu\nsleep {}\nexport STORYHOOK_LOCK_DIR=\"$PWD/locks\"\nunset STORYHOOK_MACHINE_LOCKS\n\
          lock=\"$(bash {SIBLING}/machine-lock.sh --plan gate -- true | sed -n 's/^lock=//p')\"\n\
          bash {SIBLING}/machine-lock.sh gate -- sleep {} &\nholder=$!\n\
-         for i in {{1..100}}; do [ ! -f \"$lock/pid\" ] || break; sleep 0.01; done\n\
-         test -f \"$lock/pid\"\n\
+         while [ ! -f \"$lock/pid\" ]; do sleep 0.01; done\n\
          bash {SIBLING}/machine-lock.sh gate -- true\nwait \"$holder\"\n{CERTIFIED}\n",
-        (idle * 2).as_secs()
+        startup_delay.as_secs_f64(),
+        (idle * 2).as_secs_f64()
     );
-    let outcome = verify_script(&script, idle);
+    let outcome = exercise(
+        &script,
+        idle,
+        |_, _| {},
+        |actuator, candidate, pr, fixture| {
+            let outcome = actuator.verify(candidate, pr);
+            if matches!(outcome, VerificationOutcome::Certified { .. }) {
+                let journal = std::fs::read_to_string(
+                    storyhook::daemon::verification::journal_path(fixture.env(), candidate),
+                )
+                .unwrap();
+                assert!(
+                    journal.lines().any(|line| {
+                        serde_json::from_str::<serde_json::Value>(line)
+                            .is_ok_and(|record| record["kind"] == "lock-wait")
+                    }),
+                    "no live-holder observation: {journal}"
+                );
+            }
+            outcome
+        },
+    );
     assert!(
         matches!(outcome, VerificationOutcome::Certified { .. }),
         "{outcome:?}"

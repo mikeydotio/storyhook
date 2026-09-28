@@ -3,17 +3,21 @@
 //! activity. File-backed observers never wait for a descendant to close a pipe.
 
 pub(crate) mod context;
+pub(crate) mod hygiene;
+mod ignore;
 mod observe;
 mod view;
 pub(crate) mod window;
+mod window_requests;
 
+pub use ignore::{IGNORE_FILE, JOURNAL_IGNORE};
 pub(crate) use observe::OutputWatch;
 pub use view::{read_logs, read_logs_from};
 pub(crate) use window::command_source;
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -23,6 +27,15 @@ use fs4::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::env::Environment;
+
+/// Where a registered checkout keeps its project journal, relative to the
+/// checkout (SH-748).
+pub(crate) const PROJECT_JOURNAL: &str = ".storyhook/logs";
+
+/// The project journal directory of `checkout`.
+pub(crate) fn project_journal(checkout: &Path) -> PathBuf {
+    checkout.join(PROJECT_JOURNAL)
+}
 
 static ACTIVE: OnceLock<Journal> = OnceLock::new();
 static DIAGNOSTICS: Mutex<Option<OutputWatch>> = Mutex::new(None);
@@ -48,7 +61,8 @@ pub(crate) struct Journal {
 }
 
 impl Journal {
-    /// Selects a destination; the first append creates its private directory.
+    /// Selects a destination; the first append creates its private,
+    /// self-ignoring directory.
     pub(crate) fn new(directory: PathBuf) -> Self {
         Self { directory }
     }
@@ -62,10 +76,9 @@ impl Journal {
         context: &str,
         message: &str,
     ) -> io::Result<()> {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&self.directory)?;
+        // Before the day file is opened: a journal file never exists in a
+        // directory git can see (SH-771).
+        ignore::prepare(&self.directory)?;
         let record = Record {
             at: at.to_rfc3339_opts(SecondsFormat::Millis, true),
             level: clean(level),
@@ -90,6 +103,25 @@ impl Journal {
 
 fn day_path(directory: &Path, at: DateTime<Utc>) -> PathBuf {
     directory.join(format!("{}.jsonl", at.format("%Y-%m-%d")))
+}
+
+/// Every day file in `directory`, sorted: what a test that reads a whole
+/// journal must iterate. The directory also holds its ignore file and a
+/// reader's `.view.lock`, and neither is a journal (SH-771).
+#[cfg(test)]
+pub(crate) fn day_files(directory: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut days = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "jsonl")
+        {
+            days.push(path);
+        }
+    }
+    days.sort();
+    Ok(days)
 }
 
 fn clean(text: &str) -> String {
@@ -282,5 +314,53 @@ mod tests {
                 & 0o777,
             0o600
         );
+    }
+
+    /// SH-771: the first record into a new directory finds the ignore file
+    /// already there, and a record into an existing, unprotected directory
+    /// (every checkout journaled before SH-771) puts it back.
+    #[test]
+    fn every_append_leaves_the_directory_ignoring_itself() {
+        let root = storyhook_test_support::scratch_dir();
+        let directory = root.path().join(".storyhook/logs");
+        let at = Utc::now();
+        Journal::new(directory.clone())
+            .append(at, "INFO", "daemon", "event", "", "first")
+            .unwrap();
+        assert_eq!(
+            std::fs::read(directory.join(IGNORE_FILE)).unwrap(),
+            JOURNAL_IGNORE
+        );
+        std::fs::remove_file(directory.join(IGNORE_FILE)).unwrap();
+        Journal::new(directory.clone())
+            .append(at, "INFO", "daemon", "event", "", "second")
+            .unwrap();
+        assert_eq!(
+            std::fs::read(directory.join(IGNORE_FILE)).unwrap(),
+            JOURNAL_IGNORE
+        );
+        assert_eq!(
+            std::fs::read_to_string(day_path(&directory, at))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+    }
+
+    /// SH-771: a record the ignore file cannot protect is refused, not
+    /// written where git would see it.
+    #[test]
+    fn an_append_that_cannot_protect_its_directory_writes_no_journal_file() {
+        let root = storyhook_test_support::scratch_dir();
+        let directory = root.path().join(".storyhook/logs");
+        std::fs::create_dir_all(directory.join(IGNORE_FILE)).unwrap();
+        let at = Utc::now();
+        assert!(
+            Journal::new(directory.clone())
+                .append(at, "INFO", "daemon", "event", "", "refused")
+                .is_err()
+        );
+        assert!(!day_path(&directory, at).exists());
     }
 }

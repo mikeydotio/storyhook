@@ -208,3 +208,134 @@ fn daemon_start_does_not_allocate_a_store_activity_window() {
         "store startup must not allocate a terminal reader"
     );
 }
+
+/// SH-771: a journal directory also holds its ignore file and a reader's
+/// lock. Neither is a journal, and `daemon logs --directory` prints only
+/// the day's records.
+#[test]
+fn project_logs_read_only_records_beside_the_ignore_file_and_view_lock() {
+    let env = TestEnv::isolated();
+    let directory = env.home().join("checkout/.storyhook/logs");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join(storyhook::daemon::activity::IGNORE_FILE),
+        storyhook::daemon::activity::JOURNAL_IGNORE,
+    )
+    .unwrap();
+    std::fs::write(directory.join(".view.lock"), "").unwrap();
+    let row = serde_json::json!({"at":"2026-09-26T00:00:00Z", "level":"INFO",
+        "source":"fixture", "stream":"event", "pid":1,
+        "context":"project=fixture", "message":"only this"});
+    std::fs::write(
+        directory.join(format!("{}.jsonl", chrono::Utc::now().format("%Y-%m-%d"))),
+        format!("{row}\n"),
+    )
+    .unwrap();
+    let output = env
+        .story(env.home())
+        .args(["daemon", "logs", "--directory"])
+        .arg(&directory)
+        .arg("--json")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(serde_json::from_slice::<Value>(&output).unwrap(), row);
+}
+
+/// `git` in `cwd` under the fixture's environment, with global excludes
+/// disabled so only the journal's own ignore file can hide it.
+fn git_output(env: &TestEnv, cwd: &std::path::Path, args: &[&str]) -> String {
+    let mut command = storyhook::env::git_env::command(cwd);
+    env.apply(&mut command);
+    let output = command
+        .args(["-c", "core.excludesFile=/dev/null"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}: {output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// SH-771, end to end through a real daemon: started over a checkout whose
+/// repository already committed a journal file, the daemon makes the
+/// journal ignore itself at start, reports the committed file on `story
+/// daemon status` and `story verifier status` with the command that fixes
+/// it, and never touches the index. A stopped daemon reports nothing.
+#[test]
+fn a_starting_daemon_fixes_the_journal_and_reports_committed_journal_files() {
+    use storyhook_test_support::STORY_COMMAND_DEADLINE;
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("HYG").git().build();
+    env.stop_daemon();
+    let logs = project.path().join(".storyhook/logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::write(logs.join("2026-09-24.jsonl"), "{}\n").unwrap();
+    std::fs::write(logs.join(".view.lock"), "").unwrap();
+    git_output(
+        &env,
+        project.path(),
+        &["add", "-f", ".storyhook/logs/2026-09-24.jsonl"],
+    );
+    git_output(
+        &env,
+        project.path(),
+        &["commit", "-qm", "a journal committed by mistake"],
+    );
+    let head = git_output(&env, project.path(), &["rev-parse", "HEAD"]);
+    let index = git_output(&env, project.path(), &["ls-files", "-s"]);
+
+    // Any store command starts the daemon, and its first sweep is its start.
+    project.run(&["list"]).success();
+    let mut patience = storyhook_test_support::load_grace::Patience::new(STORY_COMMAND_DEADLINE);
+    let warnings = loop {
+        let status = project.json(&["daemon", "status"]);
+        // The envelope omits an empty warnings list.
+        let warnings = status["warnings"].as_array().cloned().unwrap_or_default();
+        if !warnings.is_empty() {
+            break warnings;
+        }
+        assert!(
+            !patience.expired(),
+            "no journal warning on daemon status: {status}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let warning = warnings[0].as_str().unwrap();
+    assert!(
+        warning.contains("git rm -r --cached .storyhook/logs"),
+        "{warning}"
+    );
+    assert!(warning.contains("1 activity journal file in "), "{warning}");
+    let human = project.run(&["verifier", "status"]).success();
+    let human = String::from_utf8_lossy(&human.get_output().stdout).into_owned();
+    assert!(human.contains(&format!("warning: {warning}")), "{human}");
+    let verifier = project.json(&["verifier", "status"]);
+    assert_eq!(
+        verifier["verifier"]["journal_warning"], warning,
+        "{verifier}"
+    );
+
+    assert_eq!(
+        std::fs::read(logs.join(storyhook::daemon::activity::IGNORE_FILE)).unwrap(),
+        storyhook::daemon::activity::JOURNAL_IGNORE,
+        "the daemon made the pre-existing journal ignore itself"
+    );
+    let status = git_output(
+        &env,
+        project.path(),
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
+    assert!(!status.contains(".storyhook/logs"), "{status}");
+    assert_eq!(
+        git_output(&env, project.path(), &["rev-parse", "HEAD"]),
+        head
+    );
+    assert_eq!(git_output(&env, project.path(), &["ls-files", "-s"]), index);
+
+    env.stop_daemon();
+    let stopped = project.json(&["daemon", "status"]);
+    assert!(stopped.get("warnings").is_none(), "{stopped}");
+}

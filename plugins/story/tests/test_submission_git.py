@@ -7,10 +7,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts/tests"))
+import load_grace  # noqa: E402
 
 LIB = Path(__file__).resolve().parents[1] / "lib" / "submission-git.sh"
 REAL_GIT = shutil.which("git")
+SUBMISSION_IDLE_TIMEOUT = 10
 
 
 class SubmissionGitTests(unittest.TestCase):
@@ -109,16 +113,33 @@ print("a" * 40 + "\\trefs/heads/main")
 
     def submit_git(self, *args):
         """Exercise the shipped runner, bounded even when credentials are absent."""
+        ratio = load_grace.contention()
+        allowance = load_grace.patience(SUBMISSION_IDLE_TIMEOUT, ratio)
+        if allowance > SUBMISSION_IDLE_TIMEOUT:
+            print(load_grace.describe(ratio, allowance / SUBMISSION_IDLE_TIMEOUT), file=sys.stderr)
         return subprocess.run(
             ["bash", "-c", 'source "$1"; shift; submission_git "$@"',
              "submission-test", str(LIB), *args],
             cwd=self.root, env=self.env, text=True,
-            capture_output=True, timeout=10,
+            capture_output=True, timeout=allowance,
         )
 
     def remote_head(self):
         """Read one ref through the actual submission API."""
         return self.submit_git("ls-remote", "--heads", "origin", "refs/heads/main")
+
+    def test_slow_credentials_use_the_shared_contention_allowance(self):
+        """One real credential exchange can outlast the old harness deadline."""
+        endpoint = self.bin / "gh"
+        endpoint.write_text(endpoint.read_text().replace(
+            "set -eu\n", f"set -eu\nsleep {SUBMISSION_IDLE_TIMEOUT * 1.1}\n", 1))
+        ratio = max(2, load_grace.contention() or 1)
+        with patch.object(load_grace, "contention", return_value=ratio):
+            result = self.remote_head()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "a" * 40 + "\trefs/heads/main\n")
+        self.assertIn("host=github.com", (self.root / "request").read_text())
+        self.assertFalse((self.root / "inherited").exists())
 
     def test_github_bypasses_inherited_keychain_and_uses_gh(self):
         """Both hosts use gh credentials without exposing them to the caller."""

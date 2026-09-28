@@ -348,6 +348,13 @@
       "reason": "recorded_pid is an optional post-kill observation. A helper killed before publication legitimately leaves no PID; the timeout ladder repeats that attempt. This window must not turn absence into a mandatory readiness wait."
     }
   },
+  "tests/verification_queue/reconcile_hold.rs": {
+    ".recv_timeout(RECEIVE_POLL": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "RECEIVE_POLL is the receive polling quantum. recv_patiently checks its outer load_grace Patience after each empty receive and returns disconnection immediately."
+    }
+  },
   "tests/verification_shutdown_drain.rs": {
     ".recv_timeout(lifecycle::CONTROL_DEADLINE/10": {
       "count": 1,

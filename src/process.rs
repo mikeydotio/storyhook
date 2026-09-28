@@ -174,9 +174,21 @@ pub(crate) fn run_captured_private(
 /// exit. A periodic reconcile whose success is the steady state would
 /// otherwise fill the very window it keeps alive. Timeouts still record an
 /// ERROR, and the caller keeps the captured stderr for its own report.
+/// For a child with no owner stop to observe, such as the journal hygiene
+/// sweep's bounded `git ls-files` (SH-771).
 pub(crate) fn run_captured_quiet(
     command: Command,
     timeout: Duration,
+) -> Result<Captured, CaptureError> {
+    run_captured_quiet_cancellable(command, timeout, || false)
+}
+
+/// Captures a supervisor helper while observing its owner's stop signal.
+/// Cancellation is quiet and reaps the same process group as deadline expiry.
+pub(crate) fn run_captured_quiet_cancellable(
+    command: Command,
+    timeout: Duration,
+    cancelled: impl Fn() -> bool,
 ) -> Result<Captured, CaptureError> {
     let deadline = Instant::now() + timeout;
     run_captured_until(
@@ -188,7 +200,7 @@ pub(crate) fn run_captured_quiet(
             failures_only: true,
             ..CaptureWait::default()
         },
-        None,
+        Some(&cancelled),
         |_| Ok(()),
         || Ok(deadline.saturating_duration_since(Instant::now())),
     )
@@ -262,7 +274,7 @@ pub(crate) fn run_captured_cancellable<G>(
         termination,
         None,
         CaptureWait::default(),
-        Some(cancellation),
+        Some(&|| cancellation.is_cancelled()),
         register,
         || Ok(deadline.saturating_duration_since(Instant::now())),
     )
@@ -293,7 +305,7 @@ pub(crate) fn run_captured_with_progress_and_registration<G>(
             poll: Some(poll),
             ..CaptureWait::default()
         },
-        Some(cancellation),
+        Some(&|| cancellation.is_cancelled()),
         register,
         || deadline.remaining(),
     )?;
@@ -372,11 +384,11 @@ fn run_captured_until<G>(
     termination: TerminationPolicy,
     input: Option<File>,
     wait: CaptureWait,
-    cancellation: Option<&Cancellation>,
+    cancellation: Option<&dyn Fn() -> bool>,
     register: impl FnOnce(u32) -> Result<G, String>,
     mut remaining: impl FnMut() -> std::io::Result<Duration>,
 ) -> Result<Captured, CaptureFailure> {
-    if cancellation.is_some_and(Cancellation::is_cancelled) {
+    if cancellation.is_some_and(|cancelled| cancelled()) {
         return Err(CaptureError::Cancelled.into());
     }
     let poll = if cancellation.is_some() {
@@ -429,7 +441,7 @@ fn run_captured_until<G>(
         }
     };
     let status = loop {
-        if cancellation.is_some_and(Cancellation::is_cancelled) {
+        if cancellation.is_some_and(|cancelled| cancelled()) {
             terminate_timed_out(&mut child, pid, termination);
             drop(observer);
             return Err(CaptureFailure::after(

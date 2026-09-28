@@ -7,6 +7,10 @@
 //! the waiter starts on its own thread: the activity journal, which records
 //! every child the daemon runners start and is how the defect was measured,
 //! and the `git` tally, which also sees the `git` the journal never records.
+//!
+//! Since SH-770 the one process a hold may start is its agent probe, at most
+//! one per `RECOVERY_WAKE` and never on a pass or a wake: a third seam counts
+//! the probes.
 
 use super::*;
 use crate::daemon::activity::context::{LogContext, enter};
@@ -50,15 +54,14 @@ fn submitted(ctx: &Ctx<'_, SqliteStore>, title: &str, priority: Priority, url: &
 /// The process records the daemon runners journaled under `logs`. Each child
 /// they start is journaled with a `child=<pid>` context.
 fn child_records(logs: &Path) -> Vec<String> {
-    let days = match std::fs::read_dir(logs) {
+    let days = match crate::daemon::activity::day_files(logs) {
         Ok(days) => days,
         // The first record creates the directory: nothing was journaled.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(error) => panic!("reading journal {}: {error}", logs.display()),
     };
     let mut records = Vec::new();
-    for day in days {
-        let path = day.expect("a journal directory entry").path();
+    for path in days {
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
         records.extend(
@@ -129,6 +132,14 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
     let subscription = bus.subscribe();
     let stop = AtomicBool::new(false);
     let idle = Cancellation::default();
+    let probes = std::sync::atomic::AtomicUsize::new(0);
+    let counted = |candidate: &VerificationCandidate,
+                   lease: Option<&crate::domain::StoryCleanupLease>,
+                   cancellation: &Cancellation| {
+        probes.fetch_add(1, Ordering::Relaxed);
+        super::reconcile_hold::unwatched(candidate, lease, cancellation)
+    };
+    let watch = HoldWatch::production(&counted);
     let (idle_tx, idle_rx) = channel();
     let (resumed_tx, resumed_rx) = channel();
     std::thread::scope(|scope| {
@@ -144,6 +155,7 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
                 &stop,
                 &reserved,
                 &idle,
+                &watch,
             );
             idle_tx
                 .send((result, built_on_this_thread() - before))
@@ -154,6 +166,7 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
                 &stop,
                 &reserved,
                 &Cancellation::default(),
+                &watch,
             );
             resumed_tx
                 .send((result, built_on_this_thread() - before))
@@ -177,10 +190,19 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
             .recv_timeout(CONTROL_DEADLINE)
             .expect("cancellation ends the idle wait");
         assert!(
-            idle_result.unwrap().is_none(),
+            idle_result.unwrap() == ReconcileWait::Ended,
             "a cancelled wait returns no candidate"
         );
         assert_eq!(idle_git, 0, "an idle reconcile wait must build no git");
+        assert!(
+            CONTROL_DEADLINE / 10 < watch.probe_every,
+            "the idle window must end before the first probe is due"
+        );
+        assert_eq!(
+            probes.load(Ordering::Relaxed),
+            0,
+            "passes and wakes never probe; the first probe waits one interval"
+        );
         let idle_children = child_records(&logs);
         assert!(
             idle_children.is_empty(),
@@ -194,9 +216,9 @@ fn a_reconcile_wait_starts_no_process_until_its_story_resubmits() {
         let (resumed, total_git) = resumed_rx
             .recv_timeout(CONTROL_DEADLINE)
             .expect("the resubmission ends the wait promptly");
-        let resumed = resumed
-            .unwrap()
-            .expect("the reserved story's resubmission wakes its waiter");
+        let ReconcileWait::Resubmitted(resumed) = resumed.unwrap() else {
+            panic!("the reserved story's resubmission wakes its waiter");
+        };
         assert_eq!(resumed.story_id, held);
         assert!(resumed.verifying_generation.is_some());
         assert_ne!(resumed.verifying_generation, reserved.verifying_generation);
@@ -253,7 +275,7 @@ fn the_store_only_generation_read_agrees_with_the_validated_queue() {
         .cloned()
         .expect("the verifying story is queued");
     assert!(
-        queue.current_generation_for(&template).unwrap().is_some(),
+        queue.hold_view(&template).unwrap().generation.is_some(),
         "a queued story reports its generation"
     );
     for id in [&verifying, &human, &returned, &unknown] {
@@ -266,7 +288,7 @@ fn the_store_only_generation_read_agrees_with_the_validated_queue() {
             .find(|candidate| &candidate.story_id == id)
             .and_then(|candidate| candidate.verifying_generation);
         assert_eq!(
-            queue.current_generation_for(&probe).unwrap(),
+            queue.hold_view(&probe).unwrap().generation,
             validated,
             "{id}: the store-only read must report what the validated queue reports"
         );

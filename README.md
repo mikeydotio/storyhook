@@ -758,7 +758,10 @@ store-wide daemon journal. Reading logs never starts a daemon. Color is added
 only at a terminal; `--json` produces one JSON record per line.
 
 Private project files live at `.storyhook/logs/YYYY-MM-DD.jsonl` in the
-registered checkout. Add `/.storyhook/logs/` to `.gitignore`. Store journals
+registered checkout. The directory ignores itself: storyhook keeps a `.gitignore`
+containing `*` in it, so git never lists the journal and your repository's own
+`.gitignore` needs no entry. If a repository committed journal files earlier,
+`story daemon status` names the command that untracks them. Store journals
 remain under `<daemon state directory>/activity/`. Both rotate at UTC midnight,
 append across restarts, and remain until you remove them. Set
 `STORYHOOK_VERIFIER_MIRROR=0` to disable all tmux calls while retaining logs.

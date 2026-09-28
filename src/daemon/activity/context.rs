@@ -23,7 +23,7 @@ impl LogContext {
             return None;
         }
         Some(Self {
-            directory: candidate.checkout.join(".storyhook/logs"),
+            directory: super::project_journal(&candidate.checkout),
             label: format!(
                 "project={} {} attempt={attempt}",
                 candidate.project_slug, candidate.story_id
@@ -45,7 +45,7 @@ pub(crate) fn project_error(
         Ok(match (tx.project(project)?, tx.checkout_path(project)?) {
             (Some(project), Some(checkout)) if checkout.is_absolute() && checkout.is_dir() => {
                 Some(LogContext {
-                    directory: checkout.join(".storyhook/logs"),
+                    directory: super::project_journal(&checkout),
                     label: format!("project={} supervisor", project.slug),
                 })
             }

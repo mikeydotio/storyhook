@@ -10,12 +10,14 @@ and converts only recognized Cargo/libtest milestones into gate progress.
 """
 
 import datetime
+import errno
 import fcntl
 import json
 import os
 from pathlib import Path
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,6 +30,11 @@ from test_output import TestOutputParser
 
 CHUNK = 16 * 1024
 POLL_SECONDS = 0.05
+# SH-771: every journal directory ignores itself. The Rust daemon writes the
+# same bytes by the same rule (src/daemon/activity/ignore.rs), and
+# tests/activity_script.rs proves the two identical.
+IGNORE_FILE = ".gitignore"
+JOURNAL_IGNORE = b"# Created by storyhook automatically: local activity journal, not source.\n*\n"
 
 
 def clean(text):
@@ -35,6 +42,45 @@ def clean(text):
     text = re.sub(r"(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]*", "[REDACTED-GITHUB-TOKEN]", text)
     text = re.sub(r"(?i)(Authorization:|X-Storyhook-Token:).*", r"\1 [REDACTED]", text)
     return "".join(ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in text)
+
+
+def prepare(directory):
+    """Create the journal directory privately and make it ignore itself.
+
+    Runs before every journal open, so no journal file exists where git can
+    see it. A missing, changed, symlinked or non-regular ignore file is
+    replaced by renaming a complete sibling copy over it; a symlink is never
+    followed and a FIFO never blocks the read.
+    """
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / IGNORE_FILE
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        fd = None
+    except OSError as error:
+        if error.errno != errno.ELOOP:
+            raise
+        fd = None
+    if fd is not None:
+        try:
+            # One byte past the expected length is enough to prove a difference.
+            if (stat.S_ISREG(os.fstat(fd).st_mode)
+                    and os.read(fd, len(JOURNAL_IGNORE) + 1) == JOURNAL_IGNORE):
+                return
+        finally:
+            os.close(fd)
+    staged, name = tempfile.mkstemp(prefix=IGNORE_FILE + ".", dir=directory)
+    try:
+        with os.fdopen(staged, "wb") as output:
+            output.write(JOURNAL_IGNORE)
+        os.replace(name, path)
+    except BaseException:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass  # The failure being raised is the one to report.
+        raise
 
 
 class Journal:
@@ -51,7 +97,7 @@ class Journal:
             return
         try:
             at = datetime.datetime.now(datetime.timezone.utc)
-            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            prepare(self.directory)
             record = dict(at=at.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                           level=level or ("WARN" if stream == "stderr" else "INFO"),
                           source=clean(self.source), stream=stream, pid=os.getpid(),

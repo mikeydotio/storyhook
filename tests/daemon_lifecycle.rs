@@ -22,6 +22,9 @@ use storyhook_test_support::{
     scratch_dir, story_binary,
 };
 
+#[path = "daemon_lifecycle/restart_budget.rs"]
+mod restart_budget;
+
 /// Whether `info` describes a daemon running the `story` binary this build
 /// produced.
 ///
@@ -1584,6 +1587,7 @@ fn a_portfile_without_a_daemon_does_not_stop_one_starting() {
         tailnet: None,
         cookie_name: "storyhook_stale".to_string(),
         owner: None,
+        execution_path: None,
     };
     let environment = env.environment();
     std::fs::create_dir_all(environment.daemon_state_dir()).unwrap();
@@ -1810,6 +1814,7 @@ fn wedge_the_daemon(env: &TestEnv) -> std::fs::File {
         tailnet: None,
         cookie_name: "storyhook_wedged".to_string(),
         owner: None,
+        execution_path: None,
     };
     std::fs::write(
         environment.daemon_file(),

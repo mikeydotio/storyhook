@@ -123,6 +123,7 @@ fn a_subscriber_seeded_with_a_dead_daemon_never_spawns_one() {
         tailnet: None,
         cookie_name: "storyhook_unused".to_string(),
         owner: None,
+        execution_path: None,
     };
 
     let environment = storyhook::env::Environment::at(dir.path());

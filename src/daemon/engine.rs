@@ -87,7 +87,12 @@ fn context_for_run<'store, S: Store>(
 /// dead tmux server or a missing checkout on one project must not stop
 /// another project's run from being reconciled (`github_poll::tick`'s own
 /// per-project isolation discipline, applied here to per-run isolation).
-fn reconcile_one<S: Store>(store: &S, env: &Environment, run: &EngineRunRecord, restart: bool) {
+fn reconcile_one<S: Store>(
+    store: &S,
+    env: &Environment,
+    run: &EngineRunRecord,
+    restart_deadline: Option<Instant>,
+) {
     let (ctx, dispatcher) = match context_for_run(store, env, run) {
         Ok(built) => built,
         Err(error) => {
@@ -97,6 +102,11 @@ fn reconcile_one<S: Store>(store: &S, env: &Environment, run: &EngineRunRecord, 
             );
             return;
         }
+    };
+    let restart = restart_deadline.is_some();
+    let dispatcher = match restart_deadline {
+        Some(deadline) => dispatcher.with_probe_deadline(deadline),
+        None => dispatcher,
     };
     let service = EngineService::new(&ctx, &dispatcher);
     let activity_context = format!("project={} run={}", run.project_slug, run.id);
@@ -188,20 +198,25 @@ fn census_journal_edge(
 /// [`crate::daemon::verification::tick_with`] is.
 pub fn reconcile_tick<S: Store>(store: &S, env: &Environment) {
     for run in live_runs(store) {
-        reconcile_one(store, env, &run, false);
+        reconcile_one(store, env, &run, None);
     }
 }
 
-/// The daemon-start pass (D11): every occupied lane an outage left behind is
-/// classified `Interrupted` rather than misread as `WindowGone`/`Stalled`,
-/// and no lane is filled or the run finished — see
+/// The daemon-start pass (D11): confirmed dead lanes are classified
+/// `Interrupted` rather than `WindowGone`/`Stalled`. External probes share
+/// one [`crate::service::engine::TMUX_TIMEOUT`] across all runs (SH-809).
+/// Exhaustion leaves liveness unknown, but every lane's store facts and
+/// progress clock are reconciled before publication. No lane is filled — see
 /// [`crate::service::engine::ReconcilePass::Restart`].
 ///
 /// Public for store-backed integration tests, for the same reason
 /// [`reconcile_tick`] is.
 pub fn reconcile_restart_tick<S: Store>(store: &S, env: &Environment) {
+    // One allowance for the machine, not one per run or lane. Even after it
+    // expires, every lane receives store reconciliation and clock reseeding.
+    let deadline = Instant::now() + crate::service::engine::TMUX_TIMEOUT;
     for run in live_runs(store) {
-        reconcile_one(store, env, &run, true);
+        reconcile_one(store, env, &run, Some(deadline));
     }
 }
 

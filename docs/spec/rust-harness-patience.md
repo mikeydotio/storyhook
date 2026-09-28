@@ -19,10 +19,10 @@ so a failing assertion releases workers before their join.
 
 ## Census
 
-The sweep covers 390 tracked Rust files recursively under `tests/` and
+The sweep covers 398 tracked Rust files recursively under `tests/` and
 `crates/storyhook-test-support/`, including nested modules. The exact retained
-inventory is `tests/timing_assertions/waits.json`: 64 expressions at 81 sites
-(45 proof, 20 delegated, 16 fixture). These counts describe the lexical fence,
+inventory is `tests/timing_assertions/waits.json`: 65 expressions at 82 sites
+(45 proof, 20 delegated, 17 fixture). These counts describe the lexical fence,
 not every blocking operation in a test. Each inventory entry states its owner
 and reason; occurrence counts prevent a new use from inheriting an old waiver.
 
@@ -164,3 +164,22 @@ the source and inventory passed. Shared support, subscriber and worker regressio
 also cover ready-before-expiry and buffered-before-disconnect behavior. Direct
 integration tests exercise the migrated production flows; the central verifier
 owns the full suite.
+
+## Remediation after the SH-827 merge
+
+The merged base adds two patience sites: the journal-warning readiness loop in
+`activity_log` and the fixture tmux completion in `verification_queue/reconcile_hold`.
+Both now use shared load grace. The latter module uses `RECEIVE_POLL` only as
+a receive quantum inside an outer `Patience`; the exact inventory records it
+as fixture timing. The source fence caught all three new expressions.
+
+The verifier also found a fake child pane that ignored its configured lifetime.
+The merge includes the landed SH-819 repair and its behavioral regression: parent
+and child share the graced lifetime, and the parent reaps the child. The regression
+failed on this branch before the merge. No notify guard was relaxed.
+
+The reported selective-gate helper timeout was outside the Rust source scan:
+`tests/support/selective_receipt.py` bounded fixture commands at 30 seconds. It
+now samples shared Python load grace for each command. A deterministic regression
+covers unknown, idle, busy and capped load, and preserves timeout errors. The
+`selective_gate` target runs that regression and the production receipt scenarios.

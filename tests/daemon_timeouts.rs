@@ -112,6 +112,7 @@ impl SilentPeer {
             tailnet: None,
             cookie_name: "storyhook_timeouts".to_string(),
             owner: None,
+            execution_path: None,
         }
     }
 }
@@ -300,6 +301,7 @@ fn a_refused_connection_still_fails_immediately() {
         tailnet: None,
         cookie_name: "storyhook_timeouts".to_string(),
         owner: None,
+        execution_path: None,
     };
 
     let started = Instant::now();

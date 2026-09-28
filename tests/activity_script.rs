@@ -54,11 +54,21 @@ fn guarded_output(command: &mut Command, what: &'static str) -> std::process::Ou
     )
 }
 
+/// Every record in the day files under `logs`. Only `*.jsonl` files are
+/// journals: the directory also holds its ignore file, and a writer's
+/// temporary copy of it may appear and vanish while this polls (SH-771).
 fn journal(logs: &std::path::Path) -> Vec<serde_json::Value> {
     let mut rows = Vec::new();
     if let Ok(entries) = std::fs::read_dir(logs) {
         for entry in entries {
-            let bytes = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            let path = entry.unwrap().path();
+            if path
+                .extension()
+                .is_none_or(|extension| extension != "jsonl")
+            {
+                continue;
+            }
+            let bytes = std::fs::read_to_string(path).unwrap();
             rows.extend(
                 bytes
                     .lines()
@@ -398,4 +408,185 @@ fn group_cancellation_preserves_the_commands_cleanup_and_final_output() {
     assert_eq!(output.status.code(), Some(23), "{output:?}");
     assert_eq!(output.stdout, b"ready\ncleaned");
     assert!(journal(&logs).iter().any(|r| r["message"] == "cleaned"));
+}
+
+/// Entry names in `directory`, sorted: a leftover temporary file shows here.
+fn entries(directory: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Runs one observed command that journals into `logs` and succeeds.
+fn journal_once(logs: &std::path::Path) {
+    let output = guarded_output(
+        &mut runner(logs, "printf 'observed\n'"),
+        "activity runner did not finish",
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        output.stderr.is_empty(),
+        "no journal warning expected: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn day_file_names(logs: &std::path::Path) -> Vec<String> {
+    entries(logs)
+        .into_iter()
+        .filter(|name| name.ends_with(".jsonl"))
+        .collect()
+}
+
+/// SH-771: the Python writer creates the directory with the ignore file
+/// before its first record, byte for byte what the Rust daemon writes.
+#[test]
+fn the_python_writer_prepares_the_rust_ignore_file_before_its_first_record() {
+    let root = scratch_dir();
+    let logs = root.path().join("checkout/.storyhook/logs");
+    journal_once(&logs);
+    assert_eq!(
+        std::fs::read(logs.join(storyhook::daemon::activity::IGNORE_FILE)).unwrap(),
+        storyhook::daemon::activity::JOURNAL_IGNORE,
+        "scripts/activity-run.py and src/daemon/activity/ignore.rs disagree"
+    );
+    let days = day_file_names(&logs);
+    assert_eq!(days.len(), 1, "{:?}", entries(&logs));
+    assert_eq!(
+        entries(&logs),
+        [storyhook::daemon::activity::IGNORE_FILE, days[0].as_str()],
+        "no temporary file is left behind"
+    );
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&logs).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert!(journal(&logs).iter().any(|r| r["message"] == "observed"));
+}
+
+/// SH-771: every checkout journaled before this change has a directory
+/// without the ignore file; a changed, deleted or symlinked one is written
+/// again on the next record.
+#[test]
+fn the_python_writer_repairs_a_missing_changed_or_symlinked_ignore_file() {
+    use storyhook::daemon::activity::{IGNORE_FILE, JOURNAL_IGNORE};
+    let root = scratch_dir();
+    let logs = root.path().join("checkout/.storyhook/logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::write(logs.join("2026-09-24.jsonl"), "").unwrap();
+    std::fs::write(logs.join(".view.lock"), "").unwrap();
+    journal_once(&logs);
+    assert_eq!(
+        std::fs::read(logs.join(IGNORE_FILE)).unwrap(),
+        JOURNAL_IGNORE
+    );
+
+    std::fs::write(logs.join(IGNORE_FILE), "# edited by hand\n!*.jsonl\n").unwrap();
+    journal_once(&logs);
+    assert_eq!(
+        std::fs::read(logs.join(IGNORE_FILE)).unwrap(),
+        JOURNAL_IGNORE
+    );
+
+    std::fs::remove_file(logs.join(IGNORE_FILE)).unwrap();
+    journal_once(&logs);
+    assert_eq!(
+        std::fs::read(logs.join(IGNORE_FILE)).unwrap(),
+        JOURNAL_IGNORE
+    );
+
+    let target = root.path().join("elsewhere.txt");
+    std::fs::write(&target, "not storyhook's\n").unwrap();
+    std::fs::remove_file(logs.join(IGNORE_FILE)).unwrap();
+    std::os::unix::fs::symlink(&target, logs.join(IGNORE_FILE)).unwrap();
+    journal_once(&logs);
+    assert!(
+        std::fs::symlink_metadata(logs.join(IGNORE_FILE))
+            .unwrap()
+            .is_file(),
+        "the symlink itself is replaced"
+    );
+    assert_eq!(
+        std::fs::read(logs.join(IGNORE_FILE)).unwrap(),
+        JOURNAL_IGNORE
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "not storyhook's\n"
+    );
+    let names = entries(&logs);
+    assert!(
+        names
+            .iter()
+            .all(|name| name == IGNORE_FILE || name == ".view.lock" || name.ends_with(".jsonl")),
+        "no temporary file is left behind: {names:?}"
+    );
+}
+
+/// SH-771: a record the ignore file cannot protect is refused, reported
+/// once, and the command's own output and status are unchanged.
+#[test]
+fn the_python_writer_refuses_a_record_it_cannot_protect() {
+    let root = scratch_dir();
+    let logs = root.path().join("checkout/.storyhook/logs");
+    std::fs::create_dir_all(logs.join(storyhook::daemon::activity::IGNORE_FILE)).unwrap();
+    let output = guarded_output(
+        &mut runner(&logs, "printf 'one\ntwo\n'; exit 4"),
+        "activity runner did not finish",
+    );
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(output.stdout, b"one\ntwo\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.matches("activity journal unavailable").count(),
+        1,
+        "{stderr}"
+    );
+    assert!(day_file_names(&logs).is_empty(), "{:?}", entries(&logs));
+}
+
+/// A hermetic git: no system or global configuration, so no global
+/// excludes file can hide what SH-771 must hide by itself.
+fn git(cwd: &std::path::Path, args: &[&str]) -> String {
+    let home = cwd.join(".git-test-home");
+    let output = Command::new("git")
+        .current_dir(cwd)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &home)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(["-c", "core.excludesFile=/dev/null"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}: {output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// SH-771: a Python-written journal inside a git checkout is invisible to
+/// `git status`, even where the repository keeps `.storyhook/` trackable.
+#[test]
+fn a_python_journal_in_a_checkout_that_tracks_storyhook_leaves_status_clean() {
+    let root = scratch_dir();
+    let repo = root.path().join("repo");
+    std::fs::create_dir_all(repo.join(".storyhook")).unwrap();
+    git(&repo, &["init", "-q"]);
+    std::fs::write(repo.join(".gitignore"), ".git-test-home/\n!.storyhook/\n").unwrap();
+    std::fs::write(repo.join(".storyhook/notes.toml"), "kept = true\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    assert_eq!(
+        git(&repo, &["status", "--porcelain", "--untracked-files=all"]),
+        "A  .gitignore\nA  .storyhook/notes.toml\n"
+    );
+    journal_once(&repo.join(".storyhook/logs"));
+    assert_eq!(
+        git(&repo, &["status", "--porcelain", "--untracked-files=all"]),
+        "A  .gitignore\nA  .storyhook/notes.toml\n",
+        "the journal must not appear; other .storyhook/ content stays tracked"
+    );
 }

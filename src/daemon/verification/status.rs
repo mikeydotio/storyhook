@@ -30,6 +30,10 @@ pub struct VerifierStatus {
     pub held_stories: Vec<String>,
     /// Process-local ownership; never inferred from queue rank.
     pub active: Option<ActiveVerification>,
+    /// Why the owner holds a story that its own write took out of the queue
+    /// (SH-768): ordinary activity, never a fault. Absent in legacy payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation: Option<VerifierReservation>,
     /// Latest durable acknowledgement and recovery request.
     pub recovery: VerificationRecovery,
     /// Project fault work, independent of infrastructure admission control.
@@ -39,20 +43,27 @@ pub struct VerifierStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_receipt: Option<VerificationRecovery>,
     /// Timestamp selected from matching evidence, ownership acquisition, or queue entry.
+    /// Absent while reserved: no gate runs, so no progress is owed.
     pub last_evidence_at: Option<String>,
     /// Seconds since matching progress, ownership acquisition, or unowned queue entry.
+    /// Absent while reserved; the reservation carries its own age.
     pub silence_seconds: Option<u64>,
     /// Diagnostic when progress cannot be inspected.
     pub evidence_error: Option<String>,
     /// One concise actionable unhealthy-queue notice.
     pub warning: Option<String>,
+    /// The project's checkout tracks journal files in git, which its
+    /// journal's own ignore file cannot hide, and the command that fixes
+    /// it (SH-771). Separate from `warning`, which describes queue health.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_warning: Option<String>,
 }
 
 impl VerificationActivity {
     /// Reads one consistent ownership/store snapshot and matching journal evidence.
     pub fn status(&self, ctx: &Ctx<'_, impl Store>) -> Result<VerifierStatus, AppError> {
-        self.read_project(ctx.store(), ctx.project(), |tx, active, control| {
-            snapshot(tx, ctx, active, control).map(|(status, _)| status)
+        self.read_project(ctx.store(), ctx.project(), |tx, owner, control| {
+            snapshot(tx, ctx, owner, control).map(|(status, _)| status)
         })
         .map_err(Into::into)
     }
@@ -61,7 +72,7 @@ impl VerificationActivity {
 pub(crate) fn snapshot(
     tx: &impl ReadOps,
     ctx: &Ctx<'_, impl Store>,
-    active: Option<&ActiveVerification>,
+    owner: Option<SlotView<'_>>,
     control: VerificationControlState,
 ) -> Result<
     (
@@ -72,6 +83,7 @@ pub(crate) fn snapshot(
 > {
     use crate::service::engine::elapsed_secs;
     let now = ctx.now();
+    let active = owner.map(|owner| owner.active);
     let project = tx
         .project(ctx.project())?
         .ok_or_else(|| AppError::NotFound(format!("project {}", ctx.project())))?;
@@ -86,7 +98,19 @@ pub(crate) fn snapshot(
         .as_ref()
         .map_or(0, |i| i.attempts.saturating_sub(1));
     let verifying: Vec<String> = ordered.iter().map(|c| c.story_id.clone()).collect();
-    let evidence = super::evidence::AttemptEvidence::read(&ordered, active, ctx.env());
+    // Only the owner's declaration explains why its generation left the queue
+    // (SH-768); an undeclared absence stays the fault `AttemptEvidence::read`
+    // reports, and a declaration the queue contradicts is one too.
+    let held = super::reservation::held(owner, &ordered);
+    let evidence = match &held {
+        Ok(None) => super::evidence::AttemptEvidence::read(&ordered, active, ctx.env()),
+        Ok(Some(_)) => super::evidence::AttemptEvidence::default(),
+        Err(contradiction) => super::evidence::AttemptEvidence {
+            error: Some(contradiction.clone()),
+            ..super::evidence::AttemptEvidence::default()
+        },
+    };
+    let reservation = held.ok().flatten();
     let incident_is_current = evidence.incident_is_current(&ordered, active, incident.as_ref());
     let statuses = crate::daemon::verification_progress::status_snapshot_with_evidence(
         &ordered,
@@ -104,7 +128,9 @@ pub(crate) fn snapshot(
     };
     let mut evidence_error = evidence.error;
     let mut last_evidence_at = evidence.last_evidence_at;
-    let silence_seconds = if active.is_some() {
+    let silence_seconds = if reservation.is_some() {
+        None
+    } else if active.is_some() {
         last_evidence_at
             .as_deref()
             .and_then(|at| elapsed_secs(at, &now))
@@ -124,12 +150,31 @@ pub(crate) fn snapshot(
             .and_then(|at| elapsed_secs(at, &now))
     };
     if silence_seconds.is_none()
+        && reservation.is_none()
         && (active.is_some() || !ordered.is_empty())
         && evidence_error.is_none()
     {
         evidence_error =
             Some("evidence age unavailable (missing timestamp or clock moved backwards)".into());
     }
+    // Counted from the holder's latest activity, not from the declaration:
+    // a live reconcile legitimately outlasts any age (SH-770 decision D1).
+    let idle = reservation.and_then(|reservation| {
+        let bound = reservation.reason.overdue_after()?;
+        let idle =
+            elapsed_secs(reservation.idle_since(), &now).filter(|idle| *idle > bound.as_secs())?;
+        // Only a reported activity measures idleness; before one, the count
+        // is plain time since the declaration and is worded as such.
+        let measured = reservation.last_activity_at.is_some();
+        Some((idle, bound, measured))
+    });
+    let reservation = reservation.zip(active).map(|(reservation, active)| {
+        VerifierReservation::project(active, reservation, &statuses, &now)
+    });
+    let overdue = reservation
+        .as_ref()
+        .zip(idle)
+        .map(|(reservation, (idle, bound, measured))| (reservation, idle, bound, measured));
     let warning = if let Some(i) = incident
         .as_ref()
         .filter(|i| incident_is_current && i.halted)
@@ -154,6 +199,19 @@ pub(crate) fn snapshot(
             project.slug,
             error.replace(['\n', '\r'], " ")
         ))
+    } else if let Some((reservation, seconds, bound, measured)) = overdue {
+        let span = if measured {
+            format!(", idle {seconds}s")
+        } else {
+            format!(" for {seconds}s")
+        };
+        Some(format!(
+            "{} verifier reserved for {} ({}){span}, beyond its {}s ceiling; story verifier status; story daemon logs",
+            project.slug,
+            reservation.story_id,
+            reservation.reason.describe(),
+            bound.as_secs()
+        ))
     } else if let Some(seconds) = silence_seconds
         .filter(|s| *s > super::super::verification_progress::PUBLISH_INTERVAL.as_secs())
     {
@@ -176,6 +234,7 @@ pub(crate) fn snapshot(
             verifying,
             held_stories,
             active: active.cloned(),
+            reservation,
             recovery,
             project_recoveries: crate::service::project_recovery::status_snapshot(
                 tx,
@@ -186,6 +245,10 @@ pub(crate) fn snapshot(
             silence_seconds,
             evidence_error,
             warning,
+            journal_warning: crate::daemon::activity::hygiene::warning_for(
+                ctx.env(),
+                ctx.project(),
+            ),
         },
         statuses,
     ))
@@ -223,12 +286,26 @@ impl VerifierStatus {
             }
         }
         if let Some(active) = &self.active {
-            text.push_str(&format!(
-                "Attempt {}: gate on {} since {}\n",
-                active.attempt_id,
-                active.story_id,
-                crate::local_time::stamp(&active.started_at)
-            ));
+            if let Some(reservation) = &self.reservation {
+                text.push_str(&format!(
+                    "Attempt {}: {} reserved for {} since {} ({}); {} queued behind\n",
+                    active.attempt_id,
+                    reservation.story_id,
+                    reservation.reason.describe(),
+                    crate::local_time::stamp(&reservation.reserved_at),
+                    reservation
+                        .age_seconds
+                        .map_or_else(|| "age unknown".into(), |s| format!("{s}s")),
+                    reservation.queued_behind
+                ));
+            } else {
+                text.push_str(&format!(
+                    "Attempt {}: gate on {} since {}\n",
+                    active.attempt_id,
+                    active.story_id,
+                    crate::local_time::stamp(&active.started_at)
+                ));
+            }
         }
         if let Some(at) = &self.last_evidence_at {
             text.push_str(&format!(
@@ -280,6 +357,9 @@ impl VerifierStatus {
             }
         }
         if let Some(warning) = &self.warning {
+            text.push_str(&format!("warning: {warning}\n"));
+        }
+        if let Some(warning) = &self.journal_warning {
             text.push_str(&format!("warning: {warning}\n"));
         }
         text

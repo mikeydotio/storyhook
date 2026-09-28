@@ -672,3 +672,75 @@ fn a_second_restart_pass_does_not_re_quarantine_or_grow_the_streak() {
     );
     assert!(fake2.calls().is_empty());
 }
+
+/// Exhausting startup's probe budget does not skip durable reconciliation or
+/// turn uncertainty into a dead lane. The first steady pass probes afresh.
+#[test]
+fn unanswered_restart_preserves_ownership_and_reseeds_before_steady_recovery() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::new([DispatcherStep::WindowUnanswered {
+        window: "=fixture:=story-SH-1".into(),
+        detail: "startup probe budget exhausted".into(),
+    }]);
+    let story = new_story(&fixture, "still owned", &[]);
+    let run = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run, 0, &story);
+    let before = lane_at(&fixture, &run, 0);
+    let report = reconcile_restart_at(&fixture, &fake, &run, FIXTURE_NOW);
+    let after = lane_at(&fixture, &run, 0);
+    assert_eq!(
+        report.unanswered,
+        [(0, "startup probe budget exhausted".into())]
+    );
+    assert!(report.quarantined.is_empty());
+    assert!(report.filled.is_empty());
+    assert_eq!(after.state, EngineLaneState::Working);
+    assert_eq!(after.story_id, before.story_id);
+    assert_eq!(after.worktree_path, before.worktree_path);
+    assert_eq!(after.window_name, before.window_name);
+    assert_eq!(after.last_progress_at.as_deref(), Some(FIXTURE_NOW));
+    assert!(after.last_progress_seq.is_some());
+    assert_eq!(streak(&fixture, &run), 0);
+    assert_eq!(awaiting_of(&fixture, 1), None);
+    let recovered = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: "=fixture:=story-SH-1".into(),
+        alive: true,
+    }]);
+    let next = reconcile_steady_at(&fixture, &recovered, &run, FIXTURE_NOW);
+    assert!(next.unanswered.is_empty());
+    assert!(next.quarantined.is_empty());
+    assert_eq!(lane_at(&fixture, &run, 0).probe_detail, None);
+}
+
+#[test]
+fn unanswered_restart_still_obeys_every_store_classification_precedence() {
+    for closed in [false, true] {
+        for blocked in [false, true] {
+            for verifying in [false, true] {
+                let observation = LaneObservation {
+                    story_closed: closed,
+                    agent_blocked: blocked,
+                    story_verifying: verifying,
+                    window: WindowProbe::Unanswered {
+                        detail: "startup probe budget exhausted".into(),
+                    },
+                    seconds_since_progress: Some(STALL_CEILING_SECS * 2),
+                    ..progressing()
+                };
+                let expected = if closed {
+                    LaneClassification::Completed
+                } else if blocked {
+                    LaneClassification::HardStop(HardStopKind::AgentBlocked)
+                } else if verifying {
+                    LaneClassification::Verifying
+                } else {
+                    LaneClassification::Progressing
+                };
+                assert_eq!(
+                    classify(&observation, STALL_CEILING_SECS, ReconcilePass::Restart),
+                    expected
+                );
+            }
+        }
+    }
+}
