@@ -49,7 +49,17 @@ if [ "${1:-}" = "--speculative-run" ]; then
     [ "$#" -ge 7 ] && [ "${6:-}" = "--" ] \
         || die "private usage: merge-watch.sh --speculative-run <expected-tree> <base-ref> <head-ref> <poller-worktree> -- <command...>"
     if ! python3 "$script_dir/verifier-owner.py" held "$common_dir" "$5"; then
-        exec bash "$script_dir/machine-lock.sh" gate -- \
+        # Like verify-pr's entry, enclose both session owners in the declared
+        # cleanup budget. The generic two-second lock grace can kill restoration.
+        cleanup_budget="${STORYHOOK_VERIFIER_CLEANUP_GRACE_MS:-30000}"
+        case "$cleanup_budget" in
+        '' | *[!0-9]*) die "invalid verifier cleanup budget: $cleanup_budget" ;;
+        esac
+        [ "${#cleanup_budget}" -le 8 ] && [ "$cleanup_budget" -ge 4000 ] \
+            || die "verifier cleanup budget must be 4000..99999999 milliseconds"
+        cleanup_budget="$((10#$cleanup_budget))"
+        export STORYHOOK_VERIFIER_CLEANUP_GRACE_MS="$cleanup_budget"
+        exec bash "$script_dir/machine-lock.sh" --termination-grace "$((cleanup_budget * 3 / 4000))" gate -- \
             python3 "$script_dir/verifier-owner.py" run "$common_dir" "$5" -- \
             bash "$script_dir/merge-watch.sh" "$@"
     fi

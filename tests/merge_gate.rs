@@ -429,6 +429,9 @@ const MARKER_POLL: Duration = Duration::from_millis(20);
 /// QoS on a tree that did not touch merge-preflight.
 const SPECULATIVE_PATIENCE: Duration = Duration::from_secs(5);
 
+/// The declared cancellation budget of the slow-cleanup signal fixture.
+const SPECULATIVE_CLEANUP_BUDGET: Duration = Duration::from_secs(30);
+
 /// The SH-607 production incident had one decisive failure followed by 611
 /// unknown outcomes. A tail cannot recover the failure from that ordering.
 #[test]
@@ -1462,11 +1465,17 @@ impl MergeRepo {
                 "--",
                 "bash",
                 "-c",
-                "trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; printf ready > \"$1\"; while :; do :; done",
+                "trap 'sleep 4; exit 129' HUP; trap 'sleep 4; exit 130' INT; trap 'sleep 4; exit 143' TERM; printf ready > \"$1\"; while :; do :; done",
                 "merge-watch-signal-probe",
                 &marker.display().to_string(),
             ])
             .current_dir(self.path())
+            // A four-second gate cleanup exceeds machine-lock's generic two
+            // seconds but fits the verifier's declared cancellation ladder.
+            .env(
+                "STORYHOOK_VERIFIER_CLEANUP_GRACE_MS",
+                format!("0{}", SPECULATIVE_CLEANUP_BUDGET.as_millis()),
+            )
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
@@ -2481,6 +2490,46 @@ fn verifier_rebuilds_legacy_private_object_metadata_before_fetch() {
 }
 
 #[test]
+fn speculative_run_refuses_invalid_cleanup_budgets_before_mutation() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let tree = repo.rev_parse("main^{tree}");
+    let poller_container = repo.poller(&base);
+    let poller = poller_container.path().join("poller");
+    // Empty selects the default, as at verify-pr's entry; nonempty values
+    // must be unsigned decimal milliseconds within the production range.
+    for budget in ["wat", "-1", "3999", "100000000", "1.5"] {
+        let output = run(
+            repo.path(),
+            "env",
+            &[
+                &format!("STORYHOOK_VERIFIER_CLEANUP_GRACE_MS={budget}"),
+                "bash",
+                &checkout()
+                    .join("scripts/merge-watch.sh")
+                    .display()
+                    .to_string(),
+                "--speculative-run",
+                &tree,
+                &base,
+                &base,
+                &poller.display().to_string(),
+                "--",
+                "true",
+            ],
+        );
+        assert!(!output.status.success(), "accepted budget {budget:?}");
+        assert!(
+            stderr(&output).contains("cleanup budget"),
+            "{}",
+            stderr(&output)
+        );
+        assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
+        assert!(repo.merge_object_artifacts().is_empty());
+    }
+}
+
+#[test]
 fn speculative_run_forwards_hup_and_term_and_cleans_before_reraising() {
     let repo = MergeRepo::new();
     let fork = repo.rev_parse("main");
@@ -2510,9 +2559,10 @@ fn speculative_run_forwards_hup_and_term_and_cleans_before_reraising() {
             .output()
             .expect("signalling speculative-run");
         assert_ok(&signal, "signalling speculative-run");
-        let status = child.wait_within(load_grace::graced_now(SPECULATIVE_PATIENCE), || {
-            format!("the speculative run did not exit after {name}")
-        });
+        let status = child.wait_within(
+            load_grace::graced_now(SPECULATIVE_CLEANUP_BUDGET + SPECULATIVE_PATIENCE),
+            || format!("the speculative run did not exit after {name}"),
+        );
         assert_eq!(status.signal(), Some(number), "{name} must be re-raised");
         assert_eq!(stdout(&run(&poller, "git", &["rev-parse", "HEAD"])), base);
         assert!(
