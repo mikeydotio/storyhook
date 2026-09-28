@@ -31,6 +31,7 @@ type EngineLane = {
   last_progress_at: string | null;
   outcome: string | null;
   outcome_detail: string | null;
+  verifying?: boolean;
 };
 
 type EngineQuarantine = {
@@ -61,6 +62,7 @@ type EngineRun = {
   acknowledged_at: string | null;
   created_at: string;
   updated_at: string;
+  admission_wait?: "lanes-full" | "verification-backlog" | null;
 };
 
 function run(
@@ -1649,6 +1651,64 @@ test("the safety poll reconciles engine state without an SSE event", async ({
   await page.clock.runFor(25_000);
   await expect.poll(() => gets).toBeGreaterThan(initialGets);
   await expect(page.locator(".engine-run-btn")).toHaveText("Auto: Running");
+});
+
+test("a verifying lane holds no capacity and says so on its card, the strip and the summary", async ({
+  page,
+}) => {
+  // SH-822: a lane whose story waits for central verification keeps its
+  // record, but it is not active work and does not count against the target.
+  const current = run("alpha", "AA-1");
+  current.lane_count = 1;
+  current.lanes[0].verifying = true;
+  occupySecondLane(current, "AA-2");
+  current.lanes[1].verifying = false;
+  current.admission_wait = "lanes-full";
+  await page.route("**/api/repos/*/engine", async (route) => {
+    await fulfillRuns(route, [current]);
+  });
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+
+  await expect(page.locator('.card[data-id="AA-1"] .engine-lane-chip')).toHaveText(
+    "Full Auto: Lane 1 · verifying",
+  );
+  await expect(page.locator('.card[data-id="AA-2"] .engine-lane-chip')).toHaveText(
+    "Full Auto: Lane 2",
+  );
+  await openProjectEngineModal(page);
+  await expect(page.locator("#engine-modal-lanes-summary")).toHaveText(
+    "1 active · 1 verifying · target 1 lane",
+  );
+  const handedOff = page.locator(".engine-lane.engine-lane-verifying");
+  await expect(handedOff).toHaveCount(1);
+  await expect(handedOff.locator(".engine-lane-story")).toHaveText("AA-1");
+  await expect(handedOff.locator(".engine-lane-handoff")).toHaveText("verifying");
+});
+
+test("a run whose verification backlog is full says it waits for verification", async ({
+  page,
+}) => {
+  // SH-822, council D3: a run holds at most `lanes` verifying handoffs; past
+  // that, admission waits and the summary names the reason.
+  const current = run("alpha", "AA-1");
+  current.lane_count = 1;
+  current.lanes[0].verifying = true;
+  occupySecondLane(current, "AA-2");
+  current.lanes[1].verifying = true;
+  current.admission_wait = "verification-backlog";
+  await page.route("**/api/repos/*/engine", async (route) => {
+    await fulfillRuns(route, [current]);
+  });
+
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await openProjectEngineModal(page);
+
+  await expect(page.locator("#engine-modal-lanes-summary")).toHaveText(
+    "0 active · 2 verifying · target 1 lane · waiting for verification",
+  );
 });
 
 test("lane chips identify live Full Auto work and clear through the view press gate", async ({

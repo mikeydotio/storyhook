@@ -1032,6 +1032,12 @@ pub struct RunView {
     pub run: EngineRunRecord,
     pub lanes: Vec<EngineLaneRecord>,
     pub skipped_no_auto: Vec<SkippedNoAutoStory>,
+    /// Lane indexes whose story waits for central verification. Those lanes
+    /// keep their record but hold no capacity (SH-822).
+    pub verifying: BTreeSet<u32>,
+    /// Why a running run admits no more work; `None` while it can admit, and
+    /// for a run that is not running (SH-822).
+    pub admission_wait: Option<AdmissionWait>,
 }
 
 /// The durable lifecycle of Full Auto runs, excluding reconciliation.
@@ -1233,10 +1239,18 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         } else {
                             Vec::new()
                         };
+                    let occupancy = lane_occupancy(tx, project, &lanes)?;
+                    let admission_wait = if run.state == EngineRunState::Running {
+                        admission_from(&run, &lanes, &occupancy, &now).wait
+                    } else {
+                        None
+                    };
                     Ok(RunView {
                         run,
                         lanes,
                         skipped_no_auto,
+                        verifying: occupancy.verifying,
+                        admission_wait,
                     })
                 })
                 .collect()
@@ -2884,7 +2898,22 @@ pub(super) fn lane_admission(
     lanes: &[EngineLaneRecord],
     at: &str,
 ) -> Result<LaneAdmission, StoreError> {
-    let occupancy = lane_occupancy(tx, project, lanes)?;
+    Ok(admission_from(
+        run,
+        lanes,
+        &lane_occupancy(tx, project, lanes)?,
+        at,
+    ))
+}
+
+/// [`lane_admission`] over an occupancy already read in the same
+/// transaction.
+fn admission_from(
+    run: &EngineRunRecord,
+    lanes: &[EngineLaneRecord],
+    occupancy: &LaneOccupancy,
+    at: &str,
+) -> LaneAdmission {
     let limit = run.lanes as usize;
     let wait = if occupancy.active >= limit {
         Some(AdmissionWait::LanesFull)
@@ -2894,10 +2923,10 @@ pub(super) fn lane_admission(
         None
     };
     if wait.is_some() {
-        return Ok(LaneAdmission {
+        return LaneAdmission {
             slots: Vec::new(),
             wait,
-        });
+        };
     }
     let mut slots: Vec<EngineLaneRecord> = lanes
         .iter()
@@ -2915,7 +2944,7 @@ pub(super) fn lane_admission(
     // Unreachable while the bounds above hold; a lane table that breaks them
     // (a quarantined lane a paused run retains, say) waits rather than grows.
     let wait = slots.is_empty().then_some(AdmissionWait::LanesFull);
-    Ok(LaneAdmission { slots, wait })
+    LaneAdmission { slots, wait }
 }
 
 pub(super) fn put_or_retire_idle_lane(

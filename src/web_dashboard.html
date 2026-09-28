@@ -603,6 +603,9 @@ button, select, input[type=number], .card, .repo-card, tbody tr, .ctxmenu-item, 
 .engine-lane-story { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-weight: 700; }
 .engine-lane-elapsed { color: var(--fg-muted); white-space: nowrap; }
 .engine-lane-quiet { color: var(--fg-muted); white-space: nowrap; }
+/* SH-822: a lane that waits for central verification holds no capacity. */
+.engine-lane-verifying { border-style: dashed; }
+.engine-lane-handoff { color: var(--fg-muted); white-space: nowrap; font-style: italic; }
 /* SH-626: the daemon could not ask tmux whether this lane's pane is alive;
  * the lane is judged by its stall clock until it can. Loud on the status
  * surface, not only in the daemon journal. */
@@ -5132,8 +5135,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     })[0] || null;
   }
 
+  /** SH-822: a lane whose story waits for central verification keeps its
+   * record but holds no capacity, so its chip says so. */
   function engineLaneDescription(lane) {
-    return lane ? "Full Auto: Lane " + (lane.index + 1) : null;
+    if (!lane) return null;
+    return "Full Auto: Lane " + (lane.index + 1) + (lane.verifying ? " · verifying" : "");
   }
 
   function buildEngineLaneChip(lane) {
@@ -6408,11 +6414,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return;
     }
     container.hidden = false;
+    // SH-822: a verifying lane holds no capacity, so "active" excludes it.
     var occupied = (run.lanes || []).filter(function(lane) {
-      return lane.state === "dispatching" || lane.state === "working";
+      return (lane.state === "dispatching" || lane.state === "working") && !lane.verifying;
     }).length;
-    $("engine-modal-lanes-summary").textContent = occupied + " active · target "
-      + run.lane_count + (run.lane_count === 1 ? " lane" : " lanes");
+    var verifying = (run.lanes || []).filter(function(lane) { return !!lane.verifying; }).length;
+    $("engine-modal-lanes-summary").textContent = occupied + " active"
+      + (verifying ? " · " + verifying + " verifying" : "")
+      + " · target " + run.lane_count + (run.lane_count === 1 ? " lane" : " lanes")
+      + (run.admission_wait === "verification-backlog" ? " · waiting for verification" : "");
     (run.lanes || []).forEach(function(lane) {
       var subject = lane.story || lane.state;
       var elapsed = formatEngineElapsed(lane.dispatched_at);
@@ -6427,11 +6437,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // nobody reads is the SH-306 shape; the full reason is the title.
       var probe = typeof lane.probe_detail === "string" && lane.probe_detail ? lane.probe_detail : null;
       strip.appendChild(el("div", {
-        class: "engine-lane",
+        class: "engine-lane" + (lane.verifying ? " engine-lane-verifying" : ""),
         title: engineLaneTitle(lane.index, subject, elapsed, quiet, probe)
       }, [
         el("span", { class: "engine-lane-index" }, ["L" + (lane.index + 1)]),
         el("span", { class: "engine-lane-story" }, [subject]),
+        lane.verifying ? el("span", { class: "engine-lane-handoff" }, ["verifying"]) : null,
         elapsed ? el("span", {
           class: "engine-lane-elapsed", dataset: { startedAt: lane.dispatched_at }
         }, [elapsed]) : null,

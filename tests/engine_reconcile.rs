@@ -1556,6 +1556,42 @@ fn the_verifying_backlog_is_bounded_by_the_lane_count() {
     assert_eq!(report.run_state, EngineRunState::Running);
 }
 
+/// SH-822: status names the lanes that wait for verification and why a
+/// running run admits nothing, so the CLI and the dashboard can say so. A
+/// run that is not running reports no admission wait.
+#[test]
+fn status_names_verifying_lanes_and_the_admission_wait() {
+    let fixture = ServiceFixture::new();
+    let first = new_story(&fixture, "first handoff", &[]);
+    let second = new_story(&fixture, "second handoff", &[]);
+    let fake = FakeDispatcher::default();
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &first);
+    occupy_overflow(&fixture, &run_id, 1, &second);
+    for story in [&first, &second] {
+        StoryService::new(&fixture.ctx())
+            .set_state(story, "verifying", None, None, None)
+            .unwrap();
+    }
+    let ctx = fixture.ctx();
+    let service = EngineService::new(&ctx, &fake);
+
+    let view = service.status(Some(&run_id)).unwrap().remove(0);
+    assert_eq!(view.verifying, std::collections::BTreeSet::from([0, 1]));
+    assert_eq!(
+        view.admission_wait,
+        Some(AdmissionWait::VerificationBacklog)
+    );
+    let cli = storyhook::output::EngineRunView::from_service(view, FIXTURE_NOW);
+    assert!(cli.lanes.iter().all(|lane| lane.verifying), "{cli:?}");
+    assert_eq!(cli.admission_wait.as_deref(), Some("verification-backlog"));
+
+    service.pause(&run_id).unwrap();
+    let paused = service.status(Some(&run_id)).unwrap().remove(0);
+    assert_eq!(paused.admission_wait, None, "a paused run is not waiting");
+    assert_eq!(paused.verifying.len(), 2);
+}
+
 /// SH-822: an overflow lane exists only while it holds a story. When that
 /// story completes, the lane retires; the run's configured lanes stay.
 #[test]
