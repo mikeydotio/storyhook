@@ -212,7 +212,10 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
         Kind::Waited,
     ),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
-    ("src/service/engine/adoption.rs", "\"tmux\"", Kind::Waited),
+    // Adoption injects the tmux executable (SH-809). Capture still uses files
+    // and kills the whole process group at TMUX_TIMEOUT or the remaining
+    // shared startup deadline, whichever is sooner.
+    ("src/service/engine/adoption.rs", "program", Kind::Waited),
     // Cleanup's tmux probe uses shared file-backed, process-group-bounded
     // capture, so neither a server nor a descendant can retain an output pipe.
     ("src/service/resources/tmux.rs", "\"tmux\"", Kind::Waited),
