@@ -62,6 +62,10 @@ for the exact contracts. Do not guess a contract from memory.
 - A halt is the verifier's own incident. After the cause is repaired, the
   person acknowledges it with `story verifier ack <incident-id>`. Do not
   acknowledge a halt whose cause is still present.
+- A `low disk` halt names the gate volume, its free space, and the floor that
+  recent gates measured. Find what fills that volume (stale worktrees and
+  their build products are the usual cause), report it to the person, and let
+  the person free the space before the acknowledgement.
 
 ## Resolve a merge conflict
 
