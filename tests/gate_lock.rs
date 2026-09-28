@@ -81,7 +81,7 @@ use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook_test_support::{ChildGuard, scratch_dir};
 use tempfile::TempDir;
@@ -147,16 +147,13 @@ fn time_to_reach_the_lock() -> Duration {
 
 /// Blocks until `path` no longer exists, or panics.
 fn wait_for_gone(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
-    while Instant::now() < deadline {
-        if !path.exists() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!(
-        "{} was still there after the allowed poll cycles",
-        path.display()
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(
+            lock_poll_secs() * WAIT_POLLS_ALLOWED,
+        )),
+        Duration::from_millis(20),
+        || format!("{} was still present", path.display()),
+        || (!path.exists()).then_some(()),
     );
 }
 
@@ -186,21 +183,19 @@ fn pid_running(pid: u32) -> bool {
 /// Existence alone is weaker: shell redirection creates the file before
 /// `printf` writes its bytes.
 fn wait_for_pid(pidfile: &Path) -> u32 {
-    let deadline = Instant::now() + Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED);
-    while Instant::now() < deadline {
-        if let Some(pid) = std::fs::read_to_string(pidfile)
-            .ok()
-            .and_then(|text| text.trim().parse::<u32>().ok())
-            .filter(|pid| *pid > 0)
-        {
-            return pid;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!(
-        "{} never published a positive pid within the allowed poll cycles",
-        pidfile.display()
-    );
+    storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(Duration::from_secs(
+            lock_poll_secs() * WAIT_POLLS_ALLOWED,
+        )),
+        Duration::from_millis(20),
+        || format!("{} never published a positive pid", pidfile.display()),
+        || {
+            std::fs::read_to_string(pidfile)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+                .filter(|pid| *pid > 0)
+        },
+    )
 }
 
 #[test]
@@ -255,7 +250,9 @@ impl Runner {
 
     fn collect(&mut self) -> Output {
         self.0.wait_with_output_within(
-            Duration::from_secs(lock_poll_secs() * WAIT_POLLS_ALLOWED),
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(
+                lock_poll_secs() * WAIT_POLLS_ALLOWED,
+            )),
             || "the spawned gate fixture did not finish".to_string(),
         )
     }
@@ -502,18 +499,26 @@ fn a_second_run_waits_for_the_gate_lock_and_names_its_holder() {
         .stdin(Stdio::null());
     let mut runner =
         Runner(ChildGuard::spawn_with_output(&mut command).expect("spawning journalled waiter"));
-    std::thread::sleep(time_to_reach_the_lock());
-    assert!(
-        !runner.finished(),
-        "the run must not have completed while the gate lock was held -- it did not serialize"
+    let waiting_progress = storyhook_test_support::load_grace::wait_for(
+        storyhook_test_support::load_grace::Patience::new(time_to_reach_the_lock()),
+        Duration::from_millis(20),
+        || "the journal must name the gate-lock wait".into(),
+        || {
+            assert!(
+                !runner.finished(),
+                "the run completed while the gate lock was held"
+            );
+            let progress = match std::fs::read_to_string(&journal) {
+                Ok(progress) => progress,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+                Err(error) => panic!("reading {}: {error}", journal.display()),
+            };
+            progress.contains(
+                r#"{"kind":"activity","path":"release gate/rust-suite","label":"waiting for gate lock","status":"running"#,
+            ).then_some(progress)
+        },
     );
-    let waiting_progress = std::fs::read_to_string(&journal).expect("reading waiter progress");
-    assert!(
-        waiting_progress.contains(
-            r#"{"kind":"activity","path":"release gate/rust-suite","label":"waiting for gate lock","status":"running"#,
-        ),
-        "the journal must name the actual wait rather than leaving the parent suite as current: {waiting_progress}"
-    );
+    assert!(!waiting_progress.is_empty());
 
     signal(holder.pid(), "TERM");
     holder.collect();

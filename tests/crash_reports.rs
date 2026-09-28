@@ -91,9 +91,10 @@ fn panic_the_daemon_with_marker(env: &TestEnv, cwd: &Path, marker: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut panicking = ChildGuard::spawn(&mut command).expect("spawning a daemon armed to panic");
-    let status = panicking.wait_within(STORY_COMMAND_DEADLINE, || {
-        "the panicking daemon did not exit".to_string()
-    });
+    let status = panicking.wait_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "the panicking daemon did not exit".to_string(),
+    );
     assert!(
         !status.success(),
         "a panicking daemon must not exit cleanly"

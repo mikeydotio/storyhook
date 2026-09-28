@@ -1,6 +1,6 @@
 //! Delivery ownership survives reset races and never transfers to a replacement.
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use storyhook::service::reset::{ResetCaller, reset_story};
 use storyhook::service::story_reset::StoryResetService;
 use storyhook::service::{NewStoryInput, StoryService};
@@ -42,11 +42,11 @@ fn reset(fixture: &ServiceFixture, card: bool) -> Result<(), storyhook::error::A
 }
 
 fn wait_for(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut deadline = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
     while !path.exists() {
         assert!(
-            Instant::now() < deadline,
-            "delivery did not reach {}",
+            !deadline.expired(),
+            "{deadline}; delivery did not reach {}",
             path.display()
         );
         std::thread::sleep(Duration::from_millis(10));

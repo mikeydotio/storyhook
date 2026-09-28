@@ -81,7 +81,9 @@ raise SystemExit(0 if reply['ok'] else 1)
                     break;
                 }
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(20)))
+                    .set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+                        Duration::from_secs(20),
+                    )))
                     .unwrap();
                 let mut request = String::new();
                 stream.read_to_string(&mut request).unwrap();

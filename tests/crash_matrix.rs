@@ -661,7 +661,8 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
     // runner may deny that unrelated bind. The schema and migration-history
     // assertions below prove directly that at least one racer completed the
     // work and that the eight processes applied it exactly once.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut deadline =
+        storyhook_test_support::load_grace::Patience::new(std::time::Duration::from_secs(60));
     let mut done = vec![false; racers.len()];
     while done.iter().any(|finished| !finished) {
         for (racer, finished) in racers.iter_mut().zip(done.iter_mut()) {
@@ -678,9 +679,12 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
                 "a racer that merely lost the pidfile must exit, not die: {status:?}"
             );
         }
+        if done.iter().all(|finished| *finished) {
+            break;
+        }
         assert!(
-            std::time::Instant::now() < deadline,
-            "a racer never exited; {} of 8 still running",
+            !deadline.expired(),
+            "{deadline}; a racer never exited; {} of 8 still running",
             done.iter().filter(|finished| !**finished).count()
         );
         // The lifetime lock identifies the exact incumbent. Kill only the

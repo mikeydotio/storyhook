@@ -333,9 +333,10 @@ fn move_if_state_under_real_concurrency_yields_exactly_one_winner() {
     let mut successes = 0usize;
     let mut conflicts = 0usize;
     for mut child in children {
-        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "a concurrent `story move` did not finish".to_string()
-        });
+        let output = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "a concurrent `story move` did not finish".to_string(),
+        );
         assert!(
             output.stderr.is_empty(),
             "no concurrent attempt should print to stderr: {:?}",

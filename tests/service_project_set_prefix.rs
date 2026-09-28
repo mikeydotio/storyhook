@@ -467,7 +467,11 @@ fn the_copy_holds_a_writer_who_committed_first(racer: Racer) {
                 .expect("the racing write")
         });
 
-        holding_rx.recv().expect("the racer took the write lock");
+        holding_rx
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                storyhook_test_support::STORY_COMMAND_DEADLINE,
+            ))
+            .expect("the racer took the write lock");
         let outcome = service(&store)
             .set_prefix(project, "AGE", backups.path())
             .expect("renaming the prefix");

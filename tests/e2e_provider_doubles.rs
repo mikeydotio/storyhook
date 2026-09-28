@@ -90,7 +90,11 @@ impl Doubles {
             .arg(&knob_dir)
             .arg(&fake)
             .current_dir(root.path());
-        let output = run_bounded(cmd, "write_e2e_provider_doubles", SHELL_DEADLINE);
+        let output = run_bounded(
+            cmd,
+            "write_e2e_provider_doubles",
+            storyhook_test_support::load_grace::graced_now(SHELL_DEADLINE),
+        );
         assert!(
             output.status.success(),
             "generating the doubles: {}",

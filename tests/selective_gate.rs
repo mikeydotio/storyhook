@@ -1267,3 +1267,14 @@ fn selector_all_reuses_the_ordinary_core_receipt_and_earns_gate() {
 fn missing_selective_tier_refuses_instead_of_certifying_gate() {
     selective_receipt_scenario("missing");
 }
+
+/// The Python command boundary must apply the shared contention allowance.
+#[test]
+fn selective_fixture_commands_use_load_grace() {
+    let output = Command::new("python3")
+        .arg("-B")
+        .arg(checkout().join("tests/support/test_selective_receipt.py"))
+        .output()
+        .expect("running selective fixture patience regressions");
+    assert_ok(&output, "selective fixture command patience");
+}

@@ -25,7 +25,10 @@ fn run(env: &TestEnv, cwd: &Path, input: &serde_json::Value) -> Output {
         .unwrap()
         .write_all(input.to_string().as_bytes())
         .unwrap();
-    child.wait_with_output_within(STORY_COMMAND_DEADLINE, || "SessionStart hook hung".into())
+    child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "SessionStart hook hung".into(),
+    )
 }
 
 fn fail_before_rpc(env: &TestEnv) {

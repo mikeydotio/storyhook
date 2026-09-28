@@ -175,6 +175,7 @@ scope_rubric	src/service/templates.rs
 scratch_env	:(glob)**/*
 selective_gate	:(glob)**/*
 selective_gate	tests/support/selective_receipt.py
+selective_gate	tests/support/test_selective_receipt.py
 semver_hook_test	.semver/hooks/pre-bump/sync-build-number.sh
 semver_hook_test	:(glob)**/*
 semver_hook_test	scripts/test-version-build-number.py

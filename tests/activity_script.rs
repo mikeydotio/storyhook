@@ -2,7 +2,7 @@
 use std::{
     io::Write as _,
     process::{Command, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, scratch_dir};
 
@@ -48,7 +48,10 @@ fn test_output_runner(
 
 fn guarded_output(command: &mut Command, what: &'static str) -> std::process::Output {
     let mut child = ChildGuard::spawn_with_output(command).expect("starting the test process");
-    child.wait_with_output_within(STORY_COMMAND_DEADLINE, || what.into())
+    child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || what.into(),
+    )
 }
 
 /// Every record in the day files under `logs`. Only `*.jsonl` files are
@@ -87,7 +90,7 @@ fn both_streams_are_visible_before_exit_and_final_fragments_keep_the_exit_status
     );
     command.arg("probe").arg(&release);
     let mut child = ChildGuard::spawn_with_output(&mut command).unwrap();
-    let deadline = Instant::now() + STORY_COMMAND_DEADLINE;
+    let mut patience = storyhook_test_support::load_grace::Patience::new(STORY_COMMAND_DEADLINE);
     loop {
         let rows = journal(&logs);
         if rows
@@ -104,15 +107,16 @@ fn both_streams_are_visible_before_exit_and_final_fragments_keep_the_exit_status
             "observer exited before publishing its streams: {rows:?}"
         );
         assert!(
-            Instant::now() < deadline,
-            "streams did not arrive while command was still running: {rows:?}"
+            !patience.expired(),
+            "{patience}; streams did not arrive while command was still running: {rows:?}"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
     std::fs::write(release, "go").unwrap();
-    let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "activity runner did not finish".into()
-    });
+    let output = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "activity runner did not finish".into(),
+    );
     assert_eq!(output.status.code(), Some(7));
     assert_eq!(output.stdout, b"out\nfinal");
     assert_eq!(output.stderr, b"err\n");
@@ -128,9 +132,10 @@ fn logging_failure_does_not_change_output_or_status() {
     std::fs::write(&blocked, "owned fixture").unwrap();
     let mut child =
         ChildGuard::spawn_with_output(&mut runner(&blocked, "printf unchanged; exit 9")).unwrap();
-    let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "activity runner did not finish".into()
-    });
+    let output = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "activity runner did not finish".into(),
+    );
     assert_eq!(output.status.code(), Some(9));
     assert_eq!(output.stdout, b"unchanged");
     assert!(String::from_utf8_lossy(&output.stderr).contains("activity journal unavailable"));
@@ -147,8 +152,10 @@ fn a_missing_python_interpreter_preserves_the_unobserved_command() {
         .env("PATH", root.path())
         .env("STORYHOOK_ACTIVITY_LOG_DIR", root.path().join("activity"));
     let mut child = ChildGuard::spawn_with_output(&mut command).unwrap();
-    let output =
-        child.wait_with_output_within(STORY_COMMAND_DEADLINE, || "fallback did not finish".into());
+    let output = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "fallback did not finish".into(),
+    );
     assert_eq!(output.status.code(), Some(9), "{output:?}");
     assert_eq!(output.stdout, b"unchanged");
     assert!(String::from_utf8_lossy(&output.stderr).contains("python3"));
@@ -163,8 +170,10 @@ fn large_and_non_utf8_output_is_complete_while_journal_text_is_safe() {
         "exec python3 -c 'import os; os.write(1, b\"x\" * 200000 + b\"\\xff\\n\"); os.write(2, b\"\\x1b[31mghp_testsecret\\n\")'",
     );
     let mut child = ChildGuard::spawn_with_output(&mut command).unwrap();
-    let output =
-        child.wait_with_output_within(STORY_COMMAND_DEADLINE, || "large output was blocked".into());
+    let output = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "large output was blocked".into(),
+    );
     assert!(output.status.success());
     assert_eq!(output.stdout.len(), 200002);
     assert_eq!(&output.stdout[200000..], b"\xff\n");
@@ -215,11 +224,11 @@ fn a_descendant_holding_the_output_file_cannot_delay_completion() {
         "the descendant must still hold its descriptors when the observer returns"
     );
     drop(guard);
-    let end = Instant::now() + deadline;
+    let mut patience = storyhook_test_support::load_grace::Patience::new(deadline);
     while !done.exists() {
         assert!(
-            Instant::now() < end,
-            "descendant did not finish after release"
+            !patience.expired(),
+            "{patience}; descendant did not finish after release"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -265,11 +274,11 @@ fn test_output_capture_cannot_be_held_open_by_a_descendant() {
         "the observer must return before the descendant"
     );
     drop(guard);
-    let end = Instant::now() + deadline;
+    let mut patience = storyhook_test_support::load_grace::Patience::new(deadline);
     while !done.exists() {
         assert!(
-            Instant::now() < end,
-            "descendant did not finish after release"
+            !patience.expired(),
+            "{patience}; descendant did not finish after release"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -320,9 +329,10 @@ fn shared_test_output_parser_preserves_ledger_identity_and_ignores_chatter() {
         )
         .unwrap();
 
-    let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "shared test-output parser did not finish".into()
-    });
+    let output = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "shared test-output parser did not finish".into(),
+    );
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
@@ -378,22 +388,23 @@ fn group_cancellation_preserves_the_commands_cleanup_and_final_output() {
         }
     }
     let _group = Group(child.pid() as i32);
-    let deadline = Instant::now() + STORY_COMMAND_DEADLINE;
+    let mut patience = storyhook_test_support::load_grace::Patience::new(STORY_COMMAND_DEADLINE);
     while !journal(&logs).iter().any(|r| r["message"] == "ready") {
         assert!(
             child.try_wait().is_none(),
             "observer exited before readiness"
         );
-        assert!(Instant::now() < deadline, "command never became ready");
+        assert!(!patience.expired(), "command never became ready");
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(
         unsafe { libc::kill(-(child.pid() as i32), libc::SIGTERM) },
         0
     );
-    let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "group cancellation did not complete".into()
-    });
+    let output = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "group cancellation did not complete".into(),
+    );
     assert_eq!(output.status.code(), Some(23), "{output:?}");
     assert_eq!(output.stdout, b"ready\ncleaned");
     assert!(journal(&logs).iter().any(|r| r["message"] == "cleaned"));

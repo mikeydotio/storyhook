@@ -335,6 +335,21 @@ mod tests {
     }
 
     #[test]
+    fn readiness_is_observed_even_after_the_entire_allowance() {
+        // A runnable waiter may not be scheduled until after readiness and
+        // expiry. The ready value remains authoritative when it finally runs.
+        assert_eq!(
+            wait_for(
+                Patience::starting_at(Duration::ZERO, Instant::now(), || None),
+                Duration::ZERO,
+                || "already queued".into(),
+                || Some(7),
+            ),
+            7
+        );
+    }
+
+    #[test]
     fn wait_for_at_idle_panics_naming_the_wait_and_the_reading() {
         let failure = std::panic::catch_unwind(|| {
             wait_for(

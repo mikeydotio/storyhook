@@ -835,7 +835,7 @@ fn the_shell_probe_reads_a_real_story_window() {
             .args(args);
         let output = ChildGuard::spawn_with_output(&mut command)
             .expect("start fixture tmux client")
-            .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
+            .wait_with_output_within(load_grace::graced_now(STORY_COMMAND_DEADLINE), || {
                 format!("fixture tmux {args:?} did not finish")
             });
         assert!(

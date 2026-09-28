@@ -61,7 +61,7 @@
 use std::ffi::OsString;
 use std::net::{IpAddr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use storyhook_test_support::{DaemonGuard, TestEnv, reserve_port, slug_at};
 
@@ -139,7 +139,7 @@ const SETTLE_DEADLINE: Duration = Duration::from_secs(5);
 /// proves the probe count is already final; nothing waits for it to "settle"
 /// because there is nothing left that could still change it.
 fn probes_after_bind_confirmed(env: &TestEnv, counter_path: &Path) -> usize {
-    let deadline = Instant::now() + SETTLE_DEADLINE;
+    let mut patience = storyhook_test_support::load_grace::Patience::new(SETTLE_DEADLINE);
     loop {
         if let Some(info) = env.daemon()
             && info.tailnet.is_some()
@@ -149,10 +149,8 @@ fn probes_after_bind_confirmed(env: &TestEnv, counter_path: &Path) -> usize {
                 .unwrap_or(0);
         }
         assert!(
-            Instant::now() < deadline,
-            "the daemon never reported a tailnet bind within {SETTLE_DEADLINE:?} — the \
-             counting shim always succeeds immediately, so this means tailnet_reprobe never \
-             ran or never bound at all, not merely that it was slow"
+            !patience.expired(),
+            "{patience}; the daemon never reported the tailnet bind from its successful counting shim"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

@@ -3,7 +3,7 @@ use fs4::FileExt;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use storyhook::service::story_reset::StoryResetService;
 use storyhook::service::{Ctx, NewStoryInput, StoryService};
 use storyhook::store::{ReadOps, SqliteStore, Store, WriteOps};
@@ -114,15 +114,15 @@ if sys.argv[1] == 'prepared':
             .stderr(Stdio::inherit()),
     )
     .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut deadline = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(15));
     while !repo.join(".git/reset-hook-entered").exists() {
         assert!(
             worker.try_wait().is_none(),
             "reset executor exited before the real Git hook"
         );
         assert!(
-            Instant::now() < deadline,
-            "Git branch cleanup never reached its hook"
+            !deadline.expired(),
+            "{deadline}; Git branch cleanup never reached its hook"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -154,11 +154,12 @@ if sys.argv[1] == 'prepared':
         assert!(error.to_string().contains("workspace is busy"), "{error}");
         assert!(!service.get(&story.id, &reset.token).unwrap().completed);
         fs::write(&release, "continue").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut deadline =
+            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
         while lock.try_lock_exclusive().is_err() {
             assert!(
-                Instant::now() < deadline,
-                "orphaned Git never released workspace ownership"
+                !deadline.expired(),
+                "{deadline}; orphaned Git never released workspace ownership"
             );
             std::thread::sleep(Duration::from_millis(10));
         }

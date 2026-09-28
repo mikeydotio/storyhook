@@ -68,9 +68,10 @@ fn run_hook_with_stdin(stdin_json: &str) -> (String, i32) {
     if let Some(stdin) = child.stdin() {
         stdin.write_all(stdin_json.as_bytes()).ok();
     }
-    let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-        "the session-start hook did not finish".to_string()
-    });
+    let output = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "the session-start hook did not finish".to_string(),
+    );
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let code = output.status.code().unwrap_or(-1);
     (stdout, code)

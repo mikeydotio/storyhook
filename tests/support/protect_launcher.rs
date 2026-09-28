@@ -78,7 +78,10 @@ pub(super) fn ask_hook(
         .stderr(Stdio::piped());
     let mut child = ChildGuard::spawn_with_output(&mut command).unwrap();
     write!(child.stdin().unwrap(), "{payload}").unwrap();
-    let result = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || format!("hook: {text}"));
+    let result = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || format!("hook: {text}"),
+    );
     assert!(result.status.success(), "{}", combined(&result));
     assert!(result.stderr.is_empty(), "{}", combined(&result));
     serde_json::from_slice(&result.stdout).expect("valid hook response")
@@ -456,7 +459,11 @@ fn launcher_identity_requires_the_installer_bytes_and_no_symlink() {
         fs::remove_file(&path).unwrap();
         let mut fifo = shell(&harness);
         fifo.arg("-c").arg(format!("mkfifo {}", quoted(&path)));
-        let output = run_bounded(fifo, "create isolated FIFO", STORY_COMMAND_DEADLINE);
+        let output = run_bounded(
+            fifo,
+            "create isolated FIFO",
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        );
         assert!(output.status.success(), "{}", combined(&output));
         assert_denied(&harness, &text);
         fs::remove_file(&path).unwrap();
@@ -589,7 +596,11 @@ fn admitted_reads_execute_real_helpers_without_domain_or_artifact_writes() {
             );
             let mut command = shell(&harness);
             command.args(["-c", &text]);
-            let output = run_bounded(command, "real launcher reader", STORY_COMMAND_DEADLINE);
+            let output = run_bounded(
+                command,
+                "real launcher reader",
+                storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            );
             assert!(output.status.success(), "{text}: {}", combined(&output));
             let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(value["ok"], true, "{text}: {value}");
@@ -651,7 +662,11 @@ fn admitted_reads_execute_real_helpers_without_domain_or_artifact_writes() {
         );
         let mut command = shell(&harness);
         command.args(["-c", &text]);
-        let output = run_bounded(command, "missing reader target", STORY_COMMAND_DEADLINE);
+        let output = run_bounded(
+            command,
+            "missing reader target",
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        );
         assert!(!output.status.success(), "{text}: {}", combined(&output));
         let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(value["ok"], false, "{value}");
@@ -739,7 +754,11 @@ printf '%s\n' "$out"
         .arg(env!("CARGO_MANIFEST_DIR"))
         .env("STORYHOOK_TEST_HOME", &harness.home)
         .env("FAKE_TMUX_CODEX_PLUGIN_ROOT", cache);
-    let output = run_bounded(command, "real installed dispatch", STORY_COMMAND_DEADLINE);
+    let output = run_bounded(
+        command,
+        "real installed dispatch",
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+    );
     assert!(output.status.success(), "{}", combined(&output));
     assert_eq!(
         regular_files(&harness.home.join(".codex")),

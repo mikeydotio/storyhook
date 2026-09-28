@@ -2703,14 +2703,11 @@ wait
         // The observer can also be delayed beyond the verifier's idle window.
         // Keep progress live until both registration and child setup are seen.
         thread::sleep(Duration::from_millis(1500));
-        let ready_by = Instant::now() + storyhook_test_support::STORY_COMMAND_DEADLINE;
+        let mut patience = Patience::new(storyhook_test_support::STORY_COMMAND_DEADLINE);
         let (active, child_ready) = loop {
             let active = lifecycle::read_owned_processes(&daemon_env);
             let child_ready = checkout.path().join("stubborn-child-pid").is_file();
-            if (!active.is_empty() && child_ready)
-                || running.is_finished()
-                || Instant::now() >= ready_by
-            {
+            if (!active.is_empty() && child_ready) || running.is_finished() || patience.expired() {
                 break (active, child_ready);
             }
             thread::sleep(Duration::from_millis(10));
@@ -2752,8 +2749,8 @@ wait
         .unwrap()
         .parse()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < deadline {
+    let mut patience = Patience::new(Duration::from_secs(2));
+    while unsafe { libc::kill(pid, 0) } == 0 && !patience.expired() {
         thread::sleep(Duration::from_millis(10));
     }
     assert_ne!(
@@ -3561,8 +3558,8 @@ fn recorded_pid(pid_path: &std::path::Path) -> Option<i32> {
 }
 
 fn assert_process_stopped(pid: i32) {
-    let stopped_by = Instant::now() + Duration::from_secs(2);
-    while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < stopped_by {
+    let mut patience = Patience::new(Duration::from_secs(2));
+    while unsafe { libc::kill(pid, 0) } == 0 && !patience.expired() {
         thread::sleep(Duration::from_millis(10));
     }
     assert_ne!(
@@ -6040,12 +6037,54 @@ fn next_entry(
     entered: &std::sync::mpsc::Receiver<storyhook::store::ProjectId>,
     what: &str,
 ) -> storyhook::store::ProjectId {
+    next_entry_with_patience(entered, what, Patience::new(WORKER_PATIENCE))
+}
+
+fn next_entry_with_patience(
+    entered: &std::sync::mpsc::Receiver<storyhook::store::ProjectId>,
+    what: &str,
+    patience: Patience,
+) -> storyhook::store::ProjectId {
     load_grace::wait_for(
-        Patience::new(WORKER_PATIENCE),
+        patience,
         WORKER_POLL,
         || what.to_string(),
-        || entered.try_recv().ok(),
+        || match entered.try_recv() {
+            Ok(value) => Some(value),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("{what}: channel disconnected")
+            }
+        },
     )
+}
+
+#[test]
+#[should_panic(expected = "worker observation: channel disconnected")]
+fn a_disconnected_worker_is_reported_without_waiting_for_patience() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    drop(sender);
+    next_entry_with_patience(
+        &receiver,
+        "worker observation",
+        Patience::starting_at(Duration::ZERO, Instant::now(), || None),
+    );
+}
+
+#[test]
+fn a_buffered_worker_entry_wins_over_disconnect_and_expiry() {
+    let fixture = ServiceFixture::new();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    sender.send(fixture.project()).unwrap();
+    drop(sender);
+    assert_eq!(
+        next_entry_with_patience(
+            &receiver,
+            "worker observation",
+            Patience::starting_at(Duration::ZERO, Instant::now(), || None),
+        ),
+        fixture.project()
+    );
 }
 
 /// An actuator that holds one project's verification open until released,

@@ -3,7 +3,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use storyhook::service::story_reset::StoryResetService;
 use storyhook::service::{NewStoryInput, StoryService};
 use storyhook::store::{ReadOps, Store, StoryNo, WriteOps};
@@ -113,11 +113,12 @@ os._exit(0)
                 .unwrap()
         });
         let release = Release(repo.join(".git/release-child"));
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut deadline =
+            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
         while !repo.join(".git/leader-exited").exists() {
             assert!(
-                Instant::now() < deadline,
-                "Git cleanup did not reach its child barrier"
+                !deadline.expired(),
+                "{deadline}; Git cleanup did not reach its child barrier"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -145,7 +146,9 @@ os._exit(0)
         drop(release);
         assert!(
             received
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(10)
+                ))
                 .unwrap()
                 .unwrap()
                 .completed

@@ -334,7 +334,9 @@ impl VerificationActuator for Gate {
         self.release
             .lock()
             .unwrap()
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(10),
+            ))
             .unwrap();
         storyhook::daemon::verification::LandingOutcome::Merged {
             detail: "remote merge completed".into(),
@@ -354,7 +356,9 @@ impl VerificationActuator for Gate {
             self.release
                 .lock()
                 .unwrap()
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(10),
+                ))
                 .unwrap();
         }
         self.outcome.clone()
@@ -436,6 +440,7 @@ fn stop_prevents_admission_and_does_not_turn_cancellation_into_an_incident() {
         )
         .unwrap();
     std::thread::scope(|scope| {
+        let release = release;
         let worker = scope.spawn(|| {
             tick_with_activity(
                 fixture.store(),
@@ -446,7 +451,11 @@ fn stop_prevents_admission_and_does_not_turn_cancellation_into_an_incident() {
                 fixture.project(),
             )
         });
-        observed.recv_timeout(Duration::from_secs(10)).unwrap();
+        observed
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(10),
+            ))
+            .unwrap();
         activity
             .control(fixture.store(), fixture.project(), VerificationAction::Stop)
             .unwrap();
@@ -492,6 +501,7 @@ fn completed_merge_wins_a_concurrent_stop_and_drain_allows_completion() {
             },
         };
         std::thread::scope(|scope| {
+            let release = release;
             let worker = scope.spawn(|| {
                 tick_with_activity(
                     fixture.store(),
@@ -502,7 +512,11 @@ fn completed_merge_wins_a_concurrent_stop_and_drain_allows_completion() {
                     fixture.project(),
                 )
             });
-            observed.recv_timeout(Duration::from_secs(10)).unwrap();
+            observed
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(10),
+                ))
+                .unwrap();
             activity
                 .control(fixture.store(), fixture.project(), action)
                 .unwrap();
@@ -544,6 +558,7 @@ fn stop_after_certification_does_not_admit_a_merge() {
         },
     };
     std::thread::scope(|scope| {
+        let release = release;
         let worker = scope.spawn(|| {
             tick_with_activity(
                 fixture.store(),
@@ -554,7 +569,11 @@ fn stop_after_certification_does_not_admit_a_merge() {
                 fixture.project(),
             )
         });
-        observed.recv_timeout(Duration::from_secs(10)).unwrap();
+        observed
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(10),
+            ))
+            .unwrap();
         activity
             .control(fixture.store(), fixture.project(), VerificationAction::Stop)
             .unwrap();
@@ -652,7 +671,8 @@ fn real_shell_cancellation_reaches_the_owned_process_and_preserves_the_queue() {
                 fixture.project(),
             )
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut patience =
+            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
         while !started.exists() {
             assert!(
                 !worker.is_finished(),
@@ -663,8 +683,8 @@ fn real_shell_cancellation_reaches_the_owned_process_and_preserves_the_queue() {
                     .unwrap()
             );
             assert!(
-                std::time::Instant::now() < deadline,
-                "verification never started"
+                !patience.expired(),
+                "{patience}; verification never started"
             );
             std::thread::yield_now();
         }
@@ -742,7 +762,9 @@ fn acknowledgement_wakes_worker_and_names_the_attempt_without_another_event() {
                 Some(VerificationAcknowledgement::Retry),
             )
             .unwrap();
-        let arrived = observed.recv_timeout(Duration::from_secs(10));
+        let arrived = observed.recv_timeout(storyhook_test_support::load_grace::graced_now(
+            Duration::from_secs(10),
+        ));
         // Always release the fixture worker before asserting, including on failure.
         stop.store(true, Ordering::Relaxed);
         if arrived.is_ok() {
@@ -816,7 +838,9 @@ fn worker_restart_settles_pending_and_preserves_interrupted_admission_evidence()
                     |_| gate.lock().unwrap().take().unwrap(),
                 )
             });
-            let signal = subscription.recv(Duration::from_secs(10));
+            let signal = subscription.recv(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(10),
+            ));
             stop.store(true, Ordering::Relaxed);
             bus.publish(Change::Resync);
             assert!(signal.is_some(), "restart left recovery silent");

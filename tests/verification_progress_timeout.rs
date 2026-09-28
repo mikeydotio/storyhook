@@ -150,7 +150,9 @@ fn with_stall_watchdog<T>(checkout: &Path, action: impl FnOnce() -> T) -> T {
         let (finished, receiver) = std::sync::mpsc::channel::<()>();
         let watchdog = scope.spawn(move || {
             if matches!(
-                receiver.recv_timeout(STORY_COMMAND_DEADLINE),
+                receiver.recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    STORY_COMMAND_DEADLINE
+                )),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
             ) {
                 std::fs::write(checkout.join("release-stall"), "").unwrap();
@@ -189,9 +191,10 @@ fn stalled_fixtures_cannot_complete_before_a_delayed_observer() {
         let early_exit = child.try_wait();
         // Release before asserting, including on the failure path.
         std::fs::write(root.path().join("release-stall"), "").unwrap();
-        let output = child.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "stalled fixture did not accept explicit cleanup".into()
-        });
+        let output = child.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "stalled fixture did not accept explicit cleanup".into(),
+        );
         assert!(early_exit.is_none(), "chatter={chatter}: {output:?}");
         assert_eq!(output.status.code(), Some(97), "{output:?}");
         assert!(

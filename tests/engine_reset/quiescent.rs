@@ -3,7 +3,7 @@ use super::*;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use storyhook::service::engine::ShellDispatcher;
 
 struct Release(PathBuf);
@@ -58,11 +58,12 @@ PY
     std::thread::scope(|scope| {
         scope.spawn(|| sent.send(engine.stop(&run, true)).unwrap());
         let release = Release(fixture.env().home().join("release-child"));
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut deadline =
+            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
         while !fixture.env().home().join("leader-exited").exists() {
             assert!(
-                Instant::now() < deadline,
-                "reset helper did not reach its child barrier"
+                !deadline.expired(),
+                "{deadline}; reset helper did not reach its child barrier"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -97,7 +98,9 @@ PY
         drop(release);
         assert_eq!(
             received
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                    Duration::from_secs(10)
+                ))
                 .unwrap()
                 .unwrap()
                 .run

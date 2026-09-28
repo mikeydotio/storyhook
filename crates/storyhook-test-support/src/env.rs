@@ -651,7 +651,11 @@ fn probe_fault_capability() -> Result<(), String> {
     for (name, value) in daemon_containment() {
         cmd.env(name, value);
     }
-    let out = crate::server::run_bounded(cmd, "the fault-capability probe", FAULT_PROBE_DEADLINE);
+    let out = crate::server::run_bounded(
+        cmd,
+        "the fault-capability probe",
+        crate::load_grace::graced_now(FAULT_PROBE_DEADLINE),
+    );
     let said = String::from_utf8_lossy(&out.stderr);
     if said.contains(storyhook::env::TEST_BUILD_REFUSAL) {
         return Ok(());

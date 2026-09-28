@@ -320,12 +320,17 @@ esac
 /// runs at the same time: it announces itself in `$BARRIER_DIR`, then waits
 /// for `other` to do the same.
 fn meets(me: &str, other: &str) -> String {
+    // The disposable crate has no support-crate dependency. Resolve the shared
+    // policy here and pass the allowance into its generated barrier.
+    let allowance =
+        storyhook_test_support::load_grace::graced_now(std::time::Duration::from_secs(60))
+            .as_secs_f64();
     format!(
         r#"#[test]
 fn {me}_meets_{other}() {{
     let dir = std::path::PathBuf::from(std::env::var("BARRIER_DIR").unwrap());
     std::fs::write(dir.join("{me}"), "").unwrap();
-    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs_f64({allowance:?});
     while !dir.join("{other}").exists() {{
         assert!(std::time::Instant::now() < give_up, "{me} never ran beside {other}");
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -462,12 +467,13 @@ fn {name}_waits() {{
     )
     .expect("spawning the battery");
 
-    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(240);
+    let mut patience =
+        storyhook_test_support::load_grace::Patience::new(std::time::Duration::from_secs(240));
     let files = [pids.join("slow_a"), pids.join("slow_b")];
     while !files.iter().all(|file| file.exists()) {
         assert!(
-            std::time::Instant::now() < give_up,
-            "both pooled binaries never started"
+            !patience.expired(),
+            "{patience}; both pooled binaries never started"
         );
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
@@ -481,9 +487,10 @@ fn {name}_waits() {{
         .status()
         .expect("signalling the battery");
     assert!(status.success());
-    runner.wait_within(std::time::Duration::from_secs(120), || {
-        "the pooled battery did not exit after SIGTERM".into()
-    });
+    runner.wait_within(
+        storyhook_test_support::load_grace::graced_now(std::time::Duration::from_secs(120)),
+        || "the pooled battery did not exit after SIGTERM".into(),
+    );
 
     let survivors: Vec<&String> = test_pids.iter().filter(|pid| pid_running(pid)).collect();
     assert!(

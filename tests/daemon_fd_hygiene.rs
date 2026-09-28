@@ -58,7 +58,8 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 /// This is not a performance budget and must not be read as one. Every writer
 /// has closed by the time it starts, so the correct answer is available
 /// immediately and the only thing being distinguished is "arrived" from "never
-/// arrives". Ten seconds is a wedge, not a slow machine.
+/// arrives". Ten seconds is the idle allowance; the receive grants contention
+/// grace so scheduling the EOF observer cannot manufacture a leak.
 const EOF_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Stops whatever daemon `env` is running, however the test ends.
@@ -120,7 +121,7 @@ fn read_to_eof(reader: OwnedFd) -> Result<usize, ()> {
         let mut buffer = Vec::new();
         let _ = tx.send(file.read_to_end(&mut buffer));
     });
-    match rx.recv_timeout(EOF_DEADLINE) {
+    match rx.recv_timeout(storyhook_test_support::load_grace::graced_now(EOF_DEADLINE)) {
         Ok(Ok(bytes)) => Ok(bytes),
         Ok(Err(e)) => panic!("reading the pipe: {e}"),
         Err(_) => Err(()),

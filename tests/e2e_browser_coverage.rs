@@ -899,9 +899,10 @@ fn grep_count(pattern: &str, input: &str) -> usize {
         .expect("grep stdin was piped")
         .write_all(input.as_bytes())
         .expect("writing synthetic Playwright list output to grep");
-    let output = child.wait_with_output_within(UTILITY_DEADLINE, || {
-        "the grep coverage probe did not finish".to_string()
-    });
+    let output = child.wait_with_output_within(
+        storyhook_test_support::load_grace::graced_now(UTILITY_DEADLINE),
+        || "the grep coverage probe did not finish".to_string(),
+    );
     assert!(
         output.status.success() || output.status.code() == Some(1),
         "grep failed unexpectedly: {}",
@@ -1781,9 +1782,10 @@ fn run_runner_environment(
     command.args(["-c", &format!("set -euo pipefail\n{block}\n{probe}")]);
     ChildGuard::spawn_with_output(&mut command)
         .expect("running the browser harness environment boundary")
-        .wait_with_output_within(UTILITY_DEADLINE, || {
-            "browser harness environment probe did not finish".to_string()
-        })
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(UTILITY_DEADLINE),
+            || "browser harness environment probe did not finish".to_string(),
+        )
 }
 
 #[test]

@@ -44,9 +44,10 @@ fn tmux(socket: &Path, args: &[&str]) -> String {
     command.arg("-S").arg(socket).args(args);
     let output = ChildGuard::spawn_with_output(&mut command)
         .expect("start fixture tmux client")
-        .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "fixture tmux client did not finish".into()
-        });
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "fixture tmux client did not finish".into(),
+        );
     assert!(
         output.status.success(),
         "tmux failed: {}",
@@ -133,9 +134,10 @@ fn answering_pid(socket: &Path) -> Option<String> {
         .args(["display-message", "-p", "#{pid}"]);
     let output = ChildGuard::spawn_with_output(&mut command)
         .expect("start fixture readiness probe")
-        .wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "fixture readiness probe did not finish".into()
-        });
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "fixture readiness probe did not finish".into(),
+        );
     output
         .status
         .success()
@@ -861,7 +863,10 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
             .env("TMUX", format!("{},0,0", socket.display()));
         let output = ChildGuard::spawn_with_output(&mut register)
             .expect("fixture agent registration")
-            .wait_with_output_within(STORY_COMMAND_DEADLINE, || "registration stalled".into());
+            .wait_with_output_within(
+                storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+                || "registration stalled".into(),
+            );
         assert!(
             output.status.success(),
             "fixture registration: {} {}",

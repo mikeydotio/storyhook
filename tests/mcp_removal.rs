@@ -29,7 +29,9 @@ fn mcp_flag_no_longer_accepted() {
     let output = story(dir.path())
         .arg("--mcp")
         .write_stdin(mcp_request)
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(storyhook_test_support::load_grace::graced_now(
+            std::time::Duration::from_secs(5),
+        ))
         .output()
         .expect("process should exit, not hang");
 
@@ -318,7 +320,9 @@ fn retired_mcp_refuses_plain_and_json_without_starting_a_daemon() {
         }
         let output = command
             .write_stdin("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n")
-            .timeout(std::time::Duration::from_secs(5))
+            .timeout(storyhook_test_support::load_grace::graced_now(
+                std::time::Duration::from_secs(5),
+            ))
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
@@ -382,9 +386,10 @@ fn retired_mcp_exits_while_protocol_input_remains_open() {
     command.arg("mcp");
     let mut child = ChildGuard::spawn_with_output(command.stdin(Stdio::piped())).unwrap();
     let input = child.take_stdin().unwrap();
-    let status = child.wait_within(STORY_COMMAND_DEADLINE, || {
-        "retired MCP waited for stdin".into()
-    });
+    let status = child.wait_within(
+        storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+        || "retired MCP waited for stdin".into(),
+    );
     assert_eq!(status.code(), Some(2));
     drop(input);
     assert!(!env.store_path().exists());

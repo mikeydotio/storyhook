@@ -43,7 +43,7 @@ use crate::env::TestEnv;
 use crate::server::{ACCEPT_DEADLINE, ChildGuard, PORTFILE_DEADLINE, REAP_POLL, run_bounded};
 
 // ---------------------------------------------------------------------------
-// The three deadlines, and what each one disproves (SH-528)
+// The idle allowances and the literal death proof (SH-528, SH-810)
 // ---------------------------------------------------------------------------
 //
 // Every wait in this file used to be unbounded, and one of them wedged
@@ -52,11 +52,10 @@ use crate::server::{ACCEPT_DEADLINE, ChildGuard, PORTFILE_DEADLINE, REAP_POLL, r
 // `run-rust-battery.sh`, `leg.sh` and `verify-pr.sh` carry no `timeout`
 // between them — so the bound has to live here.
 //
-// Each constant below is derived from the bound it is meant to prove was not
-// reached, never picked (SH-394), and each is deliberately *larger* than that
-// bound so the mechanism underneath reports itself first and names its own
-// cause. A harness that wins that race reports an anonymous timeout in place
-// of a real diagnosis, which is the opposite of the point.
+// Each constant follows its underlying operation (SH-394). Client completion
+// and startup include scheduler-dependent work and receive contention grace at
+// their callers. Already-armed death remains a literal DELIVERY_BACKSTOP proof.
+// The headroom lets the underlying mechanism report its own cause first.
 
 /// How long the client whose daemon is about to die gets.
 ///
@@ -186,7 +185,7 @@ pub fn crash_the_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint, args: &[&s
     let client = run_bounded(
         client_cmd,
         &format!("story {}", args.join(" ")),
-        CLIENT_DEADLINE,
+        crate::load_grace::graced_now(CLIENT_DEADLINE),
     );
     let daemon = armed.wait_within(ARMED_DEATH_DEADLINE, || {
         the_fault_never_fired(env, point, args, &client)
@@ -205,7 +204,7 @@ pub fn crash_the_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint, args: &[&s
     );
     wait_for_reaped_daemon_lock(
         &armed_identity,
-        Instant::now() + MARGIN,
+        Instant::now() + crate::load_grace::graced_now(MARGIN),
         || {
             (
                 env.daemon_is_live(),
@@ -339,9 +338,10 @@ fn died_before_serving(env: &TestEnv, point: FaultPoint, status: ExitStatus) -> 
 /// to send and nothing to wait for — the process simply dies on the way up.
 pub fn crash_a_starting_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint) -> ExitStatus {
     let mut armed = arm_a_daemon(env, cwd, point);
-    let status = armed.wait_within(STARTING_DEATH_DEADLINE, || {
-        the_fault_never_fired_on_the_way_up(env, point)
-    });
+    let status = armed.wait_within(
+        crate::load_grace::graced_now(STARTING_DEATH_DEADLINE),
+        || the_fault_never_fired_on_the_way_up(env, point),
+    );
     assert_eq!(
         status.signal(),
         Some(libc::SIGKILL),
@@ -664,7 +664,7 @@ mod tests {
 
         let result = wait_for_reaped_daemon_lock(
             &armed,
-            Instant::now() + MARGIN,
+            Instant::now() + crate::load_grace::graced_now(MARGIN),
             || observations.pop_front().expect("one observation per poll"),
             |_| pauses += 1,
         );
@@ -692,7 +692,7 @@ mod tests {
 
         let error = wait_for_reaped_daemon_lock(
             &armed,
-            Instant::now() + MARGIN,
+            Instant::now() + crate::load_grace::graced_now(MARGIN),
             || (true, Some(successor.clone())),
             |_| paused = true,
         )

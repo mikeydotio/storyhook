@@ -98,8 +98,16 @@ struct Answer {
 
 fn connect(port: u16, method: &str, path: &str, headers: &[(&str, String)]) -> TcpStream {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(PEER_IO_TIMEOUT * 2)).unwrap();
-    stream.set_write_timeout(Some(PEER_IO_TIMEOUT * 2)).unwrap();
+    stream
+        .set_read_timeout(Some(storyhook_test_support::load_grace::graced_now(
+            PEER_IO_TIMEOUT * 2,
+        )))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(storyhook_test_support::load_grace::graced_now(
+            PEER_IO_TIMEOUT * 2,
+        )))
+        .unwrap();
     write!(stream, "{method} {path} HTTP/1.1\r\n").unwrap();
     for (name, value) in headers {
         write!(stream, "{name}: {value}\r\n").unwrap();

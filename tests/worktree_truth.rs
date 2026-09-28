@@ -105,15 +105,17 @@ fn two_worktrees_of_one_repo_mint_colliding_ids() {
         ChildGuard::spawn_with_output(&mut b_command).expect("spawning `story new` in worktree b");
 
     let id_a = minted_id(
-        a.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "`story new` in worktree a did not finish".to_string()
-        }),
+        a.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "`story new` in worktree a did not finish".to_string(),
+        ),
         "a",
     );
     let id_b = minted_id(
-        b.wait_with_output_within(STORY_COMMAND_DEADLINE, || {
-            "`story new` in worktree b did not finish".to_string()
-        }),
+        b.wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(STORY_COMMAND_DEADLINE),
+            || "`story new` in worktree b did not finish".to_string(),
+        ),
         "b",
     );
 
