@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+from pid_record import read_pid
 
 repo, scratch = map(Path, sys.argv[1:3])
 project_slug = sys.argv[3]
@@ -63,9 +64,9 @@ message=b''
 def draw(): os.write(1,b'\\r\\x1b[2K'+glyph.encode()+message)
 os.write(1,b'\\r\\n'); draw()
 gate_log=open(root/'gate.log','ab')
-gate=subprocess.Popen(["bash",sys.argv[3],"gate","--","python3","-c", "import os,signal,time; from pathlib import Path; Path('writer').write_text(str(os.getpid())); signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(90)"], cwd=root, stdout=gate_log, stderr=gate_log)
-(root/'holder').write_text(str(gate.pid))
-(root/'ready').write_text(str(os.getpid()))
+gate=subprocess.Popen(["bash",sys.argv[3],"gate","--","python3","-c", "import os,signal,time; from pathlib import Path; signal.signal(signal.SIGTERM,signal.SIG_IGN); Path('writer').write_text(str(os.getpid())+chr(10)); time.sleep(90)"], cwd=root, stdout=gate_log, stderr=gate_log)
+(root/'holder').write_text(str(gate.pid)+chr(10))
+(root/'ready').write_text(str(os.getpid())+chr(10))
 while True:
  c=os.read(sys.stdin.fileno(),1)
  if c==b'\\x1b':
@@ -89,8 +90,9 @@ def run(*args, **kwargs):
 def wait_for(predicate, why, seconds=FIXTURE_EVENT_SECONDS):
     end = time.monotonic() + patience(seconds)
     while time.monotonic() < end:
-        if predicate():
-            return
+        value = predicate()
+        if value:
+            return value
         time.sleep(.03)
     raise AssertionError(why)
 
@@ -112,10 +114,11 @@ try:
         assert started.returncode == 0, started.stderr
         run("tmux", "set-window-option", "-t", "test:SH-1", "automatic-rename", "off", check=True)
         run("tmux", "set-window-option", "-t", "test:SH-1", "@storyhook-agent", identity, check=True)
-        wait_for(lambda: (scratch / "writer").exists(), "provider gate did not start")
-        writer = int((scratch / "writer").read_text())
-        agent = int((scratch / "ready").read_text())
-        holder = int((scratch / "holder").read_text())
+        writer, agent, holder = (
+            wait_for(lambda name=name: read_pid(scratch / name),
+                     f"provider did not publish complete {name} PID")
+            for name in ("writer", "ready", "holder")
+        )
         owned = {pid: run("ps", "-o", "lstart=", "-p", str(pid)).stdout.strip() for pid in (writer, holder)}
         # Unmarked panes refuse before any native key or cleanup side effect.
         run("tmux", "set-window-option", "-u", "-t", "test:SH-1", "@storyhook-agent", check=True)
