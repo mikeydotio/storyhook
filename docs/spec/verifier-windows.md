@@ -29,10 +29,14 @@ it fails loudly before any tmux call (SH-771, `activity-log.md`).
 
 A bounded Python helper takes a nonblocking per-directory flock. It identifies
 owned windows with a canonical journal hash, pane ID/PID, and original reader
-command. An unrelated occupant or multiple panes named `verification` is a
-visible ownership conflict. Missing windows are created; dead or changed owned
-readers are replaced. A replacement is allocated and marked before retirement
-of the old exact window ID, whose evidence is checked again before removal.
+command. An unrelated occupant or a second window named `verification` is a
+visible ownership conflict; since SH-822 identity is per pane, so the agent pane
+and panes a person adds are not conflicts. Missing windows are created; dead or
+changed owned readers are replaced. When other live panes share the window, the
+reader alone is replaced: a new reader is split in beside them, marked by exact
+pane ID, and each old reader pane is rechecked before `kill-pane`. Otherwise a
+replacement window is allocated and marked before retirement of the old exact
+window ID, whose evidence is checked again before removal.
 Creation and the first ownership tag run in one tmux command group. Staging
 names use `verification-pending-<uuid>`: a period is a pane delimiter even in
 an exact window target. Cleanup also accepts the old `.verification-` prefix,
@@ -85,3 +89,34 @@ reader commands prove known fixture origins. It rechecks exact evidence before
 removal and confirms disappearance. Production readers, unknown occupants,
 logs, and the shared server survive. Existing installed binaries are not updated
 or restarted by this cleanup; they can retain old routing until normal rollout.
+
+## The Verifier Agent pane — SH-822
+
+The window's left pane runs the Verifier Agent (`plugins/story/agents/verifier.md`,
+`storyhook::plugin::VERIFIER_AGENT`) in the registered checkout; the reader is on
+the right. The daemon resolves the launch (`src/daemon/activity/verifier_agent.rs`):
+`claude` on its own PATH, kept as spelled so an updater's versioned symlink keeps
+working, and the first plugin root that carries `agents/verifier.md` — the copy
+`STORYHOOK_DISPATCH_SCRIPT` names, the binary's release projection, a checkout,
+then Claude Code's registry. It reads files only; no provider CLI runs on the
+reconcile tick. The argv is `--plugin-dir <root> --agent story:verifier --model
+opus --effort xhigh`. Without `claude` or a root, the window keeps its reader
+alone and the project journal records why once, on the edge.
+
+The pane runs `/bin/sh -c <loop> storyhook-verifier:<owner> <argv>`. The marker is
+`$0`, so the pane is identifiable from its start command from creation; an
+interrupted pass cannot leave an agent the view does not see, and duplicates
+keep the lowest pane ID. When `claude` exits, the loop prints its status and
+waits for Enter, so a person restarts it and a failing launch cannot loop. A
+missing agent pane is created again at most once per 60 seconds
+(`@storyhook-agent-started`, stamped in the command group that splits), with
+the shared pane overrides (`tmux_server_env.pane_overrides`) and after the
+owned session's retained provider state is scrubbed. A pass makes at most one
+structural change — the window, the reader, or the agent — so each pass fits
+the 30-second operation budget, and splits use `-d` so focus is never taken.
+
+`STORYHOOK_VERIFIER_AGENT=0` omits the pane. The shared test environment sets it
+(`Literal("0")`), and `tests/verifier_fixture_hygiene.rs` refuses a fixture that
+turns it on without a fake `claude`: a real provider session is paid and
+network-bound. The private-server view tests use a fake provider; one
+production-daemon test proves the launch end to end.
