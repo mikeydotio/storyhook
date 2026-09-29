@@ -87,10 +87,14 @@ full preview, duration and verdict go to the per-project record log. See
 
 While a verification batch runs (SH-832), the snapshot reports `batch`:
 its id (absent until its record is written), head, members (head first)
-and phase (`selected`, `assembled`, `submitted`, `gating`, `landing`). It is
-a sibling of `batch_preview`, not part of `active`, whose identity
-ownership compares. Each other member's per-story status reads `running`
-with the batch named, and queue positions leave the members out.
+and phase (`selected`, `assembled`, `submitted`, `gating`, `landing`, or
+`bisecting` while a red batch is bisected, SH-833). It is a sibling of
+`batch_preview`, not part of `active`, whose identity ownership compares.
+Each other member's per-story status reads `running` with the batch named,
+and queue positions leave the members out. While bisecting, `id` is the red
+batch's and `members` are those still in the search: a member a red prefix
+puts back in the queue, or the culprit once found, is no longer listed.
+`bisecting` is a status phase only; no batch record is stored in it.
 
 ## Notifications and dashboard
 

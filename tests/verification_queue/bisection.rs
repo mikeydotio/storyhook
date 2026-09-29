@@ -727,3 +727,15 @@ fn gating_batch(board: &Board) -> VerificationBatch {
         .unwrap();
     batch
 }
+
+#[test]
+fn the_verifier_help_topic_names_the_bisection() {
+    let topic = storyhook::help_topics::get_help_topic("verifier").unwrap();
+    for named in [
+        "landing or bisecting",
+        "A red batch\n  is bisected",
+        "blames no story",
+    ] {
+        assert!(topic.contains(named), "{named}: {topic}");
+    }
+}

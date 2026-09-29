@@ -2808,13 +2808,19 @@ Inspect and control this project's centralized verifier.
 
   While a verification batch runs (SH-832), status reports batch: its id
   (once recorded), its head, its members head first, and its phase
-  (selected, assembled, submitted, gating or landing), and the text status
-  prints "Verification batch <id> running: <members> · <phase>". Each other
-  member's own verification status reads running with the batch named. A
-  certified batch lands through its batch pull request, and every member is
-  done in one transaction; a batch whose landing is uncertain keeps every
-  member fenced in verifying until the merge is confirmed. The daemon's own
-  verifier forms no batches yet (SH-841 enables it on a measured trigger).
+  (selected, assembled, submitted, gating, landing or bisecting), and the
+  text status prints "Verification batch <id> running: <members> · <phase>".
+  Each other member's own verification status reads running with the batch
+  named. A certified batch lands through its batch pull request, and every
+  member is done in one transaction; a batch whose landing is uncertain keeps
+  every member fenced in verifying until the merge is confirmed. A red batch
+  is bisected (SH-833): prefixes of its members in queue order are gated
+  until the member whose merge turns a green prefix red is found. That
+  culprit goes back to its own agent with a RED comment that names its tree,
+  its log and the batch; the members before it land together; the members
+  after it stay queued. A verdict that is not a red prefix tree (an
+  infrastructure failure, a moved base, a stop) blames no story. The daemon's
+  own verifier forms no batches yet (SH-841 enables it on a measured trigger).
 
   A project fault releases verifier ownership after cleanup. The managed agent
   decides scope before edits, preserves required gate coverage, tests new and
