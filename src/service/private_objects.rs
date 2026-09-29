@@ -106,6 +106,27 @@ impl PrivateObjects {
     }
 }
 
+/// Runs a Git query in `checkout` against the repository's own object store:
+/// objects it writes are the repository's. Exit codes in `answers` are
+/// answers; it stops at the per-command bound or as soon as `cancelled`
+/// answers true, and a cut answer is refused. `label` names the caller in
+/// every error.
+pub(crate) fn repository_query(
+    checkout: &Path,
+    label: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    answers: &'static [i32],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Captured, AppError> {
+    let mut command = git_command(checkout, None, args);
+    command.envs(env.iter().copied());
+    let result = run_captured_query(command, GIT_DEADLINE, cancelled, GIT_ANSWER_LIMIT, answers)
+        .map_err(|error| AppError::Storage(format!("{label} Git {args:?}: {}", error.detail())))?;
+    refuse_cut(&result, label, args)?;
+    Ok(result)
+}
+
 /// Runs Git in `checkout` against the repository's own objects only; a
 /// nonzero exit is an error. `label` names the caller in every error.
 pub(crate) fn git(checkout: &Path, label: &str, args: &[&str]) -> Result<Vec<u8>, AppError> {
