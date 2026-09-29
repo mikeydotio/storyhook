@@ -764,6 +764,41 @@ fn a_continuation_owned_lane_is_released_when_its_story_gains_a_reserved_label()
     assert_eq!(lane.state, EngineLaneState::Idle);
     assert_eq!(lane.outcome.as_deref(), Some(RESERVED));
 }
+
+/// Decision D3 on SH-837: an absent provider is never resumed for a story
+/// that carries a reserved label, whichever label. The provider is observed
+/// (a live one is left alone anyway), the resume is not attempted, and the
+/// record says why, so the person it is left for can see it.
+#[test]
+fn absent_provider_on_a_reserved_story_is_not_resumed() {
+    use storyhook::store::ContinuationStatus;
+    for label in storyhook::domain::RESERVED_LABELS {
+        let (f, id) = setup();
+        let ctx = f.ctx();
+        let runtime = Observer::new("absent");
+        ContinuationService::new(&ctx, &runtime)
+            .request(&id, input(&id))
+            .unwrap();
+        StoryService::new(&ctx)
+            .set_labels(&id, &[label.into()], &[])
+            .unwrap();
+
+        storyhook::daemon::continuation::process_one(f.store(), f.env(), &runtime).unwrap();
+
+        assert_eq!(
+            runtime.calls.borrow().as_slice(),
+            ["capture", "observe"],
+            "{label}"
+        );
+        let record = &requests(&f)[0];
+        assert_eq!(record.status, ContinuationStatus::NeedsAttention, "{label}");
+        assert!(
+            record.detail.contains(&format!("`{label}`")) && record.detail.contains("no replay"),
+            "{label}: {}",
+            record.detail
+        );
+    }
+}
 #[test]
 fn generic_unblock_delivery_yields_to_outstanding_continuation_owner() {
     use storyhook::store::{DeliveryStatus, ReadOps, Store, WriteOps};
