@@ -60,7 +60,12 @@ fn code_only(source: &str) -> String {
         } else if bytes[i] == b'\'' {
             // A lifetime has no closing quote. Character literals do.
             let end = if bytes.get(i + 1) == Some(&b'\\') {
-                source[i + 2..].find('\'').map(|n| i + 3 + n)
+                // The escaped character itself may be a quote (`'\''`), so
+                // the closing quote is searched for after it.
+                source
+                    .get(i + 3..)
+                    .and_then(|rest| rest.find('\''))
+                    .map(|n| i + 4 + n)
             } else {
                 source[i + 1..].chars().next().and_then(|c| {
                     let end = i + 1 + c.len_utf8();
@@ -191,6 +196,22 @@ fn ignores_comments_strings_characters_and_lifetimes() {
     "####;
     assert_eq!(raw_waits(source).len(), 1);
     assert_eq!(raw_waits(source).values().copied().collect::<Vec<_>>(), [1]);
+}
+
+#[test]
+fn an_escaped_quote_character_literal_is_masked_whole() {
+    // Unformatted but valid Rust: a stray quote left after the escaped one
+    // pairs with the comma into a character literal, and the double quote
+    // after it then opens a string that swallows the wait.
+    let source = "let quotes = ['\\'','\"']; rx.recv_timeout(BASE); let s = \"x\";";
+    assert_eq!(
+        raw_waits(source).keys().cloned().collect::<Vec<_>>(),
+        [".recv_timeout(BASE"]
+    );
+    for escaped in ["'\\\\'", "'\\n'", "'\\u{7b}'", "'\\x7f'"] {
+        let source = format!("let c = {escaped}; rx.recv_timeout(BASE);");
+        assert_eq!(raw_waits(&source).len(), 1, "{source}");
+    }
 }
 
 #[test]
