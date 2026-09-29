@@ -167,6 +167,14 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // Descendants therefore hold no output pipe and cannot outlive the
     // daemon's progress-supervision boundary.
     ("src/daemon/verification.rs", "\"bash\"", Kind::Waited),
+    // The batch helper (`verify-batch.sh`, SH-831) runs through the same
+    // bounded control runner as the story helper: file-backed capture, the
+    // control timeout, and the attempt's cancellation kill the whole group.
+    (
+        "src/daemon/verification/batch/shell.rs",
+        "\"bash\"",
+        Kind::Waited,
+    ),
     // Workspace probes use production file-backed capture and bounded group
     // cleanup. Their lock checks do not read a child pipe to EOF (SH-730).
     (
