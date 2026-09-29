@@ -30,6 +30,7 @@
 //! a write transaction open across that is a deadlock with a five-second fuse.
 
 pub mod attachment;
+pub mod batch_preview;
 pub mod block_delivery;
 pub mod catalog;
 pub mod cleanup;
@@ -73,6 +74,7 @@ pub mod story_reset;
 pub mod system;
 pub mod templates;
 pub mod transfer;
+pub mod trial_merge;
 pub mod verification;
 pub mod verification_control;
 pub(crate) mod workspace_lock;

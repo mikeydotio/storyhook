@@ -8,9 +8,9 @@
 //! batching's trial merges (SH-830) share it.
 
 use crate::error::AppError;
-use crate::process::{Captured, TerminationPolicy, run_captured_answer};
+use crate::process::{Captured, TerminationPolicy, run_captured_answer, run_captured_query};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Bound on one Git command; its whole process group is killed at the deadline.
 const GIT_DEADLINE: Duration = Duration::from_secs(30);
@@ -61,6 +61,36 @@ impl PrivateObjects {
         })
     }
 
+    /// Runs a Git query with the private object directory and `env` added,
+    /// and returns its whole answer whatever its exit status. Exit codes in
+    /// `answers` are answers, so only another failure is journaled. It stops
+    /// at the earlier of the per-command bound and `deadline`, or as soon as
+    /// `cancelled` answers true; a cut answer is refused.
+    pub(crate) fn query(
+        &self,
+        args: &[&str],
+        env: &[(&str, &str)],
+        answers: &'static [i32],
+        deadline: Option<Instant>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Captured, AppError> {
+        let timeout = deadline.map_or(GIT_DEADLINE, |deadline| {
+            GIT_DEADLINE.min(deadline.saturating_duration_since(Instant::now()))
+        });
+        let mut command = git_command(
+            &self.checkout,
+            Some((self.objects.path(), &self.source)),
+            args,
+        );
+        command.envs(env.iter().copied());
+        let result = run_captured_query(command, timeout, cancelled, GIT_ANSWER_LIMIT, answers)
+            .map_err(|error| {
+                AppError::Storage(format!("{} Git {args:?}: {}", self.label, error.detail()))
+            })?;
+        refuse_cut(&result, self.label, args)?;
+        Ok(result)
+    }
+
     /// Runs Git with the private object directory; a nonzero exit is an error.
     pub(crate) fn git(&self, args: &[&str]) -> Result<Vec<u8>, AppError> {
         answer(
@@ -82,12 +112,11 @@ pub(crate) fn git(checkout: &Path, label: &str, args: &[&str]) -> Result<Vec<u8>
     answer(capture(checkout, None, label, args)?, label, args)
 }
 
-fn capture(
+fn git_command(
     checkout: &Path,
     objects: Option<(&Path, &Path)>,
-    label: &str,
     args: &[&str],
-) -> Result<Captured, AppError> {
+) -> std::process::Command {
     let mut command = crate::env::git_env::command(checkout);
     if let Some((objects, source)) = objects {
         command
@@ -95,8 +124,17 @@ fn capture(
             .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", source);
     }
     command.args(args);
+    command
+}
+
+fn capture(
+    checkout: &Path,
+    objects: Option<(&Path, &Path)>,
+    label: &str,
+    args: &[&str],
+) -> Result<Captured, AppError> {
     run_captured_answer(
-        command,
+        git_command(checkout, objects, args),
         GIT_DEADLINE,
         TerminationPolicy::Kill,
         GIT_ANSWER_LIMIT,

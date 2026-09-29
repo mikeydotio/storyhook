@@ -349,6 +349,37 @@ pub(crate) fn run_captured_answer(
     .map_err(|failure| failure.error)
 }
 
+/// Runs a query: a command whose stdout is its answer and whose exit codes in
+/// `answers` are answers too (`git merge-tree` exits 1 for a conflict). It is
+/// journaled only when it fails otherwise (SH-761), its stdout is read up to
+/// `answer_limit` bytes with a cut reported (SH-815), and its whole process
+/// group is killed at `timeout` or as soon as `cancelled` answers true.
+pub(crate) fn run_captured_query(
+    command: Command,
+    timeout: Duration,
+    cancelled: &dyn Fn() -> bool,
+    answer_limit: u64,
+    answers: &'static [i32],
+) -> Result<Captured, CaptureError> {
+    let deadline = Instant::now() + timeout;
+    run_captured_until(
+        command,
+        TerminationPolicy::Kill,
+        None,
+        CaptureWait {
+            private_output: true,
+            failures_only: true,
+            stdout_limit: Some(answer_limit),
+            answers,
+            ..CaptureWait::default()
+        },
+        Some(cancelled),
+        |_| Ok(()),
+        || Ok(deadline.saturating_duration_since(Instant::now())),
+    )
+    .map_err(|failure| failure.error)
+}
+
 /// Runs a bounded subprocess with staged, file-backed standard input.
 pub(crate) fn run_captured_with_input(
     command: Command,
@@ -377,6 +408,8 @@ struct CaptureWait {
     failures_only: bool,
     /// How much stdout to read; `None` is the diagnostic bound.
     stdout_limit: Option<u64>,
+    /// Nonzero exit codes that are answers, journaled as success is.
+    answers: &'static [i32],
 }
 
 fn run_captured_until<G>(
@@ -513,9 +546,13 @@ fn run_captured_until<G>(
         }
     };
     drop(observer);
-    if !(wait.failures_only && status.success()) {
+    let answered = status.success()
+        || status
+            .code()
+            .is_some_and(|code| wait.answers.contains(&code));
+    if !(wait.failures_only && answered) {
         crate::daemon::activity::emit(
-            if status.success() { "INFO" } else { "ERROR" },
+            if answered { "INFO" } else { "ERROR" },
             &source,
             "event",
             &context,

@@ -214,6 +214,69 @@ mod tests {
         );
     }
 
+    /// SH-830: a trial merge's conflict is an answer (`merge-tree` exits 1),
+    /// so a query that answers leaves no record, and only a real failure is
+    /// journaled, once. Its answer is read past the diagnostic bound.
+    #[test]
+    fn a_query_journals_only_a_failure_that_is_not_an_answer() {
+        let root = storyhook_test_support::scratch_dir();
+        let directory = root.path().join("logs");
+        let _scope = enter(Some(LogContext {
+            directory: directory.clone(),
+            label: "project=query reader".into(),
+        }));
+        let never = || false;
+        let mut answered = Command::new("sh");
+        answered.args(["-c", "head -c 70000 /dev/zero | tr '\\0' x; exit 1"]);
+        let output = crate::process::run_captured_query(
+            answered,
+            std::time::Duration::from_secs(5),
+            &never,
+            1024 * 1024,
+            &[1],
+        )
+        .unwrap_or_else(|error| panic!("{}", error.detail()));
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.stdout.len(), 70_000, "the answer is read whole");
+        assert!(!output.stdout_truncated);
+        assert!(!directory.exists(), "an answer leaves no journal record");
+
+        let mut failing = Command::new("sh");
+        failing.args(["-c", "exit 3"]);
+        let output = crate::process::run_captured_query(
+            failing,
+            std::time::Duration::from_secs(5),
+            &never,
+            1024 * 1024,
+            &[1],
+        )
+        .unwrap_or_else(|error| panic!("{}", error.detail()));
+        assert_eq!(output.status.code(), Some(3));
+        let text = std::fs::read_to_string(super::super::day_path(&directory, chrono::Utc::now()))
+            .unwrap();
+        let records: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 1, "one failure, one record: {text}");
+        assert_eq!(records[0]["level"], "ERROR");
+        assert_eq!(records[0]["message"], "process finished: exit status: 3");
+
+        let stopped = || true;
+        let mut cancelled = Command::new("sh");
+        cancelled.args(["-c", "exit 0"]);
+        assert!(matches!(
+            crate::process::run_captured_query(
+                cancelled,
+                std::time::Duration::from_secs(5),
+                &stopped,
+                1024,
+                &[],
+            ),
+            Err(crate::process::CaptureError::Cancelled)
+        ));
+    }
+
     #[test]
     fn configure_preserves_an_explicit_destination_and_scopes_restore_on_panic() {
         let _scope = enter(Some(LogContext {
