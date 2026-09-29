@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Removes non-code without joining tokens separated by comments.
-fn code_only(source: &str) -> String {
+pub(super) fn code_only(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut out = bytes.to_vec();
     let mut i = 0;
@@ -92,7 +92,7 @@ fn code_only(source: &str) -> String {
 }
 
 /// The expression up to its enclosing separator, including nested call arguments.
-fn expression_end(code: &str, start: usize) -> usize {
+pub(super) fn expression_end(code: &str, start: usize) -> usize {
     let mut depth = 0_usize;
     for (offset, byte) in code.as_bytes()[start..].iter().enumerate() {
         match byte {
