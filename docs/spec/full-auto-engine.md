@@ -50,7 +50,7 @@ being picked.
 | D9 | **The queue is live and unbounded.** `story next` is re-asked every time a lane frees; a run ends when nothing is claimable. | An epic's children unblock each other as the run's own merges land; a snapshot taken at start would miss most of them. |
 | D10 | **Quarantine and continue; halt on three consecutive hard stops**, reset by any completion. Below the threshold, durable evidence moves to the story and run while the lane returns to service. | One hard story never strands a run; a broken tree halts within three attempts, with the whole triggering series retained even when one lane produced it sequentially. |
 | D11 | **On daemon restart or reboot, interrupted lanes are quarantined and reported, never resumed.** Worktree and branch are preserved. | A fresh agent inheriting uncommitted work it did not write is a hazard with no upside; the story is still there to be re-dispatched deliberately. Re-confirmed against a live alternative once `story reset` existed: the engine must never destroy a crashed agent's work unattended, so a human runs `reset` deliberately if they want the clean restart. |
-| D12 | **Two reserved labels.** `no-auto`: still returned by `story next` and claimable by hand, but never dispatched by the engine — human-in-the-loop work. `human-only`: never returned by `story next` at all. Both render with an orange tint in the dashboard. | The engine skips `no-auto` rather than holding a lane open waiting for a person who is asleep; `human-only` is removed from the ready queue entirely because no agent should be offered it. |
+| D12 | **Two reserved labels.** `no-auto`: still returned by `story next` and claimable by hand, but never dispatched by the engine — human-in-the-loop work. `human-only`: never returned by `story next` at all. Both render with an orange tint in the dashboard. A run never claims, relaunches or keeps a story that carries either label: a label added after the claim releases the lane at its first end point (SH-837). | The engine skips `no-auto` rather than holding a lane open waiting for a person who is asleep; `human-only` is removed from the ready queue entirely because no agent should be offered it. A reserved story is left for the operator; if that blocks the run, so be it. |
 | D13 | **Halt, drain and lane-failure fire an event hook and raise a non-dismissable dashboard modal that persists until acknowledged or a live run is abandoned.** Escape and backdrop presses do nothing; alerts queue newest first, one modal at a time. | A gate that goes silent must read as stale rather than as an all-clear (SH-306, SH-418). A push you might miss plus a modal that only a durable operator outcome can close is the pair that survives a missed notification. Allowing ordinary overlay dismissal would recreate the silence this decision forbids. |
 | D14 | **Multiple runs, one per project, with independent per-run lane limits (SH-672).** | Each run honors its configured `--lanes`; other runs and manual sessions do not consume its capacity. HTTP request concurrency is a separate bound. |
 | D15 | **Verification infrastructure failures are classified and bounded.** Permanent local failures halt the serialized queue immediately; retryable network failures get three attempts across one 60-second progress-freshness window. One durable incident drives an edited story comment, stalled queue status, a `verification_halted` hook and an acknowledgement banner. | An infrastructure result cannot prove later candidates are safe, so skipping would trade visible zero throughput for hidden partial certification. Exact-incident acknowledgement means “repair complete; retry,” and cannot clear a newer halt (SH-573). |
@@ -712,6 +712,11 @@ carries no steps of its own.
 | `no-auto` | yes | **no** — skipped, listed as needing a human | orange tint |
 | `human-only` | **no** — filtered in `ready_queue` | no | orange tint |
 
+Neither label may be picked up by a run in any other way either (SH-837): a
+lane whose story gains one is released at its first end point, and no
+automated door — the engine, the verifier's return, a continuation, project
+recovery — launches an agent for it. See "SH-837" under As built.
+
 `human-only` filters at the `next` path only (A1). It does not make a story
 `!is_ready`, so the board's ready count is unchanged and an epic whose only
 incomplete child is `human-only` is **not** blocked — a human can progress it.
@@ -856,6 +861,8 @@ ships no notification stack of its own.
 | `story.sh` answered `ok:false` | HardStop(DispatchRefused) | quarantine; relay the script's own refusal verbatim (SH-120's verdict) |
 | Daemon restart with a live lane | HardStop(Interrupted) | quarantine, report; never resume, never `reset` (D11) |
 | Story carries `no-auto` | Skipped | never claimed; listed as needing a human |
+| A lane's story carries a reserved label, and the verdict above would end, quarantine, defer or hold the lane (SH-837) | Reserved | release the lane (outcome `reserved`); no quarantine, `awaiting`, cleanup, hook or streak change |
+| A lane's story carries a reserved label and its agent is live | Progressing | keep the lane; never relaunch or type into it; one `FULL AUTO HOLD —` comment names `story block` |
 
 ## Testing
 
@@ -869,7 +876,7 @@ directions.
 | `tests/engine_reconcile.rs` | every row of the failure taxonomy, through `FakeDispatcher`; the four engine event hooks (SH-472), including both `EngineLaneQuarantined` producers and the `no_hooks` suppression |
 | `tests/engine_restart.rs` | interrupted lanes quarantine on restart, worktrees preserved |
 | `tests/daemon_engine.rs` | `poll_engine`'s own glue: run selection across every project, a real `ShellDispatcher`, the checkout fallback |
-| `tests/engine_labels.rs` | `human-only` never in `next` or `claim --next`; `no-auto` still in `next` and never dispatched |
+| `tests/engine_labels.rs` | `human-only` never in `next` or `claim --next`; `no-auto` still in `next` and never dispatched; `domain::reserved_label`; `story.sh`'s reserved list equals `RESERVED_LABELS` |
 | `tests/epic_computed_state.rs` | every rule and edge case above, table-driven |
 | `tests/epic_priority_tiebreak.rs` | `ready_order` with epic priority, including the no-parent rule; totality preserved |
 | `tests/machine_lock.rs` | real processes, stale-pid recovery, mutation-checked (precedent: `tests/orphan_check.rs`) |
@@ -2926,3 +2933,86 @@ bound, overflow retirement, status fields), `tests/engine_hardening.rs`
 `tests/engine_adoption.rs`, `tests/verification_queue.rs` (resume plan on an
 overflow lane), `src/output.rs` render tests, `tests/web_test.rs`, and
 `e2e/specs/engine.spec.ts`. Decisions D2, D3 and D3a are recorded on SH-822.
+
+### SH-837 — a run never picks up a story left for a person
+
+The operator asked that a Full Auto run never pick up a story that carries
+`no-auto` or `human-only`: "They should be left for the operator to act on. If
+they block the run, so be it." The fresh claim already honored both labels
+(D12). Every other door ignored them. Evidence on 2026-09-29: run `83f96b0a`
+had held three of its four lanes for 71 hours on SH-770, SH-771 and SH-811.
+Each was engine-dispatched, moved to `verifying`, and then labelled
+`human-only` as a verifier hold. The verifier never touches a `human-only`
+story, so nothing freed those lanes. Separately, the verifier's
+return-for-repair relaunched an absent `no-auto` agent as an unattended
+session (RV-9, 2026-09-28).
+
+**The rule.** A lane keeps a story only while the story still meets the rule
+the lane entered by. The engine's claim admits neither label. An explicit
+`story engine adopt` admits `no-auto` (SH-700) and refuses `human-only`.
+`domain::reserved_label` is the one predicate, and `human-only` wins when
+both labels are present. Project recovery now reads the same predicate.
+
+**Reconciliation.** `classify` wraps the old taxonomy. For a reserved story,
+`Completed` and `Progressing` stand, and every other verdict becomes
+`LaneClassification::Reserved(label)`: `AgentBlocked`, `Verifying`,
+`WindowGone`, `Interrupted`, `Stalled`, and the SH-650 deferral. The SH-650
+deferral waits for a resume that will never come. Continuation and recovery
+ownership do not exempt a reserved lane, because neither will relaunch it. A
+release sets the lane Idle with outcome `reserved` and the story id as
+detail. It writes one INFO journal line and nothing else: no `awaiting`, no
+comment, no cleanup, no hook, and no streak change in either direction. A run
+whose last lanes are released may then drain (decision D6 on SH-837).
+
+**A live agent is held, not interrupted (council decision D7, unanimous).**
+The story is in progress and its pane is alive, or its probe is unanswered.
+The run keeps the lane and its capacity, never relaunches the agent, and never
+types into it. It posts one `FULL AUTO HOLD —` comment per run and lane. The
+comment says that the session still runs in Full Auto mode (it approves its
+own plan and asks no questions) and that `story block <id>` stops it. The
+council rejected two alternatives:
+- Releasing at once would orphan a Full Auto agent outside every probe and
+  Stop Now, and would run `lanes + 1` agents.
+- Interrupting the agent would type into a pane nobody may be watching, and
+  would add an interrupt edge to block delivery, whose interrupts fence other
+  flows.
+
+Stop Now, `StopTarget::Unclaim`, stops a live reserved lane through the
+leased unclaim. The window closes and the prior state returns. The worktree
+and branch stay. Stop Now never resets such a lane. A reset reserved before
+the label still completes.
+
+**The other doors.**
+- `quarantine_refused_dispatch`: a story that became reserved between the
+  claim and the dispatch releases its lane as `reserved`, with no strike. The
+  refusal goes verbatim into `awaiting` (decision D4).
+- The verifier's `deliver_return` parks a `no-auto` story whose agent is absent
+  instead of re-dispatching it. `human-only` never gets that far (decision D2;
+  `docs/spec/verification-workflow.md` D-E).
+- The continuation daemon withholds the resume of an absent provider on a
+  reserved story, and the record needs attention (decision D3).
+- `story.sh dispatch --full-auto` refuses a reserved story before any claim or
+  resource, with reason `reserved-label`. This is the one door every Full Auto
+  launch passes. Its `RESERVED_LABELS_JSON` is fenced against
+  `RESERVED_LABELS` (decision D1).
+
+**Not changed.** The verifier still verifies and lands a `no-auto` story; that
+is the recorded rule of `verification-workflow.md`. An operator's own `--auto`
+dispatch of a `no-auto` story still works. No new finish guard exists:
+reserved stories may block a run.
+
+Tests:
+- `tests/engine_reconcile.rs`: the `classify` table, the live SH-770 case, the
+  hold and its one comment, the breaker, verbatim `awaiting`, refill, drain,
+  and the claim-dispatch race.
+- `tests/engine_restart.rs`
+- `tests/engine_reset.rs`: Stop Now unclaims and never resets, and retries a
+  failed unclaim.
+- `tests/engine_adoption.rs`
+- `tests/continuation.rs`
+- `tests/verification_queue.rs`
+- `tests/engine_labels.rs`
+- `plugins/story/tests/test-dispatch-full-auto.sh`
+
+Decisions D1 to D7 are recorded on SH-837. The council trail is
+`.council/sh-837-live-lane-agent-on-reserved-label/`.

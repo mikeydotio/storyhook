@@ -10,7 +10,10 @@ Adoption is explicit, atomic for the requested IDs, and bounded by the current
 run capacity. It requires claimed, unblocked, non-epic work in the run scope,
 a valid Git worktree cleanup lease, and the exact live provider pane on the
 leased tmux socket. It does not launch or change the existing agent. `no-auto`
-is eligible when explicitly named; `human-only` is not.
+is eligible when explicitly named; `human-only` is not. The same rule holds
+after adoption (SH-837): an adopted story that gains `human-only` is held while
+its agent is live and released at its first end point, like an engine lane
+whose story gains either reserved label; one that gains `no-auto` stays bound.
 
 External observations occur outside SQLite transactions and are revalidated
 before commit. The commit rechecks story versions, scope, run state, ownership,

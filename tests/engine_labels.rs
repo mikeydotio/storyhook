@@ -515,3 +515,23 @@ fn story_sh_reserves_exactly_the_domain_labels() {
         "the stricter label comes first, so a story carrying both names it"
     );
 }
+
+/// SH-837 — the engine topic says what a reserved label does to a run that
+/// already holds the story: the run lets go, relaunches nothing, and names
+/// the verb that stops a live agent.
+#[test]
+fn the_engine_topic_says_a_reserved_label_releases_its_lane() {
+    let body = get_help_topic("engine").expect("the `engine` topic must exist");
+    for label in RESERVED_LABELS {
+        assert!(
+            body.contains(label),
+            "`story help engine` must name `{label}`"
+        );
+    }
+    for needle in ["released", "relaunches", "story block", "stays blocked"] {
+        assert!(
+            body.contains(needle),
+            "`story help engine` must say {needle:?} about a reserved story"
+        );
+    }
+}

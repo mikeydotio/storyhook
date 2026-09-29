@@ -2330,7 +2330,10 @@ RESERVED LABELS
                It changes nothing about 'story next', which still
                offers it, and it stays claimable by hand. Automation
                skips it rather than holding a seat open for someone
-               who is asleep.
+               who is asleep: a Full Auto run never claims it, a label
+               added mid-run releases the run's lane, and neither the
+               verifier nor a continuation relaunches its agent. The
+               verifier still verifies it.
 
   human-only   Only a person may do this work. 'story next' and
                'story claim --next' never return it, at any count, so
@@ -2339,6 +2342,7 @@ RESERVED LABELS
                cleanup. Adding the label cancels an owned verifier attempt,
                releases its resources, and lets the next story proceed.
                Removing the label restores eligibility in its existing state.
+               A Full Auto run releases a lane that holds it, as for no-auto.
 
                It is NOT blocked. The story stays ready everywhere a
                person looks — 'story list --ready' carries it, every
@@ -2717,6 +2721,14 @@ start
   a story the verifier returns is active again. New work can take an extra
   lane beside a verifying one; that lane retires when its story leaves.
   status names each verifying lane and why admission waits.
+  A run never picks up a story that carries no-auto or human-only: it
+  does not claim one, and a label added later ends the lane's hold on it.
+  While the story's agent is live, the lane keeps it and posts one
+  FULL AUTO HOLD comment; `story block <id>` stops that agent. At the first
+  end point (verifying, blocked, pane gone, stall, restart) the lane is
+  released with outcome reserved: no quarantine, no cleanup, no breaker
+  strike. Nothing relaunches a reserved story. If that blocks the run, it
+  stays blocked. An adopted no-auto session stays bound.
   --agent defaults to claude; codex selects a Codex lane instead. Model,
   effort, and speed are optional provider settings. They are stored on the
   run, reused by every lane, and shown by start and status. standard keeps
@@ -2731,8 +2743,10 @@ status / pause / resume / stop / ack
   pause stops new claims but keeps the run resumable. resume returns a
   paused run to running. stop drains occupied lanes and finishes once
   they are idle; --now discards unfinished work in this run, removes its
-  windows, worktrees and local branches, and restores its stories. Stories
-  already verifying continue unchanged. Failed cleanup retains ownership
+  windows, worktrees and local branches, and restores its stories. A story
+  that carries a reserved label is unclaimed instead: its window closes,
+  and its worktree and branch stay. Stories already verifying continue
+  unchanged. Failed cleanup retains ownership
   for retry without blocking the story. ack clears the persistent
   stop notification and is idempotent.
 
