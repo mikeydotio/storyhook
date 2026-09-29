@@ -1,4 +1,5 @@
-//! One owned journal observation shared by verifier status projections.
+//! One owned journal observation shared by verifier status projections, and
+//! the retirement that keeps a journal owned by the attempt that reads it.
 
 use std::io::Read;
 
@@ -138,6 +139,49 @@ impl AttemptEvidence {
             && same_failure
             && reached_gate)
     }
+}
+
+/// Removes `candidate`'s progress journal as a new attempt becomes its owner
+/// (SH-776).
+///
+/// The journal is one file per story, and an attempt writes its `run` line
+/// only when its gate starts. Until then a new owner would read its
+/// predecessor's journal, and [`AttemptEvidence::read`] would report the
+/// mismatch for every resubmission, retry, landing recovery and hand-over.
+/// Callers hold the registry lock that publishes the new owner, which status
+/// also holds while it reads the journal, so no status read sees the new owner
+/// beside the old journal. Before its gate an owner then has no journal, which
+/// reads as evidence from its acquisition; after it, a journal that names
+/// another attempt is still a foreign writer's.
+///
+/// `Err` is the diagnostic for a journal that exists but cannot be removed.
+/// The caller reports it through [`report_unretired`] once the lock is released.
+pub(super) fn retire_journal(
+    env: &Environment,
+    candidate: &VerificationCandidate,
+) -> Result<(), String> {
+    let path = journal_path(env, candidate);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "could not retire the previous attempt's progress journal {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+/// Journals a failed [`retire_journal`]. Admission still proceeds: status goes
+/// on reporting the journal as unavailable evidence, and a gate that cannot
+/// write it fails as a permanent infrastructure failure.
+pub(super) fn report_unretired(candidate: &VerificationCandidate, detail: &str) {
+    crate::daemon::activity::emit(
+        "ERROR",
+        "verifier",
+        "event",
+        &format!("project={} {}", candidate.project_slug, candidate.story_id),
+        detail,
+    );
 }
 
 /// The queued candidate at exactly the generation `active` owns, if any.

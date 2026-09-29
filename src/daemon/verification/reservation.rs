@@ -495,7 +495,7 @@ mod tests {
         candidate.verifying_generation = Some(GlobalSeq::new(
             candidate.verifying_generation.unwrap().get() + 1,
         ));
-        guard.replace(&candidate, T0.into());
+        guard.replace(&board.env, &candidate, T0.into());
         assert!(!guard.is_reserved(), "a new generation starts unreserved");
 
         guard

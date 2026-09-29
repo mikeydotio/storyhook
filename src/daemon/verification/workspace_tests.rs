@@ -119,7 +119,7 @@ fn remediation_reuses_verifier_lock_without_parking_or_interrupting_agent() {
     git(&candidate.checkout, &["init", "-q"], None).unwrap();
     let activity = VerificationActivity::new();
     let guard = activity
-        .try_acquire(&store, &candidate, env.now())
+        .try_acquire(&store, &env, &candidate, env.now())
         .unwrap()
         .unwrap();
     let actuator = ShellVerificationActuator::with_paths(
@@ -211,7 +211,7 @@ fn control_runner_replaces_stale_markers_only_with_current_ownership() {
     for owned in [false, true] {
         let _guard = owned.then(|| {
             activity
-                .try_acquire(&store, &candidate, env.now())
+                .try_acquire(&store, &env, &candidate, env.now())
                 .unwrap()
                 .unwrap()
         });
@@ -306,7 +306,7 @@ fn control_runner_keeps_ownership_through_timeout_and_cancellation_cleanup() {
         git(fixture.cwd(), &["init", "-q"], None).unwrap();
         let activity = VerificationActivity::new();
         let guard = activity
-            .try_acquire(&store, &candidate, env.now())
+            .try_acquire(&store, &env, &candidate, env.now())
             .unwrap()
             .unwrap();
         let cancellation = activity.cancellation_for(project);
@@ -396,7 +396,7 @@ fn recovery_notification_uses_target_workspace_and_ignores_other_verifier_cancel
     git(&original.checkout, &["init", "-q"], None).unwrap();
     let activity = VerificationActivity::new();
     let guard = activity
-        .try_acquire(&store, &original, env.now())
+        .try_acquire(&store, &env, &original, env.now())
         .unwrap()
         .unwrap();
     activity.cancellation_for(project).cancel();
@@ -453,7 +453,7 @@ fn recovery_dispatch_retains_target_lock_and_uses_explicit_fresh_or_resume_mode(
     git(fixture.cwd(), &["init", "-q"], None).unwrap();
     let activity = VerificationActivity::new();
     let _guard = activity
-        .try_acquire(&store, &original, env.now())
+        .try_acquire(&store, &env, &original, env.now())
         .unwrap()
         .unwrap();
     activity.cancellation_for(project).cancel();

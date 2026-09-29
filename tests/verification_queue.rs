@@ -30,6 +30,8 @@ mod reconcile_hold;
 #[path = "verification_queue/reservation_status.rs"]
 mod reservation_status;
 
+#[path = "verification_queue/stale_journal.rs"]
+mod stale_journal;
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};

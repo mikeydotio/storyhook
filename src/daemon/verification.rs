@@ -16,6 +16,8 @@ mod cleanup;
 mod control;
 pub(crate) mod evidence;
 #[cfg(test)]
+mod journal_retirement_tests;
+#[cfg(test)]
 mod reconcile_wait_tests;
 #[cfg(test)]
 mod workspace_tests;
@@ -275,6 +277,10 @@ impl VerificationActivity {
     /// acquire for the same project is therefore an invariant violation
     /// rather than another queue slot. Two projects acquiring at once is the
     /// point.
+    ///
+    /// A test seam: it bypasses admission, so it checks no permission and
+    /// leaves the story's progress journal in place. Production publishes an
+    /// owner only through admission, which retires that journal (SH-776).
     #[must_use]
     pub fn acquire(
         &self,
@@ -377,7 +383,14 @@ impl VerificationGuard {
     /// creates a new generation when the agent resubmits it. The project's
     /// worker still owns the story throughout, so replacing the generation is
     /// one guarded mutation rather than a release followed by a new acquire.
-    fn replace(&mut self, candidate: &VerificationCandidate, started_at: String) {
+    /// The new owner retires the story's previous progress journal under the
+    /// same lock, as admission does (SH-776).
+    fn replace(
+        &mut self,
+        env: &Environment,
+        candidate: &VerificationCandidate,
+        started_at: String,
+    ) {
         assert_eq!(self.active.project, candidate.project);
         assert_eq!(self.active.story_id, candidate.story_id);
         let replacement = ActiveVerification {
@@ -397,6 +410,7 @@ impl VerificationGuard {
             .get_mut(&self.active.project)
             .expect("owned verification slot");
         assert_eq!(slot.active, self.active);
+        let retired = evidence::retire_journal(env, candidate);
         slot.active = replacement.clone();
         slot.candidate = candidate.clone();
         slot.output = crate::service::gate_output::OutputObserver::default();
@@ -407,6 +421,10 @@ impl VerificationGuard {
         slot.preview = None;
         slot.batch = None;
         self.active = replacement;
+        drop(slots);
+        if let Err(detail) = retired {
+            evidence::report_unretired(candidate, &detail);
+        }
     }
 }
 
@@ -2110,7 +2128,7 @@ where
         let lifecycle_entry = inflight.enter();
         let started_at = env.now();
         name_verification(&lifecycle_entry, candidate, &started_at);
-        let Some(active) = activity.try_acquire(store, candidate, started_at)? else {
+        let Some(active) = activity.try_acquire(store, env, candidate, started_at)? else {
             return Ok(if queue.human_permits(candidate)? {
                 TickResult::Stopped
             } else {
@@ -2223,6 +2241,7 @@ where
         // reserved for the cleanup it exists to do (SH-768).
         let Some(_active) = activity.admit(
             store,
+            env,
             &candidate,
             env.now(),
             Some(ReservationReason::Cleanup),
@@ -2261,7 +2280,7 @@ where
     let started_at = env.now();
     let lifecycle_entry = inflight.enter();
     name_verification(&lifecycle_entry, &candidate, &started_at);
-    let Some(mut active) = activity.try_acquire(store, &candidate, started_at)? else {
+    let Some(mut active) = activity.try_acquire(store, env, &candidate, started_at)? else {
         return Ok(if queue.human_permits(&candidate)? {
             TickResult::Stopped
         } else {
@@ -3128,7 +3147,7 @@ fn transfer_verifier(
     resubmitted: &VerificationCandidate,
 ) {
     let resumed_at = env.now();
-    active.replace(resubmitted, resumed_at.clone());
+    active.replace(env, resubmitted, resumed_at.clone());
     name_verification(lifecycle_entry, resubmitted, &resumed_at);
 }
 
