@@ -206,6 +206,20 @@ pub fn abandon_interrupted_batches(
     env: &Environment,
     project: ProjectId,
 ) -> Result<Vec<BatchId>, AppError> {
+    // A read first: a starting worker must never open a write transaction
+    // with nothing to write. Every store fault point fires inside every
+    // commit, an empty one included, so such a write kills an armed daemon
+    // before it accepts its first connection (SH-693), and holds `BEGIN
+    // IMMEDIATE` against every client for nothing.
+    let live = store.read(|tx| {
+        Ok(tx
+            .verification_batches(project)?
+            .iter()
+            .any(|batch| batch.phase.is_live()))
+    })?;
+    if !live {
+        return Ok(Vec::new());
+    }
     let now = env.now();
     Ok(store.write(|tx| abandon_live(tx, project, INTERRUPTED, &now))?)
 }

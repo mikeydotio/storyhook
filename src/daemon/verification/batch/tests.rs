@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::service::NewStoryInput;
-use crate::store::SqliteStore;
+use crate::store::{SqliteStore, StoreError};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use storyhook_test_support::ServiceFixture;
@@ -155,6 +155,104 @@ fn a_live_batch_is_abandoned_once_and_an_ended_one_is_left_alone() {
         abandon_interrupted_batches(&store, &env, project)
             .unwrap()
             .is_empty()
+    );
+}
+
+/// A store that counts the write transactions it opens, so a test can prove
+/// that a path writes nothing when it has nothing to write (SH-693).
+struct CountingStore {
+    inner: SqliteStore,
+    writes: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingStore {
+    fn writes(&self) -> usize {
+        self.writes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Store for CountingStore {
+    fn access(&self) -> crate::store::Access {
+        self.inner.access()
+    }
+    type ReadTx<'a> = <SqliteStore as Store>::ReadTx<'a>;
+    type WriteTx<'a> = <SqliteStore as Store>::WriteTx<'a>;
+    fn read<T>(
+        &self,
+        f: impl FnOnce(&Self::ReadTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        self.inner.read(f)
+    }
+    fn write<T>(
+        &self,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.write(f)
+    }
+    fn migrate(&self) -> Result<crate::store::MigrationReport, StoreError> {
+        self.inner.migrate()
+    }
+    fn change_token(&self) -> Result<u64, StoreError> {
+        self.inner.change_token()
+    }
+    fn snapshot(&self, dir: &Path, label: &str) -> Result<std::path::PathBuf, StoreError> {
+        self.inner.snapshot(dir, label)
+    }
+    fn write_with_snapshot<T>(
+        &self,
+        dir: &Path,
+        label: &str,
+        f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<crate::store::WriteWithSnapshot<T>, StoreError> {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.write_with_snapshot(dir, label, f)
+    }
+}
+
+#[test]
+fn a_starting_worker_opens_no_write_transaction_without_a_live_batch() {
+    let fixture = ServiceFixture::new();
+    let store = CountingStore {
+        inner: SqliteStore::open(fixture.store().path()).unwrap(),
+        writes: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let project = ProjectId::new(fixture.project().get());
+    let env = Environment::at(fixture.cwd());
+
+    assert!(
+        abandon_interrupted_batches(&store, &env, project)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(store.writes(), 0, "no batch: nothing may be written");
+
+    let first = head(&store.inner, &env, project);
+    let second = head_named(&store.inner, &env, project, "Batch partner");
+    let batch = record(project, &[&first, &second]);
+    store
+        .inner
+        .write(|tx| tx.insert_verification_batch(&batch))
+        .unwrap();
+    let mut ended = batch
+        .advance(BatchPhase::Released, "2026-01-01T00:00:01Z")
+        .unwrap();
+    ended.retired = true;
+    store
+        .inner
+        .write(|tx| tx.update_verification_batch(&ended, 0))
+        .unwrap();
+    assert!(
+        abandon_interrupted_batches(&store, &env, project)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store.writes(),
+        0,
+        "only ended batches: nothing may be written"
     );
 }
 
