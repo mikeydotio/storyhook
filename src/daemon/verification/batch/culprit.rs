@@ -527,5 +527,27 @@ pub(super) fn found_by(bisecting: &Bisecting, position: usize, certified: usize)
             " This verdict rests on one gate run of the whole batch; if the failure has no link to this story, the test may be flaky.",
         );
     }
+    if let Some(member) = parent.members.get(position - 1)
+        && let Some(resolution) = &member.resolution
+    {
+        // SH-834 D7: the red tree holds a union no member wrote as one.
+        let files: Vec<String> = resolution
+            .files
+            .iter()
+            .map(|file| format!("`{}`", file.path))
+            .collect();
+        let with = if resolution.conflicted_with.is_empty() {
+            "an earlier member".to_owned()
+        } else {
+            resolution.conflicted_with.join(", ")
+        };
+        text.push_str(&format!(
+            " {culprit} joined the batch through an automated conflict resolution ({}) of {} with {with}, in merge commit {}: the red may come from that resolution, not from {culprit}'s own change. After the members before it land, merge `{}` into this branch, resolve those files yourself, and submit again.",
+            resolution.strategy,
+            files.join(", "),
+            member.merge_commit.as_deref().unwrap_or("of the batch tip"),
+            parent.base_branch,
+        ));
+    }
     text
 }
