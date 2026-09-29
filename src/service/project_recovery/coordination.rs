@@ -36,8 +36,7 @@ pub(crate) fn owns_coordination(
     {
         return Ok(false);
     }
-    for record in tx.project_recoveries(project)? {
-        let view = persistence::read_view(tx, record)?;
+    for view in super::references::views_naming(tx, project, story)? {
         let assessment = &view.state.assessment;
         if view.record.active && assessment.story == story {
             let waiting = match assessment.status {

@@ -186,8 +186,7 @@ pub(crate) fn owns_resume(
     project: ProjectId,
     story: StoryNo,
 ) -> Result<bool, StoreError> {
-    for record in tx.project_recoveries(project)? {
-        let view = persistence::read_view(tx, record)?;
+    for view in super::references::views_naming(tx, project, story)? {
         for work in view
             .state
             .work

@@ -183,3 +183,20 @@ pub(crate) fn naming(
     }
     Ok(named)
 }
+
+/// The validated recoveries of this project that name the story.
+///
+/// A reader that asks about one story validates only these. A record that
+/// does not name the story cannot change the answer, so an invalid one must
+/// not stop it (SH-848); a record that names it is validated in full and fails
+/// closed.
+pub(super) fn views_naming(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<Vec<super::RecoveryView>, StoreError> {
+    naming(tx, project, story)?
+        .into_iter()
+        .map(|record| persistence::read_view(tx, record))
+        .collect()
+}
