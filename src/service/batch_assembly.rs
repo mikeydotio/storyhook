@@ -8,8 +8,9 @@
 //! the repository's configured identity, the one the repository's push hook
 //! accepts, and are never signed: a signer must not prompt inside the daemon.
 
+use super::isolated_merge::{self, MergeControl};
 use super::private_objects::repository_query;
-use super::trial_merge::{MERGE_TREE, TrialMerge, answer_oid, merge_answer, require_pinned};
+use super::trial_merge::{TrialMerge, answer_oid, merge_answer, require_pinned};
 use crate::error::AppError;
 use crate::process::Cancellation;
 use std::path::Path;
@@ -19,9 +20,6 @@ pub use smoothed::{LastMerge, SmoothedMerge, c_quote, merge_smoothed};
 
 /// Names batch assembly in every Git error it reports.
 const LABEL: &str = "batch assembly";
-
-/// `merge-tree --write-tree` exits 1 for a conflicted merge: an answer.
-const MERGE_ANSWERS: &[i32] = &[1];
 
 /// One member to merge, in queue order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,9 +119,17 @@ fn merge_onto(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<TrialMerge, AppError> {
     require_pinned(&member.commit, LABEL)?;
-    let mut args = MERGE_TREE.to_vec();
-    args.extend([tip, member.commit.as_str()]);
-    let merged = repository_query(repository, LABEL, &args, &[], MERGE_ANSWERS, cancelled)?;
+    let merged = isolated_merge::merge(
+        repository,
+        None,
+        [tip, &member.commit],
+        true,
+        MergeControl {
+            label: LABEL,
+            deadline: None,
+            cancelled,
+        },
+    )?;
     merge_answer(&merged, LABEL, tip, &member.commit)
 }
 

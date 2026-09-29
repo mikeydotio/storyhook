@@ -131,6 +131,7 @@ land_pr	:(glob)**/*
 lifecycle_audit	:(glob)**/*
 machine_lock	:(glob)**/*
 mcp_removal	:(glob)**/*
+merge_attributes	:(glob)**/*
 merge_gate	:(glob)**/*
 merge_gate	scripts/test-git-endpoint.py
 migration_guard	:(glob)**/*

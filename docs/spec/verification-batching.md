@@ -666,8 +666,7 @@ found SH-844: every merge-tree call follows local git attributes, so a local
   That is accepted while batching is dormant.
 - An older binary that rewrites the pointer (prefix repair) drops an unknown
   `[batch]` table.
-- Until SH-844, a local attribute can hide a conflict before this
-  classifier ever sees it.
+- SH-844 isolates attributes before this classifier runs (see below).
 
 Decisions D1 (council) and D2 to D8 are recorded on SH-834. Tests:
 - `src/domain/conflict_smoothing.rs`: the policy grammar, the deny floor,
@@ -687,3 +686,57 @@ Decisions D1 (council) and D2 to D8 are recorded on SH-834. Tests:
 - `tests/verification_queue/smoothing.rs`: it lands and is named
   everywhere; a code conflict stays out; a preview that misreads a code
   conflict is refused at assembly; the smoothed culprit's RED.
+
+### SH-844 — isolate verification merge attributes
+
+Verification merges use **no attributes**, including committed attributes.
+This policy applies to trial selection, clean and smoothed batch assembly,
+gate snapshot inspection, and the single-story shell preflight shared by
+`verify-pr.sh` and `merge-watch.sh`. It does not enable batching or smoothing.
+
+`service::isolated_merge` creates a disposable bare Git directory without
+templates, an index, or a link to source administration. It exposes source
+objects separately, sets `core.attributesFile=/dev/null` and
+`GIT_ATTR_NOSYSTEM=1`, disables global and system configuration, and clears
+inherited Git configuration injection. `merge.default=text` and diff3 are
+explicit. An empty tree in the repository's object format is passed with
+`--attr-source`, so neither working files nor committed attributes decide a
+merge. `merge-preflight.sh` applies the same boundary to pinned parent commits.
+
+Git must support the `--attr-source` option. Unknown-option, setup and merge
+errors fail loudly; they never fall back to an ambient merge. Shell isolation
+failures return 3 in both output modes; a real conflict returns 2. A repository
+that depends on committed merge attributes can now report more conflicts or
+a different predicted tree. The existing certified-tree equality check remains
+required when a server merges. Attribute support must not be restored without
+a deterministic source policy and tests for the same boundary.
+
+Object ownership is unchanged: trial and snapshot objects are disposable,
+shell objects are disposable or owned by its explicit caller, and assembly
+writes the objects needed by its durable merge commits. The private Git
+administration is always disposable. Assembly commit identity still comes
+from the repository. Rust setup and merge operations share the caller's
+cancellation and deadline checks.
+
+`tests/merge_attributes.rs` tests working, index-only, committed, modified,
+info, configured, global, XDG, custom/default driver, linked-worktree and
+inherited-config sources against the production Rust and shell paths. Real
+Git controls prove that each active source can hide the conflict; index-only
+attributes are a negative control. Unsupported Git is refused. Clean-tree
+parity, unchanged checkout/object state, and a driver sentinel protect the
+boundary. A lexical inventory requires production merge commands to use one
+of the two isolated implementations; dynamically constructed command names
+remain outside that inventory.
+
+The separate, explicit system-file regression is:
+
+```
+python3 scripts/test-system-attributes.py
+```
+
+It builds checksum-pinned upstream Git 2.54.0 with a private system attributes
+path under `/tmp`, plants a real system rule, proves its effect without the
+boundary, then runs the same production-path assertions. It never edits the
+host system attributes file. `--archive PATH` accepts the same pinned archive
+offline. The regular gate stays offline; this build is an additional required
+check when the attribute boundary changes, not a silently skipped gate test.

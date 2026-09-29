@@ -17,9 +17,9 @@
 # before a merge, not a proxy for it: does the tree this merge WOULD produce
 # already carry a certification? `git merge-tree --write-tree <base> <head>`
 # computes that tree without touching the working directory or creating a
-# commit, and is byte-identical to what a real `git merge` of the same two
-# parents would produce (verified by hand: a real merge and merge-tree of the
-# same base/head agree on the resulting tree oid). Reconstructing the actual
+# commit. SH-844 gives this computation no attributes or host merge drivers;
+# a server merge must still match the certified tree before landing is accepted.
+# Reconstructing the actual
 # SH-396 incident confirms it catches the real defect: `git merge-tree
 # --write-tree <main-before> <SH-315-branch-tip>` reproduces the broken
 # merge's tree byte-for-byte, and that tree matches neither parent — no
@@ -47,6 +47,7 @@
 #       neither side's run ever accounted for)
 #   2   the merge does not resolve cleanly (a real textual conflict, or an
 #       invalid ref) — there is no tree to certify until the branch is rebased
+#   3   merge isolation or computation failed; never an uncertified clean tree
 #
 # stdout carries exactly the tree oid on 0/1, and nothing on 2 (there is no
 # valid tree). All commentary goes to stderr, in `gate-receipt.sh`'s idiom.
@@ -111,8 +112,13 @@ objects=""
 owned_objects=0
 output_tmp=""
 child=""
+merge_admin=""
 
 cleanup() {
+    if [ -n "$merge_admin" ]; then
+        rm -rf "$merge_admin" || return 1
+        merge_admin=""
+    fi
     if [ -n "$output_tmp" ]; then
         rm -f "$output_tmp"
         output_tmp=""
@@ -178,12 +184,54 @@ git_private() {
         git "$@"
 }
 
-if [ "$structured" -eq 1 ]; then
-    base="$(git_private rev-parse --verify --end-of-options "$base^{commit}")" \
-        || die "cannot resolve the certification base to a commit"
-    head="$(git_private rev-parse --verify --end-of-options "$head^{commit}")" \
-        || die "cannot resolve the certification head to a commit"
-fi
+resolve_parent() {
+    git_private rev-parse --verify --end-of-options "$1^{commit}"
+}
+invalid_parent() {
+    if [ "$structured" -eq 1 ]; then
+        die "cannot resolve the certification parent $1 to a commit"
+    fi
+    note "CONFLICT — cannot resolve $1 to a commit"
+    exit 2
+}
+base_commit="$(resolve_parent "$base")" || invalid_parent "$base"
+head_commit="$(resolve_parent "$head")" || invalid_parent "$head"
+
+isolation_error() {
+    note "isolated merge failed: $1"
+    report inspection-error merge-read-failure "$1"
+    exit 3
+}
+
+# Objects alone do not isolate attributes. No commondir, source config,
+# source index or info/attributes may reach this private administration.
+merge_admin="$(mktemp -d -t storyhook-merge-admin.XXXXXX)" \
+    || isolation_error "cannot create private Git administration"
+format="$(git rev-parse --show-object-format)" \
+    || isolation_error "cannot read the repository object format"
+case "$format" in sha1 | sha256) ;; *) isolation_error "unsupported object format $format" ;; esac
+alternate="$(python3 - "$source_objects" <<'PY'
+import os
+import sys
+print('"' + ''.join('\\%03o' % b if b < 32 or b > 126 or b in (34, 92) else chr(b)
+                   for b in os.fsencode(sys.argv[1])) + '"')
+PY
+)" || isolation_error "cannot encode the source object path"
+
+git_isolated() (
+    # Clear config injection and repository redirects, including names added
+    # by future Git versions. This subshell cannot change the caller's state.
+    for name in ${!GIT_@}; do unset "$name"; done
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
+    export GIT_ATTR_NOSYSTEM=1 GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1
+    export GIT_DIR="$merge_admin" GIT_OBJECT_DIRECTORY="$objects"
+    export GIT_ALTERNATE_OBJECT_DIRECTORIES="$alternate"
+    exec git -C "$merge_admin" -c core.attributesFile=/dev/null -c merge.default=text "$@"
+)
+git_isolated init --bare --quiet --template= --object-format="$format" "$merge_admin" \
+    || isolation_error "cannot initialize private Git administration"
+empty_tree="$(git_isolated hash-object -t tree -w --stdin </dev/null)" \
+    || isolation_error "cannot create the empty attribute tree"
 
 # On a clean merge, `--write-tree` prints exactly one line: the tree oid, and
 # nothing else. On conflict it exits non-zero and stdout instead carries
@@ -193,7 +241,8 @@ fi
 # as a hash.
 output_tmp="$(mktemp -t storyhook-merge-preflight-output.XXXXXX)" \
     || die "could not create temporary merge output"
-git_private merge-tree --write-tree "$base" "$head" >"$output_tmp" 2>&1 &
+git_isolated --attr-source="$empty_tree" -c merge.conflictStyle=diff3 \
+    merge-tree --write-tree "$base_commit" "$head_commit" >"$output_tmp" 2>&1 &
 child=$!
 wait "$child"
 status=$?
@@ -219,6 +268,9 @@ describe_ref() {
 }
 
 if [ "$status" -ne 0 ]; then
+    if [ "$status" -ne 1 ]; then
+        isolation_error "$output"
+    fi
     note "CONFLICT — $(describe_ref "$head") does not merge cleanly onto $(describe_ref "$base")"
     printf '%s\n' "$output" | sed 's/^/  /' >&2
     if [ "$structured" -eq 1 ]; then
