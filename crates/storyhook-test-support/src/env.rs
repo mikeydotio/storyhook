@@ -927,7 +927,10 @@ mod tests {
             ("STORYHOOK_FULL_AUTO", "SH-781"),
             ("STORYHOOK_AUTO", "SH-781"),
             ("STORYHOOK_DISPATCH", "1"),
-            ("STORYHOOK_CODEX_BOOTSTRAP", "/a/live/lane/storyhook-codex-bootstrap.json"),
+            (
+                "STORYHOOK_CODEX_BOOTSTRAP",
+                "/a/live/lane/storyhook-codex-bootstrap.json",
+            ),
         ];
         let env = TestEnv::isolated();
         let mut cmd = std::process::Command::new("/usr/bin/env");
