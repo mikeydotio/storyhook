@@ -18,7 +18,7 @@
 # boolean and a human-readable `display`, mirroring issue.sh/storywork's own
 # contract:
 #
-#   dispatch <id> [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex]
+#   dispatch <id> [--auto] [--full-auto] [--force] [--resume [--if-absent]] [--agent=claude|codex]
 #                   [--model=<id>] [--effort=<id>] [--speed=standard|fast]
 #                   Refuse unless <id> is READY (issue #40's core ask — see
 #                    the READY-GATE step below) and not already claimed, then
@@ -115,8 +115,8 @@ set -euo pipefail
 
 # The daemon<->script argv contract this file implements (SH-196). The
 # dashboard's dispatch endpoint (src/api/dispatch.rs) invokes this script as
-# `story.sh --project <slug> dispatch <id> [--auto] [--full-auto] [--force] [--resume]
-# [--agent=claude|codex] [--model=<id>] [--effort=<id>]
+# `story.sh --project <slug> dispatch <id> [--auto] [--full-auto] [--force] [--resume
+# [--if-absent]] [--agent=claude|codex] [--model=<id>] [--effort=<id>]
 # [--speed=standard|fast]`; before SH-196, a daemon
 # and a script that disagreed about that contract failed by relaying this
 # script's own generic top-level usage error as a well-formed business
@@ -143,7 +143,10 @@ set -euo pipefail
 # Protocol 6 adds `notify <id> <prompt> --registered-session` (SH-772): a resume
 # whose interrupt was never acknowledged. An older helper would read the flag
 # as an unknown argument or, worse, fall back to the adopting 2-argument form.
-DISPATCH_PROTOCOL=6
+# Protocol 7 adds `dispatch <id> --resume --if-absent` (SH-850): the daemon's
+# dashboard and verifier resumes always send it, and an older helper would
+# refuse the unknown flag -- or, had it ignored it, respawn over a live agent.
+DISPATCH_PROTOCOL=7
 
 # Shared tmux/worktree/pane-readiness mechanics (window/worktree naming,
 # git-safety helpers, the readiness gate, confirmed-send) live in
@@ -1596,6 +1599,42 @@ continuation_preflight() {
     || refuse "continuation-unsafe" "continuation ownership preflight refused: $(printf '%s' "$answer" | jq -r '.detail // "no diagnostic"'). Retained work was preserved."
 }
 
+# require_agent_absent <id> <pane> <worktree> <resources-json> — refuse unless
+# no live agent remains to be replaced (SH-850 --if-absent). Two witnesses,
+# because each one alone can be wrong:
+#   - the story's own window: a surviving pane must be dead (remain-on-exit
+#     keeps the corpse). A probe that cannot answer is not death (SH-626).
+#   - the kernel: no provider process may work inside the worktree. A tmux
+#     server whose socket path was taken over keeps its panes running where
+#     the recorded socket cannot see them (SH-850's own lane on 2026-09-29),
+#     and an agent started by hand never had a window.
+# Runs before every mutation, under the workspace reservation; the respawn
+# itself then omits -k, so tmux refuses a pane that came alive meanwhile.
+require_agent_absent() {
+  local rid="$1" rpane="$2" rworktree="$3" rresources="$4" probe census found
+  if [ -n "$rpane" ]; then
+    probe=$(pane_probe "$rpane") \
+      || refuse "resource-query-failed" "cannot ask tmux whether story $rid's pane \`$rpane\` still runs; nothing was changed."
+    if [ "$(printf '%s\n' "$probe" | cut -f 3)" != 1 ]; then
+      refuse_with "agent-live" \
+        "story $rid's window pane \`$rpane\` still runs \`$(printf '%s\n' "$probe" | cut -f 2)\`. Resume replaces only a lost agent; work with that session, or stop it first. Nothing was changed." \
+        "$(jq -n --argjson resources "$rresources" --arg pane "$rpane" '{resources:$resources, live_pane:$pane}')"
+    fi
+  fi
+  [ -d "$rworktree" ] || return 0
+  census=$(python3 "$STORY_PLUGIN_ROOT/lib/worktree_occupants.py" "$rworktree" \
+             --pattern "${STORY_READY_PROCESS_PATTERN:-^(claude|node|codex)\$}" \
+             --launch claude --launch codex 2>&1) \
+    || refuse "resource-query-failed" "cannot tell whether a live agent works in story $rid's worktree: $census. Nothing was changed."
+  found=$(printf '%s' "$census" | jq -c '.occupants // empty' 2>/dev/null || printf '')
+  [ -n "$found" ] || refuse "resource-query-failed" "the worktree census for story $rid answered without a verdict: $census. Nothing was changed."
+  if [ "$found" != "[]" ]; then
+    refuse_with "agent-live" \
+      "a live agent still works in story $rid's worktree ($(printf '%s' "$found" | jq -r 'map("pid \(.pid) \(.name)") | join(", ")')), outside the story's recorded window. Resume replaces only a lost agent; stop that process first. Nothing was changed." \
+      "$(jq -n --argjson resources "$rresources" --argjson occupants "$found" '{resources:$resources, occupants:$occupants}')"
+  fi
+}
+
 # require_resume_eligibility <id> <show-json> — refuse to relaunch an agent on a
 # claimed story the tracker would not let its session continue (SH-850). A
 # blocked, awaiting or resetting story must not get an agent back (SH-690): its
@@ -1636,8 +1675,8 @@ cmd_dispatch() {
   # see the NEXT MODE section below for why this is a second mode and not a
   # rewrite of the id-directed claim, which since SH-482 goes through the same
   # verb as `story claim <id>`.
-  local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
-  local id="" auto="" full_auto="" want_next="" force="" resume="" over_budget="" requested_agent=""
+  local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume [--if-absent]] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
+  local id="" auto="" full_auto="" want_next="" force="" resume="" if_absent="" over_budget="" requested_agent=""
   local requested_model="" requested_effort="" requested_speed=""
   local require_absent="" continuation_file="" continuation_record=""
   while [ "$#" -gt 0 ]; do
@@ -1657,6 +1696,9 @@ cmd_dispatch() {
       --require-absent)
         [ -z "$require_absent" ] || fail "--require-absent may be specified only once"
         require_absent=1; shift ;;
+      --if-absent)
+        [ -z "$if_absent" ] || fail "--if-absent may be specified only once — usage: $usage"
+        if_absent=1; shift ;;
       --continuation-file=*)
         [ -z "$continuation_file" ] || fail "--continuation-file may be specified only once"
         continuation_file="${1#--continuation-file=}"
@@ -1708,6 +1750,14 @@ cmd_dispatch() {
     || fail "--require-absent requires --resume and --continuation-file"
   [ -z "$continuation_file" ] || [ -n "$require_absent" ] \
     || fail "--continuation-file requires --require-absent"
+  # --if-absent (SH-850) is the resume that never replaces a live agent: a
+  # person's or the verifier's resume after a reboot. --require-absent is the
+  # continuation monitor's stricter form of the same promise (the exact
+  # retained pane, no window creation), so naming both is a caller error.
+  [ -z "$if_absent" ] || [ -n "$resume" ] \
+    || fail "--if-absent requires --resume — usage: $usage"
+  [ -z "$if_absent" ] || [ -z "$require_absent" ] \
+    || fail "--if-absent cannot be combined with --require-absent, which already refuses a live owner"
   [ -z "$want_next" ] || [ -z "$force" ] \
     || fail "--force requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
   [ -z "$want_next" ] || [ -z "$resume" ] \
@@ -1991,6 +2041,7 @@ cmd_dispatch() {
         "story $id's surviving window is the current pane \`$existing_pane\`; refusing to kill and respawn the dispatcher itself." \
         "$(jq -n --argjson resources "$resources_json" '{resources:$resources}')"
     fi
+    [ -z "$if_absent" ] || require_agent_absent "$id" "$existing_pane" "$worktree_path" "$resources_json"
     [ -z "$resume" ] || [ "$resources_exist" != true ] || resumed=true
   fi
 
@@ -2353,6 +2404,7 @@ cmd_dispatch() {
       --argjson reused_claim "$reused_claim" \
       --argjson resume_requested "$([ -n "$resume" ] && echo true || echo false)" \
       --argjson require_absent "$([ -n "$require_absent" ] && echo true || echo false)" \
+      --argjson if_absent "$([ -n "$if_absent" ] && echo true || echo false)" \
       --argjson resumed "$resumed" --argjson resources "$resources_json" \
       --argjson worktree_reused "$worktree_reused" --argjson branch_reused "$branch_reused" \
       --argjson window_reused "$window_reused" --arg pane "$existing_pane" \
@@ -2376,7 +2428,7 @@ cmd_dispatch() {
              elif $branch_reused then [("git worktree add " + $wtpath + " " + $wtbranch)]
              else [("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>")] end)
           + [(if $window_reused or $require_absent then
-               ("tmux respawn-pane " + (if $require_absent then "" else "-k " end) + "-c " + $wtpath + $marker_tmux_args + "-t " + $pane + " " + $launch)
+               ("tmux respawn-pane " + (if $require_absent or $if_absent then "" else "-k " end) + "-c " + $wtpath + $marker_tmux_args + "-t " + $pane + " " + $launch)
              else
                ("tmux new-window " + $target + $detach + $marker_tmux_args + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
                 + " \\; set-window-option -t " + $wname + " remain-on-exit on"
@@ -2601,8 +2653,10 @@ cmd_dispatch() {
     revalidate_story_resources
     pane="$existing_pane"
     local respawn_flag=-k respawn_command="$launch_cmd"
-    if [ -n "$require_absent" ]; then
-      continuation_preflight
+    if [ -n "$require_absent" ] || [ -n "$if_absent" ]; then
+      [ -z "$require_absent" ] || continuation_preflight
+      # Without -k, tmux itself refuses a pane whose process came alive after
+      # the preflight (SH-850 --if-absent shares the continuation form).
       respawn_flag=""
       # This runs only after tmux atomically accepts the dead pane. Removing
       # the witness earlier can erase a replacement session's evidence even
@@ -5768,5 +5822,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] [--blocked-by <id> ...] | complete <plan|execute> <story-id> | reap <story-id> | submit <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] [--story <id>] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume [--if-absent]] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] [--blocked-by <id> ...] | complete <plan|execute> <story-id> | reap <story-id> | submit <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] [--story <id>] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac
