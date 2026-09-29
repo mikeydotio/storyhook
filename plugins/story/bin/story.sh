@@ -1596,6 +1596,25 @@ continuation_preflight() {
     || refuse "continuation-unsafe" "continuation ownership preflight refused: $(printf '%s' "$answer" | jq -r '.detail // "no diagnostic"'). Retained work was preserved."
 }
 
+# require_resume_eligibility <id> <show-json> — refuse to relaunch an agent on a
+# claimed story the tracker would not let its session continue (SH-850). A
+# blocked, awaiting or resetting story must not get an agent back (SH-690): its
+# block interrupted the last one. The question is `story session-eligibility`,
+# the tracker's own predicate, so this helper restates no block rule. A verb
+# that cannot answer is its own refusal, never a pass.
+require_resume_eligibility() {
+  local rid="$1" rshow="$2" answer eligible reason
+  answer=$(story_cli session-eligibility "$rid" --json 2>&1) \
+    || refuse "resume-eligibility-unavailable" "cannot ask whether $rid may resume: $answer. Nothing was changed."
+  eligible=$(printf '%s' "$answer" | jq -r '.session_eligibility.eligible | if type == "boolean" then tostring else empty end' 2>/dev/null || printf '')
+  reason=$(printf '%s' "$answer" | jq -r '.session_eligibility.reason // "unknown"' 2>/dev/null || printf 'unknown')
+  case "$eligible" in
+    true) return 0 ;;
+    false) refuse "resume-ineligible" "story $rid cannot resume ($reason): $(ready_gate_reason "$rshow" "$rid"). Lift the hold or resolve the blocker first. Nothing was changed." ;;
+    *) refuse "resume-eligibility-unavailable" "story session-eligibility $rid gave no verdict: $answer. Nothing was changed." ;;
+  esac
+}
+
 # Hold the reset/verifier exclusion through dispatch handoff. Descriptor 9 is
 # inherited by preparation children; no explicit unlock can strand an orphan.
 reserve_dispatch_workspace() {
@@ -2079,6 +2098,10 @@ cmd_dispatch() {
       fi
       reused_claim=true
       [ -z "$resume" ] || resumed=true
+      # A reused claim skips the ready gate below, so a resume must ask the
+      # tracker itself whether the claimed session may continue (SH-850). The
+      # guarded continuation form already asked, before its own effects.
+      [ -z "$resume" ] || [ -n "$require_absent" ] || require_resume_eligibility "$id" "$show_json"
     fi
 
     # Step 6 (deviation #2 — see header): READY-STATE GATE, issue #40's core
