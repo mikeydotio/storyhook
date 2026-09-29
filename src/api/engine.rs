@@ -30,9 +30,9 @@ use crate::error::AppError;
 use crate::output::render_error;
 use crate::service::Ctx;
 use crate::service::engine::{
-    ConfigureRequest, DISPATCH_TIMEOUT, DispatchOutcome, DispatchRequest, Dispatcher,
-    EngineService, MAX_ENGINE_LANES, RunView, ShellDispatcher, StartRequest, UnclaimRequest,
-    WindowProbe,
+    AdmissionWait, ConfigureRequest, DISPATCH_TIMEOUT, DispatchOutcome, DispatchRequest,
+    Dispatcher, EngineService, MAX_ENGINE_LANES, RunView, ShellDispatcher, StartRequest,
+    UnclaimRequest, WindowProbe,
 };
 use crate::store::{
     EngineAgent, EngineLaneRecord, EngineLaneState, EngineQuarantineRecord, EngineRunRecord,
@@ -463,6 +463,9 @@ struct HttpRunView {
     speed: Option<&'static str>,
     state: &'static str,
     lanes: Vec<HttpLaneView>,
+    /// Why a running run admits no more work: `lanes-full` or
+    /// `verification-backlog`; `null` while it can admit (SH-822).
+    admission_wait: Option<&'static str>,
     consecutive_hard_stops: u32,
     recent_quarantines: Vec<EngineQuarantineRecord>,
     stop_reason: Option<String>,
@@ -500,7 +503,18 @@ impl From<RunView> for HttpRunView {
             effort,
             speed: speed.map(EngineSpeed::as_str),
             state: state.as_str(),
-            lanes: value.lanes.into_iter().map(Into::into).collect(),
+            lanes: value
+                .lanes
+                .into_iter()
+                .map(|lane| {
+                    let verifying = value.verifying.contains(&lane.lane_index);
+                    HttpLaneView {
+                        verifying,
+                        ..lane.into()
+                    }
+                })
+                .collect(),
+            admission_wait: value.admission_wait.map(AdmissionWait::as_str),
             consecutive_hard_stops,
             recent_quarantines,
             stop_reason,
@@ -534,6 +548,9 @@ struct HttpLaneView {
     index: u32,
     state: &'static str,
     story: Option<String>,
+    /// The lane's story waits for central verification; the lane holds no
+    /// capacity (SH-822).
+    verifying: bool,
     window: Option<String>,
     worktree: Option<String>,
     dispatched_at: Option<String>,
@@ -561,6 +578,7 @@ impl From<EngineLaneRecord> for HttpLaneView {
             index: value.lane_index,
             state: value.state.as_str(),
             story: value.story_id,
+            verifying: false,
             window: value.window_name,
             worktree: value.worktree_path,
             dispatched_at: value.dispatched_at,

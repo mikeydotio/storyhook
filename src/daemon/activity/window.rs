@@ -49,7 +49,11 @@ const VIEW_PROGRAM: &str = concat!(
 /// The view only locks and reads the journal directory. This function
 /// prepares it first, ignore file included, so the daemon is its only
 /// creator on this path (SH-771).
-fn open(env: &Environment, project: &str, directory: &Path, stop: &AtomicBool) {
+///
+/// When the Verifier Agent can be launched, the view also keeps an agent pane
+/// that starts in `checkout` (SH-822); otherwise the window is the reader
+/// alone and the reason is journaled once.
+fn open(env: &Environment, project: &str, directory: &Path, checkout: &Path, stop: &AtomicBool) {
     if !env.verifier_mirror_enabled() {
         return;
     }
@@ -66,6 +70,8 @@ fn open(env: &Environment, project: &str, directory: &Path, stop: &AtomicBool) {
         );
         return;
     }
+    let agent = super::verifier_agent::launch(env);
+    super::verifier_agent::note(&agent);
     let result = (|| -> Result<(), String> {
         let binary = std::env::current_exe().map_err(|error| error.to_string())?;
         let mut command = Command::new("python3");
@@ -73,7 +79,11 @@ fn open(env: &Environment, project: &str, directory: &Path, stop: &AtomicBool) {
             .args(["-c", VIEW_PROGRAM])
             .arg(project)
             .arg(directory)
-            .arg(binary)
+            .arg(binary);
+        if let Ok(Some(argv)) = &agent {
+            command.arg(checkout).args(argv);
+        }
+        command
             .env("HOME", env.home())
             .envs(env.child_vars())
             .env_remove("TMUX")
@@ -121,7 +131,7 @@ fn poll_with(
     env: &Environment,
     stop: &AtomicBool,
     requests: &Requests,
-    mut reconcile: impl FnMut(&Environment, &str, &Path, &AtomicBool),
+    mut reconcile: impl FnMut(&Environment, &str, &Path, &Path, &AtomicBool),
 ) {
     if !env.verifier_mirror_enabled() {
         return;
@@ -141,36 +151,36 @@ fn poll_with(
         if periodic || !due.is_empty() {
             match registered_views(store) {
                 Ok(projects) => {
-                    let valid = projects.iter().map(|(id, _, _)| *id).collect();
+                    let valid = projects.iter().map(|view| view.id).collect();
                     schedule.retain(&valid);
                     if periodic {
                         schedule.request(
                             projects
                                 .iter()
-                                .filter(|(_, _, directory)| directory.is_dir())
-                                .map(|(id, _, _)| *id),
+                                .filter(|view| view.journal.is_dir())
+                                .map(|view| view.id),
                         );
                         due.extend(schedule.due(now, RECONCILE_INTERVAL));
                         next_scan = now + RECONCILE_INTERVAL;
                     }
                     // The catalog read ends before subprocesses start. A request carries
                     // no path authority and cannot revive a deleted registration.
-                    for (id, project, directory) in projects {
+                    for view in projects {
                         if stop.load(Ordering::Acquire) {
                             return;
                         }
-                        if !due.contains(&id) {
+                        if !due.contains(&view.id) {
                             continue;
                         }
                         let _scope = super::context::enter(Some(super::context::LogContext {
-                            directory: directory.clone(),
-                            label: format!("project={project} reader"),
+                            directory: view.journal.clone(),
+                            label: format!("project={} reader", view.slug),
                         }));
-                        reconcile(env, &project, &directory, stop);
-                        schedule.completed(id, Instant::now());
+                        reconcile(env, &view.slug, &view.journal, &view.checkout, stop);
+                        schedule.completed(view.id, Instant::now());
                         // Activation survives a failed first spawn or mkdir. The
                         // catalog and cooldown still govern every later attempt.
-                        schedule.request([id]);
+                        schedule.request([view.id]);
                     }
                 }
                 Err(error) => {
@@ -190,10 +200,18 @@ fn poll_with(
     }
 }
 
+/// One registered project whose checkout may host a verification view.
+struct RegisteredView {
+    id: ProjectId,
+    slug: String,
+    /// The project journal the reader follows.
+    journal: std::path::PathBuf,
+    /// The registered checkout, where the Verifier Agent starts (SH-822).
+    checkout: std::path::PathBuf,
+}
+
 /// Only a currently registered, valid checkout can authorize a reader path.
-fn registered_views(
-    store: &impl Store,
-) -> Result<Vec<(ProjectId, String, std::path::PathBuf)>, crate::store::StoreError> {
+fn registered_views(store: &impl Store) -> Result<Vec<RegisteredView>, crate::store::StoreError> {
     store.read(|tx| {
         let mut projects = Vec::new();
         for project in tx.projects()? {
@@ -201,7 +219,12 @@ fn registered_views(
                 && checkout.is_absolute()
                 && checkout.is_dir()
             {
-                projects.push((project.id, project.slug, super::project_journal(&checkout)));
+                projects.push(RegisteredView {
+                    id: project.id,
+                    slug: project.slug,
+                    journal: super::project_journal(&checkout),
+                    checkout,
+                });
             }
         }
         Ok(projects)

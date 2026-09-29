@@ -240,6 +240,71 @@ fn concurrent_passes_cannot_reserve_the_same_runs_last_lane_twice() {
     assert_eq!(lanes[0].state, EngineLaneState::Working);
 }
 
+/// SH-822: an overflow lane does not exist before a claim creates it, so no
+/// row can arbitrate the race: the claim transaction must. Two concurrent
+/// passes over a one-lane run whose lane is verifying fill one overflow lane.
+#[test]
+fn concurrent_passes_cannot_reserve_the_same_overflow_slot_twice() {
+    use storyhook::store::{EngineLaneState, ReadOps, Store, WriteOps};
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let held = story(&ctx, "in verification");
+    story(&ctx, "first candidate");
+    story(&ctx, "second candidate");
+    let probe = || DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{held}"),
+        alive: false,
+    };
+    let fake = FakeDispatcher::new([probe(), probe(), dispatched()]);
+    let run = start(&ctx, &fake, EngineScope::Project, 1);
+    let mut lane = fixture
+        .store()
+        .read(|tx| tx.engine_lanes(&run))
+        .unwrap()
+        .remove(0);
+    lane.state = EngineLaneState::Working;
+    lane.story_id = Some(held.clone());
+    lane.window_name = Some(format!("story-{held}"));
+    lane.dispatched_at = Some(lane.last_observed_at.clone());
+    fixture
+        .store()
+        .write(|tx| tx.put_engine_lane(&lane))
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state(&held, "verifying", None, None, None)
+        .unwrap();
+    let dispatcher = CensusBarrierDispatcher {
+        inner: fake.clone(),
+        barrier: std::sync::Barrier::new(2),
+    };
+    let filled = std::thread::scope(|scope| {
+        let one = scope.spawn(|| {
+            EngineService::new(&ctx, &dispatcher)
+                .reconcile(&run)
+                .unwrap()
+                .filled
+        });
+        let two = scope.spawn(|| {
+            EngineService::new(&ctx, &dispatcher)
+                .reconcile(&run)
+                .unwrap()
+                .filled
+        });
+        [one.join().unwrap(), two.join().unwrap()].concat()
+    });
+    assert_eq!(filled.len(), 1, "{filled:?}");
+    assert_eq!(filled[0].0, 1, "the claim takes the first overflow lane");
+    let lanes = fixture.store().read(|tx| tx.engine_lanes(&run)).unwrap();
+    let occupied: Vec<(u32, EngineLaneState)> = lanes
+        .iter()
+        .map(|lane| (lane.lane_index, lane.state))
+        .collect();
+    assert_eq!(
+        occupied,
+        [(0, EngineLaneState::Working), (1, EngineLaneState::Working)]
+    );
+}
+
 fn dispatched_with_pane() -> DispatcherStep {
     DispatcherStep::Dispatch(DispatchOutcome::from_payload(serde_json::json!({
         "ok": true, "pane": "%42", "window_name": "story-window", "worktree_path": "/tmp/preserved"

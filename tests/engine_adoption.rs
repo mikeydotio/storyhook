@@ -5,7 +5,7 @@ use storyhook::error::AppError;
 use storyhook::service::engine::adoption::{AdoptedIdentity, DispatchInspector, InspectedDispatch};
 use storyhook::service::engine::{EngineService, StartRequest};
 use storyhook::service::{NewStoryInput, StoryService};
-use storyhook::store::{EngineAgent, EngineScope, ReadOps, Store, WriteOps};
+use storyhook::store::{EngineAgent, EngineLaneState, EngineScope, ReadOps, Store, WriteOps};
 use storyhook_test_support::{FakeDispatcher, ServiceFixture};
 
 fn fixture() -> ServiceFixture {
@@ -112,6 +112,46 @@ fn atomic_adoption_and_retry_do_not_dispatch_or_change_the_claim() {
             .unwrap(),
         before
     );
+}
+
+/// SH-822: a lane whose story waits for central verification holds no
+/// capacity, so adoption binds a live dispatch to an overflow lane beside it.
+#[test]
+fn adoption_uses_capacity_freed_by_a_verifying_lane() {
+    let fixture = fixture();
+    let fake = FakeDispatcher::default();
+    let ctx = fixture.ctx();
+    let service = EngineService::new(&ctx, &fake);
+    let run = start(&service, 1);
+    let handed_off = claimed(&fixture);
+    let mut lane = fixture
+        .store()
+        .read(|tx| tx.engine_lanes(&run))
+        .unwrap()
+        .remove(0);
+    lane.state = EngineLaneState::Working;
+    lane.story_id = Some(handed_off.clone());
+    lane.window_name = Some(handed_off.clone());
+    lane.dispatched_at = Some(lane.last_observed_at.clone());
+    fixture
+        .store()
+        .write(|tx| tx.put_engine_lane(&lane))
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state(&handed_off, "verifying", None, None, None)
+        .unwrap();
+    let manual = claimed(&fixture);
+
+    let view = service
+        .adopt(&run, std::slice::from_ref(&manual), &Inspector)
+        .unwrap();
+
+    let bound: Vec<(u32, Option<String>)> = view
+        .lanes
+        .iter()
+        .map(|lane| (lane.lane_index, lane.story_id.clone()))
+        .collect();
+    assert_eq!(bound, [(0, Some(handed_off)), (1, Some(manual))]);
 }
 
 #[test]

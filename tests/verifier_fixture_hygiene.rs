@@ -172,3 +172,76 @@ fn a_helper_name_or_unrelated_safe_call_cannot_hide_a_direct_launch() {
     assert_eq!(violations(&format!("{safe}\n{mixed}")).len(), 1);
     assert!(!calls_run("fn outer() { other_run(1); object.run(2); }"));
 }
+
+/// SH-822: whether a fixture source turns the Verifier Agent pane on without
+/// a fake provider of its own. The shared test environment sets
+/// `STORYHOOK_VERIFIER_AGENT=0`; a fixture that sets it back to `1` would
+/// otherwise let the verification window start the real `claude` on PATH —
+/// a paid, network-bound session inside a gate run.
+fn enables_agent_without_fake_provider(source: &str) -> bool {
+    let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+    let enables = compact.contains("\"STORYHOOK_VERIFIER_AGENT\",\"1\"")
+        || compact.contains("[\"STORYHOOK_VERIFIER_AGENT\"]=\"1\"")
+        || compact.contains("STORYHOOK_VERIFIER_AGENT=\"1\"");
+    enables && !compact.contains("\"claude\"")
+}
+
+#[test]
+fn a_fixture_that_enables_the_verifier_agent_supplies_a_fake_provider() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let listed = std::process::Command::new("git")
+        .current_dir(root)
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "tests/*.rs",
+            "tests/support/*",
+            "scripts/tests/*.py",
+            "plugins/story/tests/*",
+        ])
+        .output()
+        .expect("list tracked fixture sources");
+    assert!(
+        listed.status.success(),
+        "cannot inspect fixtures: {listed:?}"
+    );
+    let offenders: Vec<String> = listed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            std::str::from_utf8(entry)
+                .expect("UTF-8 tracked path")
+                .to_owned()
+        })
+        .filter(|relative| relative != "tests/verifier_fixture_hygiene.rs")
+        .filter(|relative| {
+            std::fs::read_to_string(root.join(relative))
+                .is_ok_and(|source| enables_agent_without_fake_provider(&source))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "these fixtures enable the Verifier Agent without a fake `claude`: {offenders:?}"
+    );
+}
+
+#[test]
+fn the_agent_fence_recognizes_each_opt_in_spelling() {
+    for opt_in in [
+        "command.env(\"STORYHOOK_VERIFIER_AGENT\", \"1\");",
+        "self.env[\"STORYHOOK_VERIFIER_AGENT\"] = \"1\"",
+        "env.update(STORYHOOK_VERIFIER_AGENT=\"1\")",
+    ] {
+        assert!(enables_agent_without_fake_provider(opt_in), "{opt_in}");
+        let with_fake = format!("{opt_in}\nbin.join(\"claude\")");
+        assert!(!enables_agent_without_fake_provider(&with_fake), "{opt_in}");
+    }
+    assert!(!enables_agent_without_fake_provider(
+        "command.env(\"STORYHOOK_VERIFIER_AGENT\", \"0\");"
+    ));
+}

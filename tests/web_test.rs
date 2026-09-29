@@ -5083,6 +5083,17 @@ fn engine_http_serves_every_control_and_stable_run_views() {
     assert_eq!(started["run"]["speed"], "fast");
     assert_eq!(started["run"]["state"], "running");
     assert_eq!(started["run"]["lanes"].as_array().unwrap().len(), 2);
+    // SH-822: every lane says whether its story waits for verification, and
+    // a run that can still admit work names no wait.
+    assert!(
+        started["run"]["lanes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|lane| lane["verifying"] == false),
+        "{started}"
+    );
+    assert!(started["run"]["admission_wait"].is_null(), "{started}");
     let run = started["run"]["id"].as_str().unwrap().to_string();
 
     let configured = patch_json(

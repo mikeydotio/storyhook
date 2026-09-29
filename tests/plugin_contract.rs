@@ -289,3 +289,71 @@ fn plugin_python_never_writes_bytecode_beside_its_modules() {
          before it, so running them writes __pycache__/ into the plugin they run from"
     );
 }
+
+/// The `name`, `model` and `effort` values in the YAML frontmatter of a
+/// plugin agent definition. The frontmatter is flat `key: value` lines, so a
+/// line reader is enough and keeps this test free of a YAML dependency.
+fn agent_frontmatter(path: &Path) -> std::collections::BTreeMap<String, String> {
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+    let body = text
+        .strip_prefix("---\n")
+        .unwrap_or_else(|| panic!("{} must open with a --- frontmatter fence", path.display()));
+    let (frontmatter, rest) = body
+        .split_once("\n---\n")
+        .unwrap_or_else(|| panic!("{} must close its frontmatter with ---", path.display()));
+    assert!(
+        !rest.trim().is_empty(),
+        "{} has no system prompt after its frontmatter",
+        path.display()
+    );
+    frontmatter
+        .lines()
+        .filter_map(|line| line.split_once(": "))
+        .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+        .collect()
+}
+
+/// SH-822: the verification window launches `claude --agent
+/// storyhook::plugin::VERIFIER_AGENT`. Claude Code scopes a plugin agent as
+/// `<plugin name>:<agent name>`, so the constant must name the packaged
+/// file's own `name` under the plugin's own name, or the pane starts a
+/// session with no such agent. The operator asked for Opus at xhigh effort;
+/// the frontmatter carries both so the agent keeps them when a person starts
+/// it by name.
+#[test]
+fn the_verifier_agent_constant_names_the_packaged_agent() {
+    let (plugin, agent) = storyhook::plugin::VERIFIER_AGENT
+        .split_once(':')
+        .expect("a plugin agent is scoped as <plugin>:<agent>");
+    let manifest = read_json(
+        &repo_root()
+            .join(PLUGIN_ROOT)
+            .join(".claude-plugin/plugin.json"),
+    );
+    assert_eq!(manifest["name"], plugin);
+    assert_eq!(plugin, PLUGIN_NAME);
+    let definition = repo_root()
+        .join(PLUGIN_ROOT)
+        .join("agents")
+        .join(format!("{agent}.md"));
+    let frontmatter = agent_frontmatter(&definition);
+    assert_eq!(frontmatter.get("name").map(String::as_str), Some(agent));
+    assert_eq!(frontmatter.get("model").map(String::as_str), Some("opus"));
+    assert_eq!(frontmatter.get("effort").map(String::as_str), Some("xhigh"));
+    assert!(
+        frontmatter
+            .get("description")
+            .is_some_and(|description| description.starts_with("Use this agent")),
+        "{}: the description is what Claude Code reads to decide when to use the agent",
+        definition.display()
+    );
+    for ignored in ["hooks", "mcpServers", "permissionMode"] {
+        assert!(
+            !frontmatter.contains_key(ignored),
+            "{}: Claude Code ignores `{ignored}` in a plugin agent, so declaring it would \
+             promise behaviour the agent does not get",
+            definition.display()
+        );
+    }
+}

@@ -35,7 +35,8 @@ GITHUB_CREDENTIALS = ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN",
 GITHUB_ROUTING = ("STORYHOOK_GITHUB_AUTHORITY", "STORYHOOK_GITHUB_EXPECTED")
 # Environment.child_vars() names, pinned equal by the same Rust unit test:
 # what a `story` run in a pane needs to reach its caller's store and daemon.
-PANE_SELECTORS = ("STORYHOOK_STORE_PATH", "XDG_STATE_HOME", "STORYHOOK_VERIFIER_MIRROR")
+PANE_SELECTORS = ("STORYHOOK_STORE_PATH", "XDG_STATE_HOME", "STORYHOOK_VERIFIER_MIRROR",
+                  "STORYHOOK_VERIFIER_AGENT")
 
 # Hook-scoped roots both provider hosts export to a plugin's hooks.
 PLUGIN_ROOTS = ("PLUGIN_ROOT", "PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA")
@@ -113,6 +114,21 @@ def client_environment(environ):
     if path is not None:
         client["PATH"] = path
     return client
+
+
+def pane_overrides(environ):
+    """Return the `-e NAME=VALUE` arguments every storyhook pane command carries.
+
+    An existing server ignores its client's environment for new panes, so a
+    pane's own values must travel on the pane command. Each GitHub credential
+    and routing name is blanked, so a pane never inherits a parent operation's
+    GitHub authority. `STORY_BIN` and the store selectors carry the caller's
+    value; empty keeps each reader's own fallback (`${STORY_BIN:-story}`).
+    """
+    values = {name: "" for name in GITHUB_CREDENTIALS + GITHUB_ROUTING}
+    for name in ("STORY_BIN",) + PANE_SELECTORS:
+        values[name] = environ.get(name, "")
+    return [part for name, value in values.items() for part in ("-e", name + "=" + value)]
 
 
 def reports_no_server(stderr):

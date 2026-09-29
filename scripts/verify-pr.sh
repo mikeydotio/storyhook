@@ -322,6 +322,59 @@ verification_infrastructure_detail() {
     printf 'Verification log: %s\n' "$infrastructure_log"
 }
 
+# SH-822 (council decision D3): a gate that runs out of disk fails its tests
+# and reads as red, which returns stories that did nothing wrong. Every gate
+# builds cold in the verifier worktree (`ensure` runs `git clean -ffdx`), so
+# the space one needs is the working set earlier gates left there. Each gate
+# that runs records that measurement, in KiB, one per line; the last
+# GATE_DISK_SAMPLES are kept, and the largest is the floor.
+gate_disk_record() {
+    printf '%s/storyhook/gate-disk-peaks' "$common_dir"
+}
+GATE_DISK_SAMPLES=5
+
+# Refuses the gate by name, before it starts, while the volume that holds the
+# gate worktree has less free space than the largest recorded measurement: a
+# permanent local failure, so the queue halts for an operator instead of
+# judging stories on a full disk. With no measurement yet there is no floor.
+require_gate_disk() {
+    disk_worktree="$1"
+    disk_record="$(gate_disk_record)"
+    [ -f "$disk_record" ] || return 0
+    disk_needed="$(awk '$1 ~ /^[0-9]+$/ && $1 + 0 > max { max = $1 + 0 } END { if (max > 0) printf "%d", max }' \
+        "$disk_record")" || die_json "could not read the gate disk record $disk_record"
+    [ -n "$disk_needed" ] || return 0
+    disk_free="$(df -Pk "$disk_worktree" | awk 'NR == 2 { print $4 }')"
+    case "$disk_free" in
+    ('' | *[!0-9]*) die_json "could not measure free space for the gate at $disk_worktree (df answered '$disk_free')" ;;
+    esac
+    [ "$disk_free" -ge "$disk_needed" ] && return 0
+    die_json "$(printf '%s\n' \
+        "Verification infrastructure failure: low disk." \
+        "The gate worktree $disk_worktree has $disk_free KiB free. The largest of the last $GATE_DISK_SAMPLES measured gates left $disk_needed KiB there ($disk_record)." \
+        "The gate did not start and no story was judged. Free space on that volume, then acknowledge the halt.")"
+}
+
+# Records what this gate left in its worktree. The verdict stands either way:
+# a failed measurement is reported on stderr, and the floor keeps its earlier
+# samples.
+record_gate_disk() {
+    disk_worktree="$1"
+    disk_record="$(gate_disk_record)"
+    disk_used="$(du -sk "$disk_worktree" 2>/dev/null | awk '{ print $1 }')"
+    case "$disk_used" in
+    ('' | *[!0-9]*)
+        printf 'verify-pr: could not measure the gate worktree %s for %s\n' "$disk_worktree" "$disk_record" >&2
+        return 0
+        ;;
+    esac
+    {
+        [ ! -f "$disk_record" ] || tail -n "$((GATE_DISK_SAMPLES - 1))" "$disk_record"
+        printf '%s\n' "$disk_used"
+    } >"$disk_record.tmp" && mv "$disk_record.tmp" "$disk_record" \
+        || printf 'verify-pr: could not record gate disk use in %s\n' "$disk_record" >&2
+}
+
 run_verification_gate() {
     gate_pr="$1"
     gate_tree="$2"
@@ -330,6 +383,7 @@ run_verification_gate() {
     gate_worktree="$5"
     shift 5
     gate_display="$*"
+    require_gate_disk "$gate_worktree"
     logs="$common_dir/storyhook/verification-logs"
     mkdir -p "$logs" || die_json "could not create verification log directory"
     log="$(mktemp "$logs/pr-$gate_pr-$gate_tree-attempt.XXXXXX")" \
@@ -355,6 +409,7 @@ run_verification_gate() {
         activity_run "merge-watch.sh" bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
         "$gate_base" "$gate_head" "$gate_worktree" -- "$@" >"$log" 2>&1
     gate_status=$?
+    record_gate_disk "$gate_worktree"
     completed_status="$(cat "$gate_result")" || completed_status=""
     result_removal_error=""
     rm -f "$gate_result" || result_removal_error="could not remove gate completion record $gate_result"

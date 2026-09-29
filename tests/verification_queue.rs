@@ -4083,6 +4083,64 @@ fn the_resume_plan_carries_a_live_engine_lanes_identity_and_nothing_elses() {
     );
 }
 
+/// SH-822: a verifying story keeps its lane record even when the run filled
+/// an overflow lane beside it, so a story held on a lane past the run's
+/// configured count is still re-dispatched as that lane.
+#[test]
+fn the_resume_plan_follows_a_story_held_on_an_overflow_lane() {
+    use storyhook::service::engine::{EngineService, StartRequest};
+    use storyhook::store::{EngineLaneState, EngineScope};
+    use storyhook_test_support::FakeDispatcher;
+
+    let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
+    let held = submitted(&fixture, "held on an overflow lane", Priority::High, PR_ONE);
+    let ctx = fixture.ctx();
+    let fake = FakeDispatcher::default();
+    let run = EngineService::new(&ctx, &fake)
+        .start(StartRequest {
+            scope: EngineScope::Project,
+            lanes: 1,
+            agent: storyhook::store::EngineAgent::Claude,
+            model: Some("opus".into()),
+            effort: Some("xhigh".into()),
+            speed: None,
+        })
+        .unwrap()
+        .id;
+    let mut lane = fixture
+        .store()
+        .read(|tx| tx.engine_lanes(&run))
+        .unwrap()
+        .remove(0);
+    lane.lane_index = 1;
+    lane.state = EngineLaneState::Working;
+    lane.story_id = Some(held.clone());
+    lane.window_name = Some(held.clone());
+    lane.dispatched_at = Some(FIXTURE_NOW.to_string());
+    fixture
+        .store()
+        .write(|tx| tx.put_engine_lane(&lane))
+        .unwrap();
+    let candidate = VerificationQueue::new(fixture.store())
+        .ordered()
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.story_id == held)
+        .unwrap();
+
+    assert_eq!(
+        resume_plan(fixture.store(), &candidate).unwrap(),
+        ResumePlan {
+            agent: Some(storyhook::store::EngineAgent::Claude),
+            model: Some("opus".into()),
+            effort: Some("xhigh".into()),
+            fast: false,
+            full_auto: true,
+        }
+    );
+}
+
 /// SH-650 (D-E, step 4a): a RED story whose agent is gone is re-dispatched in
 /// place and never parked; its resubmission then re-enters the queue and is
 /// verified again like any other.

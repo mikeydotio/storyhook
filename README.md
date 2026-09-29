@@ -743,7 +743,12 @@ resume, clean, or delete anything.
 ### Live daemon and verifier activity
 
 The daemon maintains one `verification` window in each project-slug tmux
-session on the default server. It recreates missing or failed owned readers.
+session on the default server. Its right pane follows the project journal; its
+left pane runs the Verifier Agent (`claude --agent story:verifier`, Opus at
+xhigh effort) in the registered checkout, a build and integration specialist
+for verifier wedges, red gates and merge conflicts. The daemon recreates a
+missing or failed reader, and a closed agent pane after a minute; when the
+agent exits, its pane waits for Enter to start it again.
 
 ```bash
 tmux attach -t <project-slug>
@@ -764,7 +769,8 @@ containing `*` in it, so git never lists the journal and your repository's own
 `story daemon status` names the command that untracks them. Store journals
 remain under `<daemon state directory>/activity/`. Both rotate at UTC midnight,
 append across restarts, and remain until you remove them. Set
-`STORYHOOK_VERIFIER_MIRROR=0` to disable all tmux calls while retaining logs.
+`STORYHOOK_VERIFIER_MIRROR=0` to disable all tmux calls while retaining logs,
+or `STORYHOOK_VERIFIER_AGENT=0` to keep the reader without the agent pane.
 
 ## Storage model
 

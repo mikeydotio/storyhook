@@ -1903,6 +1903,15 @@ pub fn declared_dispatch_protocol(path: &Path) -> u32 {
         .unwrap_or(0)
 }
 
+/// The plugin root of Claude Code's installed `story@storyhook`, read from
+/// Claude's own registry without running a provider CLI (SH-822).
+pub(crate) fn installed_claude_plugin_root(home: &Path) -> Option<PathBuf> {
+    installed_plugin_script(home)?
+        .parent()?
+        .parent()
+        .map(Path::to_path_buf)
+}
+
 /// `story@storyhook`'s installed path under `home`, from Claude Code's own
 /// plugin manifest, if that path still holds the script. The manifest is a
 /// JSON array of install records per plugin key; the last one wins, matching

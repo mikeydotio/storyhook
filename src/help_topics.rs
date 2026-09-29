@@ -127,13 +127,18 @@ Each record labels its source, stream, process and story/request context.
 Use --store-path to inspect a different store, or --directory to read a project journal.
 
 The daemon maintains one verification window in each project-slug tmux session
-on the default server. Project logs live in the registered checkout at
-.storyhook/logs/YYYY-MM-DD.jsonl. Closed or failed readers are repaired.
+on the default server. The right pane follows the project journal. The left
+pane runs the Verifier Agent (claude --agent story:verifier, Opus, xhigh) in
+the registered checkout. Closed or failed readers are repaired; a closed agent
+pane returns after a minute, and an exited agent waits for Enter. Project logs
+live in the registered checkout at .storyhook/logs/YYYY-MM-DD.jsonl.
 That directory ignores itself: storyhook keeps a .gitignore with the rule *
 in it, so git never lists the journal. If a repository already tracks
 journal files, daemon status and verifier status name the command that
 untracks them; storyhook never changes the index.
 STORYHOOK_VERIFIER_MIRROR=0 disables these views without disabling the journal.
+STORYHOOK_VERIFIER_AGENT=0 keeps the reader and omits the agent pane. Without
+claude on the daemon's PATH, the window has no agent pane and the journal says so.
 A missing tmux or Python 3 activity helper is non-fatal.
 
 Daily files live at <daemon state directory>/activity/YYYY-MM-DD.jsonl.
@@ -2677,8 +2682,9 @@ adopt
   and exact live provider pane. The entire batch must fit current capacity.
   Adoption preserves claims and agents. Identical retries consume no extra
   capacity. Adopted bindings release at verification, closure, or unclaim;
-  blocked or failed work is quarantined. Engine-created lanes retain their
-  existing verification ownership. Automatic adoption at start is not supported.
+  blocked or failed work is quarantined. An engine-created lane keeps its
+  record through verification but holds no capacity there (see start).
+  Automatic adoption at start is not supported.
 
 configure
   Changes only supplied settings on a running or paused run; at least one
@@ -2689,6 +2695,12 @@ configure
 start
   Starts a project-wide run, or narrows it to an epic's descendant
   subtree with --epic. --lanes defaults to 1 and accepts 1 through 255.
+  It limits active lanes. A lane whose story is in verifying keeps its
+  record, so the verifier can resume it as that lane, but it is not active.
+  A run holds at most --lanes such handoffs before it admits more work, and
+  a story the verifier returns is active again. New work can take an extra
+  lane beside a verifying one; that lane retires when its story leaves.
+  status names each verifying lane and why admission waits.
   --agent defaults to claude; codex selects a Codex lane instead. Model,
   effort, and speed are optional provider settings. They are stored on the
   run, reused by every lane, and shown by start and status. standard keeps

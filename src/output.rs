@@ -164,6 +164,10 @@ pub struct EngineLaneView {
     pub index: u32,
     pub state: EngineLaneState,
     pub story: Option<String>,
+    /// The lane's story waits for central verification; the lane holds no
+    /// capacity (SH-822). Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub verifying: bool,
     pub elapsed_seconds: Option<u64>,
     /// Seconds since the lane last showed observed activity on either stall
     /// channel — its story moving or its pane writing to the terminal
@@ -208,6 +212,10 @@ pub struct EngineRunView {
     pub created_at: String,
     pub updated_at: String,
     pub lanes: Vec<EngineLaneView>,
+    /// Why a running run admits no more work: `lanes-full` or
+    /// `verification-backlog`. Omitted while it can admit (SH-822).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_wait: Option<String>,
     pub needs_human: Vec<EngineNeedsHumanView>,
 }
 
@@ -241,6 +249,7 @@ impl EngineRunView {
                     index: lane.lane_index,
                     state: lane.state,
                     story: lane.story_id,
+                    verifying: view.verifying.contains(&lane.lane_index),
                     elapsed_seconds,
                     quiet_seconds,
                     probe_detail: lane.probe_detail,
@@ -265,6 +274,7 @@ impl EngineRunView {
             created_at: view.run.created_at,
             updated_at: view.run.updated_at,
             lanes,
+            admission_wait: view.admission_wait.map(|wait| wait.as_str().to_string()),
             needs_human: view
                 .skipped_no_auto
                 .into_iter()
@@ -1836,12 +1846,26 @@ fn render_engine_run(run: &EngineRunView) -> String {
                 .unwrap_or_else(|| "no".to_string())
         ));
     }
+    match run.admission_wait.as_deref() {
+        Some("verification-backlog") => body.push_str(
+            "admission: waiting -- as many stories wait for central verification as the run has lanes\n",
+        ),
+        Some("lanes-full") => body.push_str("admission: waiting -- every lane holds active work\n"),
+        Some(other) => body.push_str(&format!("admission: waiting -- {other}\n")),
+        None => {}
+    }
     body.push_str("\nlane  state        story       elapsed     quiet\n");
     for lane in &run.lanes {
+        // A verifying lane keeps its record but holds no capacity (SH-822).
+        let state = if lane.verifying {
+            "verifying"
+        } else {
+            lane.state.as_str()
+        };
         body.push_str(&format!(
             "{:<5} {:<12} {:<11} {:<11} {}\n",
             lane.index + 1,
-            lane.state.as_str(),
+            state,
             lane.story.as_deref().unwrap_or("-"),
             lane.elapsed_seconds
                 .map(format_elapsed)
@@ -2912,5 +2936,80 @@ mod cleanup_render_tests {
             "dirty-worktree"
         );
         assert_eq!(rendered["cleanup"]["failed"][0]["reason"], "fetch-failed");
+    }
+}
+
+#[cfg(test)]
+mod engine_render_tests {
+    use super::*;
+
+    fn run(admission_wait: Option<&str>, verifying: bool) -> Response {
+        Response::EngineRun(Box::new(EngineRunView {
+            id: "run-1".into(),
+            scope: EngineScopeView {
+                kind: "project".into(),
+                epic: None,
+            },
+            agent: EngineAgent::Claude,
+            model: None,
+            effort: None,
+            speed: None,
+            state: EngineRunState::Running,
+            lane_count: 1,
+            consecutive_hard_stops: 0,
+            recent_quarantines: Vec::new(),
+            stop_reason: None,
+            acknowledged_at: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            lanes: vec![EngineLaneView {
+                adopted_identity: None,
+                index: 0,
+                state: EngineLaneState::Working,
+                story: Some("SH-1".into()),
+                verifying,
+                elapsed_seconds: None,
+                quiet_seconds: None,
+                probe_detail: None,
+                outcome: None,
+                outcome_detail: None,
+            }],
+            admission_wait: admission_wait.map(str::to_string),
+            needs_human: Vec::new(),
+        }))
+    }
+
+    /// SH-822: a lane that waits for central verification says so instead of
+    /// `working`, and a closed admission names its reason.
+    #[test]
+    fn a_verifying_lane_and_a_verification_backlog_are_named() {
+        let body = render_human(&run(Some("verification-backlog"), true));
+        assert!(
+            body.contains(
+                "admission: waiting -- as many stories wait for central verification as the run has lanes"
+            ),
+            "{body}"
+        );
+        assert!(body.contains("1     verifying    SH-1"), "{body}");
+    }
+
+    /// An open admission and an active lane render exactly as before.
+    #[test]
+    fn an_open_run_with_active_work_prints_no_admission_line() {
+        let body = render_human(&run(None, false));
+        assert!(!body.contains("admission:"), "{body}");
+        assert!(body.contains("1     working      SH-1"), "{body}");
+    }
+
+    /// The CLI JSON omits both fields when they carry nothing, so older
+    /// readers and the golden transcripts see no change.
+    #[test]
+    fn empty_admission_and_verifying_fields_are_omitted_from_json() {
+        let Response::EngineRun(view) = run(None, false) else {
+            unreachable!()
+        };
+        let json = serde_json::to_value(&*view).unwrap();
+        assert!(json.get("admission_wait").is_none(), "{json}");
+        assert!(json["lanes"][0].get("verifying").is_none(), "{json}");
     }
 }

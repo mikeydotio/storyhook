@@ -216,6 +216,113 @@ fn verifier_distinguishes_poller_preparation_failure_from_test_failure() {
     }
 }
 
+/// SH-822 (council decision D3): a gate that runs out of disk reads as red
+/// and returns stories that did nothing wrong. Every gate builds cold in the
+/// verifier worktree, so the space it needs is what earlier gates measured.
+/// While that much is not free, the gate is refused by name before it starts:
+/// a permanent local failure, which halts the queue for an operator.
+#[test]
+fn a_gate_is_refused_before_it_starts_while_its_measured_disk_is_not_free() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let container = repo.poller(&base);
+    let poller = container.path().join("poller");
+    let record = repo.path().join(".git/storyhook/gate-disk-peaks");
+    fs::create_dir_all(record.parent().unwrap()).unwrap();
+    // No volume has this much free (about 900 PiB).
+    fs::write(&record, "1\n999999999999999\n12\n").unwrap();
+    let tree = stdout(&repo.preflight(&base, &head));
+
+    let result = repo.verification_gate(&tree, &base, &head, &poller, &["touch", "gate-started"]);
+
+    assert_ok(&result, "verifier emits classified JSON");
+    assert!(
+        !poller.join("gate-started").exists(),
+        "the gate never started"
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(payload["result"], "infrastructure-failure", "{payload}");
+    assert_eq!(payload["disposition"], "permanent", "{payload}");
+    let detail = payload["detail"].as_str().unwrap();
+    assert!(detail.contains("low disk"), "{detail}");
+    assert!(detail.contains("999999999999999 KiB"), "{detail}");
+    assert!(detail.contains(&poller.display().to_string()), "{detail}");
+    assert!(detail.contains("no story was judged"), "{detail}");
+    assert_eq!(
+        fs::read_to_string(&record).unwrap(),
+        "1\n999999999999999\n12\n",
+        "a refused gate measures nothing"
+    );
+}
+
+/// SH-822: every gate that runs records the working set it left in the
+/// verifier worktree, keeping the last five, and a record that the volume can
+/// hold admits the gate.
+#[test]
+fn a_gate_records_its_disk_use_and_keeps_the_last_five() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let container = repo.poller(&base);
+    let poller = container.path().join("poller");
+    let record = repo.path().join(".git/storyhook/gate-disk-peaks");
+    fs::create_dir_all(record.parent().unwrap()).unwrap();
+    fs::write(&record, "1\n2\n3\n4\n5\n").unwrap();
+    let tree = stdout(&repo.preflight(&base, &head));
+
+    let result = repo.verification_gate(
+        &tree,
+        &base,
+        &head,
+        &poller,
+        &[
+            "bash",
+            "-c",
+            "head -c 2097152 /dev/zero > build-product && touch gate-started",
+        ],
+    );
+
+    assert_ok(&result, "verifier emits classified JSON");
+    let payload: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(payload["result"], "gate-passed", "{payload}");
+    let samples: Vec<u64> = fs::read_to_string(&record)
+        .unwrap()
+        .lines()
+        .map(|line| line.parse().unwrap())
+        .collect();
+    assert_eq!(
+        samples.len(),
+        5,
+        "only the last five gates are kept: {samples:?}"
+    );
+    assert_eq!(&samples[..4], [2, 3, 4, 5]);
+    assert!(
+        samples[4] >= 2048,
+        "the gate's 2 MiB build product is in its measurement: {samples:?}"
+    );
+}
+
+/// SH-822: the first gate on a machine has no measurement, so no floor
+/// applies; it runs, and it leaves the first measurement.
+#[test]
+fn the_first_gate_runs_without_a_floor_and_leaves_the_first_measurement() {
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("main");
+    let head = repo.branch("candidate", "main", "candidate-file", "candidate\n");
+    let container = repo.poller(&base);
+    let poller = container.path().join("poller");
+    let record = repo.path().join(".git/storyhook/gate-disk-peaks");
+    let tree = stdout(&repo.preflight(&base, &head));
+
+    let result = repo.verification_gate(&tree, &base, &head, &poller, &["touch", "gate-started"]);
+
+    assert_ok(&result, "verifier emits classified JSON");
+    assert!(poller.join("gate-started").exists());
+    let samples = fs::read_to_string(&record).unwrap();
+    assert_eq!(samples.lines().count(), 1, "{samples}");
+}
+
 /// SH-692: the gate for PR #791 was terminated by SIGTERM at leg 226/4058,
 /// and `merge-watch.sh` published the dead child's status, `143`, as a
 /// "completion record". `run_verification_gate`'s one guard is that the

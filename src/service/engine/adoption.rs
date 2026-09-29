@@ -445,12 +445,12 @@ impl<S: Store, D: Dispatcher> EngineService<'_, S, D> {
                 }
                 if existing.is_none() { additions.push((row, dispatch)); }
             }
-            let idle: Vec<_> = lanes.iter().filter(|lane| lane.state == super::EngineLaneState::Idle && lane.lane_index < run.lanes).collect();
-            if !additions.is_empty() && (additions.len() > idle.len() || super::occupied_run_lane_count(&lanes) + additions.len() > run.lanes as usize) {
+            let slots = super::lane_admission(tx, project, &run, &lanes, &now)?.slots;
+            if additions.len() > slots.len() {
                 return Err(refusal(format!("insufficient capacity in run {run_id}; configure more lanes or wait for idle capacity")).into());
             }
             let mut adopted = Vec::new();
-            for ((row, dispatch), slot) in additions.into_iter().zip(idle) {
+            for ((row, dispatch), slot) in additions.into_iter().zip(slots) {
                 let mut lane = super::idle_lane(run_id, slot.lane_index, &now);
                 lane.state = super::EngineLaneState::Working;
                 lane.story_id = Some(row.snapshot.id.clone());

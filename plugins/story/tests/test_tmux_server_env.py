@@ -111,6 +111,19 @@ class PolicyTests(unittest.TestCase):
     def test_selectors_are_not_retained_by_a_server(self):
         self.assertEqual(set(policy.PANE_SELECTORS) & policy.SERVER_MAY_SEE, {"XDG_STATE_HOME"})
 
+    def test_pane_overrides_blank_github_state_and_carry_selectors(self):
+        environ = {"GH_TOKEN": "secret", "STORYHOOK_GITHUB_AUTHORITY": "op", "STORY_BIN": "/bin/story",
+                   "STORYHOOK_STORE_PATH": "/store", "PATH": "/usr/bin"}
+        flags = policy.pane_overrides(environ)
+        pairs = dict(flag.split("=", 1) for flag in flags[1::2])
+        self.assertEqual(flags[0::2], ["-e"] * len(pairs))
+        for name in policy.GITHUB_CREDENTIALS + policy.GITHUB_ROUTING:
+            self.assertEqual(pairs[name], "", name)
+        self.assertEqual(pairs["STORY_BIN"], "/bin/story")
+        self.assertEqual(pairs["STORYHOOK_STORE_PATH"], "/store")
+        self.assertEqual(pairs["XDG_STATE_HOME"], "", "an absent selector is carried empty")
+        self.assertNotIn("PATH", pairs)
+
     def test_parse_environment_reads_set_values_and_skips_removals(self):
         listing = "A=b\n-REMOVED\nD=x=y\n\nEMPTY=\n"
         self.assertEqual(policy.parse_environment(listing), {"A": "b", "D": "x=y", "EMPTY": ""})

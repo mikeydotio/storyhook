@@ -32,7 +32,7 @@ class BudgetTests(unittest.TestCase):
         def answer(argv, **kwargs):
             allowances.append(kwargs["timeout"])
             clock[0] += 1
-            return subprocess.CompletedProcess(argv, 0, "@1" if argv[1] == "new-session" else "", "")
+            return subprocess.CompletedProcess(argv, 0, "@1\t%1" if argv[1] == "new-session" else "", "")
 
         with tempfile.TemporaryDirectory(dir="/tmp") as directory, \
                 patch.dict(view.os.environ, STORYHOOK_VERIFIER_MIRROR="1"), \
@@ -52,7 +52,7 @@ class BudgetTests(unittest.TestCase):
             if argv[1] == "display-message":
                 clock[0] = view.BUDGET_SECONDS
                 return subprocess.CompletedProcess(argv, 1, "", "original mark failure")
-            return subprocess.CompletedProcess(argv, 0, "@1" if argv[1] == "new-session" else "", "")
+            return subprocess.CompletedProcess(argv, 0, "@1\t%1" if argv[1] == "new-session" else "", "")
 
         with tempfile.TemporaryDirectory(dir="/tmp") as directory, \
                 patch.dict(view.os.environ, STORYHOOK_VERIFIER_MIRROR="1"), \
