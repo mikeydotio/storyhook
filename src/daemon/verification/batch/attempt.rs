@@ -16,6 +16,8 @@ pub(super) struct Attempt<'a, S: Store> {
     pub(super) cancellation: &'a Cancellation,
     /// Head and members whose authority the observer checks.
     pub(super) tracked: &'a Mutex<Vec<VerificationCandidate>>,
+    /// The slot's listing of the batch's members while the steps run.
+    pub(super) membership: Option<BatchMembership<'a>>,
     /// The durable record, once written.
     pub(super) record: Option<VerificationBatch>,
     /// Why the batch ended before a record was written.
@@ -237,6 +239,9 @@ impl<S: Store> Attempt<'_, S> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|tracked| tracked.story_id != story_id);
+        if let Some(membership) = &self.membership {
+            membership.leave(story_id);
+        }
         self.plan.excluded.push(BatchExclusion {
             story_id: story_id.to_owned(),
             reason,

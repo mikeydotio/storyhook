@@ -131,6 +131,40 @@ fn a_reset_of_a_batch_member_ends_the_batch_not_the_heads_attempt() {
     );
 }
 
+/// A member the batch left out (busy lock, refused submission, moved head)
+/// is no longer the batch's: before the fix it stayed listed on the slot, so
+/// a reset of that story cancelled the whole batch and then waited for it.
+#[test]
+fn a_member_left_out_of_the_batch_is_neither_waited_for_nor_ends_it() {
+    let fixture = ServiceFixture::new();
+    let store = SqliteStore::open(fixture.store().path()).unwrap();
+    let project = ProjectId::new(fixture.project().get());
+    let env = Environment::at(fixture.cwd());
+    let candidate = head(&store, &env, project);
+    let activity = VerificationActivity::new();
+    let guard = activity.acquire(&candidate, env.now());
+    let batch = Cancellation::default();
+    let membership = guard.enter_batch(
+        BTreeSet::from(["SH-7".to_owned(), "SH-8".to_owned()]),
+        batch.clone(),
+    );
+
+    membership.leave("SH-8");
+
+    activity
+        .cancel_story_and_wait(project, "SH-8", Instant::now())
+        .expect("a left-out story is not the batch's to wait for");
+    assert!(!batch.is_cancelled(), "its reset does not end the batch");
+    assert!(
+        activity
+            .cancel_story_and_wait(project, "SH-7", Instant::now())
+            .is_err(),
+        "a member still in the batch is waited for"
+    );
+    assert!(batch.is_cancelled());
+    drop(membership);
+}
+
 #[test]
 fn a_live_batch_is_abandoned_once_and_an_ended_one_is_left_alone() {
     let fixture = ServiceFixture::new();

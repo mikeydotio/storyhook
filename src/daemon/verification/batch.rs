@@ -186,8 +186,20 @@ impl VerificationGuard {
 }
 
 /// Clears the slot's batch when the batch ends, on every path.
-struct BatchMembership<'a> {
+pub(super) struct BatchMembership<'a> {
     owner: &'a VerificationGuard,
+}
+
+impl BatchMembership<'_> {
+    /// Takes a member the batch left out off the slot, so a reset of that
+    /// story neither waits for the batch nor ends it.
+    pub(super) fn leave(&self, story_id: &str) {
+        self.owner.with_own_slot(|slot| {
+            if let Some(batch) = slot.batch.as_mut() {
+                batch.members.remove(story_id);
+            }
+        });
+    }
 }
 
 impl Drop for BatchMembership<'_> {
@@ -312,6 +324,7 @@ pub(super) fn run<S: Store>(
         plan,
         cancellation: &cancellation,
         tracked: &tracked,
+        membership: Some(membership),
         record: None,
         dissolved: None,
         failure: None,
@@ -333,7 +346,7 @@ pub(super) fn run<S: Store>(
         },
         || attempt.steps(),
     );
-    drop(membership);
+    attempt.membership = None;
     if let Err(error) = steps {
         attempt.failure = Some(format!("the batch step failed: {error}"));
     }
