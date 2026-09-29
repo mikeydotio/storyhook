@@ -139,8 +139,11 @@ fn a_batch_certified_at_another_head_is_released_and_the_head_is_gated_alone() {
     assert_eq!(record["verdict"], "certified", "the head's own gate");
 }
 
+/// A red verdict on a tree other than the batch tip's (the base moved)
+/// says nothing about the batch's own trees: it is released without a
+/// bisection (SH-833 D9) and changes no member.
 #[test]
-fn a_red_batch_is_released_with_its_verdict_and_changes_no_member() {
+fn a_red_batch_on_another_tree_is_released_unbisected_and_changes_no_member() {
     let board = board(&CLEAN, Some(3));
     let before = queued(&board);
     let batcher = Batcher::new(
@@ -161,6 +164,10 @@ fn a_red_batch_is_released_with_its_verdict_and_changes_no_member() {
     assert_eq!(gate.verdict, GateVerdict::TestsFailed);
     assert_eq!(gate.tree.as_deref(), Some("c".repeat(40).as_str()));
     assert!(gate.detail.contains("/tmp/batch.log"), "{}", gate.detail);
+    assert_eq!(
+        batch.bisection, None,
+        "no bisection of a tree the batch did not make"
+    );
     assert_eq!(queued(&board), before[1..].to_vec());
     assert!(batcher.calls().contains(&format!(
         "verify {} https://github.com/acme/widgets/pull/1",

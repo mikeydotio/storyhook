@@ -2402,9 +2402,12 @@ where
                 published.as_ref(),
                 &active,
             );
-            // The batch (SH-831) runs before the head's own gate; landing a
-            // batch is not built yet, so the head is gated alone after it.
+            // The batch (SH-831) runs before the head's own gate. A certified
+            // batch lands (SH-832); a red one is bisected (SH-833), whose
+            // red verdict on the head alone stands in for the head's gate.
+            // Otherwise the head is gated alone after it.
             let mut batch_summary = None;
+            let mut head_verdict = None;
             if !batched && let Some(batching) = actuator.batch() {
                 match batch::run(
                     store,
@@ -2421,6 +2424,15 @@ where
                     batch::BatchEnd::Done(summary) => {
                         batched = true;
                         batch_summary = Some(summary);
+                    }
+                    batch::BatchEnd::HeadRed {
+                        outcome,
+                        found_by,
+                        summary,
+                    } => {
+                        batched = true;
+                        batch_summary = Some(summary);
+                        head_verdict = Some((*outcome, found_by));
                     }
                     batch::BatchEnd::Tick {
                         result,
@@ -2489,13 +2501,24 @@ where
                 }
             }
             let gate_started = Instant::now();
-            let verified = observation::verify(
-                store,
-                bus,
-                &candidate,
-                &active.cancellation,
-                |cancellation| actuator.verify_cancellable(&candidate, &pull_request, cancellation),
-            );
+            // Bisection already gated the head alone and it was red: that
+            // verdict is the head's own, and a red tree writes no receipt, so
+            // a second gate would only run the suite again (SH-833 D7).
+            let (verified, found_by) = match head_verdict {
+                Some((outcome, found_by)) => (Ok(Some(outcome)), Some(found_by)),
+                None => (
+                    observation::verify(
+                        store,
+                        bus,
+                        &candidate,
+                        &active.cancellation,
+                        |cancellation| {
+                            actuator.verify_cancellable(&candidate, &pull_request, cancellation)
+                        },
+                    ),
+                    None,
+                ),
+            };
             batch_preview::finish(
                 env,
                 &active,
@@ -2785,7 +2808,14 @@ where
                         &ctx,
                         actuator,
                         &candidate,
-                        &red_diagnosis(&candidate, &tree, &gate, &log, &detail, None),
+                        &red_diagnosis(
+                            &candidate,
+                            &tree,
+                            &gate,
+                            &log,
+                            &detail,
+                            found_by.as_deref(),
+                        ),
                         &active,
                         ReservationReason::Remediation,
                     )?;

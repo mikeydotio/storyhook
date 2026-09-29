@@ -6,6 +6,7 @@
 use super::end::{member_list, write};
 use super::*;
 use crate::service::batch_assembly::Assembly;
+use crate::store::BisectionOf;
 
 impl<S: Store> Attempt<'_, S> {
     /// Records the batch the plan assembled, with `tip` as its last merge
@@ -25,7 +26,7 @@ impl<S: Store> Attempt<'_, S> {
             members,
             self.plan.excluded.clone(),
         );
-        store_new(self.store, &batch)?;
+        store_new(self.store, &batch, Backstop::SettleUnfinished)?;
         journal(
             "INFO",
             self.head,
@@ -119,19 +120,33 @@ impl<S: Store> Attempt<'_, S> {
     }
 }
 
+/// What recording a new batch settles first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Backstop {
+    /// A batch the queue formed: every record a failed tick left unsettled,
+    /// live batches and unfinished bisections alike (B10).
+    SettleUnfinished,
+    /// A bisection probe (SH-833): only a live batch, because the probe's
+    /// own bisection is unfinished while it runs.
+    AbandonLive,
+}
+
 /// Writes a new live record, retention included.
-pub(super) fn store_new(store: &impl Store, batch: &VerificationBatch) -> Result<(), AppError> {
+pub(super) fn store_new(
+    store: &impl Store,
+    batch: &VerificationBatch,
+    backstop: Backstop,
+) -> Result<(), AppError> {
+    const NEWER: &str = "a newer batch of the project was recorded while this one was still live";
     let project = batch.project;
     let now = batch.created_at.clone();
     store.write(|tx| {
         // Backstop for B10: a batch still live here was left by a tick
         // that failed before it could end it.
-        abandon_live(
-            tx,
-            project,
-            "a newer batch of the project was recorded while this one was still live",
-            &now,
-        )?;
+        match backstop {
+            Backstop::SettleUnfinished => settle_unfinished(tx, project, NEWER, &now)?,
+            Backstop::AbandonLive => abandon_live(tx, project, NEWER, &now)?,
+        };
         tx.insert_verification_batch(batch)?;
         tx.prune_verification_batches(project, RETAINED_BATCHES)?;
         Ok(())
@@ -162,6 +177,9 @@ pub(super) fn advance_record(
 
 /// The pull request `batch` is published as.
 pub(super) fn publication(batch: &VerificationBatch) -> BatchPublication {
+    if let Some(of) = &batch.bisects {
+        return probe_publication(batch, of);
+    }
     let members: Vec<String> = batch
         .members
         .iter()
@@ -218,4 +236,36 @@ pub(super) fn pull_request_link(
         linked_at: now,
         last_checked_at: None,
     })
+}
+
+/// The pull request a bisection probe is published as (SH-833).
+fn probe_publication(batch: &VerificationBatch, of: &BisectionOf) -> BatchPublication {
+    BatchPublication {
+        branch: batch.branch.clone(),
+        tip: batch.tip.clone(),
+        base: batch.base_branch.clone(),
+        title: format!(
+            "Verification batch {} (bisecting {}): {}",
+            batch.id,
+            of.parent,
+            member_list(batch)
+        ),
+        body: format!(
+            "Bisection probe `{}` of verification batch `{}` in project `{}`, formed by the \
+             storyhook verifier.\n\n\
+             Batch `{}` failed its gate. This pull request merges its first {} members onto \
+             `{}` at {} in queue order ({}), exactly as that batch did, so its gate tells \
+             which member turned the batch red. If bisection certifies these members and \
+             ends here, the verifier lands this pull request and they are done together; \
+             otherwise the verifier closes it.",
+            batch.id,
+            of.parent,
+            batch.project_slug,
+            of.parent,
+            of.prefix,
+            batch.base_branch,
+            batch.base_commit,
+            member_list(batch)
+        ),
+    }
 }

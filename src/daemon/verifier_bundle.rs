@@ -57,6 +57,10 @@ pub const VERIFY_SCRIPT: &str = "verify-pr.sh";
 /// pull request (SH-831).
 pub const BATCH_SCRIPT: &str = "verify-batch.sh";
 
+/// The receipt check the daemon runs for a bisection prefix's tree
+/// (SH-833): the same `merge-preflight.sh` that `verify-pr.sh` reaches.
+pub const PREFLIGHT_SCRIPT: &str = "merge-preflight.sh";
+
 /// The directory beneath the daemon state dir that holds every leaf.
 const BUNDLE_DIR: &str = "verifier";
 

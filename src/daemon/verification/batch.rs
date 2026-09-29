@@ -15,11 +15,17 @@
 //! SH-832, which replaced decision D1 on SH-831): SH-841 turns it on when a
 //! measured trigger fires.
 //!
+//! A red batch whose judged tree is the batch tip's is bisected (SH-833,
+//! spec B7, `bisect` and `culprit`): prefixes of its merge chain are gated
+//! until the member that turns a green prefix red is found. That culprit is
+//! returned to its own agent, the members before it land together, and the
+//! members after it go back to the queue.
+//!
 //! The whole batch runs under one authority observer over the head and every
-//! member: a member that changes (a resubmission, a hold, a reset) or an
-//! operator stop cancels it. A batch's failure never fails the tick; it
-//! abandons the batch. Only member submissions, a cleanup failure and an
-//! operator stop during the gate write story state.
+//! member still in play: a member that changes (a resubmission, a hold, a
+//! reset) or an operator stop cancels it. A batch's failure never fails the
+//! tick; it abandons the batch. Only member submissions, a culprit's return,
+//! a cleanup failure and an operator stop during a gate write story state.
 
 use super::*;
 use crate::domain::gate_verdict::GateVerdict;
@@ -27,8 +33,8 @@ use crate::service::batch_assembly::{AssemblyMember, assemble};
 use crate::service::batch_preview::{BatchPreview, PreviewOutcome};
 use crate::service::workspace_lock::WorkspaceLock;
 use crate::store::{
-    BatchExclusion, BatchExclusionReason, BatchGate, BatchId, BatchMember, BatchPhase,
-    BatchPullRequest, StoreError, StoryNo, VerificationBatch,
+    BatchBisection, BatchExclusion, BatchExclusionReason, BatchGate, BatchId, BatchMember,
+    BatchPhase, BatchPullRequest, BisectionOutcome, StoreError, StoryNo, VerificationBatch,
 };
 use attempt::Attempt;
 use end::retire_leftovers;
@@ -37,6 +43,8 @@ use locks::MemberLocks;
 use serde::Serialize;
 
 mod attempt;
+mod bisect;
+mod culprit;
 mod end;
 mod landing;
 mod locks;
@@ -52,6 +60,11 @@ const RETAINED_BATCHES: usize = 100;
 /// Why a batch that was live at worker start is abandoned (B10).
 const INTERRUPTED: &str = "the verifier that formed this batch stopped before the batch ended; \
 its members keep their generations and are verified again from the queue";
+
+/// Why a bisection that never recorded its end is settled as interrupted
+/// (SH-833).
+const BISECTION_INTERRUPTED: &str = "the verifier stopped before this bisection ended; no story \
+was blamed, and every member is verified again from the queue";
 
 /// The batch operations an actuator may offer (SH-831). An actuator offers
 /// them through [`VerificationActuator::batch`].
@@ -113,6 +126,36 @@ pub trait BatchActuator {
         head: &VerificationCandidate,
         members: &[MemberBranch],
     ) -> Result<Vec<MemberPrune>, AppError>;
+    /// Whether the merge of `commit` onto `base` already carries a
+    /// qualifying gate receipt in the head's checkout, where `verify-pr.sh`
+    /// reads receipts (SH-833): a bisection prefix that needs no gate run.
+    /// `Err` is an inspection that could not answer.
+    fn certified(
+        &self,
+        head: &VerificationCandidate,
+        base: &str,
+        commit: &str,
+        cancellation: &Cancellation,
+    ) -> Result<bool, AppError>;
+    /// Pastes a returned member's diagnosis into its agent pane, with that
+    /// member's own workspace lock inherited (SH-833): the helper refuses
+    /// any other story's lock.
+    fn notify_member(
+        &self,
+        member: &VerificationCandidate,
+        message: &str,
+        owner: MemberOwner<'_>,
+        cancellation: &Cancellation,
+    ) -> Result<NotifyDelivery, AppError>;
+    /// Re-dispatches a returned member into its own window and worktree
+    /// with the resume clause, with its own workspace lock inherited.
+    fn redispatch_member(
+        &self,
+        member: &VerificationCandidate,
+        plan: &ResumePlan,
+        owner: MemberOwner<'_>,
+        cancellation: &Cancellation,
+    ) -> Result<(), AppError>;
 }
 
 /// A landed member's own branch, for [`BatchActuator::prune_members`].
@@ -189,6 +232,9 @@ pub(super) struct BatchSummary {
     seconds: u64,
     /// Why it ended as it did.
     detail: String,
+    /// The bisection of a red batch: its probes and outcome (SH-833).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bisection: Option<BatchBisection>,
 }
 
 /// How a batch step ended, for the tick.
@@ -207,6 +253,14 @@ pub(super) enum BatchEnd {
     /// The batch is admitted to land: the tick merges it with the head's
     /// actuator ([`land`]).
     Land(Box<Landing>),
+    /// Bisection found the head to be the culprit (SH-833): `outcome` is its
+    /// red gate, which the tick takes as the head's own gate outcome, and
+    /// `found_by` names the batch in the head's RED comment.
+    HeadRed {
+        outcome: Box<VerificationOutcome>,
+        found_by: String,
+        summary: BatchSummary,
+    },
 }
 
 impl VerificationGuard {
@@ -277,6 +331,19 @@ impl BatchMembership<'_> {
             }
         });
     }
+
+    /// Shows the red batch `id` being bisected, with the members whose
+    /// prefix is being gated now (SH-833). `bisecting` is a status phase
+    /// only; no record is stored in it.
+    pub(super) fn show_bisecting(&self, id: &BatchId, gated: &[String]) {
+        self.owner.with_own_slot(|slot| {
+            if let Some(batch) = slot.batch.as_mut() {
+                batch.view.id = Some(id.to_string());
+                batch.view.members = gated.to_vec();
+                BISECTING.clone_into(&mut batch.view.phase);
+            }
+        });
+    }
 }
 
 impl Drop for BatchMembership<'_> {
@@ -285,11 +352,16 @@ impl Drop for BatchMembership<'_> {
     }
 }
 
-/// Abandons every batch of `project` that is still live (B10). Called when
-/// the project's verifier worker starts: a batch exists only inside one
-/// synchronous tick of that worker, so a live one was left by a verifier
-/// that stopped. Member stories are not touched; they keep their
-/// generations and stay queued. Answers the batches abandoned.
+/// The status phase of a red batch being bisected (SH-833).
+const BISECTING: &str = "bisecting";
+
+/// Settles every batch of `project` its verifier did not end (B10): a live
+/// batch is abandoned, and a bisection that never recorded its end is
+/// marked interrupted (SH-833). Called when the project's verifier worker
+/// starts: a batch exists only inside one synchronous tick of that worker,
+/// so either was left by a verifier that stopped. Member stories are not
+/// touched; they keep their generations and stay queued. Answers the
+/// batches settled.
 pub fn abandon_interrupted_batches(
     store: &impl Store,
     env: &Environment,
@@ -299,20 +371,61 @@ pub fn abandon_interrupted_batches(
     // with nothing to write. Every store fault point fires inside every
     // commit, an empty one included, so such a write kills an armed daemon
     // before it accepts its first connection (SH-693), and holds `BEGIN
-    // IMMEDIATE` against every client for nothing.
-    let live = store.read(|tx| {
+    // IMMEDIATE` against every client for nothing. The read and the write
+    // share one predicate, `needs_finalization`.
+    let unsettled = store.read(|tx| {
         Ok(tx
             .verification_batches(project)?
             .iter()
-            .any(|batch| batch.phase.is_abandonable()))
+            .any(VerificationBatch::needs_finalization))
     })?;
-    if !live {
+    if !unsettled {
         return Ok(Vec::new());
     }
     let now = env.now();
-    Ok(store.write(|tx| abandon_live(tx, project, INTERRUPTED, &now))?)
+    Ok(store.write(|tx| settle_unfinished(tx, project, INTERRUPTED, &now))?)
 }
 
+/// Abandons each abandonable batch with `detail` and marks each bisection
+/// with no recorded end interrupted: every record `needs_finalization`
+/// selects. Answers the batches written.
+fn settle_unfinished(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    detail: &str,
+    now: &str,
+) -> Result<Vec<BatchId>, StoreError> {
+    let mut settled = Vec::new();
+    for batch in tx.verification_batches(project)? {
+        if !batch.needs_finalization() {
+            continue;
+        }
+        let mut next = if batch.phase.is_abandonable() {
+            let mut next = batch.advance(BatchPhase::Abandoned, now)?;
+            next.detail = Some(detail.to_owned());
+            next
+        } else {
+            let mut next = batch.clone();
+            next.revision = batch.revision + 1;
+            now.clone_into(&mut next.updated_at);
+            next
+        };
+        if let Some(bisection) = next.bisection.as_mut().filter(|b| b.is_unfinished()) {
+            bisection.outcome = Some(BisectionOutcome::Interrupted {
+                detail: BISECTION_INTERRUPTED.into(),
+            });
+        }
+        if tx.update_verification_batch(&next, batch.revision)? {
+            settled.push(next.id);
+        }
+    }
+    Ok(settled)
+}
+
+/// Abandons each live batch the verifier can abandon, with `detail`: the
+/// backstop when a batch is recorded while another is still live. Leaves
+/// bisections alone, because a probe batch is recorded while its own
+/// bisection runs. Answers the batches abandoned.
 fn abandon_live(
     tx: &mut impl WriteOps,
     project: ProjectId,
@@ -412,6 +525,7 @@ pub(super) fn run<S: Store>(
         dissolved: None,
         failure: None,
         gate: None,
+        bisection: None,
     };
     progress_start(env, head, owner);
     let subscription = bus.subscribe();

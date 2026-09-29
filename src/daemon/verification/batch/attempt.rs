@@ -27,6 +27,9 @@ pub(super) struct Attempt<'a, S: Store> {
     pub(super) failure: Option<String>,
     /// The batch gate's outcome and duration in seconds.
     pub(super) gate: Option<(VerificationOutcome, u64)>,
+    /// The bisection of a red batch, once its record ended (SH-833). From
+    /// then on `record` holds only a live probe record, if any.
+    pub(super) bisection: Option<super::bisect::Bisecting>,
 }
 
 impl<S: Store> Attempt<'_, S> {
@@ -157,7 +160,7 @@ impl<S: Store> Attempt<'_, S> {
         let gate_started = Instant::now();
         let outcome = self.batching.gate(self.head, &link, self.cancellation);
         self.gate = Some((outcome, gate_started.elapsed().as_secs()));
-        Ok(())
+        self.bisect()
     }
 
     /// Submits one member and records its submission; `Err` excludes it.

@@ -4,7 +4,7 @@
 
 use super::batch_preview::{Board, git};
 use super::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use storyhook::daemon::verification::{
     BatchActuator, BatchPublication, BatchRetirement, LandingOutcome, MemberBranch, MemberOwner,
     MemberPrune, VerificationCancellation,
@@ -33,6 +33,23 @@ pub(super) enum Gate {
     OperatorStops,
     /// It certifies the batch pull request at the tip it was published at.
     CertifiesTip,
+    /// It judges the gated commit (SH-833): red, with the real merge tree,
+    /// when a culprit's head (story indices) is in it, else certified.
+    Culprits(Vec<usize>),
+    /// It does `action`, then answers as `then` does, without waiting to be
+    /// cancelled.
+    Then { action: Action, then: Box<Gate> },
+}
+
+/// What a scripted gate does to the board before it answers (SH-833).
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Action {
+    /// Takes the story at this index out of `verifying`, as its agent does.
+    Leaves(usize),
+    /// Labels the story at this index human-only.
+    Holds(usize),
+    /// Makes a project recovery of the board's project active.
+    Recovers,
 }
 
 /// A gate that answers `outcome`.
@@ -62,6 +79,20 @@ pub(super) struct Batcher<'a> {
     /// The dashboard's `/data` and the CLI's status text, read while the
     /// batch gate ran and while the batch landed.
     pub(super) observed: Mutex<Vec<(serde_json::Value, String)>>,
+    /// Gates answered instead of `gate`, by gate call (0-based) (SH-833).
+    pub(super) faults: Mutex<BTreeMap<usize, Gate>>,
+    /// Gate calls so far.
+    pub(super) gates: Mutex<usize>,
+    /// Prefix lengths whose tree carries a qualifying receipt: a commit is
+    /// certified when it merges exactly that many of the board's first
+    /// stories.
+    pub(super) receipts: BTreeSet<usize>,
+    /// Members whose agent is absent at their first paste.
+    pub(super) absent: BTreeSet<String>,
+    /// Members pasted to so far.
+    pub(super) pasted: Mutex<BTreeSet<String>>,
+    /// Status read at each probe gate: (gate call, dashboard, text).
+    pub(super) probe_status: Mutex<Vec<(usize, serde_json::Value, String)>>,
 }
 
 impl<'a> Batcher<'a> {
@@ -82,7 +113,162 @@ impl<'a> Batcher<'a> {
             held_at_landing: None,
             signed_base: false,
             observed: Mutex::new(Vec::new()),
+            faults: Mutex::new(BTreeMap::new()),
+            gates: Mutex::new(0),
+            receipts: BTreeSet::new(),
+            absent: BTreeSet::new(),
+            pasted: Mutex::new(BTreeSet::new()),
+            probe_status: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Answers the `call`-th gate (0-based) with `gate` instead.
+    pub(super) fn fault(&self, call: usize, gate: Gate) {
+        self.faults.lock().unwrap().insert(call, gate);
+    }
+
+    /// The head commit of the story at `index`.
+    pub(super) fn story_head(&self, index: usize) -> String {
+        git(
+            &self.board.root,
+            &[
+                "rev-parse",
+                &format!("worktree-{}", self.board.stories[index]),
+            ],
+        )
+    }
+
+    /// Whether `commit` contains the head of the story at `index`.
+    pub(super) fn contains(&self, index: usize, commit: &str) -> bool {
+        storyhook::env::git_env::command(&self.board.root)
+            .args([
+                "merge-base",
+                "--is-ancestor",
+                &self.story_head(index),
+                commit,
+            ])
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    /// Judges the commit `pull_request` gates: red iff a culprit's head is
+    /// in it, with the tree its merge onto `origin/dev` makes.
+    fn judge(&self, pull_request: &PrLink, culprits: &[usize]) -> VerificationOutcome {
+        let root = &self.board.root;
+        let published = self
+            .publications
+            .lock()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .find(|(index, _)| pull_request.number == 900 + *index as u64)
+            .map(|(_, publication)| publication.tip.clone());
+        let commit = published.unwrap_or_else(|| {
+            // A story's own pull request: pull/<index + 1>.
+            self.story_head(pull_request.number as usize - 1)
+        });
+        let tree = git(root, &["merge-tree", "--write-tree", "origin/dev", &commit]);
+        let red = culprits
+            .iter()
+            .any(|culprit| self.contains(*culprit, &commit));
+        if red {
+            VerificationOutcome::TestsFailed {
+                tree,
+                log: format!("/tmp/gate-{}.log", pull_request.number),
+                detail: format!("fixture: pull request {} is red", pull_request.number),
+                gate: "make test".into(),
+            }
+        } else {
+            VerificationOutcome::Certified {
+                head: commit,
+                tree,
+                detail: "fixture: green".into(),
+                gate: "make test".into(),
+            }
+        }
+    }
+
+    /// Answers one gate call with `gate`.
+    fn answer_gate(
+        &self,
+        gate: &Gate,
+        pull_request: &PrLink,
+        cancellation: &VerificationCancellation,
+    ) -> VerificationOutcome {
+        match gate {
+            Gate::Answer(outcome) => (**outcome).clone(),
+            Gate::MemberLeaves(index) => {
+                self.leave(*index);
+                Self::wait_cancelled(cancellation)
+            }
+            Gate::OperatorStops => {
+                self.activity
+                    .control(
+                        self.board.fixture.store(),
+                        self.board.fixture.project(),
+                        VerificationAction::Stop,
+                    )
+                    .unwrap();
+                Self::wait_cancelled(cancellation)
+            }
+            Gate::CertifiesTip => VerificationOutcome::Certified {
+                head: self
+                    .observed_then(&self.publications)
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .tip
+                    .clone(),
+                tree: "e".repeat(40),
+                detail: "batch gate passed".into(),
+                gate: "make test".into(),
+            },
+            Gate::Culprits(culprits) => self.judge(pull_request, culprits),
+            Gate::Then { action, then } => {
+                match action {
+                    Action::Leaves(index) => self.leave(*index),
+                    Action::Holds(index) => {
+                        StoryService::new(&self.board.fixture.ctx())
+                            .set_labels(&self.board.stories[*index], &["human-only".into()], &[])
+                            .unwrap();
+                    }
+                    Action::Recovers => {
+                        let recovery = storyhook::store::ProjectRecovery {
+                            id: "fixture-recovery".into(),
+                            project: self.board.fixture.project(),
+                            code: "missing-certification".into(),
+                            locus: ".storyhook.toml#verify.gate".into(),
+                            revision: 0,
+                            active: true,
+                            state: serde_json::json!({"version": 1, "phase": "assessment-pending"}),
+                        };
+                        assert!(
+                            self.board
+                                .fixture
+                                .store()
+                                .write(|tx| tx.insert_project_recovery(&recovery))
+                                .unwrap()
+                        );
+                    }
+                }
+                self.answer_gate(then, pull_request, cancellation)
+            }
+        }
+    }
+
+    /// Takes the story at `index` out of `verifying`, as its agent does.
+    fn leave(&self, index: usize) {
+        StoryService::new(&self.board.fixture.ctx())
+            .set_state(
+                &self.board.stories[index],
+                "in-progress",
+                Some("fixture: the agent takes the story back"),
+                None,
+                None,
+            )
+            .unwrap();
     }
 
     /// Observes status, then answers the batch's published tip holder.
@@ -94,8 +280,19 @@ impl<'a> Batcher<'a> {
         publications
     }
 
+    /// Reads status at a later gate call: a bisection probe.
+    fn observe_probe(&self, call: usize) {
+        let (data, text) = self.status_now();
+        self.probe_status.lock().unwrap().push((call, data, text));
+    }
+
     /// Reads what the dashboard and `story verifier status` show now.
     pub(super) fn observe(&self) {
+        let observed = self.status_now();
+        self.observed.lock().unwrap().push(observed);
+    }
+
+    fn status_now(&self) -> (serde_json::Value, String) {
         let fixture = &self.board.fixture;
         let slug = VerificationQueue::new(fixture.store())
             .ordered_for(fixture.project())
@@ -117,7 +314,7 @@ impl<'a> Batcher<'a> {
         );
         let data = serde_json::from_str(routed.reply.text_body().unwrap()).unwrap();
         let text = self.activity.status(&fixture.ctx()).unwrap().render_human();
-        self.observed.lock().unwrap().push((data, text));
+        (data, text)
     }
 
     pub(super) fn call(&self, call: String) {
@@ -289,10 +486,14 @@ impl BatchActuator for Batcher<'_> {
         _cancellation: &VerificationCancellation,
     ) -> Result<BatchPullRequest, AppError> {
         self.call(format!("publish {}", publication.branch));
-        self.publications.lock().unwrap().push(publication.clone());
+        let mut publications = self.publications.lock().unwrap();
+        // The first publication is BATCH_PR; each later one (a bisection
+        // probe) its own pull request.
+        let number = 900 + publications.len() as u64;
+        publications.push(publication.clone());
         Ok(BatchPullRequest {
-            url: BATCH_PR.into(),
-            number: 900,
+            url: format!("https://github.com/acme/widgets/pull/{number}"),
+            number,
         })
     }
 
@@ -303,44 +504,21 @@ impl BatchActuator for Batcher<'_> {
         cancellation: &VerificationCancellation,
     ) -> VerificationOutcome {
         self.call(format!("gate {}", pull_request.url));
-        match &self.gate {
-            Gate::Answer(outcome) => (**outcome).clone(),
-            Gate::MemberLeaves(index) => {
-                StoryService::new(&self.board.fixture.ctx())
-                    .set_state(
-                        &self.board.stories[*index],
-                        "in-progress",
-                        Some("fixture: the agent takes the story back"),
-                        None,
-                        None,
-                    )
-                    .unwrap();
-                Self::wait_cancelled(cancellation)
-            }
-            Gate::OperatorStops => {
-                self.activity
-                    .control(
-                        self.board.fixture.store(),
-                        self.board.fixture.project(),
-                        VerificationAction::Stop,
-                    )
-                    .unwrap();
-                Self::wait_cancelled(cancellation)
-            }
-            Gate::CertifiesTip => VerificationOutcome::Certified {
-                head: self
-                    .observed_then(&self.publications)
-                    .lock()
-                    .unwrap()
-                    .last()
-                    .unwrap()
-                    .tip
-                    .clone(),
-                tree: "e".repeat(40),
-                detail: "batch gate passed".into(),
-                gate: "make test".into(),
-            },
+        let call = {
+            let mut gates = self.gates.lock().unwrap();
+            *gates += 1;
+            *gates - 1
+        };
+        if call > 0 {
+            self.observe_probe(call);
         }
+        let gate = self
+            .faults
+            .lock()
+            .unwrap()
+            .remove(&call)
+            .unwrap_or_else(|| self.gate.clone());
+        self.answer_gate(&gate, pull_request, cancellation)
     }
 
     fn retire(
@@ -381,6 +559,50 @@ impl BatchActuator for Batcher<'_> {
         _cancellation: &VerificationCancellation,
     ) -> Result<(), AppError> {
         self.call(format!("reap-member {}", member.story_id));
+        Ok(())
+    }
+
+    fn certified(
+        &self,
+        _head: &VerificationCandidate,
+        base: &str,
+        commit: &str,
+        _cancellation: &VerificationCancellation,
+    ) -> Result<bool, AppError> {
+        assert_eq!(base, git(&self.board.root, &["rev-parse", "origin/dev"]));
+        let merged = (0..self.board.stories.len())
+            .take_while(|index| self.contains(*index, commit))
+            .count();
+        self.call(format!("certified {merged}"));
+        Ok(self.receipts.contains(&merged))
+    }
+
+    fn notify_member(
+        &self,
+        member: &VerificationCandidate,
+        _message: &str,
+        _owner: MemberOwner<'_>,
+        _cancellation: &VerificationCancellation,
+    ) -> Result<NotifyDelivery, AppError> {
+        self.call(format!("notify-member {}", member.story_id));
+        let first = self.pasted.lock().unwrap().insert(member.story_id.clone());
+        if first && self.absent.contains(&member.story_id) {
+            return Ok(NotifyDelivery::AgentAbsent {
+                reason: "agent-absent".into(),
+                detail: "fixture: no agent pane".into(),
+            });
+        }
+        Ok(NotifyDelivery::Delivered)
+    }
+
+    fn redispatch_member(
+        &self,
+        member: &VerificationCandidate,
+        _plan: &ResumePlan,
+        _owner: MemberOwner<'_>,
+        _cancellation: &VerificationCancellation,
+    ) -> Result<(), AppError> {
+        self.call(format!("redispatch-member {}", member.story_id));
         Ok(())
     }
 
