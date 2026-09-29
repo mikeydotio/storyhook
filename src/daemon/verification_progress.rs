@@ -24,6 +24,7 @@ use crate::store::VerificationIncident;
 use crate::store::{GlobalSeq, ReadOps, Store};
 
 use super::verification::evidence::AttemptEvidence;
+use super::verification::status::ActiveBatch;
 use super::verification::{ActiveVerification, VerificationActivity, journal_path};
 
 /// Dashboard wire shape for a story waiting in the verification queue or
@@ -56,6 +57,21 @@ pub enum VerificationStatus {
         current_step: Option<VerificationStep>,
         #[serde(skip_serializing_if = "Option::is_none")]
         tests: Option<VerificationTests>,
+    },
+    /// A member of the batch the verifier is running (SH-832, spec B9): on
+    /// the wire it is `running` too, with the batch named. Its own gate
+    /// evidence is the batch's, which the head's status carries.
+    #[serde(rename = "running")]
+    Batched {
+        /// The batch's id, once its record is written.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        batch: Option<String>,
+        /// The story whose attempt runs the batch.
+        head: String,
+        /// The batch's phase.
+        phase: String,
+        /// Seconds since the attempt that runs the batch started.
+        elapsed_seconds: u64,
     },
     /// A newer submission is durably queued while this story's prior
     /// generation still owns the serialized verifier process.
@@ -210,7 +226,34 @@ pub fn status_snapshot_with_incident(
         now,
         &evidence,
         incident_is_current,
+        None,
     )
+}
+
+/// Whether `candidate` is a non-head member of the running `batch`.
+fn batched(candidate: &VerificationCandidate, batch: Option<&ActiveBatch>) -> bool {
+    batch.is_some_and(|batch| {
+        candidate.story_id != batch.head && batch.members.contains(&candidate.story_id)
+    })
+}
+
+/// The candidates that wait for the verifier, in queue order: not held,
+/// not landing, not the owned attempt or its successor, and not a member
+/// of the running batch. Queue positions count only these.
+fn waiting<'a>(
+    ordered: &'a [VerificationCandidate],
+    active: Option<&ActiveVerification>,
+    batch: Option<&ActiveBatch>,
+) -> Vec<&'a VerificationCandidate> {
+    ordered
+        .iter()
+        .filter(|candidate| {
+            candidate.blocked_by.is_empty()
+                && !candidate.landing_pending
+                && !active.is_some_and(|held| owns(candidate, held) || supersedes(candidate, held))
+                && !batched(candidate, batch)
+        })
+        .collect()
 }
 
 /// Projects one already-read journal and incident classification for every consumer.
@@ -221,16 +264,10 @@ pub(crate) fn status_snapshot_with_evidence(
     now: &str,
     evidence: &AttemptEvidence,
     incident_is_current: bool,
+    batch: Option<&ActiveBatch>,
 ) -> Vec<StoryVerificationStatus> {
     let incident = incident.filter(|_| incident_is_current);
-    let waiting: Vec<&VerificationCandidate> = ordered
-        .iter()
-        .filter(|candidate| {
-            candidate.blocked_by.is_empty()
-                && !candidate.landing_pending
-                && !active.is_some_and(|held| owns(candidate, held) || supersedes(candidate, held))
-        })
-        .collect();
+    let waiting = waiting(ordered, active, batch);
 
     ordered
         .iter()
@@ -277,6 +314,16 @@ pub(crate) fn status_snapshot_with_evidence(
                     elapsed_seconds: elapsed_secs(&held.started_at, now).unwrap_or(0),
                     current_step,
                     tests,
+                }
+            } else if let (Some(held), Some(batch)) = (
+                active,
+                batch.filter(|batch| batched(candidate, Some(batch))),
+            ) {
+                VerificationStatus::Batched {
+                    batch: batch.id.clone(),
+                    head: batch.head.clone(),
+                    phase: batch.phase.clone(),
+                    elapsed_seconds: elapsed_secs(&held.started_at, now).unwrap_or(0),
                 }
             } else if let Some(held) = active.filter(|held| supersedes(candidate, held)) {
                 VerificationStatus::Superseding {
@@ -449,13 +496,15 @@ fn publish_project(
     activity: &VerificationActivity,
     project: crate::store::ProjectId,
 ) -> Result<bool, AppError> {
-    let (ordered, active, incident) = activity.read_project(store, project, |tx, owner, _| {
-        Ok((
-            crate::service::verification::ordered_candidates_for(tx, project)?,
-            owner.map(|owner| owner.active.clone()),
-            tx.verification_incident(project)?,
-        ))
-    })?;
+    let (ordered, active, incident, batch) =
+        activity.read_project(store, project, |tx, owner, _| {
+            Ok((
+                crate::service::verification::ordered_candidates_for(tx, project)?,
+                owner.map(|owner| owner.active.clone()),
+                tx.verification_incident(project)?,
+                owner.and_then(|owner| owner.batch.cloned()),
+            ))
+        })?;
     let evidence = AttemptEvidence::read(&ordered, active.as_ref(), env);
     let incident_is_current =
         evidence.incident_is_current(&ordered, active.as_ref(), incident.as_ref());
@@ -466,6 +515,7 @@ fn publish_project(
         now,
         &evidence,
         incident_is_current,
+        batch.as_ref(),
     );
     let mut moved = false;
     for (candidate, (_, _, status)) in ordered.iter().zip(statuses) {
@@ -542,6 +592,14 @@ fn publish_project(
                 },
                 now,
             )
+        } else if let VerificationStatus::Batched {
+            batch, head, phase, ..
+        } = &status
+        {
+            format!(
+                "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — RUNNING IN BATCH\nThis submission is verified together with verification batch {} (head {head}; {phase}). The batch's gate progress is on {head}.\n",
+                batch.as_deref().unwrap_or("(forming)")
+            )
         } else if let VerificationStatus::Superseding {
             generation,
             superseded_generation,
@@ -564,17 +622,11 @@ fn publish_project(
             else {
                 unreachable!("running handled above")
             };
-            let waiting: Vec<VerificationCandidate> = ordered
-                .iter()
-                .filter(|candidate| {
-                    candidate.blocked_by.is_empty()
-                        && !candidate.landing_pending
-                        && !active.as_ref().is_some_and(|held| {
-                            owns(candidate, held) || supersedes(candidate, held)
-                        })
-                })
-                .cloned()
-                .collect();
+            let waiting: Vec<VerificationCandidate> =
+                waiting(&ordered, active.as_ref(), batch.as_ref())
+                    .into_iter()
+                    .cloned()
+                    .collect();
             let (ahead_higher_priority, ahead_equal_priority_older) =
                 ahead_counts(&waiting, position - 1);
             let evidence_at = blocked_by

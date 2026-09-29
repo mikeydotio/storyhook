@@ -148,11 +148,13 @@ struct VerificationSlot {
     batch: Option<BatchSlot>,
 }
 
-/// A running batch's non-head members and the cancellation that ends the
-/// batch without ending the head's attempt.
+/// A running batch's non-head members, the cancellation that ends the
+/// batch without ending the head's attempt, and the batch as status shows
+/// it (SH-832).
 struct BatchSlot {
     members: BTreeSet<String>,
     cancellation: Cancellation,
+    view: status::ActiveBatch,
 }
 
 impl VerificationActivity {

@@ -63,6 +63,9 @@ struct Batcher<'a> {
     held_at_landing: Option<String>,
     /// Whether the base requires signed commits.
     signed_base: bool,
+    /// The dashboard's `/data` and the CLI's status text, read while the
+    /// batch gate ran and while the batch landed.
+    observed: Mutex<Vec<(serde_json::Value, String)>>,
 }
 
 impl<'a> Batcher<'a> {
@@ -82,7 +85,43 @@ impl<'a> Batcher<'a> {
             recovery: None,
             held_at_landing: None,
             signed_base: false,
+            observed: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Observes status, then answers the batch's published tip holder.
+    fn observed_then<'m>(
+        &self,
+        publications: &'m Mutex<Vec<BatchPublication>>,
+    ) -> &'m Mutex<Vec<BatchPublication>> {
+        self.observe();
+        publications
+    }
+
+    /// Reads what the dashboard and `story verifier status` show now.
+    fn observe(&self) {
+        let fixture = &self.board.fixture;
+        let slug = VerificationQueue::new(fixture.store())
+            .ordered_for(fixture.project())
+            .unwrap()
+            .first()
+            .map(|candidate| candidate.project_slug.clone())
+            .expect("a queued story names the project");
+        let routed = rest::route_with_activity(
+            fixture.store(),
+            fixture.env(),
+            &self.activity,
+            rest::RouteRequest::new(
+                &Method::Get,
+                &format!("/api/repos/{slug}/data"),
+                &[Header::from_bytes("Host", "127.0.0.1:3456").unwrap()],
+                "",
+            ),
+            &TrustedHosts::default(),
+        );
+        let data = serde_json::from_str(routed.reply.text_body().unwrap()).unwrap();
+        let text = self.activity.status(&fixture.ctx()).unwrap().render_human();
+        self.observed.lock().unwrap().push((data, text));
     }
 
     fn call(&self, call: String) {
@@ -156,6 +195,7 @@ impl VerificationActuator for Batcher<'_> {
             candidate.story_id,
             intent.landing_pull_request()
         ));
+        self.observe();
         if let Some(held) = &self.held_at_landing {
             StoryService::new(&self.board.fixture.ctx())
                 .set_labels(held, &["human-only".into()], &[])
@@ -289,7 +329,7 @@ impl BatchActuator for Batcher<'_> {
             }
             Gate::CertifiesTip => VerificationOutcome::Certified {
                 head: self
-                    .publications
+                    .observed_then(&self.publications)
                     .lock()
                     .unwrap()
                     .last()
@@ -1007,6 +1047,66 @@ fn a_certified_batch_lands_and_every_member_is_done_and_reaped() {
     let record = &board.records()[0];
     assert_eq!(record["batch"]["phase"], "landed", "{record}");
     assert_eq!(record["verdict"], "certified");
+
+    // B9: while the batch gates and lands, status names it and each member
+    // reads `running` with the batch; the head keeps its own running status.
+    let observed = batcher.observed.lock().unwrap().clone();
+    assert_eq!(
+        observed.len(),
+        2,
+        "one read at the gate, one at the landing"
+    );
+    for ((data, text), phase) in observed.iter().zip(["gating", "landing"]) {
+        let shown = &data["verifier"]["batch"];
+        assert_eq!(shown["id"], batch.id.as_str(), "{shown}");
+        assert_eq!(shown["head"], ids[0].as_str());
+        assert_eq!(shown["members"], serde_json::json!(ids));
+        assert_eq!(shown["phase"], phase);
+        let story = |id: &str| {
+            data["stories"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|view| view["story"]["id"] == id)
+                .unwrap()["verification"]
+                .clone()
+        };
+        assert!(
+            story(&ids[0]).get("batch").is_none(),
+            "the head is the owner"
+        );
+        for id in &ids[1..] {
+            let member = story(id);
+            if phase == "gating" {
+                assert_eq!(member["status"], "running", "{id}: {member}");
+                assert_eq!(member["batch"], batch.id.as_str(), "{id}: {member}");
+                assert_eq!(member["head"], ids[0].as_str());
+                assert_eq!(member["phase"], "gating");
+            } else {
+                assert_eq!(
+                    member["status"], "landingpending",
+                    "a fenced member reads as landing: {member}"
+                );
+            }
+        }
+        assert!(
+            text.contains(&format!(
+                "Verification batch {} running: {} · {phase}",
+                batch.id,
+                ids.join(", ")
+            )),
+            "{text}"
+        );
+    }
+    assert!(
+        batcher
+            .activity
+            .status(&board.fixture.ctx())
+            .unwrap()
+            .batch
+            .is_none(),
+        "no batch once it landed"
+    );
 }
 
 /// A landing whose outcome is uncertain leaves every member fenced in
@@ -1181,4 +1281,12 @@ fn a_base_that_requires_signed_commits_forms_no_batch() {
             .contains("signed commits"),
         "{record}"
     );
+}
+
+#[test]
+fn the_verifier_help_topic_names_the_running_batch_and_its_landing() {
+    let topic = storyhook::help_topics::get_help_topic("verifier").unwrap();
+    assert!(topic.contains("status reports batch"), "{topic}");
+    assert!(topic.contains("Verification batch <id> running"), "{topic}");
+    assert!(topic.contains("done in one transaction"), "{topic}");
 }

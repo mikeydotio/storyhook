@@ -343,6 +343,9 @@ impl<S: Store> Attempt<'_, S> {
                 batch.tip
             ),
         );
+        if let Some(membership) = &self.membership {
+            membership.show(&batch.id, batch.phase);
+        }
         self.record = Some(batch);
         Ok(())
     }
@@ -363,6 +366,9 @@ impl<S: Store> Attempt<'_, S> {
             self.head,
             &format!("verification batch {} {}", next.id, phase.as_str()),
         );
+        if let Some(membership) = &self.membership {
+            membership.show(&next.id, phase);
+        }
         self.record = Some(next);
         Ok(())
     }

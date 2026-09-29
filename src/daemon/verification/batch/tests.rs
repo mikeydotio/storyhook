@@ -22,6 +22,19 @@ fn repository() -> tempfile::TempDir {
     root
 }
 
+/// A running batch headed by SH-1 with `members` after the head.
+fn view(members: &[&str]) -> status::ActiveBatch {
+    status::ActiveBatch {
+        id: None,
+        head: "SH-1".into(),
+        members: std::iter::once("SH-1")
+            .chain(members.iter().copied())
+            .map(str::to_owned)
+            .collect(),
+        phase: "selected".into(),
+    }
+}
+
 fn lock_path(root: &Path, story: &str) -> std::path::PathBuf {
     root.join(".git/storyhook/workspace-locks")
         .join(format!("{story}.lock"))
@@ -101,7 +114,7 @@ fn a_reset_of_a_batch_member_ends_the_batch_not_the_heads_attempt() {
     let activity = VerificationActivity::new();
     let guard = activity.acquire(&candidate, env.now());
     let batch = Cancellation::default();
-    let membership = guard.enter_batch(BTreeSet::from(["SH-7".to_owned()]), batch.clone());
+    let membership = guard.enter_batch(view(&["SH-7"]), batch.clone());
 
     std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -122,7 +135,7 @@ fn a_reset_of_a_batch_member_ends_the_batch_not_the_heads_attempt() {
     activity
         .cancel_story_and_wait(project, "SH-8", Instant::now())
         .expect("neither head nor member: nothing to wait for");
-    let _stuck = guard.enter_batch(BTreeSet::from(["SH-7".to_owned()]), Cancellation::default());
+    let _stuck = guard.enter_batch(view(&["SH-7"]), Cancellation::default());
     assert!(
         activity
             .cancel_story_and_wait(project, "SH-7", Instant::now())
@@ -144,10 +157,7 @@ fn a_member_left_out_of_the_batch_is_neither_waited_for_nor_ends_it() {
     let activity = VerificationActivity::new();
     let guard = activity.acquire(&candidate, env.now());
     let batch = Cancellation::default();
-    let membership = guard.enter_batch(
-        BTreeSet::from(["SH-7".to_owned(), "SH-8".to_owned()]),
-        batch.clone(),
-    );
+    let membership = guard.enter_batch(view(&["SH-7", "SH-8"]), batch.clone());
 
     membership.leave("SH-8");
 

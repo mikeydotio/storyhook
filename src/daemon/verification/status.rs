@@ -58,11 +58,45 @@ pub struct VerifierStatus {
     /// in legacy payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch_preview: Option<crate::service::batch_preview::BatchPreview>,
+    /// The verification batch this attempt is running (SH-832, spec B9):
+    /// present only while the batch is forming, gating or landing; absent
+    /// in legacy payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<ActiveBatch>,
     /// The project's checkout tracks journal files in git, which its
     /// journal's own ignore file cannot hide, and the command that fixes
     /// it (SH-771). Separate from `warning`, which describes queue health.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_warning: Option<String>,
+}
+
+/// A running verification batch as status shows it (SH-832, spec B9).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveBatch {
+    /// The batch's id, once its record is written; absent while its
+    /// members are still being locked and submitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The story whose attempt runs the batch.
+    pub head: String,
+    /// Every member, head first, in batch order.
+    pub members: Vec<String>,
+    /// `selected` before the record exists, then the record's phase:
+    /// `assembled`, `submitted`, `gating` or `landing`.
+    pub phase: String,
+}
+
+impl ActiveBatch {
+    /// One line naming the batch, its phase and its members.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "Verification batch {} running: {} · {}",
+            self.id.as_deref().unwrap_or("(forming)"),
+            self.members.join(", "),
+            self.phase
+        )
+    }
 }
 
 impl VerificationActivity {
@@ -91,6 +125,7 @@ pub(crate) fn snapshot(
     let now = ctx.now();
     let active = owner.map(|owner| owner.active);
     let batch_preview = owner.and_then(|owner| owner.preview.cloned());
+    let batch = owner.and_then(|owner| owner.batch.cloned());
     let project = tx
         .project(ctx.project())?
         .ok_or_else(|| AppError::NotFound(format!("project {}", ctx.project())))?;
@@ -126,6 +161,7 @@ pub(crate) fn snapshot(
         &now,
         &evidence,
         incident_is_current,
+        batch.as_ref(),
     );
     let stopped = control != VerificationControlState::Running;
     let held_stories = if stopped || incident_is_current {
@@ -253,6 +289,7 @@ pub(crate) fn snapshot(
             evidence_error,
             warning,
             batch_preview,
+            batch,
             journal_warning: crate::daemon::activity::hygiene::warning_for(
                 ctx.env(),
                 ctx.project(),
@@ -314,6 +351,9 @@ impl VerifierStatus {
                     crate::local_time::stamp(&active.started_at)
                 ));
             }
+        }
+        if let Some(batch) = &self.batch {
+            text.push_str(&format!("{}\n", batch.describe()));
         }
         if let Some(preview) = &self.batch_preview {
             text.push_str(&format!("Batch preview: {}\n", preview.describe()));

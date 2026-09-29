@@ -132,6 +132,20 @@ pub(in crate::daemon::verification) fn land<S: Store, A: VerificationActuator>(
     owner: &VerificationGuard,
     landing: &mut Landing,
 ) -> Result<Landed, AppError> {
+    // Status shows the batch while it lands (B9); dropped on every path.
+    let _membership = owner.enter_batch(
+        status::ActiveBatch {
+            id: Some(landing.batch.to_string()),
+            head: head.story_id.clone(),
+            members: landing
+                .members
+                .iter()
+                .map(|member| member.story_id.clone())
+                .collect(),
+            phase: BatchPhase::Landing.as_str().into(),
+        },
+        Cancellation::default(),
+    );
     let row = landing.intent.row(&head.story_id).cloned().ok_or_else(|| {
         AppError::Storage(format!(
             "verification batch {} has no landing intent for its head {}",

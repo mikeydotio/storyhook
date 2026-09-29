@@ -209,19 +209,27 @@ pub(super) enum BatchEnd {
 }
 
 impl VerificationGuard {
-    /// Lists `members` as this attempt's running batch until the returned
-    /// value drops, so a reset of a member ends the batch rather than failing
-    /// as busy. Takes the registry lock alone, and only while the slot is
-    /// still this attempt's (the SH-768 identity rule).
+    /// Lists `view`'s members as this attempt's running batch until the
+    /// returned value drops, so a reset of a member ends the batch rather
+    /// than failing as busy, and status shows the batch (SH-832 B9). Takes
+    /// the registry lock alone, and only while the slot is still this
+    /// attempt's (the SH-768 identity rule).
     fn enter_batch(
         &self,
-        members: BTreeSet<String>,
+        view: status::ActiveBatch,
         cancellation: Cancellation,
     ) -> BatchMembership<'_> {
+        let members = view
+            .members
+            .iter()
+            .filter(|member| **member != view.head)
+            .cloned()
+            .collect();
         self.with_own_slot(|slot| {
             slot.batch = Some(BatchSlot {
                 members,
                 cancellation,
+                view,
             });
         });
         BatchMembership { owner: self }
@@ -254,6 +262,17 @@ impl BatchMembership<'_> {
         self.owner.with_own_slot(|slot| {
             if let Some(batch) = slot.batch.as_mut() {
                 batch.members.remove(story_id);
+                batch.view.members.retain(|member| member != story_id);
+            }
+        });
+    }
+
+    /// Shows the batch's record id and phase in status.
+    pub(super) fn show(&self, id: &BatchId, phase: BatchPhase) {
+        self.owner.with_own_slot(|slot| {
+            if let Some(batch) = slot.batch.as_mut() {
+                batch.view.id = Some(id.to_string());
+                phase.as_str().clone_into(&mut batch.view.phase);
             }
         });
     }
@@ -364,11 +383,16 @@ pub(super) fn run<S: Store>(
             .collect::<Vec<_>>(),
     );
     let membership = owner.enter_batch(
-        plan.members
-            .iter()
-            .skip(1)
-            .map(|member| member.candidate.story_id.clone())
-            .collect(),
+        status::ActiveBatch {
+            id: None,
+            head: head.story_id.clone(),
+            members: plan
+                .members
+                .iter()
+                .map(|member| member.candidate.story_id.clone())
+                .collect(),
+            phase: "selected".into(),
+        },
         cancellation.clone(),
     );
     let mut attempt = Attempt {
