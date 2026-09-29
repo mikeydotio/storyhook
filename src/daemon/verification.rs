@@ -850,9 +850,14 @@ impl ShellVerificationActuator {
     }
 
     /// Forms verification batches (SH-831) around each dequeued story, which
-    /// also turns on the preview that selects them. Landing a batch is not
-    /// built yet, so the daemon's own verifier does not ask for it (decision
-    /// D1 on SH-831); tests do.
+    /// also turns on the preview that selects them, and lands a certified
+    /// batch (SH-832). The daemon's own verifier does not ask for it: council
+    /// decision D10 on SH-832 (replacing decision D1 on SH-831) measured that
+    /// at the current red rate a batch loses throughput before bisection,
+    /// and SH-841 turns it on only when live preview records show a
+    /// would-be pair green at least half the time over 30 or more dequeues
+    /// (or 62% of stories green once SH-833 bisects), capped at two members
+    /// for a supervised first batch. Tests ask for it.
     #[must_use]
     pub fn with_batching(mut self) -> Self {
         self.batch_preview = true;
@@ -3585,6 +3590,9 @@ pub(crate) fn poll_verification(
     std::thread::scope(|scope| {
         scope.spawn(|| super::project_recovery::poll(store, env, bus, stop, activity));
         scope.spawn(|| super::activity::window::poll(store, env, stop, &activity.view_requests));
+        // Previews, never batches (council decision D10 on SH-832; SH-841
+        // enables batching on a measured trigger). A batch landing left by
+        // an earlier build is still recovered: recovery needs no batching.
         poll_verification_with(store, env, bus, stop, activity, inflight, |_| {
             ShellVerificationActuator::new(env.clone())
                 .with_activity(activity.clone())
