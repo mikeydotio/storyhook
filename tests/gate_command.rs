@@ -17,7 +17,7 @@
 use std::path::Path;
 use storyhook::error::AppError;
 use storyhook::help_topics::get_help_topic;
-use storyhook::service::gate_command::{GateCommand, gate_command_for};
+use storyhook::service::gate_command::{GateCommand, gate_command_for, gate_command_from_bytes};
 use storyhook::service::project::pointer_path;
 use storyhook_test_support::scratch_dir;
 
@@ -246,4 +246,21 @@ fn the_project_settings_help_topic_documents_the_verify_table() {
     assert!(topic.contains("STORYHOOK_GATE_RECEIPT"), "{topic}");
     assert!(topic.contains("preflight"), "{topic}");
     assert!(topic.contains("postlude gate"), "{topic}");
+}
+
+#[test]
+fn a_batch_table_beside_verify_leaves_the_gate_as_configured() {
+    // SH-834 put the smoothing allowlist in a `[batch]` table of its own so
+    // that no merge tree carrying it is ever a gate configuration fault: an
+    // unknown `[verify]` key is refused, an unknown table is not.
+    let tail = "\n[verify]\ngate = \"make test-full\"\n\n[batch]\nsmooth = [\"docs/spec/\"]\n";
+    let root = scratch_dir();
+    write_pointer(root.path(), tail);
+    let command = gate_command_for(root.path()).expect("a pointer with [verify] and [batch]");
+    assert_eq!(argv(&command), ["make", "test-full"]);
+
+    let committed = format!("schema = 1\nuuid = \"u\"\nprefix = \"SH\"\n{tail}");
+    let command = gate_command_from_bytes(Some(committed.as_bytes()))
+        .expect("a committed pointer with [verify] and [batch]");
+    assert_eq!(argv(&command), ["make", "test-full"]);
 }

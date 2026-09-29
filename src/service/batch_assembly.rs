@@ -9,10 +9,13 @@
 //! accepts, and are never signed: a signer must not prompt inside the daemon.
 
 use super::private_objects::repository_query;
-use super::trial_merge::{TrialMerge, answer_oid, merge_answer, require_pinned};
+use super::trial_merge::{MERGE_TREE, TrialMerge, answer_oid, merge_answer, require_pinned};
 use crate::error::AppError;
 use crate::process::Cancellation;
 use std::path::Path;
+
+mod smoothed;
+pub use smoothed::{LastMerge, SmoothedMerge, c_quote, merge_smoothed};
 
 /// Names batch assembly in every Git error it reports.
 const LABEL: &str = "batch assembly";
@@ -62,31 +65,16 @@ pub fn assemble(
 ) -> Result<Assembly, AppError> {
     require_pinned(base, LABEL)?;
     let cancelled = || cancellation.is_cancelled();
-    let mut tip = base.to_owned();
-    let mut tree = String::new();
-    let mut merges = Vec::with_capacity(members.len());
-    let mut trees = Vec::with_capacity(members.len());
+    let mut assembly = Assembly {
+        tip: base.to_owned(),
+        tree: String::new(),
+        merges: Vec::with_capacity(members.len()),
+        trees: Vec::with_capacity(members.len()),
+    };
     for member in members {
-        require_pinned(&member.commit, LABEL)?;
-        let merged = repository_query(
-            repository,
-            LABEL,
-            &[
-                "merge-tree",
-                "--write-tree",
-                "--name-only",
-                "--no-messages",
-                "-z",
-                &tip,
-                &member.commit,
-            ],
-            &[],
-            MERGE_ANSWERS,
-            &cancelled,
-        )?;
-        tree = match merge_answer(&merged, LABEL, &tip, &member.commit)? {
+        let tree = match merge_onto(repository, &assembly.tip, member, &cancelled)? {
             TrialMerge::Clean { tree } => tree,
-            TrialMerge::Conflict { paths } => {
+            TrialMerge::Conflict { paths, .. } => {
                 return Err(AppError::Storage(format!(
                     "{LABEL}: {} ({}) conflicts with the batch so far in {}",
                     member.story_id,
@@ -95,51 +83,96 @@ pub fn assemble(
                 )));
             }
         };
-        let message = format!(
-            "Merge {} ({}) into {branch}",
-            member.story_id, member.branch
-        );
-        let committed = repository_query(
+        let message = merge_message(member, branch);
+        let commit = record_merge(
             repository,
-            LABEL,
-            &[
-                "commit-tree",
-                "--no-gpg-sign",
-                "-p",
-                &tip,
-                "-p",
-                &member.commit,
-                "-m",
-                &message,
-                &tree,
-            ],
-            &[],
-            &[],
+            &assembly.tip,
+            member,
+            &tree,
+            &message,
             &cancelled,
         )?;
-        if !committed.status.success() {
-            return Err(AppError::Storage(format!(
-                "{LABEL} could not record the merge of {} ({}): {}",
-                member.story_id,
-                member.commit,
-                String::from_utf8_lossy(&committed.stderr).trim()
-            )));
-        }
-        tip = answer_oid(&committed.stdout, LABEL, "the merge commit")?;
-        merges.push(tip.clone());
-        trees.push(tree.clone());
+        assembly.push(commit, tree);
     }
-    if merges.is_empty() {
+    if assembly.merges.is_empty() {
         return Err(AppError::Validation(format!(
             "{LABEL} of {branch} has no members to merge"
         )));
     }
-    Ok(Assembly {
-        tip,
-        tree,
-        merges,
-        trees,
-    })
+    Ok(assembly)
+}
+
+impl Assembly {
+    /// Appends the merge commit `commit`, whose tree is `tree`, as the new
+    /// tip.
+    fn push(&mut self, commit: String, tree: String) {
+        self.merges.push(commit.clone());
+        self.trees.push(tree.clone());
+        self.tip = commit;
+        self.tree = tree;
+    }
+}
+
+/// Merges `member` onto the commit `tip` in `repository`'s object store.
+fn merge_onto(
+    repository: &Path,
+    tip: &str,
+    member: &AssemblyMember,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<TrialMerge, AppError> {
+    require_pinned(&member.commit, LABEL)?;
+    let mut args = MERGE_TREE.to_vec();
+    args.extend([tip, member.commit.as_str()]);
+    let merged = repository_query(repository, LABEL, &args, &[], MERGE_ANSWERS, cancelled)?;
+    merge_answer(&merged, LABEL, tip, &member.commit)
+}
+
+/// The subject of `member`'s merge commit on the batch branch `branch`.
+fn merge_message(member: &AssemblyMember, branch: &str) -> String {
+    format!(
+        "Merge {} ({}) into {branch}",
+        member.story_id, member.branch
+    )
+}
+
+/// Records the merge of `member` onto `tip`, whose tree is `tree`, as a
+/// two-parent commit with the repository's configured identity, never
+/// signed, and answers it.
+fn record_merge(
+    repository: &Path,
+    tip: &str,
+    member: &AssemblyMember,
+    tree: &str,
+    message: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<String, AppError> {
+    let committed = repository_query(
+        repository,
+        LABEL,
+        &[
+            "commit-tree",
+            "--no-gpg-sign",
+            "-p",
+            tip,
+            "-p",
+            &member.commit,
+            "-m",
+            message,
+            tree,
+        ],
+        &[],
+        &[],
+        cancelled,
+    )?;
+    if !committed.status.success() {
+        return Err(AppError::Storage(format!(
+            "{LABEL} could not record the merge of {} ({}): {}",
+            member.story_id,
+            member.commit,
+            String::from_utf8_lossy(&committed.stderr).trim()
+        )));
+    }
+    answer_oid(&committed.stdout, LABEL, "the merge commit")
 }
 
 #[cfg(test)]

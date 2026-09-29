@@ -10,8 +10,14 @@ use crate::store::BisectionOf;
 
 impl<S: Store> Attempt<'_, S> {
     /// Records the batch the plan assembled, with `tip` as its last merge
-    /// commit, and shows it in status.
-    pub(super) fn insert(&mut self, id: BatchId, assembly: &Assembly) -> Result<(), AppError> {
+    /// commit and `resolution` on its last member when that merge carries
+    /// one (SH-834), and shows it in status.
+    pub(super) fn insert(
+        &mut self,
+        id: BatchId,
+        assembly: &Assembly,
+        resolution: Option<BatchResolution>,
+    ) -> Result<(), AppError> {
         let mut members = self.planned_members();
         for (member, (merge, tree)) in members
             .iter_mut()
@@ -19,6 +25,9 @@ impl<S: Store> Attempt<'_, S> {
         {
             member.merge_commit = Some(merge.clone());
             member.merge_tree = Some(tree.clone());
+        }
+        if let Some(last) = members.last_mut() {
+            last.resolution = resolution;
         }
         let batch = self.new_record(
             id,
@@ -82,6 +91,7 @@ impl<S: Store> Attempt<'_, S> {
                     .map(|lease| lease.branch.clone()),
                 merge_commit: None,
                 merge_tree: None,
+                resolution: None,
             })
             .collect()
     }
@@ -203,7 +213,7 @@ pub(super) fn publication(batch: &VerificationBatch) -> BatchPublication {
         body: format!(
             "Verification batch `{}` of project `{}`, formed by the storyhook verifier.\n\n\
              Base: `{}` at {}.\n\n\
-             Members, merged in queue order as merge commits:\n{}\n\n\
+             Members, merged in queue order as merge commits:\n{}\n\n{}\
              The verifier gates this pull request's merge tree. If the gate certifies it, the \
              verifier lands this pull request and every member is done together; otherwise the \
              verifier closes it and verifies each member on its own.",
@@ -211,9 +221,45 @@ pub(super) fn publication(batch: &VerificationBatch) -> BatchPublication {
             batch.project_slug,
             batch.base_branch,
             batch.base_commit,
-            members.join("\n")
+            members.join("\n"),
+            resolution_section(batch)
         ),
     }
+}
+
+/// The batch pull request's account of an automated resolution, when its
+/// last merge carries one (SH-834, council decision D1 (c)): the merge
+/// commit, the strategy, the members, each path in a code span, that no
+/// model wrote it, and how to audit it. Empty otherwise.
+fn resolution_section(batch: &VerificationBatch) -> String {
+    let Some((last, resolution)) = batch
+        .members
+        .last()
+        .and_then(|last| Some((last, last.resolution.as_ref()?)))
+    else {
+        return String::new();
+    };
+    let commit = last.merge_commit.as_deref().unwrap_or(&batch.tip);
+    let with = if resolution.conflicted_with.is_empty() {
+        "an earlier member".to_owned()
+    } else {
+        resolution.conflicted_with.join(", ")
+    };
+    let files: Vec<String> = resolution
+        .files
+        .iter()
+        .map(|file| format!("- `{}`", file.path))
+        .collect();
+    format!(
+        "Automated conflict resolution ({strategy}) in merge commit {commit}: {member} merges \
+         last, and it and {with} added lines at the same place in these files, where neither \
+         changed a line of the base:\n{files}\n\nThe merge keeps both additions, the earlier \
+         member's first. No model wrote it, and no person reviewed it; the gate certifies the \
+         merged tree. Audit it with `git show --remerge-diff {commit}`.\n\n",
+        strategy = resolution.strategy,
+        member = last.story_id,
+        files = files.join("\n"),
+    )
 }
 
 /// The link the gate verifies for `batch`'s pull request.

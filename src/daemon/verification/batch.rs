@@ -29,12 +29,15 @@
 
 use super::*;
 use crate::domain::gate_verdict::GateVerdict;
-use crate::service::batch_assembly::{AssemblyMember, assemble};
+use crate::service::batch_assembly::{
+    Assembly, AssemblyMember, LastMerge, SmoothedMerge, assemble, merge_smoothed,
+};
 use crate::service::batch_preview::{BatchPreview, PreviewOutcome};
 use crate::service::workspace_lock::WorkspaceLock;
 use crate::store::{
     BatchBisection, BatchExclusion, BatchExclusionReason, BatchGate, BatchId, BatchMember,
-    BatchPhase, BatchPullRequest, BisectionOutcome, StoreError, StoryNo, VerificationBatch,
+    BatchPhase, BatchPullRequest, BatchResolution, BisectionOutcome, StoreError, StoryNo,
+    VerificationBatch,
 };
 use attempt::Attempt;
 use end::retire_leftovers;
@@ -457,6 +460,9 @@ struct Planned {
     commit: String,
     /// The member's own pull request, once its submission is recorded.
     pull_request: String,
+    /// Whether the preview admitted it by smoothing its conflict, which
+    /// makes it the last member (SH-834).
+    smoothed: bool,
 }
 
 /// The batch the preview selected, checked against the store.
@@ -619,6 +625,7 @@ fn plan<S: Store>(
         generation,
         commit: preview.members[0].commit.clone(),
         pull_request: link.url.clone(),
+        smoothed: false,
     }];
     let mut excluded = Vec::new();
     let queued = queue.ordered_for(head.project)?;
@@ -636,6 +643,7 @@ fn plan<S: Store>(
                 generation,
                 commit: selected.commit.clone(),
                 pull_request: String::new(),
+                smoothed: !selected.smoothed.is_empty(),
             }),
             None => excluded.push(BatchExclusion {
                 story_id: selected.story_id.clone(),

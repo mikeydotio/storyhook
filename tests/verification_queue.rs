@@ -12,6 +12,9 @@ mod batching;
 #[path = "verification_queue/bisection.rs"]
 mod bisection;
 
+#[path = "verification_queue/smoothing.rs"]
+mod smoothing;
+
 #[path = "verification_queue/completed_capture.rs"]
 mod completed_capture;
 

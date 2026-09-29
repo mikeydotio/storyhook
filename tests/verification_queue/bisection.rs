@@ -692,6 +692,7 @@ fn gating_batch(board: &Board) -> VerificationBatch {
             branch: None,
             merge_commit: None,
             merge_tree: None,
+            resolution: None,
         })
         .collect();
     let id = BatchId::generate();

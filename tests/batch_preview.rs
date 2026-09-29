@@ -7,8 +7,8 @@ use std::process::Output;
 use std::time::{Duration, Instant};
 
 use storyhook::service::batch_preview::{
-    BatchPreview, ExclusionReason, PreviewCandidate, PreviewOutcome, PreviewRequest, Standing,
-    select,
+    BatchPreview, ExclusionReason, PreviewCandidate, PreviewOutcome, PreviewRequest,
+    SmoothingClass, SmoothingMark, SmoothingMode, Standing, select,
 };
 use storyhook::service::trial_merge::{PrivateTrialMerger, TrialMerge, TrialMerger};
 use storyhook_test_support::scratch_dir;
@@ -141,6 +141,7 @@ fn request(head: &str, rest: Vec<PreviewCandidate>, cap: u32) -> PreviewRequest 
         cap,
         live_lanes: Some(cap),
         deadline: Instant::now() + storyhook_test_support::load_grace::graced_now(PREVIEW_PATIENCE),
+        smoothing: SmoothingMode::Measure,
     }
 }
 
@@ -489,4 +490,361 @@ fn an_option_shaped_or_unpinned_argument_is_refused() {
     assert!(merger.resolve("").is_err());
     assert!(merger.merge("HEAD", &repo.base).is_err());
     assert!(merger.merge(&repo.base, "main").is_err());
+}
+
+#[test]
+fn a_conflicted_trial_merge_reports_its_index_entries_and_records() {
+    let repo = Repo::new();
+    let head = repo.story("worktree-SH-1", "a", "head's a\n");
+    let other = repo.story("worktree-SH-2", "a", "another a\n");
+    let mut merger = repo.merger();
+    let TrialMerge::Clean { tree } = merger.merge(&repo.base, &head).unwrap() else {
+        panic!("a story off its base merges cleanly");
+    };
+    let batch = merger.commit(&repo.base, &head, &tree).unwrap();
+
+    let TrialMerge::Conflict { paths, shape } = merger.merge(&batch, &other).unwrap() else {
+        panic!("two stories that rewrite `a` conflict");
+    };
+
+    assert_eq!(paths, ["a"]);
+    assert_eq!(shape.paths(), paths);
+    let stages: Vec<(&str, u8, &str)> = shape
+        .stages
+        .iter()
+        .map(|entry| (entry.mode.as_str(), entry.stage, entry.path.as_str()))
+        .collect();
+    assert_eq!(
+        stages,
+        [("100644", 1, "a"), ("100644", 2, "a"), ("100644", 3, "a")]
+    );
+    assert!(
+        shape
+            .records
+            .iter()
+            .any(|record| record.kind == "CONFLICT (contents)" && record.paths == ["a"]),
+        "{shape:?}"
+    );
+    assert_ne!(
+        shape.tree, tree,
+        "the conflicted tree is written, not the batch's"
+    );
+}
+
+// Smoothing (SH-834; council decision D1): a story that conflicts with a
+// member joins only when its conflict is insertion-only on paths the base's
+// `[batch] smooth` admits, and then only as the last member.
+
+/// The base spec both stories extend, and the pointer that admits `docs/`.
+const SPEC: &str = "# Spec\n\n## A\n\ntext\n\n## End\n";
+const SMOOTH_DOCS: &str =
+    "schema = 1\nuuid = \"u\"\nprefix = \"SH\"\n\n[batch]\nsmooth = [\"docs/\"]\n";
+
+/// `SPEC` with one section added before `## End`.
+fn spec_with(section: &str) -> String {
+    format!("# Spec\n\n## A\n\ntext\n\n## {section}\n\n{section} body\n\n## End\n")
+}
+
+impl Repo {
+    /// Moves `origin/dev` on by one commit writing every file, new or not.
+    fn base_files(&mut self, files: &[(&str, &str)]) {
+        let branch = format!("dev-tip-{}", &self.base[..8]);
+        self.ok(&["checkout", "-q", "-b", &branch, &self.base]);
+        self.write_all(files);
+        self.ok(&["commit", "-qm", "dev moves"]);
+        let tip = self.rev("HEAD");
+        self.ok(&["checkout", "-q", "main"]);
+        self.ok(&["update-ref", "refs/remotes/origin/dev", &tip]);
+        self.base = tip;
+    }
+
+    /// A story branch off the base with one commit writing every file.
+    fn story_files(&self, branch: &str, files: &[(&str, &str)]) -> String {
+        self.ok(&["checkout", "-q", "-b", branch, &self.base]);
+        self.write_all(files);
+        self.ok(&["commit", "-qm", branch]);
+        let head = self.rev("HEAD");
+        self.ok(&["checkout", "-q", "main"]);
+        head
+    }
+
+    fn write_all(&self, files: &[(&str, &str)]) {
+        for (file, body) in files {
+            let path = self.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).expect("fixture: a directory");
+            std::fs::write(path, body).expect("fixture: writing a file");
+        }
+        self.ok(&["add", "-A"]);
+    }
+}
+
+/// A repository whose base holds `docs/spec.md` and, when given, `pointer`
+/// as its `.storyhook.toml`.
+fn smoothing_repo(pointer: Option<&str>) -> Repo {
+    let mut repo = Repo::new();
+    let mut files = vec![
+        ("docs/spec.md", SPEC),
+        ("docs/CLAUDE.md", SPEC),
+        ("src/lib.rs", SPEC),
+    ];
+    if let Some(pointer) = pointer {
+        files.push((".storyhook.toml", pointer));
+    }
+    repo.base_files(&files);
+    repo
+}
+
+fn admit(head: &str, rest: Vec<PreviewCandidate>, cap: u32) -> PreviewRequest {
+    PreviewRequest {
+        smoothing: SmoothingMode::Admit,
+        ..request(head, rest, cap)
+    }
+}
+
+fn union_smoothable(allowlisted: bool) -> Option<SmoothingMark> {
+    Some(SmoothingMark {
+        class: SmoothingClass::UnionSmoothable,
+        allowlisted,
+    })
+}
+
+#[test]
+fn an_insertion_only_docs_conflict_is_measured_and_in_admit_mode_joins_last() {
+    let repo = smoothing_repo(Some(SMOOTH_DOCS));
+    repo.story_files("worktree-SH-1", &[("docs/spec.md", &spec_with("X"))]);
+    let second = repo.story_files("worktree-SH-2", &[("docs/spec.md", &spec_with("Y"))]);
+    let before = repo.state();
+
+    let measured = select(request("SH-1", vec![branch("SH-2")], 2), &mut repo.merger());
+    assert_eq!(members(&measured), ["SH-1"]);
+    assert_eq!(
+        excluded(&measured),
+        [("SH-2", ExclusionReason::ConflictWithMember)]
+    );
+    assert_eq!(measured.excluded[0].smoothing, union_smoothable(true));
+    assert_eq!(measured.smooth, ["docs/"]);
+    assert_eq!(measured.smoothing_unavailable, None);
+
+    let admitted = select(admit("SH-1", vec![branch("SH-2")], 2), &mut repo.merger());
+    assert_eq!(members(&admitted), ["SH-1", "SH-2"], "{admitted:?}");
+    assert_eq!(admitted.members[1].commit, second);
+    assert_eq!(admitted.members[1].smoothed, ["docs/spec.md"]);
+    assert!(admitted.excluded.is_empty(), "{admitted:?}");
+    assert_eq!(
+        admitted.describe(),
+        "SH-1 + SH-2 (smoothed) (cap 2, 2 queued)"
+    );
+    assert_eq!(repo.state(), before, "smoothing a preview changes nothing");
+}
+
+#[test]
+fn a_smoothable_story_never_displaces_a_clean_one_and_always_joins_last() {
+    let repo = smoothing_repo(Some(SMOOTH_DOCS));
+    repo.story_files("worktree-SH-1", &[("docs/spec.md", &spec_with("X"))]);
+    repo.story_files("worktree-SH-2", &[("docs/spec.md", &spec_with("Y"))]);
+    repo.story("worktree-SH-3", "b", "clean\n");
+    let rest = || vec![branch("SH-2"), branch("SH-3")];
+
+    let roomy = select(admit("SH-1", rest(), 3), &mut repo.merger());
+    assert_eq!(members(&roomy), ["SH-1", "SH-3", "SH-2"]);
+    assert!(roomy.members[1].smoothed.is_empty());
+    assert_eq!(roomy.members[2].smoothed, ["docs/spec.md"]);
+
+    let full = select(admit("SH-1", rest(), 2), &mut repo.merger());
+    assert_eq!(members(&full), ["SH-1", "SH-3"]);
+    assert_eq!(
+        excluded(&full),
+        [("SH-2", ExclusionReason::ConflictWithMember)]
+    );
+    assert_eq!(full.excluded[0].smoothing, union_smoothable(true));
+}
+
+#[test]
+fn a_code_conflict_never_smooths_and_keeps_the_story_out() {
+    let repo = smoothing_repo(Some(SMOOTH_DOCS));
+    repo.story_files("worktree-SH-1", &[("src/lib.rs", &spec_with("X"))]);
+    repo.story_files("worktree-SH-2", &[("src/lib.rs", &spec_with("Y"))]);
+
+    let preview = select(admit("SH-1", vec![branch("SH-2")], 3), &mut repo.merger());
+
+    assert_eq!(members(&preview), ["SH-1"]);
+    assert_eq!(
+        excluded(&preview),
+        [("SH-2", ExclusionReason::ConflictWithMember)]
+    );
+    assert_eq!(
+        preview.excluded[0].smoothing,
+        union_smoothable(false),
+        "the shape is measured, but src/ is not on the allowlist"
+    );
+}
+
+#[test]
+fn a_conflict_in_code_and_docs_together_keeps_the_story_out() {
+    let repo = smoothing_repo(Some(SMOOTH_DOCS));
+    repo.story_files(
+        "worktree-SH-1",
+        &[
+            ("docs/spec.md", &spec_with("X")),
+            ("src/lib.rs", &spec_with("X")),
+        ],
+    );
+    repo.story_files(
+        "worktree-SH-2",
+        &[
+            ("docs/spec.md", &spec_with("Y")),
+            ("src/lib.rs", &spec_with("Y")),
+        ],
+    );
+
+    let preview = select(admit("SH-1", vec![branch("SH-2")], 3), &mut repo.merger());
+
+    assert_eq!(members(&preview), ["SH-1"]);
+    assert_eq!(preview.excluded[0].paths, ["docs/spec.md", "src/lib.rs"]);
+    assert_eq!(preview.excluded[0].smoothing, union_smoothable(false));
+}
+
+#[test]
+fn a_docs_conflict_that_changes_shared_lines_is_an_agent_candidate_and_stays_out() {
+    let repo = smoothing_repo(Some(SMOOTH_DOCS));
+    repo.story_files(
+        "worktree-SH-1",
+        &[("docs/spec.md", &SPEC.replace("text", "head text"))],
+    );
+    repo.story_files(
+        "worktree-SH-2",
+        &[("docs/spec.md", &SPEC.replace("text", "other text"))],
+    );
+
+    let preview = select(admit("SH-1", vec![branch("SH-2")], 3), &mut repo.merger());
+
+    assert_eq!(members(&preview), ["SH-1"]);
+    assert_eq!(
+        preview.excluded[0].smoothing,
+        Some(SmoothingMark {
+            class: SmoothingClass::AgentCandidate,
+            allowlisted: true,
+        })
+    );
+}
+
+#[test]
+fn the_deny_floor_holds_an_allowlisted_path_and_add_add_is_never_smoothed() {
+    let repo = smoothing_repo(Some(SMOOTH_DOCS));
+    repo.story_files(
+        "worktree-SH-1",
+        &[
+            ("docs/CLAUDE.md", &spec_with("X")),
+            ("docs/new.md", "head's new file\n"),
+        ],
+    );
+    repo.story_files("worktree-SH-2", &[("docs/CLAUDE.md", &spec_with("Y"))]);
+    repo.story_files("worktree-SH-3", &[("docs/new.md", "another new file\n")]);
+
+    let preview = select(
+        admit("SH-1", vec![branch("SH-2"), branch("SH-3")], 3),
+        &mut repo.merger(),
+    );
+
+    assert_eq!(members(&preview), ["SH-1"]);
+    assert_eq!(
+        excluded(&preview),
+        [
+            ("SH-2", ExclusionReason::ConflictWithMember),
+            ("SH-3", ExclusionReason::ConflictWithMember)
+        ]
+    );
+    assert_eq!(
+        preview.excluded[0].smoothing, None,
+        "docs/CLAUDE.md is floored"
+    );
+    assert_eq!(
+        preview.excluded[1].smoothing, None,
+        "add/add has no base side"
+    );
+}
+
+#[test]
+fn a_member_cannot_widen_its_own_allowlist() {
+    let repo = smoothing_repo(None);
+    repo.story_files("worktree-SH-1", &[("docs/spec.md", &spec_with("X"))]);
+    repo.story_files(
+        "worktree-SH-2",
+        &[
+            ("docs/spec.md", &spec_with("Y")),
+            (".storyhook.toml", SMOOTH_DOCS),
+        ],
+    );
+
+    let preview = select(admit("SH-1", vec![branch("SH-2")], 3), &mut repo.merger());
+
+    assert_eq!(members(&preview), ["SH-1"]);
+    assert!(preview.smooth.is_empty(), "the base has no [batch] table");
+    assert_eq!(preview.excluded[0].smoothing, union_smoothable(false));
+}
+
+#[test]
+fn without_a_batch_table_admit_forms_exactly_the_batch_it_formed_before() {
+    let repo = smoothing_repo(None);
+    repo.story_files("worktree-SH-1", &[("docs/spec.md", &spec_with("X"))]);
+    repo.story_files("worktree-SH-2", &[("docs/spec.md", &spec_with("Y"))]);
+    repo.story("worktree-SH-3", "b", "clean\n");
+    let rest = || vec![branch("SH-2"), branch("SH-3")];
+
+    let measured = select(request("SH-1", rest(), 3), &mut repo.merger());
+    let admitted = select(admit("SH-1", rest(), 3), &mut repo.merger());
+
+    assert_eq!(members(&admitted), ["SH-1", "SH-3"]);
+    assert_eq!(members(&admitted), members(&measured));
+    assert_eq!(excluded(&admitted), excluded(&measured));
+    assert!(admitted.smooth.is_empty());
+}
+
+#[test]
+fn a_docs_conflict_with_the_base_is_never_smoothed() {
+    let mut repo = smoothing_repo(Some(SMOOTH_DOCS));
+    repo.story_files("worktree-SH-2", &[("docs/spec.md", &spec_with("Y"))]);
+    repo.base_files(&[("docs/spec.md", &spec_with("Dev"))]);
+    repo.story("worktree-SH-1", "a", "head\n");
+
+    let preview = select(admit("SH-1", vec![branch("SH-2")], 3), &mut repo.merger());
+
+    assert_eq!(members(&preview), ["SH-1"]);
+    assert_eq!(
+        excluded(&preview),
+        [("SH-2", ExclusionReason::ConflictWithBase)]
+    );
+    assert_eq!(preview.excluded[0].smoothing, None);
+}
+
+#[test]
+fn an_invalid_batch_table_smooths_nothing_and_says_why() {
+    let pointer =
+        "schema = 1\nuuid = \"u\"\nprefix = \"SH\"\n\n[batch]\nsmooth = [\"docs/*.md\"]\n";
+    let repo = smoothing_repo(Some(pointer));
+    repo.story_files("worktree-SH-1", &[("docs/spec.md", &spec_with("X"))]);
+    repo.story_files("worktree-SH-2", &[("docs/spec.md", &spec_with("Y"))]);
+
+    let preview = select(admit("SH-1", vec![branch("SH-2")], 3), &mut repo.merger());
+
+    assert_eq!(members(&preview), ["SH-1"]);
+    assert_eq!(preview.excluded[0].smoothing, None);
+    let why = preview.smoothing_unavailable.as_deref().unwrap();
+    assert!(why.contains("docs/*.md"), "{why}");
+}
+
+#[test]
+fn the_users_conflict_style_does_not_change_what_smooths() {
+    let repo = smoothing_repo(Some(SMOOTH_DOCS));
+    repo.story_files("worktree-SH-1", &[("docs/spec.md", &spec_with("X"))]);
+    repo.story_files("worktree-SH-2", &[("docs/spec.md", &spec_with("Y"))]);
+    for style in ["merge", "zdiff3"] {
+        repo.ok(&["config", "merge.conflictStyle", style]);
+        let preview = select(admit("SH-1", vec![branch("SH-2")], 2), &mut repo.merger());
+        assert_eq!(
+            members(&preview),
+            ["SH-1", "SH-2"],
+            "merge.conflictStyle={style}"
+        );
+    }
 }

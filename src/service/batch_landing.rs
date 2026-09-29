@@ -287,7 +287,7 @@ fn green_comment(record: &VerificationBatch, row: &LandingIntent, detail: &str) 
         .map(|member| member.story_id.as_str())
         .collect();
     format!(
-        "{} merge tree `{}` passed `{}` in verification batch {} with {}, and batch pull request {} landed; this story's pull request {} merged with it.\n\n{}",
+        "{} merge tree `{}` passed `{}` in verification batch {} with {}, and batch pull request {} landed; this story's pull request {} merged with it.{}\n\n{}",
         super::VERIFICATION_GREEN_PREFIX,
         row.certification.tree,
         row.certification.gate,
@@ -295,6 +295,38 @@ fn green_comment(record: &VerificationBatch, row: &LandingIntent, detail: &str) 
         others.join(", "),
         row.landing_pull_request(),
         row.pull_request,
+        resolution_note(record, row.story).unwrap_or_default(),
         crate::text_lint::quote_evidence(detail)
     )
+}
+
+/// What a member's GREEN adds when the batch's last merge carries an
+/// automated resolution this member took part in: the smoothed member, or
+/// one it conflicted with (SH-834, council decision D1 (c)). Two members'
+/// additions now sit side by side in files no test may read, so each of
+/// them is told where to look.
+fn resolution_note(record: &VerificationBatch, story: StoryNo) -> Option<String> {
+    let last = record.members.last()?;
+    let resolution = last.resolution.as_ref()?;
+    let involved = last.story == story
+        || record.members.iter().any(|member| {
+            member.story == story && resolution.conflicted_with.contains(&member.story_id)
+        });
+    if !involved {
+        return None;
+    }
+    let files: Vec<String> = resolution
+        .files
+        .iter()
+        .map(|file| format!("`{}`", file.path))
+        .collect();
+    let mut members = resolution.conflicted_with.clone();
+    members.push(last.story_id.clone());
+    Some(format!(
+        " The batch merge commit {} carries an automated conflict resolution ({}) of {} between {}: it keeps both additions, the earlier member's first, and no model wrote it. Check that the two additions agree.",
+        last.merge_commit.as_deref().unwrap_or("of the last member"),
+        resolution.strategy,
+        files.join(", "),
+        members.join(" and ")
+    ))
 }

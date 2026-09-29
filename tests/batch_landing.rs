@@ -91,6 +91,7 @@ fn gating(f: &ServiceFixture, members: &[VerificationCandidate]) -> Verification
             .map(|(position, candidate)| BatchMember {
                 merge_commit: None,
                 merge_tree: None,
+                resolution: None,
                 story: StoryNo::parse_id("SH", &candidate.story_id).unwrap(),
                 story_id: candidate.story_id.clone(),
                 generation: candidate.verifying_generation.unwrap(),

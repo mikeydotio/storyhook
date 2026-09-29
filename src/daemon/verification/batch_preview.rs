@@ -24,7 +24,8 @@ use crate::domain::gate_verdict::GateVerdict;
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::service::batch_preview::{
-    BatchPreview, ExclusionReason, PreviewCandidate, PreviewRequest, Standing, select,
+    BatchPreview, ExclusionReason, PreviewCandidate, PreviewRequest, SmoothingMode, Standing,
+    select,
 };
 use crate::service::{VerificationCandidate, VerificationProblem};
 use crate::store::{GlobalSeq, ReadOps, Store};
@@ -132,6 +133,13 @@ pub(super) fn compute<S: Store, A: VerificationActuator>(
         |lease| lease.repository_path.clone(),
     );
     let merger = actuator.trial_merges(&repository, deadline, &owner.cancellation)?;
+    // Only a verifier that forms batches may admit a smoothable story; the
+    // rest measure what smoothing would admit (SH-834 D3).
+    let smoothing = if actuator.batch().is_some() {
+        SmoothingMode::Admit
+    } else {
+        SmoothingMode::Measure
+    };
     let computed_at = env.now();
     let preview = catch_unwind(AssertUnwindSafe(|| {
         build(
@@ -141,6 +149,7 @@ pub(super) fn compute<S: Store, A: VerificationActuator>(
             &repository,
             computed_at.clone(),
             deadline,
+            smoothing,
             merger,
         )
     }))
@@ -219,6 +228,7 @@ impl VerificationGuard {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build<S: Store>(
     store: &S,
     candidate: &VerificationCandidate,
@@ -226,6 +236,7 @@ fn build<S: Store>(
     repository: &Path,
     computed_at: String,
     deadline: Instant,
+    smoothing: SmoothingMode,
     merger: Result<Box<dyn crate::service::trial_merge::TrialMerger>, AppError>,
 ) -> BatchPreview {
     let read = store.read(|tx| {
@@ -292,6 +303,7 @@ fn build<S: Store>(
             live_lanes,
             queue_depth: ordered.len(),
             deadline,
+            smoothing,
         },
         merger.as_mut(),
     )
@@ -347,6 +359,7 @@ fn unavailable(candidate: &VerificationCandidate, computed_at: &str, detail: &st
             live_lanes: None,
             queue_depth: 0,
             deadline: Instant::now(),
+            smoothing: SmoothingMode::Measure,
         },
         detail,
     )

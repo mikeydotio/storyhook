@@ -388,6 +388,7 @@ fn live_batch(board: &Board) -> VerificationBatch {
         .map(|(position, (id, generation))| BatchMember {
             merge_commit: None,
             merge_tree: None,
+            resolution: None,
             story: StoryNo::parse_id("SH", id).unwrap(),
             story_id: id.clone(),
             generation: generation.unwrap(),
