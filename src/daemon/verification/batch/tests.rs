@@ -197,8 +197,10 @@ impl Store for CountingStore {
     fn change_token(&self) -> Result<u64, StoreError> {
         self.inner.change_token()
     }
-    fn snapshot(&self, dir: &Path, label: &str) -> Result<std::path::PathBuf, StoreError> {
-        self.inner.snapshot(dir, label)
+    fn snapshot(&self, _dir: &Path, _label: &str) -> Result<std::path::PathBuf, StoreError> {
+        // These tests take no backups. A standalone copy is a backup site
+        // under SH-297 (tests/coupled_snapshot.rs), and this is not one.
+        unreachable!("the write-counting store takes no snapshot")
     }
     fn write_with_snapshot<T>(
         &self,
