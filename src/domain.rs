@@ -19,6 +19,10 @@ pub mod gate_verdict;
 /// (SH-833).
 pub mod prefix_bisection;
 
+/// Automated smoothing of non-code conflicts in a verification batch: the
+/// allowlist, the deny floor and the insertion-only hunk union (SH-834).
+pub mod conflict_smoothing;
+
 /// Validates one provider-defined model or effort token before it crosses a
 /// persistence or process boundary.
 ///
