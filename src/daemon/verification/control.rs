@@ -175,6 +175,7 @@ impl VerificationActivity {
                 slot.map(|slot| SlotView {
                     active: &slot.active,
                     reservation: slot.reservation.as_ref(),
+                    preview: slot.preview.as_ref(),
                 }),
                 state(tx.verification_enabled(project)?, slot),
             )

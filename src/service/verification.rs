@@ -1303,6 +1303,42 @@ pub(crate) fn ordered_candidates_for(
     }
 }
 
+/// Every story in `verifying` that the project's queue holds out, in story
+/// order, with why in an operator's words: the same [`queue_hold`] the queue
+/// applies, so the two can never disagree (SH-830). Store reads only.
+pub(crate) fn held_verifying_for(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<Vec<(String, String)>, crate::store::StoreError> {
+    let Some(project) = tx.project(project)? else {
+        return Ok(Vec::new());
+    };
+    let resets = tx.story_resets(project.id)?;
+    let observed = super::project_recovery::observed_generations(tx, project.id)?;
+    let mut held = Vec::new();
+    for row in tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))? {
+        let generation =
+            verifying_entry(tx, project.id, row.story_no)?.map(|(_, generation)| generation);
+        let why = match queue_hold(tx, project.id, &row, &resets, &observed, generation)? {
+            None => continue,
+            Some(QueueHold::HumanOnly) => "human-only: reserved for a person".to_string(),
+            Some(QueueHold::Awaiting) => format!(
+                "awaiting a person: {}",
+                row.snapshot
+                    .awaiting
+                    .as_deref()
+                    .unwrap_or("no reason given")
+            ),
+            Some(QueueHold::Reset) => "a reset of the story is pending".to_string(),
+            Some(QueueHold::ProjectRecovery) => {
+                "project recovery owns this verification generation".to_string()
+            }
+        };
+        held.push((row.story_no.to_id(&project.prefix), why));
+    }
+    Ok(held)
+}
+
 /// One pass of a conflict-reconcile hold's store reads
 /// ([`VerificationQueue::hold_view`], SH-770).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

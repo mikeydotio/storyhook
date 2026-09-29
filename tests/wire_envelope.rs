@@ -294,6 +294,36 @@ fn reserved(
     status
 }
 
+/// `status` while a gate runs with a batch preview (SH-830), the populated
+/// side of the nullable `batch_preview` field.
+fn previewing(
+    status: &storyhook::daemon::verification::status::VerifierStatus,
+) -> storyhook::daemon::verification::status::VerifierStatus {
+    let mut status = status.clone();
+    status.batch_preview = Some(
+        serde_json::from_value(serde_json::json!({
+            "computed_at": "2026-01-01T00:00:00Z",
+            "head": "SH-1",
+            "base_branch": "dev",
+            "base_commit": "0".repeat(40),
+            "head_tree": "1".repeat(40),
+            "cap": 2,
+            "live_lanes": 2,
+            "queue_depth": 3,
+            "outcome": "batch",
+            "members": [
+                {"story_id": "SH-1", "commit": "2".repeat(40)},
+                {"story_id": "SH-2", "commit": "3".repeat(40)}
+            ],
+            "excluded": [
+                {"story_id": "SH-3", "reason": "conflict-with-member", "detail": "3 conflicted paths"}
+            ]
+        }))
+        .expect("a well-formed preview"),
+    );
+    status
+}
+
 /// Every `Response` variant, in both its empty and its populated shape where
 /// the renderers treat those differently (`Stories`, `Issues` and
 /// `PhaseList` all have dedicated "nothing here" branches).
@@ -311,6 +341,10 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         (
             "verifier_status_reserved",
             Response::VerifierStatus(Box::new(reserved(&status))),
+        ),
+        (
+            "verifier_status_batch_preview",
+            Response::VerifierStatus(Box::new(previewing(&status))),
         ),
         (
             "with_verifier",
