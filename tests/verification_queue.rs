@@ -42,8 +42,8 @@ use storyhook::daemon::verification::{
 use storyhook::daemon::verification_progress::{VerificationStatus, publish_once, status_snapshot};
 use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{
-    CLEANUP_LEASE_VERSION, COMPLETION_STATE_SLUG, Priority, StoryCleanupLease, StoryEvent,
-    SubmittedPullRequest, SuperState, TmuxCleanupTarget,
+    CLEANUP_LEASE_VERSION, COMPLETION_STATE_SLUG, LABEL_NO_AUTO, Priority, StoryCleanupLease,
+    StoryEvent, SubmittedPullRequest, SuperState, TmuxCleanupTarget,
 };
 use storyhook::env::Environment;
 use storyhook::error::AppError;
@@ -2424,6 +2424,133 @@ fn a_refused_resume_redispatch_parks_the_story_and_releases_the_reservation() {
     assert!(actuator.notified.lock().unwrap().is_empty());
     assert_eq!(activity.active_for(fixture.project()), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
+}
+
+/// SH-837 (decision D2, amending D-E): a returned `no-auto` story whose agent
+/// is absent is parked, never re-dispatched. A resume re-dispatch launches an
+/// unattended session — its approval hook approves plans and refuses
+/// questions — and no automation launches one for a story left for a
+/// person. Both return kinds that relaunch are covered: a conflict, which
+/// would otherwise hold the queue for a resubmission nobody will make, and a
+/// RED gate.
+#[test]
+fn a_no_auto_story_returned_to_a_dead_pane_is_parked_not_redispatched() {
+    let outcomes = [
+        VerificationOutcome::Conflict {
+            detail: "both modified src/lib.rs".into(),
+        },
+        VerificationOutcome::TestsFailed {
+            tree: "abc123".into(),
+            log: "/tmp/red.log".into(),
+            detail: "red".into(),
+            gate: GateCommand::DEFAULT.into(),
+        },
+    ];
+    for outcome in outcomes {
+        let fixture = ServiceFixture::new();
+        fixture.github_checkout("https://github.com/acme/widgets");
+        let id = submitted(&fixture, "person in the loop", Priority::High, PR_ONE);
+        StoryService::new(&fixture.ctx())
+            .set_labels(&id, &[LABEL_NO_AUTO.into()], &[])
+            .unwrap();
+        let activity = VerificationActivity::new();
+        std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+        let inflight = InFlight::new(fixture.env().clone());
+        let actuator = FakeActuator::new(outcome.clone())
+            .with_notify_script([NotifyScript::Absent("pane-dead")]);
+
+        assert_eq!(
+            tick_with_reconciliation(
+                fixture.store(),
+                fixture.env(),
+                &actuator,
+                &activity,
+                &inflight,
+                fixture.project(),
+                |_| panic!("a parked story must not hold the queue: {outcome:?}"),
+            )
+            .unwrap(),
+            TickResult::Returned,
+            "{outcome:?}"
+        );
+        let row = story_row(&fixture, &id);
+        assert_eq!(row.state, "in-progress", "{outcome:?}");
+        let awaiting = row.awaiting.unwrap_or_default();
+        for needle in [
+            "will not re-dispatch",
+            "`no-auto`",
+            "left for a person",
+            "pane-dead",
+        ] {
+            assert!(
+                awaiting.contains(needle),
+                "{outcome:?}: {needle:?} in {awaiting}"
+            );
+        }
+        assert!(
+            actuator.redispatched.lock().unwrap().is_empty(),
+            "{outcome:?}: nothing relaunches a no-auto story"
+        );
+        assert!(
+            !row.snapshot
+                .comments
+                .iter()
+                .any(|comment| comment.text.starts_with("CENTRAL VERIFICATION RESUME")),
+            "{outcome:?}: no resume trail for a resume that never happens"
+        );
+        assert_eq!(activity.active_for(fixture.project()), None, "{outcome:?}");
+        assert!(
+            lifecycle::read_inflight(fixture.env()).is_empty(),
+            "{outcome:?}"
+        );
+    }
+}
+
+/// The control for D2: a `no-auto` story whose agent is live still gets its
+/// diagnosis pasted, and a conflict still holds the queue for its
+/// resubmission. Pasting launches nothing, and a live session is its owner's.
+#[test]
+fn a_no_auto_story_with_a_live_agent_still_receives_its_diagnosis() {
+    let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
+    let id = submitted(&fixture, "person at the pane", Priority::High, PR_ONE);
+    StoryService::new(&fixture.ctx())
+        .set_labels(&id, &[LABEL_NO_AUTO.into()], &[])
+        .unwrap();
+    let activity = VerificationActivity::new();
+    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
+    let inflight = InFlight::new(fixture.env().clone());
+    let actuator = FakeActuator::new(VerificationOutcome::Conflict {
+        detail: "both modified src/lib.rs".into(),
+    });
+    let waited = Mutex::new(0);
+
+    assert_eq!(
+        tick_with_reconciliation(
+            fixture.store(),
+            fixture.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            fixture.project(),
+            |_| {
+                *waited.lock().unwrap() += 1;
+                Ok(ReconcileWait::Ended)
+            },
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+    assert_eq!(
+        *waited.lock().unwrap(),
+        1,
+        "the conflict still holds the queue"
+    );
+    assert_eq!(story_row(&fixture, &id).awaiting, None);
+    let notified = actuator.notified.lock().unwrap();
+    assert_eq!(notified.len(), 1);
+    assert!(notified[0].contains("CENTRAL VERIFICATION CONFLICT"));
+    assert!(actuator.redispatched.lock().unwrap().is_empty());
 }
 
 /// SH-650: a refusal that is not evidence of absence — tmux could not be

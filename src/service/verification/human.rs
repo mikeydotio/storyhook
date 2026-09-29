@@ -34,6 +34,20 @@ pub(crate) fn permits(
     permits_row(tx, &row, candidate)
 }
 
+/// The reserved label on the candidate's current row, if any (SH-837).
+pub(crate) fn reserved_label(
+    tx: &impl ReadOps,
+    candidate: &VerificationCandidate,
+) -> Result<Option<&'static str>, StoreError> {
+    let Some(project) = tx.project(candidate.project)? else {
+        return Ok(None);
+    };
+    let number = StoryNo::parse_id(&project.prefix, &candidate.story_id)?;
+    Ok(tx
+        .story(candidate.project, number)?
+        .and_then(|row| crate::domain::reserved_label(&row.snapshot)))
+}
+
 /// Checks an already-read row inside the caller's write transaction.
 pub(super) fn permits_row(
     tx: &impl ReadOps,
