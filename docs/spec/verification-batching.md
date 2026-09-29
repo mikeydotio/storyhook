@@ -61,7 +61,7 @@ open row is decided by that child (council when two answers stay defensible).
 | B5 | **The batch lands through a batch PR.** `land-pr.sh` lands one PR and requires tree equality, so the certified tree must be the batch tree and the batch branch must be what lands. Member PRs stay open; GitHub marks each merged when the batch merge makes its head an ancestor of the base. | settled; built (SH-831 PR and gate, SH-832 landing) — see "SH-832" under As built |
 | B6 | **Members complete together, and first.** A durable `BatchLandingIntent` names every member before the merge. Completion writes, in one transaction, each member's GREEN comment (naming the batch and its PR), `StoryPrMerged` and `done`. `pr_check` treats a member of a landing batch as certified, never as UNCERTIFIED MERGE. Each member is then reaped by today's per-story reap. | settled; built with per-member intents (SH-832) |
 | B7 | **Red is bisected.** On a red batch, split the members in queue order and gate the first half's merge tree (a tree already certified by a receipt needs no run). Recurse into the red half until one member remains; return it through today's `return_for_repair` with its own tree and log. The other members re-enter the queue at their existing age, or land as a smaller batch if bisection already certified their tree. Cost: at most `ceil(log2 k)` gates per culprit. | settled; built as prefix bisection with no attribution shortcut, first culprit returned (SH-833) — see "SH-833" under As built |
-| B8 | **Non-code conflicts may be smoothed by the Verifier Agent.** v1 admits only clean trial merges (B1). Letting an agent author a resolution commit puts AI-authored changes in the certification path. | open (child 5, council) |
+| B8 | **Non-code conflicts are smoothed by rule, never by a model.** Council decision D1 on SH-834 rejected an agent-authored resolution: the gate certifies nothing about text in files no test reads. A story whose conflict with a member is insertion-only (both sides added lines at one place, neither changed a base line) on paths the base's `[batch] smooth` admits may join last; its merge commit keeps both additions. | settled; built — see "SH-834" under As built |
 | B9 | **Status and dashboard.** `VerifierStatus.active` gains `batch: { id, head, members, phase }`; each member's per-story status is `running` with the batch id; the banner reads "Verification batch B running: SH-1, SH-2, SH-3". | settled; built as a status-line and a sibling `batch` field (SH-832) |
 | B10 | **Restart.** A batch record is durable. A daemon that restarts before landing abandons the batch (members keep their generations and re-enter the queue); with a `BatchLandingIntent` present it recovers the landing exactly as today's intent does. | settled; built (SH-831 abandonment, SH-832 intent recovery) |
 | B11 | **Locks.** Member workspace locks are taken in story-id order, so two batches (in two projects' verifiers, or a batch and a manual action) cannot deadlock. | settled; built with a recorded deviation (SH-831) |
@@ -162,7 +162,8 @@ Filed as children of SH-822, ordered by `blocked-by`, each landing on its own:
 4. **Red bisection** (SH-833) — the bisection script and culprit return (B7).
 5. **Non-code conflict smoothing** (SH-834) — the Verifier Agent resolves a batch's
    non-code conflicts, if its council admits AI-authored commits in the
-   certification path (B8).
+   certification path (B8). Its council did not admit them; a deterministic
+   union of insertion-only conflicts was built instead.
 
 Related, separate: reclaiming a handed-off worktree's build products at
 handoff (SH-835, a project hook; council D3), which bounds the disk each held story
@@ -566,3 +567,123 @@ recovery, status and the record, restart), `tests/verification_batches.rs`,
 `tests/batch_assembly.rs`, and unit tests in
 `src/daemon/verification/batch/tests.rs` (member locks for delivery, the
 receipt check against a real repository, the verdict rules).
+
+### SH-834 — smooth insertion-only conflicts by rule (dormant)
+
+**The decision (council D1 on SH-834, unanimous in its runoff).** No model
+writes a resolution. Three replays of the SH-830 data found every non-code
+member conflict (4x `docs/spec/verification-workflow.md`, once
+`docs/spec/block-interruption.md`, once `.gitignore`) to be one
+insertion-only hunk, where a union writes no new text. A model would add the
+daemon's first headless model call. That call would read untrusted text from
+two branches, and the gate would certify nothing about what it wrote, because
+the admitted paths are the ones no test reads. SH-827 found defects in 3 of 5
+resolutions that nobody reviewed. At the planned cap of 2, smoothing adds a
+member in 0 of 170 replayed dequeues, so the code is built dormant and
+storyhook's own list stays empty (SH-845 holds the trigger). The same council
+found SH-844: every merge-tree call follows local git attributes, so a local
+`merge=union` can make a code conflict clean. SH-844 blocks SH-841.
+
+**What decides (`domain::conflict_smoothing`, `service::batch_smoothing`).**
+- `[batch] smooth` in `.storyhook.toml` is read from the batch's base commit
+  only, never from a member. Each entry is an exact path or a directory
+  ending in `/`; globs are refused by name. Absent means empty, which means
+  off. The table is its own, not a `[verify]` key: an older verifier refuses
+  unknown `[verify]` keys in every merge tree it inspects, but ignores
+  unknown tables.
+- A deny floor that no entry can override holds agent instructions
+  (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `SKILL.md`, `.claude/`, `.codex/`,
+  `.cursor/`), `.storyhook.toml`, and what a checkout or CI runs
+  (`.gitattributes`, `.gitmodules`, `.envrc`, `.github/`, `.githooks/`,
+  `.husky/`, `.cargo/`). It matches at any depth, case-folded. A path that is
+  not printable ASCII, or that holds a backtick, is refused. This is stricter
+  than D1's NFC matching (D2): nothing is left to normalize.
+- A merge is union-smoothable only when all of these hold:
+  - every Git record is `Auto-merging` or `CONFLICT (contents)`; any other
+    type, including one a later Git adds, is refused;
+  - every conflicted path has exactly stages 1 to 3 at mode `100644` (so
+    add/add is refused);
+  - every side is UTF-8 text of at most 1 MiB with no NUL and no line that
+    reads as a conflict marker;
+  - at most 20 paths conflict;
+  - every diff3 hunk has an empty base section.
+- Every trial and assembly merge runs `git -c merge.conflictStyle=diff3
+  merge-tree --write-tree -z` (D4). The conflict style changes only the text
+  of conflicted files, never whether a merge conflicts.
+- The union is the conflicted blob with its marker lines removed: the side
+  merged onto first, then the side merged in.
+
+**Where it acts.**
+- Preview (Measure, every verifier): each conflict-with-member exclusion
+  records `smoothing: {class, allowlisted}` (`union-smoothable` or
+  `agent-candidate`), whatever the allowlist says, so SH-845 can apply a
+  proposed list offline (D3). The preview also records the base's list
+  (`smooth`), or why none could be read (`smoothing_unavailable`).
+- Preview (Admit, a verifier that forms batches): after the clean sweep,
+  while the batch is below its cap, the first member conflict that is still
+  union-smoothable on the final batch, and whose paths are all allowlisted,
+  joins last, with its `smoothed` paths. Clean members are never displaced,
+  and a conflict with the base is never smoothed (D5).
+- Batch step (`batch_assembly::merge_smoothed`): Git classifies the
+  conflict again on the exact tip, with the allowlist from the base.
+  - A refusal leaves the member out as `conflict-not-smoothable`; a failure
+    leaves it out as `resolution-failed`. The batch goes on with two or more
+    members, or else it dissolves.
+  - Otherwise the union blobs are written, the tree is Git's conflicted tree
+    with only those blobs replaced (through a private index), and diff-tree
+    checks that the two trees differ at exactly the smoothed paths.
+  - The two-parent merge commit is the batch tip. It carries the repository
+    identity and no signature.
+
+**The record.**
+- The merge commit's trailers: `Storyhook-Batch`, `Storyhook-Resolution:
+  union-insertions/1`, one `Storyhook-Conflicted-With` per earlier member
+  whose merge changed a smoothed path (found by comparing prefix trees, D8),
+  and one C-quoted `Storyhook-Resolved-File` per path.
+- The last member's `resolution` holds the strategy, `conflicted_with`,
+  `auto_merge_tree` and each path's base, ours, theirs and resolved blob.
+  `validate()` allows one only on the last member, never on a bisection
+  probe.
+- The batch PR body gains an "Automated conflict resolution" section that
+  gives `git show --remerge-diff` as the audit.
+- The GREEN of the smoothed member and of each member it conflicted with
+  names the resolution.
+- A smoothed bisection culprit's RED says that the red may come from the
+  resolution, and tells the agent to merge the base after the certified
+  members land and resolve the files itself (D7).
+
+**Deviations.**
+- B4's "in queue order" holds for every member but the smoothed one, which
+  merges last. That is what keeps every bisection prefix free of a
+  resolution.
+- Neither a `resolving` phase nor a heartbeat was built (D6), because the
+  union takes a few plumbing calls.
+
+**Stated limits.**
+- Two insertion-only sections in a doc no test reads can still contradict
+  each other. The GREEN notes ask both agents to check.
+- A record with a new exclusion reason cannot be read by an older binary.
+  That is accepted while batching is dormant.
+- An older binary that rewrites the pointer (prefix repair) drops an unknown
+  `[batch]` table.
+- Until SH-844, a local attribute can hide a conflict before this
+  classifier ever sees it.
+
+Decisions D1 (council) and D2 to D8 are recorded on SH-834. Tests:
+- `src/domain/conflict_smoothing.rs`: the policy grammar, the deny floor,
+  path names, the text checks and the hunk parser.
+- `src/service/batch_smoothing.rs`: the pointer reader and every
+  classification rule.
+- `src/service/trial_merge.rs`: the conflict-shape parser.
+- `src/store/verification_batch.rs`: the validation rules and the wire form.
+- `tests/batch_preview.rs` (real Git): admitted, clean-first and cap, code,
+  code plus docs, modification, deny floor, add/add, a member that widens
+  its own list, no table, an invalid table, a conflict with the base, and
+  the user's conflict style.
+- `tests/batch_assembly.rs` (real Git): the union commit, its trailers and
+  identity, each refusal, the clean fallback; cancellation in its unit
+  tests.
+- `tests/gate_command.rs`: `[batch]` beside `[verify]`.
+- `tests/verification_queue/smoothing.rs`: it lands and is named
+  everywhere; a code conflict stays out; a preview that misreads a code
+  conflict is refused at assembly; the smoothed culprit's RED.

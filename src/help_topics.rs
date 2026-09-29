@@ -2817,9 +2817,13 @@ Inspect and control this project's centralized verifier.
   merge onto the base plus the members so far is clean, up to the live Full
   Auto run's lanes (at least 1). Every other story is listed with its reason:
   conflict-with-base, conflict-with-member, held, blocked, landing-pending,
-  unsubmitted, cap or trial-failed. It is a preview only: the verifier still
-  verifies and lands the one story. Each gate's preview, duration and verdict
-  are recorded, one JSON line each, in
+  unsubmitted, cap or trial-failed. A conflict-with-member entry also
+  carries smoothing (SH-834): union-smoothable when both sides only added
+  lines at the same place in text files outside the deny floor,
+  agent-candidate when a hunk changes lines both sides share, and whether
+  the base's [batch] smooth admits every conflicted path. It is a preview
+  only: the verifier still verifies and lands the one story. Each gate's
+  preview, duration and verdict are recorded, one JSON line each, in
   verification-batch-preview/<project>.ndjson in the daemon's state directory.
 
   While a verification batch runs (SH-832), status reports batch: its id
@@ -2835,8 +2839,15 @@ Inspect and control this project's centralized verifier.
   culprit goes back to its own agent with a RED comment that names its tree,
   its log and the batch; the members before it land together; the members
   after it stay queued. A verdict that is not a red prefix tree (an
-  infrastructure failure, a moved base, a stop) blames no story. The daemon's
-  own verifier forms no batches yet (SH-841 enables it on a measured trigger).
+  infrastructure failure, a moved base, a stop) blames no story. When the
+  batch is below its cap, one story whose conflict with a member is
+  union-smoothable on paths the base's [batch] smooth admits may join last
+  (SH-834): its merge commit keeps both additions, the earlier member's
+  first, and its trailers, the batch pull request and each GREEN it touches
+  name the files. No model writes it, and the conflict is classified again
+  before the merge, so a code conflict always keeps its story out. The
+  daemon's own verifier forms no batches yet (SH-841 enables it on a
+  measured trigger).
 
   A project fault releases verifier ownership after cleanup. The managed agent
   decides scope before edits, preserves required gate coverage, tests new and
