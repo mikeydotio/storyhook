@@ -133,6 +133,21 @@ pub trait TrialMerger {
     /// Records the clean merge of `head` onto `onto`, whose tree is `tree`,
     /// as a merge commit with the parents `onto` and `head`.
     fn commit(&mut self, onto: &str, head: &str, tree: &str) -> Result<String, AppError>;
+    /// The blobs its merges wrote and read, for conflict smoothing (SH-834);
+    /// `None`, the default, when this merger cannot read blobs, which
+    /// smooths nothing.
+    fn blobs(&mut self) -> Option<&mut dyn BlobSource> {
+        None
+    }
+}
+
+/// Reads blobs and committed files, for conflict smoothing (SH-834).
+pub trait BlobSource {
+    /// The content of the blob `oid`, a full object id.
+    fn blob(&mut self, oid: &str) -> Result<Vec<u8>, AppError>;
+    /// The content of the file at `path` in the commit or tree `treeish` (a
+    /// full object id), or `None` when it has no entry there.
+    fn file(&mut self, treeish: &str, path: &str) -> Result<Option<Vec<u8>>, AppError>;
 }
 
 /// The production [`TrialMerger`]: Git plumbing in private object storage.
@@ -246,6 +261,80 @@ impl TrialMerger for PrivateTrialMerger {
             )));
         }
         oid(&result.stdout, "the merge commit")
+    }
+
+    fn blobs(&mut self) -> Option<&mut dyn BlobSource> {
+        Some(self)
+    }
+}
+
+impl BlobSource for PrivateTrialMerger {
+    fn blob(&mut self, oid: &str) -> Result<Vec<u8>, AppError> {
+        pinned(oid)?;
+        let result = self.query(&["cat-file", "blob", oid], &QUERY_ENV)?;
+        blob_answer(&result, LABEL, oid)
+    }
+
+    fn file(&mut self, treeish: &str, path: &str) -> Result<Option<Vec<u8>>, AppError> {
+        pinned(treeish)?;
+        let Some(oid) = self.entry(treeish, path)? else {
+            return Ok(None);
+        };
+        self.blob(&oid).map(Some)
+    }
+}
+
+impl PrivateTrialMerger {
+    /// The object at `path` in `treeish`, or `None` when it has none.
+    fn entry(&self, treeish: &str, path: &str) -> Result<Option<String>, AppError> {
+        let spec = entry_spec(treeish, path)?;
+        let result = self.query(&["rev-parse", "--verify", "--quiet", &spec], &QUERY_ENV)?;
+        entry_answer(&result, LABEL, &spec)
+    }
+}
+
+/// `<treeish>:<path>`, refused for a path that is empty, absolute or
+/// option-shaped: callers pass paths Git reported or constants.
+pub(crate) fn entry_spec(treeish: &str, path: &str) -> Result<String, AppError> {
+    if path.is_empty() || path.starts_with('/') || path.starts_with('-') || path.contains('\0') {
+        return Err(AppError::Validation(format!(
+            "a path in a tree must be relative, not {path:?}"
+        )));
+    }
+    Ok(format!("{treeish}:{path}"))
+}
+
+/// Reads `rev-parse --verify --quiet <spec>`: exit 0 is the object, exit 1
+/// no entry, anything else a failure.
+pub(crate) fn entry_answer(
+    result: &crate::process::Captured,
+    label: &str,
+    spec: &str,
+) -> Result<Option<String>, AppError> {
+    match result.status.code() {
+        Some(0) => answer_oid(&result.stdout, label, spec).map(Some),
+        Some(1) => Ok(None),
+        _ => Err(AppError::Storage(format!(
+            "{label} could not read {spec}: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        ))),
+    }
+}
+
+/// Reads `cat-file blob <oid>`: its output on success, a failure otherwise
+/// (a missing object, or an object that is not a blob).
+pub(crate) fn blob_answer(
+    result: &crate::process::Captured,
+    label: &str,
+    oid: &str,
+) -> Result<Vec<u8>, AppError> {
+    if result.status.success() {
+        Ok(result.stdout.clone())
+    } else {
+        Err(AppError::Storage(format!(
+            "{label} could not read the blob {oid}: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        )))
     }
 }
 

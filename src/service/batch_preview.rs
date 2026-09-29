@@ -8,7 +8,9 @@
 //! shadow preview that changes nothing the verifier does; the later batching
 //! children build their batch with the same rule.
 
-use super::trial_merge::{TrialMerge, TrialMerger};
+use super::batch_smoothing::{Classification, admits_all, classify, policy_from_pointer};
+use super::trial_merge::{ConflictShape, TrialMerge, TrialMerger};
+use crate::domain::conflict_smoothing::SmoothPolicy;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -103,6 +105,45 @@ pub struct PreviewMember {
     pub story_id: String,
     /// The head commit that was trial-merged.
     pub commit: String,
+    /// The paths the verifier would smooth to let this member join, last
+    /// (SH-834); empty for a member whose merge is clean.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smoothed: Vec<String>,
+}
+
+/// How a conflict with a member reads for smoothing (SH-834, council D1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SmoothingClass {
+    /// Every conflicted path passes the deny floor and the text checks,
+    /// and every hunk is insertion-only: the verifier could unite it.
+    UnionSmoothable,
+    /// The same, except that a hunk changes lines both sides share: only
+    /// a resolver that writes text could settle it, and none is built.
+    AgentCandidate,
+}
+
+/// The smoothing measure of one conflict with a member (SH-834 D3): its
+/// class, whatever the allowlist says, and whether the base's allowlist
+/// admits every conflicted path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmoothingMark {
+    /// How the conflict reads.
+    pub class: SmoothingClass,
+    /// Whether the base's `[batch] smooth` admits every conflicted path.
+    pub allowlisted: bool,
+}
+
+/// Whether [`select`] may let a smoothable story join (SH-834).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SmoothingMode {
+    /// Classify each conflict with a member for the record; admit none.
+    /// What the preview does while the verifier forms no batches.
+    #[default]
+    Measure,
+    /// Also admit the first union-smoothable, allowlisted story as the
+    /// batch's last member when the batch is below its cap.
+    Admit,
 }
 
 /// One story that is not a member, and why.
@@ -118,6 +159,11 @@ pub struct PreviewExclusion {
     /// Conflicted paths for a conflict, at most [`MAX_RECORDED_PATHS`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
+    /// How a conflict with a member reads for smoothing (SH-834); absent
+    /// for every other exclusion, and for a conflict that could never be
+    /// smoothed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smoothing: Option<SmoothingMark>,
 }
 
 /// The batch the verifier would form at one dequeue.
@@ -161,6 +207,13 @@ pub struct BatchPreview {
     /// Every other story considered, in the order considered.
     #[serde(default)]
     pub excluded: Vec<PreviewExclusion>,
+    /// The base's `[batch] smooth` allowlist, as written (SH-834).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smooth: Vec<String>,
+    /// Why no conflict was classified or smoothed (SH-834): an unreadable
+    /// or invalid allowlist, or a merger that reads no blobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smoothing_unavailable: Option<String>,
 }
 
 impl BatchPreview {
@@ -188,6 +241,8 @@ impl BatchPreview {
             head_conflict: Vec::new(),
             members: Vec::new(),
             excluded: Vec::new(),
+            smooth: Vec::new(),
+            smoothing_unavailable: None,
         }
     }
 
@@ -217,7 +272,17 @@ impl BatchPreview {
                 self.head, self.queue_depth
             ),
             PreviewOutcome::Batch => {
-                let members: Vec<&str> = self.members.iter().map(|m| m.story_id.as_str()).collect();
+                let members: Vec<String> = self
+                    .members
+                    .iter()
+                    .map(|m| {
+                        if m.smoothed.is_empty() {
+                            m.story_id.clone()
+                        } else {
+                            format!("{} (smoothed)", m.story_id)
+                        }
+                    })
+                    .collect();
                 let mut text = format!(
                     "{} (cap {}, {} queued)",
                     members.join(" + "),
@@ -260,6 +325,8 @@ pub struct PreviewRequest {
     /// No trial merge starts at or after this instant; a story it stops is
     /// excluded as [`ExclusionReason::TrialFailed`].
     pub deadline: Instant,
+    /// Whether a smoothable story may join (SH-834).
+    pub smoothing: SmoothingMode,
 }
 
 /// Computes the batch the verifier would form (B1 to B3).
@@ -325,6 +392,7 @@ pub fn select(request: PreviewRequest, merger: &mut dyn TrialMerger) -> BatchPre
             preview.members.push(PreviewMember {
                 story_id: request.head.story_id.clone(),
                 commit: head_commit,
+                smoothed: Vec::new(),
             });
             return preview;
         }
@@ -340,8 +408,13 @@ pub fn select(request: PreviewRequest, merger: &mut dyn TrialMerger) -> BatchPre
     preview.members.push(PreviewMember {
         story_id: request.head.story_id.clone(),
         commit: head_commit,
+        smoothed: Vec::new(),
     });
+    let policy = smoothing_policy(&mut preview, merger, &base);
     let cap = preview.cap as usize;
+    // Stories that conflict with a member, as (their exclusion, commit):
+    // the only stories smoothing may admit (SH-834 D5).
+    let mut member_conflicts: Vec<(usize, String)> = Vec::new();
     for candidate in &request.rest {
         let commit = match standing_commit(candidate, merger) {
             Ok(commit) => commit,
@@ -365,6 +438,7 @@ pub fn select(request: PreviewRequest, merger: &mut dyn TrialMerger) -> BatchPre
                         preview.members.push(PreviewMember {
                             story_id: candidate.story_id.clone(),
                             commit,
+                            smoothed: Vec::new(),
                         });
                         batch = merged;
                     }
@@ -380,10 +454,16 @@ pub fn select(request: PreviewRequest, merger: &mut dyn TrialMerger) -> BatchPre
                 ExclusionReason::Cap,
                 format!("merges cleanly onto the batch, which is full at {cap}"),
             )),
-            Ok(TrialMerge::Conflict { paths, .. }) => {
+            Ok(TrialMerge::Conflict { paths, shape }) => {
                 preview.excluded.push(match merger.merge(&base, &commit) {
                     Ok(TrialMerge::Clean { .. }) => {
-                        conflict(candidate, ExclusionReason::ConflictWithMember, &paths)
+                        member_conflicts.push((preview.excluded.len(), commit.clone()));
+                        let mut entry =
+                            conflict(candidate, ExclusionReason::ConflictWithMember, &paths);
+                        entry.smoothing = policy
+                            .as_ref()
+                            .and_then(|policy| mark(&shape, policy, merger, request.deadline));
+                        entry
                     }
                     Ok(TrialMerge::Conflict { paths, .. }) => {
                         conflict(candidate, ExclusionReason::ConflictWithBase, &paths)
@@ -402,7 +482,112 @@ pub fn select(request: PreviewRequest, merger: &mut dyn TrialMerger) -> BatchPre
             )),
         }
     }
+    if request.smoothing == SmoothingMode::Admit
+        && preview.members.len() < cap
+        && let Some(policy) = policy.filter(|policy| !policy.is_empty())
+    {
+        admit_smoothable(
+            &mut preview,
+            merger,
+            &batch,
+            &policy,
+            &member_conflicts,
+            request.deadline,
+        );
+    }
     preview
+}
+
+/// The base's smoothing allowlist, or `None` with the reason recorded on
+/// `preview` when it cannot be read (SH-834). Read from the base only: a
+/// member must not widen what its own batch may smooth.
+fn smoothing_policy(
+    preview: &mut BatchPreview,
+    merger: &mut dyn TrialMerger,
+    base: &str,
+) -> Option<SmoothPolicy> {
+    let read = match merger.blobs() {
+        None => Err("this trial merger reads no blobs".to_owned()),
+        Some(blobs) => blobs
+            .file(base, super::batch_smoothing::POINTER)
+            .map_err(|error| format!("reading the base's .storyhook.toml failed: {error}"))
+            .and_then(|raw| policy_from_pointer(raw.as_deref())),
+    };
+    match read {
+        Ok(policy) => {
+            preview.smooth = policy.entries().into_iter().map(str::to_owned).collect();
+            Some(policy)
+        }
+        Err(why) => {
+            preview.smoothing_unavailable = Some(why);
+            None
+        }
+    }
+}
+
+/// The smoothing measure of one conflict with a member, or `None` for a
+/// conflict that could never be smoothed or one the deadline leaves no
+/// time to read.
+fn mark(
+    shape: &ConflictShape,
+    policy: &SmoothPolicy,
+    merger: &mut dyn TrialMerger,
+    deadline: Instant,
+) -> Option<SmoothingMark> {
+    if Instant::now() >= deadline {
+        return None;
+    }
+    match classify(shape, merger.blobs()?) {
+        Classification::UnionSmoothable(files) => Some(SmoothingMark {
+            class: SmoothingClass::UnionSmoothable,
+            allowlisted: admits_all(policy, &files),
+        }),
+        Classification::AgentCandidate(_) => Some(SmoothingMark {
+            class: SmoothingClass::AgentCandidate,
+            allowlisted: shape.paths().iter().all(|path| policy.admits(path)),
+        }),
+        Classification::NotSmoothable(_) => None,
+    }
+}
+
+/// Admits the first story that conflicts with a member, merged again onto
+/// the final batch, whose conflict is union-smoothable and whose every
+/// conflicted path `policy` admits: it becomes the last member, so a batch
+/// holds at most one resolution and every shorter prefix of its merge chain
+/// holds none (SH-834 D5). Clean members were all taken first; none is ever
+/// displaced.
+fn admit_smoothable(
+    preview: &mut BatchPreview,
+    merger: &mut dyn TrialMerger,
+    batch: &str,
+    policy: &SmoothPolicy,
+    member_conflicts: &[(usize, String)],
+    deadline: Instant,
+) {
+    for (index, commit) in member_conflicts {
+        if Instant::now() >= deadline {
+            return;
+        }
+        let Ok(TrialMerge::Conflict { shape, .. }) = merger.merge(batch, commit) else {
+            continue;
+        };
+        let Some(blobs) = merger.blobs() else {
+            return;
+        };
+        let Classification::UnionSmoothable(files) = classify(&shape, blobs) else {
+            continue;
+        };
+        if !admits_all(policy, &files) {
+            continue;
+        }
+        let entry = preview.excluded.remove(*index);
+        preview.members.push(PreviewMember {
+            story_id: entry.story_id,
+            commit: commit.clone(),
+            smoothed: files.into_iter().map(|file| file.path).collect(),
+        });
+        return;
+    }
 }
 
 /// The commit a story would be tried at, or why it cannot be tried.
@@ -441,6 +626,7 @@ fn exclusion(
         reason,
         detail: Some(detail.into()),
         paths: Vec::new(),
+        smoothing: None,
     }
 }
 
@@ -459,6 +645,7 @@ fn conflict(
             )
         }),
         paths: recorded(paths),
+        smoothing: None,
     }
 }
 
@@ -536,6 +723,7 @@ mod tests {
             live_lanes: None,
             queue_depth: rest.len() + 1,
             deadline: Instant::now() + std::time::Duration::from_secs(600),
+            smoothing: SmoothingMode::Admit,
         }
     }
 
