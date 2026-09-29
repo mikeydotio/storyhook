@@ -11,6 +11,9 @@ use super::{GlobalSeq, ProjectId, StoreError, StoryNo};
 use crate::domain::gate_verdict::GateVerdict;
 use serde::{Deserialize, Serialize};
 
+mod bisection;
+pub use bisection::{BatchBisection, BisectionOf, BisectionOutcome, BisectionProbe, ProbeKind};
+
 /// Hex digits in a batch id: enough that two verifiers never pick the same
 /// branch name, short enough to read in a branch or a title.
 const BATCH_ID_HEX: usize = 12;
@@ -93,7 +96,10 @@ pub enum BatchPhase {
     Landed,
     /// The gate ended without a landing: a verdict other than certified, a
     /// landing refused before its merge, or a merge that was never
-    /// requested. Every member went back to the single-story queue.
+    /// requested. Every member went back to the single-story queue, except
+    /// what a bisection of a red batch did with them (SH-833): its culprit
+    /// returned, its certified prefix landed through a probe batch. A
+    /// certified probe that did not end the search is released too.
     Released,
     /// The batch ended before a verdict could count: a member changed, the
     /// verifier stopped or failed, or its verifier restarted.
@@ -169,6 +175,14 @@ pub struct BatchMember {
     /// batch landed (SH-832 D8). Absent in records written before SH-832.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// The batch merge commit that merged this member: the tip of the
+    /// batch's prefix that ends with it (SH-833). Absent in records
+    /// written before SH-833, which a bisection cannot use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_commit: Option<String>,
+    /// That merge commit's tree: the tree a gate of the prefix judges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_tree: Option<String>,
 }
 
 /// Why a story the preview selected did not become a member.
@@ -260,6 +274,13 @@ pub struct VerificationBatch {
     /// Why the batch ended as it did, as an operator reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// The bisection this batch is a probe of (SH-833); absent for a batch
+    /// the queue formed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bisects: Option<BisectionOf>,
+    /// The bisection of this red batch (SH-833).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bisection: Option<BatchBisection>,
     /// Whether its pull request is closed and its branch deleted on origin.
     pub retired: bool,
     /// Compare-and-swap revision, starting at zero.
@@ -318,7 +339,61 @@ impl VerificationBatch {
         if self.revision < 0 {
             return refuse("the revision is never negative");
         }
+        if self.members.iter().any(|member| {
+            member
+                .merge_commit
+                .as_deref()
+                .is_some_and(|oid| !pinned(oid))
+                || member.merge_tree.as_deref().is_some_and(|oid| !pinned(oid))
+        }) {
+            return refuse("member merge commits and trees are full object ids");
+        }
+        if let Some(last) = self.members.last().and_then(|m| m.merge_commit.as_deref())
+            && last != self.tip
+        {
+            return refuse("the last member's merge commit is the tip");
+        }
+        if let Some(of) = &self.bisects {
+            if of.prefix < 2 || of.prefix as usize != self.members.len() {
+                return refuse("a bisection probe has exactly its prefix of two or more members");
+            }
+            if of.parent == self.id {
+                return refuse("a bisection probe is not its own parent");
+            }
+        }
+        if let Some(bisection) = &self.bisection
+            && bisection
+                .probes
+                .iter()
+                .any(|probe| probe.prefix == 0 || probe.prefix as usize >= self.members.len())
+        {
+            return refuse("a bisection probes prefixes shorter than the batch");
+        }
         Ok(())
+    }
+
+    /// Whether the verifier must settle this record when it did not end it
+    /// itself: a live record it can abandon, or a bisection that never
+    /// recorded how it ended. One predicate for the read that decides to
+    /// write and for the write, so a worker start never opens an empty
+    /// write (SH-693).
+    #[must_use]
+    pub fn needs_finalization(&self) -> bool {
+        self.phase.is_abandonable()
+            || self
+                .bisection
+                .as_ref()
+                .is_some_and(BatchBisection::is_unfinished)
+    }
+
+    /// The members' merge commits and trees in order, when the record has
+    /// them all (written by SH-833 or later): what a bisection gates.
+    #[must_use]
+    pub fn merge_chain(&self) -> Option<Vec<(String, String)>> {
+        self.members
+            .iter()
+            .map(|member| Some((member.merge_commit.clone()?, member.merge_tree.clone()?)))
+            .collect()
     }
 
     /// The next revision of this record at `now`, in `phase`. Refuses a move
@@ -343,6 +418,203 @@ impl VerificationBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn oid(digit: char) -> String {
+        digit.to_string().repeat(40)
+    }
+
+    /// A three-member batch whose members carry their merge chain.
+    fn chained() -> VerificationBatch {
+        let id = BatchId::try_from("0123456789ab".to_string()).unwrap();
+        let members: Vec<BatchMember> = (0..3u32)
+            .map(|position| BatchMember {
+                story: StoryNo::new(i64::from(position) + 1),
+                story_id: format!("SH-{}", position + 1),
+                generation: GlobalSeq::new(10 + i64::from(position)),
+                head_commit: oid(char::from_digit(position + 1, 10).unwrap()),
+                pull_request: format!("https://github.com/acme/widgets/pull/{}", position + 1),
+                position,
+                branch: None,
+                merge_commit: Some(oid(char::from_digit(position + 4, 10).unwrap())),
+                merge_tree: Some(oid(['a', 'b', 'c'][position as usize])),
+            })
+            .collect();
+        VerificationBatch {
+            branch: id.branch(),
+            id,
+            project: ProjectId::new(1),
+            project_slug: "widgets".into(),
+            head: "SH-1".into(),
+            base_branch: "dev".into(),
+            base_commit: oid('0'),
+            tip: oid('6'),
+            pull_request: None,
+            phase: BatchPhase::Assembled,
+            members,
+            excluded: Vec::new(),
+            gate: None,
+            detail: None,
+            bisects: None,
+            bisection: None,
+            retired: false,
+            revision: 0,
+            created_at: "2026-09-29T00:00:00Z".into(),
+            updated_at: "2026-09-29T00:00:00Z".into(),
+        }
+    }
+
+    fn probe(prefix: u32) -> BisectionProbe {
+        BisectionProbe {
+            prefix,
+            kind: ProbeKind::Search,
+            batch: None,
+            tree: oid('a'),
+            verdict: GateVerdict::Certified,
+            log: None,
+            detail: "passed".into(),
+            seconds: 1,
+        }
+    }
+
+    #[test]
+    fn a_record_written_before_sh_833_still_reads_and_has_no_merge_chain() {
+        let mut wire = serde_json::to_value(chained()).unwrap();
+        for member in wire["members"].as_array_mut().unwrap() {
+            let member = member.as_object_mut().unwrap();
+            member.remove("merge_commit");
+            member.remove("merge_tree");
+        }
+        let old: VerificationBatch = serde_json::from_value(wire).unwrap();
+        assert!(old.validate().is_ok());
+        assert_eq!(old.merge_chain(), None);
+        assert_eq!((&old.bisects, &old.bisection), (&None, &None));
+        let text = serde_json::to_string(&old).unwrap();
+        for absent in ["merge_commit", "merge_tree", "bisects", "bisection"] {
+            assert!(
+                !text.contains(absent),
+                "{absent} is not written when absent: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_merge_chain_lists_every_prefix_tip_and_tree_in_order() {
+        let batch = chained();
+        assert!(batch.validate().is_ok());
+        assert_eq!(
+            batch.merge_chain().unwrap(),
+            vec![
+                (oid('4'), oid('a')),
+                (oid('5'), oid('b')),
+                (oid('6'), oid('c'))
+            ]
+        );
+        let mut partial = batch;
+        partial.members[1].merge_tree = None;
+        assert_eq!(partial.merge_chain(), None);
+    }
+
+    #[test]
+    fn merge_data_and_bisection_links_are_validated() {
+        let refused = |change: &dyn Fn(&mut VerificationBatch), why: &str| {
+            let mut batch = chained();
+            change(&mut batch);
+            let error = batch.validate().unwrap_err().to_string();
+            assert!(error.contains(why), "{error}");
+        };
+        refused(
+            &|batch| batch.members[0].merge_commit = Some("abc".into()),
+            "full object ids",
+        );
+        refused(
+            &|batch| batch.members[1].merge_tree = Some("xyz".into()),
+            "full object ids",
+        );
+        refused(&|batch| batch.tip = oid('9'), "merge commit is the tip");
+        let parent = BatchId::try_from("fedcba987654".to_string()).unwrap();
+        refused(
+            &|batch| {
+                batch.bisects = Some(BisectionOf {
+                    parent: parent.clone(),
+                    prefix: 2,
+                });
+            },
+            "exactly its prefix",
+        );
+        refused(
+            &|batch| {
+                batch.bisects = Some(BisectionOf {
+                    parent: batch.id.clone(),
+                    prefix: 3,
+                });
+            },
+            "its own parent",
+        );
+        for bad in [0, 3, 4] {
+            refused(
+                &|batch| {
+                    batch.bisection = Some(BatchBisection {
+                        probes: vec![probe(bad)],
+                        outcome: None,
+                    });
+                },
+                "shorter than the batch",
+            );
+        }
+        let mut probe_batch = chained();
+        probe_batch.bisects = Some(BisectionOf { parent, prefix: 3 });
+        probe_batch.bisection = Some(BatchBisection {
+            probes: vec![probe(1), probe(2)],
+            outcome: None,
+        });
+        assert!(probe_batch.validate().is_ok());
+    }
+
+    #[test]
+    fn a_record_needs_finalization_when_live_or_its_bisection_never_ended() {
+        let mut batch = chained();
+        assert!(batch.needs_finalization(), "assembled is abandonable");
+        batch.phase = BatchPhase::Landing;
+        assert!(
+            !batch.needs_finalization(),
+            "a landing belongs to its intents"
+        );
+        batch.phase = BatchPhase::Released;
+        assert!(!batch.needs_finalization());
+        batch.bisection = Some(BatchBisection::default());
+        assert!(batch.needs_finalization(), "a bisection with no outcome");
+        batch.bisection = Some(BatchBisection {
+            probes: Vec::new(),
+            outcome: Some(BisectionOutcome::Inconclusive {
+                detail: "the base moved".into(),
+            }),
+        });
+        assert!(!batch.needs_finalization());
+    }
+
+    #[test]
+    fn bisection_outcomes_have_a_kind_tag_on_the_wire() {
+        let culprit = BisectionOutcome::Culprit {
+            story_id: "SH-2".into(),
+            position: 2,
+            tree: oid('b'),
+            log: "/tmp/gate.log".into(),
+            certified: 1,
+            detail: "returned".into(),
+        };
+        let wire = serde_json::to_value(&culprit).unwrap();
+        assert_eq!(wire["kind"], "culprit");
+        assert_eq!(
+            serde_json::from_value::<BisectionOutcome>(wire).unwrap(),
+            culprit
+        );
+        let interrupted = serde_json::to_value(BisectionOutcome::Interrupted {
+            detail: "restart".into(),
+        })
+        .unwrap();
+        assert_eq!(interrupted["kind"], "interrupted");
+        assert_eq!(serde_json::to_value(ProbeKind::Landing).unwrap(), "landing");
+    }
 
     #[test]
     fn phases_move_forward_or_end_and_never_leave_an_end() {

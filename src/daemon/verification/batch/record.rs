@@ -5,12 +5,26 @@
 
 use super::end::{member_list, write};
 use super::*;
+use crate::service::batch_assembly::Assembly;
 
 impl<S: Store> Attempt<'_, S> {
     /// Records the batch the plan assembled, with `tip` as its last merge
     /// commit, and shows it in status.
-    pub(super) fn insert(&mut self, id: BatchId, tip: String) -> Result<(), AppError> {
-        let batch = self.new_record(id, tip, self.planned_members(), self.plan.excluded.clone());
+    pub(super) fn insert(&mut self, id: BatchId, assembly: &Assembly) -> Result<(), AppError> {
+        let mut members = self.planned_members();
+        for (member, (merge, tree)) in members
+            .iter_mut()
+            .zip(assembly.merges.iter().zip(&assembly.trees))
+        {
+            member.merge_commit = Some(merge.clone());
+            member.merge_tree = Some(tree.clone());
+        }
+        let batch = self.new_record(
+            id,
+            assembly.tip.clone(),
+            members,
+            self.plan.excluded.clone(),
+        );
         store_new(self.store, &batch)?;
         journal(
             "INFO",
@@ -65,6 +79,8 @@ impl<S: Store> Attempt<'_, S> {
                     .cleanup_lease
                     .as_ref()
                     .map(|lease| lease.branch.clone()),
+                merge_commit: None,
+                merge_tree: None,
             })
             .collect()
     }
@@ -93,6 +109,8 @@ impl<S: Store> Attempt<'_, S> {
             excluded,
             gate: None,
             detail: None,
+            bisects: None,
+            bisection: None,
             retired: false,
             revision: 0,
             created_at: now.clone(),

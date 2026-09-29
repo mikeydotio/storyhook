@@ -126,7 +126,7 @@ impl<S: Store> Attempt<'_, S> {
             }
         };
         progress_item(self.env, self.head, "batch assembly", "passed");
-        self.insert(id, assembly.tip)?;
+        self.insert(id, &assembly)?;
         let publication = record::publication(
             self.record
                 .as_ref()

@@ -378,6 +378,8 @@ fn head_named(
 fn record(project: ProjectId, members: &[&VerificationCandidate]) -> VerificationBatch {
     let id = BatchId::generate();
     VerificationBatch {
+        bisects: None,
+        bisection: None,
         branch: id.branch(),
         id,
         project,
@@ -392,6 +394,8 @@ fn record(project: ProjectId, members: &[&VerificationCandidate]) -> Verificatio
             .iter()
             .enumerate()
             .map(|(position, member)| BatchMember {
+                merge_commit: None,
+                merge_tree: None,
                 story: StoryNo::parse_id("SH", &member.story_id).unwrap(),
                 story_id: member.story_id.clone(),
                 generation: member.verifying_generation.unwrap(),

@@ -108,6 +108,13 @@ fn members_merge_in_queue_order_as_merge_commits_with_every_tip_reachable() {
 
     assert_eq!(assembly.merges.len(), 3);
     assert_eq!(assembly.tip, assembly.merges[2]);
+    // Each prefix's tree is its merge commit's tree: what a bisection of
+    // the batch gates (SH-833).
+    assert_eq!(assembly.trees.len(), 3);
+    for (merge, tree) in assembly.merges.iter().zip(&assembly.trees) {
+        assert_eq!(&repo.ok(&["rev-parse", &format!("{merge}^{{tree}}")]), tree);
+    }
+    assert_eq!(assembly.trees[2], assembly.tree);
     // The first-parent chain is the batch branch itself: base, then one
     // merge per member in queue order.
     let chain: Vec<String> = repo

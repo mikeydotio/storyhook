@@ -73,6 +73,8 @@ fn gating(f: &ServiceFixture, members: &[VerificationCandidate]) -> Verification
     let id = BatchId::generate();
     let now = "2026-09-29T00:00:00Z";
     let batch = VerificationBatch {
+        bisects: None,
+        bisection: None,
         branch: id.branch(),
         id,
         project: f.project(),
@@ -87,6 +89,8 @@ fn gating(f: &ServiceFixture, members: &[VerificationCandidate]) -> Verification
             .iter()
             .enumerate()
             .map(|(position, candidate)| BatchMember {
+                merge_commit: None,
+                merge_tree: None,
                 story: StoryNo::parse_id("SH", &candidate.story_id).unwrap(),
                 story_id: candidate.story_id.clone(),
                 generation: candidate.verifying_generation.unwrap(),

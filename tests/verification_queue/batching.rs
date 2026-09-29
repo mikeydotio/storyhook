@@ -379,6 +379,8 @@ fn live_batch(board: &Board) -> VerificationBatch {
         .take(2)
         .enumerate()
         .map(|(position, (id, generation))| BatchMember {
+            merge_commit: None,
+            merge_tree: None,
             story: StoryNo::parse_id("SH", id).unwrap(),
             story_id: id.clone(),
             generation: generation.unwrap(),
@@ -390,6 +392,8 @@ fn live_batch(board: &Board) -> VerificationBatch {
         .collect();
     let id = BatchId::generate();
     let left = VerificationBatch {
+        bisects: None,
+        bisection: None,
         branch: id.branch(),
         id,
         project: board.fixture.project(),
