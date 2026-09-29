@@ -62,8 +62,8 @@ use crate::env::spawn_env::{
 };
 use crate::error::AppError;
 use crate::process::{
-    CaptureError, Captured, TerminationPolicy, TimeoutTermination, run_captured_cancellable,
-    run_captured_with_progress_and_registration,
+    CaptureError, CaptureFailure, Captured, TerminationPolicy, TimeoutTermination,
+    run_captured_cancellable, run_captured_with_progress_and_registration,
 };
 use crate::service::engine::{
     DISPATCH_TIMEOUT, DispatchOptions, DispatchOutcomeState, WindowProbe,
@@ -1504,15 +1504,24 @@ impl ShellVerificationActuator {
                     .map_err(|error| error.to_string())
             },
         );
+        self.judge_verify_pr(capture, &candidate.checkout)
+    }
+
+    /// Turns one finished `verify-pr.sh` run into the attempt's outcome: an
+    /// independently validated completion, a typed capture failure, or the
+    /// wire verdict the script printed.
+    fn judge_verify_pr(
+        &self,
+        capture: Result<Captured, CaptureFailure>,
+        checkout: &std::path::Path,
+    ) -> VerificationOutcome {
         if let Err(failure) = &capture {
             // Termination may itself finish the shell's result publication.
             // Accept only independently validated completion, never a signal
             // status or partial JSON as a test verdict.
-            if let Some(outcome) = cleanup::interrupted_outcome(
-                &failure.stdout,
-                &failure.error.detail(),
-                &candidate.checkout,
-            ) {
+            if let Some(outcome) =
+                cleanup::interrupted_outcome(&failure.stdout, &failure.error.detail(), checkout)
+            {
                 return outcome;
             }
         }
