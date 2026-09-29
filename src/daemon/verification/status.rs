@@ -385,6 +385,10 @@ impl VerifierStatus {
                 crate::local_time::stamp(&ack.at),
                 if ack.enabled {
                     "enabled"
+                } else if self.control == VerificationControlState::Running {
+                    // The record is history; its remedy is owed only while
+                    // admission is still off (SH-775).
+                    "left stopped"
                 } else {
                     "left stopped; story verifier start"
                 }
