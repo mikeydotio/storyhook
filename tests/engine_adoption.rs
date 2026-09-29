@@ -672,3 +672,77 @@ fn adoption_waits_for_workspace_ownership_and_retires_prior_pending_effects() {
         DeliveryStatus::Superseded
     );
 }
+
+/// SH-837: a lane keeps a story only while the story still meets the rule the
+/// lane entered by. An explicitly adopted `no-auto` session met adoption's
+/// rule (SH-700), so the run keeps it and says nothing; `human-only` fails
+/// that rule, so once the story gains it the lane is released at its first
+/// end point rather than quarantined, and nothing is relaunched.
+#[test]
+fn an_adopted_no_auto_lane_is_kept_but_gaining_human_only_releases_it() {
+    use storyhook::domain::{LABEL_HUMAN_ONLY, LABEL_NO_AUTO};
+    use storyhook::service::engine::{RESERVED, RESERVED_HOLD_PREFIX};
+    use storyhook_test_support::{DispatcherCall, DispatcherStep};
+    let fixture = fixture();
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: "%1".into(),
+            alive: true,
+        },
+        DispatcherStep::WindowAlive {
+            window: "%1".into(),
+            alive: false,
+        },
+    ]);
+    let ctx = fixture.ctx();
+    let service = EngineService::new(&ctx, &fake);
+    let run = start(&service, 1);
+    let id = claimed(&fixture);
+    let stories = StoryService::new(&ctx);
+    stories
+        .set_labels(&id, &[LABEL_NO_AUTO.into()], &[])
+        .unwrap();
+    service
+        .adopt(&run, std::slice::from_ref(&id), &Inspector)
+        .unwrap();
+
+    let kept = service.reconcile(&run).unwrap();
+    assert!(kept.reserved.is_empty());
+    assert!(kept.quarantined.is_empty());
+    let snapshot = fixture
+        .store()
+        .read(|tx| tx.story(ctx.project(), storyhook::store::StoryNo::new(1)))
+        .unwrap()
+        .unwrap()
+        .snapshot;
+    assert!(
+        !snapshot
+            .comments
+            .iter()
+            .any(|comment| comment.text.starts_with(RESERVED_HOLD_PREFIX)),
+        "explicitly adopted no-auto work is the operator's own choice"
+    );
+
+    stories
+        .set_labels(&id, &[LABEL_HUMAN_ONLY.into()], &[])
+        .unwrap();
+    let released = service.reconcile(&run).unwrap();
+
+    assert_eq!(released.reserved, [(0, LABEL_HUMAN_ONLY)]);
+    assert!(released.quarantined.is_empty());
+    let lane = fixture
+        .store()
+        .read(|tx| tx.engine_lanes(&run))
+        .unwrap()
+        .remove(0);
+    assert_eq!(lane.state, EngineLaneState::Idle);
+    assert_eq!(lane.outcome.as_deref(), Some(RESERVED));
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, DispatcherCall::Dispatch(_))),
+        "{:?}",
+        fake.calls()
+    );
+}

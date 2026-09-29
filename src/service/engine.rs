@@ -78,6 +78,14 @@ pub const SCOPE_UNAVAILABLE: &str = "scope-unavailable";
 /// The lane-level outcome recorded when a story reached a CLOSED superstate.
 pub const COMPLETED: &str = "completed";
 
+/// The lane-level outcome recorded when the run let go of a story that
+/// carries a reserved label (SH-837): the story is left for a person.
+pub const RESERVED: &str = "reserved";
+
+/// The prefix of the one comment a run posts when it keeps holding a lane
+/// whose live agent's story gained a reserved label (SH-837, council D7).
+pub const RESERVED_HOLD_PREFIX: &str = "FULL AUTO HOLD —";
+
 /// Consecutive hard stops that halt a run (D10). A completion zeroes the count.
 pub const HARD_STOP_BREAKER: u32 = 3;
 
@@ -236,6 +244,10 @@ pub enum LaneClassification {
     Verifying,
     /// The story left the OPEN superstate. Free the lane, zero the streak.
     Completed,
+    /// The story carries the named reserved label and its lane reached an
+    /// end point (SH-837): release the lane to the operator with no
+    /// quarantine, no `awaiting`, no cleanup and no effect on the breaker.
+    Reserved(&'static str),
     /// A hard stop. Quarantine the lane and increment the streak.
     HardStop(HardStopKind),
 }
@@ -324,6 +336,13 @@ pub struct LaneObservation {
     /// when the probe says the window is gone, which is the one case it
     /// changes.
     pub returned_for_repair: bool,
+    /// The reserved label that ends this lane's claim on its story, when the
+    /// story carries one (SH-837): either label for a lane the engine
+    /// dispatched, only `human-only` for an adopted lane, because each lane
+    /// keeps a story only while the story still meets the rule it entered
+    /// by. A reserved story is never relaunched; its lane is held while its
+    /// agent lives and released at the first end point.
+    pub reserved_label: Option<&'static str>,
 }
 
 /// Why a running run admits no more work (SH-822).
@@ -370,6 +389,9 @@ pub struct ReconcileReport {
     pub completed: Vec<u32>,
     /// Lane indices held this pass because their story reached `verifying`.
     pub verifying: Vec<u32>,
+    /// Lane indices released this pass because their story carries a
+    /// reserved label, with the label (SH-837).
+    pub reserved: Vec<(u32, &'static str)>,
     /// Lane indices quarantined this pass, with why.
     pub quarantined: Vec<(u32, HardStopKind)>,
     /// Lane indices filled this pass, with the story each claimed.
@@ -425,8 +447,30 @@ pub struct ReconcileReport {
 /// nothing stalled, since [`EngineService::record_progress`] re-seeds the
 /// clock for exactly this pass rather than let it read the outage as
 /// silence (SH-372).
+///
+/// A story that carries a reserved label ([`LaneObservation::reserved_label`])
+/// keeps every verdict above that leaves its lane alone — `Completed` and
+/// `Progressing` — and turns every other one into
+/// [`LaneClassification::Reserved`] (SH-837, council D7). The run holds a
+/// reserved story only while its agent is live: it never relaunches it,
+/// never types into it, and lets go at the first end point, without the
+/// quarantine, `awaiting` or breaker strike a hard stop would cost, because
+/// a label is an operator's decision, not an agent's failure.
 #[must_use]
 pub fn classify(
+    observation: &LaneObservation,
+    stall_ceiling_secs: u64,
+    pass: ReconcilePass,
+) -> LaneClassification {
+    let verdict = classify_unreserved(observation, stall_ceiling_secs, pass);
+    match (verdict, observation.reserved_label) {
+        (LaneClassification::Progressing | LaneClassification::Completed, _) | (_, None) => verdict,
+        (_, Some(label)) => LaneClassification::Reserved(label),
+    }
+}
+
+/// [`classify`]'s taxonomy before a reserved label is applied.
+fn classify_unreserved(
     observation: &LaneObservation,
     stall_ceiling_secs: u64,
     pass: ReconcilePass,
@@ -455,9 +499,12 @@ pub fn classify(
         // ceiling, so a re-dispatch either shows a live pane or has parked
         // the story with `awaiting` (classified above) before the clock can
         // fire. Only on a steady pass: a daemon that died mid-re-dispatch
-        // has nobody left to finish it, so a restart still reports it.
+        // has nobody left to finish it, so a restart still reports it. Never
+        // for a reserved story: no re-dispatch will come (SH-837).
         WindowProbe::Gone { .. }
-            if observation.returned_for_repair && pass == ReconcilePass::Steady => {}
+            if observation.returned_for_repair
+                && observation.reserved_label.is_none()
+                && pass == ReconcilePass::Steady => {}
         WindowProbe::Gone { .. } => {
             return LaneClassification::HardStop(match pass {
                 ReconcilePass::Steady => HardStopKind::WindowGone,
@@ -1416,6 +1463,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             admission_wait: None,
             completed: Vec::new(),
             verifying: Vec::new(),
+            reserved: Vec::new(),
             quarantined: Vec::new(),
             filled: Vec::new(),
             run_state: EngineRunState::Running,
@@ -1456,12 +1504,20 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             }
             match classification {
                 LaneClassification::Progressing => {
+                    if let Some(label) = observation.reserved_label {
+                        self.note_reserved_hold(run_id, &lane, label)?;
+                    }
                     self.record_progress(
                         &lane,
                         observation.head_global_seq,
                         &observation.window,
                         pass,
                     )?;
+                }
+                LaneClassification::Reserved(label) => {
+                    if self.release_reserved_lane(&lane, label, observation.head_global_seq)? {
+                        report.reserved.push((lane.lane_index, label));
+                    }
                 }
                 LaneClassification::Verifying => {
                     // Held, not freed: the story still owns a live worktree
@@ -1681,6 +1737,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 seconds_since_output,
                 awaiting_reason: row.as_ref().and_then(|row| row.awaiting.clone()),
                 returned_for_repair,
+                reserved_label: row
+                    .as_ref()
+                    .and_then(|row| lane_reserved_label(&lane, &row.snapshot)),
             };
             let continuation_owned = if let Some(row) = &row {
                 self.ctx.store().read(|tx| {
@@ -1703,18 +1762,21 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             } else {
                 false
             };
-            let classification = if continuation_owned || recovery_owned {
-                LaneClassification::Progressing
-            } else if row.is_none() {
-                LaneClassification::HardStop(HardStopKind::StoryMissing)
-            } else if lane.adopted_identity.is_some()
-                && !observation.agent_blocked
-                && row.as_ref().is_some_and(|row| row.state != "in-progress")
-            {
-                LaneClassification::Completed
-            } else {
-                classify(&observation, STALL_CEILING_SECS, pass)
-            };
+            // Neither owner will relaunch a reserved story (SH-837), so
+            // neither may hold its lane past the first end point.
+            let classification =
+                if (continuation_owned || recovery_owned) && observation.reserved_label.is_none() {
+                    LaneClassification::Progressing
+                } else if row.is_none() {
+                    LaneClassification::HardStop(HardStopKind::StoryMissing)
+                } else if lane.adopted_identity.is_some()
+                    && !observation.agent_blocked
+                    && row.as_ref().is_some_and(|row| row.state != "in-progress")
+                {
+                    LaneClassification::Completed
+                } else {
+                    classify(&observation, STALL_CEILING_SECS, pass)
+                };
             observed.push((lane, classification, observation));
         }
         Ok(observed)
@@ -1815,6 +1877,110 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             put_or_retire_idle_lane(tx, &idle)?;
             Ok(true)
         })?)
+    }
+
+    /// Lets go of a lane whose story carries `label` (SH-837): the story is
+    /// left for a person. Nothing about the story changes — no `awaiting`, no
+    /// comment, no state — and nothing is cleaned up: the window, worktree
+    /// and branch stay where the agent left them. The breaker is untouched in
+    /// both directions, since a label is neither a failure nor a completion.
+    fn release_reserved_lane(
+        &self,
+        lane: &EngineLaneRecord,
+        label: &'static str,
+        head_global_seq: Option<i64>,
+    ) -> Result<bool, AppError> {
+        let observed_at = self.ctx.now();
+        let mut idle = idle_lane(&lane.run_id, lane.lane_index, &observed_at);
+        idle.outcome = Some(RESERVED.to_string());
+        // A story id, as every other outcome's detail is: the dashboard
+        // reads this field as one.
+        idle.outcome_detail = lane.story_id.clone();
+        let released = self.ctx.store().write(|tx| {
+            if !observation_is_current(tx, self.ctx.project(), lane, head_global_seq)? {
+                return Ok(false);
+            }
+            put_or_retire_idle_lane(tx, &idle)?;
+            Ok(true)
+        })?;
+        if released {
+            crate::daemon::activity::emit(
+                "INFO",
+                "engine",
+                "event",
+                &format!(
+                    "run={} lane={} story={}",
+                    lane.run_id,
+                    lane.lane_index,
+                    lane.story_id.as_deref().unwrap_or("-")
+                ),
+                &format!(
+                    "released: the story carries `{label}` and is left for a person; no cleanup"
+                ),
+            );
+        }
+        Ok(released)
+    }
+
+    /// Posts, once per run and lane, the comment that says why a lane still
+    /// holds a story that carries `label` (SH-837, council D7): its agent is
+    /// live, so the run keeps the lane and its capacity until the agent
+    /// stops, and meanwhile the agent still works unattended. The comment
+    /// names the one verb that stops it now.
+    fn note_reserved_hold(
+        &self,
+        run_id: &RunId,
+        lane: &EngineLaneRecord,
+        label: &'static str,
+    ) -> Result<(), AppError> {
+        let Some(id) = lane.story_id.as_deref() else {
+            return Ok(());
+        };
+        let marker = format!(
+            "{RESERVED_HOLD_PREFIX} run `{run_id}` lane {}",
+            lane.lane_index
+        );
+        let window = lane
+            .window_name
+            .as_deref()
+            .map(|window| format!(" in window `{window}`"))
+            .unwrap_or_default();
+        let text = format!(
+            "{marker} keeps {id} while its agent is live, because the story now carries \
+             `{label}`. The agent{window} still runs in Full Auto mode: it approves its own \
+             plan and asks no questions. The run will not relaunch it or type into it. The run \
+             releases the lane without cleanup when the agent stops, the story is blocked, or \
+             the story reaches verifying. To stop the agent now, run `story block {id} <reason>`."
+        );
+        let now = self.ctx.now();
+        self.ctx.write_stories(|tx| {
+            let project = self.ctx.project();
+            let prefix = project_prefix(tx, project)?;
+            let Some(row) = optional_lane_story(tx, project, &prefix, id)? else {
+                return Ok(());
+            };
+            if row
+                .snapshot
+                .comments
+                .iter()
+                .any(|comment| comment.text.starts_with(&marker))
+            {
+                return Ok(());
+            }
+            let states = tx.state_map(project)?;
+            super::append_and_fold(
+                tx,
+                project,
+                row.story_no,
+                &prefix,
+                &states,
+                crate::store::ExpectedSeq::Exact(row.head_seq),
+                &[crate::domain::StoryEvent::StoryCommentAdded { at: now, text }],
+                self.ctx.provenance(),
+            )?;
+            Ok(())
+        })?;
+        Ok(())
     }
 
     /// Records a hard stop on the story and preserves the lane's evidence.
@@ -2321,6 +2487,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     /// is now owned by another cleanup has nothing to quarantine: its lane is
     /// freed instead, which is the one write the store's card-reset guard
     /// allows for a dispatching lane.
+    ///
+    /// A story that gained a reserved label between the claim and the
+    /// dispatch (`story.sh` refuses `--full-auto` for it) is not a failure
+    /// either (SH-837): its lane is released as [`RESERVED`] with no breaker
+    /// strike, and the refusal goes onto the story's `awaiting` verbatim, so
+    /// the person it is left for can see why a claimed story has no agent.
     fn quarantine_refused_dispatch(
         &self,
         working: &EngineLaneRecord,
@@ -2377,6 +2549,13 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 }],
                 self.ctx.provenance(),
             )?;
+            if lane_reserved_label(working, &row.snapshot).is_some() {
+                let mut idle = idle_lane(&working.run_id, working.lane_index, &now);
+                idle.outcome = Some(RESERVED.to_string());
+                idle.outcome_detail = Some(story.to_string());
+                put_or_retire_idle_lane(tx, &idle)?;
+                return Ok(false);
+            }
             tx.put_engine_lane(stuck)?;
             Ok(true)
         })?)
@@ -2865,6 +3044,21 @@ fn observation_is_current(
     let story = lane.story_id.as_deref().expect("occupied lane has a story");
     let current = optional_lane_story(tx, project, &prefix, story)?;
     Ok(current.map(|row| row.head_global_seq.get()) == head_global_seq)
+}
+
+/// The reserved label that ends `lane`'s claim on `story` (SH-837). A lane
+/// keeps a story only while the story still meets the rule the lane entered
+/// by: the engine's own claim admits neither reserved label, while an
+/// explicit `story engine adopt` admits `no-auto` (SH-700) and refuses only
+/// `human-only`. The one predicate for reconciliation and Stop Now.
+fn lane_reserved_label(
+    lane: &EngineLaneRecord,
+    story: &crate::domain::StorySnapshot,
+) -> Option<&'static str> {
+    if lane.adopted_identity.is_some() {
+        return crate::domain::is_human_only(story).then_some(crate::domain::LABEL_HUMAN_ONLY);
+    }
+    crate::domain::reserved_label(story)
 }
 
 /// Whether a lane's story has been handed to central verification. Such a

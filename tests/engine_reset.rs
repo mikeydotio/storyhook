@@ -841,3 +841,103 @@ fn stop_now_during_a_dispatch_that_is_then_refused_finishes_the_run() {
             .contains("no cleanup lease")
     );
 }
+
+/// SH-837, council D7: Stop Now must stop a live lane whose story now
+/// carries a reserved label, but must never destroy what the person it is
+/// left for will pick up. So it takes the leased unclaim — the window
+/// closes and the prior state returns — and never the leased reset that
+/// removes the worktree and branch.
+#[test]
+fn stop_now_unclaims_a_reserved_lane_and_never_resets_it() {
+    for label in [
+        storyhook::domain::LABEL_NO_AUTO,
+        storyhook::domain::LABEL_HUMAN_ONLY,
+    ] {
+        let fixture = ServiceFixture::new();
+        let fake = FakeDispatcher::new([DispatcherStep::Unclaim(DispatchOutcome::from_payload(
+            serde_json::json!({"ok": true, "id": "SH-1"}),
+        ))]);
+        let run = setup(&fixture, &fake, "todo");
+        let ctx = fixture.ctx();
+        StoryService::new(&ctx)
+            .set_labels("SH-1", &[label.to_string()], &[])
+            .unwrap();
+        let lease = fixture
+            .store()
+            .read(|tx| tx.engine_lanes(&run))
+            .unwrap()
+            .remove(0)
+            .cleanup_lease
+            .unwrap();
+
+        let stopped = EngineService::new(&ctx, &fake).stop(&run, true).unwrap();
+
+        assert_eq!(stopped.run.state, EngineRunState::Finished, "{label}");
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "{label}: {calls:?}");
+        let DispatcherCall::Unclaim(request) = &calls[0] else {
+            panic!("{label}: Stop Now must unclaim, not reset: {calls:?}");
+        };
+        assert_eq!(request.story, "SH-1");
+        assert_eq!(request.project, "fixture");
+        assert_eq!(request.cleanup_lease, lease);
+        assert!(
+            fixture
+                .store()
+                .read(|tx| tx.engine_reset(fixture.project(), StoryNo::new(1)))
+                .unwrap()
+                .is_none(),
+            "{label}: no reset reservation may be written"
+        );
+        let lane = fixture
+            .store()
+            .read(|tx| tx.engine_lanes(&run))
+            .unwrap()
+            .remove(0);
+        assert_eq!(lane.state, EngineLaneState::Idle);
+        let detail = lane.outcome_detail.unwrap_or_default();
+        assert!(
+            detail.contains("reserved label") && detail.contains("worktree and branch stay"),
+            "{label}: {detail}"
+        );
+    }
+}
+
+/// A failed unclaim keeps the lane and its proof of ownership, so the next
+/// Stop Now retries it rather than abandoning a live agent.
+#[test]
+fn a_failed_reserved_unclaim_keeps_the_lane_for_the_next_stop_now() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::new([
+        DispatcherStep::UnclaimFailure("tmux did not answer".into()),
+        DispatcherStep::Unclaim(DispatchOutcome::from_payload(
+            serde_json::json!({"ok": true, "id": "SH-1"}),
+        )),
+    ]);
+    let run = setup(&fixture, &fake, "todo");
+    let ctx = fixture.ctx();
+    StoryService::new(&ctx)
+        .set_labels("SH-1", &[storyhook::domain::LABEL_NO_AUTO.to_string()], &[])
+        .unwrap();
+    let engine = EngineService::new(&ctx, &fake);
+
+    let error = engine.stop(&run, true).unwrap_err().to_string();
+
+    assert!(error.contains("tmux did not answer"), "{error}");
+    let lane = fixture
+        .store()
+        .read(|tx| tx.engine_lanes(&run))
+        .unwrap()
+        .remove(0);
+    assert_eq!(lane.state, EngineLaneState::Working);
+    assert!(lane.cleanup_lease.is_some());
+    assert_eq!(
+        engine.stop(&run, true).unwrap().run.state,
+        EngineRunState::Finished
+    );
+    assert!(
+        fake.calls()
+            .iter()
+            .all(|call| matches!(call, DispatcherCall::Unclaim(_)))
+    );
+}

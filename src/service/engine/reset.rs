@@ -16,6 +16,11 @@ enum StopTarget {
     Settled,
     /// A leased reset that the helper must clean up.
     Reset(Box<EngineReset>),
+    /// A live lane whose story carries a reserved label (SH-837, council
+    /// D7): the story is left for a person, so Stop Now closes the agent's
+    /// window and restores the story's prior state through the leased
+    /// unclaim, and never removes its worktree or branch.
+    Unclaim(Box<UnclaimRequest>),
     /// Another cleanup operation owns the story and releases the lane when
     /// it finishes; the store refuses this lane's writes until then.
     Deferred(String),
@@ -174,6 +179,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                         ));
                         return Ok(());
                     }
+                    StopTarget::Unclaim(request) => return self.unclaim_reserved(lane, *request),
                     StopTarget::Reset(reset) => *reset,
                 };
                 let result = (|| {
@@ -387,6 +393,13 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 put_or_retire_idle_lane(tx, &released_lane(&lane, &now, detail))?;
                 return Ok(StopTarget::Settled);
             };
+            if super::lane_reserved_label(&lane, &row.snapshot).is_some() {
+                return Ok(StopTarget::Unclaim(Box::new(UnclaimRequest {
+                    project: project_slug(tx, project)?,
+                    story: id.to_string(),
+                    cleanup_lease: lease,
+                })));
+            }
             let events: Vec<_> = tx
                 .events_for(project, number)?
                 .iter()
@@ -414,6 +427,41 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             tx.put_engine_reset(&reset)?;
             Ok(StopTarget::Reset(Box::new(reset)))
         })?)
+    }
+
+    /// Stops a live reserved lane (SH-837): the leased unclaim closes the
+    /// story's window and restores its prior state, and the lane is
+    /// released only once the helper proves it. The worktree and branch
+    /// stay for the person the story is left for. A failed unclaim keeps
+    /// the lane, so the next Stop Now retries it.
+    fn unclaim_reserved(
+        &self,
+        observed: &EngineLaneRecord,
+        request: UnclaimRequest,
+    ) -> Result<(), AppError> {
+        let story = request.story.clone();
+        let outcome = self.dispatcher.unclaim(request)?;
+        if outcome.state != DispatchOutcomeState::Ok {
+            return Err(AppError::Validation(helper_diagnosis(&outcome.payload)));
+        }
+        let now = self.ctx.now();
+        self.ctx.store().write(|tx| {
+            let Some(lane) = tx.engine_lanes(&observed.run_id)?.into_iter().find(|lane| {
+                lane.lane_index == observed.lane_index
+                    && lane.story_id.as_deref() == Some(story.as_str())
+                    && lane.cleanup_lease == observed.cleanup_lease
+            }) else {
+                return Ok(());
+            };
+            let detail = format!(
+                "Full Auto Stop Now unclaimed story `{story}` from run `{}` lane {}: it carries \
+                 a reserved label, so its window was closed and its prior state restored. Its \
+                 worktree and branch stay in place.",
+                lane.run_id, lane.lane_index,
+            );
+            put_or_retire_idle_lane(tx, &released_lane(&lane, &now, detail))
+        })?;
+        Ok(())
     }
 
     fn finish_reset(
