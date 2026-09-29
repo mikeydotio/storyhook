@@ -58,6 +58,28 @@ impl<S: Store> Attempt<'_, S> {
         let gated = gate.is_some();
         let verdict =
             |outcome: &VerificationOutcome| GateVerdict::of(&Ok(Some(outcome.clone())), false);
+        // A certified batch whose members all kept their authority lands
+        // (SH-832). A refused admission wrote nothing: the batch is released
+        // below with the reason, and the head goes on to its own gate.
+        let mut refused = None;
+        if !stopped
+            && stale.is_empty()
+            && let Some((outcome @ VerificationOutcome::Certified { tree, .. }, seconds)) = &gate
+        {
+            let summary = BatchSummary {
+                id: Some(record.id.to_string()),
+                members: members.clone(),
+                phase: Some(BatchPhase::Landing),
+                verdict: Some(GateVerdict::Certified),
+                tree: Some(tree.clone()),
+                seconds: started.elapsed().as_secs(),
+                detail: "certified; landing".into(),
+            };
+            match self.admit(&record, outcome, *seconds, summary) {
+                Ok(landing) => return Ok(BatchEnd::Land(Box::new(landing))),
+                Err(why) => refused = Some(why),
+            }
+        }
         let (phase, detail, batch_gate) = if stopped {
             (
                 BatchPhase::Abandoned,
@@ -88,10 +110,15 @@ impl<S: Store> Attempt<'_, S> {
         } else if let Some((outcome, seconds)) = &gate {
             (
                 BatchPhase::Released,
-                format!(
-                    "gated ({}); landing a batch is not built yet, so every member returns to the single-story queue",
-                    verdict(outcome).as_str()
-                ),
+                match &refused {
+                    Some(why) => format!(
+                        "gated (certified), but its landing was refused, so every member returns to the single-story queue: {why}"
+                    ),
+                    None => format!(
+                        "gated ({}); only a certified batch lands, so every member returns to the single-story queue",
+                        verdict(outcome).as_str()
+                    ),
+                },
                 Some(BatchGate {
                     verdict: verdict(outcome),
                     tree: judged_tree(outcome),
@@ -260,16 +287,22 @@ pub(super) fn retire_leftovers(
 }
 
 /// Closes an ended batch's pull request and deletes its branch, then records
-/// that it is retired. A failure is journaled and retried at the next batch.
-fn retire(
+/// that it is retired; for a landed batch, deletes its members' own branches
+/// on origin instead (SH-832 D8). A failure is journaled and retried at the
+/// next batch.
+pub(super) fn retire(
     store: &impl Store,
     env: &Environment,
     batching: &dyn BatchActuator,
     head: &VerificationCandidate,
     batch: &VerificationBatch,
 ) {
+    if batch.phase == BatchPhase::Landed {
+        retire_landed(store, env, batching, head, batch);
+        return;
+    }
     let comment = format!(
-        "Verification batch {} ended ({}). Landing a batch is not built yet, so each member is verified on its own.",
+        "Verification batch {} ended ({}) without landing, so each member is verified on its own.",
         batch.id,
         batch.gate.as_ref().map_or_else(
             || batch.phase.as_str().to_owned(),
@@ -310,6 +343,110 @@ fn retire(
     }
 }
 
+/// Retires a landed batch: land-pr.sh already deleted the batch branch, so
+/// what is left is each member's own branch on origin, deleted only where
+/// GitHub reports that member merged from it at its head. The branches kept
+/// are named in the record's detail; the call is not repeated once it
+/// answered.
+fn retire_landed(
+    store: &impl Store,
+    env: &Environment,
+    batching: &dyn BatchActuator,
+    head: &VerificationCandidate,
+    batch: &VerificationBatch,
+) {
+    // A member a person holds still has its landing intent and is not done:
+    // its branch is its own until it completes.
+    let held = match store.read(|tx| tx.landing_intents()) {
+        Ok(intents) => intents
+            .into_iter()
+            .filter(|intent| {
+                intent
+                    .batch
+                    .as_ref()
+                    .is_some_and(|binding| binding.id == batch.id)
+            })
+            .map(|intent| intent.story)
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            journal(
+                "ERROR",
+                head,
+                &format!(
+                    "verification batch {} landing intents could not be read for retirement: {error}",
+                    batch.id
+                ),
+            );
+            return;
+        }
+    };
+    let branches: Vec<MemberBranch> = batch
+        .members
+        .iter()
+        .filter(|member| !held.contains(&member.story))
+        .filter_map(|member| {
+            Some(MemberBranch {
+                pull_request: member.pull_request.clone(),
+                branch: member.branch.clone()?,
+                head: member.head_commit.clone(),
+            })
+        })
+        .collect();
+    let kept = if branches.is_empty() {
+        Vec::new()
+    } else {
+        match batching.prune_members(head, &branches) {
+            Ok(pruned) => pruned
+                .into_iter()
+                .filter(|member| member.result != "deleted" && member.result != "absent")
+                .map(|member| {
+                    format!(
+                        "{} ({}{})",
+                        member.branch,
+                        member.result,
+                        member
+                            .detail
+                            .map(|detail| format!(": {detail}"))
+                            .unwrap_or_default()
+                    )
+                })
+                .collect(),
+            Err(error) => {
+                journal(
+                    "ERROR",
+                    head,
+                    &format!(
+                        "verification batch {} member branches could not be pruned and are retried at the next batch: {error}",
+                        batch.id
+                    ),
+                );
+                return;
+            }
+        }
+    };
+    let mut next = batch.clone();
+    next.retired = true;
+    next.revision = batch.revision + 1;
+    next.updated_at = env.now();
+    if !kept.is_empty() {
+        next.detail = Some(format!(
+            "{} Member branches kept on origin: {}.",
+            next.detail.unwrap_or_default(),
+            kept.join(", ")
+        ));
+    }
+    if let Err(error) = write(store, &next, batch.revision) {
+        journal(
+            "ERROR",
+            head,
+            &format!(
+                "verification batch {} retirement not recorded: {error}",
+                batch.id
+            ),
+        );
+    }
+}
+
 pub(super) fn member_list(batch: &VerificationBatch) -> String {
     batch
         .members
@@ -332,7 +469,7 @@ fn judged_tree(outcome: &VerificationOutcome) -> Option<String> {
     }
 }
 
-fn outcome_detail(outcome: &VerificationOutcome) -> String {
+pub(super) fn outcome_detail(outcome: &VerificationOutcome) -> String {
     match outcome {
         VerificationOutcome::Certified { detail, gate, .. } => format!("`{gate}` passed. {detail}"),
         VerificationOutcome::TestsFailed {

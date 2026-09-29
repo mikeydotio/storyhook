@@ -24,6 +24,7 @@ fn member(story: StoryNo, prefix: &str, position: u32) -> BatchMember {
         head_commit: oid(char::from_digit(position + 1, 10).unwrap()),
         pull_request: format!("https://github.com/acme/widgets/pull/{}", position + 1),
         position,
+        branch: None,
     }
 }
 

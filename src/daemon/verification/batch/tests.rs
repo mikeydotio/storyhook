@@ -388,6 +388,7 @@ fn record(project: ProjectId, members: &[&VerificationCandidate]) -> Verificatio
                 head_commit: "c".repeat(40),
                 pull_request: format!("https://github.com/acme/widgets/pull/{}", position + 1),
                 position: position as u32,
+                branch: None,
             })
             .collect(),
         excluded: Vec::new(),
@@ -528,6 +529,44 @@ fn a_member_submission_inherits_that_members_own_lock() {
         .unwrap();
 
     assert_eq!(receipt.number, 7);
+    let inherited: u64 = boundary.read("lock").trim().parse().unwrap();
+    let member_lock = std::fs::metadata(lock_path(&boundary.root, "SH-41")).unwrap();
+    assert_eq!(
+        inherited,
+        member_lock.ino(),
+        "the member's own lock, not the head's"
+    );
+}
+
+/// A landed member is reaped under its own workspace lock: the reap helper
+/// refuses any other story's descriptor, and the slot holds only the head's
+/// (SH-832 D6).
+#[test]
+fn a_member_reap_inherits_that_members_own_lock() {
+    let boundary = Boundary::new();
+    let activity = VerificationActivity::new();
+    let _head = activity.acquire(&boundary.candidate, boundary.env.now());
+    let actuator = boundary.actuator(&activity);
+    let (locks, busy) =
+        MemberLocks::acquire(&boundary.root, &[(StoryNo::new(41), "SH-41".to_owned())]).unwrap();
+    assert!(busy.is_empty());
+
+    // The fixture helper answers every verb with a submission receipt, which
+    // a reap refuses as its receipt; what matters here is the descriptor it
+    // inherited before answering.
+    let answer = actuator
+        .batch()
+        .expect("with_batching offers batch operations")
+        .reap_member(
+            &boundary.candidate,
+            MemberOwner(locks.get("SH-41").unwrap()),
+            &Cancellation::default(),
+        );
+
+    assert!(
+        answer.is_err(),
+        "the fixture's answer is not a reap receipt"
+    );
     let inherited: u64 = boundary.read("lock").trim().parse().unwrap();
     let member_lock = std::fs::metadata(lock_path(&boundary.root, "SH-41")).unwrap();
     assert_eq!(

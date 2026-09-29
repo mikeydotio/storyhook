@@ -18,6 +18,8 @@ pub(super) struct Attempt<'a, S: Store> {
     pub(super) tracked: &'a Mutex<Vec<VerificationCandidate>>,
     /// The slot's listing of the batch's members while the steps run.
     pub(super) membership: Option<BatchMembership<'a>>,
+    /// The non-head members' workspace locks, held until the batch ends.
+    pub(super) locks: Option<MemberLocks>,
     /// The durable record, once written.
     pub(super) record: Option<VerificationBatch>,
     /// Why the batch ended before a record was written.
@@ -30,6 +32,28 @@ pub(super) struct Attempt<'a, S: Store> {
 
 impl<S: Store> Attempt<'_, S> {
     pub(super) fn steps(&mut self) -> Result<(), AppError> {
+        // Before anything is submitted: a base that requires signed commits
+        // would refuse the batch's unsigned merge commits after the landing
+        // attempt began, fencing every member (SH-832 D8).
+        let base = self.plan.base_branch.clone();
+        match self
+            .batching
+            .base_policy(self.head, &base, self.cancellation)
+        {
+            Ok(false) => {}
+            Ok(true) => {
+                self.dissolved = Some(format!(
+                    "{base} requires signed commits, and a batch's merge commits are unsigned"
+                ));
+                return Ok(());
+            }
+            Err(error) => {
+                self.dissolved = Some(format!(
+                    "whether {base} requires signed commits could not be read: {error}"
+                ));
+                return Ok(());
+            }
+        }
         let lockable: Vec<(StoryNo, String)> = self.plan.members[1..]
             .iter()
             .map(|member| (member.story, member.candidate.story_id.clone()))
@@ -49,7 +73,7 @@ impl<S: Store> Attempt<'_, S> {
             .collect();
         for story_id in others {
             if self.cancellation.is_cancelled() {
-                return Ok(());
+                break;
             }
             let Some(lock) = locks.get(&story_id) else {
                 continue;
@@ -58,6 +82,12 @@ impl<S: Store> Attempt<'_, S> {
                 locks.release(&story_id);
                 self.exclude(&story_id, reason, detail);
             }
+        }
+        // The member locks outlive the steps: a landed member is reaped
+        // under its own lock (SH-832 D6).
+        self.locks = Some(locks);
+        if self.cancellation.is_cancelled() {
+            return Ok(());
         }
         progress_item(self.env, self.head, "batch member submission", "passed");
         if self.plan.members.len() < 2 {
@@ -274,6 +304,11 @@ impl<S: Store> Attempt<'_, S> {
                     head_commit: member.commit.clone(),
                     pull_request: member.pull_request.clone(),
                     position: position as u32,
+                    branch: member
+                        .candidate
+                        .cleanup_lease
+                        .as_ref()
+                        .map(|lease| lease.branch.clone()),
                 })
                 .collect(),
             excluded: self.plan.excluded.clone(),

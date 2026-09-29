@@ -165,6 +165,10 @@ pub struct BatchMember {
     pub pull_request: String,
     /// Queue order within the batch, from 0 (the head).
     pub position: u32,
+    /// The member's own branch, whose copy on origin is deleted once the
+    /// batch landed (SH-832 D8). Absent in records written before SH-832.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// Why a story the preview selected did not become a member.

@@ -13,8 +13,8 @@ use super::{Ctx, VerificationCandidate, VerificationQueue};
 use crate::domain::landing::VerifiedSubmission;
 use crate::error::AppError;
 use crate::store::{
-    BatchLanding, BatchLandingIntent, BatchPhase, LandingIntent, ReadOps, Store, StoreError,
-    StoryNo, VerificationBatch, WriteOps,
+    BatchGate, BatchLanding, BatchLandingIntent, BatchPhase, LandingIntent, ReadOps, Store,
+    StoreError, StoryNo, VerificationBatch, WriteOps,
 };
 
 /// Whether a certified batch may begin its merge.
@@ -35,13 +35,15 @@ impl<S: Store> VerificationQueue<'_, S> {
     /// Atomically admits a certified batch to land: re-derives every member
     /// exactly as a single landing does, writes one landing intent per
     /// member bound to the batch, and moves the record from `gating` to
-    /// `landing`. `members` are the members' candidates in batch order.
+    /// `landing` with its `gate`. `members` are the members' candidates in
+    /// batch order.
     pub fn begin_batch_landing(
         &self,
         ctx: &Ctx<'_, S>,
         record: &VerificationBatch,
         members: &[VerificationCandidate],
         certification: &VerifiedSubmission,
+        gate: BatchGate,
     ) -> Result<BatchLandingAdmission, AppError> {
         certification.validate()?;
         if ctx.project() != record.project {
@@ -143,7 +145,8 @@ impl<S: Store> VerificationQueue<'_, S> {
                 crate::store::landing::validate_intent(tx, row)?;
                 tx.insert_landing_intent(row)?;
             }
-            let next = record.advance(BatchPhase::Landing, &now)?;
+            let mut next = record.advance(BatchPhase::Landing, &now)?;
+            next.gate = Some(gate);
             if !tx.update_verification_batch(&next, record.revision)? {
                 return Err(StoreError::Invariant(format!(
                     "verification batch {} changed while its landing was admitted",

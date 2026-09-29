@@ -20,7 +20,8 @@ mod reconcile_wait_tests;
 #[cfg(test)]
 mod workspace_tests;
 pub use batch::{
-    BatchActuator, BatchPublication, BatchRetirement, MemberOwner, abandon_interrupted_batches,
+    BatchActuator, BatchPublication, BatchRetirement, MemberBranch, MemberOwner, MemberPrune,
+    abandon_interrupted_batches,
 };
 pub use batch_preview::batch_preview_log;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
@@ -2080,6 +2081,9 @@ where
         })?;
     }
     let ordered = queue.ordered_for(project)?;
+    // One recovery per batch per tick: every member's intent observes the
+    // same batch merge (SH-832 D5).
+    let mut recovered_batches = BTreeSet::new();
     for intent in store.read(|tx| tx.landing_intents())? {
         let Some(candidate) = ordered
             .iter()
@@ -2087,6 +2091,11 @@ where
         else {
             continue;
         };
+        if let Some(batch) = &intent.batch
+            && !recovered_batches.insert(batch.id.clone())
+        {
+            continue;
+        }
         let lifecycle_entry = inflight.enter();
         let started_at = env.now();
         name_verification(&lifecycle_entry, candidate, &started_at);
@@ -2124,6 +2133,12 @@ where
                     .no_hooks(true);
                     if !observation::human_permits(store, candidate)? {
                         return Ok(TickResult::Returned);
+                    }
+                    if intent.batch.is_some() {
+                        return batch::recover(
+                            store, env, &queue, &ctx, actuator, candidate, &active, &intent,
+                            &detail, &ordered,
+                        );
                     }
                     let pending = active.reserve(ReservationReason::Cleanup, env.now());
                     if !queue.complete_landing_for(&ctx, candidate, &intent, &detail)? {
@@ -2412,6 +2427,54 @@ where
                             Some(&summary),
                         );
                         return Ok(result);
+                    }
+                    batch::BatchEnd::Land(mut landing) => {
+                        batched = true;
+                        let landed = batch::land(
+                            store,
+                            env,
+                            &queue,
+                            &ctx,
+                            actuator,
+                            &candidate,
+                            &active,
+                            &mut landing,
+                        )?;
+                        match landed {
+                            // The merge was never requested: the head goes
+                            // on to its own gate, as after any released batch.
+                            batch::Landed::Released => batch_summary = Some(landing.summary),
+                            batch::Landed::Tick(result) => {
+                                batch_preview::finish(
+                                    env,
+                                    &active,
+                                    &candidate,
+                                    preview,
+                                    Instant::now(),
+                                    &Ok(Some(landing.outcome.clone())),
+                                    Some(&landing.summary),
+                                );
+                                return Ok(result);
+                            }
+                            batch::Landed::Reap(reaps) => {
+                                batch_preview::finish(
+                                    env,
+                                    &active,
+                                    &candidate,
+                                    preview,
+                                    Instant::now(),
+                                    &Ok(Some(landing.outcome.clone())),
+                                    Some(&landing.summary),
+                                );
+                                // Reaping is cleanup for work already recorded
+                                // done; graceful shutdown must not wait on it
+                                // (as for one story).
+                                drop(lifecycle_entry);
+                                return batch::reap(
+                                    store, env, &ctx, actuator, &candidate, &active, *reaps,
+                                );
+                            }
+                        }
                     }
                 }
             }

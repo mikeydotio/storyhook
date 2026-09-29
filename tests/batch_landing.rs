@@ -93,6 +93,7 @@ fn gating(f: &ServiceFixture, members: &[VerificationCandidate]) -> Verification
                 head_commit: "c".repeat(40),
                 pull_request: candidate.pull_request.clone().unwrap().url,
                 position: position as u32,
+                branch: None,
             })
             .collect(),
         excluded: Vec::new(),
@@ -134,6 +135,15 @@ fn certification() -> VerifiedSubmission {
     }
 }
 
+fn passed() -> BatchGate {
+    BatchGate {
+        verdict: GateVerdict::Certified,
+        tree: Some(TREE.into()),
+        detail: "batch gate passed".into(),
+        seconds: 1,
+    }
+}
+
 fn record(f: &ServiceFixture, id: &BatchId) -> VerificationBatch {
     f.store()
         .read(|tx| tx.verification_batches(f.project()))
@@ -162,7 +172,7 @@ fn admit(
     batch: &VerificationBatch,
 ) -> BatchLandingIntent {
     match VerificationQueue::new(f.store())
-        .begin_batch_landing(&f.ctx(), batch, members, &certification())
+        .begin_batch_landing(&f.ctx(), batch, members, &certification(), passed())
         .unwrap()
     {
         BatchLandingAdmission::Admitted { intent, .. } => *intent,
@@ -393,7 +403,7 @@ fn admission_writes_nothing_unless_every_member_is_still_what_the_batch_gated() 
     let mut wrong_head = certification();
     wrong_head.head = "f".repeat(40);
     let BatchLandingAdmission::Refused(why) = queue
-        .begin_batch_landing(&f.ctx(), &batch, &members, &wrong_head)
+        .begin_batch_landing(&f.ctx(), &batch, &members, &wrong_head, passed())
         .unwrap()
     else {
         panic!("a certification of another head must not land the batch")
@@ -411,7 +421,7 @@ fn admission_writes_nothing_unless_every_member_is_still_what_the_batch_gated() 
         .relate(&ids[2], "blocked-by", &blocker, false)
         .unwrap();
     let BatchLandingAdmission::Refused(why) = queue
-        .begin_batch_landing(&f.ctx(), &batch, &members, &certification())
+        .begin_batch_landing(&f.ctx(), &batch, &members, &certification(), passed())
         .unwrap()
     else {
         panic!("a held member must not land")
@@ -428,7 +438,7 @@ fn admission_writes_nothing_unless_every_member_is_still_what_the_batch_gated() 
         .set_state(&ids[1], "verifying", None, None, None)
         .unwrap();
     let BatchLandingAdmission::Refused(why) = queue
-        .begin_batch_landing(&f.ctx(), &batch, &members, &certification())
+        .begin_batch_landing(&f.ctx(), &batch, &members, &certification(), passed())
         .unwrap()
     else {
         panic!("a resubmitted member must not land on the old gate")

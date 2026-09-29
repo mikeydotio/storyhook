@@ -7,8 +7,8 @@ use super::batch_preview::{Board, git};
 use super::*;
 use std::collections::BTreeSet;
 use storyhook::daemon::verification::{
-    BatchActuator, BatchPublication, BatchRetirement, MemberOwner, VerificationCancellation,
-    abandon_interrupted_batches,
+    BatchActuator, BatchPublication, BatchRetirement, LandingOutcome, MemberBranch, MemberOwner,
+    MemberPrune, VerificationCancellation, abandon_interrupted_batches,
 };
 use storyhook::domain::gate_verdict::GateVerdict;
 use storyhook::service::trial_merge::{PrivateTrialMerger, TrialMerger};
@@ -35,6 +35,8 @@ enum Gate {
     MemberLeaves(usize),
     /// It stops the verifier, then waits to be cancelled.
     OperatorStops,
+    /// It certifies the batch pull request at the tip it was published at.
+    CertifiesTip,
 }
 
 /// A gate that answers `outcome`.
@@ -53,6 +55,14 @@ struct Batcher<'a> {
     moved: BTreeSet<String>,
     calls: Mutex<Vec<String>>,
     publications: Mutex<Vec<BatchPublication>>,
+    /// What `land` answers.
+    landing: LandingOutcome,
+    /// What `recover_landing` answers; none means no recovery is expected.
+    recovery: Option<LandingOutcome>,
+    /// A story `land` labels human-only as the merge completes.
+    held_at_landing: Option<String>,
+    /// Whether the base requires signed commits.
+    signed_base: bool,
 }
 
 impl<'a> Batcher<'a> {
@@ -66,6 +76,12 @@ impl<'a> Batcher<'a> {
             moved: BTreeSet::new(),
             calls: Mutex::new(Vec::new()),
             publications: Mutex::new(Vec::new()),
+            landing: LandingOutcome::Merged {
+                detail: "test merge confirmed".into(),
+            },
+            recovery: None,
+            held_at_landing: None,
+            signed_base: false,
         }
     }
 
@@ -133,20 +149,34 @@ impl VerificationActuator for Batcher<'_> {
     fn land(
         &self,
         candidate: &VerificationCandidate,
-        _intent: &storyhook::store::LandingIntent,
-    ) -> storyhook::daemon::verification::LandingOutcome {
-        self.call(format!("land {}", candidate.story_id));
-        storyhook::daemon::verification::LandingOutcome::Merged {
-            detail: "test merge confirmed".into(),
+        intent: &storyhook::store::LandingIntent,
+    ) -> LandingOutcome {
+        self.call(format!(
+            "land {} {}",
+            candidate.story_id,
+            intent.landing_pull_request()
+        ));
+        if let Some(held) = &self.held_at_landing {
+            StoryService::new(&self.board.fixture.ctx())
+                .set_labels(held, &["human-only".into()], &[])
+                .unwrap();
         }
+        self.landing.clone()
     }
 
     fn recover_landing(
         &self,
-        _candidate: &VerificationCandidate,
-        _intent: &storyhook::store::LandingIntent,
-    ) -> storyhook::daemon::verification::LandingOutcome {
-        panic!("these tests leave no landing authority unresolved")
+        candidate: &VerificationCandidate,
+        intent: &storyhook::store::LandingIntent,
+    ) -> LandingOutcome {
+        self.call(format!(
+            "recover {} {}",
+            candidate.story_id,
+            intent.landing_pull_request()
+        ));
+        self.recovery
+            .clone()
+            .expect("this test leaves no landing authority unresolved")
     }
 
     fn notify(
@@ -165,7 +195,8 @@ impl VerificationActuator for Batcher<'_> {
         panic!("a delivered notification never re-dispatches")
     }
 
-    fn reap(&self, _candidate: &VerificationCandidate) -> Result<(), AppError> {
+    fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
+        self.call(format!("reap {}", candidate.story_id));
         Ok(())
     }
 
@@ -256,6 +287,19 @@ impl BatchActuator for Batcher<'_> {
                     .unwrap();
                 Self::wait_cancelled(cancellation)
             }
+            Gate::CertifiesTip => VerificationOutcome::Certified {
+                head: self
+                    .publications
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .tip
+                    .clone(),
+                tree: "e".repeat(40),
+                detail: "batch gate passed".into(),
+                gate: "make test".into(),
+            },
         }
     }
 
@@ -278,6 +322,49 @@ impl BatchActuator for Batcher<'_> {
             merged: false,
             deleted: true,
         })
+    }
+
+    fn base_policy(
+        &self,
+        _head: &VerificationCandidate,
+        base: &str,
+        _cancellation: &VerificationCancellation,
+    ) -> Result<bool, AppError> {
+        self.call(format!("base-policy {base}"));
+        Ok(self.signed_base)
+    }
+
+    fn reap_member(
+        &self,
+        member: &VerificationCandidate,
+        _owner: MemberOwner<'_>,
+        _cancellation: &VerificationCancellation,
+    ) -> Result<(), AppError> {
+        self.call(format!("reap-member {}", member.story_id));
+        Ok(())
+    }
+
+    fn prune_members(
+        &self,
+        _head: &VerificationCandidate,
+        members: &[MemberBranch],
+    ) -> Result<Vec<MemberPrune>, AppError> {
+        self.call(format!(
+            "prune-members {}",
+            members
+                .iter()
+                .map(|member| member.branch.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+        Ok(members
+            .iter()
+            .map(|member| MemberPrune {
+                branch: member.branch.clone(),
+                result: "deleted".into(),
+                detail: None,
+            })
+            .collect())
     }
 }
 
@@ -344,8 +431,11 @@ fn certified_batch() -> VerificationOutcome {
     }
 }
 
+/// A batch whose gate certified some other head than the batch tip never
+/// lands: its admission is refused, it is released with the reason, and the
+/// head is gated alone (SH-832 D4).
 #[test]
-fn a_green_batch_is_released_and_the_head_is_then_gated_alone() {
+fn a_batch_certified_at_another_head_is_released_and_the_head_is_gated_alone() {
     let board = board(&CLEAN, Some(3));
     let ids = board.stories.clone();
     let before = queued(&board);
@@ -359,19 +449,26 @@ fn a_green_batch_is_released_and_the_head_is_then_gated_alone() {
         calls,
         [
             format!("submit {}", ids[0]),
+            "base-policy dev".to_owned(),
             format!("submit-member {}", ids[1]),
             format!("submit-member {}", ids[2]),
             format!("publish {}", batch.branch),
             format!("gate {BATCH_PR}"),
             format!("retire {} {BATCH_PR}", batch.id),
             format!("verify {} https://github.com/acme/widgets/pull/1", ids[0]),
-            format!("land {}", ids[0]),
+            format!("land {} https://github.com/acme/widgets/pull/1", ids[0]),
+            format!("reap {}", ids[0]),
         ],
         "the batch gate runs first, then the head's own gate on its own PR"
     );
     assert_eq!(batch.phase, BatchPhase::Released);
     assert!(batch.retired);
     assert_eq!(member_ids(batch), ids);
+    let detail = batch.detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("landing was refused") && detail.contains("not the batch tip"),
+        "{detail}"
+    );
     let gate = batch.gate.as_ref().expect("the verdict is recorded");
     assert_eq!(gate.verdict, GateVerdict::Certified);
     assert_eq!(gate.tree.as_deref(), Some("e".repeat(40).as_str()));
@@ -508,7 +605,11 @@ fn no_batch_forms_without_a_partner_or_when_batching_is_off() {
                 "verify {} https://github.com/acme/widgets/pull/1",
                 off.stories[0]
             ),
-            format!("land {}", off.stories[0]),
+            format!(
+                "land {} https://github.com/acme/widgets/pull/1",
+                off.stories[0]
+            ),
+            format!("reap {}", off.stories[0]),
         ]
     );
 }
@@ -693,6 +794,7 @@ fn live_batch(board: &Board) -> VerificationBatch {
             head_commit: git(&board.root, &["rev-parse", &format!("worktree-{id}")]),
             pull_request: format!("https://github.com/acme/widgets/pull/{}", position + 1),
             position: position as u32,
+            branch: None,
         })
         .collect();
     let id = BatchId::generate();
@@ -827,5 +929,256 @@ fn the_verifier_worker_abandons_a_batch_left_live_when_it_starts() {
             .as_deref()
             .map(|d| d.contains("stopped before")),
         Some(true)
+    );
+}
+
+fn landing_batcher(board: &Board) -> Batcher<'_> {
+    Batcher::new(board, Gate::CertifiesTip)
+}
+
+fn comments_with(board: &Board, id: &str, prefix: &str) -> Vec<String> {
+    story_row(&board.fixture, id)
+        .snapshot
+        .comments
+        .iter()
+        .filter(|comment| comment.text.starts_with(prefix))
+        .map(|comment| comment.text.clone())
+        .collect()
+}
+
+fn landing_intents(board: &Board) -> Vec<storyhook::store::LandingIntent> {
+    board
+        .fixture
+        .store()
+        .read(|tx| tx.landing_intents())
+        .unwrap()
+}
+
+/// A certified batch lands through its own pull request, every member is
+/// done in one transaction and reaped under its own lock, and the head is
+/// never gated alone (SH-832 B5, B6).
+#[test]
+fn a_certified_batch_lands_and_every_member_is_done_and_reaped() {
+    let board = board(&CLEAN, Some(3));
+    let ids = board.stories.clone();
+    let batcher = landing_batcher(&board);
+
+    assert_eq!(tick(&board, &batcher), TickResult::Completed);
+
+    let batch = &batches(&board)[0];
+    assert_eq!(batch.phase, BatchPhase::Landed);
+    assert!(batch.retired, "{:?}", batch.detail);
+    assert_eq!(
+        batch.gate.as_ref().map(|gate| gate.verdict),
+        Some(GateVerdict::Certified)
+    );
+    let branches: Vec<String> = ids.iter().map(|id| format!("worktree-{id}")).collect();
+    assert_eq!(
+        batcher.calls(),
+        [
+            format!("submit {}", ids[0]),
+            "base-policy dev".to_owned(),
+            format!("submit-member {}", ids[1]),
+            format!("submit-member {}", ids[2]),
+            format!("publish {}", batch.branch),
+            format!("gate {BATCH_PR}"),
+            format!("land {} {BATCH_PR}", ids[0]),
+            format!("reap {}", ids[0]),
+            format!("reap-member {}", ids[1]),
+            format!("reap-member {}", ids[2]),
+            format!("prune-members {}", branches.join(" ")),
+        ],
+        "one merge of the batch pull request; no single gate for the head"
+    );
+    assert!(landing_intents(&board).is_empty());
+    assert!(queued(&board).is_empty());
+    for id in &ids {
+        assert_eq!(story_row(&board.fixture, id).state, "done", "{id}");
+        let green = comments_with(&board, id, storyhook::service::VERIFICATION_GREEN_PREFIX);
+        assert_eq!(green.len(), 1, "{id}: {green:?}");
+        assert!(green[0].contains(&format!("verification batch {}", batch.id)));
+        assert!(green[0].contains(BATCH_PR), "{}", green[0]);
+        assert_eq!(
+            comments_with(&board, id, "CENTRAL VERIFICATION CLEANUP COMPLETE").len(),
+            1,
+            "{id} is reaped"
+        );
+    }
+    let record = &board.records()[0];
+    assert_eq!(record["batch"]["phase"], "landed", "{record}");
+    assert_eq!(record["verdict"], "certified");
+}
+
+/// A landing whose outcome is uncertain leaves every member fenced in
+/// `verifying`; a restarted verifier does not abandon the batch and
+/// recovers the merge once from the intents, then completes and reaps every
+/// member (B10: a crash between the merge and the completion).
+#[test]
+fn an_uncertain_batch_landing_is_recovered_from_its_intents_after_a_restart() {
+    let board = board(&CLEAN, Some(3));
+    let ids = board.stories.clone();
+    let mut batcher = landing_batcher(&board);
+    batcher.landing = LandingOutcome::Uncertain {
+        detail: "the daemon stopped after the merge request".into(),
+    };
+
+    assert_eq!(tick(&board, &batcher), TickResult::RetryLater);
+
+    let batch = batches(&board)[0].clone();
+    assert_eq!(batch.phase, BatchPhase::Landing);
+    assert_eq!(landing_intents(&board).len(), 3);
+    for id in &ids {
+        assert_eq!(story_row(&board.fixture, id).state, "verifying", "{id}");
+        assert_eq!(
+            comments_with(&board, id, "CENTRAL LANDING PENDING").len(),
+            1,
+            "{id}"
+        );
+    }
+
+    // A new verifier process: worker start leaves the landing batch alone.
+    let env = board.env();
+    assert!(
+        abandon_interrupted_batches(board.fixture.store(), &env, board.fixture.project())
+            .unwrap()
+            .is_empty()
+    );
+    let mut restarted = landing_batcher(&board);
+    restarted.recovery = Some(LandingOutcome::Merged {
+        detail: "confirmed on recovery".into(),
+    });
+
+    assert_eq!(tick(&board, &restarted), TickResult::Completed);
+
+    assert_eq!(
+        restarted.calls(),
+        [
+            format!("recover {} {BATCH_PR}", ids[0]),
+            format!("reap {}", ids[0]),
+            format!("reap-member {}", ids[1]),
+            format!("reap-member {}", ids[2]),
+            format!(
+                "prune-members {}",
+                ids.iter()
+                    .map(|id| format!("worktree-{id}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        ],
+        "one recovery for the batch, never a second merge request"
+    );
+    assert!(landing_intents(&board).is_empty());
+    assert_eq!(batches(&board)[0].phase, BatchPhase::Landed);
+    for id in &ids {
+        assert_eq!(story_row(&board.fixture, id).state, "done", "{id}");
+    }
+}
+
+/// A merge that was never requested releases every member's intent and the
+/// batch in one transaction; the head then goes on to its own gate.
+#[test]
+fn a_batch_merge_never_requested_is_released_and_the_head_is_gated_alone() {
+    let board = board(&CLEAN, Some(3));
+    let ids = board.stories.clone();
+    let mut batcher = landing_batcher(&board);
+    batcher.landing = LandingOutcome::NotAttempted {
+        detail: "the base moved before the merge".into(),
+    };
+
+    let result = tick(&board, &batcher);
+
+    let batch = &batches(&board)[0];
+    assert_eq!(batch.phase, BatchPhase::Released);
+    assert!(
+        batch
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("never requested"),
+        "{:?}",
+        batch.detail
+    );
+    let calls = batcher.calls();
+    assert!(
+        calls.contains(&format!(
+            "verify {} https://github.com/acme/widgets/pull/1",
+            ids[0]
+        )),
+        "the head is gated alone: {calls:?}"
+    );
+    assert_eq!(
+        result,
+        TickResult::RetryLater,
+        "the head's own landing is not attempted either"
+    );
+    assert!(landing_intents(&board).is_empty());
+    for id in &ids {
+        assert_eq!(story_row(&board.fixture, id).state, "verifying", "{id}");
+    }
+}
+
+/// A member a person takes while the batch merges keeps its landing intent
+/// (as a single human-only landing does); the others are done, and the
+/// worker does not spin on the held one.
+#[test]
+fn a_member_a_person_holds_at_landing_keeps_its_intent_and_the_worker_does_not_spin() {
+    let board = board(&CLEAN, Some(3));
+    let ids = board.stories.clone();
+    let mut batcher = landing_batcher(&board);
+    batcher.held_at_landing = Some(ids[1].clone());
+
+    assert_eq!(tick(&board, &batcher), TickResult::Completed);
+
+    assert_eq!(story_row(&board.fixture, &ids[0]).state, "done");
+    assert_eq!(story_row(&board.fixture, &ids[2]).state, "done");
+    assert_eq!(story_row(&board.fixture, &ids[1]).state, "verifying");
+    let rows = landing_intents(&board);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].story_id, ids[1]);
+    let batch = &batches(&board)[0];
+    assert_eq!(batch.phase, BatchPhase::Landed);
+    assert!(
+        !batcher
+            .calls()
+            .iter()
+            .any(|call| call.contains(&format!("worktree-{}", ids[1]))),
+        "the held member's branch is neither reaped nor pruned: {:?}",
+        batcher.calls()
+    );
+
+    let quiet = landing_batcher(&board);
+    assert_eq!(tick(&board, &quiet), TickResult::Idle);
+    assert!(quiet.calls().is_empty(), "{:?}", quiet.calls());
+}
+
+/// A base that requires signed commits forms no batch: nothing is submitted
+/// for the partners, and the head is gated alone (SH-832 D8).
+#[test]
+fn a_base_that_requires_signed_commits_forms_no_batch() {
+    let board = board(&CLEAN, Some(3));
+    let ids = board.stories.clone();
+    let mut batcher = landing_batcher(&board);
+    batcher.signed_base = true;
+
+    assert_eq!(tick(&board, &batcher), TickResult::Completed);
+
+    assert!(batches(&board).is_empty());
+    assert_eq!(
+        batcher.calls(),
+        [
+            format!("submit {}", ids[0]),
+            "base-policy dev".to_owned(),
+            format!("verify {} https://github.com/acme/widgets/pull/1", ids[0]),
+            format!("land {} https://github.com/acme/widgets/pull/1", ids[0]),
+            format!("reap {}", ids[0]),
+        ]
+    );
+    let record = &board.records()[0];
+    assert!(
+        record["batch"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("signed commits"),
+        "{record}"
     );
 }
