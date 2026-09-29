@@ -694,6 +694,15 @@ enum HelperAnswer {
     },
 }
 
+/// Whether a `verify-pr.sh` run may claim its attempt's repair admission
+/// (`STORYHOOK_REPAIR_*`), which binds a gate to one story's project-recovery
+/// lineage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RepairAdmission {
+    /// The run gates the owned story's own submission.
+    Owned,
+}
+
 /// Production actuator backed by repository and plugin scripts.
 pub struct ShellVerificationActuator {
     activity: VerificationActivity,
@@ -1130,7 +1139,8 @@ impl ShellVerificationActuator {
         Ok(())
     }
 
-    /// Runs `story.sh submit` from the lease and validates its receipt.
+    /// Runs `story.sh submit` from the lease under `owner` (the story's own
+    /// workspace lock and cancellation) and validates its receipt.
     ///
     /// Spawned like [`Self::reap_leased`] — cwd is the leased repository, the
     /// lease rides [`CLEANUP_LEASE_ENV`], `STORY_BIN` names this daemon's own
@@ -1144,9 +1154,10 @@ impl ShellVerificationActuator {
     /// the one asked about, a URL that does not parse as a pull request — all
     /// are [`SubmissionFailure::Infrastructure`], since none of them is
     /// anything an agent could repair.
-    fn submit_leased(
+    fn submit_owned(
         &self,
         candidate: &VerificationCandidate,
+        owner: ControlOwner<'_>,
     ) -> Result<SubmittedPullRequest, SubmissionFailure> {
         let _log = self.log_scope(candidate);
         let infrastructure = |detail: String| SubmissionFailure::Infrastructure { detail };
@@ -1179,12 +1190,12 @@ impl ShellVerificationActuator {
             .env("GH_PROMPT_DISABLED", "1")
             .stdin(Stdio::null());
         let output = self
-            .run_control_command(
+            .run_control_owned(
                 command,
                 "verifier-submit",
                 &verification_request_id(candidate),
-                candidate.project,
                 "leased story helper `submit`",
+                owner,
             )
             .map_err(|error| infrastructure(error.to_string()))?;
 
@@ -1249,80 +1260,17 @@ impl ShellVerificationActuator {
         }
         Ok(pull_request)
     }
-}
 
-impl VerificationActuator for ShellVerificationActuator {
-    fn trial_merges(
-        &self,
-        repository: &std::path::Path,
-        deadline: Instant,
-        cancellation: &Cancellation,
-    ) -> Option<Result<Box<dyn crate::service::trial_merge::TrialMerger>, AppError>> {
-        self.batch_preview.then(|| {
-            crate::service::trial_merge::PrivateTrialMerger::open(repository).map(|merger| {
-                Box::new(
-                    merger
-                        .with_deadline(deadline)
-                        .with_cancellation(cancellation.clone()),
-                ) as Box<dyn crate::service::trial_merge::TrialMerger>
-            })
-        })
-    }
-
-    /// Probes the windows named for the story on the tmux server its lease
-    /// records: the server `story.sh notify` delivers to, and the one a
-    /// `--resume` re-dispatch relaunches on. One `tmux list-panes`.
-    fn probe_agent(
-        &self,
-        candidate: &VerificationCandidate,
-        lease: Option<&crate::domain::StoryCleanupLease>,
-        cancellation: &Cancellation,
-    ) -> WindowProbe {
-        let Some(lease) = lease else {
-            return WindowProbe::Unanswered {
-                detail: format!(
-                    "no cleanup lease records the tmux server of {}'s agent",
-                    candidate.story_id
-                ),
-            };
-        };
-        crate::service::resources::tmux::probe_story_panes(
-            &lease.tmux.socket_path,
-            &crate::service::resources::lease_names(lease, &BTreeSet::new()),
-            cancellation,
-        )
-    }
-    fn land(
-        &self,
-        candidate: &VerificationCandidate,
-        intent: &crate::store::LandingIntent,
-    ) -> LandingOutcome {
-        self.run_landing(candidate, intent, false)
-    }
-    fn recover_landing(
-        &self,
-        candidate: &VerificationCandidate,
-        intent: &crate::store::LandingIntent,
-    ) -> LandingOutcome {
-        self.run_landing(candidate, intent, true)
-    }
-    fn verify(
-        &self,
-        candidate: &VerificationCandidate,
-        pull_request: &PrLink,
-    ) -> VerificationOutcome {
-        self.verify_cancellable(
-            candidate,
-            pull_request,
-            &self.activity.cancellation_for(candidate.project),
-        )
-    }
-
-    fn verify_cancellable(
+    /// Runs `verify-pr.sh` on `pull_request` under `candidate`'s owned attempt:
+    /// its progress journal, attempt id and workspace lock. `admission` says
+    /// whether the run may claim the attempt's project-recovery repair
+    /// admission, which is keyed to one story.
+    fn run_verify_pr(
         &self,
         candidate: &VerificationCandidate,
         pull_request: &PrLink,
         cancellation: &VerificationCancellation,
+        admission: RepairAdmission,
     ) -> VerificationOutcome {
         let _log = self.log_scope(candidate);
         if let Some(detail) = checkout_repository_problem(&candidate.checkout, pull_request) {
@@ -1425,7 +1373,9 @@ impl VerificationActuator for ShellVerificationActuator {
             .env_remove("STORYHOOK_REPAIR_GENERATION");
         // Legacy ordinary submissions have no generation and cannot own a
         // recovery lineage. Preserve their existing path without inventing one.
-        if let Some(generation) = owned_attempt.as_ref().and_then(|owned| owned.generation) {
+        if admission == RepairAdmission::Owned
+            && let Some(generation) = owned_attempt.as_ref().and_then(|owned| owned.generation)
+        {
             command
                 .env("STORYHOOK_REPAIR_ADMISSION", "1")
                 .env("STORYHOOK_REPAIR_PROJECT", &candidate.project_slug)
@@ -1545,6 +1495,88 @@ impl VerificationActuator for ShellVerificationActuator {
         };
         parsed.into_outcome()
     }
+}
+
+impl VerificationActuator for ShellVerificationActuator {
+    fn trial_merges(
+        &self,
+        repository: &std::path::Path,
+        deadline: Instant,
+        cancellation: &Cancellation,
+    ) -> Option<Result<Box<dyn crate::service::trial_merge::TrialMerger>, AppError>> {
+        self.batch_preview.then(|| {
+            crate::service::trial_merge::PrivateTrialMerger::open(repository).map(|merger| {
+                Box::new(
+                    merger
+                        .with_deadline(deadline)
+                        .with_cancellation(cancellation.clone()),
+                ) as Box<dyn crate::service::trial_merge::TrialMerger>
+            })
+        })
+    }
+
+    /// Probes the windows named for the story on the tmux server its lease
+    /// records: the server `story.sh notify` delivers to, and the one a
+    /// `--resume` re-dispatch relaunches on. One `tmux list-panes`.
+    fn probe_agent(
+        &self,
+        candidate: &VerificationCandidate,
+        lease: Option<&crate::domain::StoryCleanupLease>,
+        cancellation: &Cancellation,
+    ) -> WindowProbe {
+        let Some(lease) = lease else {
+            return WindowProbe::Unanswered {
+                detail: format!(
+                    "no cleanup lease records the tmux server of {}'s agent",
+                    candidate.story_id
+                ),
+            };
+        };
+        crate::service::resources::tmux::probe_story_panes(
+            &lease.tmux.socket_path,
+            &crate::service::resources::lease_names(lease, &BTreeSet::new()),
+            cancellation,
+        )
+    }
+    fn land(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+    ) -> LandingOutcome {
+        self.run_landing(candidate, intent, false)
+    }
+    fn recover_landing(
+        &self,
+        candidate: &VerificationCandidate,
+        intent: &crate::store::LandingIntent,
+    ) -> LandingOutcome {
+        self.run_landing(candidate, intent, true)
+    }
+    fn verify(
+        &self,
+        candidate: &VerificationCandidate,
+        pull_request: &PrLink,
+    ) -> VerificationOutcome {
+        self.verify_cancellable(
+            candidate,
+            pull_request,
+            &self.activity.cancellation_for(candidate.project),
+        )
+    }
+
+    fn verify_cancellable(
+        &self,
+        candidate: &VerificationCandidate,
+        pull_request: &PrLink,
+        cancellation: &VerificationCancellation,
+    ) -> VerificationOutcome {
+        self.run_verify_pr(
+            candidate,
+            pull_request,
+            cancellation,
+            RepairAdmission::Owned,
+        )
+    }
 
     fn notify(
         &self,
@@ -1585,7 +1617,14 @@ impl VerificationActuator for ShellVerificationActuator {
         &self,
         candidate: &VerificationCandidate,
     ) -> Result<SubmittedPullRequest, SubmissionFailure> {
-        self.submit_leased(candidate)
+        let workspace = self.activity.workspace_for(candidate.project);
+        self.submit_owned(
+            candidate,
+            ControlOwner {
+                workspace: workspace.as_deref(),
+                cancellation: &self.activity.cancellation_for(candidate.project),
+            },
+        )
     }
 }
 
