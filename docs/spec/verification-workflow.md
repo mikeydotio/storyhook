@@ -1694,6 +1694,9 @@ this exception does not erase a missing-pane observation, reset, or quarantine.
 locus, affected stories, assessor, repair story and PR, phase, completed-attempt
 budget, and next action. Old payloads decode with an empty array. Project repair
 is displayed independently of infrastructure halt and manual admission control.
+Only unresolved recoveries are listed: a landed recovery leaves the list when no
+affected story is held or still owes a fresh generation (SH-775; the rule is in
+`docs/spec/project-fault-recovery.md`, "Resolution").
 `story verifier repair show <id> --json` retains the full evidence and history.
 
 Legacy incident text cannot prove execution, receipt inspection, or cleanup.
