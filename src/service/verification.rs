@@ -1365,14 +1365,9 @@ fn ordered_candidates_in(
     let resets = tx.story_resets(project.id)?;
     let observed = super::project_recovery::observed_generations(tx, project.id)?;
     for row in rows {
-        if crate::domain::is_human_only(&row.snapshot)
-            || row.snapshot.awaiting.is_some()
-            || resets.contains_key(&row.story_no)
-            || tx.engine_reset(project.id, row.story_no)?.is_some()
-            || tx
-                .story_reset(project.id, row.story_no)?
-                .is_some_and(|reset| !reset.completed)
-        {
+        let entry = verifying_entry(tx, project.id, row.story_no)?;
+        let generation = entry.as_ref().map(|(_, generation)| *generation);
+        if queue_hold(tx, project.id, &row, &resets, &observed, generation)?.is_some() {
             continue;
         }
         let links = tx
@@ -1388,15 +1383,9 @@ fn ordered_candidates_in(
                 many.iter().map(|link| link.url.clone()).collect(),
             )),
         };
-        let entry = verifying_entry(tx, project.id, row.story_no)?;
         let (verifying_since, verifying_generation) = entry
             .map(|(at, generation)| (Some(at), Some(generation)))
             .unwrap_or((None, None));
-        if verifying_generation
-            .is_some_and(|generation| observed.contains(&(row.story_no, generation)))
-        {
-            continue;
-        }
         candidates.push(VerificationCandidate {
             blocked_by: crate::domain::transition::open_blockers(&row.snapshot, index),
             landing_pending: intents
@@ -1419,6 +1408,48 @@ fn ordered_candidates_in(
     }
     sort_candidates(&mut candidates);
     Ok(candidates)
+}
+
+/// Why the verifier's queue leaves out a story that is in `verifying`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QueueHold {
+    /// The `human-only` label reserves the story for a person.
+    HumanOnly,
+    /// The story awaits a person (its `awaiting` reason).
+    Awaiting,
+    /// A story or engine reset of the story is pending.
+    Reset,
+    /// Project recovery has observed this verification generation.
+    ProjectRecovery,
+}
+
+/// Why the queue leaves out `row`, a story in `verifying`, or `None` when it
+/// is queued. The one statement of the queue's exclusions, so every reader
+/// agrees with the queue about which stories it holds out.
+fn queue_hold(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    row: &crate::store::StoryRow,
+    resets: &std::collections::BTreeMap<StoryNo, String>,
+    observed: &std::collections::BTreeSet<(StoryNo, GlobalSeq)>,
+    generation: Option<GlobalSeq>,
+) -> Result<Option<QueueHold>, crate::store::StoreError> {
+    Ok(if crate::domain::is_human_only(&row.snapshot) {
+        Some(QueueHold::HumanOnly)
+    } else if row.snapshot.awaiting.is_some() {
+        Some(QueueHold::Awaiting)
+    } else if resets.contains_key(&row.story_no)
+        || tx.engine_reset(project, row.story_no)?.is_some()
+        || tx
+            .story_reset(project, row.story_no)?
+            .is_some_and(|reset| !reset.completed)
+    {
+        Some(QueueHold::Reset)
+    } else if generation.is_some_and(|generation| observed.contains(&(row.story_no, generation))) {
+        Some(QueueHold::ProjectRecovery)
+    } else {
+        None
+    })
 }
 
 /// The verifier's durable verdict on a generation's post-merge resources.
