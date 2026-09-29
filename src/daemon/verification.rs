@@ -30,8 +30,11 @@ mod observation;
 mod reconcile_hold;
 mod recovery_transport;
 mod repair_admission;
+mod repair_return;
 mod reservation;
 pub(crate) use recovery_transport::ControlOwner;
+pub use repair_return::resume_plan;
+use repair_return::{red_diagnosis, return_for_repair};
 pub(crate) use reservation::{Reservation, SlotView};
 pub use reservation::{ReservationReason, VerifierReservation};
 pub mod status;
@@ -2782,12 +2785,7 @@ where
                         &ctx,
                         actuator,
                         &candidate,
-                        &format!(
-                            "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`. Fix the branch in its worktree. Run new and impacted tests. Commit the work. Move {} back to verifying. {}.\n\n{}",
-                            candidate.story_id,
-                            push_promise(candidate.cleanup_lease.is_some(), false),
-                            crate::text_lint::quote_evidence(&detail)
-                        ),
+                        &red_diagnosis(&candidate, &tree, &gate, &log, &detail, None),
                         &active,
                         ReservationReason::Remediation,
                     )?;
@@ -3196,179 +3194,6 @@ fn record_cleanup_required(
             crate::text_lint::quote_evidence(&error.to_string())
         ),
     )
-}
-
-/// Hands a returned story back to its agent: the transition and the
-/// diagnosis comment, then delivery into the dispatched pane.
-///
-/// `Applied(true)` means remediation is under way in the story's own window —
-/// the paste landed, or the agent was absent and a resume re-dispatch of the
-/// same story into the same window and worktree succeeded (SH-650, decision
-/// D-E of `docs/spec/verification-workflow.md`). `Applied(false)` means the
-/// story is parked with `awaiting`: only when the re-dispatch itself was
-/// refused, or the refusal was not evidence of absence. The Conflict arm holds
-/// the queue on `true` and releases it on `false`, so the hold applies whether
-/// or not the FIRST paste landed, and never waits for a resubmission nobody
-/// will make.
-///
-/// `reservation` names why `owner` keeps its slot once the return takes its
-/// generation out of the queue (SH-768): through delivery, and on a conflict
-/// through the wait that follows. It is declared before that write and kept
-/// only if the write applied.
-fn return_for_repair<S: Store, A: VerificationActuator>(
-    queue: &VerificationQueue<'_, S>,
-    ctx: &Ctx<'_, S>,
-    actuator: &A,
-    candidate: &VerificationCandidate,
-    diagnosis: &str,
-    owner: &VerificationGuard,
-    reservation: ReservationReason,
-) -> Result<GenerationWrite<bool>, AppError> {
-    let cancellation = &owner.cancellation;
-    if cancellation.is_cancelled() || !queue.human_permits(candidate)? {
-        return Ok(GenerationWrite::Applied(false));
-    }
-    let pending = owner.reserve(reservation, ctx.now());
-    if matches!(
-        queue.record_generation_returned(ctx, candidate, diagnosis)?,
-        GenerationWrite::Superseded
-    ) {
-        return Ok(GenerationWrite::Superseded);
-    }
-    pending.retire();
-    let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
-    let delivered = actuator.notify(candidate, diagnosis);
-    if cancellation.is_cancelled() || !queue.human_permits(candidate)? {
-        return Ok(GenerationWrite::Applied(false));
-    }
-    let absent = match delivered {
-        Ok(NotifyDelivery::Delivered) => return Ok(GenerationWrite::Applied(true)),
-        Ok(NotifyDelivery::AgentAbsent { reason, detail }) => format!("{detail} ({reason})"),
-        Err(error) => {
-            let reason = format!("verification remediation could not reach its agent: {error}");
-            return park(queue, ctx, candidate, &reason);
-        }
-    };
-    // The trail is written BEFORE the respawn so a daemon that dies inside it
-    // leaves a story that says what was attempted, not one that merely sits
-    // in-progress with a dead pane (SH-306).
-    comment_once(
-        ctx,
-        candidate,
-        &format!(
-            "{VERIFICATION_RESUME_PREFIX} re-dispatching {} into its own window and worktree with the resume clause.\n\n{}",
-            candidate.story_id,
-            crate::text_lint::quote_evidence(&absent)
-        ),
-    )?;
-    let plan = resume_plan(ctx.store(), candidate)?;
-    super::activity::emit(
-        "INFO",
-        "verifier",
-        "event",
-        &activity_context,
-        &format!("agent absent ({absent}); re-dispatching with {plan:?}"),
-    );
-    let redispatched = actuator.redispatch(candidate, &plan);
-    if cancellation.is_cancelled() || !queue.human_permits(candidate)? {
-        return Ok(GenerationWrite::Applied(false));
-    }
-    if let Err(error) = redispatched {
-        super::activity::emit(
-            "ERROR",
-            "verifier",
-            "event",
-            &activity_context,
-            &format!("resume re-dispatch refused: {error}"),
-        );
-        let reason = format!(
-            "verification remediation could not re-dispatch its agent: {error} (after: {absent})"
-        );
-        return park(queue, ctx, candidate, &reason);
-    }
-    // The agent is live under the resume charter, which begins by reading this
-    // story's comments — where the diagnosis already is. A paste that fails
-    // here is recorded, never a hard stop (D-E: `awaiting` only when the
-    // re-dispatch itself is refused).
-    let delivered = actuator.notify(candidate, diagnosis);
-    if cancellation.is_cancelled() || !queue.human_permits(candidate)? {
-        return Ok(GenerationWrite::Applied(false));
-    }
-    match delivered {
-        Ok(NotifyDelivery::Delivered) => {}
-        Ok(NotifyDelivery::AgentAbsent { reason, detail }) => comment_once(
-            ctx,
-            candidate,
-            &format!(
-                "{VERIFICATION_RESUME_PREFIX} re-dispatched, but the diagnosis could not be pasted afterwards. Read the diagnosis in the previous comment.\n\n{}",
-                crate::text_lint::quote_evidence(&format!("{detail} ({reason})"))
-            ),
-        )?,
-        Err(error) => comment_once(
-            ctx,
-            candidate,
-            &format!(
-                "{VERIFICATION_RESUME_PREFIX} re-dispatched, but the diagnosis could not be pasted afterwards. Read the diagnosis in the previous comment.\n\n{}",
-                crate::text_lint::quote_evidence(&error.to_string())
-            ),
-        )?,
-    }
-    Ok(GenerationWrite::Applied(true))
-}
-
-fn park<S: Store>(
-    queue: &VerificationQueue<'_, S>,
-    ctx: &Ctx<'_, S>,
-    candidate: &VerificationCandidate,
-    reason: &str,
-) -> Result<GenerationWrite<bool>, AppError> {
-    if matches!(
-        queue.set_generation_awaiting(ctx, candidate, reason)?,
-        GenerationWrite::Superseded
-    ) {
-        return Ok(GenerationWrite::Superseded);
-    }
-    Ok(GenerationWrite::Applied(false))
-}
-
-/// Derives the resume plan for `candidate` from the store (SH-650).
-///
-/// A story held by a live lane — `Dispatching` or `Working`, never `Idle` or
-/// `Quarantined` — of a live engine run in the candidate's project is
-/// re-dispatched as that lane: the run's provider options and `--full-auto`.
-/// A quarantined lane is one the engine has already given up on, so passing
-/// its identity would be a lie about who observes the window. Everything
-/// else (an attended dispatch, a finished run) is an ordinary autonomous
-/// resume whose provider the helper reads from the dispatch's own record.
-/// Public for store-backed integration tests.
-pub fn resume_plan(
-    store: &impl Store,
-    candidate: &VerificationCandidate,
-) -> Result<ResumePlan, AppError> {
-    let plan = store.read(|tx| {
-        for run in tx.live_engine_runs()? {
-            if run.project_slug != candidate.project_slug {
-                continue;
-            }
-            let held = tx.engine_lanes(&run.id)?.into_iter().any(|lane| {
-                matches!(
-                    lane.state,
-                    EngineLaneState::Dispatching | EngineLaneState::Working
-                ) && lane.story_id.as_deref() == Some(candidate.story_id.as_str())
-            });
-            if held {
-                return Ok(ResumePlan {
-                    agent: Some(run.agent),
-                    model: run.model.clone(),
-                    effort: run.effort.clone(),
-                    fast: run.speed == Some(EngineSpeed::Fast),
-                    full_auto: true,
-                });
-            }
-        }
-        Ok(ResumePlan::default())
-    })?;
-    Ok(plan)
 }
 
 /// The conventional name of a termination signal, for a diagnosis a reader
