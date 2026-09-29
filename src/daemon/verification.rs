@@ -1119,6 +1119,24 @@ impl ShellVerificationActuator {
     }
 
     fn reap_leased(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
+        let workspace = self.activity.workspace_for(candidate.project);
+        self.reap_owned(
+            candidate,
+            ControlOwner {
+                workspace: workspace.as_deref(),
+                cancellation: &self.activity.cancellation_for(candidate.project),
+            },
+        )
+    }
+
+    /// Reaps `candidate` with an explicit owner: the workspace lock the
+    /// helper inherits must be that story's own (the helper refuses another
+    /// story's descriptor), which a batch member's reap supplies (SH-832).
+    pub(super) fn reap_owned(
+        &self,
+        candidate: &VerificationCandidate,
+        owner: ControlOwner<'_>,
+    ) -> Result<(), AppError> {
         let _log = self.log_scope(candidate);
         let lease = candidate.cleanup_lease.as_ref().ok_or_else(|| {
             AppError::Storage(format!(
@@ -1144,12 +1162,12 @@ impl ShellVerificationActuator {
             .env(CLEANUP_LEASE_ENV, encoded)
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null());
-        let output = self.run_control_command(
+        let output = self.run_control_owned(
             command,
             "verifier-reap",
             &verification_request_id(candidate),
-            candidate.project,
             "leased story helper `reap`",
+            owner,
         )?;
 
         let receipt: CleanupReceipt = serde_json::from_slice(&output.stdout).map_err(|_| {
