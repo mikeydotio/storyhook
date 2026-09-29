@@ -31,10 +31,8 @@ pub(super) fn find(
     read_view(tx, record)
 }
 
-pub(super) fn read_view(
-    tx: &impl ReadOps,
-    record: ProjectRecovery,
-) -> Result<RecoveryView, StoreError> {
+/// Strictly decodes a record's versioned state, without cross-record validation.
+pub(super) fn decode(record: &ProjectRecovery) -> Result<RecoveryState, StoreError> {
     let state: RecoveryState = serde_json::from_value(record.state.clone()).map_err(|error| {
         StoreError::Corrupt(format!("project recovery {} state: {error}", record.id))
     })?;
@@ -44,6 +42,14 @@ pub(super) fn read_view(
             state.version
         )));
     }
+    Ok(state)
+}
+
+pub(super) fn read_view(
+    tx: &impl ReadOps,
+    record: ProjectRecovery,
+) -> Result<RecoveryView, StoreError> {
+    let state = decode(&record)?;
     let observations = tx.project_recovery_observations(record.project, &record.id)?;
     if state
         .subjects
