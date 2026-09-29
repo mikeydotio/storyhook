@@ -62,6 +62,20 @@ elif args[:2] == ["pr", "view"]:
             open(stale, "w").write(str(left - 1))
             answer["headRefOid"] = "0" * 40
     print(json.dumps(answer))
+elif args[0] == "api" and args[1].endswith("/protection/required_signatures"):
+    # `signatures` holds enabled, disabled, 404 or 500; absent reads as 404,
+    # which GitHub answers for an unprotected branch and for a reader
+    # without admin rights alike.
+    mode_path = os.path.join(state, "signatures")
+    mode = open(mode_path).read().strip() if os.path.exists(mode_path) else "404"
+    if mode in ("enabled", "disabled"):
+        print(json.dumps({"enabled": mode == "enabled"}))
+    else:
+        sys.stderr.write("gh: fixture (HTTP %s)\n" % mode)
+        sys.exit(1)
+elif args[0] == "api" and "/rules/branches/" in args[1]:
+    rules_path = os.path.join(state, "rules.json")
+    print(open(rules_path).read() if os.path.exists(rules_path) else "[]")
 elif args[:2] == ["pr", "close"]:
     pr = next(p for p in prs if str(p["number"]) == args[2])
     pr["state"] = "CLOSED"
@@ -225,6 +239,35 @@ impl Fixture {
             )
         });
         (output, answer)
+    }
+
+    /// Puts `head` on origin as `branch`.
+    fn origin_has(&self, branch: &str, head: &str) {
+        self.git(
+            &self.checkout(),
+            &[
+                "push",
+                "-q",
+                self.origin().to_str().unwrap(),
+                &format!("{head}:refs/heads/{branch}"),
+            ],
+        );
+    }
+
+    fn origin_head(&self, branch: &str) -> Option<String> {
+        let output = storyhook::env::git_env::command(&self.origin())
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
+            .output()
+            .unwrap();
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
     }
 
     fn publish(&self, extra: &[(&str, &str)]) -> (Output, Value) {
@@ -477,4 +520,138 @@ fn bad_inputs_are_refused_before_any_github_call() {
     }
     assert!(fixture.gh_calls().is_empty());
     assert_eq!(fixture.origin_branch(), None);
+}
+
+/// A member pull request as GitHub reports it once its head is on the base.
+fn member_pr(number: u64, branch: &str, head: &str, state: &str) -> Value {
+    json!({
+        "number": number,
+        "url": format!("https://github.com/acme/widgets/pull/{number}"),
+        "baseRefName": "dev",
+        "headRefName": branch,
+        "headRefOid": head,
+        "isCrossRepository": false,
+        "state": state,
+    })
+}
+
+/// After a batch lands, each member's own branch on origin is deleted only
+/// when GitHub reports that member merged from it at the recorded head, and
+/// origin still has it there (SH-832 D8). Anything else is kept and named.
+#[test]
+fn prune_members_deletes_only_merged_member_branches_still_at_their_heads() {
+    let fixture = Fixture::new();
+    let checkout = fixture.checkout();
+    let base = fixture.git(&checkout, &["rev-parse", "HEAD~1"]);
+    let head = fixture.tip.clone();
+    for branch in ["worktree-SH-1", "worktree-SH-2", "worktree-SH-5"] {
+        fixture.origin_has(branch, &head);
+    }
+    // SH-3's branch is not where its merged head was: someone moved it.
+    fixture.origin_has("worktree-SH-3", &base);
+    fixture.seed(&json!([
+        member_pr(7, "worktree-SH-1", &head, "MERGED"),
+        member_pr(8, "worktree-SH-2", &head, "OPEN"),
+        member_pr(9, "worktree-SH-3", &head, "MERGED"),
+        member_pr(10, "worktree-SH-4", &head, "MERGED"),
+        member_pr(11, "worktree-SH-other", &head, "MERGED"),
+    ]));
+    let pr = |number: u64| format!("https://github.com/acme/widgets/pull/{number}");
+    let (p7, p8, p9, p10, p11) = (pr(7), pr(8), pr(9), pr(10), pr(11));
+    let args = [
+        "prune-members",
+        &p7,
+        "worktree-SH-1",
+        &head,
+        &p8,
+        "worktree-SH-2",
+        &head,
+        &p9,
+        "worktree-SH-3",
+        &head,
+        &p10,
+        "worktree-SH-4",
+        &head,
+        &p11,
+        "worktree-SH-5",
+        &head,
+    ];
+
+    let (output, answer) = fixture.run(&args, &[]);
+
+    assert!(output.status.success(), "{answer}");
+    let results: Vec<(String, String)> = answer["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|member| {
+            (
+                member["branch"].as_str().unwrap().to_owned(),
+                member["result"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        results,
+        [
+            ("worktree-SH-1".into(), "deleted".into()),
+            ("worktree-SH-2".into(), "unmerged".into()),
+            ("worktree-SH-3".into(), "moved".into()),
+            ("worktree-SH-4".into(), "absent".into()),
+            ("worktree-SH-5".into(), "other-head".into()),
+        ]
+    );
+    assert_eq!(fixture.origin_head("worktree-SH-1"), None);
+    assert_eq!(fixture.origin_head("worktree-SH-2"), Some(head.clone()));
+    assert_eq!(fixture.origin_head("worktree-SH-3"), Some(base));
+    assert_eq!(fixture.origin_head("worktree-SH-5"), Some(head.clone()));
+
+    let (_, again) = fixture.run(&args[..4], &[]);
+    assert_eq!(again["members"][0]["result"], "absent", "{again}");
+}
+
+/// A base that requires signed commits forms no batch: its unsigned merge
+/// commits could never land (SH-832 D8). Both rulesets and readable classic
+/// protection count; an unreadable answer is a refusal, never a guess.
+#[test]
+fn base_policy_reads_rulesets_and_classic_signature_protection() {
+    let fixture = Fixture::new();
+    let policy = |fixture: &Fixture| fixture.run(&["base-policy", "dev"], &[]);
+
+    let (output, answer) = policy(&fixture);
+    assert!(output.status.success(), "{answer}");
+    assert_eq!(
+        answer["signatures_required"], false,
+        "no rules, no protection"
+    );
+
+    fs::write(
+        fixture.state().join("rules.json"),
+        json!([{"type": "pull_request"}, {"type": "required_signatures"}]).to_string(),
+    )
+    .unwrap();
+    assert_eq!(policy(&fixture).1["signatures_required"], true, "a ruleset");
+    fs::write(fixture.state().join("rules.json"), "[]").unwrap();
+
+    for (mode, required) in [("enabled", true), ("disabled", false)] {
+        fs::write(fixture.state().join("signatures"), mode).unwrap();
+        assert_eq!(
+            policy(&fixture).1["signatures_required"],
+            required,
+            "classic protection {mode}"
+        );
+    }
+
+    fs::write(fixture.state().join("signatures"), "500").unwrap();
+    let (output, answer) = policy(&fixture);
+    assert!(!output.status.success());
+    assert_eq!(answer["reason"], "base-policy-unreadable", "{answer}");
+    assert!(
+        fixture
+            .gh_calls()
+            .iter()
+            .all(|call| call[0] == "api" && call[1].starts_with("repos/acme/widgets/")),
+        "only reads, of the pinned repository: {:?}",
+        fixture.gh_calls()
+    );
 }

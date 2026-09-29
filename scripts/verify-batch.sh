@@ -4,6 +4,8 @@
 #
 #   verify-batch.sh publish <branch> <tip> <base> <title> <body>
 #   verify-batch.sh retire <branch> <pr-url|-> <comment>
+#   verify-batch.sh base-policy <base>
+#   verify-batch.sh prune-members (<pr-url> <branch> <head>)...
 #
 # The daemon assembles a batch's merge commits itself (src/service/
 # batch_assembly.rs); this script is the batch's only contact with GitHub, so
@@ -22,6 +24,23 @@
 # batch. retire closes the pull request if it is open (reporting it when a
 # person already merged it) and deletes the branch on origin if it is there;
 # running it again changes nothing.
+#
+# base-policy answers whether <base> requires signed commits (SH-832 D8). A
+# batch's merge commits are unsigned (a signer must never prompt inside the
+# daemon), so GitHub would refuse to land it after the attempt marker is
+# written, which leaves every member fenced as uncertain. Rulesets are read
+# with read access; classic protection's signature rule only with admin
+# rights, and GitHub answers 404 to anyone else as it does for an
+# unprotected branch, so a 404 there reads as no classic requirement. Any
+# other failure is a refusal: the daemon then forms no batch.
+#
+# prune-members deletes, after a batch landed, each member's own branch on
+# origin: only when GitHub reports that member's pull request MERGED from
+# that same-repository branch at <head>, and origin still has the branch at
+# <head>. Anything else keeps the branch and says why (unmerged, moved,
+# absent, other-head, unreadable); running it again changes nothing. Like
+# land-pr.sh's own branch delete, the read and the delete are two steps: the
+# member's agent session is reaped before this runs.
 #
 # Exactly one JSON document on stdout: {"ok":true,...} with exit 0, or
 # {"ok":false,"reason":"<slug>","display":"<sentence>"} with exit 1.
@@ -181,8 +200,65 @@ retire() {
         '{ok:true, closed:$closed, merged:$merged, deleted:$deleted}'
 }
 
+base_policy() {
+    [ "$#" -eq 1 ] || refuse usage "usage: verify-batch.sh base-policy <base>"
+    local base="$1" repo rules signed out
+    [ -n "$base" ] || refuse invalid-base "verify-batch.sh: no base branch was named"
+    github_begin || refuse origin-unavailable "verify-batch.sh: cannot establish the GitHub origin: ${GITHUB_ACCESS_ERROR:-origin unavailable}"
+    repo="${STORYHOOK_GITHUB_EXPECTED#*/}"
+    rules="$(github_exec api "repos/$repo/rules/branches/$base" 2>&1)" \
+        || refuse base-policy-unreadable "verify-batch.sh: gh could not read the rulesets of $base: $rules"
+    signed="$(printf '%s' "$rules" | jq -r 'if type == "array" then any(.[]; .type == "required_signatures") else error("not a list") end' 2>/dev/null)" \
+        || refuse base-policy-unreadable "verify-batch.sh: the rulesets of $base are not a JSON list: $rules"
+    if [ "$signed" != true ]; then
+        if out="$(github_exec api "repos/$repo/branches/$base/protection/required_signatures" 2>&1)"; then
+            signed="$(printf '%s' "$out" | jq -r '.enabled == true' 2>/dev/null)" \
+                || refuse base-policy-unreadable "verify-batch.sh: the signature protection of $base is not JSON: $out"
+        elif printf '%s' "$out" | grep -q 'HTTP 404'; then
+            signed=false
+        else
+            refuse base-policy-unreadable "verify-batch.sh: gh could not read the signature protection of $base: $out"
+        fi
+    fi
+    jq -n --argjson signed "$signed" '{ok:true, signatures_required:$signed}'
+}
+
+prune_members() {
+    { [ "$#" -gt 0 ] && [ $(($# % 3)) -eq 0 ]; } \
+        || refuse usage "usage: verify-batch.sh prune-members (<pr-url> <branch> <head>)..."
+    github_begin || refuse origin-unavailable "verify-batch.sh: cannot establish the GitHub origin: ${GITHUB_ACCESS_ERROR:-origin unavailable}"
+    local results="[]" url branch head view result detail present out
+    while [ "$#" -gt 0 ]; do
+        url="$1" branch="$2" head="$3"
+        shift 3
+        valid_oid "$head" || refuse invalid-head "verify-batch.sh: \`$head\` is not a full commit id"
+        detail=""
+        if ! view="$(github_exec pr view "$url" --json state,headRefName,headRefOid,isCrossRepository 2>&1)"; then
+            result=unreadable detail="$view"
+        elif [ "$(printf '%s' "$view" | jq -r '.state // empty' 2>/dev/null)" != MERGED ]; then
+            result=unmerged
+        elif [ "$(printf '%s' "$view" | jq -r '"\(.headRefName)|\(.headRefOid)|\(.isCrossRepository)"' 2>/dev/null)" != "$branch|$head|false" ]; then
+            result=other-head detail="$view"
+        elif ! present="$(remote_head "$branch" 2>&1)"; then
+            result=unreadable detail="$present"
+        elif [ -z "$present" ]; then
+            result=absent
+        elif [ "$present" != "$head" ]; then
+            result=moved detail="origin has $present"
+        elif out="$(github_git push origin ":refs/heads/$branch" 2>&1)"; then
+            result=deleted
+        else
+            result=unreadable detail="$out"
+        fi
+        results="$(printf '%s' "$results" | jq -c --arg b "$branch" --arg r "$result" --arg d "$detail" '. + [{branch:$b, result:$r} + (if $d == "" then {} else {detail:$d} end)]')"
+    done
+    jq -n --argjson members "$results" '{ok:true, members:$members}'
+}
+
 case "${1:-}" in
 publish) shift; publish "$@" ;;
 retire) shift; retire "$@" ;;
-*) refuse usage "usage: verify-batch.sh publish|retire ..." ;;
+base-policy) shift; base_policy "$@" ;;
+prune-members) shift; prune_members "$@" ;;
+*) refuse usage "usage: verify-batch.sh publish|retire|base-policy|prune-members ..." ;;
 esac
