@@ -565,6 +565,13 @@ WORKTREE_IGNORE_COMMENT="# story per-story git worktrees (ephemeral — never co
 # lockstep with src/domain.rs; protocol/version tests pin the agreement.
 CLEANUP_LEASE_VERSION=1
 CLEANUP_LEASE_MARKER="storyhook-cleanup-lease-v1.json"
+# The settings a person chose for this story's last successful launch
+# (SH-850): read by the dashboard to prefill Resume after a reboot has erased
+# the pane's environment. Beside the cleanup marker, in the worktree's private
+# Git directory, so it lives exactly as long as the worktree. Not identity:
+# nothing selects, authorizes or removes anything by it. Mirrored by
+# LAUNCH_RECORD_FILE in src/service/launch_record.rs.
+LAUNCH_RECORD_FILE="storyhook-launch-v1.json"
 # Readiness gate before typing the prompt — see lib/session.sh's wait_ready
 # for the full two-tier rationale (marker footer match, or structural
 # frame+glyph+stabilise fallback), and wait_ready_sentinel for the
@@ -1597,6 +1604,34 @@ continuation_preflight() {
     || refuse "continuation-unsafe" "continuation ownership preflight could not run; retained work was preserved."
   [ "$(printf '%s' "$answer" | jq -r '.ok // false')" = true ] \
     || refuse "continuation-unsafe" "continuation ownership preflight refused: $(printf '%s' "$answer" | jq -r '.detail // "no diagnostic"'). Retained work was preserved."
+}
+
+# write_launch_record <project> <story> <worktree> <provider> <model> <effort>
+# <speed> <autonomy> — atomically publish LAUNCH_RECORD_FILE for a launch whose
+# handoff was confirmed. Only explicit selectors are recorded: an empty one
+# means the provider's (or the dispatch policy's) default, which a resume
+# re-resolves exactly as this launch did. Returns nonzero with a diagnostic.
+write_launch_record() {
+  local project="$1" story="$2" worktree="$3" provider="$4" model="$5" effort="$6" speed="$7" autonomy="$8"
+  local private_git_dir record temp
+  private_git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) \
+    || { printf 'cannot locate the private Git directory of %s' "$worktree"; return 1; }
+  record=$(jq -n --arg project "$project" --arg story "$story" --arg provider "$provider" \
+      --arg model "$model" --arg effort "$effort" --arg speed "$speed" --arg autonomy "$autonomy" \
+      --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{version:1, project_slug:$project, story_id:$story, provider:$provider,
+        model:(if $model == "" then null else $model end),
+        effort:(if $effort == "" then null else $effort end),
+        speed:(if $speed == "" then null else $speed end),
+        autonomy:$autonomy, recorded_at:$at}') \
+    || { printf 'cannot compose the launch record'; return 1; }
+  temp=$(mktemp "$private_git_dir/.storyhook-launch.XXXXXX") \
+    || { printf 'cannot create a temporary launch record in %s' "$private_git_dir"; return 1; }
+  if ! printf '%s\n' "$record" >"$temp" || ! mv -f "$temp" "$private_git_dir/$LAUNCH_RECORD_FILE"; then
+    rm -f "$temp"
+    printf 'cannot publish %s/%s' "$private_git_dir" "$LAUNCH_RECORD_FILE"
+    return 1
+  fi
 }
 
 # require_agent_absent <id> <pane> <worktree> <resources-json> — refuse unless
@@ -2989,6 +3024,16 @@ cmd_dispatch() {
     fi
   fi
 
+  # The confirmed launch's settings, for a later Resume to offer again
+  # (SH-850). A failed write is reported, never fatal: the agent is already
+  # working, and a Resume without the record falls back to the person's
+  # remembered choice and says so.
+  local launch_autonomy=attended launch_record_error=""
+  [ -z "$auto" ] || launch_autonomy=auto
+  [ -z "$full_auto" ] || launch_autonomy=full-auto
+  launch_record_error=$(write_launch_record "$PROJECT_SLUG" "$id" "$worktree_path" "$AGENT" \
+    "$requested_model" "$requested_effort" "$requested_speed" "$launch_autonomy") || true
+
   # Result. Reaching here means BOTH readiness and submission were confirmed —
   # every other outcome refused above. `ok:true` therefore now means "the story
   # was claimed AND the charter reached a confirmed agent session", which is
@@ -3007,6 +3052,9 @@ cmd_dispatch() {
   base="[story] $id ($title) → $session_action on worktree \`$worktree_path\` @ \`${base_oid:0:8}\`, launched $AGENT_LABEL with \`$launch_cmd\` (plan mode), submitted the prompt with \`$SUBMIT_KEY\`, $claim_success_note."
   if [ -n "$base_note" ]; then
     warning="${warning:+$warning }${base_note}."
+  fi
+  if [ -n "$launch_record_error" ]; then
+    warning="${warning:+$warning }The launch settings were not recorded for a later Resume: $launch_record_error."
   fi
 
   local tail_evidence=""
