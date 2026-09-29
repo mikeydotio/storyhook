@@ -14,9 +14,9 @@ use storyhook::service::trial_merge::{PrivateTrialMerger, TrialMerge, TrialMerge
 use storyhook_test_support::scratch_dir;
 use tempfile::TempDir;
 
-/// Room for a preview's trial merges on a loaded machine: a patience bound,
-/// never a claim about how fast a merge runs (the deadline test uses an
-/// instant that has already passed instead).
+/// Room for a preview's trial merges on a loaded machine: patience, graced
+/// by load, never a claim about how fast a merge runs (the deadline test uses
+/// an instant that has already passed instead).
 const PREVIEW_PATIENCE: Duration = Duration::from_secs(600);
 
 /// A repository whose `origin/dev` starts at one base commit, with story
@@ -140,7 +140,7 @@ fn request(head: &str, rest: Vec<PreviewCandidate>, cap: u32) -> PreviewRequest 
         base_branch: Some("dev".into()),
         cap,
         live_lanes: Some(cap),
-        deadline: Instant::now() + PREVIEW_PATIENCE,
+        deadline: Instant::now() + storyhook_test_support::load_grace::graced_now(PREVIEW_PATIENCE),
     }
 }
 
