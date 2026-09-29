@@ -3057,9 +3057,8 @@ pub fn is_ready(story: &StorySnapshot, all_stories: &impl StoryIndex) -> bool {
 /// (SH-452, decision D12). A `no-auto` story is still offered by
 /// [`ready_order`]'s queue and still claimable by hand — it marks
 /// human-in-the-loop work, where the agent may ask questions and seek plan
-/// approval. Nothing in this crate filters on it yet: the engine's skip is
-/// `--exclude-label`'s job, and the reservation exists so the two halves
-/// cannot disagree about the spelling.
+/// approval. Automation reads it through [`reserved_label`], never by
+/// spelling, so every automated door agrees on what it reserves.
 pub const LABEL_NO_AUTO: &str = "no-auto";
 
 /// The reserved label naming work only a human may perform (SH-452, decision
@@ -3092,6 +3091,37 @@ pub const RESERVED_LABELS: [&str; 2] = [LABEL_NO_AUTO, LABEL_HUMAN_ONLY];
 #[must_use]
 pub fn is_human_only(story: &StorySnapshot) -> bool {
     story.labels.iter().any(|label| label == LABEL_HUMAN_ONLY)
+}
+
+/// The reserved label `story` carries, if any: the one fact every automated
+/// door reads before it acts on a story nobody asked it to act on
+/// (SH-837). A story with a reserved label is left for a person — no
+/// automation claims it, holds it, or launches an agent for it.
+///
+/// [`LABEL_HUMAN_ONLY`] wins when both are present: it is the stricter
+/// reservation, and the answer names the label a person must remove before
+/// automation may act again.
+#[must_use]
+pub fn reserved_label(story: &StorySnapshot) -> Option<&'static str> {
+    if is_human_only(story) {
+        return Some(LABEL_HUMAN_ONLY);
+    }
+    RESERVED_LABELS
+        .into_iter()
+        .find(|reserved| story.labels.iter().any(|label| label == reserved))
+}
+
+/// Whether `story` carries either reserved label — see [`reserved_label`].
+#[must_use]
+pub fn is_reserved(story: &StorySnapshot) -> bool {
+    reserved_label(story).is_some()
+}
+
+/// Whether `label` is one of [`RESERVED_LABELS`], for callers that hold a
+/// bare label list (an event's payload) rather than a snapshot.
+#[must_use]
+pub fn is_reserved_label(label: &str) -> bool {
+    RESERVED_LABELS.contains(&label)
 }
 
 /// Whether `story` is an actionable leaf that is [`is_ready`], has not entered

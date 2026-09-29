@@ -36,7 +36,10 @@
 //! reporting the constants as unreachable public surface (SH-198).
 
 use assert_cmd::Command;
-use storyhook::domain::{LABEL_HUMAN_ONLY, LABEL_NO_AUTO, RESERVED_LABELS};
+use storyhook::domain::{
+    LABEL_HUMAN_ONLY, LABEL_NO_AUTO, RESERVED_LABELS, StorySnapshot, is_reserved,
+    is_reserved_label, reserved_label,
+};
 use storyhook::help_topics::get_help_topic;
 use storyhook::service::templates;
 use storyhook_test_support::{TestEnv, scratch_dir};
@@ -382,6 +385,45 @@ fn both_labels_at_once_reads_as_human_only() {
         ("other", None),
     ]);
     assert_eq!(ids(&json(dir.path(), &["next"])), vec!["SH-2"]);
+}
+
+/// SH-837 — the one predicate every automated door reads. Labels go in
+/// through the CLI and come back out as the stored snapshot, so the test
+/// covers the spelling a person actually types, including case folding.
+#[test]
+fn reserved_label_names_each_reserved_label_and_prefers_human_only() {
+    let both = format!("{LABEL_NO_AUTO},{LABEL_HUMAN_ONLY}");
+    let upper = LABEL_NO_AUTO.to_uppercase();
+    let dir = project(&[
+        ("plain", Some("backend")),
+        ("no auto", Some(LABEL_NO_AUTO)),
+        ("human only", Some(LABEL_HUMAN_ONLY)),
+        ("both", Some(&both as &str)),
+        ("shouted", Some(&upper as &str)),
+        ("lookalike", Some("no-autonomy,human")),
+    ]);
+    let snapshot = |id: &str| -> StorySnapshot {
+        serde_json::from_value(view(dir.path(), id)["story"].clone())
+            .expect("`story show --json` carries the stored snapshot")
+    };
+    let expected = [
+        ("SH-1", None),
+        ("SH-2", Some(LABEL_NO_AUTO)),
+        ("SH-3", Some(LABEL_HUMAN_ONLY)),
+        ("SH-4", Some(LABEL_HUMAN_ONLY)),
+        ("SH-5", Some(LABEL_NO_AUTO)),
+        ("SH-6", None),
+    ];
+    for (id, label) in expected {
+        let story = snapshot(id);
+        assert_eq!(reserved_label(&story), label, "{id}: {:?}", story.labels);
+        assert_eq!(is_reserved(&story), label.is_some(), "{id}");
+    }
+    for label in RESERVED_LABELS {
+        assert!(is_reserved_label(label), "`{label}` is reserved");
+    }
+    assert!(!is_reserved_label("backend"));
+    assert!(!is_reserved_label("no-autonomy"));
 }
 
 // ---------------------------------------------------------------------------
