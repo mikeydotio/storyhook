@@ -30,6 +30,35 @@ fn current(store: &impl Store, candidate: &VerificationCandidate) -> Result<bool
         })
 }
 
+/// The stories in `members` (one project's) that no longer carry the exact
+/// authority they were admitted with, from one queue read.
+pub(super) fn stale_members(
+    store: &impl Store,
+    members: &[VerificationCandidate],
+) -> Result<Vec<String>, AppError> {
+    let Some(first) = members.first() else {
+        return Ok(Vec::new());
+    };
+    let queue = VerificationQueue::new(store)
+        .ordered_for(first.project)
+        .map_err(|error| {
+            error.with_context(&format!(
+                "observing batch authority for project={}",
+                first.project_slug
+            ))
+        })?;
+    Ok(members
+        .iter()
+        .filter(|member| {
+            !queue
+                .iter()
+                .find(|fresh| fresh.story_id == member.story_id)
+                .is_some_and(|fresh| still_current(fresh, member))
+        })
+        .map(|member| member.story_id.clone())
+        .collect())
+}
+
 /// Whether `fresh`, re-derived from the store, still carries the exact
 /// authority `expected` was admitted with, and is runnable.
 fn still_current(fresh: &VerificationCandidate, expected: &VerificationCandidate) -> bool {
@@ -48,7 +77,7 @@ fn still_current(fresh: &VerificationCandidate, expected: &VerificationCandidate
 /// change and at least every `RECOVERY_WAKE`). Returns what `run` returned
 /// and the observer's last authority answer; the observer is joined before
 /// this returns, also while `run` unwinds.
-fn observe_during<T>(
+pub(super) fn observe_during<T>(
     subscription: &Subscription,
     manual: &Cancellation,
     attempt: &Cancellation,
@@ -153,7 +182,7 @@ pub(super) fn verify(
 /// Withdraws `candidate`'s generation after human-only revoked an attempt
 /// whose cleanup failed: no verdict is authorized, and the retained cleanup
 /// evidence goes on the story.
-fn withdraw_with_cleanup_evidence(
+pub(super) fn withdraw_with_cleanup_evidence(
     store: &impl Store,
     candidate: &VerificationCandidate,
     cleanup: &VerificationCleanupFailure,

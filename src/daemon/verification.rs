@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+mod batch;
 mod batch_preview;
 mod cleanup;
 mod control;
@@ -18,6 +19,9 @@ pub(crate) mod evidence;
 mod reconcile_wait_tests;
 #[cfg(test)]
 mod workspace_tests;
+pub use batch::{
+    BatchActuator, BatchPublication, BatchRetirement, MemberOwner, abandon_interrupted_batches,
+};
 pub use batch_preview::batch_preview_log;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
@@ -139,6 +143,15 @@ struct VerificationSlot {
     /// The batch the verifier would form around this attempt, shown only
     /// while its gate runs (SH-830).
     preview: Option<crate::service::batch_preview::BatchPreview>,
+    /// The batch this attempt is running, if any (SH-831).
+    batch: Option<BatchSlot>,
+}
+
+/// A running batch's non-head members and the cancellation that ends the
+/// batch without ending the head's attempt.
+struct BatchSlot {
+    members: BTreeSet<String>,
+    cancellation: Cancellation,
 }
 
 impl VerificationActivity {
@@ -202,7 +215,10 @@ impl VerificationActivity {
             .map(|slot| slot.active.clone())
     }
 
-    /// Cancels only this story and waits until its owned subprocesses have exited.
+    /// Cancels only this story and waits until its owned subprocesses have
+    /// exited. A story that is a member of the running batch (SH-831) ends
+    /// that batch, not the head's attempt, and is waited for until the batch
+    /// has released its workspace lock.
     pub(crate) fn cancel_story_and_wait(
         &self,
         project: ProjectId,
@@ -212,12 +228,19 @@ impl VerificationActivity {
         loop {
             {
                 let slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
-                match slots
-                    .get(&project)
-                    .filter(|slot| slot.active.story_id == story)
+                let Some(slot) = slots.get(&project) else {
+                    return Ok(());
+                };
+                if slot.active.story_id == story {
+                    slot.cancellation.cancel();
+                } else if let Some(batch) = slot
+                    .batch
+                    .as_ref()
+                    .filter(|batch| batch.members.contains(story))
                 {
-                    None => return Ok(()),
-                    Some(slot) => slot.cancellation.cancel(),
+                    batch.cancellation.cancel();
+                } else {
+                    return Ok(());
                 }
             }
             if Instant::now() >= deadline {
@@ -293,6 +316,7 @@ impl VerificationActivity {
                 output: crate::service::gate_output::OutputObserver::default(),
                 reservation: None,
                 preview: None,
+                batch: None,
             },
         );
         VerificationGuard {
@@ -375,6 +399,7 @@ impl VerificationGuard {
         // and no gate of it has been previewed yet.
         slot.reservation = None;
         slot.preview = None;
+        slot.batch = None;
         self.active = replacement;
     }
 }
@@ -682,6 +707,12 @@ pub trait VerificationActuator: Send + Sync {
     ) -> Option<Result<Box<dyn crate::service::trial_merge::TrialMerger>, AppError>> {
         None
     }
+    /// The batch operations this actuator offers (SH-831), or `None`: the
+    /// verifier then never forms a batch. The default forms none, so an
+    /// actuator that predates batching verifies exactly as before.
+    fn batch(&self) -> Option<&dyn BatchActuator> {
+        None
+    }
 }
 
 /// A control verb's well-formed answer, as the helper's JSON contract states
@@ -701,6 +732,8 @@ enum HelperAnswer {
 enum RepairAdmission {
     /// The run gates the owned story's own submission.
     Owned,
+    /// The run gates a verification batch, which claims no story's admission.
+    Withheld,
 }
 
 /// Production actuator backed by repository and plugin scripts.
@@ -715,6 +748,8 @@ pub struct ShellVerificationActuator {
     control_timeout: Duration,
     termination_grace: Duration,
     batch_preview: bool,
+    batching: bool,
+    batch_script: Option<PathBuf>,
 }
 
 impl ShellVerificationActuator {
@@ -732,6 +767,8 @@ impl ShellVerificationActuator {
             control_timeout: DISPATCH_TIMEOUT,
             termination_grace: RECOVERY_WAKE,
             batch_preview: false,
+            batching: false,
+            batch_script: None,
         }
     }
 
@@ -753,6 +790,8 @@ impl ShellVerificationActuator {
             control_timeout: DISPATCH_TIMEOUT,
             termination_grace: RECOVERY_WAKE,
             batch_preview: false,
+            batching: false,
+            batch_script: None,
         }
     }
 
@@ -781,6 +820,8 @@ impl ShellVerificationActuator {
             control_timeout,
             termination_grace,
             batch_preview: false,
+            batching: false,
+            batch_script: None,
         }
     }
 
@@ -802,6 +843,26 @@ impl ShellVerificationActuator {
     #[must_use]
     pub fn with_batch_preview(mut self) -> Self {
         self.batch_preview = true;
+        self
+    }
+
+    /// Forms verification batches (SH-831) around each dequeued story, which
+    /// also turns on the preview that selects them. Landing a batch is not
+    /// built yet, so the daemon's own verifier does not ask for it (decision
+    /// D1 on SH-831); tests do.
+    #[must_use]
+    pub fn with_batching(mut self) -> Self {
+        self.batch_preview = true;
+        self.batching = true;
+        self
+    }
+
+    /// Runs `script` as the batch helper instead of the bundled
+    /// `verify-batch.sh`: the test seam for the process boundary, in the
+    /// shape of [`Self::with_verifier_script`].
+    #[must_use]
+    pub fn with_batch_script(mut self, script: PathBuf) -> Self {
+        self.batch_script = Some(script);
         self
     }
 
@@ -1498,6 +1559,10 @@ impl ShellVerificationActuator {
 }
 
 impl VerificationActuator for ShellVerificationActuator {
+    fn batch(&self) -> Option<&dyn BatchActuator> {
+        self.batching.then_some(self as &dyn BatchActuator)
+    }
+
     fn trial_merges(
         &self,
         repository: &std::path::Path,
@@ -2167,6 +2232,9 @@ where
         let mut submitted: Option<Option<GlobalSeq>> = None;
         // What that submission reported, for the batch preview (SH-830).
         let mut published: Option<batch_preview::Published> = None;
+        // One batch per tick (SH-831): a head replaced during a long batch
+        // gate goes on alone rather than starting a second batch.
+        let mut batched = false;
 
         loop {
             let _log =
@@ -2288,6 +2356,44 @@ where
                 published.as_ref(),
                 &active,
             );
+            // The batch (SH-831) runs before the head's own gate; landing a
+            // batch is not built yet, so the head is gated alone after it.
+            let mut batch_summary = None;
+            if !batched && let Some(batching) = actuator.batch() {
+                match batch::run(
+                    store,
+                    env,
+                    bus,
+                    &queue,
+                    &ctx,
+                    batching,
+                    &candidate,
+                    &active,
+                    preview.as_ref(),
+                )? {
+                    batch::BatchEnd::NotFormed => {}
+                    batch::BatchEnd::Done(summary) => {
+                        batched = true;
+                        batch_summary = Some(summary);
+                    }
+                    batch::BatchEnd::Tick {
+                        result,
+                        outcome,
+                        summary,
+                    } => {
+                        batch_preview::finish(
+                            env,
+                            &active,
+                            &candidate,
+                            preview,
+                            Instant::now(),
+                            &Ok(Some(*outcome)),
+                            Some(&summary),
+                        );
+                        return Ok(result);
+                    }
+                }
+            }
             let gate_started = Instant::now();
             let verified = observation::verify(
                 store,
@@ -2296,7 +2402,15 @@ where
                 &active.cancellation,
                 |cancellation| actuator.verify_cancellable(&candidate, &pull_request, cancellation),
             );
-            batch_preview::finish(env, &active, &candidate, preview, gate_started, &verified);
+            batch_preview::finish(
+                env,
+                &active,
+                &candidate,
+                preview,
+                gate_started,
+                &verified,
+                batch_summary.as_ref(),
+            );
             let Some(mut outcome) = verified? else {
                 // Authority loss is queue progress, not a durable manual stop.
                 // Refresh creates a new attempt token for a resubmitted generation.
@@ -3521,6 +3635,19 @@ fn poll_project_verification(
             );
             eprintln!("storyhook: project {project} recovery startup read failed: {error}")
         }
+    }
+    // A batch lives only inside one tick of this worker, so one still live
+    // now was left by a verifier that stopped (SH-831, B10).
+    if let Err(error) = abandon_interrupted_batches(store, env, project) {
+        super::activity::context::project_error(
+            store,
+            project,
+            "verifier",
+            &format!(
+                "storyhook: project {project} interrupted batches were not abandoned: {error}"
+            ),
+        );
+        eprintln!("storyhook: project {project} interrupted batches were not abandoned: {error}");
     }
     while !stop.load(Ordering::Relaxed) {
         let mut request_id = match store.read(|tx| tx.verification_recovery(project)) {

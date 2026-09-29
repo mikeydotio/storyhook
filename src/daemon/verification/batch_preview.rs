@@ -102,6 +102,9 @@ struct PreviewRecord<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     gate_tree: Option<&'a str>,
     preview: &'a BatchPreview,
+    /// The batch that ran before this gate, when one did (SH-831).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    batch: Option<&'a super::batch::BatchSummary>,
 }
 
 /// Where the verifier records one project's previews: one JSON line per
@@ -153,7 +156,8 @@ pub(super) fn compute<S: Store, A: VerificationActuator>(
 }
 
 /// Takes the preview off the owner's slot and records it with the gate that
-/// followed. A record that cannot be written is journaled and dropped.
+/// followed and the batch that ran before that gate, if any. A record that
+/// cannot be written is journaled and dropped.
 pub(super) fn finish(
     env: &Environment,
     owner: &VerificationGuard,
@@ -161,6 +165,7 @@ pub(super) fn finish(
     preview: Option<BatchPreview>,
     gate_started: Instant,
     verified: &Result<Option<VerificationOutcome>, AppError>,
+    batch: Option<&super::batch::BatchSummary>,
 ) {
     let Some(preview) = preview else {
         return;
@@ -182,6 +187,7 @@ pub(super) fn finish(
         verdict: GateVerdict::of(verified, owner.is_cancelled()),
         gate_tree,
         preview: &preview,
+        batch,
     };
     if let Err(error) = append(&batch_preview_log(env, &candidate.project_slug), &record) {
         crate::daemon::activity::emit(

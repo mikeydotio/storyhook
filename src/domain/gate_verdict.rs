@@ -36,3 +36,50 @@ pub enum GateVerdict {
     /// The verifier could not observe the gate's outcome.
     Error,
 }
+
+impl GateVerdict {
+    /// The verdict's wire slug.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Certified => "certified",
+            Self::TestsFailed => "tests-failed",
+            Self::Conflict => "conflict",
+            Self::InvalidSubmission => "invalid-submission",
+            Self::ProjectFault => "project-fault",
+            Self::InfrastructureFailure => "infrastructure-failure",
+            Self::Cancelled => "cancelled",
+            Self::RepairDeferred => "repair-deferred",
+            Self::CleanupFailed => "cleanup-failed",
+            Self::Withdrawn => "withdrawn",
+            Self::Interrupted => "interrupted",
+            Self::Error => "error",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn as_str_is_the_wire_slug() {
+        use GateVerdict::*;
+        for verdict in [
+            Certified,
+            TestsFailed,
+            Conflict,
+            InvalidSubmission,
+            ProjectFault,
+            InfrastructureFailure,
+            Cancelled,
+            RepairDeferred,
+            CleanupFailed,
+            Withdrawn,
+            Interrupted,
+            Error,
+        ] {
+            assert_eq!(serde_json::to_value(verdict).unwrap(), verdict.as_str());
+        }
+    }
+}

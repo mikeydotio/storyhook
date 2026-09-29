@@ -3,6 +3,9 @@
 #[path = "verification_queue/batch_preview.rs"]
 mod batch_preview;
 
+#[path = "verification_queue/batching.rs"]
+mod batching;
+
 #[path = "verification_queue/completed_capture.rs"]
 mod completed_capture;
 

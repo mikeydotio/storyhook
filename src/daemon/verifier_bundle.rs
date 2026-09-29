@@ -53,6 +53,10 @@ include!(concat!(env!("OUT_DIR"), "/embedded_verifier.rs"));
 /// The entry point the daemon runs; the rest of the bundle is its siblings.
 pub const VERIFY_SCRIPT: &str = "verify-pr.sh";
 
+/// The batch helper the daemon runs for a verification batch's branch and
+/// pull request (SH-831).
+pub const BATCH_SCRIPT: &str = "verify-batch.sh";
+
 /// The directory beneath the daemon state dir that holds every leaf.
 const BUNDLE_DIR: &str = "verifier";
 
