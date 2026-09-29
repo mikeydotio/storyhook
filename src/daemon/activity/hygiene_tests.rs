@@ -13,6 +13,10 @@ use crate::store::{NewProject, SqliteStore, WriteOps};
 const FIRST_SWEEP_PATIENCE: Duration = Duration::from_secs(SWEEP_INTERVAL.as_secs() / 2);
 
 /// A store whose registered checkouts live under one scratch root.
+///
+/// Every sweep waits for a real `git ls-files` to answer, so the registry's
+/// environment declares patience (SH-836); the `poll` thread a test starts
+/// with it applies the same declaration.
 struct Registry {
     root: tempfile::TempDir,
     env: Environment,
@@ -22,7 +26,7 @@ struct Registry {
 impl Registry {
     fn new() -> Self {
         let root = tempfile::tempdir_in("/private/tmp").unwrap();
-        let env = Environment::at(root.path().join("home"));
+        let env = Environment::at(root.path().join("home")).with_subprocess_patience();
         std::fs::create_dir_all(env.store_path().parent().unwrap()).unwrap();
         let store = SqliteStore::open(env.store_path()).unwrap();
         store.migrate().unwrap();
