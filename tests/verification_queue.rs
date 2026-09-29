@@ -32,6 +32,9 @@ mod reservation_status;
 
 #[path = "verification_queue/stale_journal.rs"]
 mod stale_journal;
+
+#[path = "verification_queue/own_submission.rs"]
+mod own_submission;
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};

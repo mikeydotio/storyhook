@@ -2338,11 +2338,18 @@ where
                 submitted = Some(candidate.verifying_generation);
                 match submit_candidate(&queue, &ctx, actuator, &candidate, &active, &mut published)?
                 {
-                    GenerationWrite::Applied(Some(result)) => return Ok(result),
-                    // Recorded: the link is a store fact now. Re-derive rather than
-                    // trust a PrLink built here, so whatever `ordered_candidates`
-                    // makes of it (registered, single, open) is what gets verified.
-                    GenerationWrite::Applied(None) | GenerationWrite::Superseded => continue,
+                    GenerationWrite::Applied(Submission::Ended(result)) => return Ok(result),
+                    // Recorded: the link is a store fact now. The refresh at the
+                    // top of the loop re-derives the candidate rather than trust a
+                    // PrLink built here, so whatever `ordered_candidates` makes of
+                    // it (registered, single, open) is what gets verified. It
+                    // compares against this, the verifier's own write, so that
+                    // write is not a supersession; any other change still is.
+                    GenerationWrite::Applied(Submission::Recorded(link)) => {
+                        candidate.pull_request = Ok(link);
+                        continue;
+                    }
+                    GenerationWrite::Superseded => continue,
                 }
             }
             let pull_request = match &candidate.pull_request {
@@ -2933,14 +2940,25 @@ fn submission_due(candidate: &VerificationCandidate, submitted: Option<Option<Gl
         && submitted != Some(candidate.verifying_generation)
 }
 
+/// What one submission left the tick holding.
+enum Submission {
+    /// The link and SUBMITTED comment are recorded: the pull request exactly
+    /// as the store now links it, read back in the recording transaction.
+    Recorded(PrLink),
+    /// This tick is over: the story was returned to its agent, or an
+    /// infrastructure incident was recorded.
+    Ended(TickResult),
+}
+
 /// Runs the actuator's submission and records what it left behind.
 ///
-/// `Applied(None)` means the link and SUBMITTED comment are recorded and the
-/// caller should re-derive the candidate; `Applied(Some(result))` means this
-/// tick is over — the story was returned to its agent (a refusal, or an
-/// adopted pull request that is not the one the agent linked), or an
-/// infrastructure incident was recorded and the story waits in `verifying`
-/// for the next tick to re-run the same idempotent steps.
+/// `Applied(Recorded(link))` means the link and SUBMITTED comment are
+/// recorded and the caller should re-derive the candidate;
+/// `Applied(Ended(result))` means this tick is over — the story was returned
+/// to its agent (a refusal, or an adopted pull request that is not the one
+/// the agent linked), or an infrastructure incident was recorded and the
+/// story waits in `verifying` for the next tick to re-run the same
+/// idempotent steps.
 fn submit_candidate<S: Store, A: VerificationActuator>(
     queue: &VerificationQueue<'_, S>,
     ctx: &Ctx<'_, S>,
@@ -2948,14 +2966,18 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
     candidate: &VerificationCandidate,
     owner: &VerificationGuard,
     published: &mut Option<batch_preview::Published>,
-) -> Result<GenerationWrite<Option<TickResult>>, AppError> {
+) -> Result<GenerationWrite<Submission>, AppError> {
     let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
     if owner.is_cancelled() {
-        return Ok(GenerationWrite::Applied(Some(TickResult::Stopped)));
+        return Ok(GenerationWrite::Applied(Submission::Ended(
+            TickResult::Stopped,
+        )));
     }
     let submitted = actuator.submit(candidate);
     if owner.is_cancelled() && submitted.is_err() {
-        return Ok(GenerationWrite::Applied(Some(TickResult::Stopped)));
+        return Ok(GenerationWrite::Applied(Submission::Ended(
+            TickResult::Stopped,
+        )));
     }
     super::activity::emit(
         if submitted.is_ok() { "INFO" } else { "ERROR" },
@@ -2990,11 +3012,11 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
                         owner,
                         ReservationReason::Remediation,
                     )?
-                    .map(|_| Some(TickResult::Returned)));
+                    .map(|_| Submission::Ended(TickResult::Returned)));
                 }
             }
             match queue.record_generation_submitted(ctx, candidate, &pull_request) {
-                Ok(write) => Ok(write.map(|_| None)),
+                Ok(write) => Ok(write.map(Submission::Recorded)),
                 // The helper left a pull request on a repository this project
                 // has not registered: a configuration fault between the
                 // worktree's origin and the project's, which no retry and no
@@ -3006,7 +3028,7 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
                     VerificationFailureDisposition::Permanent,
                     &detail,
                 )?
-                .map(Some)),
+                .map(Submission::Ended)),
                 Err(error) => Err(error),
             }
         }
@@ -3019,7 +3041,7 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
             owner,
             ReservationReason::Remediation,
         )?
-        .map(|_| Some(TickResult::Returned))),
+        .map(|_| Submission::Ended(TickResult::Returned))),
         Err(SubmissionFailure::Infrastructure { detail }) => Ok(record_infrastructure_failure(
             queue,
             ctx,
@@ -3027,7 +3049,7 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
             VerificationFailureDisposition::Retryable,
             &detail,
         )?
-        .map(Some)),
+        .map(Submission::Ended)),
     }
 }
 
