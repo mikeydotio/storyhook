@@ -82,7 +82,8 @@ pub struct ActiveBatch {
     /// Every member, head first, in batch order.
     pub members: Vec<String>,
     /// `selected` before the record exists, then the record's phase:
-    /// `assembled`, `submitted`, `gating` or `landing`.
+    /// `assembled`, `submitted`, `gating` or `landing`; `bisecting` while a
+    /// red batch is bisected (SH-833), a status phase no record is in.
     pub phase: String,
 }
 

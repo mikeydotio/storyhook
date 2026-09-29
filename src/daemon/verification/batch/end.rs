@@ -13,6 +13,9 @@ impl<S: Store> Attempt<'_, S> {
         stale: Vec<String>,
         started: Instant,
     ) -> Result<BatchEnd, AppError> {
+        if self.bisection.is_some() {
+            return self.finish_bisection(owner, stale, started);
+        }
         let stopped = owner.is_cancelled();
         let members: Vec<String> = self
             .plan
@@ -45,6 +48,7 @@ impl<S: Store> Attempt<'_, S> {
                 tree: None,
                 seconds: started.elapsed().as_secs(),
                 detail,
+                bisection: None,
             };
             if stopped {
                 return Ok(BatchEnd::Tick {
@@ -74,6 +78,7 @@ impl<S: Store> Attempt<'_, S> {
                 tree: Some(tree.clone()),
                 seconds: started.elapsed().as_secs(),
                 detail: "certified; landing".into(),
+                bisection: None,
             };
             match self.admit(&record, outcome, *seconds, summary) {
                 Ok(landing) => return Ok(BatchEnd::Land(Box::new(landing))),
@@ -172,48 +177,10 @@ impl<S: Store> Attempt<'_, S> {
             tree: ended.gate.as_ref().and_then(|gate| gate.tree.clone()),
             seconds: started.elapsed().as_secs(),
             detail,
+            bisection: None,
         };
-        if let Some((outcome @ VerificationOutcome::CleanupFailed { cleanup, .. }, _)) = &gate {
-            // The gate's worktree is not safe to reuse, whatever the verdict
-            // and whichever member changed: halt as a single gate would.
-            if !observation::human_permits(self.store, self.head)? {
-                observation::withdraw_with_cleanup_evidence(self.store, self.head, cleanup)?;
-                return Ok(BatchEnd::Tick {
-                    result: TickResult::Returned,
-                    outcome: Box::new(outcome.clone()),
-                    summary,
-                });
-            }
-            let detail = format!(
-                "the gate of verification batch {} could not clean up: {}: {}\nOwner retained: {}\nWorktree retained: {}\nQuiescence/recovery was not established; do not clear ownership or remove evidence without recovery checks.",
-                ended.id,
-                cleanup.phase,
-                cleanup.detail,
-                cleanup
-                    .owner
-                    .as_deref()
-                    .unwrap_or("path not reported by wrapper"),
-                cleanup
-                    .worktree
-                    .as_deref()
-                    .unwrap_or("path not reported by wrapper"),
-            );
-            return Ok(
-                match record_infrastructure_failure(
-                    self.queue,
-                    self.ctx,
-                    self.head,
-                    VerificationFailureDisposition::Permanent,
-                    &detail,
-                )? {
-                    GenerationWrite::Applied(result) => BatchEnd::Tick {
-                        result,
-                        outcome: Box::new(outcome.clone()),
-                        summary,
-                    },
-                    GenerationWrite::Superseded => BatchEnd::Done(summary),
-                },
-            );
+        if let Some((outcome @ VerificationOutcome::CleanupFailed { .. }, _)) = &gate {
+            return self.halt(&ended.id, outcome, summary);
         }
         if stopped {
             if gated {
@@ -235,7 +202,62 @@ impl<S: Store> Attempt<'_, S> {
     }
 }
 
-fn stopped_result<S: Store>(
+impl<S: Store> Attempt<'_, S> {
+    /// Halts the queue after a batch gate (or a bisection probe of it) that
+    /// could not clean up: the gate's worktree is not safe to reuse, whatever
+    /// the verdict and whichever member changed, so it halts as a single
+    /// gate would.
+    pub(super) fn halt(
+        &self,
+        batch: &BatchId,
+        outcome: &VerificationOutcome,
+        summary: BatchSummary,
+    ) -> Result<BatchEnd, AppError> {
+        let VerificationOutcome::CleanupFailed { cleanup, .. } = outcome else {
+            return Ok(BatchEnd::Done(summary));
+        };
+        if !observation::human_permits(self.store, self.head)? {
+            observation::withdraw_with_cleanup_evidence(self.store, self.head, cleanup)?;
+            return Ok(BatchEnd::Tick {
+                result: TickResult::Returned,
+                outcome: Box::new(outcome.clone()),
+                summary,
+            });
+        }
+        let detail = format!(
+            "the gate of verification batch {} could not clean up: {}: {}\nOwner retained: {}\nWorktree retained: {}\nQuiescence/recovery was not established; do not clear ownership or remove evidence without recovery checks.",
+            batch,
+            cleanup.phase,
+            cleanup.detail,
+            cleanup
+                .owner
+                .as_deref()
+                .unwrap_or("path not reported by wrapper"),
+            cleanup
+                .worktree
+                .as_deref()
+                .unwrap_or("path not reported by wrapper"),
+        );
+        Ok(
+            match record_infrastructure_failure(
+                self.queue,
+                self.ctx,
+                self.head,
+                VerificationFailureDisposition::Permanent,
+                &detail,
+            )? {
+                GenerationWrite::Applied(result) => BatchEnd::Tick {
+                    result,
+                    outcome: Box::new(outcome.clone()),
+                    summary,
+                },
+                GenerationWrite::Superseded => BatchEnd::Done(summary),
+            },
+        )
+    }
+}
+
+pub(super) fn stopped_result<S: Store>(
     queue: &VerificationQueue<'_, S>,
     head: &VerificationCandidate,
 ) -> Result<TickResult, AppError> {
@@ -301,14 +323,7 @@ pub(super) fn retire(
         retire_landed(store, env, batching, head, batch);
         return;
     }
-    let comment = format!(
-        "Verification batch {} ended ({}) without landing, so each member is verified on its own.",
-        batch.id,
-        batch.gate.as_ref().map_or_else(
-            || batch.phase.as_str().to_owned(),
-            |gate| format!("{}, {}", batch.phase.as_str(), gate.verdict.as_str())
-        )
-    );
+    let comment = retirement_comment(batch);
     match batching.retire(head, batch, &comment) {
         Ok(retirement) => {
             let mut next = batch.clone();
@@ -445,6 +460,44 @@ fn retire_landed(
             ),
         );
     }
+}
+
+/// What a batch's pull request is closed with: why it ended without
+/// landing, and for a bisection (SH-833) what the bisection found.
+fn retirement_comment(batch: &VerificationBatch) -> String {
+    let ended = batch.gate.as_ref().map_or_else(
+        || batch.phase.as_str().to_owned(),
+        |gate| format!("{}, {}", batch.phase.as_str(), gate.verdict.as_str()),
+    );
+    if let Some(of) = &batch.bisects {
+        return format!(
+            "Verification batch {} was a bisection probe of batch {} (its first {} members). It ended ({ended}) without landing; its verdict is recorded on batch {}.",
+            batch.id, of.parent, of.prefix, of.parent
+        );
+    }
+    let found = match batch.bisection.as_ref().and_then(|b| b.outcome.as_ref()) {
+        Some(BisectionOutcome::Culprit {
+            story_id,
+            certified,
+            ..
+        }) => format!(
+            " Bisection found that {story_id} turns it red; {} leading members were certified.",
+            certified
+        ),
+        Some(
+            BisectionOutcome::Inconclusive { detail } | BisectionOutcome::Interrupted { detail },
+        ) => format!(" Bisection blamed no member: {detail}."),
+        None => {
+            return format!(
+                "Verification batch {} ended ({ended}) without landing, so each member is verified on its own.",
+                batch.id
+            );
+        }
+    };
+    format!(
+        "Verification batch {} ended ({ended}) without landing.{found} Members that did not land are verified from the queue.",
+        batch.id
+    )
 }
 
 pub(super) fn member_list(batch: &VerificationBatch) -> String {

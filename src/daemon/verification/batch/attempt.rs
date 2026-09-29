@@ -1,7 +1,6 @@
 //! One batch in progress: locking and submitting members, assembling and
 //! recording the batch, publishing it and running its gate (SH-831).
 
-use super::end::{member_list, write};
 use super::*;
 
 /// One batch in progress.
@@ -28,6 +27,9 @@ pub(super) struct Attempt<'a, S: Store> {
     pub(super) failure: Option<String>,
     /// The batch gate's outcome and duration in seconds.
     pub(super) gate: Option<(VerificationOutcome, u64)>,
+    /// The bisection of a red batch, once its record ended (SH-833). From
+    /// then on `record` holds only a live probe record, if any.
+    pub(super) bisection: Option<super::bisect::Bisecting>,
 }
 
 impl<S: Store> Attempt<'_, S> {
@@ -127,8 +129,12 @@ impl<S: Store> Attempt<'_, S> {
             }
         };
         progress_item(self.env, self.head, "batch assembly", "passed");
-        self.insert(id, assembly.tip)?;
-        let publication = self.publication();
+        self.insert(id, &assembly)?;
+        let publication = record::publication(
+            self.record
+                .as_ref()
+                .expect("the batch is recorded before it is published"),
+        );
         match self
             .batching
             .publish(self.head, &publication, self.cancellation)
@@ -145,11 +151,16 @@ impl<S: Store> Attempt<'_, S> {
             return Ok(());
         }
         self.advance(BatchPhase::Gating, |_| {})?;
-        let link = self.pull_request_link()?;
+        let link = record::pull_request_link(
+            self.record
+                .as_ref()
+                .ok_or_else(|| AppError::Storage("the batch has no record to gate".into()))?,
+            self.env.now(),
+        )?;
         let gate_started = Instant::now();
         let outcome = self.batching.gate(self.head, &link, self.cancellation);
         self.gate = Some((outcome, gate_started.elapsed().as_secs()));
-        Ok(())
+        self.bisect()
     }
 
     /// Submits one member and records its submission; `Err` excludes it.
@@ -277,159 +288,5 @@ impl<S: Store> Attempt<'_, S> {
             reason,
             detail,
         });
-    }
-
-    fn insert(&mut self, id: BatchId, tip: String) -> Result<(), AppError> {
-        let now = self.env.now();
-        let batch = VerificationBatch {
-            branch: id.branch(),
-            id,
-            project: self.head.project,
-            project_slug: self.head.project_slug.clone(),
-            head: self.head.story_id.clone(),
-            base_branch: self.plan.base_branch.clone(),
-            base_commit: self.plan.base_commit.clone(),
-            tip,
-            pull_request: None,
-            phase: BatchPhase::Assembled,
-            members: self
-                .plan
-                .members
-                .iter()
-                .enumerate()
-                .map(|(position, member)| BatchMember {
-                    story: member.story,
-                    story_id: member.candidate.story_id.clone(),
-                    generation: member.generation,
-                    head_commit: member.commit.clone(),
-                    pull_request: member.pull_request.clone(),
-                    position: position as u32,
-                    branch: member
-                        .candidate
-                        .cleanup_lease
-                        .as_ref()
-                        .map(|lease| lease.branch.clone()),
-                })
-                .collect(),
-            excluded: self.plan.excluded.clone(),
-            gate: None,
-            detail: None,
-            retired: false,
-            revision: 0,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        };
-        let project = self.head.project;
-        self.store.write(|tx| {
-            // Backstop for B10: a batch still live here was left by a tick
-            // that failed before it could end it.
-            abandon_live(
-                tx,
-                project,
-                "a newer batch of the project was recorded while this one was still live",
-                &now,
-            )?;
-            tx.insert_verification_batch(&batch)?;
-            tx.prune_verification_batches(project, RETAINED_BATCHES)?;
-            Ok(())
-        })?;
-        journal(
-            "INFO",
-            self.head,
-            &format!(
-                "verification batch {} assembled: {} at {}",
-                batch.id,
-                member_list(&batch),
-                batch.tip
-            ),
-        );
-        if let Some(membership) = &self.membership {
-            membership.show(&batch.id, batch.phase);
-        }
-        self.record = Some(batch);
-        Ok(())
-    }
-
-    fn advance(
-        &mut self,
-        phase: BatchPhase,
-        change: impl FnOnce(&mut VerificationBatch),
-    ) -> Result<(), AppError> {
-        let current = self.record.as_ref().ok_or_else(|| {
-            AppError::Storage("a batch phase moved before the batch was recorded".into())
-        })?;
-        let mut next = current.advance(phase, &self.env.now())?;
-        change(&mut next);
-        write(self.store, &next, current.revision)?;
-        journal(
-            "INFO",
-            self.head,
-            &format!("verification batch {} {}", next.id, phase.as_str()),
-        );
-        if let Some(membership) = &self.membership {
-            membership.show(&next.id, phase);
-        }
-        self.record = Some(next);
-        Ok(())
-    }
-
-    fn publication(&self) -> BatchPublication {
-        let batch = self
-            .record
-            .as_ref()
-            .expect("the batch is recorded before it is published");
-        let members: Vec<String> = batch
-            .members
-            .iter()
-            .map(|member| {
-                let number = parse_pr_url(&member.pull_request)
-                    .map(|reference| format!("#{}", reference.number))
-                    .unwrap_or_else(|_| member.pull_request.clone());
-                format!(
-                    "{}. {} — {number} (head {})",
-                    member.position + 1,
-                    member.story_id,
-                    &member.head_commit[..12]
-                )
-            })
-            .collect();
-        BatchPublication {
-            branch: batch.branch.clone(),
-            tip: batch.tip.clone(),
-            base: batch.base_branch.clone(),
-            title: format!("Verification batch {}: {}", batch.id, member_list(batch)),
-            body: format!(
-                "Verification batch `{}` of project `{}`, formed by the storyhook verifier.\n\n\
-                 Base: `{}` at {}.\n\n\
-                 Members, merged in queue order as merge commits:\n{}\n\n\
-                 The verifier gates this pull request's merge tree. Landing a batch is not built \
-                 yet, so the verifier closes this pull request when its gate ends and verifies \
-                 each member on its own.",
-                batch.id,
-                batch.project_slug,
-                batch.base_branch,
-                batch.base_commit,
-                members.join("\n")
-            ),
-        }
-    }
-
-    fn pull_request_link(&self) -> Result<PrLink, AppError> {
-        let pull_request = self
-            .record
-            .as_ref()
-            .and_then(|batch| batch.pull_request.clone())
-            .ok_or_else(|| AppError::Storage("the batch has no pull request to gate".into()))?;
-        let reference = parse_pr_url(&pull_request.url)?;
-        Ok(PrLink {
-            owner: reference.owner,
-            repo: reference.repo,
-            number: pull_request.number,
-            url: pull_request.url,
-            close_on_merge: false,
-            status: "open".into(),
-            linked_at: self.env.now(),
-            last_checked_at: None,
-        })
     }
 }

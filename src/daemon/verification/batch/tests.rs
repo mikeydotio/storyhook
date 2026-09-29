@@ -378,6 +378,8 @@ fn head_named(
 fn record(project: ProjectId, members: &[&VerificationCandidate]) -> VerificationBatch {
     let id = BatchId::generate();
     VerificationBatch {
+        bisects: None,
+        bisection: None,
         branch: id.branch(),
         id,
         project,
@@ -392,6 +394,8 @@ fn record(project: ProjectId, members: &[&VerificationCandidate]) -> Verificatio
             .iter()
             .enumerate()
             .map(|(position, member)| BatchMember {
+                merge_commit: None,
+                merge_tree: None,
                 story: StoryNo::parse_id("SH", &member.story_id).unwrap(),
                 story_id: member.story_id.clone(),
                 generation: member.verifying_generation.unwrap(),
@@ -706,4 +710,223 @@ fn publish_and_retire_run_the_batch_script_from_the_lease_repository() {
     );
     drop(boundary.store);
     drop(boundary.fixture);
+}
+
+/// A returned member's diagnosis is pasted, and its agent re-dispatched,
+/// under that member's own lock (SH-833 D8): the helper refuses any other
+/// story's descriptor, and the slot holds only the head's.
+#[test]
+fn a_culprit_members_delivery_inherits_that_members_own_lock() {
+    let boundary = Boundary::new();
+    let activity = VerificationActivity::new();
+    let _head = activity.acquire(&boundary.candidate, boundary.env.now());
+    let actuator = boundary.actuator(&activity);
+    let batching = actuator
+        .batch()
+        .expect("with_batching offers batch operations");
+    let (locks, busy) =
+        MemberLocks::acquire(&boundary.root, &[(StoryNo::new(41), "SH-41".to_owned())]).unwrap();
+    assert!(busy.is_empty());
+    let member_lock = std::fs::metadata(lock_path(&boundary.root, "SH-41")).unwrap();
+
+    // The fixture helper answers only submission receipts, which a paste
+    // refuses; what matters is the descriptor it inherited first.
+    let _ = batching.notify_member(
+        &boundary.candidate,
+        "CENTRAL VERIFICATION RED — fixture",
+        MemberOwner(locks.get("SH-41").unwrap()),
+        &Cancellation::default(),
+    );
+    let inherited: u64 = boundary.read("lock").trim().parse().unwrap();
+    assert_eq!(
+        inherited,
+        member_lock.ino(),
+        "notify: the member's own lock"
+    );
+
+    std::fs::remove_file(boundary.record.with_extension("lock")).unwrap();
+    let _ = batching.redispatch_member(
+        &boundary.candidate,
+        &ResumePlan::default(),
+        MemberOwner(locks.get("SH-41").unwrap()),
+        &Cancellation::default(),
+    );
+    let inherited: u64 = boundary.read("lock").trim().parse().unwrap();
+    assert_eq!(
+        inherited,
+        member_lock.ino(),
+        "redispatch: the member's own lock"
+    );
+}
+
+/// The receipt check runs the bundled merge-preflight.sh in the head's
+/// checkout, whose receipt store verify-pr.sh reads: a gate or full receipt
+/// certifies the prefix tree; none, or a changed-tier one, does not.
+#[test]
+fn a_prefix_is_certified_only_by_a_qualifying_receipt_in_the_checkout() {
+    let boundary = Boundary::new();
+    let activity = VerificationActivity::new();
+    let _head = activity.acquire(&boundary.candidate, boundary.env.now());
+    let actuator = boundary.actuator(&activity);
+    let batching = actuator.batch().unwrap();
+    let git = |args: &[&str]| {
+        let output = crate::env::git_env::command(&boundary.root)
+            .args(args)
+            .envs([
+                ("GIT_AUTHOR_NAME", "t"),
+                ("GIT_AUTHOR_EMAIL", "t@t"),
+                ("GIT_COMMITTER_NAME", "t"),
+                ("GIT_COMMITTER_EMAIL", "t@t"),
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    std::fs::write(boundary.root.join("prefix"), "members\n").unwrap();
+    git(&["add", "prefix"]);
+    git(&["commit", "-q", "-m", "prefix"]);
+    let prefix = git(&["rev-parse", "HEAD"]);
+    let tree = git(&["rev-parse", "HEAD^{tree}"]);
+    // Relative to the checkout when git answers a relative path.
+    let receipts = boundary
+        .root
+        .join(git(&["rev-parse", "--git-common-dir"]))
+        .join("storyhook/gate-receipts");
+    std::fs::create_dir_all(&receipts).unwrap();
+    let certified = || {
+        batching.certified(
+            &boundary.candidate,
+            &base,
+            &prefix,
+            &Cancellation::default(),
+        )
+    };
+
+    assert!(!certified().unwrap(), "no receipt");
+    std::fs::write(receipts.join(&tree), "tier changed\n").unwrap();
+    assert!(
+        !certified().unwrap(),
+        "a changed-tier receipt never certifies a merge"
+    );
+    std::fs::write(receipts.join(&tree), "tier gate\n").unwrap();
+    assert!(certified().unwrap(), "a gate receipt");
+    std::fs::write(receipts.join(&tree), "tier full\n").unwrap();
+    assert!(certified().unwrap(), "a full receipt");
+    assert!(
+        batching
+            .certified(
+                &boundary.candidate,
+                &base,
+                &"0".repeat(40),
+                &Cancellation::default()
+            )
+            .is_err(),
+        "a commit the checkout lacks is an inspection error, never a receipt"
+    );
+}
+
+#[test]
+fn the_receipt_answer_reads_merge_preflights_json() {
+    use super::shell::receipt_answer;
+    let answer = |result: &str| {
+        receipt_answer(
+            format!(r#"{{"version":1,"result":"{result}","reason":"r","tree":"t","detail":"d"}}"#)
+                .as_bytes(),
+            b"",
+        )
+    };
+    assert!(answer("certified").unwrap());
+    assert!(!answer("uncertified").unwrap());
+    assert!(!answer("conflict").unwrap());
+    assert!(answer("inspection-error").is_err());
+    assert!(receipt_answer(b"not json", b"merge-preflight: boom").is_err());
+}
+
+/// Only a verdict on the exact prefix counts (SH-833 D9); a landing probe
+/// needs only a certification of the prefix's head.
+#[test]
+fn a_probe_verdict_counts_only_for_the_exact_prefix() {
+    use super::bisect::{Probe, classify};
+    use crate::store::ProbeKind::{Landing, Search};
+    let (tree, head) = ("a".repeat(40), "b".repeat(40));
+    let certified = |head: &str, tree: &str| VerificationOutcome::Certified {
+        head: head.into(),
+        tree: tree.into(),
+        detail: "ok".into(),
+        gate: "make test".into(),
+    };
+    let red = |tree: &str| VerificationOutcome::TestsFailed {
+        tree: tree.into(),
+        log: "/tmp/gate.log".into(),
+        detail: "1 failed".into(),
+        gate: "make test".into(),
+    };
+    let other = "c".repeat(40);
+    let kind = |probe: Probe| match probe {
+        Probe::Green(_) => "green",
+        Probe::Red(_) => "red",
+        Probe::Void(_) => "void",
+        Probe::Halt(..) => "halt",
+    };
+    let judge =
+        |outcome: &VerificationOutcome, probe| kind(classify(outcome, &tree, &head, probe, 1));
+
+    assert_eq!(judge(&certified(&head, &tree), Search), "green");
+    assert_eq!(
+        judge(&certified(&head, &other), Search),
+        "void",
+        "another tree"
+    );
+    assert_eq!(
+        judge(&certified(&other, &tree), Search),
+        "void",
+        "another head"
+    );
+    assert_eq!(judge(&red(&tree), Search), "red");
+    assert_eq!(judge(&red(&other), Search), "void", "red on a moved base");
+    assert_eq!(
+        judge(&certified(&head, &other), Landing),
+        "green",
+        "lands what it certified"
+    );
+    assert_eq!(judge(&certified(&other, &other), Landing), "void");
+    assert_eq!(
+        judge(&red(&tree), Landing),
+        "void",
+        "a landing gate never blames"
+    );
+    assert_eq!(judge(&VerificationOutcome::Cancelled, Search), "void");
+    for outcome in [
+        VerificationOutcome::Conflict {
+            detail: "moved".into(),
+        },
+        VerificationOutcome::InvalidSubmission {
+            detail: "closed".into(),
+        },
+        VerificationOutcome::InfrastructureFailure {
+            detail: "disk full".into(),
+            disposition: VerificationFailureDisposition::Retryable,
+        },
+    ] {
+        assert_eq!(judge(&outcome, Search), "void", "{outcome:?}");
+    }
+    let cleanup = VerificationOutcome::CleanupFailed {
+        verdict: CompletedVerification::TestsFailed {
+            tree: tree.clone(),
+            log: "/tmp/gate.log".into(),
+            detail: "red".into(),
+            gate: "make test".into(),
+        },
+        cleanup: VerificationCleanupFailure {
+            phase: "outer census".into(),
+            detail: "a survivor".into(),
+            owner: None,
+            worktree: None,
+            disposition: VerificationFailureDisposition::Permanent,
+        },
+    };
+    assert_eq!(judge(&cleanup, Search), "halt");
 }

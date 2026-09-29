@@ -60,7 +60,7 @@ open row is decided by that child (council when two answers stay defensible).
 | B4 | **The branch is assembled by merge commits.** `storyhook/verify-batch/<batch-id>` starts at the base the trial merges used; each member head is merged with `--no-ff` in queue order. No history is rewritten; each member's own commits stay reachable. | settled; built, dormant — see "SH-831" under As built |
 | B5 | **The batch lands through a batch PR.** `land-pr.sh` lands one PR and requires tree equality, so the certified tree must be the batch tree and the batch branch must be what lands. Member PRs stay open; GitHub marks each merged when the batch merge makes its head an ancestor of the base. | settled; built (SH-831 PR and gate, SH-832 landing) — see "SH-832" under As built |
 | B6 | **Members complete together, and first.** A durable `BatchLandingIntent` names every member before the merge. Completion writes, in one transaction, each member's GREEN comment (naming the batch and its PR), `StoryPrMerged` and `done`. `pr_check` treats a member of a landing batch as certified, never as UNCERTIFIED MERGE. Each member is then reaped by today's per-story reap. | settled; built with per-member intents (SH-832) |
-| B7 | **Red is bisected.** On a red batch, split the members in queue order and gate the first half's merge tree (a tree already certified by a receipt needs no run). Recurse into the red half until one member remains; return it through today's `return_for_repair` with its own tree and log. The other members re-enter the queue at their existing age, or land as a smaller batch if bisection already certified their tree. Cost: at most `ceil(log2 k)` gates per culprit. | open (child 4): whether failing-test attribution may skip steps, and how two culprits are handled |
+| B7 | **Red is bisected.** On a red batch, split the members in queue order and gate the first half's merge tree (a tree already certified by a receipt needs no run). Recurse into the red half until one member remains; return it through today's `return_for_repair` with its own tree and log. The other members re-enter the queue at their existing age, or land as a smaller batch if bisection already certified their tree. Cost: at most `ceil(log2 k)` gates per culprit. | settled; built as prefix bisection with no attribution shortcut, first culprit returned (SH-833) — see "SH-833" under As built |
 | B8 | **Non-code conflicts may be smoothed by the Verifier Agent.** v1 admits only clean trial merges (B1). Letting an agent author a resolution commit puts AI-authored changes in the certification path. | open (child 5, council) |
 | B9 | **Status and dashboard.** `VerifierStatus.active` gains `batch: { id, head, members, phase }`; each member's per-story status is `running` with the batch id; the banner reads "Verification batch B running: SH-1, SH-2, SH-3". | settled; built as a status-line and a sibling `batch` field (SH-832) |
 | B10 | **Restart.** A batch record is durable. A daemon that restarts before landing abandons the batch (members keep their generations and re-enter the queue); with a `BatchLandingIntent` present it recovers the landing exactly as today's intent does. | settled; built (SH-831 abandonment, SH-832 intent recovery) |
@@ -470,3 +470,99 @@ batch unit tests (worker start with a landing batch, member reap lock,
 left-out member), and `e2e/specs/verification-control.spec.ts` /
 `verification-status.spec.ts`.
 
+### SH-833 — bisect a red batch to its culprit (dormant)
+
+**Off in production**, as SH-832 left it: only `with_batching()` forms
+batches (council D10 on SH-832; SH-841 turns it on).
+
+**When.** A batch gate that judged the batch tip's own tree red, with no
+member change and no stop, is bisected. A red verdict on another tree (the
+base moved) is released as before and blames nobody. A record written before
+SH-833 has no merge chain and is not bisected.
+
+**The search (decision D1).** The batch branch is a first-parent chain of
+merge commits `P1..Pk`; each member now records its merge commit and tree
+(`merge_commit`, `merge_tree`). `domain::prefix_bisection::PrefixBisection`
+keeps the longest prefix known green (the base is green) and the shortest
+known red (the batch), gates the prefix halfway between rounding down, and
+stops when they are adjacent: that member turns a green prefix red, and the
+members before it are certified together. It finds a real green-to-red
+transition whatever the verdicts, the first culprit when culprits are
+independent, in at most `ceil(log2 k)` gate runs. This is the spec's "first
+half" read as prefixes: a half gated alone would miss a semantic conflict
+between members in different halves.
+
+**Receipts (D4).** Before the search, the bundled `merge-preflight.sh
+--json` runs in the head's checkout (whose receipt store `verify-pr.sh`
+reads) for each shorter prefix, longest first; the first qualifying receipt
+raises the green prefix with no gate. An unreadable receipt is journaled and
+costs only a gate.
+
+**Probes (D5).** Prefix 1 is a certify-only gate of the head's own pull
+request, whose merge tree is `P1`'s. A longer prefix is a *probe batch*: a
+batch record of its own (members `1..j`, tip `Pj`, `bisects: {parent,
+prefix}`), published and gated by SH-831's code, retired when it ends.
+A verdict counts only for the exact prefix tree and head (D9): a conflict, an
+invalid submission, a project fault, an infrastructure failure, a moved base,
+a member change, a stop or a step error ends the search *inconclusive*, and
+no story is blamed; the head then takes its own gate as after any released
+batch (SH-831 D2). A probe's cleanup failure halts the queue as a batch
+gate's does. Members above a red prefix leave the search at once: no longer
+observed, listed in status or locked, back in the queue at their age.
+
+**No `bisecting` phase is stored (D6).** The red batch ends `released`
+before the first probe exists (one live batch per project) and keeps a
+`bisection` record: every probe (prefix, kind `search`/`receipt`/`landing`,
+probe batch, tree, verdict, log, seconds) and the outcome (`culprit`,
+`inconclusive` or `interrupted`). Status shows the display phase
+`bisecting` with the red batch's id and the members still in the search.
+Worker start, and a new batch's backstop, settle a bisection that never
+recorded its end as interrupted, with one `needs_finalization` predicate for
+the read and the write (SH-693).
+
+**The culprit.** The outcome is recorded first; the culprit is then frozen
+(no longer observed). A head culprit goes to the tick as `BatchEnd::HeadRed`:
+its red probe is the head's own gate outcome through the unchanged
+TestsFailed path, so no second suite runs (D7); if a project recovery started
+meanwhile, the head takes its own admitted gate instead. Any other culprit
+is returned after the observer with its own RED comment and delivered under
+its own workspace lock (`notify_member`, `redispatch_member`), with no slot
+reservation (D8). Its RED names the red tree and log, the batch, the members
+merged before it and the tree they passed as (or the receipt that certifies
+them); when only the batch gate is red evidence, it says so, because a flaky
+test can blame the last member (the flake class is SH-839's). A culprit a
+person holds is not returned.
+
+**The certified members (D10).** Two or more land together in the same tick
+through SH-832's landing: the probe batch that ended the search stays live
+for it, or else (a receipt, or an earlier green probe) a fresh probe of that
+prefix is gated first, which its receipt makes a reuse. The head alone
+lands through its own gate, which reuses its receipt. The members after the
+culprit stay queued at their generation (D3: a second culprit meets its own
+next gate). Stated limit: if the base moved during the tick, that landing
+gate is a real run on the new base.
+
+**Open questions, decided** (decisions on SH-833): failing-test attribution
+never skips steps (D2: the gate's output has no standard format, a wrong
+attribution blames an innocent story, and at the cap it saves at most one
+gate); two culprits return the first and re-queue the rest (D3, as merge
+trains, Zuul, Mergify and bors do); the bound is `ceil(log2 k)` search runs
+per red batch (D4).
+
+**Records and text.** The per-dequeue preview record's batch summary gains
+`bisection`. Probe pull requests say which batch and prefix they probe, and
+retirement comments state what the bisection found. The batch pull request
+body no longer says landing is not built (adopted fix).
+
+Decisions D1–D10 are recorded on SH-833. Tests:
+`src/domain/prefix_bisection.rs` (every position, independent culprits,
+every non-monotone verdict set, receipts, the bound),
+`src/store/verification_batch.rs` (merge chain, links, `needs_finalization`,
+old records), `tests/verification_queue/bisection.rs` (a culprit at every
+position of batches of 2, 3 and 4, receipts, two culprits, an
+infrastructure failure, a moved base, a stop, member changes inside and
+outside the search, a cleanup failure, a held culprit, an absent agent, a
+recovery, status and the record, restart), `tests/verification_batches.rs`,
+`tests/batch_assembly.rs`, and unit tests in
+`src/daemon/verification/batch/tests.rs` (member locks for delivery, the
+receipt check against a real repository, the verdict rules).

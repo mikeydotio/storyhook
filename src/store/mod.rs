@@ -115,8 +115,9 @@ pub use types::{
     VerificationFailureDisposition, VerificationIncident, partition_known,
 };
 pub use verification_batch::{
-    BatchExclusion, BatchExclusionReason, BatchGate, BatchId, BatchMember, BatchPhase,
-    BatchPullRequest, VerificationBatch,
+    BatchBisection, BatchExclusion, BatchExclusionReason, BatchGate, BatchId, BatchMember,
+    BatchPhase, BatchPullRequest, BisectionOf, BisectionOutcome, BisectionProbe, ProbeKind,
+    VerificationBatch,
 };
 pub use verification_recovery::{
     VerificationAcknowledgementIntent, VerificationAcknowledgementRecord, VerificationAdmission,

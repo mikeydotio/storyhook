@@ -6,8 +6,9 @@ mod store_support;
 use store_support::{create_story, new_store, seed_project};
 use storyhook::domain::gate_verdict::GateVerdict;
 use storyhook::store::{
-    BatchGate, BatchId, BatchMember, BatchPhase, GlobalSeq, ProjectId, ReadOps, SqliteStore, Store,
-    StoreError, StoryNo, VerificationBatch, WriteOps,
+    BatchBisection, BatchGate, BatchId, BatchMember, BatchPhase, BisectionOf, BisectionOutcome,
+    GlobalSeq, ProjectId, ReadOps, SqliteStore, Store, StoreError, StoryNo, VerificationBatch,
+    WriteOps,
 };
 
 const AT: &str = "2026-01-01T00:00:00Z";
@@ -18,6 +19,8 @@ fn oid(digit: char) -> String {
 
 fn member(story: StoryNo, prefix: &str, position: u32) -> BatchMember {
     BatchMember {
+        merge_commit: None,
+        merge_tree: None,
         story,
         story_id: story.to_id(prefix),
         generation: GlobalSeq::new(100 + i64::from(position)),
@@ -34,6 +37,8 @@ fn batch(store: &SqliteStore, project: ProjectId, prefix: &str) -> VerificationB
     let id = BatchId::generate();
     let members = vec![member(first, prefix, 0), member(second, prefix, 1)];
     VerificationBatch {
+        bisects: None,
+        bisection: None,
         branch: id.branch(),
         id,
         project,
@@ -456,4 +461,95 @@ fn migration_52_keeps_every_batch_in_order_and_the_live_index() {
             .unwrap(),
         "the landing phase is storable after migration 52"
     );
+}
+
+/// A red batch ends released and keeps recording its bisection (SH-833):
+/// an ended record may change everything but its phase, and a probe batch
+/// of its prefix is then the project's one live batch.
+#[test]
+fn a_released_batch_records_its_bisection_while_its_probe_is_live() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "first", "AA");
+    let first = create_story(&store, project, "head", AT);
+    let second = create_story(&store, project, "member", AT);
+    let third = create_story(&store, project, "third", AT);
+    let id = BatchId::generate();
+    let members = vec![
+        member(first, "AA", 0),
+        member(second, "AA", 1),
+        member(third, "AA", 2),
+    ];
+    let parent = VerificationBatch {
+        bisects: None,
+        bisection: None,
+        branch: id.branch(),
+        id,
+        project,
+        project_slug: "first".into(),
+        head: members[0].story_id.clone(),
+        base_branch: "dev".into(),
+        base_commit: oid('a'),
+        tip: oid('b'),
+        pull_request: None,
+        phase: BatchPhase::Gating,
+        members,
+        excluded: Vec::new(),
+        gate: None,
+        detail: None,
+        retired: false,
+        revision: 0,
+        created_at: AT.into(),
+        updated_at: AT.into(),
+    };
+    store
+        .write(|tx| tx.insert_verification_batch(&parent))
+        .unwrap();
+    let mut released = parent.advance(BatchPhase::Released, AT).unwrap();
+    released.bisection = Some(BatchBisection::default());
+    assert!(
+        store
+            .write(|tx| tx.update_verification_batch(&released, 0))
+            .unwrap()
+    );
+    assert!(
+        released.needs_finalization(),
+        "its bisection has no outcome yet"
+    );
+
+    let probe_id = BatchId::generate();
+    let probe = VerificationBatch {
+        bisects: Some(BisectionOf {
+            parent: parent.id.clone(),
+            prefix: 2,
+        }),
+        branch: probe_id.branch(),
+        id: probe_id,
+        members: parent.members[..2].to_vec(),
+        tip: oid('c'),
+        phase: BatchPhase::Assembled,
+        ..parent.clone()
+    };
+    store
+        .write(|tx| tx.insert_verification_batch(&probe))
+        .expect("the probe is the project's only live batch");
+
+    let mut finished = released.clone();
+    finished.revision += 1;
+    finished.bisection = Some(BatchBisection {
+        probes: Vec::new(),
+        outcome: Some(BisectionOutcome::Inconclusive {
+            detail: "fixture".into(),
+        }),
+    });
+    assert!(
+        store
+            .write(|tx| tx.update_verification_batch(&finished, released.revision))
+            .unwrap(),
+        "an ended record records its bisection's end in the same phase"
+    );
+    let stored = store.read(|tx| tx.verification_batches(project)).unwrap();
+    assert_eq!(stored.len(), 2);
+    assert_eq!(stored[0], finished);
+    assert!(!stored[0].needs_finalization());
+    assert_eq!(stored[1].bisects.as_ref().unwrap().parent, parent.id);
 }

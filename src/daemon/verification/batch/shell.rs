@@ -211,6 +211,72 @@ impl BatchActuator for ShellVerificationActuator {
         )
     }
 
+    fn certified(
+        &self,
+        head: &VerificationCandidate,
+        base: &str,
+        commit: &str,
+        cancellation: &Cancellation,
+    ) -> Result<bool, AppError> {
+        let _log = self.log_scope(head);
+        let script = crate::daemon::verifier_bundle::materialize(&self.env)?
+            .join(crate::daemon::verifier_bundle::PREFLIGHT_SCRIPT);
+        let mut command = Command::new("bash");
+        apply_verification_allowlist(&mut command);
+        command
+            .arg(script)
+            .arg("--json")
+            .arg(base)
+            .arg(commit)
+            // The checkout's receipt store is the one verify-pr.sh reads; the
+            // batch's merge commits reached its objects when the batch gate
+            // fetched the batch pull request.
+            .current_dir(&head.checkout)
+            .envs(self.env.child_vars())
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null());
+        let workspace = self.activity.workspace_for(head.project);
+        let output = self.run_control_owned(
+            command,
+            "verifier-batch",
+            &verification_request_id(head),
+            "merge-preflight.sh --json",
+            ControlOwner {
+                workspace: workspace.as_deref(),
+                cancellation,
+            },
+        )?;
+        receipt_answer(&output.stdout, &output.stderr)
+    }
+
+    fn notify_member(
+        &self,
+        member: &VerificationCandidate,
+        message: &str,
+        owner: MemberOwner<'_>,
+        cancellation: &Cancellation,
+    ) -> Result<NotifyDelivery, AppError> {
+        self.notify_owned(member, message, Some(owner.0), cancellation)
+    }
+
+    fn redispatch_member(
+        &self,
+        member: &VerificationCandidate,
+        plan: &ResumePlan,
+        owner: MemberOwner<'_>,
+        cancellation: &Cancellation,
+    ) -> Result<(), AppError> {
+        self.dispatch_owned(
+            member,
+            plan,
+            true,
+            ControlOwner {
+                workspace: Some(owner.0),
+                cancellation,
+            },
+        )
+    }
+
     fn prune_members(
         &self,
         head: &VerificationCandidate,
@@ -237,5 +303,25 @@ impl BatchActuator for ShellVerificationActuator {
                 ))
             },
         )
+    }
+}
+
+/// Reads `merge-preflight.sh --json`'s answer (SH-833): `certified` is a
+/// qualifying receipt, `uncertified` or `conflict` is none. An inspection
+/// error, or anything else, is an error: the search then gates the prefix
+/// if it must.
+pub(super) fn receipt_answer(stdout: &[u8], stderr: &[u8]) -> Result<bool, AppError> {
+    let answer: serde_json::Value = serde_json::from_slice(stdout).map_err(|_| {
+        AppError::Storage(format!(
+            "merge-preflight.sh --json answered no JSON: {}",
+            String::from_utf8_lossy(stderr).trim()
+        ))
+    })?;
+    match answer.get("result").and_then(serde_json::Value::as_str) {
+        Some("certified") => Ok(true),
+        Some("uncertified" | "conflict") => Ok(false),
+        _ => Err(AppError::Storage(format!(
+            "merge-preflight.sh --json could not inspect the receipt: {answer}"
+        ))),
     }
 }

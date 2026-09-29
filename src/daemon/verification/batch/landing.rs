@@ -74,11 +74,17 @@ impl<S: Store> Attempt<'_, S> {
             tree: tree.clone(),
             gate: gate.clone(),
         };
-        let members: Vec<VerificationCandidate> = self
-            .plan
+        // The record's own members: a batch lands exactly what it gated.
+        let members: Vec<VerificationCandidate> = record
             .members
             .iter()
-            .map(|member| member.candidate.clone())
+            .filter_map(|member| {
+                self.plan
+                    .members
+                    .iter()
+                    .find(|planned| planned.candidate.story_id == member.story_id)
+                    .map(|planned| planned.candidate.clone())
+            })
             .collect();
         let gated = BatchGate {
             verdict: GateVerdict::Certified,

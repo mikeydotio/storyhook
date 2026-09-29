@@ -38,8 +38,12 @@ pub struct Assembly {
     pub tip: String,
     /// The tip's tree.
     pub tree: String,
-    /// The merge commit made for each member, in member order.
+    /// The merge commit made for each member, in member order: the tip of
+    /// each prefix of the batch.
     pub merges: Vec<String>,
+    /// Each merge commit's tree, in member order: the tree a gate of that
+    /// prefix judges (SH-833).
+    pub trees: Vec<String>,
 }
 
 /// Merges `members` onto `base` in order in `repository`, for the branch
@@ -61,6 +65,7 @@ pub fn assemble(
     let mut tip = base.to_owned();
     let mut tree = String::new();
     let mut merges = Vec::with_capacity(members.len());
+    let mut trees = Vec::with_capacity(members.len());
     for member in members {
         require_pinned(&member.commit, LABEL)?;
         let merged = repository_query(
@@ -122,13 +127,19 @@ pub fn assemble(
         }
         tip = answer_oid(&committed.stdout, LABEL, "the merge commit")?;
         merges.push(tip.clone());
+        trees.push(tree.clone());
     }
     if merges.is_empty() {
         return Err(AppError::Validation(format!(
             "{LABEL} of {branch} has no members to merge"
         )));
     }
-    Ok(Assembly { tip, tree, merges })
+    Ok(Assembly {
+        tip,
+        tree,
+        merges,
+        trees,
+    })
 }
 
 #[cfg(test)]
