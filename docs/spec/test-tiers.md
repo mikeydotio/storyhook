@@ -1061,6 +1061,9 @@ Known limits, stated rather than hidden:
   literal. `tests/timing_assertions/waits.rs` rejects new, changed or stale raw
   bounds against an exact classified inventory. See
   [Rust harness patience](rust-harness-patience.md) for the census and fence limits.
+- SH-836 covers lib tests in `src/`: production reads a subprocess bound through
+  `Environment::subprocess_bound`, and a lib test declares patience or proof on
+  the `Environment` it builds, or the read fails. See the same document.
 
 ## A failed cleanup is one red (SH-765)
 
