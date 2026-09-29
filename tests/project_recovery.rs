@@ -10,6 +10,8 @@ mod decision;
 mod deletion;
 #[path = "project_recovery/engine.rs"]
 mod engine;
+#[path = "project_recovery/isolation.rs"]
+mod isolation;
 #[path = "project_recovery/landing.rs"]
 mod landing;
 #[path = "project_recovery/queue.rs"]

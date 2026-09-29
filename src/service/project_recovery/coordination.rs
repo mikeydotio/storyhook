@@ -3,14 +3,18 @@ use super::{AssessmentStatus, WorkKind, WorkStatus, authority, persistence};
 use crate::store::{ProjectId, ReadOps, StoreError, StoryNo};
 
 /// Generations already judged as project faults cannot become fresh gate attempts.
+///
+/// Reads the immutable observation rows directly rather than validating each
+/// record: the queue needs only their typed story and generation, and one
+/// invalid record must not stop every other story in the project (SH-848).
+/// An invalid record's own observations still hold their generations.
 pub(crate) fn observed_generations(
     tx: &impl ReadOps,
     project: ProjectId,
 ) -> Result<std::collections::BTreeSet<(StoryNo, crate::store::GlobalSeq)>, StoreError> {
     let mut observed = std::collections::BTreeSet::new();
     for record in tx.project_recoveries(project)? {
-        let view = persistence::read_view(tx, record)?;
-        for observation in view.observations {
+        for observation in tx.project_recovery_observations(project, &record.id)? {
             observed.insert((observation.story, observation.generation));
         }
     }
