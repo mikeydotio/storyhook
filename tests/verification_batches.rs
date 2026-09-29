@@ -21,6 +21,7 @@ fn member(story: StoryNo, prefix: &str, position: u32) -> BatchMember {
     BatchMember {
         merge_commit: None,
         merge_tree: None,
+        resolution: None,
         story,
         story_id: story.to_id(prefix),
         generation: GlobalSeq::new(100 + i64::from(position)),

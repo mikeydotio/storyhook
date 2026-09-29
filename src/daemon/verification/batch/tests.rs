@@ -396,6 +396,7 @@ fn record(project: ProjectId, members: &[&VerificationCandidate]) -> Verificatio
             .map(|(position, member)| BatchMember {
                 merge_commit: None,
                 merge_tree: None,
+                resolution: None,
                 story: StoryNo::parse_id("SH", &member.story_id).unwrap(),
                 story_id: member.story_id.clone(),
                 generation: member.verifying_generation.unwrap(),

@@ -116,8 +116,8 @@ pub use types::{
 };
 pub use verification_batch::{
     BatchBisection, BatchExclusion, BatchExclusionReason, BatchGate, BatchId, BatchMember,
-    BatchPhase, BatchPullRequest, BisectionOf, BisectionOutcome, BisectionProbe, ProbeKind,
-    VerificationBatch,
+    BatchPhase, BatchPullRequest, BatchResolution, BisectionOf, BisectionOutcome, BisectionProbe,
+    ProbeKind, ResolvedFile, VerificationBatch,
 };
 pub use verification_recovery::{
     VerificationAcknowledgementIntent, VerificationAcknowledgementRecord, VerificationAdmission,

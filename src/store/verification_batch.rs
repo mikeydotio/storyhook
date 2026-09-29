@@ -12,7 +12,9 @@ use crate::domain::gate_verdict::GateVerdict;
 use serde::{Deserialize, Serialize};
 
 mod bisection;
+mod resolution;
 pub use bisection::{BatchBisection, BisectionOf, BisectionOutcome, BisectionProbe, ProbeKind};
+pub use resolution::{BatchResolution, ResolvedFile};
 
 /// Hex digits in a batch id: enough that two verifiers never pick the same
 /// branch name, short enough to read in a branch or a title.
@@ -183,6 +185,10 @@ pub struct BatchMember {
     /// That merge commit's tree: the tree a gate of the prefix judges.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_tree: Option<String>,
+    /// The automated resolution its merge commit carries (SH-834); only
+    /// the last member may have one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<BatchResolution>,
 }
 
 /// Why a story the preview selected did not become a member.
@@ -203,6 +209,12 @@ pub enum BatchExclusionReason {
     HeadMoved,
     /// Its pull request targets another base branch.
     BaseMismatch,
+    /// Its conflict with the batch, merged again at assembly, is not one
+    /// the verifier may smooth (SH-834).
+    ConflictNotSmoothable,
+    /// Resolving its smoothable conflict failed independently of its code
+    /// (SH-834).
+    ResolutionFailed,
 }
 
 /// A selected story that did not become a member, and why.
@@ -353,6 +365,24 @@ impl VerificationBatch {
         {
             return refuse("the last member's merge commit is the tip");
         }
+        let (last, earlier) = self
+            .members
+            .split_last()
+            .expect("a batch has two or more members");
+        if earlier.iter().any(|member| member.resolution.is_some()) {
+            return refuse("only the last member's merge carries a resolution");
+        }
+        if let Some(resolution) = &last.resolution {
+            if self.bisects.is_some() {
+                return refuse("a bisection probe carries no resolution");
+            }
+            if last.merge_commit.is_none() || last.merge_tree.is_none() {
+                return refuse("a resolved member records its merge commit and tree");
+            }
+            if let Some(why) = resolution.refusal(pinned) {
+                return refuse(why);
+            }
+        }
         if let Some(of) = &self.bisects {
             if of.prefix < 2 || of.prefix as usize != self.members.len() {
                 return refuse("a bisection probe has exactly its prefix of two or more members");
@@ -437,6 +467,7 @@ mod tests {
                 branch: None,
                 merge_commit: Some(oid(char::from_digit(position + 4, 10).unwrap())),
                 merge_tree: Some(oid(['a', 'b', 'c'][position as usize])),
+                resolution: None,
             })
             .collect();
         VerificationBatch {
@@ -512,6 +543,92 @@ mod tests {
         let mut partial = batch;
         partial.members[1].merge_tree = None;
         assert_eq!(partial.merge_chain(), None);
+    }
+
+    fn resolution() -> BatchResolution {
+        BatchResolution {
+            strategy: "union-insertions/1".into(),
+            conflicted_with: vec!["SH-1".into()],
+            auto_merge_tree: oid('d'),
+            files: vec![ResolvedFile {
+                path: "docs/spec.md".into(),
+                base: oid('7'),
+                ours: oid('8'),
+                theirs: oid('9'),
+                resolved: oid('e'),
+            }],
+        }
+    }
+
+    #[test]
+    fn only_the_last_members_merge_carries_a_well_formed_resolution() {
+        let mut batch = chained();
+        batch.members[2].resolution = Some(resolution());
+        assert!(batch.validate().is_ok());
+
+        let refused = |change: &dyn Fn(&mut VerificationBatch), why: &str| {
+            let mut batch = chained();
+            batch.members[2].resolution = Some(resolution());
+            change(&mut batch);
+            let error = batch.validate().unwrap_err().to_string();
+            assert!(error.contains(why), "{why}: {error}");
+        };
+        refused(
+            &|batch| batch.members[1].resolution = Some(resolution()),
+            "only the last member",
+        );
+        refused(
+            &|batch| {
+                batch.members[2].resolution = None;
+                batch.members[0].resolution = Some(resolution());
+            },
+            "only the last member",
+        );
+        refused(
+            &|batch| {
+                batch.bisects = Some(BisectionOf {
+                    parent: BatchId::try_from("fedcba987654".to_string()).unwrap(),
+                    prefix: 3,
+                });
+            },
+            "probe carries no resolution",
+        );
+        refused(
+            &|batch| batch.members[2].merge_tree = None,
+            "records its merge commit and tree",
+        );
+        let resolved = |change: &dyn Fn(&mut BatchResolution), why: &str| {
+            refused(
+                &|batch| change(batch.members[2].resolution.as_mut().unwrap()),
+                why,
+            );
+        };
+        resolved(&|r| r.strategy.clear(), "names its strategy");
+        resolved(&|r| r.files.clear(), "at least one path");
+        resolved(&|r| r.files.push(r.files[0].clone()), "each path once");
+        resolved(&|r| r.files[0].path.clear(), "each path once");
+        resolved(&|r| r.auto_merge_tree = "short".into(), "full object ids");
+        resolved(&|r| r.files[0].resolved = "short".into(), "full object ids");
+        resolved(&|r| r.files[0].base = "short".into(), "full object ids");
+    }
+
+    #[test]
+    fn a_resolution_is_written_only_when_present_and_new_reasons_are_kebab_case() {
+        let plain = serde_json::to_string(&chained()).unwrap();
+        assert!(!plain.contains("resolution"), "{plain}");
+        let mut batch = chained();
+        batch.members[2].resolution = Some(resolution());
+        let text = serde_json::to_string(&batch).unwrap();
+        let back: VerificationBatch = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, batch);
+        assert_eq!(
+            serde_json::to_value(BatchExclusionReason::ConflictNotSmoothable).unwrap(),
+            "conflict-not-smoothable"
+        );
+        assert_eq!(
+            serde_json::to_value(BatchExclusionReason::ResolutionFailed).unwrap(),
+            "resolution-failed"
+        );
     }
 
     #[test]

@@ -82,6 +82,7 @@ impl<S: Store> Attempt<'_, S> {
                     .map(|lease| lease.branch.clone()),
                 merge_commit: None,
                 merge_tree: None,
+                resolution: None,
             })
             .collect()
     }
