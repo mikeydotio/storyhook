@@ -298,18 +298,35 @@ fn run_git(
             .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", source);
     }
     command.args(args);
-    let result = crate::process::run_captured_private(command, std::time::Duration::from_secs(30))
-        .map_err(|error| {
-            AppError::Storage(format!(
-                "gate configuration Git {args:?}: {}",
-                error.detail()
-            ))
-        })?;
+    let result = crate::process::run_captured_answer(
+        command,
+        std::time::Duration::from_secs(30),
+        crate::process::TerminationPolicy::Kill,
+        GIT_ANSWER_LIMIT,
+    )
+    .map_err(|error| {
+        AppError::Storage(format!(
+            "gate configuration Git {args:?}: {}",
+            error.detail()
+        ))
+    })?;
     if !result.status.success() {
         return Err(AppError::Storage(format!(
             "gate configuration Git {args:?} failed: {}",
             String::from_utf8_lossy(&result.stderr)
         )));
     }
+    // A committed file is judged whole or not at all (SH-815): a prefix could
+    // parse where the file does not, and the digest would cover the prefix.
+    if result.stdout_truncated {
+        return Err(AppError::Storage(format!(
+            "gate configuration Git {args:?} answered more than {} MiB; a cut answer is refused rather than read",
+            GIT_ANSWER_LIMIT / (1024 * 1024)
+        )));
+    }
     Ok(result.stdout)
 }
+
+/// Largest Git answer gate inspection reads: far above any real
+/// `.storyhook.toml`, and bounded so a hostile tree cannot exhaust memory.
+const GIT_ANSWER_LIMIT: u64 = 8 * 1024 * 1024;
