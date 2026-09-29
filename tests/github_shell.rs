@@ -158,6 +158,7 @@ fn verifier_keeps_host_authentication_diagnostics() {
 fn verifier_network_calls_cannot_bypass_the_origin_boundary() {
     for name in [
         "scripts/verify-pr.sh",
+        "scripts/verify-batch.sh",
         "scripts/land-pr.sh",
         "scripts/landing-intent.sh",
         "scripts/release.sh",
