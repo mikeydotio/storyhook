@@ -44,6 +44,16 @@ pub(super) struct Board {
 
 impl Board {
     pub(super) fn new(stories: &[(&str, &str)]) -> Self {
+        Self::with_base(stories, &[], None)
+    }
+
+    /// [`Self::new`] whose base also holds `files` and, when given,
+    /// `pointer_tail` appended to its committed `.storyhook.toml` (SH-834).
+    pub(super) fn with_base(
+        stories: &[(&str, &str)],
+        files: &[(&str, &str)],
+        pointer_tail: Option<&str>,
+    ) -> Self {
         let fixture = ServiceFixture::new();
         let root = fixture.github_checkout("https://github.com/acme/widgets");
         git(&root, &["config", "commit.gpgsign", "false"]);
@@ -52,6 +62,19 @@ impl Board {
             std::fs::write(root.join(file), format!("{file} base\n")).unwrap();
         }
         git(&root, &["add", "a", "b", "c"]);
+        for (file, body) in files {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+            git(&root, &["add", file]);
+        }
+        if let Some(tail) = pointer_tail {
+            let pointer = root.join(".storyhook.toml");
+            let mut text = std::fs::read_to_string(&pointer).unwrap();
+            text.push_str(tail);
+            std::fs::write(&pointer, text).unwrap();
+            git(&root, &["add", ".storyhook.toml"]);
+        }
         git(&root, &["commit", "-qm", "base"]);
         let base = git(&root, &["rev-parse", "HEAD"]);
         git(&root, &["update-ref", "refs/remotes/origin/dev", &base]);

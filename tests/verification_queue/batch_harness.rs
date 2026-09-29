@@ -9,7 +9,9 @@ use storyhook::daemon::verification::{
     BatchActuator, BatchPublication, BatchRetirement, LandingOutcome, MemberBranch, MemberOwner,
     MemberPrune, VerificationCancellation,
 };
-use storyhook::service::trial_merge::{PrivateTrialMerger, TrialMerger};
+use storyhook::service::trial_merge::{
+    BlobSource, ConflictShape, PrivateTrialMerger, TrialMerge, TrialMerger,
+};
 use storyhook::store::{BatchPullRequest, VerificationBatch};
 
 pub(super) const BATCH_PR: &str = "https://github.com/acme/widgets/pull/900";
@@ -93,6 +95,63 @@ pub(super) struct Batcher<'a> {
     pub(super) pasted: Mutex<BTreeSet<String>>,
     /// Status read at each probe gate: (gate call, dashboard, text).
     pub(super) probe_status: Mutex<Vec<(usize, serde_json::Value, String)>>,
+    /// A conflict the preview's trial merger reports falsely (SH-834).
+    pub(super) lie: Option<Lie>,
+}
+
+/// A false conflict for the preview to see: merging `head` answers `shape`,
+/// and the conflicted tree's files read as `text` (SH-834). The batch step
+/// merges with Git itself, so only the preview is deceived.
+#[derive(Clone)]
+pub(super) struct Lie {
+    pub(super) head: String,
+    pub(super) shape: ConflictShape,
+    pub(super) text: Vec<u8>,
+}
+
+/// A private trial merger that tells [`Lie`] for one head.
+struct LyingMerger {
+    inner: PrivateTrialMerger,
+    lie: Lie,
+}
+
+impl TrialMerger for LyingMerger {
+    fn resolve(&mut self, rev: &str) -> Result<Option<String>, AppError> {
+        self.inner.resolve(rev)
+    }
+    fn merge(&mut self, onto: &str, head: &str) -> Result<TrialMerge, AppError> {
+        if head == self.lie.head {
+            let merged = self.inner.merge(onto, head)?;
+            // Only a real conflict is misreported: the merge onto the base
+            // stays clean, so the story still reads as a member conflict.
+            if matches!(merged, TrialMerge::Conflict { .. }) {
+                return Ok(TrialMerge::Conflict {
+                    paths: self.lie.shape.paths(),
+                    shape: self.lie.shape.clone(),
+                });
+            }
+            return Ok(merged);
+        }
+        self.inner.merge(onto, head)
+    }
+    fn commit(&mut self, onto: &str, head: &str, tree: &str) -> Result<String, AppError> {
+        self.inner.commit(onto, head, tree)
+    }
+    fn blobs(&mut self) -> Option<&mut dyn BlobSource> {
+        Some(self)
+    }
+}
+
+impl BlobSource for LyingMerger {
+    fn blob(&mut self, oid: &str) -> Result<Vec<u8>, AppError> {
+        self.inner.blob(oid)
+    }
+    fn file(&mut self, treeish: &str, path: &str) -> Result<Option<Vec<u8>>, AppError> {
+        if treeish == self.lie.shape.tree {
+            return Ok(Some(self.lie.text.clone()));
+        }
+        self.inner.file(treeish, path)
+    }
 }
 
 impl<'a> Batcher<'a> {
@@ -119,6 +178,7 @@ impl<'a> Batcher<'a> {
             absent: BTreeSet::new(),
             pasted: Mutex::new(BTreeSet::new()),
             probe_status: Mutex::new(Vec::new()),
+            lie: None,
         }
     }
 
@@ -469,11 +529,16 @@ impl VerificationActuator for Batcher<'_> {
         cancellation: &VerificationCancellation,
     ) -> Option<Result<Box<dyn TrialMerger>, AppError>> {
         Some(PrivateTrialMerger::open(repository).map(|merger| {
-            Box::new(
-                merger
-                    .with_deadline(deadline)
-                    .with_cancellation(cancellation.clone()),
-            ) as Box<dyn TrialMerger>
+            let merger = merger
+                .with_deadline(deadline)
+                .with_cancellation(cancellation.clone());
+            match &self.lie {
+                Some(lie) => Box::new(LyingMerger {
+                    inner: merger,
+                    lie: lie.clone(),
+                }) as Box<dyn TrialMerger>,
+                None => Box::new(merger) as Box<dyn TrialMerger>,
+            }
         }))
     }
 

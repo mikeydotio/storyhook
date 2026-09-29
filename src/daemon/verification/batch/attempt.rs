@@ -102,34 +102,11 @@ impl<S: Store> Attempt<'_, S> {
         progress_item(self.env, self.head, "batch assembly", "running");
         let id = BatchId::generate();
         let branch = id.branch();
-        let assembly = match assemble(
-            &self.plan.repository,
-            &branch,
-            &self.plan.base_commit,
-            &self
-                .plan
-                .members
-                .iter()
-                .map(|member| AssemblyMember {
-                    story_id: member.candidate.story_id.clone(),
-                    branch: member
-                        .candidate
-                        .cleanup_lease
-                        .as_ref()
-                        .map_or_else(String::new, |lease| lease.branch.clone()),
-                    commit: member.commit.clone(),
-                })
-                .collect::<Vec<_>>(),
-            self.cancellation,
-        ) {
-            Ok(assembly) => assembly,
-            Err(error) => {
-                self.dissolved = Some(format!("assembling the batch branch failed: {error}"));
-                return Ok(());
-            }
+        let Some((assembly, resolution)) = self.assemble(&id, &branch) else {
+            return Ok(());
         };
         progress_item(self.env, self.head, "batch assembly", "passed");
-        self.insert(id, &assembly)?;
+        self.insert(id, &assembly, resolution)?;
         let publication = record::publication(
             self.record
                 .as_ref()
@@ -161,6 +138,114 @@ impl<S: Store> Attempt<'_, S> {
         let outcome = self.batching.gate(self.head, &link, self.cancellation);
         self.gate = Some((outcome, gate_started.elapsed().as_secs()));
         self.bisect()
+    }
+
+    /// Assembles the batch branch: the clean members as merge commits in
+    /// queue order, then a smoothed last member, if the preview admitted one
+    /// (SH-834), with its conflict classified again and united. A smoothed
+    /// member the assembly refuses, or cannot resolve, is left out, and the
+    /// batch goes on with two or more members. `None` when the batch
+    /// dissolved or was stopped.
+    fn assemble(
+        &mut self,
+        id: &BatchId,
+        branch: &str,
+    ) -> Option<(Assembly, Option<BatchResolution>)> {
+        let members: Vec<AssemblyMember> = self
+            .plan
+            .members
+            .iter()
+            .map(|member| AssemblyMember {
+                story_id: member.candidate.story_id.clone(),
+                branch: member
+                    .candidate
+                    .cleanup_lease
+                    .as_ref()
+                    .map_or_else(String::new, |lease| lease.branch.clone()),
+                commit: member.commit.clone(),
+            })
+            .collect();
+        let smoothed = self
+            .plan
+            .members
+            .last()
+            .is_some_and(|member| member.smoothed);
+        let (clean, last) = if smoothed {
+            let (last, clean) = members.split_last().expect("a batch has members");
+            (clean, Some(last))
+        } else {
+            (members.as_slice(), None)
+        };
+        let mut assembly = match assemble(
+            &self.plan.repository,
+            branch,
+            &self.plan.base_commit,
+            clean,
+            self.cancellation,
+        ) {
+            Ok(assembly) => assembly,
+            Err(error) => {
+                self.dissolved = Some(format!("assembling the batch branch failed: {error}"));
+                return None;
+            }
+        };
+        let Some(last) = last else {
+            return Some((assembly, None));
+        };
+        let merged = merge_smoothed(
+            &SmoothedMerge {
+                repository: &self.plan.repository,
+                branch,
+                batch: id.as_str(),
+                base: &self.plan.base_commit,
+                earlier: clean,
+                member: last,
+            },
+            &mut assembly,
+            self.cancellation,
+        );
+        if self.cancellation.is_cancelled() {
+            return None;
+        }
+        let (reason, detail) = match merged {
+            Ok(LastMerge::Clean) => return Some((assembly, None)),
+            Ok(LastMerge::Resolved(resolution)) => {
+                journal(
+                    "INFO",
+                    self.head,
+                    &format!(
+                        "verification batch {id}: {} joins last with an automated resolution \
+                         ({}) of {}",
+                        last.story_id,
+                        resolution.strategy,
+                        resolution
+                            .files
+                            .iter()
+                            .map(|file| file.path.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                );
+                return Some((assembly, Some(resolution)));
+            }
+            Ok(LastMerge::Refused(why)) => (BatchExclusionReason::ConflictNotSmoothable, why),
+            Err(error) => (
+                BatchExclusionReason::ResolutionFailed,
+                format!("resolving its conflict failed: {error}"),
+            ),
+        };
+        if let Some(locks) = self.locks.as_mut() {
+            locks.release(&last.story_id);
+        }
+        let left_out = format!("{} was left out: {detail}", last.story_id);
+        self.exclude(&last.story_id, reason, detail);
+        if self.plan.members.len() < 2 {
+            self.dissolved = Some(format!(
+                "fewer than two members remain after assembly; {left_out}"
+            ));
+            return None;
+        }
+        Some((assembly, None))
     }
 
     /// Submits one member and records its submission; `Err` excludes it.
