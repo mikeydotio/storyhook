@@ -1343,6 +1343,15 @@ fn immediate_stop_retries_only_failed_targets_and_retains_reservation_identity()
             .to_string()
             .contains("reset in progress")
     );
+    // The preview refuses what the delete refuses, so no one confirms a
+    // deletion that cannot happen (SH-848).
+    assert!(
+        stories
+            .delete_plan(&first)
+            .unwrap_err()
+            .to_string()
+            .contains("reset in progress")
+    );
     assert!(
         stories
             .set_awaiting(&first, "cancelled")

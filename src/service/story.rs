@@ -1187,9 +1187,11 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     ///    to write it.
     /// 2. The story itself goes, through [`WriteOps::purge_story`].
     ///
-    /// Before either, a story that a durable record still names is refused:
-    /// a project recovery keeps exact event references into every story it
-    /// names, and the purge would strand them (SH-848).
+    /// Before either, a story that a durable record still depends on is
+    /// refused by name, through `story_deletion::refuse_deletion`: a reset, a
+    /// landing, an in-flight block delivery, or a project recovery, which
+    /// keeps exact event references into every story it names that the purge
+    /// would strand (SH-848).
     ///
     /// The retractions are real events on real stories rather than a silent
     /// table edit, because that is what makes the claimant's history true: the
@@ -1200,7 +1202,6 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         let (canonical, title, retracted, removed) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
-            super::engine::reset::refuse_reserved(&*tx, project, story_no)?;
             let canonical = story_no.to_id(&prefix);
             super::story_deletion::refuse_deletion(&*tx, project, story_no, &canonical)?;
             let retracted = surviving_claims(&*tx, project, &prefix, story_no, &canonical)?;
