@@ -8,8 +8,10 @@
 #
 # CONTRACT: every emitter in this repository -- scripts/leg.sh,
 # scripts/run-tests.sh, plugins/story/tests/run-tests.sh, scripts/run-e2e.sh,
-# scripts/verify-pr.sh -- is a no-op when $STORYHOOK_GATE_PROGRESS is unset,
-# so interactive `make test` is byte-identical to before this file existed.
+# scripts/verify-pr.sh, and scripts/gate-progress-writer.py, the portable
+# writer a project gate calls (SH-777) -- is a no-op when
+# $STORYHOOK_GATE_PROGRESS is unset, so interactive `make test` is
+# byte-identical to before this file existed.
 # Never gate that no-op on anything else (a `-t 1` TTY check, an environment
 # guess): the daemon is the only caller that sets the variable, and its
 # absence is what makes an interactive run inert.

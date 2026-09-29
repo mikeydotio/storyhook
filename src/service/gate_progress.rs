@@ -3,8 +3,10 @@
 //! `scripts/gate-progress.sh` and its producers (`scripts/leg.sh`,
 //! `scripts/run-tests.sh`, `plugins/story/tests/run-tests.sh`,
 //! `scripts/run-e2e.sh`, `e2e/gate-progress-reporter.ts`, and
-//! `scripts/machine-lock.sh`) append one JSON object per line to a journal file
-//! named by `$STORYHOOK_GATE_PROGRESS`. [`fold`] turns that raw text into a
+//! `scripts/machine-lock.sh`), and a project gate through the bundled
+//! `scripts/gate-progress-writer.py` (SH-777, rows under `release gate/`
+//! only), append one JSON object per line to a journal file named by
+//! `$STORYHOOK_GATE_PROGRESS`. [`fold`] turns that raw text into a
 //! tree of [`ProgressItem`]s; [`render`] turns the tree into the markdown
 //! checklist body the SH-524 progress comment carries. Both are pure — no
 //! clock, no I/O — so both are exhaustively table-tested.
