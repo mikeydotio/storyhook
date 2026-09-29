@@ -2655,6 +2655,12 @@ Any surviving story that claims a relationship with the target has
 that claim retracted first as a real event. The preview names those
 claims. The story number is never reused.
 
+Delete refuses a story that another record still depends on: a project
+recovery that names it as verification evidence, a landing in
+progress, or an unfinished reset, cleanup or block delivery. The
+refusal names that record. Close the story instead, or let the
+operation finish first.
+
 When to use:
   For a duplicate whose record adds no value, a story filed in the wrong
   project, a typo, or another creation mistake.
