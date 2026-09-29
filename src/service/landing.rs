@@ -67,8 +67,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                 created_at: ctx.now(),
                 batch: None,
             };
-            crate::store::landing::validate_intent(tx, &intent)?;
-            tx.insert_landing_intent(&intent)?;
+            admit_intent(tx, &intent)?;
             Ok(LandingAdmission::Admitted(intent))
         })?)
     }
@@ -138,7 +137,7 @@ impl<S: Store> VerificationQueue<'_, S> {
         &self,
         intent: &LandingIntent,
     ) -> Result<bool, AppError> {
-        Ok(self.store.write(|tx| tx.remove_landing_intent(intent))?)
+        Ok(self.store.write(|tx| release_intent(tx, intent))?)
     }
 }
 
@@ -281,4 +280,25 @@ pub(super) fn complete_story<S: Store>(
     )?;
     super::project_recovery::record_landing(tx, intent, &now)?;
     Ok(())
+}
+
+/// Acquires `intent` as durable landing authority in the caller's
+/// transaction, after validating it. This module is the one owner of every
+/// landing-authority mutation (`tests/state_set_funnel.rs`); a batch admits
+/// one intent per member through here (SH-832).
+pub(super) fn admit_intent(
+    tx: &mut impl WriteOps,
+    intent: &LandingIntent,
+) -> Result<(), StoreError> {
+    crate::store::landing::validate_intent(tx, intent)?;
+    tx.insert_landing_intent(intent)
+}
+
+/// Releases `intent` in the caller's transaction, for a merge that was
+/// provably never requested.
+pub(super) fn release_intent(
+    tx: &mut impl WriteOps,
+    intent: &LandingIntent,
+) -> Result<bool, StoreError> {
+    tx.remove_landing_intent(intent)
 }

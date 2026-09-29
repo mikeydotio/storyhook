@@ -8,7 +8,10 @@
 //! here is one transaction over every member.
 
 use super::block_delivery::{SubmissionGate, derive_block_edges};
-use super::landing::{Admissible, admissible, completable, complete_story, pending_intent};
+use super::landing::{
+    Admissible, admissible, admit_intent, completable, complete_story, pending_intent,
+    release_intent,
+};
 use super::{Ctx, VerificationCandidate, VerificationQueue};
 use crate::domain::landing::VerifiedSubmission;
 use crate::error::AppError;
@@ -142,8 +145,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                 });
             }
             for row in &rows {
-                crate::store::landing::validate_intent(tx, row)?;
-                tx.insert_landing_intent(row)?;
+                admit_intent(tx, row)?;
             }
             let mut next = record.advance(BatchPhase::Landing, &now)?;
             next.gate = Some(gate);
@@ -260,7 +262,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                 .into_iter()
                 .filter(|row| row.batch.as_ref() == Some(&intent.batch))
             {
-                tx.remove_landing_intent(&row)?;
+                release_intent(tx, &row)?;
             }
             let mut next = record.advance(BatchPhase::Released, &ctx.now())?;
             next.detail = Some(detail.to_owned());
