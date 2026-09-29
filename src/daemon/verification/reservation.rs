@@ -100,6 +100,9 @@ pub(crate) struct SlotView<'a> {
     pub(crate) active: &'a ActiveVerification,
     /// Why the owner holds a story its own write took out of the queue.
     pub(crate) reservation: Option<&'a Reservation>,
+    /// The batch the verifier would form around the gate now running
+    /// (SH-830), without conflicted paths.
+    pub(crate) preview: Option<&'a crate::service::batch_preview::BatchPreview>,
 }
 
 /// A reservation declared before the write that retires the owned generation.

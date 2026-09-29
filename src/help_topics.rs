@@ -2795,6 +2795,17 @@ Inspect and control this project's centralized verifier.
   overdue only when its hold reports no activity for longer than the stall
   ceiling plus one wake, because the hold did not release.
 
+  While a gate runs, status reports batch_preview: the batch the verifier
+  would form around that story if batching were on (SH-830). The head is the
+  story being verified; each other queued story joins only when its trial
+  merge onto the base plus the members so far is clean, up to the live Full
+  Auto run's lanes (at least 1). Every other story is listed with its reason:
+  conflict-with-base, conflict-with-member, held, blocked, landing-pending,
+  unsubmitted, cap or trial-failed. It is a preview only: the verifier still
+  verifies and lands the one story. Each gate's preview, duration and verdict
+  are recorded, one JSON line each, in
+  verification-batch-preview/<project>.ndjson in the daemon's state directory.
+
   A project fault releases verifier ownership after cleanup. The managed agent
   decides scope before edits, preserves required gate coverage, tests new and
   impacted behavior, commits, and moves its repair to verifying as the last

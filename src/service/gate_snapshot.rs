@@ -1,11 +1,15 @@
 //! Read gate configuration from the exact proposed merge, never mutable source files.
 
 use super::gate_command::gate_command_from_bytes;
+use super::private_objects::{self, PrivateObjects};
 use super::project_fault::{GateEntryRefusal, ProjectFault, is_pinned_oid};
 use crate::error::AppError;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
+
+/// Names gate inspection in every Git error it reports.
+const LABEL: &str = "gate configuration";
 
 /// Store-free inspection result used by the bundled verifier.
 #[derive(Debug, Serialize)]
@@ -38,9 +42,9 @@ pub fn inspect(
             "gate inspection requires pinned base, head and tree object IDs".into(),
         ));
     }
-    let head_tree = run_git(
+    let head_tree = private_objects::git(
         checkout,
-        None,
+        LABEL,
         &["rev-parse", "--verify", &format!("{head}^{{tree}}")],
     )?;
     let head_tree = String::from_utf8(head_tree)
@@ -51,27 +55,9 @@ pub fn inspect(
             "Git returned an invalid committed head tree".into(),
         ));
     }
-    let common = run_git(
-        checkout,
-        None,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    let common = String::from_utf8(common).map_err(|error| {
-        AppError::Storage(format!("Git common directory is not UTF-8: {error}"))
-    })?;
-    let common = PathBuf::from(common.strip_suffix('\n').unwrap_or(&common));
-    let objects = tempfile::Builder::new()
-        .prefix("storyhook-gate-config-")
-        .tempdir()
-        .map_err(|error| {
-            AppError::Storage(format!(
-                "creating private gate configuration objects: {error}"
-            ))
-        })?;
+    let objects = PrivateObjects::open(checkout, LABEL, "storyhook-gate-config-")?;
     let snapshot = Snapshot {
-        checkout,
-        objects: objects.path(),
-        source: common.join("objects"),
+        objects: &objects,
         tree,
     };
     let computed = snapshot.git(&["merge-tree", "--write-tree", base, head])?;
@@ -147,15 +133,13 @@ struct Entry {
 }
 
 struct Snapshot<'a> {
-    checkout: &'a Path,
-    objects: &'a Path,
-    source: PathBuf,
+    objects: &'a PrivateObjects,
     tree: &'a str,
 }
 
 impl Snapshot<'_> {
     fn git(&self, args: &[&str]) -> Result<Vec<u8>, AppError> {
-        run_git(self.checkout, Some((self.objects, &self.source)), args)
+        self.objects.git(args)
     }
 
     fn entry(&self, path: &str) -> Result<Option<Entry>, AppError> {
@@ -284,32 +268,4 @@ fn normalize(path: &Path) -> Result<String, AppError> {
     path.to_str()
         .map(str::to_owned)
         .ok_or_else(|| AppError::Storage("gate path is not UTF-8".into()))
-}
-
-fn run_git(
-    checkout: &Path,
-    objects: Option<(&Path, &Path)>,
-    args: &[&str],
-) -> Result<Vec<u8>, AppError> {
-    let mut command = crate::env::git_env::command(checkout);
-    if let Some((objects, source)) = objects {
-        command
-            .env("GIT_OBJECT_DIRECTORY", objects)
-            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", source);
-    }
-    command.args(args);
-    let result = crate::process::run_captured_private(command, std::time::Duration::from_secs(30))
-        .map_err(|error| {
-            AppError::Storage(format!(
-                "gate configuration Git {args:?}: {}",
-                error.detail()
-            ))
-        })?;
-    if !result.status.success() {
-        return Err(AppError::Storage(format!(
-            "gate configuration Git {args:?} failed: {}",
-            String::from_utf8_lossy(&result.stderr)
-        )));
-    }
-    Ok(result.stdout)
 }

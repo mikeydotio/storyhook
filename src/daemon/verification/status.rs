@@ -52,6 +52,12 @@ pub struct VerifierStatus {
     pub evidence_error: Option<String>,
     /// One concise actionable unhealthy-queue notice.
     pub warning: Option<String>,
+    /// The batch the verifier would form around the gate now running
+    /// (SH-830), without conflicted paths: a shadow preview that changes
+    /// nothing the verifier does. Present only while that gate runs; absent
+    /// in legacy payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_preview: Option<crate::service::batch_preview::BatchPreview>,
     /// The project's checkout tracks journal files in git, which its
     /// journal's own ignore file cannot hide, and the command that fixes
     /// it (SH-771). Separate from `warning`, which describes queue health.
@@ -84,6 +90,7 @@ pub(crate) fn snapshot(
     use crate::service::engine::elapsed_secs;
     let now = ctx.now();
     let active = owner.map(|owner| owner.active);
+    let batch_preview = owner.and_then(|owner| owner.preview.cloned());
     let project = tx
         .project(ctx.project())?
         .ok_or_else(|| AppError::NotFound(format!("project {}", ctx.project())))?;
@@ -245,6 +252,7 @@ pub(crate) fn snapshot(
             silence_seconds,
             evidence_error,
             warning,
+            batch_preview,
             journal_warning: crate::daemon::activity::hygiene::warning_for(
                 ctx.env(),
                 ctx.project(),
@@ -306,6 +314,9 @@ impl VerifierStatus {
                     crate::local_time::stamp(&active.started_at)
                 ));
             }
+        }
+        if let Some(preview) = &self.batch_preview {
+            text.push_str(&format!("Batch preview: {}\n", preview.describe()));
         }
         if let Some(at) = &self.last_evidence_at {
             text.push_str(&format!(

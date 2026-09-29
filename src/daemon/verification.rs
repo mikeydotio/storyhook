@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+mod batch_preview;
 mod cleanup;
 mod control;
 pub(crate) mod evidence;
@@ -17,6 +18,7 @@ pub(crate) mod evidence;
 mod reconcile_wait_tests;
 #[cfg(test)]
 mod workspace_tests;
+pub use batch_preview::batch_preview_log;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
 
 mod observation;
@@ -134,6 +136,9 @@ struct VerificationSlot {
     /// Why the owner keeps this slot after its own write took the owned
     /// generation out of the queue (SH-768).
     reservation: Option<Reservation>,
+    /// The batch the verifier would form around this attempt, shown only
+    /// while its gate runs (SH-830).
+    preview: Option<crate::service::batch_preview::BatchPreview>,
 }
 
 impl VerificationActivity {
@@ -287,6 +292,7 @@ impl VerificationActivity {
                 cancellation: cancellation.clone(),
                 output: crate::service::gate_output::OutputObserver::default(),
                 reservation: None,
+                preview: None,
             },
         );
         VerificationGuard {
@@ -365,8 +371,10 @@ impl VerificationGuard {
         slot.candidate = candidate.clone();
         slot.output = crate::service::gate_output::OutputObserver::default();
         // Set here, under the lock this already holds: the registry mutex is
-        // not reentrant. A new generation is queued, so nothing is reserved.
+        // not reentrant. A new generation is queued, so nothing is reserved,
+        // and no gate of it has been previewed yet.
         slot.reservation = None;
+        slot.preview = None;
         self.active = replacement;
     }
 }
@@ -661,6 +669,19 @@ pub trait VerificationActuator: Send + Sync {
     ) -> Result<(), AppError>;
     /// Reclaims a merged story's worktree, branch, and tmux window.
     fn reap(&self, candidate: &VerificationCandidate) -> Result<(), AppError>;
+    /// Opens trial merges in `repository` for the shadow batch preview
+    /// (SH-830), bounded by `deadline` and stopped by `cancellation`.
+    ///
+    /// The default previews nothing: an actuator that answers `None` leaves
+    /// the verifier exactly as it was before batching existed.
+    fn trial_merges(
+        &self,
+        _repository: &std::path::Path,
+        _deadline: Instant,
+        _cancellation: &Cancellation,
+    ) -> Option<Result<Box<dyn crate::service::trial_merge::TrialMerger>, AppError>> {
+        None
+    }
 }
 
 /// A control verb's well-formed answer, as the helper's JSON contract states
@@ -684,6 +705,7 @@ pub struct ShellVerificationActuator {
     verification_idle_timeout: Duration,
     control_timeout: Duration,
     termination_grace: Duration,
+    batch_preview: bool,
 }
 
 impl ShellVerificationActuator {
@@ -700,6 +722,7 @@ impl ShellVerificationActuator {
             verification_idle_timeout: VERIFICATION_IDLE_TIMEOUT,
             control_timeout: DISPATCH_TIMEOUT,
             termination_grace: RECOVERY_WAKE,
+            batch_preview: false,
         }
     }
 
@@ -720,6 +743,7 @@ impl ShellVerificationActuator {
             verification_idle_timeout: VERIFICATION_IDLE_TIMEOUT,
             control_timeout: DISPATCH_TIMEOUT,
             termination_grace: RECOVERY_WAKE,
+            batch_preview: false,
         }
     }
 
@@ -747,6 +771,7 @@ impl ShellVerificationActuator {
             verification_idle_timeout,
             control_timeout,
             termination_grace,
+            batch_preview: false,
         }
     }
 
@@ -759,6 +784,15 @@ impl ShellVerificationActuator {
     #[must_use]
     pub fn with_verifier_script(mut self, script: PathBuf) -> Self {
         self.verifier_script = Some(script);
+        self
+    }
+
+    /// Previews the batch the verifier would form at each dequeue (SH-830).
+    /// Only the daemon's own verifier asks for it, so a test that drives this
+    /// actuator starts no trial-merge process it did not ask for.
+    #[must_use]
+    pub fn with_batch_preview(mut self) -> Self {
+        self.batch_preview = true;
         self
     }
 
@@ -1218,6 +1252,23 @@ impl ShellVerificationActuator {
 }
 
 impl VerificationActuator for ShellVerificationActuator {
+    fn trial_merges(
+        &self,
+        repository: &std::path::Path,
+        deadline: Instant,
+        cancellation: &Cancellation,
+    ) -> Option<Result<Box<dyn crate::service::trial_merge::TrialMerger>, AppError>> {
+        self.batch_preview.then(|| {
+            crate::service::trial_merge::PrivateTrialMerger::open(repository).map(|merger| {
+                Box::new(
+                    merger
+                        .with_deadline(deadline)
+                        .with_cancellation(cancellation.clone()),
+                ) as Box<dyn crate::service::trial_merge::TrialMerger>
+            })
+        })
+    }
+
     /// Probes the windows named for the story on the tmux server its lease
     /// records: the server `story.sh notify` delivers to, and the one a
     /// `--resume` re-dispatch relaunches on. One `tmux list-panes`.
@@ -2075,6 +2126,8 @@ where
         // The generation this tick has already submitted, so the `continue` after
         // recording a submission re-derives the candidate without pushing twice.
         let mut submitted: Option<Option<GlobalSeq>> = None;
+        // What that submission reported, for the batch preview (SH-830).
+        let mut published: Option<batch_preview::Published> = None;
 
         loop {
             let _log =
@@ -2110,7 +2163,8 @@ where
             .no_hooks(true);
             if submission_due(&candidate, submitted) {
                 submitted = Some(candidate.verifying_generation);
-                match submit_candidate(&queue, &ctx, actuator, &candidate, &active)? {
+                match submit_candidate(&queue, &ctx, actuator, &candidate, &active, &mut published)?
+                {
                     GenerationWrite::Applied(Some(result)) => return Ok(result),
                     // Recorded: the link is a store fact now. Re-derive rather than
                     // trust a PrLink built here, so whatever `ordered_candidates`
@@ -2185,14 +2239,26 @@ where
                     TickResult::Returned
                 });
             }
-            let Some(mut outcome) = observation::verify(
+            // After the cancellation check: a stop during the preview reaches
+            // the gate exactly as a stop during the gate does (SH-830 D1a).
+            let preview = batch_preview::compute(
+                store,
+                env,
+                actuator,
+                &candidate,
+                published.as_ref(),
+                &active,
+            );
+            let gate_started = Instant::now();
+            let verified = observation::verify(
                 store,
                 bus,
                 &candidate,
                 &active.cancellation,
                 |cancellation| actuator.verify_cancellable(&candidate, &pull_request, cancellation),
-            )?
-            else {
+            );
+            batch_preview::finish(env, &active, &candidate, preview, gate_started, &verified);
+            let Some(mut outcome) = verified? else {
                 // Authority loss is queue progress, not a durable manual stop.
                 // Refresh creates a new attempt token for a resubmitted generation.
                 // The story is told first (SH-692): its attempt was cancelled and
@@ -2589,6 +2655,7 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
     actuator: &A,
     candidate: &VerificationCandidate,
     owner: &VerificationGuard,
+    published: &mut Option<batch_preview::Published>,
 ) -> Result<GenerationWrite<Option<TickResult>>, AppError> {
     let activity_context = format!("project={} {}", candidate.project_slug, candidate.story_id);
     if owner.is_cancelled() {
@@ -2607,6 +2674,11 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
     );
     match submitted {
         Ok(pull_request) => {
+            *published = Some(batch_preview::Published::new(
+                candidate,
+                &pull_request.base,
+                &pull_request.head_oid,
+            ));
             if let Ok(linked) = &candidate.pull_request
                 && linked.number != pull_request.number
             {
@@ -3275,7 +3347,9 @@ pub(crate) fn poll_verification(
         scope.spawn(|| super::project_recovery::poll(store, env, bus, stop, activity));
         scope.spawn(|| super::activity::window::poll(store, env, stop, &activity.view_requests));
         poll_verification_with(store, env, bus, stop, activity, inflight, |_| {
-            ShellVerificationActuator::new(env.clone()).with_activity(activity.clone())
+            ShellVerificationActuator::new(env.clone())
+                .with_activity(activity.clone())
+                .with_batch_preview()
         });
     });
 }

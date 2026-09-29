@@ -79,6 +79,12 @@ declare is still unavailable evidence. A declaration that the queue contradicts
 is also unavailable evidence. The field is omitted when absent, so older
 payloads decode unchanged.
 
+While a gate runs, the snapshot also reports `batch_preview` (SH-830): the
+batch the verifier would form around that story, without conflicted paths.
+It is ordinary activity and changes nothing the verifier does; each gate's
+full preview, duration and verdict go to the per-project record log. See
+`verification-batching.md`, "As built".
+
 ## Notifications and dashboard
 
 `on_verification_halted` carries held stories, the exact acknowledgement command,
@@ -91,7 +97,9 @@ execution and failure reporting remain in use; no notification service is added.
 The dashboard retains its halt controls and adds stopped, draining, stopping,
 overdue, and scheduled-recovery banners. A reservation is not a banner: the
 verifying column's status line reads "Held for <story> · <reason> · since <time>
-· N queued", and nothing in that live region ticks. A halt-cleared notice lasts until the
+· N queued", and nothing in that live region ticks. A batch preview is not a
+banner either: the same line reads "Batch preview · SH-1 + SH-2 would verify
+together · N excluded (cap K)" while its gate runs (SH-830, decision D8). A halt-cleared notice lasts until the
 next observed verifier transition. Responses remain bound to their originating
 project, so a delayed acknowledgement cannot affect another project's board.
 

@@ -4269,6 +4269,68 @@ fn gate_snapshot_distinguishes_project_configuration_from_git_failure() {
     }
 }
 
+/// A committed configuration longer than the process module's diagnostic
+/// capture bound (64 KiB) is judged whole (SH-830, the SH-815 rule): a prefix
+/// that parses must not certify a file that does not, and the configuration
+/// digest must cover every committed byte.
+#[test]
+fn gate_snapshot_judges_a_configuration_longer_than_the_diagnostic_bound_whole() {
+    use sha2::{Digest, Sha256};
+    let repo = MergeRepo::new();
+    let base = repo.rev_parse("HEAD");
+    let mut valid = pointer_with_gate("make test");
+    let comment = format!("# {}\n", "x".repeat(78));
+    while valid.len() <= 96 * 1024 {
+        valid.push_str(&comment);
+    }
+
+    let head = repo.branch("oversized-valid", "main", ".storyhook.toml", &valid);
+    let result = inspect_snapshot(&repo, &base, &head, &repo.tree_of(&head));
+    assert_ok(&result, "an oversized valid configuration is read");
+    let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(value["result"], "gate-ready", "{value}");
+    let mut digest = Sha256::new();
+    digest.update([1u8]);
+    digest.update(valid.as_bytes());
+    assert_eq!(
+        value["configuration"],
+        format!("{:x}", digest.finalize()),
+        "the digest covers the whole committed file, not a prefix"
+    );
+
+    repo.git(&["checkout", "-q", "main"]);
+    let invalid = format!("{valid}this line is not TOML\n");
+    let head = repo.branch("oversized-invalid", "main", ".storyhook.toml", &invalid);
+    let result = inspect_snapshot(&repo, &base, &head, &repo.tree_of(&head));
+    assert_ok(
+        &result,
+        "an invalid configuration is a structured project fault",
+    );
+    let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(value["result"], "project-fault", "{value}");
+    assert_eq!(
+        value["fault"]["code"], "invalid-gate-configuration",
+        "{value}"
+    );
+
+    // Past the answer limit the file cannot be judged whole, so nothing is
+    // judged: an infrastructure refusal, never a verdict from a prefix.
+    repo.git(&["checkout", "-q", "main"]);
+    let mut huge = valid.clone();
+    while huge.len() <= 9 * 1024 * 1024 {
+        huge.push_str(&comment);
+    }
+    let head = repo.branch("oversized-huge", "main", ".storyhook.toml", &huge);
+    let result = inspect_snapshot(&repo, &base, &head, &repo.tree_of(&head));
+    assert!(!result.status.success(), "a cut answer must not be read");
+    let reported = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(reported.contains("a cut answer is refused"), "{reported}");
+}
+
 #[test]
 fn gate_snapshot_resolves_only_committed_files_and_in_tree_symlinks() {
     use std::os::unix::fs::{PermissionsExt, symlink};

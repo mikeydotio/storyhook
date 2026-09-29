@@ -5482,11 +5482,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var verifier = state.data && state.data.verifier;
     var reservation = !pending && (mode === "running" || mode === "draining") &&
       verifier && verifier.reservation;
+    // The batch the verifier would form around the gate now running (SH-830)
+    // is ordinary activity too: it reads here, never in the alert banner.
+    var preview = !pending && !reservation && (mode === "running" || mode === "draining") &&
+      verifier && verifier.batch_preview;
     // The line is a live region: rebuild it only when what it says changes,
     // so the age that moves on every snapshot is left out, and nothing in it
     // ticks (SH-549).
     var fingerprint = JSON.stringify([text, reservation ? [reservation.story_id, reservation.reason,
-      reservation.reserved_at, reservation.queued_behind] : null]);
+      reservation.reserved_at, reservation.queued_behind] : null,
+      preview ? verificationPreviewParts(preview) : null]);
     if (status.dataset.fingerprint !== fingerprint) {
       status.dataset.fingerprint = fingerprint;
       clear(status);
@@ -5496,8 +5501,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         status.appendChild(el("span", { class: "verification-reservation" },
           verificationReservationParts(reservation)));
       }
+      if (preview) {
+        if (text) status.appendChild(document.createTextNode(" "));
+        status.appendChild(el("span", { class: "verification-batch-preview" },
+          verificationPreviewParts(preview)));
+      }
     }
-    status.hidden = !text && !reservation;
+    status.hidden = !text && !reservation && !preview;
     if (verificationMenuNode && (mode !== verificationMenuMode || !!pending)) closeVerificationMenu(true);
   }
 
@@ -5514,6 +5524,24 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       " · ", reasons[reservation.reason] || String(reservation.reason),
       " · since ", timeNode(reservation.reserved_at, "second"),
       " · ", queued + " queued"
+    ];
+  }
+
+  /**
+   * "Batch preview · SH-1 + SH-2 would verify together · 1 excluded (cap 2)":
+   * what batching would do around the gate now running; it changes nothing.
+   */
+  function verificationPreviewParts(preview) {
+    if (preview.outcome === "head-conflict") {
+      return ["Batch preview · ", String(preview.head), " conflicts with its base; no batch"];
+    }
+    if (preview.outcome !== "batch") return ["Batch preview unavailable"];
+    var members = (preview.members || []).map(function (member) { return String(member.story_id); });
+    var excluded = (preview.excluded || []).length;
+    return [
+      "Batch preview · ", members.join(" + "),
+      members.length > 1 ? " would verify together" : " would verify alone",
+      " · ", excluded + " excluded (cap " + (Number(preview.cap) || 1) + ")"
     ];
   }
 
