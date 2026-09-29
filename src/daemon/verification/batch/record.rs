@@ -168,9 +168,9 @@ pub(super) fn publication(batch: &VerificationBatch) -> BatchPublication {
             "Verification batch `{}` of project `{}`, formed by the storyhook verifier.\n\n\
              Base: `{}` at {}.\n\n\
              Members, merged in queue order as merge commits:\n{}\n\n\
-             The verifier gates this pull request's merge tree. Landing a batch is not built \
-             yet, so the verifier closes this pull request when its gate ends and verifies \
-             each member on its own.",
+             The verifier gates this pull request's merge tree. If the gate certifies it, the \
+             verifier lands this pull request and every member is done together; otherwise the \
+             verifier closes it and verifies each member on its own.",
             batch.id,
             batch.project_slug,
             batch.base_branch,

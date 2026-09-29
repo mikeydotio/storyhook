@@ -104,6 +104,16 @@ fn a_batch_certified_at_another_head_is_released_and_the_head_is_gated_alone() {
     for number in ["#1", "#2", "#3"] {
         assert!(publication.body.contains(number), "{}", publication.body);
     }
+    // A certified batch lands (SH-832): the body must not tell a reader the
+    // batch pull request is always closed.
+    assert!(
+        publication
+            .body
+            .contains("If the gate certifies it, the verifier lands this pull request")
+            && !publication.body.contains("not built yet"),
+        "{}",
+        publication.body
+    );
     // Linking a member is a plain `#N` reference, never a closing keyword:
     // a member pull request closes when its own story lands, not the batch's.
     let body = publication.body.to_lowercase();
