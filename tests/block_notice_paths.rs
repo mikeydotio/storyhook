@@ -54,6 +54,7 @@ fn sets_awaiting(invocation: &Invocation) -> bool {
         // Native reset restores the existing reason; it accepts no new prose.
         | Invocation::Reset { .. }
         | Invocation::SupersedeBlockDeliveries { .. }
+        | Invocation::SupersedeContinuations { .. }
         | Invocation::Resources { .. }
         | Invocation::Summary
         | Invocation::Report { .. }

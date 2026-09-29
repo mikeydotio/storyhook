@@ -661,6 +661,12 @@ pub enum Invocation {
         /// Canonical or project-relative story identifier.
         id: String,
     },
+    /// Supersedes the context-handoff chain a manual resume replaces (SH-850).
+    /// The caller holds workspace exclusion through the replacement launch.
+    SupersedeContinuations {
+        /// Canonical or project-relative story identifier.
+        id: String,
+    },
     /// `story engine start|status|pause|resume|stop|ack` (SH-467).
     Engine {
         action: EngineAction,
@@ -1050,6 +1056,7 @@ impl Invocation {
             | Self::Claim { .. }
             | Self::Unclaim { .. }
             | Self::SupersedeBlockDeliveries { .. }
+            | Self::SupersedeContinuations { .. }
             | Self::Engine { .. }
             | Self::Verifier { .. }
             | Self::Cleanup { .. }
@@ -2538,8 +2545,15 @@ fn parse_internal(args: &[String]) -> Result<Invocation, AppError> {
         {
             Ok(Invocation::SupersedeBlockDeliveries { id: id.clone() })
         }
+        [_, operation, id]
+            if operation == "supersede-continuations" && !id.is_empty() && !id.starts_with('-') =>
+        {
+            Ok(Invocation::SupersedeContinuations { id: id.clone() })
+        }
         _ => Err(AppError::Usage(
-            "usage: story internal supersede-block-deliveries <id> --json".into(),
+            "usage: story internal supersede-block-deliveries <id> --json\n       \
+             story internal supersede-continuations <id> --json"
+                .into(),
         )),
     }
 }

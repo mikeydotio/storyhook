@@ -697,6 +697,31 @@ fn dispatch_inner<S: Store>(
             })?;
             Ok(Response::RawJson(receipt.to_string()))
         }
+        Invocation::SupersedeContinuations { id } => {
+            let now = ctx.now();
+            let receipt = ctx.store().write(|tx| {
+                let project = tx.project(ctx.project())?.ok_or_else(|| {
+                    crate::store::StoreError::NotFound("selected project no longer exists".into())
+                })?;
+                let story = crate::store::StoryNo::parse_id(&project.prefix, &id)?;
+                if tx.story(project.id, story)?.is_none() {
+                    return Err(crate::store::StoreError::NotFound(format!(
+                        "story `{id}` not found"
+                    )));
+                }
+                let outcome = crate::service::continuation::supersede_for_replacement(
+                    tx, project.id, story, &now,
+                )?;
+                Ok(serde_json::json!({
+                    "protocol_version": 1,
+                    "project": project.slug,
+                    "story_id": story.to_id(&project.prefix),
+                    "superseded": outcome.superseded,
+                    "attempting": outcome.attempting,
+                }))
+            })?;
+            Ok(Response::RawJson(receipt.to_string()))
+        }
         Invocation::Engine { action } => dispatch_engine(ctx, action),
         Invocation::Verifier { action } => dispatch_verifier(ctx, action),
         Invocation::Resources { id, options } => {
@@ -3098,6 +3123,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Unclaim { .. } => "unclaim",
         Invocation::Reset { .. } => "reset",
         Invocation::SupersedeBlockDeliveries { .. } => "supersede-block-deliveries",
+        Invocation::SupersedeContinuations { .. } => "supersede-continuations",
         Invocation::Engine { .. } => "engine",
         Invocation::Verifier { .. } => "verifier",
         Invocation::Cleanup { .. } => "cleanup",
@@ -4236,6 +4262,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         | Invocation::Unclaim { .. }
         | Invocation::Reset { .. }
         | Invocation::SupersedeBlockDeliveries { .. }
+        | Invocation::SupersedeContinuations { .. }
         | Invocation::Engine { .. }
         | Invocation::Verifier { .. }
         | Invocation::Cleanup { .. }
