@@ -2602,6 +2602,12 @@ cmd_dispatch() {
     tmux set-window-option -t "$pane" @storyhook-agent "$AGENT" >/dev/null 2>&1 || true
     window_reused=true
   else
+    # A reused worktree still holds the lost session's readiness witness
+    # (SH-850): launching over it would let wait_ready_sentinel accept the old
+    # session's evidence and bind continuation registration to its id. A live
+    # session also cites its witness in a context handoff, so this is safe
+    # only because the story has no window left here to hold that session.
+    rm -f "$worktree_path/.claude/dispatch-sentinel.json"
     new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
     # shellcheck disable=SC2206 # lane_ceiling_tmux_args is a deliberate word list
     new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args "${new_window_args[@]}")
