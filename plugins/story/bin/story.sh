@@ -485,6 +485,12 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 CODEX_AUTO_PLAN_CLAUSE="In Codex Default mode, present a completed implementation plan as one JSON object with exactly four fields: type set to storyhook.implementation-plan, version set to integer 1, story_id set to <n>, and plan set to the complete plan text as a JSON string. Output only that object, without fences or surrounding prose. In Plan mode, use the native proposed_plan envelope instead. Use this declaration only for a complete implementation plan, never for operational permissions or unresolved choices. Approval applies to the decoded plan text and grants no additional permissions."
 CODEX_BUILTIN_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it."
 RESUME_PROMPT_CLAUSE="You are resuming work already started and left behind by a previous agent. Before changing anything, inspect the worktree, git status, git log, git diff, story comments, and relevant tests to determine exactly where it stopped. The previous agent may have encountered an error or stopped uncleanly. Preserve valid existing work, then continue under every remaining instruction in this charter."
+# SH-850: the start-over permission a resumed session needs when what it
+# inherits cannot be trusted, with the SH-850 council's C5 guard rails: say what
+# was found before touching anything, keep abandoned work reachable, never the
+# shared stash, never published history. Appended after RESUME_PROMPT_CLAUSE,
+# but never to guarded continuation, whose own clause preserves dirty work.
+RESUME_RESTART_CLAUSE="If the existing work seems corrupt, or you cannot understand it well enough to continue safely, you may start the story over. Before you change any file, comment on the story what you found and whether you continue or start over. To start over, first keep the abandoned work on a named branch or in a WIP commit. Never use git stash, because every worktree shares one stash. Never rewrite commits that were already pushed."
 # The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
 # last human interaction: plan approval is scoped by provider events (with one
 # exact-gated tmux Return for Claude), and question refusal is provider-native;
@@ -2397,6 +2403,7 @@ cmd_dispatch() {
   fi
   prompt=$(render_template "$prompt_tpl" "$id" "$wname" "$dir" "$reap_cmd" "$completion_state")
   [ "$resumed" != true ] || prompt="$prompt $RESUME_PROMPT_CLAUSE"
+  [ "$resumed" != true ] || [ -n "$require_absent" ] || prompt="$prompt $RESUME_RESTART_CLAUSE"
   [ -n "$PROMPT_EXTRA" ] && prompt="$prompt $PROMPT_EXTRA"
 
   # Surfaced in both the dry-run and real result. SH-511 removed autonomous

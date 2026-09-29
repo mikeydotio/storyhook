@@ -75,6 +75,21 @@ check_inert "the Codex attended prompt" "$codex_attended"
 check_inert "the Codex autonomous (council) charter" "$codex_auto"
 check_inert "the Codex autonomous (solo) charter" "$codex_solo"
 
+# SH-850: a resumed charter carries the resume and start-over clauses, and
+# both are inert too. A claimed story makes the dry-run a resume.
+resume_id=$(new_story "$repo" "Charter inertness on resume")
+(cd "$repo" && story move "$resume_id" in-progress >/dev/null)
+resumed_attended=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$resume_id" --resume 2>&1 | jq -r '.prompt')
+resumed_auto=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off bash "$SCRIPT" dispatch "$resume_id" --auto --resume 2>&1 | jq -r '.prompt')
+for pair in "attended:$resumed_attended" "autonomous:$resumed_auto"; do
+  label="${pair%%:*}"; text="${pair#*:}"
+  assert_contains "$text" "You are resuming work already started" "resumed $label: carries the resume clause"
+  assert_contains "$text" "you may start the story over" "resumed $label: carries the start-over clause"
+  assert_contains "$text" "Never use git stash" "resumed $label: forbids the shared stash"
+  assert_contains "$text" "Never rewrite commits that were already pushed" "resumed $label: protects published history"
+  check_inert "the resumed $label charter" "$text"
+done
+
 # SH-676: inertness must preserve automatic plan approval in every variant.
 # The original approval wording introduced a semicolon in the shared head.
 # Removing that instruction to pass the character guard would restore the stall.
