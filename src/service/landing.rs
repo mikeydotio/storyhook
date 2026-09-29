@@ -65,6 +65,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                 checkout: candidate.checkout.clone(),
                 certification: certification.clone(),
                 created_at: ctx.now(),
+                batch: None,
             };
             crate::store::landing::validate_intent(tx, &intent)?;
             tx.insert_landing_intent(&intent)?;

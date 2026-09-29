@@ -73,7 +73,8 @@ impl std::fmt::Display for BatchId {
     }
 }
 
-/// Where a batch is in its life. The first three are live; the last two end it.
+/// Where a batch is in its life. The first four are live; the last three end
+/// it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BatchPhase {
@@ -83,8 +84,16 @@ pub enum BatchPhase {
     Submitted,
     /// The batch pull request's merge tree is being gated.
     Gating,
-    /// The gate ended; landing is not built yet, so every member went back
-    /// to the single-story queue.
+    /// The gate certified the batch tree and every member holds a landing
+    /// intent: the merge is requested, or its outcome is not yet confirmed
+    /// (SH-832). Never abandoned: a restart recovers it from the intents.
+    Landing,
+    /// The batch merge landed with the certified tree and its members are
+    /// done (a member a person holds keeps its landing intent).
+    Landed,
+    /// The gate ended without a landing: a verdict other than certified, a
+    /// landing refused before its merge, or a merge that was never
+    /// requested. Every member went back to the single-story queue.
     Released,
     /// The batch ended before a verdict could count: a member changed, the
     /// verifier stopped or failed, or its verifier restarted.
@@ -95,17 +104,33 @@ impl BatchPhase {
     /// Whether a batch in this phase may still move on.
     #[must_use]
     pub fn is_live(self) -> bool {
-        matches!(self, Self::Assembled | Self::Submitted | Self::Gating)
+        matches!(
+            self,
+            Self::Assembled | Self::Submitted | Self::Gating | Self::Landing
+        )
+    }
+
+    /// Whether a live batch may be abandoned: every live phase except
+    /// `landing`, whose outcome belongs to its landing intents (B10). Both
+    /// the worker-start check and the abandonment itself read this one
+    /// predicate, so a start never opens a write it then finds empty.
+    #[must_use]
+    pub fn is_abandonable(self) -> bool {
+        self.is_live() && self != Self::Landing
     }
 
     /// Whether a batch may move from this phase to `next`: forward through
-    /// the live phases, or to an end; never out of an end.
+    /// the live phases, or to an end; never out of an end. Only a certified
+    /// gate lands, only a landing lands, and a landing is never abandoned.
     #[must_use]
     pub fn may_become(self, next: Self) -> bool {
         match (self, next) {
             (current, next) if current == next => true,
-            (Self::Assembled, Self::Submitted) | (Self::Submitted, Self::Gating) => true,
-            (current, Self::Released | Self::Abandoned) => current.is_live(),
+            (Self::Assembled, Self::Submitted)
+            | (Self::Submitted, Self::Gating)
+            | (Self::Gating, Self::Landing)
+            | (Self::Landing, Self::Landed | Self::Released) => true,
+            (current, Self::Released | Self::Abandoned) => current.is_abandonable(),
             _ => false,
         }
     }
@@ -117,6 +142,8 @@ impl BatchPhase {
             Self::Assembled => "assembled",
             Self::Submitted => "submitted",
             Self::Gating => "gating",
+            Self::Landing => "landing",
+            Self::Landed => "landed",
             Self::Released => "released",
             Self::Abandoned => "abandoned",
         }
@@ -316,15 +343,26 @@ mod tests {
     #[test]
     fn phases_move_forward_or_end_and_never_leave_an_end() {
         use BatchPhase::*;
-        let all = [Assembled, Submitted, Gating, Released, Abandoned];
+        let all = [
+            Assembled, Submitted, Gating, Landing, Landed, Released, Abandoned,
+        ];
         for from in all {
             for to in all {
                 let expected = from == to
-                    || matches!((from, to), (Assembled, Submitted) | (Submitted, Gating))
-                    || (from.is_live() && matches!(to, Released | Abandoned));
+                    || matches!(
+                        (from, to),
+                        (Assembled, Submitted)
+                            | (Submitted, Gating)
+                            | (Gating, Landing)
+                            | (Landing, Landed | Released)
+                    )
+                    || (matches!(from, Assembled | Submitted | Gating)
+                        && matches!(to, Released | Abandoned));
                 assert_eq!(from.may_become(to), expected, "{from:?} -> {to:?}");
             }
         }
+        assert!(Landing.is_live() && !Landing.is_abandonable());
+        assert!(!Landed.is_live());
     }
 
     #[test]

@@ -902,14 +902,17 @@ impl ShellVerificationActuator {
             }
             let script = self.verifier_script()?;
             let journal = journal_path(&self.env, candidate);
-            let marker = journal.with_file_name(format!("landing-{}.attempted", intent.id));
+            // A batch member's intent lands the batch pull request, and every
+            // member shares one attempt marker (SH-832 D2).
+            let marker =
+                journal.with_file_name(format!("landing-{}.attempted", intent.landing_attempt()));
             let mut command = Command::new("bash");
             apply_verification_allowlist(&mut command);
             command
                 .arg(script)
                 .arg("--landing")
                 .arg(if recover { "recover" } else { "attempt" })
-                .arg(&intent.pull_request)
+                .arg(intent.landing_pull_request())
                 .arg(&intent.certification.head)
                 .arg(&intent.certification.tree)
                 .arg(marker)

@@ -97,7 +97,7 @@ mod verification_recovery;
 pub use error::StoreError;
 pub use fault::{DELIVERY_BACKSTOP, FaultPoint};
 pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo, StoryRef};
-pub use landing::LandingIntent;
+pub use landing::{BatchLanding, BatchLandingIntent, LandingIntent};
 pub use migrate::{MIGRATIONS, Migration, current_schema_version};
 #[cfg(feature = "test-seam")]
 pub use rebuild::folds;

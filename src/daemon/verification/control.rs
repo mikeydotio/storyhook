@@ -837,6 +837,7 @@ PY
                 gate: "true".into(),
             },
             created_at: env.now(),
+            batch: None,
         };
         let journal = journal_path(&env, &candidate);
         std::fs::create_dir_all(journal.parent().unwrap()).unwrap();

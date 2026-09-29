@@ -186,6 +186,7 @@ fn record_actuator_children(env: Environment) -> BTreeMap<String, Option<String>
             gate: "test gate".into(),
         },
         created_at: FIXTURE_NOW.into(),
+        batch: None,
     };
     for outcome in [
         actuator.land(&candidate, &intent),

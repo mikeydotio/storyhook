@@ -227,7 +227,7 @@ pub fn abandon_interrupted_batches(
         Ok(tx
             .verification_batches(project)?
             .iter()
-            .any(|batch| batch.phase.is_live()))
+            .any(|batch| batch.phase.is_abandonable()))
     })?;
     if !live {
         return Ok(Vec::new());
@@ -244,7 +244,7 @@ fn abandon_live(
 ) -> Result<Vec<BatchId>, StoreError> {
     let mut abandoned = Vec::new();
     for batch in tx.verification_batches(project)? {
-        if !batch.phase.is_live() {
+        if !batch.phase.is_abandonable() {
             continue;
         }
         let mut next = batch.advance(BatchPhase::Abandoned, now)?;

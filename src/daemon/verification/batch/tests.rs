@@ -292,6 +292,54 @@ fn a_starting_worker_opens_no_write_transaction_without_a_live_batch() {
     );
 }
 
+/// A batch in `landing` is recovered from its landing intents, never
+/// abandoned (B10, SH-832 D3): a restart that finds only such a batch writes
+/// nothing, and the batch stays `landing`.
+#[test]
+fn a_starting_worker_leaves_a_landing_batch_to_its_intents() {
+    let fixture = ServiceFixture::new();
+    let store = CountingStore {
+        inner: SqliteStore::open(fixture.store().path()).unwrap(),
+        writes: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let project = ProjectId::new(fixture.project().get());
+    let env = Environment::at(fixture.cwd());
+    let first = head(&store.inner, &env, project);
+    let second = head_named(&store.inner, &env, project, "Batch partner");
+    let batch = record(project, &[&first, &second]);
+    assert_eq!(batch.phase, BatchPhase::Gating);
+    let landing = batch
+        .advance(BatchPhase::Landing, "2026-01-01T00:00:01Z")
+        .unwrap();
+    store
+        .inner
+        .write(|tx| {
+            tx.insert_verification_batch(&batch)?;
+            assert!(tx.update_verification_batch(&landing, 0)?);
+            Ok(())
+        })
+        .unwrap();
+
+    assert!(
+        abandon_interrupted_batches(&store, &env, project)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store.writes(),
+        0,
+        "only a landing batch: nothing is written"
+    );
+    assert_eq!(
+        store
+            .inner
+            .read(|tx| tx.verification_batches(project))
+            .unwrap()[0]
+            .phase,
+        BatchPhase::Landing
+    );
+}
+
 fn head_named(
     store: &SqliteStore,
     env: &Environment,
