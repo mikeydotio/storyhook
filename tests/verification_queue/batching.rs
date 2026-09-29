@@ -78,14 +78,12 @@ impl<'a> Batcher<'a> {
     }
 
     fn wait_cancelled(cancellation: &VerificationCancellation) -> VerificationOutcome {
-        let deadline = Instant::now() + load_grace::graced_now(OBSERVER_PATIENCE);
-        while !cancellation.is_cancelled() {
-            assert!(
-                Instant::now() < deadline,
-                "the batch gate was never cancelled"
-            );
-            thread::sleep(Duration::from_millis(20));
-        }
+        load_grace::wait_for(
+            Patience::new(OBSERVER_PATIENCE),
+            Duration::from_millis(20),
+            || "the batch gate was never cancelled".into(),
+            || cancellation.is_cancelled().then_some(()),
+        );
         VerificationOutcome::Cancelled
     }
 
@@ -806,12 +804,13 @@ fn the_verifier_worker_abandons_a_batch_left_live_when_it_starts() {
                 |_| Batcher::new(&board, answer(certified_batch())),
             )
         });
-        let deadline = Instant::now() + load_grace::graced_now(OBSERVER_PATIENCE);
+        // Never panic while the worker runs: the scope would wait on it.
+        let mut patience = Patience::new(OBSERVER_PATIENCE);
         let abandoned = loop {
             if batches(&board)[0].phase == BatchPhase::Abandoned {
                 break true;
             }
-            if Instant::now() >= deadline {
+            if patience.expired() {
                 break false;
             }
             thread::sleep(Duration::from_millis(20));
