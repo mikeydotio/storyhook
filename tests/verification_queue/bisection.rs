@@ -578,34 +578,49 @@ fn a_recovery_that_starts_during_bisection_sends_the_head_to_its_own_gate() {
     assert!(detail.contains("project recovery"), "{detail}");
 }
 
-/// Status reads `bisecting` with the members whose prefix is being gated,
-/// and the per-dequeue record carries the bisection.
+/// Status reads `bisecting` with the members still in the search: the
+/// members a red prefix puts back in the queue read as queued again, not
+/// as running in the batch. The per-dequeue record carries the bisection.
 #[test]
 fn status_and_the_record_show_the_bisection() {
-    let board = board_of(3);
+    let board = board_of(4);
     let ids = board.stories.clone();
-    let batcher = Batcher::new(&board, Gate::Culprits(vec![2]));
+    let batcher = Batcher::new(&board, Gate::Culprits(vec![0]));
 
-    assert_eq!(tick(&board, &batcher), TickResult::Completed);
+    assert_eq!(tick(&board, &batcher), TickResult::Returned);
 
     let parent = parent(&board);
     let seen = batcher.probe_status.lock().unwrap().clone();
-    // Gate 1 is the head alone, gate 2 the first two members.
-    let expected = [(1, ids[..1].to_vec()), (2, ids[..2].to_vec())];
+    // Gate 1 is prefix 2 (red), gate 2 the head alone.
+    let expected = [(1, ids.clone()), (2, ids[..2].to_vec())];
     assert_eq!(seen.len(), expected.len(), "{seen:?}");
     for ((call, data, text), (want_call, members)) in seen.iter().zip(expected) {
         assert_eq!(*call, want_call);
         let shown = &data["verifier"]["batch"];
         assert_eq!(shown["phase"], "bisecting", "{shown}");
         assert_eq!(shown["id"], parent.id.as_str());
-        assert_eq!(shown["members"], serde_json::json!(members));
+        assert_eq!(shown["members"], serde_json::json!(members), "gate {call}");
         assert!(text.contains("bisecting"), "{text}");
+        for id in &ids[1..] {
+            let verification = data["stories"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|view| view["story"]["id"] == id.as_str())
+                .unwrap()["verification"]
+                .clone();
+            assert_eq!(
+                verification.get("batch").is_some(),
+                members.contains(id),
+                "gate {call}: {id}: {verification}"
+            );
+        }
     }
     let record = &board.records()[0];
     assert_eq!(record["batch"]["bisection"]["outcome"]["kind"], "culprit");
     assert_eq!(
         record["batch"]["bisection"]["outcome"]["story_id"],
-        ids[2].as_str()
+        ids[0].as_str()
     );
 }
 

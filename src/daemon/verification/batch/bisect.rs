@@ -465,19 +465,18 @@ impl<S: Store> Attempt<'_, S> {
 
     /// Gates the tree of the first `prefix` members.
     fn probe(&mut self, prefix: usize, kind: ProbeKind) -> Result<Probe, AppError> {
-        let (parent, gated, commit, tree, head_commit) = {
+        let (parent, commit, tree, head_commit) = {
             let bisecting = self.bisecting();
             let (commit, tree) = bisecting.chain[prefix - 1].clone();
             (
                 bisecting.parent.id.clone(),
-                bisecting.ids(0..prefix),
                 commit,
                 tree,
                 bisecting.members[0].commit.clone(),
             )
         };
         if let Some(membership) = &self.membership {
-            membership.show_bisecting(&parent, &gated);
+            membership.show_bisecting(&parent);
         }
         let item = format!("bisection prefix {prefix}");
         progress_item(self.env, self.head, &item, "running");

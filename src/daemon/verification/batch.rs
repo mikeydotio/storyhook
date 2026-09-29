@@ -332,14 +332,15 @@ impl BatchMembership<'_> {
         });
     }
 
-    /// Shows the red batch `id` being bisected, with the members whose
-    /// prefix is being gated now (SH-833). `bisecting` is a status phase
-    /// only; no record is stored in it.
-    pub(super) fn show_bisecting(&self, id: &BatchId, gated: &[String]) {
+    /// Shows the red batch `id` being bisected (SH-833). Its members stay
+    /// listed while they are still in the search, where a change to any of
+    /// them ends it; [`Self::leave`] takes out those the search puts back
+    /// in the queue. `bisecting` is a status phase only; no record is
+    /// stored in it.
+    pub(super) fn show_bisecting(&self, id: &BatchId) {
         self.owner.with_own_slot(|slot| {
             if let Some(batch) = slot.batch.as_mut() {
                 batch.view.id = Some(id.to_string());
-                batch.view.members = gated.to_vec();
                 BISECTING.clone_into(&mut batch.view.phase);
             }
         });
