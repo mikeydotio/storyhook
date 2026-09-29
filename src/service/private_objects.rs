@@ -29,6 +29,28 @@ pub(crate) struct PrivateObjects {
 }
 
 impl PrivateObjects {
+    /// Computes a merge without borrowing attributes or configuration from
+    /// this checkout. New objects retain this value's private lifetime.
+    pub(crate) fn merge(
+        &self,
+        parents: [&str; 2],
+        nul: bool,
+        deadline: Option<Instant>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Captured, AppError> {
+        super::isolated_merge::merge(
+            &self.checkout,
+            Some((self.objects.path(), &self.source)),
+            parents,
+            nul,
+            super::isolated_merge::MergeControl {
+                label: self.label,
+                deadline,
+                cancelled,
+            },
+        )
+    }
+
     /// Creates the private object directory for `checkout`'s repository.
     ///
     /// `label` names the caller in every error it reports; `prefix` names the

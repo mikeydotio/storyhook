@@ -60,7 +60,14 @@ pub fn inspect(
         objects: &objects,
         tree,
     };
-    let computed = snapshot.git(&["merge-tree", "--write-tree", base, head])?;
+    let computed = objects.merge([base, head], false, None, &|| false)?;
+    if !computed.status.success() {
+        return Err(AppError::Storage(format!(
+            "gate configuration: merge of {head} onto {base} conflicts: {}",
+            String::from_utf8_lossy(&computed.stdout)
+        )));
+    }
+    let computed = computed.stdout;
     if computed.strip_suffix(b"\n").unwrap_or(&computed) != tree.as_bytes() {
         return Err(AppError::Storage(format!(
             "gate configuration merge tree differs from expected {tree}"

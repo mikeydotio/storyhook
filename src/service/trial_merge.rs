@@ -41,20 +41,6 @@ const COMMIT_ENV: [(&str, &str); 7] = [
     ("GIT_COMMITTER_DATE", "1970-01-01T00:00:00Z"),
 ];
 
-/// The merge command every trial and assembly merge runs, before its two
-/// commits. The conflict style is pinned to `diff3` so that each conflict
-/// hunk in the conflicted tree carries its base section whatever the user's
-/// `merge.conflictStyle` says: an insertion-only hunk is one whose base
-/// section is empty (SH-834 D4). The style changes only the text written into
-/// conflicted files, never whether a merge conflicts.
-pub(crate) const MERGE_TREE: [&str; 5] = [
-    "-c",
-    "merge.conflictStyle=diff3",
-    "merge-tree",
-    "--write-tree",
-    "-z",
-];
-
 /// The answer to one trial merge.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrialMerge {
@@ -227,9 +213,14 @@ impl TrialMerger for PrivateTrialMerger {
     fn merge(&mut self, onto: &str, head: &str) -> Result<TrialMerge, AppError> {
         pinned(onto)?;
         pinned(head)?;
-        let mut args = MERGE_TREE.to_vec();
-        args.extend([onto, head]);
-        let result = self.query(&args, &QUERY_ENV)?;
+        let cancelled = || {
+            self.cancellation
+                .as_ref()
+                .is_some_and(Cancellation::is_cancelled)
+        };
+        let result = self
+            .objects
+            .merge([onto, head], true, self.deadline, &cancelled)?;
         merge_answer(&result, LABEL, onto, head)
     }
 
@@ -338,7 +329,7 @@ pub(crate) fn blob_answer(
     }
 }
 
-/// Reads the answer of [`MERGE_TREE`] `<onto> <head>`: exit 0 is a clean
+/// Reads an isolated NUL-delimited merge answer: exit 0 is a clean
 /// tree, exit 1 a conflict with its shape, anything else a failure. `label`
 /// names the caller.
 pub(crate) fn merge_answer(

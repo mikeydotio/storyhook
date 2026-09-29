@@ -212,6 +212,13 @@
       "reason": "DISPATCH_TIMEOUT (180 s) bounds the engine-reset helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
     }
   },
+  "src/service/isolated_merge.rs": {
+    "production run_captured_query(timeout": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The merge caller supplies an outer deadline and cancellation. Each initialization or merge command is capped at COMMAND_BOUND (30 s), matching private_objects."
+    }
+  },
   "src/service/private_objects.rs": {
     "production run_captured_answer(GIT_DEADLINE": {
       "count": 1,
