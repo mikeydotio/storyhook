@@ -11,6 +11,8 @@ pub mod reset;
 
 #[cfg(test)]
 mod restart_probe_tests;
+#[cfg(test)]
+mod tmux_grace_tests;
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -3676,10 +3678,12 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    /// A dispatcher whose tmux is a fixture expected to answer, so the tmux
+    /// bound is patience (SH-836).
     fn dispatcher_with_tmux(root: &Path, tmux_program: &Path) -> ShellDispatcher {
         ShellDispatcher {
             story_sh_path: root.join("story.sh"),
-            env: Environment::at(root.join("home")),
+            env: Environment::at(root.join("home")).with_subprocess_patience(),
             tmux_program: tmux_program.as_os_str().to_owned(),
             probe_deadline: None,
         }

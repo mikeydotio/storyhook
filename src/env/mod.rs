@@ -26,6 +26,8 @@ pub mod git_env;
 /// (SH-153, SH-160) do not cover.
 pub mod spawn_env;
 mod store_location;
+#[cfg(test)]
+mod subprocess_policy;
 
 /// What a storyhook **test environment** is: the environment variables that
 /// stop a run reaching the developer's own store, daemon and credentials,
@@ -100,6 +102,10 @@ pub struct Environment {
     busy_timeout: Duration,
     verifier_mirror_enabled: bool,
     verifier_agent_enabled: bool,
+    /// Test builds only: how the lib test that built this environment
+    /// declared the production subprocess bounds it reaches (SH-836).
+    #[cfg(test)]
+    subprocess_policy: subprocess_policy::SubprocessPolicy,
 }
 
 impl Environment {
@@ -178,6 +184,8 @@ impl Environment {
                 != Some(OsStr::new("0")),
             verifier_agent_enabled: std::env::var_os("STORYHOOK_VERIFIER_AGENT").as_deref()
                 != Some(OsStr::new("0")),
+            #[cfg(test)]
+            subprocess_policy: subprocess_policy::SubprocessPolicy::Undeclared,
         })
     }
 
@@ -201,6 +209,8 @@ impl Environment {
             busy_timeout: DEFAULT_BUSY_TIMEOUT,
             verifier_mirror_enabled: false,
             verifier_agent_enabled: false,
+            #[cfg(test)]
+            subprocess_policy: subprocess_policy::SubprocessPolicy::Undeclared,
         }
     }
 
@@ -283,6 +293,39 @@ impl Environment {
     #[cfg(test)]
     pub(crate) fn with_test_verifier_agent(mut self) -> Self {
         self.verifier_agent_enabled = true;
+        self
+    }
+
+    /// Declares that this lib test waits for the production subprocesses it
+    /// reaches to answer: each bound read through [`Self::subprocess_bound`]
+    /// is graced by this machine's contention, read once now (SH-836).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_subprocess_patience(mut self) -> Self {
+        self.subprocess_policy = subprocess_policy::SubprocessPolicy::patience(
+            storyhook_test_support::load_grace::contention(),
+        );
+        self
+    }
+
+    /// Patience under a stated contention, never below this machine's: for a
+    /// regression that proves grace deterministically at idle (SH-836).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_subprocess_patience_under(mut self, stated: f64) -> Self {
+        let real = storyhook_test_support::load_grace::contention();
+        self.subprocess_policy = subprocess_policy::SubprocessPolicy::patience(Some(
+            real.map_or(stated, |real| real.max(stated)),
+        ));
+        self
+    }
+
+    /// Declares that this lib test proves the production subprocess bounds it
+    /// reaches: each read returns the production value (SH-836).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_subprocess_proof(mut self) -> Self {
+        self.subprocess_policy = subprocess_policy::SubprocessPolicy::Proof;
         self
     }
 
@@ -392,9 +435,23 @@ impl Environment {
     /// can reach reads it here rather than naming the constant alone
     /// (SH-836): `TMUX_TIMEOUT` for tmux clients and the tmux-sized guards,
     /// `TRACKED_CHECK_DEADLINE` for the journal hygiene `git`. Call it at the
-    /// capture, after any early return that spawns nothing.
+    /// capture, after any early return that spawns nothing. A lib test
+    /// declares how it reads them with [`Self::with_subprocess_patience`] or
+    /// [`Self::with_subprocess_proof`].
     pub(crate) fn subprocess_bound(&self, production: Duration) -> Duration {
+        self.declared_bound(production)
+    }
+
+    /// A shipped build's bound: the production value.
+    #[cfg(not(test))]
+    fn declared_bound(&self, production: Duration) -> Duration {
         production
+    }
+
+    /// A lib test's bound: the production value under its declared policy.
+    #[cfg(test)]
+    fn declared_bound(&self, production: Duration) -> Duration {
+        self.subprocess_policy.bound(production)
     }
 
     /// The store's database file, canonicalized.
