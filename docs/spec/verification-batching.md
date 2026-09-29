@@ -58,12 +58,12 @@ open row is decided by that child (council when two answers stay defensible).
 | B2 | **Batch size cap = the project's live engine run `lanes`** (at least 1), the same bound as the verifying backlog (council D3): a deeper batch raises bisection cost faster than it raises throughput while the queue is bounded by that number anyway. | settled for child 1; child 1's measurements are under As built ("SH-830") |
 | B3 | **A candidate that cannot batch stays single.** A head that conflicts with base keeps today's conflict hold; a held, blocked, landing-pending, human-only or unsubmitted candidate is never a member. A batch of one is today's single-story path, unchanged. | settled; built in the preview (SH-830) |
 | B4 | **The branch is assembled by merge commits.** `storyhook/verify-batch/<batch-id>` starts at the base the trial merges used; each member head is merged with `--no-ff` in queue order. No history is rewritten; each member's own commits stay reachable. | settled; built, dormant — see "SH-831" under As built |
-| B5 | **The batch lands through a batch PR.** `land-pr.sh` lands one PR and requires tree equality, so the certified tree must be the batch tree and the batch branch must be what lands. Member PRs stay open; GitHub marks each merged when the batch merge makes its head an ancestor of the base. | settled; the batch PR and its gate are built (SH-831), landing is SH-832's |
-| B6 | **Members complete together, and first.** A durable `BatchLandingIntent` names every member before the merge. Completion writes, in one transaction, each member's GREEN comment (naming the batch and its PR), `StoryPrMerged` and `done`. `pr_check` treats a member of a landing batch as certified, never as UNCERTIFIED MERGE. Each member is then reaped by today's per-story reap. | settled |
+| B5 | **The batch lands through a batch PR.** `land-pr.sh` lands one PR and requires tree equality, so the certified tree must be the batch tree and the batch branch must be what lands. Member PRs stay open; GitHub marks each merged when the batch merge makes its head an ancestor of the base. | settled; built (SH-831 PR and gate, SH-832 landing) — see "SH-832" under As built |
+| B6 | **Members complete together, and first.** A durable `BatchLandingIntent` names every member before the merge. Completion writes, in one transaction, each member's GREEN comment (naming the batch and its PR), `StoryPrMerged` and `done`. `pr_check` treats a member of a landing batch as certified, never as UNCERTIFIED MERGE. Each member is then reaped by today's per-story reap. | settled; built with per-member intents (SH-832) |
 | B7 | **Red is bisected.** On a red batch, split the members in queue order and gate the first half's merge tree (a tree already certified by a receipt needs no run). Recurse into the red half until one member remains; return it through today's `return_for_repair` with its own tree and log. The other members re-enter the queue at their existing age, or land as a smaller batch if bisection already certified their tree. Cost: at most `ceil(log2 k)` gates per culprit. | open (child 4): whether failing-test attribution may skip steps, and how two culprits are handled |
 | B8 | **Non-code conflicts may be smoothed by the Verifier Agent.** v1 admits only clean trial merges (B1). Letting an agent author a resolution commit puts AI-authored changes in the certification path. | open (child 5, council) |
-| B9 | **Status and dashboard.** `VerifierStatus.active` gains `batch: { id, head, members, phase }`; each member's per-story status is `running` with the batch id; the banner reads "Verification batch B running: SH-1, SH-2, SH-3". | settled |
-| B10 | **Restart.** A batch record is durable. A daemon that restarts before landing abandons the batch (members keep their generations and re-enter the queue); with a `BatchLandingIntent` present it recovers the landing exactly as today's intent does. | settled; abandonment built (SH-831), intent recovery is SH-832's |
+| B9 | **Status and dashboard.** `VerifierStatus.active` gains `batch: { id, head, members, phase }`; each member's per-story status is `running` with the batch id; the banner reads "Verification batch B running: SH-1, SH-2, SH-3". | settled; built as a status-line and a sibling `batch` field (SH-832) |
+| B10 | **Restart.** A batch record is durable. A daemon that restarts before landing abandons the batch (members keep their generations and re-enter the queue); with a `BatchLandingIntent` present it recovers the landing exactly as today's intent does. | settled; built (SH-831 abandonment, SH-832 intent recovery) |
 | B11 | **Locks.** Member workspace locks are taken in story-id order, so two batches (in two projects' verifiers, or a batch and a manual action) cannot deadlock. | settled; built with a recorded deviation (SH-831) |
 
 ## Type proposal
@@ -378,3 +378,95 @@ leaves, an operator stop, a cleanup failure, restart abandonment by the
 helper and by a real worker), and unit tests in
 `src/daemon/verification/batch/tests.rs` (lock order, the member-aware
 reset, the shell boundary).
+
+### SH-832 — land a batch and complete its members together (dormant)
+
+**Off in production.** Council decision D10 on SH-832 (replacing SH-831 D1)
+keeps `poll_verification` on the preview alone: on the SH-830 replay both
+members of a would-be pair were green in 12 of 53 pairs (23%), so batching
+would land about 0.69 stories per gate against 1.0 single, and even SH-833
+bisection breaks even only at about 62% of stories green. SH-841 turns it
+on when live preview records show pair-green of at least 50% over at least
+30 batch-eligible dequeues (or 62% per-story green once SH-833 ships),
+capped at two members with a supervised first batch. The real throughput
+levers today are the gate-flake stories and the first-submission green
+rate (31%).
+
+**The intent (B6).** Not a table of its own: each member gets an ordinary
+`LandingIntent` row — its own story, generation and pull request — with
+the batch certification (tip, batch tree, gate) and a `batch` binding
+(`BatchLanding{id, landing, pull_request}`). Every per-story guard (the
+ownership fence, the story foreign key, `landing_pending`, the
+project-recovery checks, `validate_intent`) covers members unchanged.
+`BatchLandingIntent` is the Rust aggregate. `validate_pending` also ties a
+batch's rows to each other and to the record before every commit: same
+binding, certification and checkout; tip, batch PR and member generations
+and PRs as recorded; exactly the members while the record is `landing`
+(no commit resolves one member before the merge is confirmed), a subset
+once it is `landed` (a member a person holds keeps its row, as a single
+human-only landing does). Retention never prunes a record an intent names.
+
+**Phases.** `landing` (live, never abandoned) and `landed` (end); gating →
+landing → landed or released. Migration 52 rebuilds the leaf table with the
+wider CHECKs, keeping rowid order and the live index. One predicate,
+`is_abandonable`, drives the worker-start read and the abandonment write,
+so a start with only a landing batch writes nothing (SH-693).
+
+**Landing (B5).** After the batch observer ends (a landing-pending member
+would read as changed), a certified gate of the batch tip with every member
+unchanged is admitted in one transaction; a refusal or error releases the
+batch with its reason, and the head goes on to its own gate. The tick lands
+through the head's actuator: `run_landing` uses the intent's landing target
+(the batch PR, one shared attempt marker). Merged: one transaction completes
+every member the verifier may complete (GREEN naming the batch, the batch
+PR and the member's PR; `StoryPrMerged`; `done`) and records the batch
+`landed`; the tick drops its in-flight record, reaps the head with the
+slot's lock and each member under its own lock (`reap_member`), each with
+a fresh cleanup reservation, then prunes the completed members' branches on
+origin (`verify-batch.sh prune-members`: only a merged PR's own head at its
+recorded commit). NotAttempted: every intent and the batch are released;
+the head is gated alone. Uncertain: every member stays fenced with CENTRAL
+LANDING PENDING.
+
+**Recovery (B10).** The tick-start loop recovers each batch once per tick
+through one queued member; a confirmed merge completes the queued,
+permitted members and reaps them. Nothing completable is RetryLater, never
+Returned, so a member a person holds cannot spin the worker. No new batch
+forms while one is landing. Recovery needs no batching actuator; without
+one, members other than the one the slot owns are reaped by the cleanup
+retry.
+
+**`pr_check`.** A merged or closed link of a story with a pending landing
+intent (single or batch) writes nothing and reads "landing in progress";
+before SH-832 its write was refused before commit and aborted the whole
+poll (fixed and tested on its own, D7).
+
+**Status (B9).** `VerifierStatus.batch: {id, head, members, phase}` is a
+sibling of `batch_preview`, not `active.batch` as B9 words it:
+`ActiveVerification` is an identity that ownership compares with `==`.
+The phase is `selected` before the record exists. Each non-head member
+reads `running` with the batch; queue positions leave members out. The
+dashboard's verifying-column status line reads "Verification batch <id>
+running: SH-1, SH-2, SH-3 · <phase>" (not the alert banner, SH-830 D8), and
+member chips name the batch.
+
+**Stated limits.** `verify-batch.sh base-policy` refuses to batch onto a
+base whose rulesets, or readable classic protection, require signed
+commits (the batch's merge commits are unsigned); classic protection is
+readable only by admins and a 404 reads as no requirement. A merge GitHub
+refuses after the attempt marker reads as uncertain forever, and no
+operator command releases a landing intent; that class predates batching
+and is filed separately. Member branch pruning runs once; a member PR
+GitHub has not yet marked merged keeps its branch, named in the record.
+
+Decisions D1–D11 and the council verdict D10 are recorded on SH-832. Tests:
+`tests/batch_landing.rs` (admission, all-or-none completion, fault, held
+member, release, retention, pr_check), `tests/verification_queue/batching.rs`
+(land, uncertain + restart recovery, never requested, held member, signed
+base, another head, status at gate and landing),
+`tests/verification_batches.rs` (phases, migration 52),
+`tests/verify_batch.rs` (prune, base policy), `tests/service_pr_check.rs`,
+batch unit tests (worker start with a landing batch, member reap lock,
+left-out member), and `e2e/specs/verification-control.spec.ts` /
+`verification-status.spec.ts`.
+
