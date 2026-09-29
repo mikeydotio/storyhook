@@ -339,6 +339,14 @@ pub struct ProjectPointer {
     /// User-authored; storyhook never writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify: Option<toml::Value>,
+    /// The `[batch]` table, if the repository has one — the paths a
+    /// verification batch may smooth (SH-834, read by
+    /// [`super::batch_smoothing::policy_from_pointer`]). A table of its own,
+    /// not a `[verify]` key: an older verifier refuses unknown `[verify]`
+    /// keys in every merge tree it inspects, but ignores unknown tables.
+    /// User-authored; storyhook never writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<toml::Value>,
 }
 
 impl ProjectPointer {
@@ -354,6 +362,7 @@ impl ProjectPointer {
             hooks: None,
             github: None,
             verify: None,
+            batch: None,
         }
     }
 }

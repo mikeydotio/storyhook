@@ -373,6 +373,22 @@ Repository configuration:
     The old api_url option is refused: remove it and configure gh for
     the actual origin host. StoryHook never launches interactive login.
 
+  [batch]
+  smooth = ["docs/spec/", ".gitignore"]
+
+    Paths where the verifier may smooth a conflict between the
+    members of a verification batch (default: none). Each entry is an
+    exact path or a directory ending in "/"; globs are refused. The
+    list is read from the batch's base commit, never from a member.
+    A path is smoothed only when both members added lines at the same
+    place and neither changed a line of the base. The result keeps
+    both additions, the earlier member's first. No model writes it. A
+    deny floor that the list cannot override protects agent
+    instructions (CLAUDE.md, AGENTS.md, SKILL.md, .claude/),
+    .storyhook.toml and files that CI or a checkout runs (.github/,
+    .githooks/, .gitattributes). Any other conflict keeps the story
+    out of the batch.
+
 Settings:
   sync.auto_transition    true|false, default true
     Whether 'story commit-sync' moves a story a commit CLAIMS into the
