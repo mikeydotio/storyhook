@@ -41,6 +41,20 @@ const COMMIT_ENV: [(&str, &str); 7] = [
     ("GIT_COMMITTER_DATE", "1970-01-01T00:00:00Z"),
 ];
 
+/// The merge command every trial and assembly merge runs, before its two
+/// commits. The conflict style is pinned to `diff3` so that each conflict
+/// hunk in the conflicted tree carries its base section whatever the user's
+/// `merge.conflictStyle` says: an insertion-only hunk is one whose base
+/// section is empty (SH-834 D4). The style changes only the text written into
+/// conflicted files, never whether a merge conflicts.
+pub(crate) const MERGE_TREE: [&str; 5] = [
+    "-c",
+    "merge.conflictStyle=diff3",
+    "merge-tree",
+    "--write-tree",
+    "-z",
+];
+
 /// The answer to one trial merge.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrialMerge {
@@ -51,9 +65,63 @@ pub enum TrialMerge {
     },
     /// The merge conflicts.
     Conflict {
-        /// Every conflicted path, in Git's order.
+        /// Every conflicted path, in Git's order, each once.
         paths: Vec<String>,
+        /// What Git reported about the conflict (SH-834).
+        shape: ConflictShape,
     },
+}
+
+/// A conflicted merge as `merge-tree --write-tree -z` reports it: the tree
+/// it wrote, the index entries of every conflicted path, and its
+/// informational records.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConflictShape {
+    /// The merged tree, each conflicted file written with diff3 markers.
+    pub tree: String,
+    /// Every index entry of a conflicted path, in Git's order.
+    pub stages: Vec<StageEntry>,
+    /// Every informational record, in Git's order.
+    pub records: Vec<ConflictRecord>,
+}
+
+impl ConflictShape {
+    /// Every conflicted path, in Git's order, each once: what
+    /// `merge-tree --name-only` lists.
+    #[must_use]
+    pub fn paths(&self) -> Vec<String> {
+        let mut paths: Vec<String> = Vec::new();
+        for entry in &self.stages {
+            if !paths.contains(&entry.path) {
+                paths.push(entry.path.clone());
+            }
+        }
+        paths
+    }
+}
+
+/// One index entry of a conflicted path: `<mode> <object> <stage> <path>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StageEntry {
+    /// The entry's mode, such as `100644`.
+    pub mode: String,
+    /// The entry's object id.
+    pub oid: String,
+    /// 1 for the merge base, 2 for the side merged onto, 3 for the side
+    /// merged in.
+    pub stage: u8,
+    /// The path, unquoted.
+    pub path: String,
+}
+
+/// One informational record of a merge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConflictRecord {
+    /// Git's stable conflict type, such as `Auto-merging` or
+    /// `CONFLICT (contents)`.
+    pub kind: String,
+    /// The paths (or branch names) the record names.
+    pub paths: Vec<String>,
 }
 
 /// Resolves revisions and merges commits without changing the repository.
@@ -144,18 +212,9 @@ impl TrialMerger for PrivateTrialMerger {
     fn merge(&mut self, onto: &str, head: &str) -> Result<TrialMerge, AppError> {
         pinned(onto)?;
         pinned(head)?;
-        let result = self.query(
-            &[
-                "merge-tree",
-                "--write-tree",
-                "--name-only",
-                "--no-messages",
-                "-z",
-                onto,
-                head,
-            ],
-            &QUERY_ENV,
-        )?;
+        let mut args = MERGE_TREE.to_vec();
+        args.extend([onto, head]);
+        let result = self.query(&args, &QUERY_ENV)?;
         merge_answer(&result, LABEL, onto, head)
     }
 
@@ -190,33 +249,124 @@ impl TrialMerger for PrivateTrialMerger {
     }
 }
 
-/// Reads the answer of `git merge-tree --write-tree --name-only
-/// --no-messages -z <onto> <head>`: exit 0 is a clean tree, exit 1 a conflict
-/// with its paths, anything else a failure. `label` names the caller.
+/// Reads the answer of [`MERGE_TREE`] `<onto> <head>`: exit 0 is a clean
+/// tree, exit 1 a conflict with its shape, anything else a failure. `label`
+/// names the caller.
 pub(crate) fn merge_answer(
     result: &crate::process::Captured,
     label: &str,
     onto: &str,
     head: &str,
 ) -> Result<TrialMerge, AppError> {
-    // `-z` output: the tree, then each conflicted path, each NUL-terminated.
-    let mut fields = result.stdout.split(|byte| *byte == 0);
-    let tree = fields.next().unwrap_or_default();
     match result.status.code() {
-        Some(0) => Ok(TrialMerge::Clean {
-            tree: answer_oid(tree, label, "the merged tree")?,
-        }),
-        Some(1) => Ok(TrialMerge::Conflict {
-            paths: fields
-                .take_while(|path| !path.is_empty())
-                .map(|path| String::from_utf8_lossy(path).into_owned())
-                .collect(),
-        }),
+        Some(0) => {
+            let tree = result.stdout.split(|byte| *byte == 0).next();
+            Ok(TrialMerge::Clean {
+                tree: answer_oid(tree.unwrap_or_default(), label, "the merged tree")?,
+            })
+        }
+        Some(1) => {
+            let shape = parse_conflict(&result.stdout).map_err(|why| {
+                AppError::Storage(format!(
+                    "{label} of {head} onto {onto} reported a conflict Git's output does \
+                     not describe: {why}"
+                ))
+            })?;
+            Ok(TrialMerge::Conflict {
+                paths: shape.paths(),
+                shape,
+            })
+        }
         _ => Err(AppError::Storage(format!(
             "{label} of {head} onto {onto} failed: {}",
             String::from_utf8_lossy(&result.stderr).trim()
         ))),
     }
+}
+
+/// Parses the `-z` output of a conflicted `merge-tree --write-tree`: the
+/// tree, then each conflicted index entry (`<mode> <oid> <stage>\t<path>`),
+/// then an empty field, then each informational record (`<count>`, that many
+/// paths, the conflict type, the message). Every field is NUL-terminated.
+fn parse_conflict(stdout: &[u8]) -> Result<ConflictShape, String> {
+    let text = |field: &[u8]| {
+        std::str::from_utf8(field)
+            .map(str::to_owned)
+            .map_err(|_| format!("a field is not UTF-8: {:?}", String::from_utf8_lossy(field)))
+    };
+    // Every field ends with NUL; without the last one the output was cut.
+    let body = stdout
+        .strip_suffix(&[0])
+        .ok_or("the output does not end with NUL")?;
+    let mut fields = body.split(|byte| *byte == 0);
+    let tree = text(fields.next().unwrap_or_default())?;
+    if !is_pinned_oid(&tree) {
+        return Err(format!("no tree object id: {tree:?}"));
+    }
+    let mut stages = Vec::new();
+    loop {
+        let Some(field) = fields.next() else {
+            return Err("the conflicted entries do not end".into());
+        };
+        if field.is_empty() {
+            break;
+        }
+        let entry = text(field)?;
+        let (info, path) = entry
+            .split_once('\t')
+            .ok_or_else(|| format!("an entry has no path: {entry:?}"))?;
+        let mut parts = info.split(' ');
+        let (Some(mode), Some(oid), Some(stage), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(format!("an entry is not `<mode> <oid> <stage>`: {entry:?}"));
+        };
+        let stage: u8 = stage
+            .parse()
+            .ok()
+            .filter(|stage| (1..=3).contains(stage))
+            .ok_or_else(|| format!("an entry has no stage 1, 2 or 3: {entry:?}"))?;
+        if !is_pinned_oid(oid) || path.is_empty() {
+            return Err(format!("an entry is malformed: {entry:?}"));
+        }
+        stages.push(StageEntry {
+            mode: mode.to_owned(),
+            oid: oid.to_owned(),
+            stage,
+            path: path.to_owned(),
+        });
+    }
+    if stages.is_empty() {
+        return Err("a conflict with no conflicted entry".into());
+    }
+    let mut records = Vec::new();
+    while let Some(count) = fields.next() {
+        let count: usize = text(count)?
+            .parse()
+            .map_err(|_| "a record does not start with its path count".to_owned())?;
+        let paths = (0..count)
+            .map(|_| {
+                fields
+                    .next()
+                    .ok_or_else(|| "a record ends inside its paths".to_owned())
+                    .and_then(text)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let kind = text(
+            fields
+                .next()
+                .ok_or_else(|| "a record has no conflict type".to_owned())?,
+        )?;
+        fields
+            .next()
+            .ok_or_else(|| "a record has no message".to_owned())?;
+        records.push(ConflictRecord { kind, paths });
+    }
+    Ok(ConflictShape {
+        tree,
+        stages,
+        records,
+    })
 }
 
 /// Refuses anything but a full object id where Git is handed one.
@@ -248,4 +398,77 @@ fn pinned(oid: &str) -> Result<(), AppError> {
 
 fn oid(bytes: &[u8], what: &str) -> Result<String, AppError> {
     answer_oid(bytes, LABEL, what)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn oid(digit: char) -> String {
+        digit.to_string().repeat(40)
+    }
+
+    #[test]
+    fn a_conflict_reads_its_tree_entries_and_records() {
+        let (tree, a, b, c) = (oid('0'), oid('1'), oid('2'), oid('3'));
+        let stdout = format!(
+            "{tree}\0100644 {a} 2\tboth.md\0100644 {b} 3\tboth.md\0\
+             100644 {a} 1\tdoc.md\0100644 {b} 2\tdoc.md\0100644 {c} 3\tdoc.md\0\0\
+             1\0both.md\0Auto-merging\0Auto-merging both.md\n\0\
+             1\0both.md\0CONFLICT (contents)\0CONFLICT (add/add): Merge conflict in both.md\n\0\
+             2\0old.md\0new.md\0CONFLICT (rename/delete)\0old.md renamed to new.md\0"
+        );
+        let shape = parse_conflict(stdout.as_bytes()).unwrap();
+        assert_eq!(shape.tree, tree);
+        assert_eq!(shape.paths(), ["both.md", "doc.md"]);
+        assert_eq!(shape.stages.len(), 5);
+        assert_eq!(
+            shape.stages[2],
+            StageEntry {
+                mode: "100644".into(),
+                oid: a,
+                stage: 1,
+                path: "doc.md".into(),
+            }
+        );
+        let kinds: Vec<_> = shape.records.iter().map(|r| r.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "Auto-merging",
+                "CONFLICT (contents)",
+                "CONFLICT (rename/delete)"
+            ]
+        );
+        assert_eq!(shape.records[2].paths, ["old.md", "new.md"]);
+    }
+
+    #[test]
+    fn a_conflict_with_no_records_still_reads() {
+        let stdout = format!("{}\0100644 {} 2\ta\0\0", oid('0'), oid('1'));
+        let shape = parse_conflict(stdout.as_bytes()).unwrap();
+        assert_eq!(shape.paths(), ["a"]);
+        assert!(shape.records.is_empty());
+    }
+
+    #[test]
+    fn malformed_conflict_output_is_refused_not_guessed() {
+        let (tree, a) = (oid('0'), oid('1'));
+        for bad in [
+            String::new(),
+            "not-a-tree\0".to_owned(),
+            format!("{tree}\0"),
+            format!("{tree}\0\0"),
+            format!("{tree}\0100644 {a} 2 a\0\0"),
+            format!("{tree}\0100644 {a} 4\ta\0\0"),
+            format!("{tree}\0100644 short 2\ta\0\0"),
+            format!("{tree}\0100644 {a} 2\t\0\0"),
+            format!("{tree}\0100644 {a} 2\ta\0\0x\0"),
+            format!("{tree}\0100644 {a} 2\ta\0\02\0a\0"),
+            format!("{tree}\0100644 {a} 2\ta\0\01\0a\0CONFLICT (contents)\0"),
+            format!("{tree}\0100644 {a} 2\ta\0\01\0a\0t\0m\0\0x\0"),
+        ] {
+            assert!(parse_conflict(bad.as_bytes()).is_err(), "accepted {bad:?}");
+        }
+    }
 }

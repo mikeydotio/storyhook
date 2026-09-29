@@ -312,7 +312,7 @@ pub fn select(request: PreviewRequest, merger: &mut dyn TrialMerger) -> BatchPre
             TrialMerge::Clean { tree } => merger
                 .commit(&base, &head_commit, &tree)
                 .map(|commit| Ok((tree, commit))),
-            TrialMerge::Conflict { paths } => Ok(Err(paths)),
+            TrialMerge::Conflict { paths, .. } => Ok(Err(paths)),
         });
     let mut batch = match merged {
         Ok(Ok((tree, commit))) => {
@@ -380,12 +380,12 @@ pub fn select(request: PreviewRequest, merger: &mut dyn TrialMerger) -> BatchPre
                 ExclusionReason::Cap,
                 format!("merges cleanly onto the batch, which is full at {cap}"),
             )),
-            Ok(TrialMerge::Conflict { paths }) => {
+            Ok(TrialMerge::Conflict { paths, .. }) => {
                 preview.excluded.push(match merger.merge(&base, &commit) {
                     Ok(TrialMerge::Clean { .. }) => {
                         conflict(candidate, ExclusionReason::ConflictWithMember, &paths)
                     }
-                    Ok(TrialMerge::Conflict { paths }) => {
+                    Ok(TrialMerge::Conflict { paths, .. }) => {
                         conflict(candidate, ExclusionReason::ConflictWithBase, &paths)
                     }
                     Err(error) => exclusion(
@@ -543,6 +543,13 @@ mod tests {
         Ok(TrialMerge::Clean { tree: oid(digit) })
     }
 
+    fn conflicted(paths: Vec<String>) -> Result<TrialMerge, String> {
+        Ok(TrialMerge::Conflict {
+            paths,
+            shape: crate::service::trial_merge::ConflictShape::default(),
+        })
+    }
+
     #[test]
     fn a_failed_trial_merge_is_reported_in_the_preview_and_the_sweep_goes_on() {
         let mut merger = scripted(&["SH-1", "SH-2", "SH-3"]);
@@ -624,13 +631,7 @@ mod tests {
     fn more_conflicted_paths_than_the_record_keeps_are_counted() {
         let paths: Vec<String> = (0..25).map(|index| format!("src/{index}.rs")).collect();
         let mut merger = scripted(&["SH-1", "SH-2"]);
-        merger.merges = VecDeque::from([
-            clean('a'),
-            Ok(TrialMerge::Conflict {
-                paths: paths.clone(),
-            }),
-            Ok(TrialMerge::Conflict { paths }),
-        ]);
+        merger.merges = VecDeque::from([clean('a'), conflicted(paths.clone()), conflicted(paths)]);
         merger.commits = VecDeque::from([Ok(oid('c'))]);
 
         let preview = select(request(&["SH-2"]), &mut merger);
@@ -650,13 +651,7 @@ mod tests {
     #[test]
     fn describe_reads_each_outcome() {
         let mut merger = scripted(&["SH-1", "SH-2"]);
-        merger.merges = VecDeque::from([
-            clean('a'),
-            Ok(TrialMerge::Conflict {
-                paths: vec!["a".into()],
-            }),
-            clean('b'),
-        ]);
+        merger.merges = VecDeque::from([clean('a'), conflicted(vec!["a".into()]), clean('b')]);
         merger.commits = VecDeque::from([Ok(oid('c'))]);
         let preview = select(request(&["SH-2"]), &mut merger);
         assert_eq!(
@@ -665,9 +660,7 @@ mod tests {
         );
 
         let mut merger = scripted(&["SH-1"]);
-        merger.merges = VecDeque::from([Ok(TrialMerge::Conflict {
-            paths: vec!["a".into()],
-        })]);
+        merger.merges = VecDeque::from([conflicted(vec!["a".into()])]);
         let preview = select(request(&[]), &mut merger);
         assert_eq!(
             preview.describe(),

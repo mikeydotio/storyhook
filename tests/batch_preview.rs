@@ -490,3 +490,42 @@ fn an_option_shaped_or_unpinned_argument_is_refused() {
     assert!(merger.merge("HEAD", &repo.base).is_err());
     assert!(merger.merge(&repo.base, "main").is_err());
 }
+
+#[test]
+fn a_conflicted_trial_merge_reports_its_index_entries_and_records() {
+    let repo = Repo::new();
+    let head = repo.story("worktree-SH-1", "a", "head's a\n");
+    let other = repo.story("worktree-SH-2", "a", "another a\n");
+    let mut merger = repo.merger();
+    let TrialMerge::Clean { tree } = merger.merge(&repo.base, &head).unwrap() else {
+        panic!("a story off its base merges cleanly");
+    };
+    let batch = merger.commit(&repo.base, &head, &tree).unwrap();
+
+    let TrialMerge::Conflict { paths, shape } = merger.merge(&batch, &other).unwrap() else {
+        panic!("two stories that rewrite `a` conflict");
+    };
+
+    assert_eq!(paths, ["a"]);
+    assert_eq!(shape.paths(), paths);
+    let stages: Vec<(&str, u8, &str)> = shape
+        .stages
+        .iter()
+        .map(|entry| (entry.mode.as_str(), entry.stage, entry.path.as_str()))
+        .collect();
+    assert_eq!(
+        stages,
+        [("100644", 1, "a"), ("100644", 2, "a"), ("100644", 3, "a")]
+    );
+    assert!(
+        shape
+            .records
+            .iter()
+            .any(|record| record.kind == "CONFLICT (contents)" && record.paths == ["a"]),
+        "{shape:?}"
+    );
+    assert_ne!(
+        shape.tree, tree,
+        "the conflicted tree is written, not the batch's"
+    );
+}

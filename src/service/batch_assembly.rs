@@ -9,7 +9,7 @@
 //! accepts, and are never signed: a signer must not prompt inside the daemon.
 
 use super::private_objects::repository_query;
-use super::trial_merge::{TrialMerge, answer_oid, merge_answer, require_pinned};
+use super::trial_merge::{MERGE_TREE, TrialMerge, answer_oid, merge_answer, require_pinned};
 use crate::error::AppError;
 use crate::process::Cancellation;
 use std::path::Path;
@@ -68,25 +68,12 @@ pub fn assemble(
     let mut trees = Vec::with_capacity(members.len());
     for member in members {
         require_pinned(&member.commit, LABEL)?;
-        let merged = repository_query(
-            repository,
-            LABEL,
-            &[
-                "merge-tree",
-                "--write-tree",
-                "--name-only",
-                "--no-messages",
-                "-z",
-                &tip,
-                &member.commit,
-            ],
-            &[],
-            MERGE_ANSWERS,
-            &cancelled,
-        )?;
+        let mut args = MERGE_TREE.to_vec();
+        args.extend([tip.as_str(), member.commit.as_str()]);
+        let merged = repository_query(repository, LABEL, &args, &[], MERGE_ANSWERS, &cancelled)?;
         tree = match merge_answer(&merged, LABEL, &tip, &member.commit)? {
             TrialMerge::Clean { tree } => tree,
-            TrialMerge::Conflict { paths } => {
+            TrialMerge::Conflict { paths, .. } => {
                 return Err(AppError::Storage(format!(
                     "{LABEL}: {} ({}) conflicts with the batch so far in {}",
                     member.story_id,

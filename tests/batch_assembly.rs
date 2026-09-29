@@ -183,7 +183,7 @@ fn the_batch_tree_is_the_tree_the_trial_merges_accepted() {
                 trial = merger.commit(&trial, &member.commit, &merged).unwrap();
                 tree = merged;
             }
-            TrialMerge::Conflict { paths } => panic!("fixture members conflict: {paths:?}"),
+            TrialMerge::Conflict { paths, .. } => panic!("fixture members conflict: {paths:?}"),
         }
     }
 
