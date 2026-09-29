@@ -40,6 +40,7 @@ mod attempt;
 mod end;
 mod landing;
 mod locks;
+mod record;
 mod shell;
 #[cfg(test)]
 mod tests;
