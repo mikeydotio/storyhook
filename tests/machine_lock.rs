@@ -1913,6 +1913,13 @@ fn the_gate_idle_ceiling_stays_derived() {
         storyhook::daemon::verification::VERIFICATION_IDLE_TIMEOUT.as_secs() > gate_ceiling,
         "the outer verifier must not race the gate watchdog that owns stall diagnostics"
     );
+    // `story help project-settings` states this ceiling from the Rust
+    // constant (SH-777), so the script and the constant must be one number.
+    assert_eq!(
+        storyhook::daemon::verification::GATE_SILENCE_CEILING.as_secs(),
+        gate_ceiling,
+        "the documented silence ceiling must be the one the gate lock enforces"
+    );
 }
 
 /// The poll period is the resolution of the observation, not a guess about

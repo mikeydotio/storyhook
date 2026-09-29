@@ -412,23 +412,34 @@ impl VerificationGuard {
 
 /// Largest observed runtime of the default gate (`make test`) under this
 /// machine's ordinary concurrent workload, recorded by the Full Auto design
-/// investigation. A project's own `[verify] gate` (SH-649) runs under the
-/// same silence cap; one that emits no progress journal has only this.
+/// investigation. It is storyhook's own measurement, not the project's: a
+/// project's `[verify] gate` (SH-649) is held to the same silence ceiling,
+/// and renews it with each line it writes through the bundled progress
+/// writer (SH-777).
 const MEASURED_CONTENDED_GATE_SECS: u64 = 873;
 
 /// Multiplicative slack above the measured contended gate.
 const VERIFICATION_IDLE_TIMEOUT_MARGIN: u64 = 2;
 
+/// Longest progress-journal silence the gate lock's own watchdog tolerates
+/// before it stops the gate (`scripts/machine-lock.sh`'s
+/// `GATE_IDLE_CEILING_SECS`, bound to this value by `tests/machine_lock.rs`).
+///
+/// Twice the largest measured contended gate covers healthy silence. It is a
+/// ceiling on silence, never on runtime: every journal append renews it, so a
+/// gate that reports its legs may run indefinitely, and a gate that reports
+/// nothing must finish within it (`story help project-settings`).
+pub const GATE_SILENCE_CEILING: Duration =
+    Duration::from_secs(MEASURED_CONTENDED_GATE_SECS * VERIFICATION_IDLE_TIMEOUT_MARGIN);
+
 /// Maximum silence during centralized verification (SH-592).
 ///
-/// Twice the largest measured contended gate covers healthy silence. One
-/// recovery window beyond that gives the inner gate watchdog time to publish
-/// its last journal record, descendant tree, and bounded cleanup first.
-/// Journal appends renew this deadline, so progressing tests and
-/// identity-checked lock waits have no total runtime cap.
-pub const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(
-    MEASURED_CONTENDED_GATE_SECS * VERIFICATION_IDLE_TIMEOUT_MARGIN + RECOVERY_WAKE.as_secs(),
-);
+/// One recovery window beyond [`GATE_SILENCE_CEILING`] gives the inner gate
+/// watchdog time to publish its last journal record, descendant tree, and
+/// bounded cleanup first. Journal appends renew this deadline, so progressing
+/// tests and identity-checked lock waits have no total runtime cap.
+pub const VERIFICATION_IDLE_TIMEOUT: Duration =
+    Duration::from_secs(GATE_SILENCE_CEILING.as_secs() + RECOVERY_WAKE.as_secs());
 
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
