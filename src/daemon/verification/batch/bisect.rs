@@ -62,7 +62,7 @@ pub(super) struct Bisecting {
     /// How each green prefix was certified.
     pub(super) greens: BTreeMap<usize, ProbeKind>,
     /// The certified probe batch that lands, while it is live.
-    pub(super) live: Option<LiveProbe>,
+    pub(super) live: Option<Box<LiveProbe>>,
     /// The culprit's 1-based position and the certified prefix, once the
     /// finding is recorded.
     pub(super) found: Option<(usize, usize)>,
@@ -89,7 +89,7 @@ impl Bisecting {
 /// What one probe found.
 pub(super) enum Probe {
     /// The prefix tree passed; a probe batch that did stays live.
-    Green(Option<LiveProbe>),
+    Green(Option<Box<LiveProbe>>),
     /// The prefix tree failed its tests.
     Red(Red),
     /// No verdict that may count, and why.
@@ -605,12 +605,12 @@ impl<S: Store> Attempt<'_, S> {
             // the stored record.
             Probe::Green(_) => {
                 self.record = None;
-                Probe::Green(Some(LiveProbe {
+                Probe::Green(Some(Box::new(LiveProbe {
                     prefix,
                     record: child,
                     outcome,
                     seconds,
-                }))
+                })))
             }
             other => {
                 let (phase, why) = match &other {
