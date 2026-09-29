@@ -225,6 +225,8 @@
 # except when the launch was mangled (a non-claude shell's hook never fires)
 # or a test sets $FAKE_TMUX_SUPPRESS_SENTINEL=1 (models "claude started, but
 # its SessionStart hook never published" — hooks.json missing/disabled).
+# Each launch's session id is new, as a real provider's is; a test sets
+# $FAKE_TMUX_SESSION_ID to model a launch that reports a given (old) id.
 #
 # `\;`-CHAINED SUB-COMMANDS (SH-230). Real tmux sends each `;`-separated argv
 # segment to the server as its own command; this fake models only what
@@ -663,8 +665,12 @@ case "${1:-}" in
           publish_claude_hook() {
             local hook_root payload
             hook_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+            # A real provider names every new session afresh; a resume that
+            # compares ids (SH-850) needs the fake to do so too. A test that
+            # models a relaunch reporting an old id sets the knob.
             payload=$(jq -cn --arg cwd "$nw_cwd" \
-              '{cwd:$cwd,session_id:"fake-claude-session",hook_event_name:"SessionStart",source:"startup"}')
+              --arg sid "${FAKE_TMUX_SESSION_ID:-fake-claude-session-$$-$RANDOM}" \
+              '{cwd:$cwd,session_id:$sid,hook_event_name:"SessionStart",source:"startup"}')
             printf '%s' "$payload" | STORYHOOK_DISPATCH=1 STORYHOOK_CODEX_BOOTSTRAP= \
               bash "$hook_root/hooks/session-start.sh" > "$STATE/claude-hook-output.json" 2> "$STATE/claude-hook-stderr"
             if [ -n "${FAKE_TMUX_CLAUDE_SENTINEL_ROOT:-}" ]; then

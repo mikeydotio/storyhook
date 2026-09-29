@@ -1635,6 +1635,30 @@ require_agent_absent() {
   fi
 }
 
+# supersede_resumed_continuations <id> <pre-claim-state> <transitioned> <state>
+# — retire the story's context-handoff chain before a resume launches a fresh
+# session (SH-850 council C3/C4), through the helper-only
+# `story internal supersede-continuations`. The daemon changes nothing while a
+# handoff is attempting delivery: the continuation monitor owns that gap, and a
+# second launcher must not race it, so the resume refuses. Publishes the
+# superseded request ids as SUPERSEDED_CONTINUATIONS (a JSON array).
+SUPERSEDED_CONTINUATIONS='[]'
+supersede_resumed_continuations() {
+  local rid="$1" pre_state="$2" transitioned="$3" claimed_state="$4" receipt attempting
+  receipt=$(story_cli internal supersede-continuations "$rid" --json 2>&1) \
+    || fail "could not retire story $rid's context handoffs: $receipt. No replacement session was launched.$(claim_rollback_note "$rid" "$pre_state" "$transitioned" "$claimed_state")"
+  printf '%s' "$receipt" | jq -e --arg id "$rid" --arg project "$PROJECT_SLUG" '
+    .protocol_version == 1 and .project == $project and .story_id == $id
+    and (.superseded | type == "array") and (.attempting | type == "array")' >/dev/null 2>&1 \
+    || fail "invalid context-handoff receipt for story $rid: $receipt. No replacement session was launched.$(claim_rollback_note "$rid" "$pre_state" "$transitioned" "$claimed_state")"
+  attempting=$(printf '%s' "$receipt" | jq -r '.attempting | join(", ")')
+  if [ -n "$attempting" ]; then
+    refuse "continuation-attempting" \
+      "story $rid's context handoff $attempting may be delivering right now, and the continuation monitor owns that gap. Retry after it settles (story continuation status $rid). No replacement session was launched.$(claim_rollback_note "$rid" "$pre_state" "$transitioned" "$claimed_state")"
+  fi
+  SUPERSEDED_CONTINUATIONS=$(printf '%s' "$receipt" | jq -c '.superseded')
+}
+
 # require_resume_eligibility <id> <show-json> — refuse to relaunch an agent on a
 # claimed story the tracker would not let its session continue (SH-850). A
 # blocked, awaiting or resetting story must not get an agent back (SH-690): its
@@ -2472,6 +2496,16 @@ cmd_dispatch() {
     return 0
   fi
 
+  # A resume replaces the story's context-handoff chain too (SH-850 council
+  # C3/C4): the lost receiving session can never acknowledge it, and an
+  # outstanding or acknowledged handoff would refuse the fresh session's own
+  # handoff and fence its submission. Guarded continuation IS that chain.
+  local superseded_continuations='[]'
+  if [ "$resumed" = true ] && [ -z "$require_absent" ]; then
+    supersede_resumed_continuations "$id" "$pre_claim_state" "$claim_transitioned" "$state"
+    superseded_continuations="$SUPERSEDED_CONTINUATIONS"
+  fi
+
   if ! supersede_block_deliveries "$id"; then
     fail "$BLOCK_DELIVERY_ERROR. No replacement session was launched.$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
   fi
@@ -2645,6 +2679,20 @@ cmd_dispatch() {
       fail "could not prepare Codex initialization metadata. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
   fi
+  # The lost session's own witness, read before either launch branch removes
+  # it (SH-850 council C2). Diagnostic only: the file is writable by anything
+  # in the worktree and proves only that a hook once ran (SH-231), so it never
+  # selects or launches anything. It lets the result and the dispatch comment
+  # name what was replaced, and lets readiness refuse a "new" session that
+  # reports the old id.
+  local previous_session='null' previous_session_id=""
+  if [ "$resumed" = true ] && [ -f "$worktree_path/.claude/dispatch-sentinel.json" ]; then
+    previous_session=$(jq -c 'select((.session_id // "") != "")
+        | {session_id, transcript_path: (.transcript_path // null)}' \
+      "$worktree_path/.claude/dispatch-sentinel.json" 2>/dev/null || printf '')
+    [ -n "$previous_session" ] || previous_session='null'
+    previous_session_id=$(printf '%s' "$previous_session" | jq -r '.session_id // empty' 2>/dev/null || printf '')
+  fi
   local new_window_args pane="" window set_target
   set_target="$wname"
   [ -n "$TARGET_SESSION" ] && set_target="$TARGET_SESSION:$wname"
@@ -2767,6 +2815,19 @@ cmd_dispatch() {
               pane_tail:$tail, claimed:$claimed}')"
   fi
   local readiness_confirmed=true
+  # A replacement must be a NEW session (SH-850 council C2), the rule
+  # continuation_runtime.resume already enforces for its own replacements. A
+  # launch that reports the lost session's id resumed a conversation, or read
+  # a witness that was not its own; either way it is not the fresh session
+  # this charter is written for.
+  if [ -n "$previous_session_id" ] \
+     && [ "$(jq -r '.session_id // empty' "$worktree_path/.claude/dispatch-sentinel.json" 2>/dev/null || printf '')" = "$previous_session_id" ]; then
+    rollback_dispatch_attempt
+    refuse_with resume-session-reused \
+      "[story] $id → the replacement in window \`$wname\` reported the lost session's id \`$previous_session_id\`, so it is not a fresh session. No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
+      "$(jq -n --arg id "$id" --arg wname "$wname" --arg pane "$pane" --argjson previous "$previous_session" \
+            '{id:$id, window_name:$wname, pane:$pane, readiness_confirmed:true, previous_session:$previous}')"
+  fi
 
   # The ready launch owns this exact pane/PID. Registration is required before
   # the story charter, so a failed metadata write cannot strand remediation.
@@ -2905,6 +2966,12 @@ cmd_dispatch() {
   # failed dispatch postcondition, but rolling back would make the same story
   # ready while that agent may be working. Refuse with the complete resource
   # identity and preserve everything for a safe resume or explicit teardown.
+  if [ -n "$post_dispatch_comment" ] && [ "$previous_session" != null ]; then
+    post_dispatch_comment="$post_dispatch_comment It replaces the lost session $previous_session_id (unverified: read from the worktree's readiness witness$(printf '%s' "$previous_session" | jq -r 'if .transcript_path then "; transcript " + .transcript_path else "" end'))."
+  fi
+  if [ -n "$post_dispatch_comment" ] && [ "$superseded_continuations" != '[]' ]; then
+    post_dispatch_comment="$post_dispatch_comment Superseded context handoffs: $(printf '%s' "$superseded_continuations" | jq -r 'join(", ")')."
+  fi
   if [ -n "$post_dispatch_comment" ]; then
     local comment_json comment_result comment_error
     comment_json=$(story_cli --actor dispatch comment "$id" "$post_dispatch_comment" --json 2>/dev/null) || true
@@ -2978,6 +3045,8 @@ cmd_dispatch() {
     --arg session "$TARGET_SESSION" --argjson session_created "$session_created" \
     --arg pane_pid "$pane_pid" \
     --argjson cleanup_lease "$DISPATCH_CLEANUP_LEASE" \
+    --argjson previous_session "$previous_session" \
+    --argjson superseded_continuations "$superseded_continuations" \
     --arg model_source "$model_source" --arg effort_source "$effort_source" --arg policy_note "$policy_note" \
     --arg model "$effective_model" --arg effort "$resolved_effort" --arg speed "$resolved_speed" '
     {
@@ -3006,6 +3075,9 @@ cmd_dispatch() {
         launch_overridden: $launch_overridden
       } else {} end)
     + (if $full_auto then {full_auto: true} else {} end)
+    + (if $previous_session == null then {} else {previous_session: $previous_session} end)
+    + (if $superseded_continuations == [] then {}
+       else {superseded_continuations: $superseded_continuations} end)
     + (if $ignored_general_override == "" then {}
        else {ignored_general_override: $ignored_general_override} end)
     + (if $warning == "" then {} else {warning: $warning} end)
