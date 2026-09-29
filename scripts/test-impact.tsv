@@ -229,6 +229,11 @@ verifier_bundle	build.rs
 verifier_fixture_hygiene	:(glob)**/*
 verifier_foreign_checkout	:(glob)scripts/*
 verifier_lifecycle	:(glob)scripts/**
+verify_batch	:(glob)src/github_access/**
+verify_batch	scripts/gate-progress.sh
+verify_batch	scripts/github-access.sh
+verify_batch	scripts/test-git-endpoint.py
+verify_batch	scripts/verify-batch.sh
 verify_window	:(glob)**/*
 version_identity	:(glob)**/*
 web_test	:(glob)**/*

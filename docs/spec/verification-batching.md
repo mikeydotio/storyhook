@@ -57,14 +57,14 @@ open row is decided by that child (council when two answers stay defensible).
 | B1 | **Selection.** The head is the first runnable candidate in the existing order (`sort_candidates`). The rest of the runnable queue is swept in the same order. A candidate joins only when its trial merge onto base plus the members already accepted is clean. Trial merges run in private object storage (the `gate_snapshot.rs` pattern) and never touch a checkout. | settled; built as a shadow preview — see "SH-830" under As built |
 | B2 | **Batch size cap = the project's live engine run `lanes`** (at least 1), the same bound as the verifying backlog (council D3): a deeper batch raises bisection cost faster than it raises throughput while the queue is bounded by that number anyway. | settled for child 1; child 1's measurements are under As built ("SH-830") |
 | B3 | **A candidate that cannot batch stays single.** A head that conflicts with base keeps today's conflict hold; a held, blocked, landing-pending, human-only or unsubmitted candidate is never a member. A batch of one is today's single-story path, unchanged. | settled; built in the preview (SH-830) |
-| B4 | **The branch is assembled by merge commits.** `storyhook/verify-batch/<batch-id>` starts at the base the trial merges used; each member head is merged with `--no-ff` in queue order. No history is rewritten; each member's own commits stay reachable. | settled |
-| B5 | **The batch lands through a batch PR.** `land-pr.sh` lands one PR and requires tree equality, so the certified tree must be the batch tree and the batch branch must be what lands. Member PRs stay open; GitHub marks each merged when the batch merge makes its head an ancestor of the base. | settled |
+| B4 | **The branch is assembled by merge commits.** `storyhook/verify-batch/<batch-id>` starts at the base the trial merges used; each member head is merged with `--no-ff` in queue order. No history is rewritten; each member's own commits stay reachable. | settled; built, dormant — see "SH-831" under As built |
+| B5 | **The batch lands through a batch PR.** `land-pr.sh` lands one PR and requires tree equality, so the certified tree must be the batch tree and the batch branch must be what lands. Member PRs stay open; GitHub marks each merged when the batch merge makes its head an ancestor of the base. | settled; the batch PR and its gate are built (SH-831), landing is SH-832's |
 | B6 | **Members complete together, and first.** A durable `BatchLandingIntent` names every member before the merge. Completion writes, in one transaction, each member's GREEN comment (naming the batch and its PR), `StoryPrMerged` and `done`. `pr_check` treats a member of a landing batch as certified, never as UNCERTIFIED MERGE. Each member is then reaped by today's per-story reap. | settled |
 | B7 | **Red is bisected.** On a red batch, split the members in queue order and gate the first half's merge tree (a tree already certified by a receipt needs no run). Recurse into the red half until one member remains; return it through today's `return_for_repair` with its own tree and log. The other members re-enter the queue at their existing age, or land as a smaller batch if bisection already certified their tree. Cost: at most `ceil(log2 k)` gates per culprit. | open (child 4): whether failing-test attribution may skip steps, and how two culprits are handled |
 | B8 | **Non-code conflicts may be smoothed by the Verifier Agent.** v1 admits only clean trial merges (B1). Letting an agent author a resolution commit puts AI-authored changes in the certification path. | open (child 5, council) |
 | B9 | **Status and dashboard.** `VerifierStatus.active` gains `batch: { id, head, members, phase }`; each member's per-story status is `running` with the batch id; the banner reads "Verification batch B running: SH-1, SH-2, SH-3". | settled |
-| B10 | **Restart.** A batch record is durable. A daemon that restarts before landing abandons the batch (members keep their generations and re-enter the queue); with a `BatchLandingIntent` present it recovers the landing exactly as today's intent does. | settled |
-| B11 | **Locks.** Member workspace locks are taken in story-id order, so two batches (in two projects' verifiers, or a batch and a manual action) cannot deadlock. | settled |
+| B10 | **Restart.** A batch record is durable. A daemon that restarts before landing abandons the batch (members keep their generations and re-enter the queue); with a `BatchLandingIntent` present it recovers the landing exactly as today's intent does. | settled; abandonment built (SH-831), intent recovery is SH-832's |
+| B11 | **Locks.** Member workspace locks are taken in story-id order, so two batches (in two projects' verifiers, or a batch and a manual action) cannot deadlock. | settled; built with a recorded deviation (SH-831) |
 
 ## Type proposal
 
@@ -278,3 +278,103 @@ exact pushed head, passed deadline, merge parents, repository unchanged);
 the gate only, the record, unavailable previews); unit tests for failure
 paths, the wire form and the query runner's journaling;
 `e2e/specs/verification-control.spec.ts` for the status line.
+
+### SH-831 — assemble, submit and gate a batch (dormant until SH-832)
+
+**Off in production.** `ShellVerificationActuator::with_batching()` turns
+batching on (it implies the SH-830 preview, which selects the members);
+the daemon's own verifier does not call it, because a batch that cannot
+land only adds a 35–50 minute gate in front of its head's own gate on the
+serial bottleneck. SH-832 adds the call together with landing (decision
+D1 on SH-831). The trait seam is `VerificationActuator::batch()`, whose
+default offers nothing, so every actuator that predates batching verifies
+exactly as before.
+
+**What a batch step does** (`src/daemon/verification/batch.rs`), after the
+preview and before the head's own gate, at most once per tick:
+
+1. Takes the preview's members when the queue is in ordinary operation:
+   no verification incident, no active project recovery, a submission
+   receipt for the head's generation and a preview base. Anything else is
+   no batch and no side effect.
+2. Locks each non-head member's workspace with a non-blocking try, in
+   ascending story number (`batch/locks.rs`); a busy lock leaves the
+   member out. The head's lock was taken at admission, before the batch
+   existed, so strict story-id order over every member is impossible
+   without releasing it; the property B11 wants still holds, because every
+   workspace-lock acquisition in the system is non-blocking and nothing
+   waits while it holds one.
+3. Submits each member through the story helper under that member's own
+   lock and records the submission (`record_generation_submitted`). A
+   member is left out when its submission is refused or fails, is
+   superseded, links another pull request, targets another base, or
+   pushed a head other than the commit the preview merged.
+4. Merges every member onto the preview's base as merge commits
+   (`service::batch_assembly`): `merge-tree --write-tree`, then
+   `commit-tree --no-gpg-sign` with the repository's configured identity,
+   in the repository's own object store; no ref, index or HEAD changes.
+5. Records the `VerificationBatch` only now, with two or more members, so
+   a batch of one never has a record (the spec's `Selected` phase is
+   therefore never stored; the first stored phase is `assembled`).
+6. Publishes through `scripts/verify-batch.sh publish` (bundled): pushes
+   the tip to `storyhook/verify-batch/<id>` without force, adopts or opens
+   the batch pull request, lists each member as `#N` (no closing
+   keywords), and answers once GitHub reports the new head.
+7. Gates the batch pull request through `verify-pr.sh`, certify-only, with
+   no repair admission (`RepairAdmission::Withheld`): admission binds a
+   gate to one story's project-recovery lineage.
+
+The whole step runs under one authority observer over the head and every
+current member, with its own cancellation (decision D12): a member that
+changes, or an operator stop, cancels it wherever it is. The verdict and
+judged tree go on the record, which ends `released` (gated; landing
+refused; every member back in the single-story queue) or `abandoned`
+(a member changed, an operator stopped, a step failed, a restart), and
+is then retired: `verify-batch.sh retire` closes the pull request and
+deletes the branch, and a retirement that fails is retried at the next
+batch. The head is then gated alone in the same tick. A batch failure
+never fails the tick.
+
+**Story writes.** Member submissions record their link and SUBMITTED
+comment as the member's own dequeue would. Beyond that, only a batch
+cleanup failure (a permanent incident on the head, so the queue halts as
+it would for a single gate), an operator stop during the batch gate (the
+head's interruption comment) and a head that lost authority (today's
+withdrawal, at its own gate) write story state. A RED, conflict or
+project-fault verdict is recorded on the batch only: attributing it to a
+member is SH-833's.
+
+**Restart (B10).** A batch lives only inside one tick of its project's
+single worker. The worker abandons every batch still live when it starts
+(`abandon_interrupted_batches`), and a new batch's insert abandons a
+stale live one in the same transaction. Members are never written by
+abandonment: they keep their generations and stay queued. A reset of a
+member does not fail as busy while a batch holds the member's lock: the
+slot lists the batch's members, and `cancel_story_and_wait` ends the
+batch, not the head's attempt.
+
+**Record.** Migration 51, `verification_batches`: the whole record as a
+JSON payload, `revision` and `live` tied to it by CHECK, one live batch per
+project by partial unique index, compare-and-swap updates, and an ended
+batch never changes phase again. It names no story key and is not an
+ownership-fence owner; SH-832's batch landing intent is the record that
+needs authority. The newest 100 retired, ended batches per project are
+kept. The SH-830 per-dequeue record gains the batch's summary (id,
+members, phase, verdict, tree, seconds, detail).
+
+**Stated limits.** Member submissions write SUBMITTED comments at the
+batch, so the SH-830 replay's assumption that a SUBMITTED comment marks a
+dequeue no longer holds once batching is on. Pushing the batch branch
+leaves a remote-tracking ref until retirement deletes the branch. A
+repository whose base requires signed commits would refuse to land a
+batch of unsigned merge commits; that is SH-832's to meet.
+
+Decisions D1–D12 are recorded on SH-831. Tests: `tests/verification_batches.rs`
+(the record), `tests/batch_assembly.rs` (merge commits over real Git),
+`tests/verify_batch.rs` (publish and retire against a local origin and a
+stateful fake `gh`), `tests/verification_queue/batching.rs` (the tick:
+green, red, no partner, batching off, members left out, a member that
+leaves, an operator stop, a cleanup failure, restart abandonment by the
+helper and by a real worker), and unit tests in
+`src/daemon/verification/batch/tests.rs` (lock order, the member-aware
+reset, the shell boundary).

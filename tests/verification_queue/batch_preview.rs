@@ -20,7 +20,7 @@ const COMMIT_ENV: [(&str, &str); 6] = [
     ("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z"),
 ];
 
-fn git(root: &Path, args: &[&str]) -> String {
+pub(super) fn git(root: &Path, args: &[&str]) -> String {
     let output = storyhook::env::git_env::command(root)
         .args(args)
         .envs(COMMIT_ENV)
@@ -36,14 +36,14 @@ fn git(root: &Path, args: &[&str]) -> String {
 
 /// A registered checkout with `origin/dev` at a base commit and one leased,
 /// submitted story per `(file, body)`, each on its own branch off the base.
-struct Board {
-    fixture: ServiceFixture,
-    root: PathBuf,
-    stories: Vec<String>,
+pub(super) struct Board {
+    pub(super) fixture: ServiceFixture,
+    pub(super) root: PathBuf,
+    pub(super) stories: Vec<String>,
 }
 
 impl Board {
-    fn new(stories: &[(&str, &str)]) -> Self {
+    pub(super) fn new(stories: &[(&str, &str)]) -> Self {
         let fixture = ServiceFixture::new();
         let root = fixture.github_checkout("https://github.com/acme/widgets");
         git(&root, &["config", "commit.gpgsign", "false"]);
@@ -76,7 +76,7 @@ impl Board {
 
     /// The environment the tick runs with: the fixture's, on the fixture's
     /// fixed clock, so two runs write the same timestamps.
-    fn env(&self) -> Environment {
+    pub(super) fn env(&self) -> Environment {
         self.fixture
             .env()
             .clone()
@@ -97,7 +97,7 @@ impl Board {
         .unwrap()
     }
 
-    fn live_run(&self, lanes: u32) {
+    pub(super) fn live_run(&self, lanes: u32) {
         let slug = self
             .fixture
             .store()
@@ -151,7 +151,7 @@ impl Board {
             .replace(&self.fixture.cwd().display().to_string(), "<cwd>")
     }
 
-    fn records(&self) -> Vec<serde_json::Value> {
+    pub(super) fn records(&self) -> Vec<serde_json::Value> {
         let path = batch_preview_log(&self.env(), &self.slug());
         match std::fs::read_to_string(&path) {
             Ok(text) => text
@@ -163,7 +163,7 @@ impl Board {
         }
     }
 
-    fn slug(&self) -> String {
+    pub(super) fn slug(&self) -> String {
         self.fixture
             .store()
             .read(|tx| tx.project(self.fixture.project()))

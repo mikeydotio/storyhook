@@ -223,6 +223,7 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "verifier-worktree.py",
     "verifier_state.py",
     "verifier_result.py",
+    "verify-batch.sh",
     "verify-pr.sh",
     "verify-window.sh",
 ];

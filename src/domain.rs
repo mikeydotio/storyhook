@@ -11,6 +11,10 @@ pub mod transition;
 /// Exact verification evidence preceding durable landing admission.
 pub mod landing;
 
+/// How one verification gate ended, as recorded beside batch previews and
+/// batch records.
+pub mod gate_verdict;
+
 /// Validates one provider-defined model or effort token before it crosses a
 /// persistence or process boundary.
 ///

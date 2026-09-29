@@ -156,24 +156,7 @@ impl TrialMerger for PrivateTrialMerger {
             ],
             &QUERY_ENV,
         )?;
-        // `-z` output: the tree, then each conflicted path, each NUL-terminated.
-        let mut fields = result.stdout.split(|byte| *byte == 0);
-        let tree = fields.next().unwrap_or_default();
-        match result.status.code() {
-            Some(0) => Ok(TrialMerge::Clean {
-                tree: oid(tree, "the merged tree")?,
-            }),
-            Some(1) => Ok(TrialMerge::Conflict {
-                paths: fields
-                    .take_while(|path| !path.is_empty())
-                    .map(|path| String::from_utf8_lossy(path).into_owned())
-                    .collect(),
-            }),
-            _ => Err(AppError::Storage(format!(
-                "trial merge of {head} onto {onto} failed: {}",
-                String::from_utf8_lossy(&result.stderr).trim()
-            ))),
-        }
+        merge_answer(&result, LABEL, onto, head)
     }
 
     fn commit(&mut self, onto: &str, head: &str, tree: &str) -> Result<String, AppError> {
@@ -207,23 +190,62 @@ impl TrialMerger for PrivateTrialMerger {
     }
 }
 
-fn pinned(oid: &str) -> Result<(), AppError> {
+/// Reads the answer of `git merge-tree --write-tree --name-only
+/// --no-messages -z <onto> <head>`: exit 0 is a clean tree, exit 1 a conflict
+/// with its paths, anything else a failure. `label` names the caller.
+pub(crate) fn merge_answer(
+    result: &crate::process::Captured,
+    label: &str,
+    onto: &str,
+    head: &str,
+) -> Result<TrialMerge, AppError> {
+    // `-z` output: the tree, then each conflicted path, each NUL-terminated.
+    let mut fields = result.stdout.split(|byte| *byte == 0);
+    let tree = fields.next().unwrap_or_default();
+    match result.status.code() {
+        Some(0) => Ok(TrialMerge::Clean {
+            tree: answer_oid(tree, label, "the merged tree")?,
+        }),
+        Some(1) => Ok(TrialMerge::Conflict {
+            paths: fields
+                .take_while(|path| !path.is_empty())
+                .map(|path| String::from_utf8_lossy(path).into_owned())
+                .collect(),
+        }),
+        _ => Err(AppError::Storage(format!(
+            "{label} of {head} onto {onto} failed: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        ))),
+    }
+}
+
+/// Refuses anything but a full object id where Git is handed one.
+pub(crate) fn require_pinned(oid: &str, label: &str) -> Result<(), AppError> {
     if is_pinned_oid(oid) {
         Ok(())
     } else {
         Err(AppError::Validation(format!(
-            "trial merge requires a full object id, not {oid:?}"
+            "{label} requires a full object id, not {oid:?}"
         )))
     }
 }
 
-fn oid(bytes: &[u8], what: &str) -> Result<String, AppError> {
+/// The object id Git printed for `what`, refused unless it is a full one.
+pub(crate) fn answer_oid(bytes: &[u8], label: &str, what: &str) -> Result<String, AppError> {
     let text = String::from_utf8_lossy(bytes);
     let text = text.trim();
     if !is_pinned_oid(text) {
         return Err(AppError::Storage(format!(
-            "trial merge Git gave no object id for {what}: {text:?}"
+            "{label} Git gave no object id for {what}: {text:?}"
         )));
     }
     Ok(text.to_owned())
+}
+
+fn pinned(oid: &str) -> Result<(), AppError> {
+    require_pinned(oid, LABEL)
+}
+
+fn oid(bytes: &[u8], what: &str) -> Result<String, AppError> {
+    answer_oid(bytes, LABEL, what)
 }

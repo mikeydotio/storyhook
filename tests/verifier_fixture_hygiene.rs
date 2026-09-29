@@ -46,7 +46,7 @@ fn violations(text: &str) -> Vec<String> {
     blocks
         .into_iter()
         .filter(|block| {
-            let script = ["-pr.sh", "-window.sh"]
+            let script = ["-pr.sh", "-window.sh", "-batch.sh"]
                 .iter()
                 .any(|suffix| block.contains(&format!("scripts/verify{suffix}")))
                 || block.contains(&["scripts/", "verification-view.py"].concat());
