@@ -3373,7 +3373,8 @@ pub(crate) fn run_shell_capabilities(
         .env("STORY_BIN", exe)
         .env("GIT_TERMINAL_PROMPT", "0");
 
-    let captured = run_captured(command, CAPABILITIES_TIMEOUT).map_err(|error| match error {
+    let bound = env.subprocess_bound(CAPABILITIES_TIMEOUT);
+    let captured = run_captured(command, bound).map_err(|error| match error {
         CaptureError::Cancelled => {
             AppError::Validation("the operator cancelled verification".into())
         }
@@ -3393,8 +3394,7 @@ pub(crate) fn run_shell_capabilities(
             AppError::Storage(format!("capabilities cleanup did not quiesce: {detail}"))
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
-            "capabilities did not finish within {}s and was terminated",
-            CAPABILITIES_TIMEOUT.as_secs()
+            "capabilities did not finish within {bound:?} and was terminated"
         )),
     })?;
     classify_dispatch_capture(&captured)

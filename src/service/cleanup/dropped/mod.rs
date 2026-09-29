@@ -108,7 +108,7 @@ pub(super) fn run<S: Store>(
                 .map_err(refuse)?;
             safety::validate(ctx, repository, lease, &report, true)?;
             let paths = identity::capture(&report).map_err(refuse)?;
-            let process_start = process::capture(&report).map_err(refuse)?;
+            let process_start = process::capture(ctx.env(), &report).map_err(refuse)?;
             DroppedCleanup {
                 project: ctx.project(),
                 story,

@@ -357,23 +357,32 @@ pub(crate) fn save(
     Ok(())
 }
 
+/// How long one `git` read of the submitted worktree may take: each reads
+/// local refs or the index, and the whole check runs before a block
+/// delivery's write transaction.
+const SUBMISSION_GIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub(crate) struct SubmissionEvidence {
     head: String,
     worktree: std::path::PathBuf,
     branch: String,
     clean: bool,
 }
-pub(crate) fn current_submission(path: &std::path::Path) -> Result<SubmissionEvidence, AppError> {
+pub(crate) fn current_submission(
+    env: &crate::env::Environment,
+    path: &std::path::Path,
+) -> Result<SubmissionEvidence, AppError> {
     let git = |args: &[&str]| -> Result<String, AppError> {
         let mut command = crate::env::git_env::command(path);
         command.args(args);
-        let output = crate::process::run_captured(command, std::time::Duration::from_secs(5))
-            .map_err(|e| {
-                AppError::Validation(format!(
-                    "continuation submission Git evidence: {}",
-                    e.detail()
-                ))
-            })?;
+        let output =
+            crate::process::run_captured(command, env.subprocess_bound(SUBMISSION_GIT_DEADLINE))
+                .map_err(|e| {
+                    AppError::Validation(format!(
+                        "continuation submission Git evidence: {}",
+                        e.detail()
+                    ))
+                })?;
         if !output.status.success() {
             return Err(AppError::Validation(format!(
                 "cannot read continuation submission Git evidence: {}",
