@@ -28,7 +28,7 @@ const PER_MILLE: f64 = 1000.0;
 /// One test's declaration for every production subprocess bound it reaches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SubprocessPolicy {
-    /// Nothing declared.
+    /// Nothing declared: reading a bound fails the test.
     Undeclared,
     /// Every bound is the production value.
     Proof,
@@ -62,9 +62,24 @@ impl SubprocessPolicy {
     }
 
     /// The bound a production site that names `production` gets.
+    ///
+    /// # Panics
+    ///
+    /// When nothing was declared: a lib test that reaches a production
+    /// subprocess bound must say whether it waits for an answer or proves the
+    /// bound, and it fails at idle, every run, until it does. Silence here is
+    /// how five tests came to hold fixtures to 3 s under load (SH-836).
     pub(crate) fn bound(self, production: Duration) -> Duration {
         match self {
-            Self::Undeclared | Self::Proof => production,
+            Self::Undeclared => panic!(
+                "a lib test reached a production subprocess bound ({production:?}) through an \
+                 Environment that declared neither patience nor proof (SH-836); test thread: \
+                 {}. Build it with .with_subprocess_patience() when the test waits for the \
+                 subprocess to answer, or .with_subprocess_proof() when it proves the \
+                 production bound itself.",
+                std::thread::current().name().unwrap_or("unnamed")
+            ),
+            Self::Proof => production,
             Self::Patience {
                 contention_per_mille,
             } => load_grace::graced_by(
@@ -77,8 +92,51 @@ impl SubprocessPolicy {
 
 mod tests {
     use super::*;
+    use crate::env::Environment;
 
     const PRODUCTION: Duration = Duration::from_secs(3);
+
+    /// The panic message of `read`, which must panic.
+    fn panic_of(read: impl FnOnce() -> Duration + std::panic::UnwindSafe) -> String {
+        let payload = std::panic::catch_unwind(read).expect_err("an undeclared read must panic");
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn an_undeclared_read_fails_and_names_both_declarations() {
+        let message = panic_of(|| SubprocessPolicy::Undeclared.bound(PRODUCTION));
+        for part in [
+            "SH-836",
+            "3s",
+            "with_subprocess_patience()",
+            "with_subprocess_proof()",
+            "an_undeclared_read_fails_and_names_both_declarations",
+        ] {
+            assert!(message.contains(part), "{part:?} missing from {message:?}");
+        }
+    }
+
+    #[test]
+    fn a_lib_test_environment_starts_undeclared_and_carries_its_declaration() {
+        let root = storyhook_test_support::scratch_dir();
+        let undeclared = Environment::at(root.path());
+        panic_of(|| undeclared.subprocess_bound(PRODUCTION));
+
+        let proven = Environment::at(root.path()).with_subprocess_proof();
+        assert_eq!(proven.subprocess_bound(PRODUCTION), PRODUCTION);
+        let patient = Environment::at(root.path()).with_subprocess_patience_under(3.0);
+        assert!(patient.subprocess_bound(PRODUCTION) >= PRODUCTION * 3);
+
+        // A thread production starts with a clone reads the same declaration.
+        let carried = patient.clone();
+        let across = std::thread::spawn(move || carried.subprocess_bound(PRODUCTION))
+            .join()
+            .unwrap();
+        assert_eq!(across, patient.subprocess_bound(PRODUCTION));
+    }
 
     #[test]
     fn proof_is_the_production_value() {
