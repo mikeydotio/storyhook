@@ -5,19 +5,24 @@
 //! production bundle against a real foreign repository: the writer reaches the
 //! gate through `merge-watch.sh`, each verb becomes exactly one checklist line,
 //! a call it cannot record safely writes nothing, and nothing it writes can
-//! touch the verifier's own recovery evidence.
+//! touch the verifier's own recovery evidence. A gate that reports nothing
+//! but prints keeps the verifier status quiet, as a real run shows.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, File, FileTimes};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::time::Duration;
 
 use serde_json::{Value, json};
+use storyhook::daemon::verification::{VerificationActivity, journal_path};
+use storyhook::daemon::verification_progress::PUBLISH_INTERVAL;
 use storyhook::service::gate_progress::{self, ItemStatus};
-use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, load_grace};
+use storyhook::service::{Clock, NewStoryInput, StoryService, VerificationQueue};
+use storyhook_test_support::{ChildGuard, STORY_COMMAND_DEADLINE, ServiceFixture, load_grace};
 
 #[path = "support/foreign_repo.rs"]
 mod foreign_repo;
@@ -375,4 +380,172 @@ fn no_leg_name_reaches_the_verifiers_own_rows() {
     assert_eq!(labels, ["merge preflight", "release gate"]);
     assert_eq!(progress.items[0].status, ItemStatus::Passed);
     assert_eq!(progress.items[1].status, ItemStatus::Running);
+}
+
+/// How often a wait on the running gate looks again.
+const GATE_POLL: Duration = Duration::from_millis(100);
+
+/// Patience for the bundled verifier to reach its gate and for the gate to
+/// print: `verify-pr.sh` re-execs under the gate lock and the lifecycle owner
+/// first. Patience, never proof: it is graced by contention (SH-806).
+const GATE_START_PATIENCE: Duration = Duration::from_secs(60);
+
+/// How far past the publisher interval the journal is made to look quiet.
+const PAST_THE_INTERVAL: i64 = 5;
+
+/// A second-precision RFC3339 stamp, the daemon clock's own grid.
+fn stamp(at: chrono::DateTime<chrono::Utc>) -> String {
+    at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// SH-777 acceptance 3: a real uninstrumented foreign gate, run by the
+/// bundled `verify-pr.sh`, prints while its journal stays quiet for longer
+/// than the publisher interval, and the verifier status raises no warning.
+/// The gate prints until told to stop, then stays alive and silent, so the
+/// log is still when the status reads it. Only the journal's modification
+/// time is moved: that is the one input the old status judged by, and moving
+/// it back is how "quiet for longer than the interval" is shown without a
+/// sixty-second test.
+#[test]
+fn an_uninstrumented_foreign_gate_that_prints_needs_no_attention() {
+    let fixture = ForeignRepo::new();
+    let service = ServiceFixture::new();
+    let story = StoryService::new(&service.ctx())
+        .create(&NewStoryInput {
+            title: "Foreign gate output".into(),
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    StoryService::new(&service.ctx())
+        .set_state(&story, "verifying", None, None, None)
+        .unwrap();
+    let candidate = VerificationQueue::new(service.store())
+        .ordered_for(service.project())
+        .unwrap()
+        .remove(0);
+    // Acquired a moment in the past, so the capture the verifier registers
+    // with its own clock can never precede the attempt.
+    let started = stamp(chrono::Utc::now() - chrono::Duration::seconds(PAST_THE_INTERVAL));
+    let activity = VerificationActivity::new();
+    let _guard = activity.acquire(&candidate, started.clone());
+    let attempt = activity.active_for(service.project()).unwrap().attempt_id;
+    let journal = journal_path(service.env(), &candidate);
+    fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    fs::write(
+        &journal,
+        format!(
+            "{}\n",
+            json!({"kind":"run", "generation":candidate.verifying_generation.unwrap().get(), "attempt_id":attempt, "at":started})
+        ),
+    )
+    .unwrap();
+
+    let quiet = fixture.root.path().join("quiet");
+    let release = fixture.root.path().join("release");
+    let mut command = fixture.command("verify-pr.sh", &fixture.repo);
+    command
+        .env("STORYHOOK_GATE_PROGRESS", &journal)
+        .env("STORYHOOK_VERIFICATION_ATTEMPT", &attempt)
+        .env("STORYHOOK_VERIFIER_CLEANUP_GRACE_MS", "8000")
+        .args([
+            "--run-gate",
+            "1",
+            &fixture.tree,
+            &fixture.base,
+            &fixture.head,
+            fixture.poller.to_str().unwrap(),
+            "--",
+            "bash",
+            "-eu",
+            "-c",
+            r#"
+n=0
+while [ ! -e "$1" ]; do n=$((n + 1)); echo "compiling unit $n"; sleep 0.1; done
+while [ ! -e "$2" ]; do sleep 0.1; done
+"#,
+            "foreign-gate",
+            quiet.to_str().unwrap(),
+            release.to_str().unwrap(),
+        ]);
+    let mut gate = ChildGuard::spawn_with_output(&mut command).unwrap();
+
+    // The verifier registered its capture and the gate is printing into it.
+    let log = load_grace::wait_for(
+        load_grace::Patience::new(GATE_START_PATIENCE),
+        GATE_POLL,
+        || {
+            format!(
+                "the gate never printed: {}",
+                fs::read_to_string(&journal).unwrap_or_default()
+            )
+        },
+        || {
+            let progress = gate_progress::fold(&fs::read_to_string(&journal).ok()?);
+            let log = progress.output?.path;
+            (fs::read_to_string(&log).ok()?.contains("compiling unit 2")).then_some(log)
+        },
+    );
+    fs::write(&quiet, "").unwrap();
+    // Still means two looks one poll apart see the same length.
+    let mut previous = None;
+    load_grace::wait_for(
+        load_grace::Patience::new(GATE_START_PATIENCE),
+        GATE_POLL,
+        || "the gate never went quiet".into(),
+        || {
+            let length = fs::metadata(&log).ok()?.len();
+            let still = previous == Some(length);
+            previous = Some(length);
+            still.then_some(())
+        },
+    );
+
+    let now = chrono::DateTime::parse_from_rfc3339(&stamp(chrono::Utc::now()))
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let interval = PUBLISH_INTERVAL.as_secs() as i64;
+    let quiet_since = now - chrono::Duration::seconds(interval + PAST_THE_INTERVAL);
+    File::options()
+        .write(true)
+        .open(&journal)
+        .unwrap()
+        .set_times(FileTimes::new().set_modified(quiet_since.into()))
+        .unwrap();
+    let status_at = |at: chrono::DateTime<chrono::Utc>| {
+        activity
+            .status(&service.ctx().clock(Clock::Fixed(stamp(at))))
+            .unwrap()
+    };
+    let status = status_at(now);
+    assert_eq!(
+        status.silence_seconds,
+        Some((interval + PAST_THE_INTERVAL) as u64),
+        "the journal is quiet beyond the interval: {status:?}"
+    );
+    assert!(
+        status
+            .output_silence_seconds
+            .is_some_and(|age| age <= interval as u64),
+        "{status:?}"
+    );
+    assert_eq!(status.warning, None, "a printing gate needs no attention");
+
+    // The same gate, read once its output has been quiet as long, does.
+    let later = status_at(now + chrono::Duration::seconds(interval + PAST_THE_INTERVAL));
+    let warning = later.warning.clone().unwrap_or_default();
+    assert!(
+        warning.contains("no progress evidence") && warning.contains("no gate output"),
+        "{later:?}"
+    );
+
+    fs::write(&release, "").unwrap();
+    let result = gate
+        .wait_with_output_within(load_grace::graced_now(STORY_COMMAND_DEADLINE), || {
+            "the released gate did not finish".into()
+        });
+    let verdict: Value = serde_json::from_slice(&result.stdout)
+        .unwrap_or_else(|error| panic!("{error}: {result:?}"));
+    assert_eq!(verdict["result"], "gate-passed", "{result:?}");
+    fixture.assert_restored();
 }
