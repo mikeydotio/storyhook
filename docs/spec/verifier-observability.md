@@ -55,7 +55,8 @@ a daemon; missing or incompatible runtime status is explicitly unavailable.
 
 Silence exceeding `PUBLISH_INTERVAL` is overdue. Active work uses the modification
 time of a generation-matching journal, including case-only appends. A missing
-journal falls back to ownership acquisition. An unowned queue uses its oldest
+journal falls back to ownership acquisition. Publishing a new owner removes
+the story's previous journal first (SH-776), so before its gate an attempt has none. An unowned queue uses its oldest
 verification entry; an otherwise empty pending request uses its request time.
 Waiting behind a progressing owner is ordinary queueing. Unreadable or mismatched
 evidence is unavailable, not healthy. Timestamps remain UTC on the wire and use
@@ -234,3 +235,65 @@ incident-first precedence and removed UUID/new-failure guards.
 The read-only installed-system inspection workaround remains necessary until a
 containing release is installed and an installed recovery regression validates
 the transition. A source merge does not retire it.
+
+## A new attempt's journal — SH-776
+
+The progress journal is one file per story (`journal_path`), and an attempt
+writes its `run` line only when its gate starts. Until then every new owner
+read its predecessor's journal. Status reported the mismatch as unavailable
+evidence, and the dashboard showed "Central verification needs attention"
+for each resubmission, retry after an infrastructure failure, landing
+recovery and conflict-reconcile hand-over, while nothing was wrong.
+
+Publishing an owner removes the story's journal. `admit` (which
+`try_acquire` wraps) does it only for an allowed admission, and
+`VerificationGuard::replace` does it for a generation transfer. Both do it
+under the registry lock that `status()` and REST `/data` hold while they
+read the journal, so no read sees the new owner beside the old journal.
+Before its gate an attempt therefore reads exactly as a first attempt:
+Running, no current step, evidence from its acquisition. After its gate
+writes the `run` line, a journal that names another attempt is still
+unavailable evidence, because only a foreign writer can put it there. The
+progress publisher reads outside the lock; its `if_current` check discards
+a body prepared for an owner that has changed.
+
+A refused admission removes nothing, so a stopped or halted queue keeps its
+last evidence. A journal that exists but cannot be removed does not refuse
+admission. The daemon journal gets an ERROR naming the path once the lock
+is released, status goes on reporting the journal as unavailable evidence,
+and a gate that cannot write the path fails as a permanent infrastructure
+failure. `acquire` is a test seam and removes nothing.
+
+Rejected (decision D1 on SH-776): reading a journal older than `started_at`
+as absent, which mixes file times with an injectable clock at one-second
+precision and treats the symptom; one journal per attempt, which still
+needs removal and makes every reader without an attempt find its file;
+and writing the `run` line at admission, which changes what
+`last_evidence_at` means before the gate.
+
+**Adopted: the verifier's own submission is not a supersession.** Every
+leased generation is submitted, and the submission links its pull request
+again: a new link, or the same link with a new `linked_at`. Since SH-656
+made `candidate_authority` compare the whole link, the refresh after the
+submission took the verifier's own write for a supersession of the same
+generation. It replaced the admitted attempt before its gate — a new
+attempt id, `retry_origin` cleared, the recovery receipt's attempt
+orphaned — and journaled "superseded and has no outcome authority" for
+every verification. `submit_candidate` now returns the link it recorded,
+read back in the recording transaction, and the tick sets it on the
+in-hand candidate before the refresh. The refresh still re-derives the
+candidate from the store: the verifier's own link compares equal, and any
+other change (another link, a new generation, another checkout) still
+supersedes.
+
+Not included: removing the journals of stories that complete in the tick
+that verified them. That is one small file per story; a cleanup admission
+removes its story's journal.
+
+Tests: `tests/verification_queue/stale_journal.rs` drives each instance
+through the production tick with a gate double that journals like
+`run_verify_pr`, and reads status before the new `run` line;
+`src/daemon/verification/journal_retirement_tests.rs` covers admission,
+refused admission, a journal that cannot be removed, and `replace`;
+`tests/verification_queue/own_submission.rs` covers a new link, a re-link
+and a retry's origin.
