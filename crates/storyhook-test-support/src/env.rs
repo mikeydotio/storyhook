@@ -912,6 +912,96 @@ mod tests {
         );
     }
 
+    /// **A live agent lane's identity does not reach a fixture child.** A
+    /// dispatched lane's pane carries its markers, and every test an agent
+    /// runs there inherits them: the plugin hooks a fixture drives then act
+    /// for that lane, and `STORYHOOK_FULL_AUTO` outranks the
+    /// `STORYHOOK_AUTO` a test sets, which is how
+    /// `tests/continuation_lost_reply.rs` failed in every Full Auto lane
+    /// while the central gate stayed green (SH-781). Named here, not derived,
+    /// because the incident is these four; the derived guard is below. Set
+    /// on the command before `apply`, which is where an inherited value sits.
+    #[test]
+    fn an_inherited_lane_identity_does_not_reach_a_fixture_child() {
+        const LANE: [(&str, &str); 4] = [
+            ("STORYHOOK_FULL_AUTO", "SH-781"),
+            ("STORYHOOK_AUTO", "SH-781"),
+            ("STORYHOOK_DISPATCH", "1"),
+            ("STORYHOOK_CODEX_BOOTSTRAP", "/a/live/lane/storyhook-codex-bootstrap.json"),
+        ];
+        let env = TestEnv::isolated();
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        cmd.envs(LANE);
+        env.apply(&mut cmd);
+        let out = cmd.output().expect("running env(1)");
+        let seen = String::from_utf8_lossy(&out.stdout).into_owned();
+        for (name, _) in LANE {
+            assert!(
+                !seen
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{name}="))),
+                "{name} reached a fixture child, so its hooks act for a live \
+                 lane; it saw:\n{seen}"
+            );
+        }
+    }
+
+    /// **Every removed parameter is removed even when it was inherited.**
+    ///
+    /// `no_real_credential_reaches_a_fixture_child` checks every `Clear`
+    /// parameter's absence, but plants only `GH_TOKEN`, so for the others an
+    /// absence proves nothing when the parent never had one. Derived: a
+    /// `Clear` parameter the table gains is planted here with no edit.
+    #[test]
+    fn every_cleared_parameter_is_removed_even_when_inherited() {
+        let cleared: Vec<&str> = storyhook::env::test_environment::TEST_ENVIRONMENT
+            .iter()
+            .filter(|parameter| parameter.disposition == Disposition::Clear)
+            .map(|parameter| parameter.name)
+            .collect();
+        assert!(
+            !cleared.is_empty(),
+            "the table removes nothing, so this test proves nothing"
+        );
+        let env = TestEnv::isolated();
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        for name in &cleared {
+            cmd.env(name, format!("inherited-{name}"));
+        }
+        env.apply(&mut cmd);
+        let out = cmd.output().expect("running env(1)");
+        let seen = String::from_utf8_lossy(&out.stdout).into_owned();
+        let leaked: Vec<&str> = cleared
+            .iter()
+            .copied()
+            .filter(|name| {
+                seen.lines()
+                    .any(|line| line.starts_with(&format!("{name}=")))
+            })
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "{leaked:?} survived `apply` although the table removes them; it \
+             saw:\n{seen}"
+        );
+    }
+
+    /// A test that drives a hook sets the lane marker after `apply`
+    /// (`tests/continuation_lost_reply.rs` does), and keeps it.
+    #[test]
+    fn a_test_can_still_supply_a_lane_marker_on_purpose() {
+        let env = TestEnv::isolated();
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        env.apply(&mut cmd);
+        cmd.env("STORYHOOK_AUTO", "SH-7");
+        let out = cmd.output().expect("running env(1)");
+        let seen = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            seen.lines().any(|line| line == "STORYHOOK_AUTO=SH-7"),
+            "a deliberate lane marker must survive the removal:\n{seen}"
+        );
+    }
+
     /// A test that installs a fake helper binary on purpose sets it after
     /// `apply` (`tests/block_delivery.rs` does), and keeps it.
     #[test]

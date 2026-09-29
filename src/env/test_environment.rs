@@ -252,6 +252,39 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  writes are recorded as somebody's",
     },
     Parameter {
+        name: "STORYHOOK_FULL_AUTO",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "the story a live Full Auto agent lane is working on, which \
+                 every test that agent runs inherits; a fixture's plugin hooks \
+                 then approve plans, refuse questions and forward handoffs in \
+                 that lane's name, and this marker outranks the STORYHOOK_AUTO \
+                 a test sets",
+    },
+    Parameter {
+        name: "STORYHOOK_AUTO",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "the same, for an agent lane started by an ordinary autonomous \
+                 dispatch",
+    },
+    Parameter {
+        name: "STORYHOOK_DISPATCH",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "marks a dispatched agent session; inherited, a fixture's \
+                 session hooks take that session's deadlines instead of the \
+                 ones an ordinary session gets",
+    },
+    Parameter {
+        name: "STORYHOOK_CODEX_BOOTSTRAP",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "a live Codex lane's pending start-up request; inherited, a \
+                 fixture's session hooks answer that lane's start-up in place \
+                 of their own session's",
+    },
+    Parameter {
         name: "STORYHOOK_ALLOW_TEMP_PROJECT",
         disposition: Disposition::Clear,
         scope: Scope::Anywhere,
