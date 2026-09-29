@@ -383,9 +383,12 @@ impl Parameter {
 /// applies these to a `story` process itself and may therefore also redirect
 /// `HOME`.
 ///
-/// The order is [`TEST_ENVIRONMENT`]'s own, and callers depend on it: the
-/// equality test between this and the shell rendering compares sequences, so a
-/// reordering here is a change both sides have to make.
+/// The order is [`TEST_ENVIRONMENT`]'s own, and callers depend on it:
+/// `storyhook-test-support`'s `isolation_covers_every_parameter_in_the_table`
+/// compares `TestEnv`'s settings with the table as a sequence, and the rendered
+/// recipe in `story help test-environment` follows it. The equality test
+/// against the shell rendering compares by name, so there the shared order is a
+/// convention for readers of the two files, not a check.
 #[must_use]
 pub fn resolve(root: &Path, pid: u32, scope: Scope) -> Vec<Setting> {
     TEST_ENVIRONMENT

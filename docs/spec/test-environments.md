@@ -114,6 +114,41 @@ table mean two things at once.
   neutralize cannot also contain a thing a harness must set —
   `tests/store_isolation.rs` fences those two on their own terms.
 
+### An agent lane's identity is in the table (SH-781)
+
+`story.sh` launches a dispatched agent's pane with its lane's markers:
+`STORYHOOK_FULL_AUTO` (the story a Full Auto lane works on), `STORYHOOK_AUTO`
+(the same for an `--auto` lane), `STORYHOOK_DISPATCH` (always `1`) and
+`STORYHOOK_CODEX_BOOTSTRAP` (a Codex lane's pending start-up request). When that
+agent runs a test, every child inherits them, and the plugin hooks a fixture
+drives read them: `full-auto.sh` approves plans and refuses questions,
+`session_handoff.py` forwards a handoff for the lane's story, `session-start.sh`
+takes a dispatched session's deadline, and `STORYHOOK_FULL_AUTO` outranks the
+`STORYHOOK_AUTO` a test sets. `tests/continuation_lost_reply.rs` failed in every
+Full Auto lane for exactly that reason, while the central gate — whose
+environment starts from `env_clear` — stayed green.
+
+They pass the admission question for the reason `STORYHOOK_ACTIVITY_CONTEXT`
+and `STORYHOOK_ACTOR` do: each is an identity somebody else chose, and a fixture
+that inherits one acts in its name. They are removed, never redirected, because
+no lane id is harmless. A test that drives a hook sets its marker after
+isolation, the way a GitHub test sets a credential after `TestEnv::apply`.
+
+Considered and left out:
+
+- `STORY_BIN` — a harness sets it after isolating (`scripts/run-e2e.sh`), so it
+  stays with the harnesses that put the build on `PATH` (SH-764,
+  `test-tiers.md`).
+- `STORYHOOK_GITHUB_AUTHORITY`, `STORYHOOK_GITHUB_EXPECTED` — not lane identity
+  (a pane gets both empty), set in production by `story.sh` and
+  `github-access.sh`, and removed before any test by `merge-watch.sh` and
+  `github_without_credentials`.
+- `TMUX`, `TMUX_PANE` — tmux's names, not storyhook's. Every table name must
+  pass the dispatch allowlist's `STORY_`/`STORYHOOK_` prefix
+  (`src/env/spawn_env.rs`), which keeps a daemon's inherited pane out of helper
+  work on purpose. The plugin runner removes both per test, and no Rust test
+  reaches a real server through them.
+
 ## How the renderings are kept in agreement
 
 **Behaviourally, never structurally.** The SH-357 doctrine, one language over: a
@@ -147,6 +182,26 @@ can be doing. Setting a single parameter is *pointing* a run somewhere —
 `scripts/merge-watch.sh` names a store for a real, deliberate, non-isolated run.
 Setting two or more is *constructing an environment*, and constructing one by
 hand is what produced six copies that had already drifted.
+
+**Running under the shared isolation counts as calling it** (SH-781). A script
+that sources one already under it — every plugin case sources `lib.sh` — was
+isolated before its first line, so the first rule skips it: what it sets after
+that is an input to the code under test, such as the lane markers the
+full-auto cases export and unset. The resolver reads the two "beside this
+script" spellings this repository uses and ignores every other, so the
+exemption can only shrink. The second rule still binds the harnesses
+themselves.
+
+### The published recipe is a rendering too
+
+`story help test-environment` ends with a shell block a suite in another
+repository can copy. It is built from the table — every parameter a wrapper may
+apply, in table order, then the directories — rather than written out, and
+`tests/test_environment.rs::the_published_shell_recipe_isolates_like_the_table`
+runs it under the same poisoned parent and compares the result with the table.
+The hand-written block it replaced had fallen nine parameters behind, among
+them four GitHub credentials and `STORYHOOK_VERIFIER_AGENT=0`, which keeps a
+fixture from starting a paid provider session (SH-781).
 
 ## The scratch environment
 
