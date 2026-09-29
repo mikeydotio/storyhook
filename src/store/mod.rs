@@ -83,6 +83,7 @@ pub mod sqlite;
 #[cfg(feature = "fault-injection")]
 pub mod test_support;
 pub mod types;
+pub mod verification_batch;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -112,6 +113,10 @@ pub use types::{
     ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
     StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic,
     VerificationFailureDisposition, VerificationIncident, partition_known,
+};
+pub use verification_batch::{
+    BatchExclusion, BatchExclusionReason, BatchGate, BatchId, BatchMember, BatchPhase,
+    BatchPullRequest, VerificationBatch,
 };
 pub use verification_recovery::{
     VerificationAcknowledgementIntent, VerificationAcknowledgementRecord, VerificationAdmission,
@@ -281,6 +286,11 @@ pub trait ReadOps {
     ) -> Result<Vec<ProjectRecoveryObservation>, StoreError>;
     /// Every unresolved external merge authorization across projects.
     fn landing_intents(&self) -> Result<Vec<LandingIntent>, StoreError>;
+    /// This project's verification batches in the order they were recorded.
+    fn verification_batches(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<VerificationBatch>, StoreError>;
     /// Durable context handoffs in creation order.
     fn continuations(&self, project: ProjectId) -> Result<Vec<Continuation>, StoreError>;
     /// Ordered block transition deliveries for a project.
@@ -607,6 +617,23 @@ pub trait WriteOps: ReadOps {
 
     /// Resolves exactly the supplied intent; a stale identity cannot release a newer attempt.
     fn remove_landing_intent(&mut self, intent: &LandingIntent) -> Result<bool, StoreError>;
+    /// Records a new batch at revision zero; a second live batch of one
+    /// project is refused.
+    fn insert_verification_batch(&mut self, batch: &VerificationBatch) -> Result<(), StoreError>;
+    /// Writes the next revision of a batch only if `expected` still owns the
+    /// row and an ended batch keeps its phase; answers whether it was written.
+    fn update_verification_batch(
+        &mut self,
+        batch: &VerificationBatch,
+        expected: i64,
+    ) -> Result<bool, StoreError>;
+    /// Deletes this project's ended, retired batches beyond the newest
+    /// `keep`; answers how many went.
+    fn prune_verification_batches(
+        &mut self,
+        project: ProjectId,
+        keep: usize,
+    ) -> Result<usize, StoreError>;
     /// Inserts generation-bound context intent atomically with its story comment.
     fn insert_continuation(&mut self, record: &Continuation) -> Result<(), StoreError>;
     /// Writes the next revision only if the expected revision still owns the row.

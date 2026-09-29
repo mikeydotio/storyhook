@@ -72,6 +72,7 @@ fn every_supported_lineage_converges_and_reopens_idempotently() {
             "engine_resets",
             "story_resets",
             "dropped_cleanups",
+            "verification_batches",
         ] {
             assert!(
                 conn.prepare(&format!("SELECT * FROM {table}")).is_ok(),

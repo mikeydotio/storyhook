@@ -40,6 +40,7 @@ mod ownership;
 mod project_recovery;
 pub(crate) mod read;
 mod story_reset;
+mod verification_batch;
 pub(crate) mod write;
 
 use std::collections::BTreeMap;
@@ -844,6 +845,12 @@ macro_rules! impl_read_ops {
             fn landing_intents(&self) -> Result<Vec<crate::store::LandingIntent>, StoreError> {
                 landing::read(&self.conn)
             }
+            fn verification_batches(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::VerificationBatch>, StoreError> {
+                verification_batch::list(&self.conn, project)
+            }
             fn continuations(
                 &self,
                 project: ProjectId,
@@ -1147,6 +1154,26 @@ impl WriteOps for SqliteWriteTx<'_> {
         record: &crate::store::Continuation,
     ) -> Result<(), StoreError> {
         continuation::insert(&self.conn, record)
+    }
+    fn insert_verification_batch(
+        &mut self,
+        batch: &crate::store::VerificationBatch,
+    ) -> Result<(), StoreError> {
+        verification_batch::insert(&self.conn, batch)
+    }
+    fn update_verification_batch(
+        &mut self,
+        batch: &crate::store::VerificationBatch,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        verification_batch::update(&self.conn, batch, expected)
+    }
+    fn prune_verification_batches(
+        &mut self,
+        project: ProjectId,
+        keep: usize,
+    ) -> Result<usize, StoreError> {
+        verification_batch::prune(&self.conn, project, keep)
     }
     fn insert_project_recovery(
         &mut self,
