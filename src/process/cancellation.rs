@@ -80,7 +80,9 @@ mod tests {
             .arg(&ready);
         let result = crate::process::run_captured_quiet_cancellable(
             command,
-            storyhook_test_support::STORY_COMMAND_DEADLINE,
+            storyhook_test_support::load_grace::graced_now(
+                storyhook_test_support::STORY_COMMAND_DEADLINE,
+            ),
             || {
                 ready.exists()
                     && std::fs::read_to_string(&ready)
@@ -122,7 +124,7 @@ mod tests {
             let mut leader = 0;
             let result = run_captured_cancellable(
                 command,
-                Duration::from_secs(30),
+                storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
                 TerminationPolicy::TerminateThenKill {
                     grace: Duration::from_millis(100),
                 },
@@ -166,7 +168,7 @@ mod tests {
                 command.args(["-c", "sleep 30"]);
                 run_captured_cancellable(
                     command,
-                    Duration::from_secs(30),
+                    storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
                     TerminationPolicy::Kill,
                     &token,
                     |_| {

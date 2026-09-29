@@ -778,7 +778,7 @@ mod tests {
         command.args(["-c", "exec sleep 30"]);
         let result = run_captured_with_registration(
             command,
-            Duration::from_secs(10),
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(10)),
             TerminationPolicy::Kill,
             |_| Err::<(), _>("registry write refused".into()),
         );
@@ -809,7 +809,7 @@ mod tests {
 
         let captured = run_captured_with_registration(
             command,
-            Duration::from_secs(10),
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(10)),
             TerminationPolicy::Kill,
             |pid| {
                 let deadline = Instant::now() + Duration::from_secs(5);
@@ -902,7 +902,7 @@ mod tests {
     fn answer(bytes: u64, limit: u64) -> Captured {
         match run_captured_answer(
             writes(bytes),
-            ANSWER_DEADLINE,
+            storyhook_test_support::load_grace::graced_now(ANSWER_DEADLINE),
             TerminationPolicy::Kill,
             limit,
         ) {
@@ -934,7 +934,10 @@ mod tests {
         assert_eq!(whole.stdout.len() as u64, large);
         assert!(!whole.stdout_truncated);
 
-        let diagnostic = match run_captured(writes(MAX_CAPTURE_BYTES + 1), ANSWER_DEADLINE) {
+        let diagnostic = match run_captured(
+            writes(MAX_CAPTURE_BYTES + 1),
+            storyhook_test_support::load_grace::graced_now(ANSWER_DEADLINE),
+        ) {
             Ok(captured) => captured,
             Err(error) => panic!("the writer failed: {}", error.detail()),
         };
