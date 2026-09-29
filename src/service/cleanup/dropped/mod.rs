@@ -156,7 +156,7 @@ pub(super) fn run<S: Store>(
     }
     // A receipt cannot transfer deletion authority to a recreated workspace.
     let has_worktree = safety::worktree_present(lease).map_err(refuse)?;
-    let panes = safety::panes(lease).map_err(refuse)?;
+    let panes = safety::panes(ctx.env(), lease).map_err(refuse)?;
     if record.phase == Phase::Removed && (has_worktree || !panes.is_empty()) {
         return Err(issue(
             lease,
@@ -195,7 +195,7 @@ pub(super) fn run<S: Store>(
         }
         safety::validate(ctx, repository, lease, &record.resources, true)?;
         if record.phase == Phase::Prepared {
-            safety::same_pane(lease, &record.resources).map_err(refuse)?;
+            safety::same_pane(ctx.env(), lease, &record.resources).map_err(refuse)?;
         }
         return Ok((has_worktree || !panes.is_empty()).then_some(removal));
     }
@@ -269,13 +269,13 @@ fn execute<S: Store>(
 ) -> Result<(), AppError> {
     let lease = record.lease.clone();
     if record.phase == Phase::Prepared {
-        safety::same_pane(&lease, &record.resources)?;
+        safety::same_pane(ctx.env(), &lease, &record.resources)?;
         record.phase = Phase::Stopping;
         ctx.store().write(|tx| tx.put_dropped_cleanup(record))?;
     }
     if record.phase == Phase::Stopping {
         process::stop(ctx, record, workspace)?;
-        if !safety::panes(&lease)?.is_empty() {
+        if !safety::panes(ctx.env(), &lease)?.is_empty() {
             return Err(AppError::Validation(
                 "dropped story window remains after termination".into(),
             ));
@@ -286,7 +286,7 @@ fn execute<S: Store>(
     identity::validate(&record.paths)?;
     safety::validate(ctx, &lease.repository_path, &lease, &record.resources, true)
         .map_err(|e| AppError::Validation(format!("{}: {}", e.reason, e.detail)))?;
-    if !safety::panes(&lease)?.is_empty() {
+    if !safety::panes(ctx.env(), &lease)?.is_empty() {
         return Err(AppError::Validation(
             "dropped story window reappeared".into(),
         ));
@@ -309,7 +309,7 @@ fn execute<S: Store>(
         )?;
     }
     identity::validate(&record.paths)?;
-    if safety::worktree_present(&lease)? || !safety::panes(&lease)?.is_empty() {
+    if safety::worktree_present(&lease)? || !safety::panes(ctx.env(), &lease)?.is_empty() {
         return Err(AppError::Validation(
             "dropped cleanup postconditions failed: exact window or worktree remains".into(),
         ));

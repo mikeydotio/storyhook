@@ -1156,7 +1156,7 @@ fn dispatch_engine<S: Store>(ctx: &Ctx<'_, S>, action: EngineAction) -> Result<R
             service.adopt(
                 &run_id,
                 &ids,
-                &crate::service::engine::adoption::LiveDispatchInspector,
+                &crate::service::engine::adoption::LiveDispatchInspector::new(ctx.env().clone()),
             )?
         }
         EngineAction::Configure { run, patch } => {

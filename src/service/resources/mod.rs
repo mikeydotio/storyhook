@@ -218,6 +218,7 @@ impl<'a, S: Store> ResourceService<'a, S> {
             }
         }
         let mut report = resolve(
+            self.ctx.env(),
             &project.slug,
             id,
             checkout.as_deref(),
@@ -347,6 +348,7 @@ pub fn validate_lease(lease: &StoryCleanupLease) -> Result<(), AppError> {
 }
 
 fn resolve(
+    env: &crate::env::Environment,
     project: &str,
     id: &str,
     checkout: Option<&Path>,
@@ -501,7 +503,8 @@ fn resolve(
                             ))
                         })?
                         && !git::branch_exists(&repository, &lease.branch)?))
-                && tmux::panes(&lease.tmux.socket_path, &lease_names(&lease, &names))?.is_empty()
+                && tmux::panes(env, &lease.tmux.socket_path, &lease_names(&lease, &names))?
+                    .is_empty()
             {
                 continue;
             }
@@ -705,7 +708,7 @@ fn resolve(
     }
     if let Some(socket) = &report.socket_path {
         names.insert(report.window_name.clone());
-        match tmux::panes(socket, &names) {
+        match tmux::panes(env, socket, &names) {
             Ok(panes) if panes.len() > 1 => {
                 report.status = "ambiguous".into();
                 report.diagnostics.push(format!(

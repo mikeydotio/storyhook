@@ -44,7 +44,7 @@ pub(super) fn validate(
         .arg(report.worktree.as_deref().unwrap_or(Path::new("")));
     let captured = crate::process::run_captured_quiescent(
         guard,
-        crate::service::engine::TMUX_TIMEOUT,
+        env.subprocess_bound(crate::service::engine::TMUX_TIMEOUT),
         crate::process::TerminationPolicy::Kill,
     )
     .map_err(|error| refuse(format!("installed artifact guard: {}", error.detail())))?;
@@ -134,7 +134,7 @@ pub(super) fn remove(
     validate(report, caller, env)?;
     if let Some(socket) = &report.socket_path {
         let names = BTreeSet::from([report.window_name.clone()]);
-        let panes = tmux::panes(socket, &names)?;
+        let panes = tmux::panes(env, socket, &names)?;
         if !panes.is_empty() {
             let expected = report
                 .pane
@@ -158,7 +158,7 @@ pub(super) fn remove(
             }
             let output = crate::process::run_captured_quiescent(
                 command,
-                crate::service::engine::TMUX_TIMEOUT,
+                env.subprocess_bound(crate::service::engine::TMUX_TIMEOUT),
                 crate::process::TerminationPolicy::Kill,
             )
             .map_err(|e| refuse(format!("closing tmux window: {}", e.detail())))?;
@@ -170,7 +170,7 @@ pub(super) fn remove(
                 )));
             }
         }
-        if !tmux::panes(socket, &names)?.is_empty() {
+        if !tmux::panes(env, socket, &names)?.is_empty() {
             return Err(refuse("tmux story window remains"));
         }
     } else if report.pane.is_some() {
@@ -213,7 +213,7 @@ pub(super) fn remove(
         }
     }
     if let Some(socket) = &report.socket_path
-        && !tmux::panes(socket, &BTreeSet::from([report.window_name.clone()]))?.is_empty()
+        && !tmux::panes(env, socket, &BTreeSet::from([report.window_name.clone()]))?.is_empty()
     {
         return Err(refuse("tmux story window reappeared"));
     }

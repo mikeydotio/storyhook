@@ -32,16 +32,25 @@ pub trait DispatchInspector {
     ) -> Result<InspectedDispatch, AppError>;
 }
 
-use crate::env::git_env;
+use crate::env::{Environment, git_env};
 use crate::process::run_captured;
 use crate::store::{EngineLaneRecord, Store};
 use std::process::Command;
 
-use super::{Dispatcher, EngineService, RunId, RunView, WindowProbe};
+use super::{Dispatcher, EngineService, RunId, RunView, TMUX_TIMEOUT, TmuxBudget, WindowProbe};
 
 /// The production inspector, with no mutating subprocess operations.
-#[derive(Default)]
-pub struct LiveDispatchInspector;
+pub struct LiveDispatchInspector {
+    env: Environment,
+}
+
+impl LiveDispatchInspector {
+    /// An inspector whose subprocess bounds come from `env` (SH-836).
+    #[must_use]
+    pub fn new(env: Environment) -> Self {
+        Self { env }
+    }
+}
 
 fn refusal(detail: impl Into<String>) -> AppError {
     AppError::Validation(format!("engine adopt: {}", detail.into()))
@@ -51,13 +60,14 @@ fn capture(
     mut command: Command,
     args: &[&str],
     context: &str,
-    deadline: Option<Instant>,
+    budget: TmuxBudget,
 ) -> Result<String, AppError> {
     command.args(args);
-    let timeout = super::probe_timeout_at(deadline, Instant::now())
+    let timeout = budget
+        .timeout_at(Instant::now())
         .map_err(|detail| refusal(format!("{context}: {detail}")))?;
     let captured = run_captured(command, timeout).map_err(|error| {
-        let budget = if deadline.is_some() {
+        let budget = if budget.is_shared() {
             format!(" (remaining startup probe budget: {timeout:?})")
         } else {
             String::new()
@@ -81,11 +91,12 @@ impl DispatchInspector for LiveDispatchInspector {
         project: &str,
         story: &str,
     ) -> Result<InspectedDispatch, AppError> {
+        let budget = TmuxBudget::new(self.env.subprocess_bound(TMUX_TIMEOUT), None);
         let inventory = capture(
             git_env::command(checkout),
             &["worktree", "list", "--porcelain", "-z"],
             "list registered worktrees",
-            None,
+            budget,
         )?;
         let mut matching = Vec::new();
         for path in inventory
@@ -121,7 +132,7 @@ impl DispatchInspector for LiveDispatchInspector {
         {
             return Err(refusal(format!("{story}: repository mismatch")));
         }
-        inspect_lease(lease, None, OsStr::new("tmux"))
+        inspect_lease(lease, budget, OsStr::new("tmux"))
     }
 }
 
@@ -134,7 +145,7 @@ fn tmux(lease: &StoryCleanupLease, program: &OsStr) -> Command {
 
 fn inspect_lease(
     lease: StoryCleanupLease,
-    deadline: Option<Instant>,
+    budget: TmuxBudget,
     program: &OsStr,
 ) -> Result<InspectedDispatch, AppError> {
     let listing = capture(
@@ -146,7 +157,7 @@ fn inspect_lease(
             "#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_dead}\t#{window_id}\t#{pane_current_path}\t#{@storyhook-agent}\t#{pane_active}",
         ],
         "inspect leased tmux server",
-        deadline,
+        budget,
     )?;
     let rows: Vec<Vec<&str>> = listing
         .lines()
@@ -229,17 +240,13 @@ fn inspect_lease(
 }
 
 /// Observes an adopted process on its captured server, never an ambient server.
-pub(super) fn probe(
-    lane: &EngineLaneRecord,
-    deadline: Option<Instant>,
-    program: &OsStr,
-) -> WindowProbe {
+pub(super) fn probe(lane: &EngineLaneRecord, budget: TmuxBudget, program: &OsStr) -> WindowProbe {
     let Some(lease) = lane.cleanup_lease.clone() else {
         return WindowProbe::Unanswered {
             detail: "adopted lane lost cleanup lease".into(),
         };
     };
-    match inspect_lease(lease, deadline, program) {
+    match inspect_lease(lease, budget, program) {
         Ok(found)
             if lane.pane_id.as_deref() == Some(&found.pane_id)
                 && lane.adopted_identity.as_ref() == Some(&found.identity) =>
@@ -254,7 +261,7 @@ pub(super) fn probe(
                     "#{window_activity}",
                 ],
                 "read pane activity",
-                deadline,
+                budget,
             );
             match activity {
                 Ok(at) => WindowProbe::Alive {

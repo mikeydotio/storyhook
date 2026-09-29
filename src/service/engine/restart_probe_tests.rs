@@ -56,17 +56,15 @@ fn expired_restart_budget_never_starts_regular_or_adopted_probes() {
 #[test]
 fn restart_probe_allowance_is_remaining_time_capped_at_tmux_timeout() {
     let now = Instant::now();
-    assert_eq!(probe_timeout_at(None, now).unwrap(), TMUX_TIMEOUT);
+    let within = |deadline| TmuxBudget::new(TMUX_TIMEOUT, deadline).timeout_at(now);
+    assert_eq!(within(None).unwrap(), TMUX_TIMEOUT);
+    assert_eq!(within(Some(now + TMUX_TIMEOUT * 2)).unwrap(), TMUX_TIMEOUT);
     assert_eq!(
-        probe_timeout_at(Some(now + TMUX_TIMEOUT * 2), now).unwrap(),
-        TMUX_TIMEOUT
-    );
-    assert_eq!(
-        probe_timeout_at(Some(now + TMUX_TIMEOUT / 4), now).unwrap(),
+        within(Some(now + TMUX_TIMEOUT / 4)).unwrap(),
         TMUX_TIMEOUT / 4
     );
-    assert!(probe_timeout_at(Some(now), now).is_err());
-    assert!(probe_timeout_at(Some(now - TMUX_TIMEOUT), now).is_err());
+    assert!(within(Some(now)).is_err());
+    assert!(within(Some(now - TMUX_TIMEOUT)).is_err());
     assert!(TMUX_TIMEOUT < crate::daemon::lifecycle::SPAWN_DEADLINE);
 }
 

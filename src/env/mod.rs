@@ -385,6 +385,18 @@ impl Environment {
         self.busy_timeout
     }
 
+    /// The bound one production subprocess call gets, given the production
+    /// value its call site names.
+    ///
+    /// Every production site that holds a subprocess to a bound a lib test
+    /// can reach reads it here rather than naming the constant alone
+    /// (SH-836): `TMUX_TIMEOUT` for tmux clients and the tmux-sized guards,
+    /// `TRACKED_CHECK_DEADLINE` for the journal hygiene `git`. Call it at the
+    /// capture, after any early return that spawns nothing.
+    pub(crate) fn subprocess_bound(&self, production: Duration) -> Duration {
+        production
+    }
+
     /// The store's database file, canonicalized.
     pub fn store_path(&self) -> &Path {
         self.store.path()

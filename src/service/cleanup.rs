@@ -303,7 +303,7 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                     // guard exists to refuse exactly that clone; passing the
                     // lease's own path here would make the guard compare a
                     // value against itself (SH-653).
-                    clean_candidate(&repository, &lease, dry_run)
+                    clean_candidate(self.ctx.env(), &repository, &lease, dry_run)
                 }
                 Ok(report) => Err(CleanupSkip {
                     story_id: lease.story_id.clone(),
@@ -509,6 +509,7 @@ fn discover_worktree_markers(
 }
 
 fn clean_candidate(
+    env: &crate::env::Environment,
     repository: &Path,
     lease: &StoryCleanupLease,
     dry_run: bool,
@@ -578,7 +579,7 @@ fn clean_candidate(
         ));
     }
 
-    ensure_window_absent(lease).map_err(|detail| refuse("tmux-window-open", detail))?;
+    ensure_window_absent(env, lease).map_err(|detail| refuse("tmux-window-open", detail))?;
     let observation = crate::github_access::OriginObservation::resolve(repository)
         .map_err(|error| refuse("default-branch-unverifiable", error.to_string()))?;
     let default_branch = observed_default_branch(&observation)
@@ -688,9 +689,12 @@ fn clean_candidate(
     })
 }
 
-fn ensure_window_absent(lease: &StoryCleanupLease) -> Result<(), String> {
+fn ensure_window_absent(
+    env: &crate::env::Environment,
+    lease: &StoryCleanupLease,
+) -> Result<(), String> {
     let names = super::resources::lease_names(lease, &BTreeSet::new());
-    let panes = super::resources::tmux::panes(&lease.tmux.socket_path, &names)
+    let panes = super::resources::tmux::panes(env, &lease.tmux.socket_path, &names)
         .map_err(|e| format!("cannot prove tmux window absence: {e}"))?;
     if panes.is_empty() {
         Ok(())
@@ -826,6 +830,10 @@ mod tests {
         fn root(&self) -> &Path {
             self.workspace.root.path()
         }
+
+        fn env(&self) -> crate::env::Environment {
+            crate::env::Environment::at(self.root())
+        }
     }
 
     fn facts(superstate: SuperState, marker: Option<ReapMarker>) -> StoryFacts {
@@ -895,7 +903,7 @@ mod tests {
     fn merged_inactive_story_removes_the_worktree_and_local_branch_and_never_the_remote() {
         let repo = Repo::new(true);
         assert!(repo.workspace.origin_has_branch(), "fixture control");
-        let removal = clean_candidate(&repo.checkout, &repo.lease, false).unwrap();
+        let removal = clean_candidate(&repo.env(), &repo.checkout, &repo.lease, false).unwrap();
         assert!(removal.removed_worktree);
         assert!(removal.removed_local_branch);
         assert!(removal.reclaimed_bytes >= 4096);
@@ -906,7 +914,7 @@ mod tests {
             "the remote branch is the verifier's merge step's to delete, never cleanup's"
         );
 
-        let retry = clean_candidate(&repo.checkout, &repo.lease, false).unwrap();
+        let retry = clean_candidate(&repo.env(), &repo.checkout, &repo.lease, false).unwrap();
         assert!(!retry.removed_worktree);
         assert!(!retry.removed_local_branch);
     }
@@ -914,13 +922,15 @@ mod tests {
     #[test]
     fn unmerged_or_dirty_work_is_preserved() {
         let unmerged = Repo::new(false);
-        let refusal = clean_candidate(&unmerged.checkout, &unmerged.lease, false).unwrap_err();
+        let refusal = clean_candidate(&unmerged.env(), &unmerged.checkout, &unmerged.lease, false)
+            .unwrap_err();
         assert_eq!(refusal.reason, "unmerged-work");
         assert!(unmerged.worktree.exists());
 
         let dirty = Repo::new(true);
         fs::write(dirty.worktree.join("uncommitted"), "mine").unwrap();
-        let refusal = clean_candidate(&dirty.checkout, &dirty.lease, false).unwrap_err();
+        let refusal =
+            clean_candidate(&dirty.env(), &dirty.checkout, &dirty.lease, false).unwrap_err();
         assert_eq!(refusal.reason, "dirty-worktree");
         assert!(dirty.worktree.exists());
     }
@@ -928,7 +938,7 @@ mod tests {
     #[test]
     fn dry_run_reports_bytes_without_removing_anything() {
         let repo = Repo::new(true);
-        let removal = clean_candidate(&repo.checkout, &repo.lease, true).unwrap();
+        let removal = clean_candidate(&repo.env(), &repo.checkout, &repo.lease, true).unwrap();
         assert!(removal.reclaimed_bytes >= 4096);
         assert!(repo.worktree.exists());
         assert!(repo.workspace.local_branch_exists());
@@ -946,7 +956,8 @@ mod tests {
             ],
         )
         .unwrap();
-        let refusal = clean_candidate(&locked.checkout, &locked.lease, false).unwrap_err();
+        let refusal =
+            clean_candidate(&locked.env(), &locked.checkout, &locked.lease, false).unwrap_err();
         assert_eq!(refusal.reason, "locked-worktree");
 
         let divergent = Repo::new(true);
@@ -968,7 +979,13 @@ mod tests {
         // Nothing on the remote can be lost by a tool that never writes it:
         // the local worktree and branch are reachable from the default branch
         // and go; the remote-only commit stays exactly where it was pushed.
-        let removal = clean_candidate(&divergent.checkout, &divergent.lease, false).unwrap();
+        let removal = clean_candidate(
+            &divergent.env(),
+            &divergent.checkout,
+            &divergent.lease,
+            false,
+        )
+        .unwrap();
         assert!(removal.removed_worktree);
         assert!(!divergent.worktree.exists());
         assert!(divergent.workspace.origin_has_branch());
@@ -1007,13 +1024,13 @@ mod tests {
         let repo = Repo::new(true);
         let mut mismatched = repo.lease.clone();
         mismatched.branch = "different-branch".into();
-        let refusal = clean_candidate(&repo.checkout, &mismatched, false).unwrap_err();
+        let refusal = clean_candidate(&repo.env(), &repo.checkout, &mismatched, false).unwrap_err();
         assert_eq!(refusal.reason, "worktree-mismatch");
 
         let mut protected = repo.lease.clone();
         protected.worktree_path = repo.root().join("already-absent");
         protected.branch = "dev".into();
-        let refusal = clean_candidate(&repo.checkout, &protected, false).unwrap_err();
+        let refusal = clean_candidate(&repo.env(), &repo.checkout, &protected, false).unwrap_err();
         assert_eq!(refusal.reason, "protected-branch");
     }
 
@@ -1035,7 +1052,7 @@ mod tests {
         let mut protected = repo.lease.clone();
         protected.worktree_path = repo.root().join("already-absent");
         protected.branch = "dev".into();
-        let refusal = clean_candidate(&repo.checkout, &protected, false).unwrap_err();
+        let refusal = clean_candidate(&repo.env(), &repo.checkout, &protected, false).unwrap_err();
         assert_eq!(refusal.reason, "protected-branch");
     }
 
@@ -1049,7 +1066,7 @@ mod tests {
         run_git(&origin, &["update-ref", "--no-deref", "HEAD", &tip]).unwrap();
         let mut lease = repo.lease.clone();
         lease.worktree_path = repo.root().join("already-absent");
-        let refusal = clean_candidate(&repo.checkout, &lease, false).unwrap_err();
+        let refusal = clean_candidate(&repo.env(), &repo.checkout, &lease, false).unwrap_err();
         assert_eq!(refusal.reason, "default-branch-unverifiable");
         assert!(
             refusal.detail.contains("no symbolic HEAD"),
@@ -1113,7 +1130,7 @@ mod tests {
         assert!(started.success());
         let mut lease = repo.lease.clone();
         lease.tmux.socket_path = socket.clone();
-        let other_window = ensure_window_absent(&lease);
+        let other_window = ensure_window_absent(&repo.env(), &lease);
         let created = Command::new("tmux")
             .args([
                 "-S",
@@ -1125,7 +1142,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(created.success());
-        let exact_window = ensure_window_absent(&lease);
+        let exact_window = ensure_window_absent(&repo.env(), &lease);
         let _ = Command::new("tmux")
             .args(["-S", socket_text.as_ref(), "kill-server"])
             .status();
@@ -1136,7 +1153,7 @@ mod tests {
         fs::remove_file(&socket).unwrap();
         fs::write(&socket, "not a tmux socket").unwrap();
         assert!(
-            ensure_window_absent(&lease)
+            ensure_window_absent(&repo.env(), &lease)
                 .unwrap_err()
                 .contains("cannot prove tmux window absence")
         );

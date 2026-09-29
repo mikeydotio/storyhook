@@ -54,7 +54,7 @@ pub(super) fn stop<S: Store>(
     workspace: &WorkspaceLock,
 ) -> Result<(), AppError> {
     let Some(pane) = &record.resources.pane else {
-        return super::safety::same_pane(&record.lease, &record.resources);
+        return super::safety::same_pane(ctx.env(), &record.lease, &record.resources);
     };
     let start = record
         .process_start

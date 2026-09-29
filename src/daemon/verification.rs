@@ -1630,6 +1630,7 @@ impl VerificationActuator for ShellVerificationActuator {
             };
         };
         crate::service::resources::tmux::probe_story_panes(
+            &self.env,
             &lease.tmux.socket_path,
             &crate::service::resources::lease_names(lease, &BTreeSet::new()),
             cancellation,

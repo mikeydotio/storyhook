@@ -3,8 +3,10 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
+use crate::env::Environment;
 use crate::error::AppError;
 use crate::process::run_captured;
+use crate::service::engine::TMUX_TIMEOUT;
 use serde::{Deserialize, Serialize};
 
 /// One server-local pane belonging to an exact named window.
@@ -26,20 +28,27 @@ pub struct ResourcePane {
     pub cwd: std::path::PathBuf,
 }
 
-/// Inspects a recorded server, retaining duplicate-window evidence.
-pub fn panes(socket: &Path, names: &BTreeSet<String>) -> Result<Vec<ResourcePane>, AppError> {
-    inventory(socket, names, true)
+/// Inspects a recorded server, retaining duplicate-window evidence. `env`
+/// gives the tmux client its bound.
+pub fn panes(
+    env: &Environment,
+    socket: &Path,
+    names: &BTreeSet<String>,
+) -> Result<Vec<ResourcePane>, AppError> {
+    inventory(env, socket, names, true)
 }
 
 /// Inspects every pane so cleanup never hides another pane behind the active one.
 pub(crate) fn all_panes(
+    env: &Environment,
     socket: &Path,
     names: &BTreeSet<String>,
 ) -> Result<Vec<ResourcePane>, AppError> {
-    inventory(socket, names, false)
+    inventory(env, socket, names, false)
 }
 
 fn inventory(
+    env: &Environment,
     socket: &Path,
     names: &BTreeSet<String>,
     active_only: bool,
@@ -58,7 +67,7 @@ fn inventory(
     crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
     // ASCII locales make tmux replace tabs with underscores unless UTF-8 is explicit.
     command.args(["-u", "-S"]).arg(socket).args(["list-panes", "-a", "-F", "#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-agent}\t#{pane_active}\t#{pane_current_path}"]);
-    let output = run_captured(command, super::super::engine::TMUX_TIMEOUT)
+    let output = run_captured(command, env.subprocess_bound(TMUX_TIMEOUT))
         .map_err(|e| AppError::Validation(format!("tmux {}: {}", socket.display(), e.detail())))?;
     if !output.status.success() {
         let diagnostic = String::from_utf8_lossy(&output.stderr);
@@ -139,6 +148,7 @@ pub(crate) const HOLD_PROBE_FORMAT: &str = "#{pane_id}\t#{window_name}\t#{pane_p
 /// - **Unanswered** when tmux cannot be asked, or a pane runs something else
 ///   (the identity pattern is this daemon's, not the pane's own record).
 pub(crate) fn probe_story_panes(
+    env: &Environment,
     socket: &Path,
     names: &BTreeSet<String>,
     cancellation: &crate::process::Cancellation,
@@ -166,7 +176,7 @@ pub(crate) fn probe_story_panes(
         .args(["list-panes", "-a", "-F", HOLD_PROBE_FORMAT]);
     let output = match crate::process::run_captured_cancellable(
         command,
-        super::super::engine::TMUX_TIMEOUT,
+        env.subprocess_bound(TMUX_TIMEOUT),
         crate::process::TerminationPolicy::Kill,
         cancellation,
         |_| Ok(()),
@@ -380,6 +390,7 @@ mod tests {
         let root = storyhook_test_support::scratch_dir();
         assert!(matches!(
             probe_story_panes(
+                &Environment::at(root.path()),
                 &root.path().join("absent"),
                 &names(),
                 &crate::process::Cancellation::default()
