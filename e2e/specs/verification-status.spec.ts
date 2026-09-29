@@ -19,6 +19,7 @@ const QUEUED_TITLE = "SH-549 queued high priority";
 const STARTING_TITLE = "SH-549 active starting";
 const RESUBMITTED_TITLE = "SH-603 resubmitted generation";
 const MOVED_TITLE = "SH-549 moved out of verifying";
+const BATCHED_TITLE = "SH-832 batch member";
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
@@ -41,6 +42,13 @@ type Verification =
       elapsed_seconds: number;
       current_step?: { label: string; elapsed_seconds: number };
       tests?: { completed: number; total: number };
+    }
+  | {
+      status: "running";
+      elapsed_seconds: number;
+      batch?: string;
+      head: string;
+      phase: string;
     };
 
 async function injectVerificationCards(page: Page, slug: string): Promise<void> {
@@ -105,6 +113,18 @@ async function injectVerificationCards(page: Page, slug: string): Promise<void> 
           title: STARTING_TITLE,
           priority: "medium",
           verification: { status: "running", elapsed_seconds: 3 },
+        },
+        {
+          id: "SH-94909",
+          title: BATCHED_TITLE,
+          priority: "medium",
+          verification: {
+            status: "running",
+            elapsed_seconds: 30,
+            batch: "0123456789ab",
+            head: "SH-94901",
+            phase: "gating",
+          },
         },
         {
           id: "SH-94904",
@@ -184,6 +204,13 @@ test("cards distinguish active ownership from priority-sorted waiting work", asy
     "aria-label",
     /Resubmitted · generation 123 reserved · generation 120 still running · 7m \d+s elapsed · \d+s waiting$/,
   );
+  // A member of the running batch (SH-832, B9) names the batch and its head
+  // rather than a gate step of its own.
+  const batched = card(page, BATCHED_TITLE);
+  await expect(batched.locator(".verification-chip")).toHaveText(
+    "Verifying in batch 0123456789ab with SH-94901 · gating",
+  );
+  await expect(batched.locator(".verification-chip")).toHaveClass(/verification-chip-running/);
   const moved = page.locator('.column[data-state="todo"] .card', { hasText: MOVED_TITLE });
   await expect(moved.locator(".verification-chip")).toHaveCount(0);
   await expect(moved).not.toHaveAttribute("aria-label", /Queued/);

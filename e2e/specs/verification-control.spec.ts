@@ -183,6 +183,50 @@ test("a batch preview reads as activity in its column, not as attention", async 
   await expect(page.locator("#verification-banner-region")).toBeHidden();
 });
 
+test("a running verification batch reads as activity in its column, not as attention", async ({ page, request }) => {
+  const slug = await projectSlug(request, "Alpha Project");
+  let batch: Record<string, unknown> = {
+    id: "0123456789ab",
+    head: "ALPHA-7",
+    members: ["ALPHA-7", "ALPHA-8", "ALPHA-9"],
+    phase: "gating",
+  };
+  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.verification_incident = null;
+    data.verification_control = { state: "running" };
+    data.verifier = {
+      ...data.verifier,
+      control: "running",
+      warning: null,
+      reservation: null,
+      recovery: { acknowledgement: null, request: null },
+      batch,
+      batch_preview: {
+        computed_at: "2026-01-01T00:00:00Z",
+        head: "ALPHA-7",
+        cap: 3,
+        queue_depth: 3,
+        outcome: "batch",
+        members: [{ story_id: "ALPHA-7", commit: "a".repeat(40) }],
+        excluded: [],
+      },
+    };
+    await route.fulfill({ response, json: data });
+  });
+  await page.reload();
+  const status = page.locator('.column[data-state="verifying"] .verification-control-status');
+  await expect(status).toBeVisible();
+  await expect(status).toHaveText("Verification batch 0123456789ab running: ALPHA-7, ALPHA-8, ALPHA-9 · gating");
+  await expect(page.locator("#verification-banner-region")).toBeHidden();
+
+  batch = { head: "ALPHA-7", members: ["ALPHA-7", "ALPHA-8"], phase: "selected" };
+  await page.reload();
+  await expect(status).toHaveText("Verification batch (forming) running: ALPHA-7, ALPHA-8 · selected");
+  await expect(page.locator("#verification-banner-region")).toBeHidden();
+});
+
 test("a reserved verifier reads as activity in its column, not as attention", async ({ page, request }) => {
   const slug = await projectSlug(request, "Alpha Project");
   let mode = "running";
