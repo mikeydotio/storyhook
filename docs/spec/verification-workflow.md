@@ -367,10 +367,16 @@ For example, commit `ci/gate.sh` and configure `[verify] gate = "bash ci/gate.sh
 #!/usr/bin/env bash
 set -euo pipefail
 : "${STORYHOOK_GATE_RECEIPT:?Run this gate through the StoryHook verifier}"
+progress() { "${STORYHOOK_GATE_PROGRESS_WRITER:-true}" "$@"; }
 "$STORYHOOK_GATE_RECEIPT" preflight
+progress leg start tests
 cargo test --workspace # Replace with this project's complete required checks.
+progress leg pass tests
 "$STORYHOOK_GATE_RECEIPT" postlude gate
 ```
+
+The `progress` lines are optional (SH-777, below): they give the story a
+checklist and renew the verifier's silence ceiling at each leg.
 
 The postlude must be reached only after every required check succeeds. Use
 `full` only when the project's full tier actually ran. Shell quoting belongs
@@ -543,9 +549,13 @@ the SH-136 rule); the invariant here is only that it **survives**.
 ### What the verifier cannot do, stated rather than glossed
 
 - It **lands** only a project whose gate explicitly certifies its tree.
-  SH-665 supplies the portable writer to every project, but a bare test
-  command that exits zero still certifies nothing. Projects must integrate
-  the preflight and successful postlude described above.
+  SH-665 supplies the portable receipt writer to every project, but a bare
+  test command that exits zero still certifies nothing. Projects must
+  integrate the preflight and successful postlude described above.
+- It **stops** a gate that adds no progress-journal line for
+  `GATE_SILENCE_CEILING` (1746 s), however much the gate prints. A project
+  gate renews the ceiling through the SH-777 progress writer; one that never
+  calls it must finish within the ceiling.
 - It runs the gate tier, never the release tier, and so cannot find what only
   the browser suite finds (SH-416, SH-418, SH-622 are the precedents); the
   `browser-watch.sh` poller is what runs `make test-full` between releases.
@@ -1050,9 +1060,12 @@ the gate is `make test`, whose own preflight discards the outer one.
   (`pr_link.rs`): the actuator has no store handle, and the checkout is
   already trusted for `scripts/verify-pr.sh` itself — a registered top level,
   read root-only, never climbing.
-- A gate that emits no `gate-progress.sh` journal lines runs under
-  `VERIFICATION_IDLE_TIMEOUT`'s silence cap alone (derived from the default
-  gate's measured contended runtime); `make test` renews it per leg.
+- A gate that emits no journal lines runs under the gate lock's silence
+  ceiling alone (`GATE_SILENCE_CEILING`, 1746 s from the gate's start,
+  derived from the default gate's measured contended runtime; the outer
+  `VERIFICATION_IDLE_TIMEOUT` is one recovery wake longer). `make test`
+  renews it per leg; since SH-777 a project gate renews it through the
+  bundled progress writer.
 - SH-654 ships the verifier scripts with storyhook, so any registered
   checkout is verified; the receipt contract is then the honest boundary of
   "configurable" for a foreign project until SH-665 gives its gate a writer
@@ -1147,6 +1160,58 @@ project-local receipts, and successful worktree restoration. Existing push,
 merge, and lease tests exercise the same extracted core through its original
 wrapper. The bundle dependency fence derives the new transitive dependencies
 from the production scripts.
+
+### SH-777 — a portable progress writer, and output as activity
+
+A project gate had no documented way to report progress, so every healthy
+run of one read as silence: `story verifier status`, load-context and the
+dashboard warned "no progress evidence" after `PUBLISH_INTERVAL` (60 s)
+while the gate log grew, and a quiet leg longer than the silence ceiling
+was stopped as an infrastructure failure whose detail named neither cause
+nor remedy (moshtail MT-22, 2026-09-25).
+
+**The writer.** `scripts/gate-progress-writer.py` ships in the bundle, and
+`merge-watch.sh` supplies it to every gate as
+`STORYHOOK_GATE_PROGRESS_WRITER`, beside the receipt writer. `leg
+start|pass|fail|skip <leg>` writes the item `release gate/<leg>`; `case <leg>
+pass|fail` counts one test in it. Every row is below `release gate/`, so a
+gate cannot address the rows `reached_verification_gate` reads. A leg that
+is not strict UTF-8, holds a control character, has an empty segment or
+exceeds 256 bytes is refused (exit 2) and nothing is written, because one
+bad byte fails the daemon's read of the whole journal. It is a no-op with no
+journal (exit 0) and loud when the journal is missing or unwritable (exit 1);
+it never creates one. `story help project-settings` is the contract.
+
+**The kill rule does not change** (decision D1 on SH-777). Journal growth
+stays the only thing that renews supervision: SH-536's argument — liveness
+is insufficient for a holder, and there is no total runtime cap — applies
+to a gate that loops and prints as much as to one that hangs silently. The
+writer is the renewal a project gate controls.
+
+**Output is activity for status** (decision D2). The status reads the
+attempt's authenticated output observation (SH-713) through
+`OutputObserver::peek`, which never moves the publisher's baseline, and
+warns only when the journal and the gate log both stayed quiet beyond
+`PUBLISH_INTERVAL`. `output_silence_seconds` is a separate field; the
+progress comment is unchanged.
+
+**A silence stop explains itself** (decision D5). `machine-lock.sh` appends
+`{"kind":"watchdog","lock","idle","ceiling"}` before it signals; the fold
+reads it leniently, and `run_verify_pr` adds cause and remedy
+(`gate_progress::SILENCE_REMEDY`) to the attempt's infrastructure failure on
+every path: the trap's verdict, a verifier killed before it answered, and
+the outer deadline.
+
+**Limit.** The stop stays retryable, so a gate that is always too quiet is
+retried on the bounded cadence (about three silence ceilings) before the
+queue halts for an operator.
+
+Tests: `tests/portable_progress.rs` (the writer through the bundled
+merge-watch, its verb and refusal tables, parallel appends, a real
+uninstrumented gate under `verify-pr.sh --run-gate` keeping status quiet,
+and the watchdog rule under the real gate lock), `tests/verification_queue/
+output_status.rs`, `tests/verification_progress_timeout.rs`,
+`tests/machine_lock.rs`.
 
 ### SH-655 — D-B's "D14's lane budget bounds agents" was not true
 

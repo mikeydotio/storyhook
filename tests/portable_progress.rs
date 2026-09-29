@@ -269,6 +269,13 @@ fn a_call_the_writer_cannot_record_safely_writes_nothing() {
         }
         assert_eq!(fs::read(&journal).unwrap(), before, "{why}");
     }
+    // The help topic states the same limit the writer enforces.
+    let help = storyhook::help_topics::get_help_topic("project-settings").unwrap();
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        help.contains(&format!("longer than {LEG_LIMIT} bytes")),
+        "{help}"
+    );
     // The limit itself is accepted, in bytes as well as in characters.
     for leg in ["a".repeat(LEG_LIMIT), "é".repeat(LEG_LIMIT / 2)] {
         success(write(
