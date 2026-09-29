@@ -15,6 +15,10 @@ pub mod landing;
 /// batch records.
 pub mod gate_verdict;
 
+/// Bisection of a red verification batch over prefixes of its merge chain
+/// (SH-833).
+pub mod prefix_bisection;
+
 /// Validates one provider-defined model or effort token before it crosses a
 /// persistence or process boundary.
 ///
