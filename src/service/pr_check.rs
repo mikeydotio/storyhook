@@ -22,7 +22,7 @@ use crate::domain::{
 use crate::error::AppError;
 use crate::github::api::{GithubApi, GithubApiFactory};
 use crate::output::Response;
-use crate::store::{ExpectedSeq, PrLink, ReadOps, Store, StoreError, StoryNo};
+use crate::store::{ExpectedSeq, PrLink, ProjectId, ReadOps, Store, StoreError, StoryNo};
 
 use super::github::RealGithubApiFactory;
 use super::pr_link::PrLinkService;
@@ -111,6 +111,9 @@ pub fn run_check<S: Store>(
     let mut closed_without_merging: Vec<String> = Vec::new();
     let mut closed_stories: Vec<String> = Vec::new();
     let mut left_verifying: Vec<String> = Vec::new();
+    // Stories whose pending landing intent leaves the observation to the
+    // verifier's completion (SH-832 D7).
+    let mut landing: Vec<String> = Vec::new();
     // Per-link GitHub API failures, isolated from one another: one
     // repository's error must not stop another repository's links in the
     // same run from being checked. Non-empty at the end turns this call
@@ -143,8 +146,16 @@ pub fn run_check<S: Store>(
         let now = ctx.now();
 
         if status.merged {
-            merged.push(link.url.clone());
-            ctx.write_stories(|tx| {
+            let written = ctx.write_stories(|tx| {
+                // A pending landing intent is the verifier's durable claim on
+                // this merge: its completion records the merge itself, and
+                // any write here would change the link the intent names,
+                // which the store refuses before commit (SH-832 D7). Checked
+                // inside this transaction so a new intent cannot slip in
+                // between the check and the write.
+                if landing_pending(tx, project, story_no)? {
+                    return Ok(false);
+                }
                 let row = tx
                     .story(project, story_no)?
                     .ok_or_else(|| StoreError::NotFound(format!("story {story_no} not found")))?;
@@ -218,11 +229,18 @@ pub fn run_check<S: Store>(
                         ctx.provenance(),
                     )?;
                 }
-                Ok(())
+                Ok(true)
             })?;
+            if written {
+                merged.push(link.url.clone());
+            } else {
+                landing.push(story_no.to_id(&prefix));
+            }
         } else if status.state == "closed" {
-            closed_without_merging.push(link.url.clone());
-            ctx.write_stories(|tx| {
+            let written = ctx.write_stories(|tx| {
+                if landing_pending(tx, project, story_no)? {
+                    return Ok(false);
+                }
                 let row = tx
                     .story(project, story_no)?
                     .ok_or_else(|| StoreError::NotFound(format!("story {story_no} not found")))?;
@@ -240,8 +258,13 @@ pub fn run_check<S: Store>(
                     }],
                     ctx.provenance(),
                 )?;
-                Ok(())
+                Ok(true)
             })?;
+            if written {
+                closed_without_merging.push(link.url.clone());
+            } else {
+                landing.push(story_no.to_id(&prefix));
+            }
         }
         // Still open: nothing changed, so nothing is written. See the design
         // doc's note on `last_checked_at` — persisting "nothing happened" has
@@ -263,6 +286,12 @@ pub fn run_check<S: Store>(
         message.push_str(&format!(
             "\nleft verifying (merged without a verdict): {}",
             left_verifying.join(", ")
+        ));
+    }
+    if !landing.is_empty() {
+        message.push_str(&format!(
+            "\nlanding in progress (the verifier completes it): {}",
+            landing.join(", ")
         ));
     }
     if !skipped.is_empty() {
@@ -288,4 +317,17 @@ pub fn run_check<S: Store>(
     } else {
         AppError::GithubApi(message)
     })
+}
+
+/// Whether `story` has a pending landing intent (single story or batch
+/// member): its merge outcome is the verifier's to record.
+fn landing_pending(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<bool, StoreError> {
+    Ok(tx
+        .landing_intents()?
+        .iter()
+        .any(|intent| intent.project == project && intent.story == story))
 }
