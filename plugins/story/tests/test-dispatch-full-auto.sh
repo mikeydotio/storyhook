@@ -40,6 +40,31 @@ assert_eq "$state" "todo" "invalid Full Auto compositions: story state untouched
 [ ! -d "$repo/.claude/worktrees" ] \
   || fail_test "invalid Full Auto composition created a worktree container"
 
+# SH-837: a Full Auto lane never works a story left for a person. The refusal
+# lands before any claim or resource, for either reserved label, on a resume
+# as well as a first dispatch. Plain --auto -- a person's own choice -- is
+# unaffected.
+for reserved in no-auto human-only; do
+  rid=$(new_story "$repo" "Reserved $reserved")
+  (cd "$repo" && story label "$rid" "$reserved" >/dev/null)
+  for mode in "" --resume; do
+    out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off \
+      bash "$SCRIPT" dispatch "$rid" --auto --full-auto $mode 2>&1)
+    assert_eq "$(jqf "$out" .ok)" "false" "$reserved ${mode:-dispatch}: Full Auto refused"
+    assert_eq "$(jqf "$out" .reason)" "reserved-label" \
+      "$reserved ${mode:-dispatch}: refusal names its reason"
+    assert_contains "$(jqf "$out" .display)" "\`$reserved\`" \
+      "$reserved ${mode:-dispatch}: refusal names the label"
+  done
+  state=$(cd "$repo" && story show "$rid" --json | jq -r '.story.story.state')
+  assert_eq "$state" "todo" "$reserved: Full Auto refusal leaves the story unclaimed"
+done
+[ ! -d "$repo/.claude/worktrees" ] \
+  || fail_test "a reserved-label refusal created a worktree container"
+by_hand=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off \
+  bash "$SCRIPT" dispatch "$rid" --auto 2>&1)
+assert_eq "$(jqf "$by_hand" .ok)" "true" "reserved story: an ordinary --auto dispatch still works"
+
 # The per-window marker matrix is total and unambiguous. Empty values actively
 # contain a tmux session environment inherited from an earlier lane.
 attended=$(dry)

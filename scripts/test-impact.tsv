@@ -90,6 +90,7 @@ engine_adoption	src/service/engine/adoption.rs
 engine_adoption	src/store/schema/0040_engine_adoption.sql
 engine_adoption_identity	src/service/cleanup_lease.rs
 engine_adoption_identity	src/service/engine/adoption.rs
+engine_labels	plugins/story/bin/story.sh
 engine_reconcile	:(glob)**/*
 engine_reset	src/service/engine.rs
 engine_reset	src/service/engine/reset.rs

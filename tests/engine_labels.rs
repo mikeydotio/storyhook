@@ -478,3 +478,40 @@ fn the_label_topic_says_human_only_does_not_block() {
         "`story help label` must state that `{LABEL_HUMAN_ONLY}` leaves a story ready"
     );
 }
+
+/// SH-837 — `story.sh dispatch --full-auto` refuses a story that carries a
+/// reserved label, and a bash script cannot call `domain::reserved_label`,
+/// so it declares the names once itself. This pins that declaration to
+/// [`RESERVED_LABELS`] as a set: a rename that reaches Rust but not the
+/// script would let a Full Auto lane work a story left for a person. The
+/// script lists the stricter label first; order is its business.
+#[test]
+fn story_sh_reserves_exactly_the_domain_labels() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/bin/story.sh");
+    let script = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} must be readable: {error}", path.display()));
+    let declarations: Vec<&str> = script
+        .lines()
+        .filter_map(|line| line.strip_prefix("RESERVED_LABELS_JSON="))
+        .collect();
+    assert_eq!(
+        declarations.len(),
+        1,
+        "story.sh must declare RESERVED_LABELS_JSON exactly once: {declarations:?}"
+    );
+    let literal = declarations[0]
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+        .expect("RESERVED_LABELS_JSON is one single-quoted JSON literal");
+    let mut declared: Vec<String> =
+        serde_json::from_str(literal).expect("RESERVED_LABELS_JSON is a JSON array of strings");
+    declared.sort();
+    let mut domain: Vec<String> = RESERVED_LABELS.iter().map(ToString::to_string).collect();
+    domain.sort();
+    assert_eq!(declared, domain);
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(literal).unwrap()[0],
+        LABEL_HUMAN_ONLY,
+        "the stricter label comes first, so a story carrying both names it"
+    );
+}
