@@ -6,11 +6,14 @@
 //! gate through `merge-watch.sh`, each verb becomes exactly one checklist line,
 //! a call it cannot record safely writes nothing, and nothing it writes can
 //! touch the verifier's own recovery evidence. A gate that reports nothing
-//! but prints keeps the verifier status quiet, as a real run shows.
+//! but prints keeps the verifier status quiet, as a real run shows. Under
+//! the real gate lock, writer lines renew the silence ceiling and output
+//! alone does not (SH-536, SH-713: the kill rule stays journal growth).
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File, FileTimes};
+use std::io::Write;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -548,4 +551,139 @@ while [ ! -e "$2" ]; do sleep 0.1; done
         .unwrap_or_else(|error| panic!("{error}: {result:?}"));
     assert_eq!(verdict["result"], "gate-passed", "{result:?}");
     fixture.assert_restored();
+}
+
+/// The journal silence the watchdog cases allow before the gate lock stops
+/// the gate: room for one python3 writer start on a loaded machine, graced by
+/// contention when each case begins. The rule is the subject, not speed.
+const WATCHDOG_CEILING: Duration = Duration::from_secs(4);
+
+/// The gate lock's TERM-to-KILL grace in the watchdog cases, long enough for
+/// merge-watch's own trap to restore the poller first.
+const WATCHDOG_CLEANUP_GRACE: Duration = Duration::from_secs(10);
+
+/// How often the startup feeder appends while the merge is being prepared.
+const FEED_INTERVAL: Duration = Duration::from_millis(250);
+
+/// A gate under the real gate lock with a small silence ceiling, the way
+/// `verify-pr.sh` wraps it, run through the bundled `merge-watch.sh`.
+///
+/// Until the gate touches its `started` file (its first statement), a feeder
+/// appends to the journal, so merge preparation under load never counts as
+/// the gate's silence: from then on only the gate's own lines renew the
+/// ceiling (the SH-643 lesson in `tests/machine_lock.rs`).
+fn watched_gate(fixture: &ForeignRepo, ceiling: u64, body: &str) -> (Output, PathBuf) {
+    let journal = journal(fixture);
+    let started = fixture.root.path().join("started");
+    let feeding = {
+        let journal = journal.clone();
+        let started = started.clone();
+        std::thread::spawn(move || {
+            while !started.exists() {
+                let mut file = fs::OpenOptions::new().append(true).open(&journal).unwrap();
+                file.write_all(
+                    b"{\"kind\":\"item\",\"path\":\"release gate/fixture-feeder\",\"status\":\"running\"}\n",
+                )
+                .unwrap();
+                std::thread::sleep(FEED_INTERVAL);
+            }
+        })
+    };
+    let mut command = fixture.command("machine-lock.sh", &fixture.repo);
+    command.env("STORYHOOK_GATE_PROGRESS", &journal).args([
+        "--max-idle",
+        &ceiling.to_string(),
+        "--termination-grace",
+        &WATCHDOG_CLEANUP_GRACE.as_secs().to_string(),
+        "gate",
+        "--",
+        "bash",
+        fixture.bundle.join("merge-watch.sh").to_str().unwrap(),
+        "--speculative-run",
+        &fixture.tree,
+        &fixture.base,
+        &fixture.head,
+        fixture.poller.to_str().unwrap(),
+        "--",
+        "bash",
+        "-eu",
+        "-c",
+        body,
+        "foreign-gate",
+        started.to_str().unwrap(),
+    ]);
+    let result = output(&mut command);
+    // A run that ended before its gate started leaves the feeder waiting.
+    fs::write(&started, "").unwrap();
+    feeding.join().unwrap();
+    (result, journal)
+}
+
+/// [`WATCHDOG_CEILING`] graced by the contention when a case begins.
+fn watchdog_ceiling() -> u64 {
+    load_grace::graced_now(WATCHDOG_CEILING).as_secs().max(1)
+}
+
+#[test]
+fn a_gate_that_reports_each_leg_outlives_the_silence_ceiling() {
+    let fixture = ForeignRepo::new();
+    let ceiling = watchdog_ceiling();
+    // Two lines one pause apart per leg, a pause well inside the ceiling,
+    // for longer than two whole ceilings of wall clock in total.
+    let pause = (WATCHDOG_CEILING.as_secs() / 4).max(1);
+    let legs = 2 * ceiling / pause + 1;
+    let body = format!(
+        r#"
+: > "$1"
+leg=0
+while [ "$leg" -lt {legs} ]; do
+  leg=$((leg + 1))
+  "$STORYHOOK_GATE_PROGRESS_WRITER" leg start "leg-$leg"
+  echo "building leg $leg"
+  sleep {pause}
+  "$STORYHOOK_GATE_PROGRESS_WRITER" leg pass "leg-$leg"
+done
+"#,
+    );
+    let (result, journal) = watched_gate(&fixture, ceiling, &body);
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "writer lines must renew a {ceiling}s ceiling: {result:?}"
+    );
+    let progress = gate_progress::fold(&fs::read_to_string(&journal).unwrap());
+    assert_eq!(
+        progress.items[1].children.len() as u64,
+        legs + 1,
+        "every leg, and the feeder"
+    );
+    fixture.assert_restored();
+}
+
+#[test]
+fn a_gate_that_only_prints_or_stays_silent_is_still_stopped() {
+    for (case, body) in [
+        (
+            "prints",
+            ": > \"$1\"\nwhile :; do echo 'still compiling'; sleep 0.2; done",
+        ),
+        ("silent", ": > \"$1\"\nexec sleep 600"),
+    ] {
+        let fixture = ForeignRepo::new();
+        let ceiling = watchdog_ceiling();
+        let (result, journal) = watched_gate(&fixture, ceiling, body);
+        assert_eq!(
+            result.status.code(),
+            Some(124),
+            "{case}: output is not progress; the {ceiling}s ceiling must stop the gate: {result:?}"
+        );
+        let text = fs::read_to_string(&journal).unwrap();
+        assert!(
+            text.lines()
+                .last()
+                .is_some_and(|line| line.contains(r#""path":"release gate","status":"failed""#)),
+            "{case}: {text}"
+        );
+        fixture.assert_restored();
+    }
 }

@@ -62,7 +62,11 @@ fn exercise<T>(
     // is the ordinary shape of a registered project now.
     let tools = scratch_dir();
     std::fs::write(tools.path().join("verify-pr.sh"), script).unwrap();
-    for name in ["machine-lock.sh", "gate-progress.sh"] {
+    for name in [
+        "machine-lock.sh",
+        "gate-progress.sh",
+        "gate-progress-writer.py",
+    ] {
         std::os::unix::fs::symlink(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("scripts")
@@ -132,6 +136,34 @@ fn progressing_verification_can_outlive_its_idle_budget() {
         IDLE.as_secs_f64() / 4.0
     );
     let outcome = verify_script(&script, IDLE);
+    assert!(
+        matches!(outcome, VerificationOutcome::Certified { .. }),
+        "{outcome:?}"
+    );
+}
+
+/// The idle budget of a fake that renews it through the bundled progress
+/// writer: each call starts python3, so the budget leaves room for one slow
+/// start on a loaded machine and is graced by contention when the case runs.
+const WRITER_IDLE: Duration = Duration::from_secs(3);
+
+/// SH-777: a project gate renews the outer deadline with the portable writer
+/// the verifier hands it, one leg at a time, for three whole idle budgets.
+#[test]
+fn a_gate_reporting_through_the_bundled_writer_outlives_its_idle_budget() {
+    let idle = storyhook_test_support::load_grace::graced_now(WRITER_IDLE);
+    let script = format!(
+        "set -eu
+for i in $(seq 1 12); do
+ {SIBLING}/gate-progress-writer.py leg start \"leg-$i\"
+ echo \"building leg $i\" >&2
+ sleep {}
+done
+{CERTIFIED}
+",
+        idle.as_secs_f64() / 4.0
+    );
+    let outcome = verify_script(&script, idle);
     assert!(
         matches!(outcome, VerificationOutcome::Certified { .. }),
         "{outcome:?}"
