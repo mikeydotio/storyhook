@@ -1,5 +1,8 @@
 //! Store-backed contracts for the SH-521 centralized verification queue.
 
+#[path = "verification_queue/batch_harness.rs"]
+mod batch_harness;
+
 #[path = "verification_queue/batch_preview.rs"]
 mod batch_preview;
 

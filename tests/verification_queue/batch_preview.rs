@@ -62,6 +62,8 @@ impl Board {
                 leased_submission(&fixture, &root, &format!("story {index}"), Some(&url));
             git(&root, &["checkout", "-q", "-b", &lease.branch, &base]);
             std::fs::write(root.join(file), body).unwrap();
+            // Staged by name, so a story may add a file the base lacks.
+            git(&root, &["add", file]);
             git(&root, &["commit", "-qam", &id]);
             git(&root, &["checkout", "-q", "--detach", &base]);
             ids.push(id);
