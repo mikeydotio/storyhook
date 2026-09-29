@@ -31,8 +31,8 @@ pub(in crate::daemon::verification) struct Landing {
 
 /// How a landing left the tick.
 pub(in crate::daemon::verification) enum Landed {
-    /// Every completable member is done; the tick reaps them after it has
-    /// released its in-flight record, as a single landing does.
+    /// Every completable member is done; release locks and retire batch artifacts
+    /// after the in-flight record is released.
     Reap(Box<Reaps>),
     /// The head's attempt ends with this result.
     Tick(TickResult),
@@ -41,11 +41,9 @@ pub(in crate::daemon::verification) enum Landed {
     Released,
 }
 
-/// The members a landing completed, still holding their own workspace
-/// locks, for [`reap`].
+/// Batch artifacts and member locks retained until completion commits.
 pub(in crate::daemon::verification) struct Reaps {
     batch: BatchId,
-    members: Vec<VerificationCandidate>,
     locks: Option<MemberLocks>,
 }
 
@@ -337,65 +335,23 @@ fn complete<S: Store>(
     pending.retire();
     Ok(Landed::Reap(Box::new(Reaps {
         batch: intent.batch.id.clone(),
-        members: members
-            .iter()
-            .filter(|member| completed.contains(&member.story_id))
-            .cloned()
-            .collect(),
         locks,
     })))
 }
 
-/// Reaps every completed member: `head` (the story the slot owns) with the
-/// slot's own lock, every other member under its own lock, each with a
-/// fresh cleanup reservation, then prunes the members' branches on origin.
-/// A member whose lock the batch does not hold is left to the cleanup
-/// retry, which selects done stories whose latest generation landed.
+/// Releases member locks to the closure worker and retires remote batch artifacts.
 pub(in crate::daemon::verification) fn reap<S: Store, A: VerificationActuator>(
     store: &S,
     env: &Environment,
-    ctx: &Ctx<'_, S>,
+    _ctx: &Ctx<'_, S>,
     actuator: &A,
     head: &VerificationCandidate,
-    owner: &VerificationGuard,
+    _owner: &VerificationGuard,
     reaps: Reaps,
 ) -> Result<TickResult, AppError> {
     let batching = actuator.batch();
-    for member in &reaps.members {
-        if !observation::human_permits(store, member)? {
-            continue;
-        }
-        let reaped = if member.story_id == head.story_id {
-            let reserved = owner.reserve(ReservationReason::Cleanup, env.now());
-            let reaped = actuator.reap(member);
-            reserved.retire();
-            reaped
-        } else {
-            let lock = reaps
-                .locks
-                .as_ref()
-                .and_then(|locks| locks.get(&member.story_id));
-            let (Some(batching), Some(lock)) = (batching, lock) else {
-                journal(
-                    "INFO",
-                    head,
-                    &format!(
-                        "{} landed with verification batch {}; its reap is left to the cleanup retry",
-                        member.story_id, reaps.batch
-                    ),
-                );
-                continue;
-            };
-            let reserved = owner.reserve(ReservationReason::Cleanup, env.now());
-            let reaped = batching.reap_member(member, MemberOwner(lock), &owner.cancellation);
-            reserved.retire();
-            reaped
-        };
-        match reaped {
-            Ok(()) => record_cleanup_complete(ctx, member)?,
-            Err(error) => record_cleanup_required(ctx, member, &error)?,
-        }
-    }
+    // Each member's committed closure schedules its own cleanup. Releasing
+    // these locks hands ownership to that controller; no member is reaped here.
     drop(reaps.locks);
     if let Some(batching) = batching {
         match store.read(|tx| tx.verification_batches(head.project)) {

@@ -443,9 +443,10 @@ where
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();
+            let bus = bus.clone();
             scope.spawn(move || {
                 super::qos::WorkClass::Housekeeping.enter();
-                crate::daemon::cleanup::poll_cleanup(store, &env, &stop)
+                crate::daemon::cleanup::poll_cleanup(store, &env, &bus, &stop)
             });
         }
         if !has_tailnet && let Some(loopback_addr) = loopback_addr {

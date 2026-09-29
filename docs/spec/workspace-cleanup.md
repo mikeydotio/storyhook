@@ -1,127 +1,91 @@
 # Story workspace cleanup
 
-`story cleanup [--dry-run]` cleans dropped-story workspaces and retries the
-centralized verifier's reap of completed work. The daemon invokes the same
-service once per day by default. Dropping a story does not synchronously
-remove its resources; the next scheduled pass or manual cleanup handles them.
+Every committed transition into a CLOSED superstate schedules durable resource
+cleanup (SH-847). This includes direct completion, abandonment, custom closed
+states, verifier landing, batch completion, imports, and computed state changes.
+The state change succeeds independently of later resource cleanup.
 
-For completed work, it is not the primary reaper, and since SH-653 it is not an independent one.
-The centralized verifier reaps a story's window, worktree and local branch on
-the green path (`verification-workflow.md`, "Green: merge, done, reap") and
-retries a failed reap itself; this command is the same retry by hand or on a
-schedule, gated on the verifier's own verdict, and with no authority the reap
-does not have. Dropped work follows the separate policy below (SH-724).
+## Intent and ownership
 
-## Dropped work
+The store records one `closure_cleanups` request with the final story projection
+in the same transaction. A unique token identifies that closed lifecycle.
+The transaction compares computed epic states as well as stored story states.
+A child write can therefore close or reopen its parent without synthetic events.
+Metadata edits and closed-to-closed transitions preserve the token; reopening removes
+pending intent, and the next closure receives a new token. A transaction whose
+final state is open does not schedule cleanup. Rollback rolls back both writes.
+Migration 53 backfills existing closed stories once.
 
-A story currently in `dropped` is eligible without verification or merge
-evidence, including archived stories and work dropped before submission.
-Discovery uses durable lease events, engine lanes, and registered worktree
-markers. Missing, conflicting, foreign, or malformed ownership is refused.
+Requests are not destructive authority. Cleanup discovers leases in story
+history, engine lanes, and registered worktree markers and requires agreement.
+It validates the current closure token and CLOSED superstate while acquiring
+the existing durable cleanup reservation. That reservation pins the lease,
+filesystem incarnations, pane and process identity. The controller and inherited
+workspace locks exclude dispatch, verification, reset, and competing cleanup.
+An admitted operation fences state changes until its effects settle.
 
-Cleanup removes only the exact leased window and clean, unlocked, registered
-worktree. Local and remote branches remain for recovery, including unmerged
-commits. This path does not fetch or require an origin. Detached worktrees,
-dirty files, changed registrations, protected branches, the calling worktree,
-and installed executable resources are preserved. Ignored build artifacts
-inside an otherwise eligible worktree follow ordinary Git worktree removal.
+The existing `dropped_cleanups` storage and process journals retain their names
+and serialized representation. They now serve all closed states. Interrupted
+legacy dropped cleanup resumes its original reservation, never a replacement.
+Completed requests and reservations are receipts, not authority over resources
+that later reappear at the same path.
 
-The window must resolve to one pane on its recorded socket and have the leased
-worktree as its working directory. Duplicate windows, extra panes, a changed
-process incarnation, or an already-dead pane without captured process evidence
-are refusals. Cleanup captures kernel process identity, freezes the complete
-owned process tree, closes the exact window, and proves its captured writers
-have exited before running non-forced `git worktree remove`.
+## Resource policy
 
-A durable reservation pins the drop-transition sequence, lease, filesystem
-identities, pane, and process incarnation. Its controller and inherited
-workspace locks exclude concurrent cleanup, dispatch, verification, and reset.
-State changes and ownership transfer are refused while effects remain
-unsettled; comments remain available. Process identities are journaled before
-signals. Each destructive stage is recorded before execution, so restart can
-reconcile partial removal without targeting replacement resources.
+Cleanup terminates only the exact leased agent process tree and tmux window,
+proves its captured writers have exited, then removes the clean, unlocked,
+registered worktree with non-forced `git worktree remove`. Ignored build artifacts
+inside that worktree are reclaimed with it.
 
-Retry with `story cleanup` after a failure. Inspect its named refusal and
-diagnostics before repairing retained resources. A settled refusal releases
-ownership; uncertain termination or removal retains its reservation until a
-retry establishes safety. Cleanup never resets the story or marks it done.
-A successful receipt is silent on later passes, even though its local branch
-remains. Recreated resources cannot inherit a completed receipt's authority.
+Unverified or abandoned work retains its local branch and every remote branch.
+A local branch is removable only with completion evidence for the matching
+verification lease from the current open lifecycle (including legacy cleanup
+receipts), plus freshly checked
+ancestry in the origin default branch. An operator override additionally needs
+a recorded merged PR. Deletion uses the inspected OID as an expected value, so
+a changed branch fails removal. Dropped stories always retain their branch.
+Remote branches remain outside cleanup.
 
-JSON removal entries add `removed_tmux_window` and `retained_local_branch`.
-Existing worktree and branch-removal fields keep their meanings. Partial
-operational failures appear in `failed`; safety refusals appear in `skipped`.
-`--dry-run` previews eligible resources without reserving or terminating them.
-An interrupted process journal requires a real cleanup retry to establish safety.
+Dirty files, detached or locked worktrees, ambiguous leases or panes, changed
+process identities, protected branches, the main checkout, the caller's
+worktree, installed executable resources, and foreign repositories are preserved.
+No resource path or deletion authority is inferred from a story name.
 
-## Completed-work ownership and eligibility
+Before every destructive stage, the controller records its progress. Restart
+reconciles partial removal against pinned identities. A settled refusal releases
+ownership; uncertain termination or removal retains it. Failure never reverses
+closure. Reports distinguish safety refusals (`skipped`) from operational
+failures (`failed`); requests retain the latest diagnosis and retry time.
+A changed failure produces one story comment, not a comment on every retry.
 
-Cleanup authority comes only from a versioned `StoryCleanupLease` recorded in
-story history or in the worktree's private Git marker. Legacy, malformed, and
-conflicting leases are reported and preserved. StoryHook never guesses a path
-or branch from a story ID.
+## Scheduling and manual retry
 
-A leased workspace is eligible only when all of these facts can be proved, in
-this order — the first three from the store, before any Git or network work:
+The daemon wakes on project-change notifications and at startup, with a bounded
+30-second recovery wake for lost notifications and pending retries. Each project
+and story can make progress despite another story's refusal. Lifecycle cleanup
+runs even when the verifier is stopped or a closed story carries a reserved label.
 
-1. The lease names a story of this project (`unknown-story` otherwise).
-2. The story is CLOSED (`story-open` otherwise, naming its state).
-3. The story's **latest verification generation** carries the verifier's
-   `CENTRAL VERIFICATION CLEANUP COMPLETE` or `CLEANUP REQUIRED` comment
-   (`not-verifier-released` otherwise). The generation is read by event order,
-   the same way the verifier's own retry reads it; a marker from an earlier
-   verification of a since-reopened story does not count.
-4. The lease names this project and its canonical registered repository.
-5. No window with the exact story ID exists on the leased tmux socket.
-6. The canonical worktree is clean, unlocked, registered, and checked out on
-   the leased branch.
-7. After asking origin for its default branch (`git ls-remote --symref
-   origin HEAD` — never the local `origin/HEAD` cache; SH-691) and fetching
-   it, the worktree tip and local-branch tip are ancestors of that branch.
-8. The leased branch is not `main`, `master`, or the repository default.
-
-An unavailable dependency is a refusal, not permission to delete. A missing
-tmux socket is the sole exception because it proves that exact server is not
-running. Cleanup never closes a window: an open one is a refusal, and closing
-it is the verifier's reap's job.
-
-## Removal and recovery
-
-After the complete preflight, StoryHook removes the worktree with
-`git worktree remove`, prunes worktree metadata, and deletes the local branch.
-It then verifies that the path and the local ref are absent. Reports include
-reclaimed worktree bytes and a reason for every skip.
-
-The remote branch is out of scope: the verifier's merge step (`land-pr.sh`)
-deletes it, and cleanup neither reads nor writes it, so nothing on the remote
-can be lost by this command and a remote-only commit never blocks a local reap.
-
-A lease whose worktree and local branch are already absent is not a removal.
-After a CLEANUP COMPLETE it is what the verifier already verified and earns no
-report line; after a CLEANUP REQUIRED it is reported as `already-clean`.
-
-The operation is idempotent. If a step fails after an earlier step succeeded,
-the lease remains durable and the next pass rechecks the remaining resources.
-Fetch authentication and network failures fail closed and appear in output.
-
-`--dry-run` executes the same discovery and preflight without mutation, and
-lists every candidate it declined with the reason. It is the recommended first
-run in an existing installation.
-
-## Scheduling
-
-Two per-project settings control the daemon:
+The periodic reconciliation sweep remains configurable:
 
 | Setting | Default | Meaning |
 |---|---:|---|
-| `cleanup.auto` | `true` | Run automatic cleanup. |
-| `cleanup.interval` | `1d` | Minimum time between attempts. |
+| `cleanup.auto` | `true` | Enable the periodic discovery/reconciliation sweep. |
+| `cleanup.interval` | `1d` | Minimum time between periodic sweeps. |
 
-Each attempt writes a durable per-project timestamp under the store-specific
-daemon state directory. Restarts therefore do not repeat a recent pass. A
-failure waits for the next configured interval to avoid a destructive
-network retry storm; `story cleanup` can retry immediately after repair.
+These settings do not disable cleanup triggered by closure. The verifier no
+longer reaps story workspaces itself; it commits completion and releases its
+locks. Batch scratch-resource retirement remains part of verification.
 
-The repository's primary checkout and any shared `target/` beneath it are out
-of scope. Build artifacts are reclaimed because they reside inside an
-eligible story worktree.
+`story cleanup` runs the same controller and can retry before the automatic
+backoff expires. `story cleanup --dry-run` performs discovery and preflight without
+reserving, terminating, removing, or updating request state. An interrupted
+process journal requires a real retry to establish safety.
+
+JSON keeps `removed`, `skipped`, `failed`, reclaimed-byte counts, and the existing
+`removed_tmux_window` and `retained_local_branch` fields. Already-clean receipts
+are silent. Missing or conflicting authority is diagnosed; it never permits
+fallback to guessed ownership. There are no new CLI flags.
+
+Projects without a linked checkout and without discovered resource authority
+complete as no-ops. A missing or unreadable configured checkout with resources
+remains a failure; it does not establish absence.

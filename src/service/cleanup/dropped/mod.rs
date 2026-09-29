@@ -3,7 +3,7 @@ mod process;
 mod safety;
 
 use super::{CleanupRemoval, CleanupSkip};
-use crate::domain::{StoryCleanupLease, StoryEvent};
+use crate::domain::{StoryCleanupLease, StoryEvent, SuperState};
 use crate::error::AppError;
 use crate::service::{
     Ctx,
@@ -13,8 +13,8 @@ use crate::service::{
     workspace_lock::{self, WorkspaceLock},
 };
 use crate::store::{
-    DroppedCleanup, DroppedCleanupPhase as Phase, GlobalSeq, ReadOps, Store, StoreError,
-    StoredEvent, StoryNo, WriteOps,
+    ClosureCleanup, DroppedCleanup, DroppedCleanupPhase as Phase, GlobalSeq, ReadOps, Store,
+    StoreError, StoredEvent, WriteOps,
 };
 use std::path::Path;
 
@@ -41,6 +41,8 @@ pub(super) fn run<S: Store>(
     ctx: &Ctx<'_, S>,
     repository: &Path,
     lease: &StoryCleanupLease,
+    request: &ClosureCleanup,
+    delete_branch: bool,
     dry_run: bool,
 ) -> Result<Option<CleanupRemoval>, CleanupSkip> {
     let refuse = |e| issue(lease, "resource-unverifiable", e);
@@ -81,17 +83,32 @@ pub(super) fn run<S: Store>(
                 .map_err(|e| issue(lease, "workspace-busy", e))?,
         )
     };
-    let (story, drop_seq, old) = ctx
+    let story = request.story;
+    let (old, legacy_generation) = ctx
         .store()
         .read(|tx| {
-            let prefix = crate::service::project_prefix(tx, ctx.project())?;
-            let story = StoryNo::parse_id(&prefix, &lease.story_id)
-                .map_err(|e| StoreError::Invariant(e.to_string()))?;
-            let seq = require_dropped(tx, ctx.project(), story)?;
-            Ok((story, seq, tx.dropped_cleanup(ctx.project(), story)?))
+            require_closed(tx, request)?;
+            let row = tx
+                .story(ctx.project(), story)?
+                .expect("validated closed story");
+            let legacy = if row.state == "dropped" {
+                generation(&tx.events_for(ctx.project(), story)?)
+            } else {
+                None
+            };
+            Ok((tx.dropped_cleanup(ctx.project(), story)?, legacy))
         })
         .map_err(|e| refuse(e.into()))?;
-    let prior = old.filter(|r| r.generation == drop_seq && r.lease == *lease);
+    let prior = old.filter(|r| {
+        r.lease == *lease && (r.token == request.token || Some(r.generation) == legacy_generation)
+    });
+    if request.completed && prior.is_none() {
+        return Err(issue(
+            lease,
+            "resource-identity-unsafe",
+            "completed closure has no reservation for these resources; preserved replacements",
+        ));
+    }
     let mut record = match prior {
         Some(record) => record,
         None => {
@@ -112,8 +129,8 @@ pub(super) fn run<S: Store>(
             DroppedCleanup {
                 project: ctx.project(),
                 story,
-                token: uuid::Uuid::new_v4().simple().to_string(),
-                generation: drop_seq,
+                token: request.token.clone(),
+                generation: request.generation,
                 lease: lease.clone(),
                 resources: report,
                 paths,
@@ -157,17 +174,21 @@ pub(super) fn run<S: Store>(
     // A receipt cannot transfer deletion authority to a recreated workspace.
     let has_worktree = safety::worktree_present(lease).map_err(refuse)?;
     let panes = safety::panes(ctx.env(), lease).map_err(refuse)?;
-    if record.phase == Phase::Removed && (has_worktree || !panes.is_empty()) {
+    let branch_reappeared = record.phase == Phase::Removed
+        && delete_branch
+        && crate::service::resources::git::branch_exists(repository, &lease.branch)
+            .map_err(refuse)?;
+    if record.phase == Phase::Removed && (has_worktree || !panes.is_empty() || branch_reappeared) {
         return Err(issue(
             lease,
             "resource-identity-unsafe",
-            "resources reappeared after this drop was cleaned; preserved replacements",
+            "resources reappeared after this closure was cleaned; preserved replacements",
         ));
     }
     if record.released && record.phase == Phase::Removed {
         return Ok(None);
     }
-    let removal = CleanupRemoval {
+    let mut removal = CleanupRemoval {
         story_id: lease.story_id.clone(),
         worktree: lease.worktree_path.clone(),
         branch: lease.branch.clone(),
@@ -197,15 +218,27 @@ pub(super) fn run<S: Store>(
         if record.phase == Phase::Prepared {
             safety::same_pane(ctx.env(), lease, &record.resources).map_err(refuse)?;
         }
-        return Ok((has_worktree || !panes.is_empty()).then_some(removal));
+        if delete_branch {
+            let preview = super::clean_candidate_owned(ctx.env(), repository, lease, true, None)?;
+            removal.removed_local_branch = preview.removed_local_branch;
+            removal.retained_local_branch = false;
+        }
+        return Ok(
+            (has_worktree || !panes.is_empty() || removal.removed_local_branch).then_some(removal),
+        );
     }
     record.released = false;
     record.failure = None;
     ctx.store()
         .write(|tx| {
-            if require_dropped(tx, ctx.project(), story)? != drop_seq {
+            require_closed(tx, request)?;
+            let mut pinned = tx
+                .closure_cleanup(ctx.project(), story)?
+                .expect("validated closure");
+            pinned.lease = Some(lease.clone());
+            if !tx.update_closure_cleanup(&pinned)? {
                 return Err(StoreError::Invariant(
-                    "drop generation changed during cleanup admission".into(),
+                    "closure changed during cleanup admission".into(),
                 ));
             }
             if tx.block_deliveries(ctx.project())?.iter().any(|delivery| {
@@ -225,6 +258,7 @@ pub(super) fn run<S: Store>(
         ctx,
         &mut record,
         workspace.as_ref().expect("real cleanup owns workspace"),
+        delete_branch,
     );
     if let Err(error) = result {
         record.failure = Some(error.to_string());
@@ -241,31 +275,39 @@ pub(super) fn run<S: Store>(
             })?;
         return Err(issue(lease, "dropped-cleanup-failed", error));
     }
-    Ok((has_worktree || !panes.is_empty()).then_some(removal))
+    if delete_branch {
+        removal.removed_local_branch = removal.retained_local_branch;
+        removal.retained_local_branch = false;
+    }
+    Ok((has_worktree || !panes.is_empty() || removal.removed_local_branch).then_some(removal))
 }
 
-fn require_dropped(
-    tx: &impl ReadOps,
-    project: crate::store::ProjectId,
-    story: StoryNo,
-) -> Result<GlobalSeq, StoreError> {
+fn require_closed(tx: &impl ReadOps, request: &ClosureCleanup) -> Result<(), StoreError> {
     let row = tx
-        .story(project, story)?
-        .ok_or_else(|| StoreError::NotFound("dropped cleanup story".into()))?;
-    if row.state != "dropped" {
-        return Err(StoreError::Invariant(format!(
-            "cleanup story is {}, not dropped",
-            row.state
-        )));
+        .story(request.project, request.story)?
+        .ok_or_else(|| StoreError::NotFound("cleanup story".into()))?;
+    let current = tx.closure_cleanup(request.project, request.story)?;
+    let state = if crate::domain::is_epic(&row.snapshot) {
+        let rows = tx.stories(request.project, &crate::store::StoryQuery::all())?;
+        crate::store::effective_states(&rows, &tx.states(request.project)?)[&request.story]
+            .1
+            .clone()
+    } else {
+        row.superstate
+    };
+    if state != SuperState::Closed || current.as_ref().is_none_or(|r| r.token != request.token) {
+        return Err(StoreError::Invariant(
+            "closed cleanup lifecycle changed; preserved resources".into(),
+        ));
     }
-    generation(&tx.events_for(project, story)?)
-        .ok_or_else(|| StoreError::Invariant("dropped story has no drop event".into()))
+    Ok(())
 }
 
 fn execute<S: Store>(
     ctx: &Ctx<'_, S>,
     record: &mut DroppedCleanup,
     workspace: &WorkspaceLock,
+    delete_branch: bool,
 ) -> Result<(), AppError> {
     let lease = record.lease.clone();
     if record.phase == Phase::Prepared {
@@ -291,7 +333,28 @@ fn execute<S: Store>(
             "dropped story window reappeared".into(),
         ));
     }
-    if safety::worktree_present(&lease)? {
+    if delete_branch {
+        if record.phase == Phase::Quiescent {
+            super::clean_candidate_owned(
+                ctx.env(),
+                &lease.repository_path,
+                &lease,
+                true,
+                Some(workspace),
+            )
+            .map_err(|e| AppError::Validation(format!("{}: {}", e.reason, e.detail)))?;
+        }
+        record.phase = Phase::Removing;
+        ctx.store().write(|tx| tx.put_dropped_cleanup(record))?;
+        super::clean_candidate_owned(
+            ctx.env(),
+            &lease.repository_path,
+            &lease,
+            false,
+            Some(workspace),
+        )
+        .map_err(|e| AppError::Validation(format!("{}: {}", e.reason, e.detail)))?;
+    } else if safety::worktree_present(&lease)? {
         record.phase = Phase::Removing;
         ctx.store().write(|tx| tx.put_dropped_cleanup(record))?;
         workspace_lock::git(

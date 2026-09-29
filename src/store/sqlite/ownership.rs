@@ -149,13 +149,18 @@ fn read_owners(
         .collect::<Result<Vec<_>, _>>()?;
     for (project, story, token) in rows {
         let identity: Option<String> = conn.query_row(
-            "SELECT json_array(p.uuid,p.slug,p.prefix,p.checkout_path,s.created_at,CASE WHEN ?3='dropped cleanup' THEN s.state ELSE NULL END) FROM projects p JOIN stories s ON s.project_id=p.id WHERE p.id=?1 AND s.story_no=?2",
+            "SELECT json_array(p.uuid,p.slug,p.prefix,p.checkout_path,s.created_at,CASE WHEN ?3='dropped cleanup' THEN s.state ELSE NULL END,CASE WHEN ?3='dropped cleanup' THEN s.superstate ELSE NULL END) FROM projects p JOIN stories s ON s.project_id=p.id WHERE p.id=?1 AND s.story_no=?2",
             rusqlite::params![project,story,kind], |row|row.get(0)).optional()?;
-        let project_identity = identity.ok_or_else(|| {
+        let mut project_identity = identity.ok_or_else(|| {
             StoreError::Invariant(format!(
                 "{kind} operation {token} has no owning project/story {project}/{story}"
             ))
         })?;
+        if kind == "dropped cleanup" {
+            let state = super::closure_cleanup::effective(conn, ProjectId::new(project))?
+                .remove(&StoryNo::new(story));
+            project_identity.push_str(&serde_json::to_string(&state)?);
+        }
         out.insert(Owner {
             project,
             story,

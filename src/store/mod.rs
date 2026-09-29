@@ -69,6 +69,9 @@ pub use project_recovery::{ProjectRecovery, ProjectRecoveryObservation};
 pub mod conformance;
 mod dropped_cleanup;
 pub use dropped_cleanup::{DroppedCleanup, DroppedCleanupPhase};
+mod closure_cleanup;
+pub use closure_cleanup::ClosureCleanup;
+pub(crate) use closure_cleanup::effective_states;
 mod story_reset;
 pub use story_reset::{ResetLane, ResetPathIdentity, StoryReset};
 mod engine_reset;
@@ -362,6 +365,16 @@ pub trait ReadOps {
         project: ProjectId,
         story: StoryNo,
     ) -> Result<Option<DroppedCleanup>, StoreError>;
+
+    /// One closure's cleanup intent or completed receipt.
+    fn closure_cleanup(
+        &self,
+        project: ProjectId,
+        story: StoryNo,
+    ) -> Result<Option<ClosureCleanup>, StoreError>;
+
+    /// All retained closure requests for one project, in story order.
+    fn closure_cleanups(&self, project: ProjectId) -> Result<Vec<ClosureCleanup>, StoreError>;
 
     /// Latest card reset operation for this story, including completed receipts.
     fn story_reset(
@@ -684,6 +697,9 @@ pub trait WriteOps: ReadOps {
 
     /// Reserves dropped cleanup or records its exact progress and release.
     fn put_dropped_cleanup(&mut self, cleanup: &DroppedCleanup) -> Result<(), StoreError>;
+
+    /// Updates progress only when the request still names this closure.
+    fn update_closure_cleanup(&mut self, cleanup: &ClosureCleanup) -> Result<bool, StoreError>;
 
     /// Creates or updates the current card reset operation.
     fn put_story_reset(&mut self, reset: &StoryReset) -> Result<(), StoreError>;
