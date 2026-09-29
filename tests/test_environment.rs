@@ -367,6 +367,106 @@ fn the_shell_rendering_creates_every_directory_the_library_names() {
     }
 }
 
+/// The shell recipe `story help test-environment` publishes does what the
+/// table says.
+///
+/// It is the rendering a suite in another repository copies by hand, so it is
+/// held to the contract `storyhook_isolate` is held to, and the same way: run
+/// in `bash` under a parent with every parameter poisoned, then compared with
+/// the table name by name, in both directions. When it was hand-written it had
+/// fallen nine parameters behind the table — among them four credentials and
+/// the switch that keeps a fixture from starting a paid provider session —
+/// with nothing to notice.
+#[test]
+fn the_published_shell_recipe_isolates_like_the_table() {
+    let body = topic_body();
+    let recipe: Vec<&str> = body
+        .lines()
+        .skip_while(|line| *line != "== A shell that does it ==")
+        .skip(1)
+        .skip_while(|line| line.trim().is_empty())
+        .take_while(|line| !line.trim().is_empty())
+        .map(str::trim_start)
+        .collect();
+    let (naming_the_root, rest) = recipe
+        .split_first()
+        .filter(|(first, _)| first.starts_with("root="))
+        .unwrap_or_else(|| {
+            panic!(
+                "`story help {TOPIC}` has no recipe block that starts by naming \
+                 its root:\n{body}"
+            )
+        });
+
+    // The root line is the one the reader chooses ("anywhere disposable"), so
+    // it is the one line replaced: by a root inside a fixture this test owns
+    // and reclaims. `mktemp -d` cannot be steered there — macOS ignores
+    // TMPDIR for it — and a root left in the Spotlight-indexed temp directory
+    // is a leak.
+    let fixture = scratch_dir();
+    let root = fixture.path().join("root");
+    let script = format!(
+        "set -e\nroot='{}'  # in place of: {naming_the_root}\n{}\nprintf '__SHELL_PID__=%s\\n' \"$$\"\nexec /usr/bin/env\n",
+        root.display(),
+        rest.join("\n"),
+    );
+    let out = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .envs(poison())
+        .output()
+        .expect("running bash");
+    assert!(
+        out.status.success(),
+        "the published recipe does not run: {}\n{script}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let mut pid = None;
+    let mut seen = BTreeMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if name == "__SHELL_PID__" {
+            pid = Some(value.parse::<u32>().expect("a pid"));
+        } else {
+            seen.insert(name.to_string(), value.to_string());
+        }
+    }
+    let pid = pid.expect("the recipe printed its shell's pid");
+
+    let mismatches: Vec<String> = shell_settings(&root, pid, Scope::Anywhere)
+        .iter()
+        .filter_map(|setting| {
+            let want = setting
+                .value
+                .as_ref()
+                .map(|value| value.to_str().expect("a UTF-8 value").to_string());
+            let got = seen.get(setting.name).cloned();
+            (got != want).then(|| {
+                format!(
+                    "{}: the recipe leaves {got:?}, the table requires {want:?}",
+                    setting.name
+                )
+            })
+        })
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "`story help {TOPIC}` publishes a recipe that isolates differently \
+         from the table it documents:\n{}",
+        mismatches.join("\n")
+    );
+    for dir in storyhook::env::test_environment::directories(&root) {
+        assert!(
+            dir.is_dir(),
+            "the recipe did not create {}, which the table needs",
+            dir.display()
+        );
+    }
+}
+
 /// A root that is not disposable is refused rather than isolated.
 ///
 /// The one refusal the shared function owns, and the reason three of the six
