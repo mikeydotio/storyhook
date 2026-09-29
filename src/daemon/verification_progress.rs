@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::service::engine::elapsed_secs;
-use crate::service::gate_output::OutputObservation;
+use crate::service::gate_output::{OutputObservation, OutputReference};
 use crate::service::gate_progress::{self, GATE_PROGRESS_PREFIX, VerificationProgressView};
 use crate::service::verification::GenerationWrite;
 use crate::service::{Ctx, VerificationCandidate, VerificationQueue};
@@ -566,23 +566,9 @@ fn publish_project(
                 .as_ref()
                 .and(evidence.last_evidence_at.as_deref())
                 .and_then(|at| elapsed_secs(at, now));
-            let authenticated = progress
-                .run
-                .as_ref()
-                .and_then(|run| run.attempt_id.as_deref())
-                == Some(held.attempt_id.as_str());
-            let reference = authenticated.then_some(progress.output.as_ref()).flatten();
-            let mut output = activity.observe_output(held, reference, now);
-            if let Some(error) = &progress.output_error {
-                output = OutputObservation::Unavailable(error.clone());
-            }
-            if progress
-                .items
-                .iter()
-                .any(|item| item.label == "release gate" && item.effective_status().is_terminal())
-            {
-                output = OutputObservation::NotCapturing;
-            }
+            let output = current_output(&progress, held, |reference| {
+                activity.observe_output(held, reference, now)
+            });
             gate_progress::render(
                 &VerificationProgressView::Running {
                     progress: &progress,
@@ -661,6 +647,37 @@ fn publish_project(
         }
     }
     Ok(moved)
+}
+
+/// The owned attempt's raw-output observation, read the one way every
+/// consumer must read it (SH-713): only a journal whose `run` record names
+/// the held attempt may bind a log, a malformed `output` record replaces the
+/// observation with its diagnostic, and once the release gate is terminal its
+/// capture is history rather than current silence. `observe` reads the bound
+/// log — the publisher commits that reading, status only peeks at it.
+pub(crate) fn current_output(
+    progress: &gate_progress::GateProgress,
+    held: &ActiveVerification,
+    observe: impl FnOnce(Option<&OutputReference>) -> OutputObservation,
+) -> OutputObservation {
+    let authenticated = progress
+        .run
+        .as_ref()
+        .and_then(|run| run.attempt_id.as_deref())
+        == Some(held.attempt_id.as_str());
+    let reference = authenticated.then_some(progress.output.as_ref()).flatten();
+    let mut output = observe(reference);
+    if let Some(error) = &progress.output_error {
+        output = OutputObservation::Unavailable(error.clone());
+    }
+    if progress
+        .items
+        .iter()
+        .any(|item| item.label == "release gate" && item.effective_status().is_terminal())
+    {
+        output = OutputObservation::NotCapturing;
+    }
+    output
 }
 
 /// The line every waiting candidate carries while the head is stalled.

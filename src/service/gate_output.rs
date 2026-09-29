@@ -60,7 +60,13 @@ impl OutputObserver {
         if let Some(detail) = &self.invalid {
             return OutputObservation::Unavailable(detail.clone());
         }
-        let result = self.observe_inner(reference, attempt_id, started_at, now);
+        let result = self
+            .measure(reference, attempt_id, started_at, now)
+            .and_then(|extent| {
+                let age = extent.age()?;
+                self.extent = Some(extent);
+                Ok(age)
+            });
         match result {
             Ok(age) => OutputObservation::Observed(age),
             Err(detail) => {
@@ -74,13 +80,16 @@ impl OutputObserver {
         }
     }
 
-    fn observe_inner(
-        &mut self,
+    /// Validates `reference` against this attempt and the committed extent and
+    /// measures the log, without committing anything: the caller decides
+    /// whether the measurement becomes the new baseline.
+    fn measure(
+        &self,
         reference: Option<&OutputReference>,
         attempt_id: &str,
         started_at: &str,
         now: &str,
-    ) -> Result<u64, String> {
+    ) -> Result<Extent, String> {
         let reference = reference.ok_or("current-attempt output reference is unavailable")?;
         if reference.attempt_id != attempt_id {
             return Err("output reference belongs to another attempt".into());
@@ -165,15 +174,20 @@ impl OutputObserver {
                 .as_ref()
                 .map_or(capture, |extent| extent.last_output)
         };
-        let age = u64::try_from((now - last_output).num_seconds())
-            .map_err(|_| "output observation clock moved backwards".to_string())?;
-        self.extent = Some(Extent {
+        Ok(Extent {
             reference: reference.clone(),
             length,
             last_output,
             observed_at: now,
-        });
-        Ok(age)
+        })
+    }
+}
+
+impl Extent {
+    /// Seconds from the last output to the observation that measured it.
+    fn age(&self) -> Result<u64, String> {
+        u64::try_from((self.observed_at - self.last_output).num_seconds())
+            .map_err(|_| "output observation clock moved backwards".to_string())
     }
 }
 
