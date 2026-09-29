@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::{VerificationActuator, VerificationGuard, VerificationOutcome};
+use crate::domain::gate_verdict::GateVerdict;
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::service::batch_preview::{
@@ -58,29 +59,13 @@ impl Published {
     }
 }
 
-/// How the gate that followed a preview ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum GateVerdict {
-    Certified,
-    TestsFailed,
-    Conflict,
-    InvalidSubmission,
-    ProjectFault,
-    InfrastructureFailure,
-    Cancelled,
-    RepairDeferred,
-    CleanupFailed,
-    /// The attempt lost its authority (a resubmission or a withdrawal).
-    Withdrawn,
-    /// An operator stopped the attempt while its gate ran.
-    Interrupted,
-    /// The verifier could not observe the gate's outcome.
-    Error,
-}
-
 impl GateVerdict {
-    fn of(verified: &Result<Option<VerificationOutcome>, AppError>, cancelled: bool) -> Self {
+    /// The verdict of the gate that returned `verified`; `cancelled` is
+    /// whether an operator had stopped the attempt.
+    pub(super) fn of(
+        verified: &Result<Option<VerificationOutcome>, AppError>,
+        cancelled: bool,
+    ) -> Self {
         match verified {
             Err(_) => Self::Error,
             Ok(None) => Self::Withdrawn,
