@@ -324,6 +324,21 @@ fn previewing(
     status
 }
 
+/// `status` while a verification batch runs (SH-832, spec B9), the populated
+/// side of the nullable `batch` field.
+fn batching(
+    status: &storyhook::daemon::verification::status::VerifierStatus,
+) -> storyhook::daemon::verification::status::VerifierStatus {
+    let mut status = status.clone();
+    status.batch = Some(storyhook::daemon::verification::status::ActiveBatch {
+        id: Some("0123456789ab".into()),
+        head: "SH-1".into(),
+        members: vec!["SH-1".into(), "SH-2".into()],
+        phase: "gating".into(),
+    });
+    status
+}
+
 /// Every `Response` variant, in both its empty and its populated shape where
 /// the renderers treat those differently (`Stories`, `Issues` and
 /// `PhaseList` all have dedicated "nothing here" branches).
@@ -345,6 +360,10 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         (
             "verifier_status_batch_preview",
             Response::VerifierStatus(Box::new(previewing(&status))),
+        ),
+        (
+            "verifier_status_batch",
+            Response::VerifierStatus(Box::new(batching(&status))),
         ),
         (
             "with_verifier",

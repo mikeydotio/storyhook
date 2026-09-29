@@ -178,4 +178,64 @@ impl BatchActuator for ShellVerificationActuator {
             ))
         })
     }
+
+    fn base_policy(
+        &self,
+        head: &VerificationCandidate,
+        base: &str,
+        cancellation: &Cancellation,
+    ) -> Result<bool, AppError> {
+        let answer = self.run_batch_script(head, "base-policy", &[base], cancellation)?;
+        answer
+            .get("signatures_required")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                AppError::Storage(format!(
+                    "verify-batch.sh base-policy answered no signatures_required: {answer}"
+                ))
+            })
+    }
+
+    fn reap_member(
+        &self,
+        member: &VerificationCandidate,
+        owner: MemberOwner<'_>,
+        cancellation: &Cancellation,
+    ) -> Result<(), AppError> {
+        self.reap_owned(
+            member,
+            ControlOwner {
+                workspace: Some(owner.0),
+                cancellation,
+            },
+        )
+    }
+
+    fn prune_members(
+        &self,
+        head: &VerificationCandidate,
+        members: &[MemberBranch],
+    ) -> Result<Vec<MemberPrune>, AppError> {
+        let args: Vec<&str> = members
+            .iter()
+            .flat_map(|member| {
+                [
+                    member.pull_request.as_str(),
+                    member.branch.as_str(),
+                    member.head.as_str(),
+                ]
+            })
+            .collect();
+        // After the batch ended: never under its cancellation; the control
+        // timeout still bounds it.
+        let answer =
+            self.run_batch_script(head, "prune-members", &args, &Cancellation::default())?;
+        serde_json::from_value(answer.get("members").cloned().unwrap_or_default()).map_err(
+            |error| {
+                AppError::Storage(format!(
+                    "verify-batch.sh prune-members answered no member results: {error}"
+                ))
+            },
+        )
+    }
 }

@@ -176,6 +176,7 @@ impl VerificationActivity {
                     active: &slot.active,
                     reservation: slot.reservation.as_ref(),
                     preview: slot.preview.as_ref(),
+                    batch: slot.batch.as_ref().map(|batch| &batch.view),
                 }),
                 state(tx.verification_enabled(project)?, slot),
             )
@@ -837,6 +838,7 @@ PY
                 gate: "true".into(),
             },
             created_at: env.now(),
+            batch: None,
         };
         let journal = journal_path(&env, &candidate);
         std::fs::create_dir_all(journal.parent().unwrap()).unwrap();

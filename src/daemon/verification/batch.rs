@@ -6,10 +6,14 @@
 //! locks and submits the partners, merges every member onto the preview's
 //! base as merge commits, records the batch, pushes the batch branch, opens
 //! the batch pull request, and gates that pull request's exact merge tree.
-//! Landing a batch is not built yet (SH-832), so whatever the verdict the
-//! batch is recorded and its members go back to the single-story queue: the
-//! head goes on to its own gate in the same tick. The daemon's own verifier
-//! does not batch until landing exists (decision D1 on SH-831).
+//! A certified batch lands (SH-832, `landing`): every member gets a landing
+//! intent bound to the batch, the batch pull request is merged, and every
+//! member completes in one transaction and is reaped under its own lock.
+//! Any other verdict releases the batch and its members go back to the
+//! single-story queue: the head goes on to its own gate in the same tick.
+//! The daemon's own verifier does not batch (council decision D10 on
+//! SH-832, which replaced decision D1 on SH-831): SH-841 turns it on when a
+//! measured trigger fires.
 //!
 //! The whole batch runs under one authority observer over the head and every
 //! member: a member that changes (a resubmission, a hold, a reset) or an
@@ -28,11 +32,13 @@ use crate::store::{
 };
 use attempt::Attempt;
 use end::retire_leftovers;
+pub(super) use landing::{Landed, Landing, land, reap, recover};
 use locks::MemberLocks;
 use serde::Serialize;
 
 mod attempt;
 mod end;
+mod landing;
 mod locks;
 mod shell;
 #[cfg(test)]
@@ -82,6 +88,54 @@ pub trait BatchActuator {
         batch: &VerificationBatch,
         comment: &str,
     ) -> Result<BatchRetirement, AppError>;
+    /// Whether `base` requires signed commits, on which a batch of unsigned
+    /// merge commits could never land (SH-832 D8).
+    fn base_policy(
+        &self,
+        head: &VerificationCandidate,
+        base: &str,
+        cancellation: &Cancellation,
+    ) -> Result<bool, AppError>;
+    /// Reaps a landed member as [`VerificationActuator::reap`] reaps a
+    /// story, with that member's own workspace lock inherited: the helper
+    /// refuses any other story's lock.
+    fn reap_member(
+        &self,
+        member: &VerificationCandidate,
+        owner: MemberOwner<'_>,
+        cancellation: &Cancellation,
+    ) -> Result<(), AppError>;
+    /// Deletes landed members' own branches on origin where GitHub reports
+    /// each member merged from it at its recorded head (SH-832 D8).
+    fn prune_members(
+        &self,
+        head: &VerificationCandidate,
+        members: &[MemberBranch],
+    ) -> Result<Vec<MemberPrune>, AppError>;
+}
+
+/// A landed member's own branch, for [`BatchActuator::prune_members`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberBranch {
+    /// The member's own pull request.
+    pub pull_request: String,
+    /// Its branch on origin.
+    pub branch: String,
+    /// The head the batch merged.
+    pub head: String,
+}
+
+/// What pruning found for one member branch.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct MemberPrune {
+    /// The branch.
+    pub branch: String,
+    /// `deleted`, or why it was kept: `unmerged`, `moved`, `absent`,
+    /// `other-head` or `unreadable`.
+    pub result: String,
+    /// The evidence behind a kept branch, when there is any.
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// A batch member's own workspace lock, lent to that member's submission.
@@ -149,22 +203,33 @@ pub(super) enum BatchEnd {
         outcome: Box<VerificationOutcome>,
         summary: BatchSummary,
     },
+    /// The batch is admitted to land: the tick merges it with the head's
+    /// actuator ([`land`]).
+    Land(Box<Landing>),
 }
 
 impl VerificationGuard {
-    /// Lists `members` as this attempt's running batch until the returned
-    /// value drops, so a reset of a member ends the batch rather than failing
-    /// as busy. Takes the registry lock alone, and only while the slot is
-    /// still this attempt's (the SH-768 identity rule).
+    /// Lists `view`'s members as this attempt's running batch until the
+    /// returned value drops, so a reset of a member ends the batch rather
+    /// than failing as busy, and status shows the batch (SH-832 B9). Takes
+    /// the registry lock alone, and only while the slot is still this
+    /// attempt's (the SH-768 identity rule).
     fn enter_batch(
         &self,
-        members: BTreeSet<String>,
+        view: status::ActiveBatch,
         cancellation: Cancellation,
     ) -> BatchMembership<'_> {
+        let members = view
+            .members
+            .iter()
+            .filter(|member| **member != view.head)
+            .cloned()
+            .collect();
         self.with_own_slot(|slot| {
             slot.batch = Some(BatchSlot {
                 members,
                 cancellation,
+                view,
             });
         });
         BatchMembership { owner: self }
@@ -186,8 +251,31 @@ impl VerificationGuard {
 }
 
 /// Clears the slot's batch when the batch ends, on every path.
-struct BatchMembership<'a> {
+pub(super) struct BatchMembership<'a> {
     owner: &'a VerificationGuard,
+}
+
+impl BatchMembership<'_> {
+    /// Takes a member the batch left out off the slot, so a reset of that
+    /// story neither waits for the batch nor ends it.
+    pub(super) fn leave(&self, story_id: &str) {
+        self.owner.with_own_slot(|slot| {
+            if let Some(batch) = slot.batch.as_mut() {
+                batch.members.remove(story_id);
+                batch.view.members.retain(|member| member != story_id);
+            }
+        });
+    }
+
+    /// Shows the batch's record id and phase in status.
+    pub(super) fn show(&self, id: &BatchId, phase: BatchPhase) {
+        self.owner.with_own_slot(|slot| {
+            if let Some(batch) = slot.batch.as_mut() {
+                batch.view.id = Some(id.to_string());
+                phase.as_str().clone_into(&mut batch.view.phase);
+            }
+        });
+    }
 }
 
 impl Drop for BatchMembership<'_> {
@@ -215,7 +303,7 @@ pub fn abandon_interrupted_batches(
         Ok(tx
             .verification_batches(project)?
             .iter()
-            .any(|batch| batch.phase.is_live()))
+            .any(|batch| batch.phase.is_abandonable()))
     })?;
     if !live {
         return Ok(Vec::new());
@@ -232,7 +320,7 @@ fn abandon_live(
 ) -> Result<Vec<BatchId>, StoreError> {
     let mut abandoned = Vec::new();
     for batch in tx.verification_batches(project)? {
-        if !batch.phase.is_live() {
+        if !batch.phase.is_abandonable() {
             continue;
         }
         let mut next = batch.advance(BatchPhase::Abandoned, now)?;
@@ -295,11 +383,16 @@ pub(super) fn run<S: Store>(
             .collect::<Vec<_>>(),
     );
     let membership = owner.enter_batch(
-        plan.members
-            .iter()
-            .skip(1)
-            .map(|member| member.candidate.story_id.clone())
-            .collect(),
+        status::ActiveBatch {
+            id: None,
+            head: head.story_id.clone(),
+            members: plan
+                .members
+                .iter()
+                .map(|member| member.candidate.story_id.clone())
+                .collect(),
+            phase: "selected".into(),
+        },
         cancellation.clone(),
     );
     let mut attempt = Attempt {
@@ -312,6 +405,8 @@ pub(super) fn run<S: Store>(
         plan,
         cancellation: &cancellation,
         tracked: &tracked,
+        membership: Some(membership),
+        locks: None,
         record: None,
         dissolved: None,
         failure: None,
@@ -333,7 +428,7 @@ pub(super) fn run<S: Store>(
         },
         || attempt.steps(),
     );
-    drop(membership);
+    attempt.membership = None;
     if let Err(error) = steps {
         attempt.failure = Some(format!("the batch step failed: {error}"));
     }
@@ -386,11 +481,17 @@ fn plan<S: Store>(
             .iter()
             .any(|recovery| recovery.active);
         let incident = tx.verification_incident(head.project)?.is_some();
+        // One live batch per project: a batch still landing (its merge
+        // requested or uncertain) is resolved from its intents first.
+        let landing = tx
+            .verification_batches(head.project)?
+            .iter()
+            .any(|batch| batch.phase == BatchPhase::Landing);
         let prefix = tx
             .project(head.project)?
             .ok_or_else(|| StoreError::NotFound(format!("project {}", head.project)))?
             .prefix;
-        Ok((!recovering && !incident, prefix))
+        Ok((!recovering && !incident && !landing, prefix))
     })?;
     if !ordinary {
         return Ok(None);

@@ -403,6 +403,7 @@ fn progressing_landing_outlives_the_control_budget_but_silence_keeps_authority_u
                         gate: "test gate".into(),
                     },
                     created_at: FIXTURE_NOW.into(),
+                    batch: None,
                 };
                 actuator.land(&candidate, &intent)
             },

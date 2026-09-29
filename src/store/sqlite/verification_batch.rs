@@ -89,9 +89,15 @@ pub(super) fn prune(
 ) -> Result<usize, StoreError> {
     let keep = i64::try_from(keep)
         .map_err(|_| StoreError::Validation("batch retention is out of range".into()))?;
+    // A batch named by a landing intent (a member a person holds after its
+    // batch landed) is never pruned: that intent is validated against it
+    // before every commit.
     conn.execute(
         "DELETE FROM verification_batches
          WHERE project_id = ?1 AND live = 0 AND json_extract(payload, '$.retired') = 1
+           AND id NOT IN (
+             SELECT json_extract(payload, '$.batch.id') FROM landing_intents
+             WHERE json_extract(payload, '$.batch.id') IS NOT NULL)
            AND rowid NOT IN (
              SELECT rowid FROM verification_batches
              WHERE project_id = ?1 AND live = 0 AND json_extract(payload, '$.retired') = 1

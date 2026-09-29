@@ -24,6 +24,7 @@ fn member(story: StoryNo, prefix: &str, position: u32) -> BatchMember {
         head_commit: oid(char::from_digit(position + 1, 10).unwrap()),
         pull_request: format!("https://github.com/acme/widgets/pull/{}", position + 1),
         position,
+        branch: None,
     }
 }
 
@@ -343,4 +344,116 @@ fn a_payload_that_disagrees_with_its_columns_cannot_be_stored() {
         rusqlite::params![record.id.as_str(), project.get(), payload],
     )
     .expect("the consistent row is stored");
+}
+
+/// A batch record can hold a landing and its end (SH-832), and a landing
+/// batch stays live: it still counts as the project's one live batch.
+#[test]
+fn a_certified_batch_moves_through_landing_to_landed() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "first", "AA");
+    let assembled = batch(&store, project, "AA");
+    let submitted = assembled.advance(BatchPhase::Submitted, AT).unwrap();
+    let gating = submitted.advance(BatchPhase::Gating, AT).unwrap();
+    let landing = gating.advance(BatchPhase::Landing, AT).unwrap();
+    store
+        .write(|tx| {
+            tx.insert_verification_batch(&assembled)?;
+            assert!(tx.update_verification_batch(&submitted, 0)?);
+            assert!(tx.update_verification_batch(&gating, 1)?);
+            assert!(tx.update_verification_batch(&landing, 2)?);
+            Ok(())
+        })
+        .unwrap();
+    let second = batch(&store, project, "AA");
+    assert!(
+        store
+            .write(|tx| tx.insert_verification_batch(&second))
+            .is_err(),
+        "a landing batch is still the project's live batch"
+    );
+    assert!(landing.advance(BatchPhase::Abandoned, AT).is_err());
+    let landed = landing.advance(BatchPhase::Landed, AT).unwrap();
+    assert!(
+        store
+            .write(|tx| tx.update_verification_batch(&landed, 3))
+            .unwrap()
+    );
+    let reopened = SqliteStore::open(store.path()).unwrap();
+    assert_eq!(
+        reopened
+            .read(|tx| tx.verification_batches(project))
+            .unwrap(),
+        vec![landed]
+    );
+    assert!(
+        store
+            .write(|tx| tx.insert_verification_batch(&second))
+            .is_ok(),
+        "a landed batch ends"
+    );
+}
+
+/// Migration 52 rebuilds the table with the landing phases: every row, its
+/// rowid order (listing and retention read it) and the one-live-batch index
+/// survive, and the new phases can be stored.
+#[test]
+fn migration_52_keeps_every_batch_in_order_and_the_live_index() {
+    use storyhook::store::MIGRATIONS;
+    let dir = storyhook_test_support::scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    let before_52 = MIGRATIONS
+        .iter()
+        .take_while(|migration| migration.version < 52)
+        .copied()
+        .collect::<Vec<_>>();
+    store.migrate_with(&before_52).unwrap();
+    let project = seed_project(&store, "first", "AA");
+    let first = batch(&store, project, "AA");
+    let second = batch(&store, project, "AA");
+    let ended = ended(&first, BatchPhase::Released);
+    store
+        .write(|tx| {
+            tx.insert_verification_batch(&first)?;
+            assert!(tx.update_verification_batch(&ended, 0)?);
+            tx.insert_verification_batch(&second)?;
+            Ok(())
+        })
+        .unwrap();
+
+    store.migrate().unwrap();
+
+    assert_eq!(
+        store.read(|tx| tx.verification_batches(project)).unwrap(),
+        vec![ended, second.clone()],
+        "rows and their order survive the rebuild"
+    );
+    let third = batch(&store, project, "AA");
+    assert!(
+        store
+            .write(|tx| tx.insert_verification_batch(&third))
+            .is_err(),
+        "the one-live-batch index survives the rebuild"
+    );
+    let landing = second
+        .advance(BatchPhase::Submitted, AT)
+        .and_then(|next| next.advance(BatchPhase::Gating, AT))
+        .and_then(|next| next.advance(BatchPhase::Landing, AT))
+        .unwrap();
+    let mut path = second;
+    for next in [BatchPhase::Submitted, BatchPhase::Gating] {
+        let moved = path.advance(next, AT).unwrap();
+        assert!(
+            store
+                .write(|tx| tx.update_verification_batch(&moved, path.revision))
+                .unwrap()
+        );
+        path = moved;
+    }
+    assert!(
+        store
+            .write(|tx| tx.update_verification_batch(&landing, path.revision))
+            .unwrap(),
+        "the landing phase is storable after migration 52"
+    );
 }

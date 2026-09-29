@@ -475,6 +475,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0051_verification_batches.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 52,
+        name: "verification_batch_landing",
+        sql: include_str!("schema/0052_verification_batch_landing.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 mod lineage;

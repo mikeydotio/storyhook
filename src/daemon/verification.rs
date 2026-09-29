@@ -20,7 +20,8 @@ mod reconcile_wait_tests;
 #[cfg(test)]
 mod workspace_tests;
 pub use batch::{
-    BatchActuator, BatchPublication, BatchRetirement, MemberOwner, abandon_interrupted_batches,
+    BatchActuator, BatchPublication, BatchRetirement, MemberBranch, MemberOwner, MemberPrune,
+    abandon_interrupted_batches,
 };
 pub use batch_preview::batch_preview_log;
 pub use cleanup::{CompletedVerification, VerificationCleanupFailure};
@@ -147,11 +148,13 @@ struct VerificationSlot {
     batch: Option<BatchSlot>,
 }
 
-/// A running batch's non-head members and the cancellation that ends the
-/// batch without ending the head's attempt.
+/// A running batch's non-head members, the cancellation that ends the
+/// batch without ending the head's attempt, and the batch as status shows
+/// it (SH-832).
 struct BatchSlot {
     members: BTreeSet<String>,
     cancellation: Cancellation,
+    view: status::ActiveBatch,
 }
 
 impl VerificationActivity {
@@ -847,9 +850,14 @@ impl ShellVerificationActuator {
     }
 
     /// Forms verification batches (SH-831) around each dequeued story, which
-    /// also turns on the preview that selects them. Landing a batch is not
-    /// built yet, so the daemon's own verifier does not ask for it (decision
-    /// D1 on SH-831); tests do.
+    /// also turns on the preview that selects them, and lands a certified
+    /// batch (SH-832). The daemon's own verifier does not ask for it: council
+    /// decision D10 on SH-832 (replacing decision D1 on SH-831) measured that
+    /// at the current red rate a batch loses throughput before bisection,
+    /// and SH-841 turns it on only when live preview records show a
+    /// would-be pair green at least half the time over 30 or more dequeues
+    /// (or 62% of stories green once SH-833 bisects), capped at two members
+    /// for a supervised first batch. Tests ask for it.
     #[must_use]
     pub fn with_batching(mut self) -> Self {
         self.batch_preview = true;
@@ -902,14 +910,17 @@ impl ShellVerificationActuator {
             }
             let script = self.verifier_script()?;
             let journal = journal_path(&self.env, candidate);
-            let marker = journal.with_file_name(format!("landing-{}.attempted", intent.id));
+            // A batch member's intent lands the batch pull request, and every
+            // member shares one attempt marker (SH-832 D2).
+            let marker =
+                journal.with_file_name(format!("landing-{}.attempted", intent.landing_attempt()));
             let mut command = Command::new("bash");
             apply_verification_allowlist(&mut command);
             command
                 .arg(script)
                 .arg("--landing")
                 .arg(if recover { "recover" } else { "attempt" })
-                .arg(&intent.pull_request)
+                .arg(intent.landing_pull_request())
                 .arg(&intent.certification.head)
                 .arg(&intent.certification.tree)
                 .arg(marker)
@@ -1119,6 +1130,24 @@ impl ShellVerificationActuator {
     }
 
     fn reap_leased(&self, candidate: &VerificationCandidate) -> Result<(), AppError> {
+        let workspace = self.activity.workspace_for(candidate.project);
+        self.reap_owned(
+            candidate,
+            ControlOwner {
+                workspace: workspace.as_deref(),
+                cancellation: &self.activity.cancellation_for(candidate.project),
+            },
+        )
+    }
+
+    /// Reaps `candidate` with an explicit owner: the workspace lock the
+    /// helper inherits must be that story's own (the helper refuses another
+    /// story's descriptor), which a batch member's reap supplies (SH-832).
+    pub(super) fn reap_owned(
+        &self,
+        candidate: &VerificationCandidate,
+        owner: ControlOwner<'_>,
+    ) -> Result<(), AppError> {
         let _log = self.log_scope(candidate);
         let lease = candidate.cleanup_lease.as_ref().ok_or_else(|| {
             AppError::Storage(format!(
@@ -1144,12 +1173,12 @@ impl ShellVerificationActuator {
             .env(CLEANUP_LEASE_ENV, encoded)
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null());
-        let output = self.run_control_command(
+        let output = self.run_control_owned(
             command,
             "verifier-reap",
             &verification_request_id(candidate),
-            candidate.project,
             "leased story helper `reap`",
+            owner,
         )?;
 
         let receipt: CleanupReceipt = serde_json::from_slice(&output.stdout).map_err(|_| {
@@ -2059,6 +2088,9 @@ where
         })?;
     }
     let ordered = queue.ordered_for(project)?;
+    // One recovery per batch per tick: every member's intent observes the
+    // same batch merge (SH-832 D5).
+    let mut recovered_batches = BTreeSet::new();
     for intent in store.read(|tx| tx.landing_intents())? {
         let Some(candidate) = ordered
             .iter()
@@ -2066,6 +2098,11 @@ where
         else {
             continue;
         };
+        if let Some(batch) = &intent.batch
+            && !recovered_batches.insert(batch.id.clone())
+        {
+            continue;
+        }
         let lifecycle_entry = inflight.enter();
         let started_at = env.now();
         name_verification(&lifecycle_entry, candidate, &started_at);
@@ -2103,6 +2140,12 @@ where
                     .no_hooks(true);
                     if !observation::human_permits(store, candidate)? {
                         return Ok(TickResult::Returned);
+                    }
+                    if intent.batch.is_some() {
+                        return batch::recover(
+                            store, env, &queue, &ctx, actuator, candidate, &active, &intent,
+                            &detail, &ordered,
+                        );
                     }
                     let pending = active.reserve(ReservationReason::Cleanup, env.now());
                     if !queue.complete_landing_for(&ctx, candidate, &intent, &detail)? {
@@ -2391,6 +2434,54 @@ where
                             Some(&summary),
                         );
                         return Ok(result);
+                    }
+                    batch::BatchEnd::Land(mut landing) => {
+                        batched = true;
+                        let landed = batch::land(
+                            store,
+                            env,
+                            &queue,
+                            &ctx,
+                            actuator,
+                            &candidate,
+                            &active,
+                            &mut landing,
+                        )?;
+                        match landed {
+                            // The merge was never requested: the head goes
+                            // on to its own gate, as after any released batch.
+                            batch::Landed::Released => batch_summary = Some(landing.summary),
+                            batch::Landed::Tick(result) => {
+                                batch_preview::finish(
+                                    env,
+                                    &active,
+                                    &candidate,
+                                    preview,
+                                    Instant::now(),
+                                    &Ok(Some(landing.outcome.clone())),
+                                    Some(&landing.summary),
+                                );
+                                return Ok(result);
+                            }
+                            batch::Landed::Reap(reaps) => {
+                                batch_preview::finish(
+                                    env,
+                                    &active,
+                                    &candidate,
+                                    preview,
+                                    Instant::now(),
+                                    &Ok(Some(landing.outcome.clone())),
+                                    Some(&landing.summary),
+                                );
+                                // Reaping is cleanup for work already recorded
+                                // done; graceful shutdown must not wait on it
+                                // (as for one story).
+                                drop(lifecycle_entry);
+                                return batch::reap(
+                                    store, env, &ctx, actuator, &candidate, &active, *reaps,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -3499,6 +3590,9 @@ pub(crate) fn poll_verification(
     std::thread::scope(|scope| {
         scope.spawn(|| super::project_recovery::poll(store, env, bus, stop, activity));
         scope.spawn(|| super::activity::window::poll(store, env, stop, &activity.view_requests));
+        // Previews, never batches (council decision D10 on SH-832; SH-841
+        // enables batching on a measured trigger). A batch landing left by
+        // an earlier build is still recovered: recovery needs no batching.
         poll_verification_with(store, env, bus, stop, activity, inflight, |_| {
             ShellVerificationActuator::new(env.clone())
                 .with_activity(activity.clone())

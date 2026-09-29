@@ -4,7 +4,7 @@ use super::block_delivery::{SubmissionGate, derive_block_edges};
 use super::{Ctx, VerificationCandidate, VerificationQueue};
 pub use crate::domain::landing::VerifiedSubmission;
 use crate::error::AppError;
-use crate::store::{LandingIntent, ReadOps, Store, StoreError, StoryNo, WriteOps};
+use crate::store::{GlobalSeq, LandingIntent, ReadOps, Store, StoreError, StoryNo, WriteOps};
 
 /// Whether verification may begin an external merge for its exact submission.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,39 +42,17 @@ impl<S: Store> VerificationQueue<'_, S> {
             return Ok(LandingAdmission::Superseded);
         }
         Ok(self.store.write(|tx| {
-            if let Some(intent) = tx
-                .landing_intents()?
-                .into_iter()
-                .find(|i| i.project == candidate.project && i.story_id == candidate.story_id)
-            {
+            if let Some(intent) = pending_intent(tx, candidate)? {
                 return Ok(LandingAdmission::Pending(intent));
             }
-            let Some(current) = super::verification::ordered_candidates_for(tx, candidate.project)?
-                .into_iter()
-                .find(|c| c.project == candidate.project && c.story_id == candidate.story_id)
-            else {
-                return Ok(LandingAdmission::Superseded);
+            let (generation, pull_request) = match admissible(tx, candidate)? {
+                Admissible::Ready {
+                    generation,
+                    pull_request,
+                } => (generation, pull_request),
+                Admissible::Held(blockers) => return Ok(LandingAdmission::Held(blockers)),
+                Admissible::Superseded => return Ok(LandingAdmission::Superseded),
             };
-            if current.verifying_generation != candidate.verifying_generation
-                || current.human_only_revision != candidate.human_only_revision
-                || current.pull_request != candidate.pull_request
-                || current.checkout != candidate.checkout
-                || current.project_slug != candidate.project_slug
-            {
-                return Ok(LandingAdmission::Superseded);
-            }
-            if !current.blocked_by.is_empty() {
-                return Ok(LandingAdmission::Held(current.blocked_by));
-            }
-            if current.blocking_revision != candidate.blocking_revision {
-                return Ok(LandingAdmission::Superseded);
-            }
-            let Some(generation) = current.verifying_generation else {
-                return Ok(LandingAdmission::Superseded);
-            };
-            let pr = current
-                .pull_request
-                .map_err(|problem| StoreError::Validation(problem.message()))?;
             let prefix = super::project_prefix(tx, candidate.project)?;
             let intent = LandingIntent {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -83,13 +61,13 @@ impl<S: Store> VerificationQueue<'_, S> {
                 story_id: candidate.story_id.clone(),
                 project_slug: candidate.project_slug.clone(),
                 generation,
-                pull_request: pr.url,
+                pull_request,
                 checkout: candidate.checkout.clone(),
                 certification: certification.clone(),
                 created_at: ctx.now(),
+                batch: None,
             };
-            crate::store::landing::validate_intent(tx, &intent)?;
-            tx.insert_landing_intent(&intent)?;
+            admit_intent(tx, &intent)?;
             Ok(LandingAdmission::Admitted(intent))
         })?)
     }
@@ -127,7 +105,6 @@ impl<S: Store> VerificationQueue<'_, S> {
         detail: &str,
         candidate: Option<&VerificationCandidate>,
     ) -> Result<bool, AppError> {
-        use crate::domain::{StoryEvent, completion_state};
         if ctx.project() != intent.project {
             return Err(AppError::Validation(
                 "landing context belongs to another project".into(),
@@ -138,29 +115,9 @@ impl<S: Store> VerificationQueue<'_, S> {
         // owed their Resume (SH-772). It moves nothing into `verifying`.
         Ok(self.store.write(|tx| {
             derive_block_edges(tx, intent.project, SubmissionGate::NotASubmission, |tx| {
-                if let Some(candidate) = candidate
-                    && !super::verification::human::permits(tx, candidate)?
-                {
+                if !completable(tx, intent, candidate)? {
                     return Ok(false);
                 }
-                if !tx.landing_intents()?.contains(intent) {
-                    return Ok(false);
-                }
-                crate::store::landing::validate_intent(tx, intent)?;
-                let prefix = super::project_prefix(tx, intent.project)?;
-                let row = tx
-                    .story(intent.project, intent.story)?
-                    .ok_or_else(|| StoreError::NotFound(intent.story_id.clone()))?;
-                // A remote merge may already have happened. Keep its intent for
-                // reconciliation rather than completing a person's reserved work.
-                if crate::domain::is_human_only(&row.snapshot) {
-                    return Ok(false);
-                }
-                let done = completion_state(&tx.states(intent.project)?).ok_or_else(|| {
-                    StoreError::Validation("project lacks required done state".into())
-                })?;
-                let states = tx.state_map(intent.project)?;
-                let now = ctx.now();
                 let comment = format!(
                     "{} merge tree `{}` passed `{}` and pull request {} landed.\n\n{}",
                     super::VERIFICATION_GREEN_PREFIX,
@@ -169,35 +126,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                     intent.pull_request,
                     crate::text_lint::quote_evidence(detail)
                 );
-                if let Some(incident) = tx.verification_incident(intent.project)?
-                    && incident.project == intent.project
-                    && incident.generation == intent.generation
-                {
-                    tx.clear_verification_incident(&incident.incident_id)?;
-                }
-                tx.remove_landing_intent(intent)?;
-                super::story::append_state_transition(
-                    tx,
-                    intent.project,
-                    intent.story,
-                    &row,
-                    &prefix,
-                    &states,
-                    &done,
-                    &now,
-                    vec![
-                        StoryEvent::StoryCommentAdded {
-                            at: now.clone(),
-                            text: comment,
-                        },
-                        StoryEvent::StoryPrMerged {
-                            at: now.clone(),
-                            url: intent.pull_request.clone(),
-                        },
-                    ],
-                    ctx.provenance(),
-                )?;
-                super::project_recovery::record_landing(tx, intent, &now)?;
+                complete_story(tx, ctx, intent, comment)?;
                 Ok(true)
             })
         })?)
@@ -208,6 +137,168 @@ impl<S: Store> VerificationQueue<'_, S> {
         &self,
         intent: &LandingIntent,
     ) -> Result<bool, AppError> {
-        Ok(self.store.write(|tx| tx.remove_landing_intent(intent))?)
+        Ok(self.store.write(|tx| release_intent(tx, intent))?)
     }
+}
+
+/// The pending landing intent of `candidate`'s story, if one exists.
+pub(super) fn pending_intent(
+    tx: &impl ReadOps,
+    candidate: &VerificationCandidate,
+) -> Result<Option<LandingIntent>, StoreError> {
+    Ok(tx
+        .landing_intents()?
+        .into_iter()
+        .find(|i| i.project == candidate.project && i.story_id == candidate.story_id))
+}
+
+/// Whether a candidate's submission may still be admitted to land, read
+/// inside the admitting transaction.
+pub(super) enum Admissible {
+    /// The submission is current: its generation and linked pull request.
+    Ready {
+        /// The submitted generation.
+        generation: GlobalSeq,
+        /// The linked pull request's URL.
+        pull_request: String,
+    },
+    /// Open dependencies hold the submission.
+    Held(Vec<String>),
+    /// The submission changed since the candidate was read.
+    Superseded,
+}
+
+/// Re-derives `candidate` from the queue inside `tx` and compares every
+/// field its landing authority depends on.
+pub(super) fn admissible(
+    tx: &impl ReadOps,
+    candidate: &VerificationCandidate,
+) -> Result<Admissible, StoreError> {
+    let Some(current) = super::verification::ordered_candidates_for(tx, candidate.project)?
+        .into_iter()
+        .find(|c| c.project == candidate.project && c.story_id == candidate.story_id)
+    else {
+        return Ok(Admissible::Superseded);
+    };
+    if current.verifying_generation != candidate.verifying_generation
+        || current.human_only_revision != candidate.human_only_revision
+        || current.pull_request != candidate.pull_request
+        || current.checkout != candidate.checkout
+        || current.project_slug != candidate.project_slug
+    {
+        return Ok(Admissible::Superseded);
+    }
+    if !current.blocked_by.is_empty() {
+        return Ok(Admissible::Held(current.blocked_by));
+    }
+    if current.blocking_revision != candidate.blocking_revision {
+        return Ok(Admissible::Superseded);
+    }
+    let Some(generation) = current.verifying_generation else {
+        return Ok(Admissible::Superseded);
+    };
+    let pull_request = current
+        .pull_request
+        .map_err(|problem| StoreError::Validation(problem.message()))?
+        .url;
+    Ok(Admissible::Ready {
+        generation,
+        pull_request,
+    })
+}
+
+/// Whether `intent` may be completed now: it is still pending unchanged, it
+/// still validates, its story is not a person's, and (for a daemon attempt)
+/// the attempt's human reservation is still current.
+pub(super) fn completable(
+    tx: &impl ReadOps,
+    intent: &LandingIntent,
+    candidate: Option<&VerificationCandidate>,
+) -> Result<bool, StoreError> {
+    if let Some(candidate) = candidate
+        && !super::verification::human::permits(tx, candidate)?
+    {
+        return Ok(false);
+    }
+    if !tx.landing_intents()?.contains(intent) {
+        return Ok(false);
+    }
+    crate::store::landing::validate_intent(tx, intent)?;
+    let row = tx
+        .story(intent.project, intent.story)?
+        .ok_or_else(|| StoreError::NotFound(intent.story_id.clone()))?;
+    // A remote merge may already have happened. Keep its intent for
+    // reconciliation rather than completing a person's reserved work.
+    Ok(!crate::domain::is_human_only(&row.snapshot))
+}
+
+/// Completes one story whose landing is confirmed: `comment` (a GREEN),
+/// `StoryPrMerged` for the story's own pull request and the move to the
+/// completion state, with its intent released, in the caller's transaction.
+pub(super) fn complete_story<S: Store>(
+    tx: &mut impl WriteOps,
+    ctx: &Ctx<'_, S>,
+    intent: &LandingIntent,
+    comment: String,
+) -> Result<(), StoreError> {
+    use crate::domain::{StoryEvent, completion_state};
+    let prefix = super::project_prefix(tx, intent.project)?;
+    let row = tx
+        .story(intent.project, intent.story)?
+        .ok_or_else(|| StoreError::NotFound(intent.story_id.clone()))?;
+    let done = completion_state(&tx.states(intent.project)?)
+        .ok_or_else(|| StoreError::Validation("project lacks required done state".into()))?;
+    let states = tx.state_map(intent.project)?;
+    let now = ctx.now();
+    if let Some(incident) = tx.verification_incident(intent.project)?
+        && incident.project == intent.project
+        && incident.generation == intent.generation
+    {
+        tx.clear_verification_incident(&incident.incident_id)?;
+    }
+    tx.remove_landing_intent(intent)?;
+    super::story::append_state_transition(
+        tx,
+        intent.project,
+        intent.story,
+        &row,
+        &prefix,
+        &states,
+        &done,
+        &now,
+        vec![
+            StoryEvent::StoryCommentAdded {
+                at: now.clone(),
+                text: comment,
+            },
+            StoryEvent::StoryPrMerged {
+                at: now.clone(),
+                url: intent.pull_request.clone(),
+            },
+        ],
+        ctx.provenance(),
+    )?;
+    super::project_recovery::record_landing(tx, intent, &now)?;
+    Ok(())
+}
+
+/// Acquires `intent` as durable landing authority in the caller's
+/// transaction, after validating it. This module is the one owner of every
+/// landing-authority mutation (`tests/state_set_funnel.rs`); a batch admits
+/// one intent per member through here (SH-832).
+pub(super) fn admit_intent(
+    tx: &mut impl WriteOps,
+    intent: &LandingIntent,
+) -> Result<(), StoreError> {
+    crate::store::landing::validate_intent(tx, intent)?;
+    tx.insert_landing_intent(intent)
+}
+
+/// Releases `intent` in the caller's transaction, for a merge that was
+/// provably never requested.
+pub(super) fn release_intent(
+    tx: &mut impl WriteOps,
+    intent: &LandingIntent,
+) -> Result<bool, StoreError> {
+    tx.remove_landing_intent(intent)
 }

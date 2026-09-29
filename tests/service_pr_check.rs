@@ -571,3 +571,134 @@ fn check_isolates_one_pull_requests_failure_from_another_link() {
         "the failing repository's own story must not close"
     );
 }
+
+/// Admits a landing for the one verifying story `id`, the way the verifier
+/// does just before it asks GitHub to merge (SH-656).
+fn admit_landing(fixture: &ServiceFixture) -> storyhook::store::LandingIntent {
+    use storyhook::service::VerificationQueue;
+    use storyhook::service::landing::{LandingAdmission, VerifiedSubmission};
+    let queue = VerificationQueue::new(fixture.store());
+    let candidate = queue.next().unwrap().expect("a queued submission");
+    let LandingAdmission::Admitted(intent) = queue
+        .begin_landing(
+            &fixture.ctx(),
+            &candidate,
+            &VerifiedSubmission {
+                head: "a".repeat(40),
+                tree: "b".repeat(40),
+                gate: "make test".into(),
+            },
+        )
+        .unwrap()
+    else {
+        panic!("landing admission refused")
+    };
+    intent
+}
+
+/// Runs a whole-project check where `landing`'s pull request #7 reads as
+/// `state`/`merged`, beside an ordinary merged link (#9) on a later story.
+/// Answers the landing story's row, the ordinary story's row and the
+/// check's message.
+fn check_beside_a_pending_landing(
+    state: &str,
+    merged: bool,
+) -> (
+    ServiceFixture,
+    storyhook::store::LandingIntent,
+    storyhook::store::StoryRow,
+    storyhook::store::StoryRow,
+    String,
+) {
+    let fixture = ServiceFixture::new();
+    configure_remote(&fixture, "acme", "widgets");
+    let landing = create(&fixture, "Landing under the verifier");
+    let ordinary = create(&fixture, "Merged by a person");
+    let ctx = fixture.ctx();
+    PrLinkService::new(&ctx).link(&landing, URL, true).unwrap();
+    PrLinkService::new(&ctx)
+        .link(&ordinary, "https://github.com/acme/widgets/pull/9", true)
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state(&landing, "verifying", None, None, None)
+        .unwrap();
+    let intent = admit_landing(&fixture);
+
+    let fake = FakeGithubApiFactory::new();
+    fake.seed_pull_request(7, state, merged);
+    fake.seed_pull_request(9, "closed", true);
+    let message = format!(
+        "{:?}",
+        run_check(&ctx, &fake, None).expect("a pending landing never fails the poll")
+    );
+
+    let project = fixture.project();
+    let row = |id: &str| {
+        let story_no = storyhook::store::StoryNo::parse_id("SH", id).unwrap();
+        fixture
+            .store()
+            .read(|tx| tx.story(project, story_no))
+            .unwrap()
+            .expect("story exists")
+    };
+    let (landing, ordinary) = (row(&landing), row(&ordinary));
+    (fixture, intent, landing, ordinary, message)
+}
+
+/// A merged pull request of a story whose landing intent is pending is the
+/// verifier's to complete (SH-832 D7). Before the fix the poller's write
+/// failed the pending intent's check before commit and aborted the whole
+/// poll, so the ordinary merged story after it was never closed.
+#[test]
+fn check_leaves_a_merged_pull_request_under_a_pending_landing_to_the_verifier() {
+    let (fixture, intent, landing, ordinary, message) =
+        check_beside_a_pending_landing("closed", true);
+    assert!(
+        message.contains(&format!(
+            "landing in progress (the verifier completes it): {}",
+            landing.snapshot.id
+        )),
+        "the check names what it left alone: {message}"
+    );
+    assert_eq!(landing.state, "verifying");
+    assert!(
+        landing.snapshot.comments.iter().all(|comment| !comment
+            .text
+            .starts_with(VERIFICATION_UNCERTIFIED_MERGE_PREFIX)),
+        "a merge under a landing intent is never called uncertified: {:?}",
+        landing.snapshot.comments
+    );
+    assert_eq!(
+        fixture.store().read(|tx| tx.landing_intents()).unwrap(),
+        std::slice::from_ref(&intent),
+        "the intent still fences the story for the verifier's completion"
+    );
+    let project = fixture.project();
+    let open = fixture
+        .store()
+        .read(|tx| tx.open_pr_links_for_story(project, intent.story))
+        .unwrap();
+    assert_eq!(open.len(), 1, "the link stays open for the completion");
+    assert_eq!(
+        ordinary.state, COMPLETION_STATE_SLUG,
+        "the rest of the poll still ran"
+    );
+}
+
+/// The same for a pull request closed without merging: `StoryPrClosed`
+/// would change the link the pending intent names, so it is not written.
+#[test]
+fn check_leaves_a_closed_pull_request_under_a_pending_landing_to_the_verifier() {
+    let (fixture, intent, landing, ordinary, message) =
+        check_beside_a_pending_landing("closed", false);
+    assert!(
+        message.contains("landing in progress (the verifier completes it)"),
+        "{message}"
+    );
+    assert_eq!(landing.state, "verifying");
+    assert_eq!(
+        fixture.store().read(|tx| tx.landing_intents()).unwrap(),
+        [intent]
+    );
+    assert_eq!(ordinary.state, COMPLETION_STATE_SLUG);
+}

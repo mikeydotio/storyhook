@@ -22,6 +22,19 @@ fn repository() -> tempfile::TempDir {
     root
 }
 
+/// A running batch headed by SH-1 with `members` after the head.
+fn view(members: &[&str]) -> status::ActiveBatch {
+    status::ActiveBatch {
+        id: None,
+        head: "SH-1".into(),
+        members: std::iter::once("SH-1")
+            .chain(members.iter().copied())
+            .map(str::to_owned)
+            .collect(),
+        phase: "selected".into(),
+    }
+}
+
 fn lock_path(root: &Path, story: &str) -> std::path::PathBuf {
     root.join(".git/storyhook/workspace-locks")
         .join(format!("{story}.lock"))
@@ -101,7 +114,7 @@ fn a_reset_of_a_batch_member_ends_the_batch_not_the_heads_attempt() {
     let activity = VerificationActivity::new();
     let guard = activity.acquire(&candidate, env.now());
     let batch = Cancellation::default();
-    let membership = guard.enter_batch(BTreeSet::from(["SH-7".to_owned()]), batch.clone());
+    let membership = guard.enter_batch(view(&["SH-7"]), batch.clone());
 
     std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -122,13 +135,44 @@ fn a_reset_of_a_batch_member_ends_the_batch_not_the_heads_attempt() {
     activity
         .cancel_story_and_wait(project, "SH-8", Instant::now())
         .expect("neither head nor member: nothing to wait for");
-    let _stuck = guard.enter_batch(BTreeSet::from(["SH-7".to_owned()]), Cancellation::default());
+    let _stuck = guard.enter_batch(view(&["SH-7"]), Cancellation::default());
     assert!(
         activity
             .cancel_story_and_wait(project, "SH-7", Instant::now())
             .is_err(),
         "a batch that does not release in time is reported, never waited on forever"
     );
+}
+
+/// A member the batch left out (busy lock, refused submission, moved head)
+/// is no longer the batch's: before the fix it stayed listed on the slot, so
+/// a reset of that story cancelled the whole batch and then waited for it.
+#[test]
+fn a_member_left_out_of_the_batch_is_neither_waited_for_nor_ends_it() {
+    let fixture = ServiceFixture::new();
+    let store = SqliteStore::open(fixture.store().path()).unwrap();
+    let project = ProjectId::new(fixture.project().get());
+    let env = Environment::at(fixture.cwd());
+    let candidate = head(&store, &env, project);
+    let activity = VerificationActivity::new();
+    let guard = activity.acquire(&candidate, env.now());
+    let batch = Cancellation::default();
+    let membership = guard.enter_batch(view(&["SH-7", "SH-8"]), batch.clone());
+
+    membership.leave("SH-8");
+
+    activity
+        .cancel_story_and_wait(project, "SH-8", Instant::now())
+        .expect("a left-out story is not the batch's to wait for");
+    assert!(!batch.is_cancelled(), "its reset does not end the batch");
+    assert!(
+        activity
+            .cancel_story_and_wait(project, "SH-7", Instant::now())
+            .is_err(),
+        "a member still in the batch is waited for"
+    );
+    assert!(batch.is_cancelled());
+    drop(membership);
 }
 
 #[test]
@@ -258,6 +302,54 @@ fn a_starting_worker_opens_no_write_transaction_without_a_live_batch() {
     );
 }
 
+/// A batch in `landing` is recovered from its landing intents, never
+/// abandoned (B10, SH-832 D3): a restart that finds only such a batch writes
+/// nothing, and the batch stays `landing`.
+#[test]
+fn a_starting_worker_leaves_a_landing_batch_to_its_intents() {
+    let fixture = ServiceFixture::new();
+    let store = CountingStore {
+        inner: SqliteStore::open(fixture.store().path()).unwrap(),
+        writes: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let project = ProjectId::new(fixture.project().get());
+    let env = Environment::at(fixture.cwd());
+    let first = head(&store.inner, &env, project);
+    let second = head_named(&store.inner, &env, project, "Batch partner");
+    let batch = record(project, &[&first, &second]);
+    assert_eq!(batch.phase, BatchPhase::Gating);
+    let landing = batch
+        .advance(BatchPhase::Landing, "2026-01-01T00:00:01Z")
+        .unwrap();
+    store
+        .inner
+        .write(|tx| {
+            tx.insert_verification_batch(&batch)?;
+            assert!(tx.update_verification_batch(&landing, 0)?);
+            Ok(())
+        })
+        .unwrap();
+
+    assert!(
+        abandon_interrupted_batches(&store, &env, project)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store.writes(),
+        0,
+        "only a landing batch: nothing is written"
+    );
+    assert_eq!(
+        store
+            .inner
+            .read(|tx| tx.verification_batches(project))
+            .unwrap()[0]
+            .phase,
+        BatchPhase::Landing
+    );
+}
+
 fn head_named(
     store: &SqliteStore,
     env: &Environment,
@@ -306,6 +398,7 @@ fn record(project: ProjectId, members: &[&VerificationCandidate]) -> Verificatio
                 head_commit: "c".repeat(40),
                 pull_request: format!("https://github.com/acme/widgets/pull/{}", position + 1),
                 position: position as u32,
+                branch: None,
             })
             .collect(),
         excluded: Vec::new(),
@@ -446,6 +539,44 @@ fn a_member_submission_inherits_that_members_own_lock() {
         .unwrap();
 
     assert_eq!(receipt.number, 7);
+    let inherited: u64 = boundary.read("lock").trim().parse().unwrap();
+    let member_lock = std::fs::metadata(lock_path(&boundary.root, "SH-41")).unwrap();
+    assert_eq!(
+        inherited,
+        member_lock.ino(),
+        "the member's own lock, not the head's"
+    );
+}
+
+/// A landed member is reaped under its own workspace lock: the reap helper
+/// refuses any other story's descriptor, and the slot holds only the head's
+/// (SH-832 D6).
+#[test]
+fn a_member_reap_inherits_that_members_own_lock() {
+    let boundary = Boundary::new();
+    let activity = VerificationActivity::new();
+    let _head = activity.acquire(&boundary.candidate, boundary.env.now());
+    let actuator = boundary.actuator(&activity);
+    let (locks, busy) =
+        MemberLocks::acquire(&boundary.root, &[(StoryNo::new(41), "SH-41".to_owned())]).unwrap();
+    assert!(busy.is_empty());
+
+    // The fixture helper answers every verb with a submission receipt, which
+    // a reap refuses as its receipt; what matters here is the descriptor it
+    // inherited before answering.
+    let answer = actuator
+        .batch()
+        .expect("with_batching offers batch operations")
+        .reap_member(
+            &boundary.candidate,
+            MemberOwner(locks.get("SH-41").unwrap()),
+            &Cancellation::default(),
+        );
+
+    assert!(
+        answer.is_err(),
+        "the fixture's answer is not a reap receipt"
+    );
     let inherited: u64 = boundary.read("lock").trim().parse().unwrap();
     let member_lock = std::fs::metadata(lock_path(&boundary.root, "SH-41")).unwrap();
     assert_eq!(
