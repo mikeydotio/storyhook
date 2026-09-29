@@ -2882,8 +2882,10 @@ Inspect and control this project's centralized verifier.
   and story daemon logs for that evidence. The dashboard uses the same controls.
 
   load-context, next, summary, engine status and lane-budget expose unhealthy
-  verifier warnings. No progress evidence beyond the publisher interval is
-  overdue; waiting behind a progressing owner is ordinary queueing.
+  verifier warnings. A running gate is overdue only when its progress journal
+  and its captured output both stayed quiet beyond the publisher interval;
+  a gate that prints is active even when it reports no legs. Waiting behind
+  a progressing owner is ordinary queueing.
 
   Hooks: on_verification_halted and on_verification_resumed. A resumed event
   explicitly states whether admission was left stopped. Bind notifications

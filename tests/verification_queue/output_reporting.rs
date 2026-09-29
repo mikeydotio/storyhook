@@ -6,22 +6,24 @@ use std::fs::{self, File, FileTimes};
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 
-const START: &str = "2026-01-01T00:00:00Z";
-const RECENT: &str = "2026-01-01T00:09:59Z";
-const NOW: &str = "2026-01-01T00:10:00Z";
-const LATER: &str = "2026-01-01T00:14:00Z";
+pub(super) const START: &str = "2026-01-01T00:00:00Z";
+pub(super) const RECENT: &str = "2026-01-01T00:09:59Z";
+pub(super) const NOW: &str = "2026-01-01T00:10:00Z";
+pub(super) const LATER: &str = "2026-01-01T00:14:00Z";
 
-struct OutputFixture {
-    fixture: ServiceFixture,
-    candidate: VerificationCandidate,
-    activity: VerificationActivity,
+/// One owned attempt whose journal binds a real log (SH-713); shared with
+/// `output_status`, which reads the same evidence through the verifier status.
+pub(super) struct OutputFixture {
+    pub(super) fixture: ServiceFixture,
+    pub(super) candidate: VerificationCandidate,
+    pub(super) activity: VerificationActivity,
     guard: Option<VerificationGuard>,
-    journal: PathBuf,
-    log: PathBuf,
+    pub(super) journal: PathBuf,
+    pub(super) log: PathBuf,
 }
 
 impl OutputFixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let fixture = ServiceFixture::new();
         fixture.github_checkout("https://github.com/acme/widgets");
         submitted(&fixture, "foreign gate output", Priority::High, PR_ONE);
@@ -48,7 +50,7 @@ impl OutputFixture {
         this
     }
 
-    fn records(&self) -> Vec<Value> {
+    pub(super) fn records(&self) -> Vec<Value> {
         let held = self.activity.active_for(self.fixture.project()).unwrap();
         let metadata = fs::metadata(&self.log).unwrap();
         vec![
@@ -58,7 +60,7 @@ impl OutputFixture {
         ]
     }
 
-    fn write_journal(&self, rows: Vec<Value>) {
+    pub(super) fn write_journal(&self, rows: Vec<Value>) {
         let text = rows
             .iter()
             .map(Value::to_string)
@@ -69,7 +71,7 @@ impl OutputFixture {
         set_modified(&self.journal, START);
     }
 
-    fn publish(&self, now: &str) -> String {
+    pub(super) fn publish(&self, now: &str) -> String {
         publish_once(
             self.fixture.store(),
             self.fixture.env(),
@@ -101,7 +103,7 @@ impl OutputFixture {
     }
 }
 
-fn set_modified(path: &Path, at: &str) {
+pub(super) fn set_modified(path: &Path, at: &str) {
     let time = chrono::DateTime::parse_from_rfc3339(at).unwrap();
     File::options()
         .write(true)

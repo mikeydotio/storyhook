@@ -21,6 +21,9 @@ mod completed_capture;
 #[path = "verification_queue/output_reporting.rs"]
 mod output_reporting;
 
+#[path = "verification_queue/output_status.rs"]
+mod output_status;
+
 #[path = "verification_queue/human_only.rs"]
 mod human_only;
 

@@ -40,6 +40,19 @@ struct Extent {
     observed_at: DateTime<Utc>,
 }
 
+/// How a measurement dates growth past the committed baseline.
+#[derive(Clone, Copy)]
+enum GrowthDating {
+    /// At the observation itself: the publisher's committed rule (SH-713).
+    /// It only ever sees growth at its own ticks, and records what it saw.
+    Observation,
+    /// At the log's own modification second, clamped to the interval since
+    /// the committed observation (SH-777): a read between two publisher
+    /// ticks must not report the growth as older than it is, nor date it
+    /// before the baseline that did not yet contain it.
+    Modification,
+}
+
 /// Monotonic extent tracking owned by a single active verification slot.
 #[derive(Debug, Default)]
 pub(crate) struct OutputObserver {
@@ -61,7 +74,13 @@ impl OutputObserver {
             return OutputObservation::Unavailable(detail.clone());
         }
         let result = self
-            .measure(reference, attempt_id, started_at, now)
+            .measure(
+                reference,
+                attempt_id,
+                started_at,
+                now,
+                GrowthDating::Observation,
+            )
             .and_then(|extent| {
                 let age = extent.age()?;
                 self.extent = Some(extent);
@@ -80,6 +99,35 @@ impl OutputObserver {
         }
     }
 
+    /// Reads the current observation without committing it (SH-777): the
+    /// progress publisher alone moves the baseline, so a status read can
+    /// neither poison it with a different clock nor hide growth from it.
+    /// A binding the publisher already lost stays unavailable here too.
+    pub(crate) fn peek(
+        &self,
+        reference: Option<&OutputReference>,
+        attempt_id: &str,
+        started_at: &str,
+        now: &str,
+    ) -> OutputObservation {
+        if let Some(detail) = &self.invalid {
+            return OutputObservation::Unavailable(detail.clone());
+        }
+        match self
+            .measure(
+                reference,
+                attempt_id,
+                started_at,
+                now,
+                GrowthDating::Modification,
+            )
+            .and_then(|extent| extent.age())
+        {
+            Ok(age) => OutputObservation::Observed(age),
+            Err(detail) => OutputObservation::Unavailable(detail),
+        }
+    }
+
     /// Validates `reference` against this attempt and the committed extent and
     /// measures the log, without committing anything: the caller decides
     /// whether the measurement becomes the new baseline.
@@ -89,6 +137,7 @@ impl OutputObserver {
         attempt_id: &str,
         started_at: &str,
         now: &str,
+        dating: GrowthDating,
     ) -> Result<Extent, String> {
         let reference = reference.ok_or("current-attempt output reference is unavailable")?;
         if reference.attempt_id != attempt_id {
@@ -151,20 +200,17 @@ impl OutputObserver {
             .extent
             .as_ref()
             .is_none_or(|extent| length > extent.length);
-        let last_output = if grew && self.extent.is_some() {
-            // Growth is directly observed now; a touch without growth never
+        let last_output = if let Some(committed) = self.extent.as_ref().filter(|_| grew) {
+            // Growth is directly observed; a touch without growth never
             // reaches this branch. This is activity, not semantic progress.
-            now
+            match dating {
+                GrowthDating::Observation => now,
+                GrowthDating::Modification => {
+                    modified_second(&metadata)?.clamp(committed.observed_at, now)
+                }
+            }
         } else if grew && length > 0 {
-            let modified = metadata_time(
-                metadata
-                    .modified()
-                    .map_err(|error| format!("output log modification time: {error}"))?,
-            )?;
-            // Environment's RFC3339 clock has whole-second precision. A real
-            // write at .500 within that second must not look like the future.
-            let modified = DateTime::from_timestamp(modified.timestamp(), 0)
-                .ok_or("output modification timestamp is out of range")?;
+            let modified = modified_second(&metadata)?;
             if modified < capture || modified > now {
                 return Err("output modification timestamp is outside the current capture".into());
             }
@@ -189,6 +235,19 @@ impl Extent {
         u64::try_from((self.observed_at - self.last_output).num_seconds())
             .map_err(|_| "output observation clock moved backwards".to_string())
     }
+}
+
+/// The log's modification time on the daemon clock's whole-second grid:
+/// Environment's RFC3339 clock has whole-second precision, and a real write
+/// at .500 within the current second must not look like the future.
+fn modified_second(metadata: &std::fs::Metadata) -> Result<DateTime<Utc>, String> {
+    let modified = metadata_time(
+        metadata
+            .modified()
+            .map_err(|error| format!("output log modification time: {error}"))?,
+    )?;
+    DateTime::from_timestamp(modified.timestamp(), 0)
+        .ok_or_else(|| "output modification timestamp is out of range".to_string())
 }
 
 fn timestamp(value: &str) -> Result<DateTime<Utc>, String> {
@@ -433,6 +492,107 @@ mod tests {
         );
         assert!(matches!(
             observer.observe(Some(&reference), "owned", START, "2026-09-13T04:05:00Z"),
+            OutputObservation::Unavailable(_)
+        ));
+    }
+
+    /// SH-777: status reads between publisher ticks. A peek sees growth the
+    /// publisher has not observed yet, dates it by the log itself, and never
+    /// moves the baseline the publisher's own next observation compares to.
+    #[test]
+    fn peek_reports_growth_between_ticks_without_moving_the_baseline() {
+        let dir = storyhook_test_support::scratch_dir();
+        let path = dir.path().join("log");
+        write_at(&path, b"first", START);
+        let reference = reference(path.clone());
+        let mut observer = OutputObserver::default();
+        // Before the publisher binds anything, a peek applies the first-sample rule.
+        assert_eq!(
+            observer.peek(Some(&reference), "owned", START, NOW),
+            OutputObservation::Observed(600)
+        );
+        assert_eq!(
+            observer.observe(Some(&reference), "owned", START, NOW),
+            OutputObservation::Observed(600)
+        );
+        // Growth at 04:12:00, read at 04:15:00, is three minutes old: not
+        // "now" (the publisher's tick rule) and not the 04:10:00 baseline.
+        write_at(&path, b"first second", "2026-09-13T04:12:00Z");
+        let later = "2026-09-13T04:15:00Z";
+        assert_eq!(
+            observer.peek(Some(&reference), "owned", START, later),
+            OutputObservation::Observed(180)
+        );
+        assert_eq!(
+            observer.peek(Some(&reference), "owned", START, later),
+            OutputObservation::Observed(180),
+            "a peek is repeatable because it commits nothing"
+        );
+        // The publisher still sees the growth as new and records its own tick.
+        assert_eq!(
+            observer.observe(Some(&reference), "owned", START, later),
+            OutputObservation::Observed(0)
+        );
+    }
+
+    #[test]
+    fn peek_clamps_growth_to_the_interval_since_the_baseline() {
+        let dir = storyhook_test_support::scratch_dir();
+        let path = dir.path().join("log");
+        write_at(&path, b"first", START);
+        let reference = reference(path.clone());
+        let mut observer = OutputObserver::default();
+        observer.observe(Some(&reference), "owned", START, NOW);
+        let later = "2026-09-13T04:15:00Z";
+        // An mtime older than the baseline cannot date growth the baseline
+        // did not contain, and a future mtime cannot make it newer than now.
+        for (modified, age) in [
+            ("2026-09-13T04:01:00Z", 300),
+            ("2026-09-13T04:30:00Z", 0),
+            ("2026-09-13T04:15:00.999Z", 0),
+        ] {
+            write_at(&path, b"first second", modified);
+            assert_eq!(
+                observer.peek(Some(&reference), "owned", START, later),
+                OutputObservation::Observed(age),
+                "{modified}"
+            );
+        }
+    }
+
+    #[test]
+    fn peek_counts_no_touch_and_keeps_every_invalidity() {
+        let dir = storyhook_test_support::scratch_dir();
+        let path = dir.path().join("log");
+        write_at(&path, b"output", START);
+        let reference = reference(path.clone());
+        let mut observer = OutputObserver::default();
+        observer.observe(Some(&reference), "owned", START, NOW);
+        // A touch without growth keeps the committed last output.
+        write_at(&path, b"output", "2026-09-13T04:14:00Z");
+        assert_eq!(
+            observer.peek(Some(&reference), "owned", START, "2026-09-13T04:15:00Z"),
+            OutputObservation::Observed(900)
+        );
+        // A reader whose clock is behind the baseline gets no answer and
+        // leaves the publisher's binding intact.
+        assert!(matches!(
+            observer.peek(Some(&reference), "owned", START, "2026-09-13T04:05:00Z"),
+            OutputObservation::Unavailable(_)
+        ));
+        assert_eq!(
+            observer.observe(Some(&reference), "owned", START, "2026-09-13T04:15:00Z"),
+            OutputObservation::Observed(900)
+        );
+        // Evidence the publisher lost stays lost for a peek as well.
+        write_at(&path, b"", "2026-09-13T04:15:00Z");
+        assert!(matches!(
+            observer.observe(Some(&reference), "owned", START, "2026-09-13T04:16:00Z"),
+            OutputObservation::Unavailable(_)
+        ));
+        write_at(&path, b"regrown after truncation", "2026-09-13T04:16:00Z");
+        assert!(matches!(
+            observer.peek(Some(&reference), "owned", START, "2026-09-13T04:17:00Z"),
             OutputObservation::Unavailable(_)
         ));
     }
