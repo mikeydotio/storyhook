@@ -904,7 +904,16 @@ pub trait WriteOps: ReadOps {
     /// story whose own events claim an edge into this one still claims it, and
     /// the rebuild oracle will report the divergence. Retracting those claims
     /// with real `StoryRelationshipRemoved` events, before this is called, is
-    /// the caller's job — `StoryService::purge` is the only caller and does it.
+    /// the caller's job — `StoryService::delete` is the only caller and does it.
+    ///
+    /// **It does not refuse a story that a project recovery names.** A
+    /// recovery keeps exact event references into every story it names, in
+    /// state this layer holds as opaque JSON, and a purge would strand them so
+    /// that every later read of the recovery fails as corruption. Refusing
+    /// such a story is the caller's job too; `StoryService::delete` does it
+    /// through `story_deletion::refuse_deletion` (SH-848). Owners the store
+    /// itself tracks — landings, resets, cleanups, in-flight block deliveries
+    /// — are still refused here, by foreign key or the ownership fence.
     fn purge_story(
         &mut self,
         project: ProjectId,
