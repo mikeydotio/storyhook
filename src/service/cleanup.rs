@@ -1130,7 +1130,9 @@ mod tests {
         assert!(started.success());
         let mut lease = repo.lease.clone();
         lease.tmux.socket_path = socket.clone();
-        let other_window = ensure_window_absent(&repo.env(), &lease);
+        // A real tmux server must answer each gate question.
+        let env = repo.env().with_subprocess_patience();
+        let other_window = ensure_window_absent(&env, &lease);
         let created = Command::new("tmux")
             .args([
                 "-S",
@@ -1142,7 +1144,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(created.success());
-        let exact_window = ensure_window_absent(&repo.env(), &lease);
+        let exact_window = ensure_window_absent(&env, &lease);
         let _ = Command::new("tmux")
             .args(["-S", socket_text.as_ref(), "kill-server"])
             .status();
@@ -1153,7 +1155,7 @@ mod tests {
         fs::remove_file(&socket).unwrap();
         fs::write(&socket, "not a tmux socket").unwrap();
         assert!(
-            ensure_window_absent(&repo.env(), &lease)
+            ensure_window_absent(&env, &lease)
                 .unwrap_err()
                 .contains("cannot prove tmux window absence")
         );
