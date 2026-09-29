@@ -1,7 +1,7 @@
 //! Strict decoding and transactional revision changes for recovery state.
 
 use super::{AssessmentStatus, FaultObservation, RecoveryState, RecoveryView};
-use crate::store::{ProjectId, ProjectRecovery, ReadOps, StoreError, WriteOps};
+use crate::store::{ProjectId, ProjectRecovery, ReadOps, StoreError, StoryNo, WriteOps};
 
 pub(super) fn serialize(value: &impl serde::Serialize) -> Result<serde_json::Value, StoreError> {
     serde_json::to_value(value)
@@ -121,7 +121,7 @@ pub(super) fn read_view(
                 || work.source_attempt.is_some()
                 || work.epoch == 0
                 || lease.project_slug != project.slug
-                || lease.story_id != work.story.to_id(&project.prefix)
+                || minted_number(&lease.story_id) != Some(work.story)
                 || !super::managed_claim::valid_lease(lease)
             {
                 return Err(StoreError::Corrupt(
@@ -185,6 +185,21 @@ pub(super) fn read_view(
     Ok(view)
 }
 
+/// The number a canonical story id names, under the prefix it was minted with.
+///
+/// A retained lease keeps the id its worktree, branch and pane were created
+/// under, and the project's prefix can change afterwards, so comparing it with
+/// the current prefix would read a supported rename as damage (SH-848). A
+/// prefix is letters and digits only, so the number follows the last `-`; the
+/// prefix half must still be canonical.
+fn minted_number(id: &str) -> Option<StoryNo> {
+    let (prefix, _) = id.rsplit_once('-')?;
+    if crate::domain::prefix::validate(prefix).ok()? != prefix {
+        return None;
+    }
+    StoryNo::parse_id(prefix, id).ok()
+}
+
 pub(super) fn save(
     tx: &mut impl WriteOps,
     view: &mut RecoveryView,
@@ -202,4 +217,26 @@ pub(super) fn save(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::minted_number;
+    use crate::store::StoryNo;
+
+    #[test]
+    fn a_minted_id_names_its_number_under_any_canonical_prefix() {
+        assert_eq!(minted_number("SH-2"), Some(StoryNo::new(2)));
+        assert_eq!(minted_number("NW2-10"), Some(StoryNo::new(10)));
+        assert_eq!(minted_number("A-1"), Some(StoryNo::new(1)));
+    }
+
+    #[test]
+    fn a_malformed_id_names_no_story() {
+        for id in [
+            "", "SH", "SH-", "-2", "sh-2", "SH-02", "SH-0", "SH-x", "SH-2-3", "S H-2", "2SH-2",
+        ] {
+            assert_eq!(minted_number(id), None, "{id:?}");
+        }
+    }
 }
