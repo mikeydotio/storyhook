@@ -142,6 +142,47 @@ test("overdue evidence warning is visible outside the verifier column", async ({
   await expect(banner).toContainText("story verifier status");
 });
 
+test("a batch preview reads as activity in its column, not as attention", async ({ page, request }) => {
+  const slug = await projectSlug(request, "Alpha Project");
+  let preview: Record<string, unknown> = {
+    computed_at: "2026-01-01T00:00:00Z",
+    head: "ALPHA-7",
+    cap: 2,
+    queue_depth: 3,
+    outcome: "batch",
+    members: [
+      { story_id: "ALPHA-7", commit: "a".repeat(40) },
+      { story_id: "ALPHA-8", commit: "b".repeat(40) },
+    ],
+    excluded: [{ story_id: "ALPHA-9", reason: "conflict-with-member" }],
+  };
+  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.verification_incident = null;
+    data.verification_control = { state: "running" };
+    data.verifier = {
+      ...data.verifier,
+      control: "running",
+      warning: null,
+      reservation: null,
+      recovery: { acknowledgement: null, request: null },
+      batch_preview: preview,
+    };
+    await route.fulfill({ response, json: data });
+  });
+  await page.reload();
+  const status = page.locator('.column[data-state="verifying"] .verification-control-status');
+  await expect(status).toBeVisible();
+  await expect(status).toHaveText("Batch preview · ALPHA-7 + ALPHA-8 would verify together · 1 excluded (cap 2)");
+  await expect(page.locator("#verification-banner-region")).toBeHidden();
+
+  preview = { ...preview, outcome: "head-conflict", members: [{ story_id: "ALPHA-7", commit: "a".repeat(40) }], excluded: [] };
+  await page.reload();
+  await expect(status).toHaveText("Batch preview · ALPHA-7 conflicts with its base; no batch");
+  await expect(page.locator("#verification-banner-region")).toBeHidden();
+});
+
 test("a reserved verifier reads as activity in its column, not as attention", async ({ page, request }) => {
   const slug = await projectSlug(request, "Alpha Project");
   let mode = "running";
