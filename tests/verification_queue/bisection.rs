@@ -526,7 +526,7 @@ fn an_absent_culprit_agent_is_redispatched() {
     let calls = batcher.calls();
     let delivery: Vec<_> = calls
         .iter()
-        .filter(|call| call.ends_with(ids[1].as_str()) && call.contains("-member "))
+        .filter(|call| call.starts_with("notify-member ") || call.starts_with("redispatch-member "))
         .cloned()
         .collect();
     assert_eq!(

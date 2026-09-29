@@ -235,22 +235,47 @@ impl<'a> Batcher<'a> {
                             .unwrap();
                     }
                     Action::Recovers => {
-                        let recovery = storyhook::store::ProjectRecovery {
-                            id: "fixture-recovery".into(),
-                            project: self.board.fixture.project(),
-                            code: "missing-certification".into(),
+                        // A project fault observed on a story outside the
+                        // batch opens an active project recovery.
+                        use storyhook::service::project_fault::{ProjectFault, ReceiptRefusal};
+                        use storyhook::service::project_recovery::ProjectRecoveryService;
+                        let ctx = self.board.fixture.ctx();
+                        let id = StoryService::new(&ctx)
+                            .create(&storyhook::service::NewStoryInput {
+                                title: "fixture: a project fault".into(),
+                                ..Default::default()
+                            })
+                            .unwrap()
+                            .id;
+                        storyhook::service::PrLinkService::new(&ctx)
+                            .link(&id, "https://github.com/acme/widgets/pull/77", true)
+                            .unwrap();
+                        StoryService::new(&ctx)
+                            .set_state(&id, "verifying", None, None, None)
+                            .unwrap();
+                        let subject = VerificationQueue::new(self.board.fixture.store())
+                            .ordered_for(self.board.fixture.project())
+                            .unwrap()
+                            .into_iter()
+                            .find(|candidate| candidate.story_id == id)
+                            .unwrap();
+                        let fault = ProjectFault::MissingCertification {
                             locus: ".storyhook.toml#verify.gate".into(),
-                            revision: 0,
-                            active: true,
-                            state: serde_json::json!({"version": 1, "phase": "assessment-pending"}),
+                            tree: "a".repeat(40),
+                            base: "b".repeat(40),
+                            head: "c".repeat(40),
+                            head_tree: "d".repeat(40),
+                            gate: "make test".into(),
+                            log: "/retained/gate.log".into(),
+                            execution: "/retained/execution.json".into(),
+                            execution_status: 0,
+                            receipt: ReceiptRefusal::Missing,
+                            detail: "fixture: a gate omitted certification".into(),
                         };
-                        assert!(
-                            self.board
-                                .fixture
-                                .store()
-                                .write(|tx| tx.insert_project_recovery(&recovery))
-                                .unwrap()
-                        );
+                        ProjectRecoveryService::new(&ctx)
+                            .observe(&subject, &fault, "fixture-attempt")
+                            .unwrap()
+                            .expect("the fault opens a recovery");
                     }
                 }
                 self.answer_gate(then, pull_request, cancellation)
