@@ -214,7 +214,7 @@ pub fn reconcile_tick<S: Store>(store: &S, env: &Environment) {
 pub fn reconcile_restart_tick<S: Store>(store: &S, env: &Environment) {
     // One allowance for the machine, not one per run or lane. Even after it
     // expires, every lane receives store reconciliation and clock reseeding.
-    let deadline = Instant::now() + crate::service::engine::TMUX_TIMEOUT;
+    let deadline = Instant::now() + env.subprocess_bound(crate::service::engine::TMUX_TIMEOUT);
     for run in live_runs(store) {
         reconcile_one(store, env, &run, Some(deadline));
     }

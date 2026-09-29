@@ -221,3 +221,71 @@ printing credentials. This is a diagnostic regression, not a reproduction of
 the original disconnect. Requests are not retried: a failed write can already
 have delivered bytes, and coupon redemption is single-use. No production
 transport behavior or deadline changed.
+
+## Lib tests and production subprocess bounds (SH-836)
+
+### Why
+
+The census above reads `tests/` and the shared test support. Five lib unit
+tests in `src/` went RED together in the SH-822 central gate (load about 38 on
+10 cores, utility QoS) because a fake `tmux` that answered at once missed the
+production `TMUX_TIMEOUT` (3 s): the capture clock includes the spawn, and a
+starved spawn missed it. The bound was named inside production code
+(`ShellDispatcher`, adoption, the census), so no scan of the test could see it
+and the test could not grace it.
+
+### As built
+
+- **One read point.** Every production site that holds a subprocess to a bound
+  a lib test can reach reads it through `Environment::subprocess_bound(production)`.
+  A shipped build returns `production`. Routed today: every per-call tmux bound
+  (`TMUX_TIMEOUT`: engine probe, kill and census, adoption, `resources::tmux`,
+  story-reset kill-window, the restart sweep's shared deadline), the python3
+  artifact guards that borrow it, hygiene's `git ls-files`
+  (`TRACKED_CHECK_DEADLINE`), `CAPABILITIES_TIMEOUT`, the dropped-cleanup
+  identity read and the continuation submission reads. Leaves take
+  `&Environment` from a caller that already holds one; the engine's per-call
+  cap and the SH-809 shared deadline travel together as `TmuxBudget`.
+- **A declared policy, carried on the `Environment`** (council D1 on SH-836, in
+  its comments). A lib test builds its `Environment` with
+  `.with_subprocess_patience()` when it waits for an answer (each bound is
+  graced by `load_grace::graced_by` at one contention reading taken then) or
+  `.with_subprocess_proof()` when it proves the production bound.
+  `.with_subprocess_patience_under(stated)` lets a regression prove grace at
+  idle. The declaration travels with the `Environment`, so a daemon or worker
+  thread that production hands a clone applies it too. It follows the
+  existing `#[cfg(test)]` builders on `Environment` (`with_test_verifier_mirror`).
+- **Undeclared fails.** An `Environment` a lib test builds starts undeclared;
+  reading a routed bound through it panics, naming SH-836, the bound, the test
+  thread and both builders. The next test that reaches a routed bound states
+  its intent on its first run, at idle.
+- **One reading per declaration** (decision D2): a test derives deadlines and
+  fixture delays from the bound, and production must read the same bound after
+  it. Each test declares afresh.
+- **The census** (`tests/timing_assertions/src_bounds.rs`, `src_bounds.json`):
+  every production `run_captured*` bound not read through `subprocess_bound` is
+  `delegated` or `unrouted` with a reason; every raw mention of a routed
+  constant is a bypass; every `run_captured*` bound in `src/` test code that is
+  not graced or routed is a `proof`, `fixture` or `delegated` local.
+- **Regression**: `src/service/engine/tmux_grace_tests.rs` makes each fake
+  answer after 1.5 × `TMUX_TIMEOUT`. Under proof it is not waited for; under
+  patience at a stated contention of 3 it is; a slow wrong answer still gives
+  the wrong verdict.
+
+### Limits, named
+
+- Code a lib test reaches through `storyhook_test_support` links a non-test
+  build of storyhook, and integration tests in `tests/` run the non-test lib:
+  both read the production value, with no grace and no panic. SH-846 owns the
+  census of those and of the raw harness waits in `src/` test code.
+- A panic on a thread production spawns can be swallowed by a `catch_unwind`
+  (`api/rpc.rs`, `daemon/serve.rs`, `verification/batch_preview.rs`) or a
+  discarded join. Carrying the declaration on the `Environment` means a
+  declared test is graced there too; an undeclared read there is loud only as
+  far as that thread's failure reaches the test.
+- The census is lexical: an alias of a routed constant (`claim_comment.rs`'s
+  `TMUX_PROBE_TIMEOUT`, whose test passes whether or not tmux answers) or a
+  helper that wraps a `run_captured*` call is only as visible as that call.
+- One reading cannot follow a burst that starts after the declaration: the
+  `graced_now` limit above. A capture the bound already killed cannot be
+  extended.

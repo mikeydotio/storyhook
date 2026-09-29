@@ -276,8 +276,11 @@ fn shell_reservation_rejects_invalid_and_wrong_workspace_descriptors() {
                 if marker == "closed" { "999999" } else { marker },
             );
         }
-        let output = crate::process::run_captured(command, Duration::from_secs(5))
-            .unwrap_or_else(|error| panic!("{}", error.detail()));
+        let output = crate::process::run_captured(
+            command,
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(5)),
+        )
+        .unwrap_or_else(|error| panic!("{}", error.detail()));
         assert!(!output.status.success(), "accepted {marker}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(

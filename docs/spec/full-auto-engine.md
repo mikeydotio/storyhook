@@ -468,7 +468,11 @@ second, differently-behaved door onto the same script.
 
 The daemon completes store reconciliation before publishing its portfile.
 External lane probes share one absolute, monotonic `TMUX_TIMEOUT` deadline
-(three seconds) across every project and run (SH-809). Adopted-lane identity
+(three seconds) across every project and run (SH-809). Production reads it,
+and every per-call tmux bound, through `Environment::subprocess_bound`, which
+returns it unchanged in a shipped build; a lib test declares on its
+`Environment` whether it proves the bound or waits for a fixture to answer
+(SH-836, [Rust harness patience](rust-harness-patience.md)). Adopted-lane identity
 and activity queries share that same deadline. Each subprocess gets only
 the remaining allowance; after expiry no further probe is started.
 An exhausted budget is `Unanswered`, never evidence of a dead lane: ownership

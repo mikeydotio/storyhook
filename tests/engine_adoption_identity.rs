@@ -154,7 +154,11 @@ impl Dispatch {
         &self,
     ) -> Result<storyhook::service::engine::adoption::InspectedDispatch, storyhook::error::AppError>
     {
-        LiveDispatchInspector.inspect(&self.repository, "fixture", "SH-1")
+        LiveDispatchInspector::new(storyhook::env::Environment::at(self._root.path())).inspect(
+            &self.repository,
+            "fixture",
+            "SH-1",
+        )
     }
 }
 impl Drop for Dispatch {

@@ -178,7 +178,8 @@ fn controller_refusal_allows_retry_but_live_effect_retains_workspace_and_reserva
     store
         .write(|tx| tx.set_checkout_path(project, Some(&repo)))
         .unwrap();
-    let env = crate::env::Environment::at(fixture.env().home());
+    // The reset runs the real python3 artifact guard, which must answer.
+    let env = crate::env::Environment::at(fixture.env().home()).with_subprocess_patience();
     let ctx = Ctx::new(&store, project, fixture.env().home(), env).no_hooks(true);
     let story = StoryService::new(&ctx)
         .create(&NewStoryInput {

@@ -1,6 +1,7 @@
 //! Checks are local: retaining the branch removes any need for merge evidence.
 use super::issue;
 use crate::domain::StoryCleanupLease;
+use crate::env::Environment;
 use crate::error::AppError;
 use crate::service::{
     CleanupSkip, Ctx,
@@ -11,8 +12,12 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 /// Reads every pane on the leased server that claims the exact story name.
-pub(super) fn panes(lease: &StoryCleanupLease) -> Result<Vec<ResourcePane>, AppError> {
+pub(super) fn panes(
+    env: &Environment,
+    lease: &StoryCleanupLease,
+) -> Result<Vec<ResourcePane>, AppError> {
     tmux::all_panes(
+        env,
         &lease.tmux.socket_path,
         &BTreeSet::from([lease.story_id.clone()]),
     )
@@ -20,10 +25,11 @@ pub(super) fn panes(lease: &StoryCleanupLease) -> Result<Vec<ResourcePane>, AppE
 
 /// Refuses any change to the pane snapshot captured before cleanup.
 pub(super) fn same_pane(
+    env: &Environment,
     lease: &StoryCleanupLease,
     report: &ResourceReport,
 ) -> Result<(), AppError> {
-    let current = panes(lease)?;
+    let current = panes(env, lease)?;
     match (&report.pane, current.as_slice()) {
         (None, []) => Ok(()),
         (Some(expected), [actual]) if actual == expected => Ok(()),
@@ -108,8 +114,12 @@ pub(super) fn validate<S: Store>(
         .arg(repository)
         .arg(common.trim())
         .arg(worktree);
-    let guarded = crate::process::run_captured(guard, crate::service::engine::TMUX_TIMEOUT)
-        .map_err(|e| refuse("artifact-unverifiable", e.detail()))?;
+    let guarded = crate::process::run_captured(
+        guard,
+        ctx.env()
+            .subprocess_bound(crate::service::engine::TMUX_TIMEOUT),
+    )
+    .map_err(|e| refuse("artifact-unverifiable", e.detail()))?;
     if !guarded.status.success() {
         return Err(refuse(
             "protected-artifact",
@@ -173,7 +183,7 @@ pub(super) fn validate<S: Store>(
             "registered worktree is missing; preserve its metadata for recovery".into(),
         ));
     }
-    let current = panes(lease).map_err(probe)?;
+    let current = panes(ctx.env(), lease).map_err(probe)?;
     if current.len() > 1 {
         return Err(refuse(
             "resource-identity-unsafe",

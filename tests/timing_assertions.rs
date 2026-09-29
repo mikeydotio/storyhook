@@ -84,6 +84,14 @@
 //! Only that module may read the load average, and its ceiling is pinned to
 //! the Python port's.
 //!
+//! # Subprocess bounds in `src/` (SH-836)
+//!
+//! `timing_assertions/src_bounds.rs` extends the census to `src/`: every
+//! production `run_captured*` bound not read through
+//! `Environment::subprocess_bound`, every raw mention of a routed constant,
+//! and every ungraced direct capture in `src/` test code must be classified
+//! in `timing_assertions/src_bounds.json`.
+//!
 //! # Derived, not hand-listed, and its own positive control
 //!
 //! Every tracked `tests/*.rs` file is read via `git ls-files`, the same
@@ -104,6 +112,8 @@ use std::path::Path;
 
 use storyhook_test_support::without_rust_comments;
 
+#[path = "timing_assertions/src_bounds.rs"]
+mod src_bounds;
 #[path = "timing_assertions/waits.rs"]
 mod waits;
 

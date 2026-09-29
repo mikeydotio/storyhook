@@ -11,8 +11,14 @@ use std::time::Duration;
 /// could land while the helper holds processes frozen.
 const CLEANUP_HELPER_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// How long the python3 process-identity read may take: one `ps` of one pid.
+const IDENTITY_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Pins a live pane incarnation before cleanup can reserve or signal it.
-pub(super) fn capture(report: &ResourceReport) -> Result<Option<String>, AppError> {
+pub(super) fn capture(
+    env: &crate::env::Environment,
+    report: &ResourceReport,
+) -> Result<Option<String>, AppError> {
     let Some(pane) = &report.pane else {
         return Ok(None);
     };
@@ -28,7 +34,7 @@ pub(super) fn capture(report: &ResourceReport) -> Result<Option<String>, AppErro
         include_str!("../../../../plugins/story/lib/process_identity.py")
     );
     command.args(["-c", &source, &pane.pid]);
-    let output = crate::process::run_captured(command, Duration::from_secs(10))
+    let output = crate::process::run_captured(command, env.subprocess_bound(IDENTITY_TIMEOUT))
         .map_err(|e| AppError::Validation(e.detail()))?;
     if !output.status.success() {
         return Err(AppError::Validation(format!(
@@ -54,7 +60,7 @@ pub(super) fn stop<S: Store>(
     workspace: &WorkspaceLock,
 ) -> Result<(), AppError> {
     let Some(pane) = &record.resources.pane else {
-        return super::safety::same_pane(&record.lease, &record.resources);
+        return super::safety::same_pane(ctx.env(), &record.lease, &record.resources);
     };
     let start = record
         .process_start

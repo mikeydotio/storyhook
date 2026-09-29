@@ -102,6 +102,19 @@ pub fn graced_now(base: Duration) -> Duration {
     granted
 }
 
+/// `base` graced by one reading the caller already took, within
+/// [`PATIENCE_CEILING`]; silent.
+///
+/// For a caller that samples contention once and must then grant the same
+/// bound at every use, such as a lib test's declared patience for the
+/// production subprocess bounds it reaches (SH-836): its own derived
+/// deadlines and the bound production code reads must agree. That caller
+/// reports the reading once, when it takes it.
+#[must_use]
+pub fn graced_by(base: Duration, reading: Option<f64>) -> Duration {
+    graced(base, reading)
+}
+
 /// A wait allowance that is graced by contention when it starts and extended,
 /// never shortened, when contention has risen by the time it expires.
 ///
@@ -300,6 +313,21 @@ mod tests {
             "contention fell to 0.5, and a granted extension is never retracted"
         );
         assert_eq!(patience.allowance(), IDLE * 5);
+    }
+
+    #[test]
+    fn a_fixed_reading_grants_the_same_bound_every_time() {
+        let base = Duration::from_secs(3);
+        for reading in [None, Some(0.4), Some(1.0), Some(f64::NAN)] {
+            assert_eq!(graced_by(base, reading), base, "{reading:?}");
+        }
+        assert_eq!(graced_by(base, Some(3.0)), Duration::from_secs(9));
+        assert_eq!(
+            graced_by(base, Some(3.0)),
+            graced_by(base, Some(3.0)),
+            "a caller that fixed its reading gets one bound, however often it asks"
+        );
+        assert_eq!(graced_by(base, Some(1e12)), PATIENCE_CEILING);
     }
 
     #[test]

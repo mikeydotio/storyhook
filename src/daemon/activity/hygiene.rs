@@ -161,7 +161,7 @@ pub(crate) fn sweep(
         if !in_git_work_tree(&checkout) {
             continue;
         }
-        match tracked_files(&checkout) {
+        match tracked_files(env, &checkout) {
             Ok(None) => {}
             Ok(Some((files, more))) => tracked.push(TrackedJournal {
                 project_id,
@@ -201,13 +201,14 @@ fn in_git_work_tree(checkout: &Path) -> bool {
 /// How many journal paths `checkout`'s index tracks, with whether the list
 /// was cut short; `None` when it tracks none. `ls-files` reads only the
 /// index, so no ignore rule changes its answer.
-fn tracked_files(checkout: &Path) -> Result<Option<(usize, bool)>, String> {
+fn tracked_files(env: &Environment, checkout: &Path) -> Result<Option<(usize, bool)>, String> {
     let mut command = crate::env::git_env::command(checkout);
     command.args(["ls-files", "-z", "--", super::PROJECT_JOURNAL]);
     // Journals only a failure: this runs every minute for every checkout,
     // and success is the steady state (the SH-761 rule).
-    let captured = crate::process::run_captured_quiet(command, TRACKED_CHECK_DEADLINE)
-        .map_err(|error| error.detail())?;
+    let captured =
+        crate::process::run_captured_quiet(command, env.subprocess_bound(TRACKED_CHECK_DEADLINE))
+            .map_err(|error| error.detail())?;
     if !captured.status.success() {
         return Err(format!(
             "git ls-files {}: {}",

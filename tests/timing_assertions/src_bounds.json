@@ -1,0 +1,251 @@
+{
+  "src/daemon/activity/window.rs": {
+    "production run_captured_quiet_cancellable(VIEW_RECONCILE_TIMEOUT": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "VIEW_RECONCILE_TIMEOUT (45 s) bounds one verification-view reconcile; window_tests reaches it with a 6 s fixture: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/daemon/block_delivery.rs": {
+    "production run_captured_quiescent(NOTIFY_TIMEOUT": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "NOTIFY_TIMEOUT (45 s) bounds the story.sh notify helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/daemon/verification.rs": {
+    "production run_captured_with_progress_and_registration(self.verification_idle_timeout": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "The actuator's configured gate idle bound (VERIFICATION_IDLE_TIMEOUT, 1776 s, in production); tests that need another value set the field."
+    }
+  },
+  "src/daemon/verification/recovery_transport.rs": {
+    "production run_captured_cancellable(self.control_timeout": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The actuator's configured control bound (DISPATCH_TIMEOUT, 180 s, in production); workspace_tests sets its own for the timeout proof."
+    }
+  },
+  "src/github_access.rs": {
+    "production run_captured_private(Duration::from_secs(30)": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "30 s for one gh call: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/github_access/command.rs": {
+    "production run_captured_private(Duration::from_secs(120)": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "120 s for one gh command: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/github_access/observation.rs": {
+    "production run_captured_private(Duration::from_secs(120)": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "120 s for one gh observation: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/github_access/transport.rs": {
+    "production run_captured_private(Duration::from_secs(120)": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "120 s for one gh transport call: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    },
+    "production run_captured_private(Duration::from_secs(30)": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "30 s for one gh transport probe: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/lane_budget.rs": {
+    "production ref:TMUX_TIMEOUT": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "count_live_agent_windows is the store-less `story lane-budget` door: it holds no Environment and must not resolve one (it never starts a daemon). No lib test reaches it; the engine's census reaches census_through with its Environment's bound."
+    },
+    "production run_captured(bound": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "census_through's bound parameter: ShellDispatcher passes its Environment's subprocess_bound(TMUX_TIMEOUT), the CLI door passes TMUX_TIMEOUT."
+    }
+  },
+  "src/plugin/provider_cli.rs": {
+    "production run_captured_answer(deadline": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The caller's per-provider deadline parameter."
+    }
+  },
+  "src/process.rs": {
+    "production run_captured_quiet_cancellable(timeout": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "run_captured_quiet forwards its caller's bound."
+    },
+    "production run_captured_with_registration(timeout": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "run_captured_with_termination forwards its caller's bound."
+    },
+    "production run_captured_with_termination(timeout": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "run_captured forwards its caller's bound."
+    },
+    "test run_captured_answer(Duration::from_millis(200)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A silent answer must be cut off at its 200 ms deadline; the test expects the timeout to fire."
+    },
+    "test run_captured_quiescent(Duration::from_millis(100)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "Descendants that outlive a 100 ms deadline must turn success into a failure; the test expects the deadline to pass."
+    },
+    "test run_captured_with_registration(Duration::ZERO": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A zero bound times out at once so the test can prove TERM-then-KILL cleanup."
+    }
+  },
+  "src/process/activity_tests.rs": {
+    "test run_captured(idle": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "idle = load_grace::graced_now(1 s) at the top of the test."
+    },
+    "test run_captured_private(idle": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "idle = load_grace::graced_now(1 s) at the top of the test."
+    },
+    "test run_captured_with_progress_and_registration(allowance": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "allowance = load_grace::graced_now(2 s) at the top of the test."
+    },
+    "test run_captured_with_progress_and_registration(idle": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "idle = load_grace::graced_now(1 s); the stall case still expects its timeout, only later."
+    }
+  },
+  "src/process/cancellation.rs": {
+    "test run_captured_cancellable(Duration::ZERO": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A real zero-bound timeout must stay a timeout without operator cancellation."
+    },
+    "test run_captured_cancellable(Duration::from_secs(5)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "The token is cancelled before the call, so nothing spawns and the bound never starts."
+    },
+    "test run_captured_quiet_cancellable(storyhook_test_support::STORY_COMMAND_DEADLINE": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "The cancel check answers true at once, so nothing spawns and the bound never starts."
+    }
+  },
+  "src/service/cleanup.rs": {
+    "production run_captured(Duration::from_secs(60)": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "60 s for one cleanup git call; cleanup lib tests reach it with local git: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/service/cleanup/dropped/process.rs": {
+    "production run_captured_quiescent(CLEANUP_HELPER_TIMEOUT": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "CLEANUP_HELPER_TIMEOUT (45 s) bounds the process-stop helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/service/continuation/runtime.rs": {
+    "production run_captured_with_input(Duration::from_secs(ifoperation=={125}else{45})": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "45 s or 125 s for the continuation runtime helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/service/engine.rs": {
+    "production run_captured(DISPATCH_TIMEOUT": {
+      "count": 2,
+      "kind": "unrouted",
+      "reason": "DISPATCH_TIMEOUT (180 s) bounds the story.sh dispatch and unclaim helpers: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    },
+    "production run_captured(bound": {
+      "count": 2,
+      "kind": "delegated",
+      "reason": "kill_window and run_shell_capabilities read bound through Environment::subprocess_bound on the line before."
+    },
+    "production run_captured(timeout": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "probe_window_at's timeout comes from its TmuxBudget, whose per-call bound is subprocess_bound(TMUX_TIMEOUT)."
+    },
+    "production run_captured_cancellable(DISPATCH_TIMEOUT": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "DISPATCH_TIMEOUT (180 s) bounds a cancellable dispatch helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    },
+    "test run_captured(Duration::from_millis(20)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "A 20 ms bound on `sleep 30` must terminate the process group; the test expects the timeout."
+    }
+  },
+  "src/service/engine/adoption.rs": {
+    "production run_captured(timeout": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "capture's timeout comes from its TmuxBudget, whose per-call bound is subprocess_bound(TMUX_TIMEOUT)."
+    }
+  },
+  "src/service/engine/reset.rs": {
+    "production run_captured_quiescent(DISPATCH_TIMEOUT": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "DISPATCH_TIMEOUT (180 s) bounds the engine-reset helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/service/private_objects.rs": {
+    "production run_captured_answer(GIT_DEADLINE": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "GIT_DEADLINE (30 s) bounds one private-object git read: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    },
+    "production run_captured_query(GIT_DEADLINE": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "GIT_DEADLINE (30 s) bounds one private-object git query: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    },
+    "production run_captured_query(timeout": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The caller's timeout parameter."
+    }
+  },
+  "src/service/resources/git.rs": {
+    "production run_captured(Duration::from_secs(60)": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "60 s for one resource git call: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/service/workspace_lock.rs": {
+    "production run_captured(Duration::from_secs(30)": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "30 s for one workspace-locked git or tmux call: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    },
+    "production run_captured_quiescent(Duration::from_secs(30)": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "30 s for one workspace-locked quiescent call: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  }
+}

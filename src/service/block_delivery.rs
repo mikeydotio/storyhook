@@ -162,8 +162,8 @@ impl<S: Store> Ctx<'_, S> {
             .read(|tx| Ok(!tx.continuations(self.project())?.is_empty()))?;
         // Read external Git evidence before acquiring the write transaction. A
         // failure matters only if this mutation actually submits managed work.
-        let submission_head =
-            has_continuations.then(|| super::continuation::current_submission(self.cwd()));
+        let submission_head = has_continuations
+            .then(|| super::continuation::current_submission(self.env(), self.cwd()));
         self.store().write(|tx| {
             derive_block_edges(
                 tx,

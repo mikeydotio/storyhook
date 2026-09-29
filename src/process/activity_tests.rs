@@ -12,7 +12,8 @@ fn progress_capture_retains_the_answer_emitted_during_cancellation() {
     let mut command = Command::new("bash");
     command.args(["-c", "trap 'printf completed; exit 143' TERM; printf ready > \"$1\"; while :; do sleep 30 & wait; done", "probe"]).arg(&ready);
     let cancellation = Cancellation::default();
-    let allowance = Duration::from_secs(2);
+    // Patience for the handler to install and the capture to hear it (SH-836).
+    let allowance = storyhook_test_support::load_grace::graced_now(Duration::from_secs(2));
     let result = std::thread::scope(|scope| {
         let running = scope.spawn(|| {
             run_captured_with_progress_and_registration(
@@ -72,7 +73,8 @@ fn both_deadline_modes_record_output_and_timeouts() {
     let _activity = crate::daemon::activity::start(&env);
     let progress = root.path().join("progress.jsonl");
     std::fs::write(&progress, "").unwrap();
-    let idle = Duration::from_secs(1);
+    // Patience for each answer; the stall case still times out, only later.
+    let idle = storyhook_test_support::load_grace::graced_now(Duration::from_secs(1));
 
     let mut command = Command::new("sh");
     command.args(["-c", "printf absolute-out; printf absolute-err >&2"]);

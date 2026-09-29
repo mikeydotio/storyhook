@@ -11,6 +11,8 @@ pub mod reset;
 
 #[cfg(test)]
 mod restart_probe_tests;
+#[cfg(test)]
+mod tmux_grace_tests;
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -516,18 +518,44 @@ pub(crate) fn silent_on_both_channels(
 
 /// A tmux client normally answers in milliseconds. The shared machine-probe
 /// budget bounds a wedged server without inventing another patience value.
+///
+/// Production sites read it through
+/// [`crate::env::Environment::subprocess_bound`] (SH-836), which returns it
+/// unchanged in every shipped build.
 pub const TMUX_TIMEOUT: Duration = crate::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
 
-/// The remaining startup allowance, or the ordinary per-probe bound. Keeping
-/// one absolute deadline prevents a nested adopted-lane probe from renewing it.
-fn probe_timeout_at(deadline: Option<Instant>, now: Instant) -> Result<Duration, String> {
-    let remaining = deadline.map_or(TMUX_TIMEOUT, |until| {
-        until.saturating_duration_since(now).min(TMUX_TIMEOUT)
-    });
-    if remaining.is_zero() {
-        Err("startup probe budget exhausted; lane liveness is unknown".into())
-    } else {
-        Ok(remaining)
+/// The allowance for one tmux client call: its per-call bound, and the
+/// absolute deadline a daemon-restart sweep shares across every lane probe
+/// (SH-809), when there is one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TmuxBudget {
+    per_call: Duration,
+    deadline: Option<Instant>,
+}
+
+impl TmuxBudget {
+    /// A budget of `per_call` for each call, within `deadline` when one is shared.
+    pub(crate) fn new(per_call: Duration, deadline: Option<Instant>) -> Self {
+        Self { per_call, deadline }
+    }
+
+    /// The remaining startup allowance, or the ordinary per-call bound.
+    /// Keeping one absolute deadline prevents a nested adopted-lane probe
+    /// from renewing it.
+    pub(crate) fn timeout_at(self, now: Instant) -> Result<Duration, String> {
+        let remaining = self.deadline.map_or(self.per_call, |until| {
+            until.saturating_duration_since(now).min(self.per_call)
+        });
+        if remaining.is_zero() {
+            Err("startup probe budget exhausted; lane liveness is unknown".into())
+        } else {
+            Ok(remaining)
+        }
+    }
+
+    /// Whether this budget is a share of a restart sweep's deadline.
+    pub(crate) fn is_shared(self) -> bool {
+        self.deadline.is_some()
     }
 }
 
@@ -723,12 +751,23 @@ impl ShellDispatcher {
         apply_dispatch_allowlist(&mut command);
         command
     }
+
+    /// The per-call bound of one tmux client this dispatcher runs.
+    fn tmux_bound(&self) -> Duration {
+        self.env.subprocess_bound(TMUX_TIMEOUT)
+    }
+
+    /// A liveness probe's allowance: the per-call bound, within the restart
+    /// sweep's shared deadline when this dispatcher carries one.
+    fn probe_budget(&self) -> TmuxBudget {
+        TmuxBudget::new(self.tmux_bound(), self.probe_deadline)
+    }
 }
 
 impl ShellDispatcher {
     /// The window census on the server this dispatcher's lanes live on.
     fn shell_census(&self) -> WindowCensus {
-        crate::lane_budget::census_through(self.tmux())
+        crate::lane_budget::census_through(self.tmux(), self.tmux_bound())
     }
 }
 
@@ -739,7 +778,8 @@ impl ShellDispatcher {
             command.arg("-S").arg(socket);
         }
         command.args(["display-message", "-p", "-t", window, WINDOW_PROBE_FORMAT]);
-        let timeout = match probe_timeout_at(self.probe_deadline, Instant::now()) {
+        let budget = self.probe_budget();
+        let timeout = match budget.timeout_at(Instant::now()) {
             Ok(timeout) => timeout,
             Err(detail) => {
                 return WindowProbe::Unanswered {
@@ -753,7 +793,7 @@ impl ShellDispatcher {
                 return WindowProbe::Unanswered {
                     detail: format!(
                         "tmux did not answer the liveness probe for `{window}` within {timeout:?}{}",
-                        if self.probe_deadline.is_some() {
+                        if budget.is_shared() {
                             " (remaining startup probe budget)"
                         } else {
                             ""
@@ -933,7 +973,7 @@ impl Dispatcher for ShellDispatcher {
 
     fn probe_lane(&self, lane: &EngineLaneRecord, window: &str) -> WindowProbe {
         if lane.adopted_identity.is_some() {
-            return adoption::probe(lane, self.probe_deadline, &self.tmux_program);
+            return adoption::probe(lane, self.probe_budget(), &self.tmux_program);
         }
         self.probe_window_at(
             window,
@@ -946,7 +986,8 @@ impl Dispatcher for ShellDispatcher {
     fn kill_window(&self, window: &str) -> Result<(), AppError> {
         let mut command = self.tmux();
         command.args(["kill-window", "-t", window]);
-        match run_captured(command, TMUX_TIMEOUT) {
+        let bound = self.tmux_bound();
+        match run_captured(command, bound) {
             Ok(captured) if captured.status.success() => Ok(()),
             Ok(captured) => {
                 let detail = String::from_utf8_lossy(&captured.stderr).trim().to_string();
@@ -960,8 +1001,7 @@ impl Dispatcher for ShellDispatcher {
                 )))
             }
             Err(CaptureError::Timeout(_)) => Err(AppError::Storage(format!(
-                "tmux did not answer while killing window `{window}` within {}s",
-                TMUX_TIMEOUT.as_secs()
+                "tmux did not answer while killing window `{window}` within {bound:?}"
             ))),
             Err(error) => Err(AppError::Storage(format!(
                 "could not kill tmux window `{window}`: {}",
@@ -3333,7 +3373,8 @@ pub(crate) fn run_shell_capabilities(
         .env("STORY_BIN", exe)
         .env("GIT_TERMINAL_PROMPT", "0");
 
-    let captured = run_captured(command, CAPABILITIES_TIMEOUT).map_err(|error| match error {
+    let bound = env.subprocess_bound(CAPABILITIES_TIMEOUT);
+    let captured = run_captured(command, bound).map_err(|error| match error {
         CaptureError::Cancelled => {
             AppError::Validation("the operator cancelled verification".into())
         }
@@ -3353,8 +3394,7 @@ pub(crate) fn run_shell_capabilities(
             AppError::Storage(format!("capabilities cleanup did not quiesce: {detail}"))
         }
         CaptureError::Timeout(_) => AppError::Storage(format!(
-            "capabilities did not finish within {}s and was terminated",
-            CAPABILITIES_TIMEOUT.as_secs()
+            "capabilities did not finish within {bound:?} and was terminated"
         )),
     })?;
     classify_dispatch_capture(&captured)
@@ -3638,10 +3678,12 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    /// A dispatcher whose tmux is a fixture expected to answer, so the tmux
+    /// bound is patience (SH-836).
     fn dispatcher_with_tmux(root: &Path, tmux_program: &Path) -> ShellDispatcher {
         ShellDispatcher {
             story_sh_path: root.join("story.sh"),
-            env: Environment::at(root.join("home")),
+            env: Environment::at(root.join("home")).with_subprocess_patience(),
             tmux_program: tmux_program.as_os_str().to_owned(),
             probe_deadline: None,
         }

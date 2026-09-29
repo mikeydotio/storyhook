@@ -96,6 +96,11 @@ impl Drop for Scope {
 mod tests {
     use super::*;
     use std::process::Command;
+    use storyhook_test_support::load_grace::graced_now;
+
+    /// Each shell here answers at once; the bound only waits for that answer
+    /// (patience, SH-836).
+    const ANSWER_WITHIN: std::time::Duration = std::time::Duration::from_secs(5);
 
     #[test]
     fn supervisor_errors_use_catalog_ownership_and_restore_the_callers_scope() {
@@ -136,9 +141,8 @@ mod tests {
                     }));
                     let mut command = Command::new("sh");
                     command.args(["-c", "printf output; printf error >&2"]);
-                    let output =
-                        crate::process::run_captured(command, std::time::Duration::from_secs(5))
-                            .unwrap_or_else(|error| panic!("{}", error.detail()));
+                    let output = crate::process::run_captured(command, graced_now(ANSWER_WITHIN))
+                        .unwrap_or_else(|error| panic!("{}", error.detail()));
                     assert!(output.status.success());
                     let text = std::fs::read_to_string(super::super::day_path(
                         &directory,
@@ -181,7 +185,7 @@ mod tests {
         }));
         let mut healthy = Command::new("sh");
         healthy.args(["-c", "printf reconciled; exit 0"]);
-        let output = crate::process::run_captured_quiet(healthy, std::time::Duration::from_secs(5))
+        let output = crate::process::run_captured_quiet(healthy, graced_now(ANSWER_WITHIN))
             .unwrap_or_else(|error| panic!("{}", error.detail()));
         assert!(output.status.success());
         assert_eq!(output.stdout, b"reconciled", "capture itself is unchanged");
@@ -192,7 +196,7 @@ mod tests {
 
         let mut failing = Command::new("sh");
         failing.args(["-c", "printf broken >&2; exit 3"]);
-        let output = crate::process::run_captured_quiet(failing, std::time::Duration::from_secs(5))
+        let output = crate::process::run_captured_quiet(failing, graced_now(ANSWER_WITHIN))
             .unwrap_or_else(|error| panic!("{}", error.detail()));
         assert_eq!(output.status.code(), Some(3));
         assert_eq!(output.stderr, b"broken", "the caller still gets stderr");
@@ -230,7 +234,7 @@ mod tests {
         answered.args(["-c", "head -c 70000 /dev/zero | tr '\\0' x; exit 1"]);
         let output = crate::process::run_captured_query(
             answered,
-            std::time::Duration::from_secs(5),
+            graced_now(ANSWER_WITHIN),
             &never,
             1024 * 1024,
             &[1],
@@ -245,7 +249,7 @@ mod tests {
         failing.args(["-c", "exit 3"]);
         let output = crate::process::run_captured_query(
             failing,
-            std::time::Duration::from_secs(5),
+            graced_now(ANSWER_WITHIN),
             &never,
             1024 * 1024,
             &[1],
@@ -268,7 +272,7 @@ mod tests {
         assert!(matches!(
             crate::process::run_captured_query(
                 cancelled,
-                std::time::Duration::from_secs(5),
+                graced_now(ANSWER_WITHIN),
                 &stopped,
                 1024,
                 &[],

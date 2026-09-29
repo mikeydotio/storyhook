@@ -22,6 +22,7 @@
 //! never be interpreted as an empty server.
 
 use std::process::Command;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -54,24 +55,26 @@ pub enum WindowCensus {
 /// environment intact — never `ShellDispatcher`'s allowlisted spawn, which
 /// strips `TMUX` and would ask the default socket on behalf of a client that
 /// is attached somewhere else.
+///
+/// The store-less `story lane-budget` door holds no `Environment` and must not
+/// resolve one, so it names the production bound itself; lib tests reach the
+/// census only through `ShellDispatcher`, whose bound its `Environment` gives.
 pub fn count_live_agent_windows() -> WindowCensus {
-    census_through(Command::new("tmux"))
+    census_through(Command::new("tmux"), TMUX_TIMEOUT)
 }
 
 /// The same census through a caller-prepared `tmux` command — the engine's
 /// `ShellDispatcher` passes its own program and allowlisted environment, so
 /// the census is taken on the server its lanes live
-/// on. One parser, one error vocabulary, two doors (SH-136).
-pub fn census_through(mut command: Command) -> WindowCensus {
+/// on. One parser, one error vocabulary, two doors (SH-136). `bound` is the
+/// caller's per-call tmux bound.
+pub fn census_through(mut command: Command, bound: Duration) -> WindowCensus {
     command.args(["list-windows", "-a", "-F", CENSUS_FORMAT]);
-    let captured = match run_captured(command, TMUX_TIMEOUT) {
+    let captured = match run_captured(command, bound) {
         Ok(captured) => captured,
         Err(CaptureError::Timeout(_)) => {
             return WindowCensus::Unanswered {
-                detail: format!(
-                    "tmux did not answer the window census within {}s",
-                    TMUX_TIMEOUT.as_secs()
-                ),
+                detail: format!("tmux did not answer the window census within {bound:?}"),
             };
         }
         Err(error) => {
