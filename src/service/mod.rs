@@ -56,6 +56,7 @@ pub mod migrate;
 #[cfg(feature = "github-pr")]
 pub mod pr_check;
 pub mod pr_link;
+pub(crate) mod private_objects;
 pub mod project;
 pub mod project_fault;
 pub mod project_recovery;

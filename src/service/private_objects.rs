@@ -1,0 +1,128 @@
+//! Git against a repository through a private, disposable object directory.
+//!
+//! Git reads every object of the repository, whose object directory is an
+//! alternate, and every object Git writes lands in a temporary directory that
+//! is removed with the [`PrivateObjects`] value. No checkout, index, ref or
+//! repository object changes. Gate inspection introduced the pattern (it
+//! rebuilds the proposed merge to read committed configuration); verification
+//! batching's trial merges (SH-830) share it.
+
+use crate::error::AppError;
+use crate::process::{Captured, TerminationPolicy, run_captured_answer};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// Bound on one Git command; its whole process group is killed at the deadline.
+const GIT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Largest Git answer read: far above any real configuration file or conflict
+/// list, and bounded so a hostile tree cannot exhaust memory. A longer answer
+/// is refused, never read as a prefix (SH-815).
+const GIT_ANSWER_LIMIT: u64 = 8 * 1024 * 1024;
+
+/// A repository opened with a private object directory.
+pub(crate) struct PrivateObjects {
+    checkout: PathBuf,
+    objects: tempfile::TempDir,
+    source: PathBuf,
+    label: &'static str,
+}
+
+impl PrivateObjects {
+    /// Creates the private object directory for `checkout`'s repository.
+    ///
+    /// `label` names the caller in every error it reports; `prefix` names the
+    /// temporary directory, so a leftover one can be traced to its caller.
+    pub(crate) fn open(
+        checkout: &Path,
+        label: &'static str,
+        prefix: &str,
+    ) -> Result<Self, AppError> {
+        let common = git(
+            checkout,
+            label,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?;
+        let common = String::from_utf8(common).map_err(|error| {
+            AppError::Storage(format!("Git common directory is not UTF-8: {error}"))
+        })?;
+        let common = PathBuf::from(common.strip_suffix('\n').unwrap_or(&common));
+        let objects = tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir()
+            .map_err(|error| {
+                AppError::Storage(format!("creating private {label} objects: {error}"))
+            })?;
+        Ok(Self {
+            checkout: checkout.to_path_buf(),
+            objects,
+            source: common.join("objects"),
+            label,
+        })
+    }
+
+    /// Runs Git with the private object directory; a nonzero exit is an error.
+    pub(crate) fn git(&self, args: &[&str]) -> Result<Vec<u8>, AppError> {
+        answer(
+            capture(
+                &self.checkout,
+                Some((self.objects.path(), &self.source)),
+                self.label,
+                args,
+            )?,
+            self.label,
+            args,
+        )
+    }
+}
+
+/// Runs Git in `checkout` against the repository's own objects only; a
+/// nonzero exit is an error. `label` names the caller in every error.
+pub(crate) fn git(checkout: &Path, label: &str, args: &[&str]) -> Result<Vec<u8>, AppError> {
+    answer(capture(checkout, None, label, args)?, label, args)
+}
+
+fn capture(
+    checkout: &Path,
+    objects: Option<(&Path, &Path)>,
+    label: &str,
+    args: &[&str],
+) -> Result<Captured, AppError> {
+    let mut command = crate::env::git_env::command(checkout);
+    if let Some((objects, source)) = objects {
+        command
+            .env("GIT_OBJECT_DIRECTORY", objects)
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", source);
+    }
+    command.args(args);
+    run_captured_answer(
+        command,
+        GIT_DEADLINE,
+        TerminationPolicy::Kill,
+        GIT_ANSWER_LIMIT,
+    )
+    .map_err(|error| AppError::Storage(format!("{label} Git {args:?}: {}", error.detail())))
+}
+
+fn answer(result: Captured, label: &str, args: &[&str]) -> Result<Vec<u8>, AppError> {
+    if !result.status.success() {
+        return Err(AppError::Storage(format!(
+            "{label} Git {args:?} failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        )));
+    }
+    refuse_cut(&result, label, args)?;
+    Ok(result.stdout)
+}
+
+// A committed file is judged whole or not at all (SH-815): a prefix could
+// parse where the file does not, and a digest would cover the prefix.
+fn refuse_cut(result: &Captured, label: &str, args: &[&str]) -> Result<(), AppError> {
+    if result.stdout_truncated {
+        return Err(AppError::Storage(format!(
+            "{label} Git {args:?} answered more than {} MiB; a cut answer is refused rather than read",
+            GIT_ANSWER_LIMIT / (1024 * 1024)
+        )));
+    }
+    Ok(())
+}
