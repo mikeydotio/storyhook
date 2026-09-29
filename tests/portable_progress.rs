@@ -684,6 +684,15 @@ fn a_gate_that_only_prints_or_stays_silent_is_still_stopped() {
                 .is_some_and(|line| line.contains(r#""path":"release gate","status":"failed""#)),
             "{case}: {text}"
         );
+        assert_eq!(
+            gate_progress::fold(&text).watchdog,
+            Some(gate_progress::WatchdogStop {
+                lock: "gate".into(),
+                idle: ceiling,
+                ceiling,
+            }),
+            "{case}: the stop names its cause for the verifier to report: {text}"
+        );
         fixture.assert_restored();
     }
 }

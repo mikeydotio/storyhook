@@ -1504,7 +1504,9 @@ impl ShellVerificationActuator {
                     .map_err(|error| error.to_string())
             },
         );
-        self.judge_verify_pr(capture, &candidate.checkout)
+        // The journal was rewritten when this attempt started, so a stop
+        // record in it is this attempt's own.
+        explain_silence_stop(self.judge_verify_pr(capture, &candidate.checkout), &journal)
     }
 
     /// Turns one finished `verify-pr.sh` run into the attempt's outcome: an
@@ -1572,8 +1574,9 @@ impl ShellVerificationActuator {
                 };
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!(
-                        "verify-pr.sh made no progress for {:?}; {termination}",
-                        self.verification_idle_timeout
+                        "verify-pr.sh made no progress for {:?}; {termination}. {}",
+                        self.verification_idle_timeout,
+                        crate::service::gate_progress::SILENCE_REMEDY
                     ),
                     disposition: VerificationFailureDisposition::Permanent,
                 };
@@ -1607,6 +1610,38 @@ impl ShellVerificationActuator {
             }
         };
         parsed.into_outcome()
+    }
+}
+
+/// Adds a silence watchdog's stop record to the infrastructure failure of
+/// the attempt it stopped (SH-777). Every path a stop can take ends here:
+/// the signal trap's own verdict, a verifier killed before it printed one,
+/// and the outer deadline. Without this the incident read "terminated by
+/// SIGTERM" and neither the cause nor the remedy reached the operator. An
+/// unreadable journal adds nothing: the failure already stands, and journal
+/// loss is supervision's own fault to report.
+fn explain_silence_stop(
+    outcome: VerificationOutcome,
+    journal: &std::path::Path,
+) -> VerificationOutcome {
+    let VerificationOutcome::InfrastructureFailure {
+        detail,
+        disposition,
+    } = outcome
+    else {
+        return outcome;
+    };
+    let remedy = crate::service::gate_progress::SILENCE_REMEDY;
+    let stop = std::fs::read_to_string(journal)
+        .ok()
+        .and_then(|text| crate::service::gate_progress::fold(&text).watchdog);
+    let detail = match stop {
+        Some(stop) if !detail.contains(remedy) => format!("{detail} {}", stop.explain()),
+        _ => detail,
+    };
+    VerificationOutcome::InfrastructureFailure {
+        detail,
+        disposition,
     }
 }
 
