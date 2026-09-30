@@ -2000,6 +2000,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 <div class="modal" id="dispatch-modal" tabindex="-1" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="dispatch-modal-header">
   <div class="modal-header" id="dispatch-modal-header" tabindex="-1">Dispatch story</div>
   <div class="modal-body">
+    <p class="dispatch-resume-note" id="dispatch-resume-note" hidden></p>
     <div class="field-grid">
       <div class="field"><label for="dispatch-client">Client</label>
         <select id="dispatch-client"><option value="localhost">localhost</option></select></div>
@@ -2817,6 +2818,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // by OUTCOME, not by mode: a success toasts and clears itself, a failure
     // stays until dismissed (SH-304) -- see `finishDispatch`.
     dispatches: {},
+    // SH-850: whether each claimed story's agent is live, lost or unknown,
+    // from `GET .../agents` (`api::agents`). Operational state outside
+    // `/data`, fetched like Full Auto's: a project id plus a ticket keeps a
+    // late reply about a board the user left from painting over this one.
+    // Only `launchAction` reads it, and only for a story in the active state.
+    agents: { project: null, status: "unasked", byStory: {}, ticket: 0, fetchedAt: 0 },
     resets: Object.create(null),
     // Durable rows for --auto dispatches that did NOT succeed, newest first
     // -- see `addDispatchHistoryRow`/`buildDispatchHistoryRow`. Not persisted
@@ -3842,6 +3849,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         if (state.screen === "repo") {
           renderEngineControl();
           if (currentRepoHasCheckout() && state.engineProject !== state.repoId) scheduleEngineFetch();
+          if (currentRepoHasCheckout() && state.agents.project !== state.repoId) scheduleAgentsFetch();
         }
         // Not called from here before SH-301: a project created or deleted
         // elsewhere while this tab sat on Home left "N projects" stale until
@@ -5916,6 +5924,118 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }, FETCH_DEBOUNCE_MS);
   }
 
+  // ============================================================
+  // RESUME (SH-850): which claimed stories lost their agent
+  // ============================================================
+
+  var agentsFetchDebounceTimer = null;
+  /** How old the census may be when a story menu opens before that open
+   * asks again. A pane that dies publishes no change event, so the menu is
+   * the moment a stale "live" would hide Resume from the person who came
+   * looking for it. */
+  var AGENTS_FRESH_MS = 10000;
+
+  /** The census of claimed stories' agents (`GET .../agents`). Refreshed at
+   * the same moments as Full Auto's status, plus after every launch and when
+   * a story menu opens on a claimed story. A failure leaves `status`
+   * "failed", which `launchAction` reads as "unknown": the ordinary
+   * Dispatch, which the daemon guards itself. */
+  function fetchAgents() {
+    if (state.screen !== "repo" || !state.repoId || !currentRepoHasCheckout()) return;
+    var project = state.repoId;
+    var ticket = ++state.agents.ticket;
+    if (state.agents.project !== project) {
+      state.agents.project = project;
+      state.agents.status = "loading";
+      state.agents.byStory = {};
+      state.agents.fetchedAt = 0;
+    }
+    api("GET", apiBase() + "/agents", null)
+      .then(function(response) {
+        if (ticket !== state.agents.ticket || state.repoId !== project) return;
+        var byStory = {};
+        (response.agents || []).forEach(function(agent) {
+          if (agent && agent.story) byStory[agent.story] = agent;
+        });
+        state.agents.byStory = byStory;
+        state.agents.status = "loaded";
+        state.agents.fetchedAt = Date.now();
+        if (state.drawerId) renderDrawer();
+      })
+      .catch(function() {
+        if (ticket !== state.agents.ticket || state.repoId !== project) return;
+        state.agents.status = "failed";
+        if (state.drawerId) renderDrawer();
+      });
+  }
+
+  function scheduleAgentsFetch() {
+    if (agentsFetchDebounceTimer) return;
+    agentsFetchDebounceTimer = setTimeout(function() {
+      agentsFetchDebounceTimer = null;
+      fetchAgents();
+    }, FETCH_DEBOUNCE_MS);
+  }
+
+  /** Whether `slug` is the state a claim moves a story into: the one
+   * carrying role "active" (SH-850 gates Resume on it, as the server's
+   * census and `story session-eligibility` do). */
+  function isActiveStateSlug(slug) {
+    return meta().states.some(function(s) { return s.slug === slug && s.role === "active"; });
+  }
+
+  /** The one launch action a story offers (SH-850), shared by the context
+   * menu and the drawer footer so the two can never disagree:
+   * `null` (hidden) or `{kind: "dispatch" | "resume", disabled,
+   * disabledReason, agent}`.
+   *
+   * Outside the active state, and whenever the census has no answer, it is
+   * SH-523's Dispatch, which the daemon now always sends with
+   * `--resume --if-absent`, so it can no longer replace a live agent. For a
+   * claimed story, in this order:
+   *   - a live Full Auto lane holds it: hidden, the engine owns it;
+   *   - no dispatch evidence (claimed by hand): Dispatch;
+   *   - its agent is live: hidden, there is nothing to launch;
+   *   - lost: Resume; unknown: Resume, disabled with the census's words.
+   * A blocked claimed story keeps its item but disables it with the reason:
+   * the helper refuses to relaunch an agent a block exists to stop, and the
+   * Full Auto reboot case (a quarantine's `awaiting`) must stay findable. */
+  function launchAction(v) {
+    var st = v.story;
+    if (stateSuperstate(st.state) === "CLOSED" || st.story_type === "epic" || !currentRepoHasCheckout()) return null;
+    var inFlight = !!state.dispatches[st.id];
+    var action = {
+      kind: "dispatch",
+      disabled: inFlight,
+      disabledReason: inFlight ? "A dispatch is already in progress for this story" : null,
+      agent: null
+    };
+    if (!isActiveStateSlug(st.state)) return action;
+    var lane = engineLaneForStory(st.id);
+    if (lane && (lane.state === "dispatching" || lane.state === "working")) return null;
+    var census = state.agents.project === state.repoId && state.agents.status === "loaded"
+      ? state.agents.byStory : null;
+    var agent = census ? census[st.id] : null;
+    if (agent && agent.state === "live") return null;
+    if (agent) {
+      action.kind = "resume";
+      action.agent = agent;
+      if (inFlight) {
+        action.disabledReason = "A resume is already in progress for this story";
+      } else if (agent.state === "unknown") {
+        action.disabled = true;
+        action.disabledReason = "Storyhook cannot tell whether this story's agent still runs: " + agent.detail;
+      }
+    }
+    if (v.is_blocked && !action.disabled) {
+      action.disabled = true;
+      action.disabledReason = "Blocked"
+        + (st.awaiting ? " (awaiting: " + st.awaiting + ")" : " by an open blocker")
+        + ". Unblock the story first.";
+    }
+    return action;
+  }
+
   /** Starts either the selected project's queue or one epic subtree. The
    * project id is the in-flight claim, acquired before `api()` and released
    * on every response. A status GET follows success and refusal alike so an
@@ -6170,19 +6290,26 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     fetchEngineRuns();
   }
 
-  /** The drawer footer's one dispatch action. Configuration now belongs to
-   * the modal rather than to parallel buttons, but the in-flight gate remains
-   * per story: the daemon dedupes by story regardless of agent or auto mode. */
+  /** The drawer footer's one launch action, or `null` when `launchAction`
+   * hides it (SH-850). Configuration belongs to the modal rather than to
+   * parallel buttons, and the in-flight gate remains per story: the daemon
+   * dedupes by story regardless of agent, auto mode or intent. */
   function dispatchButton(st) {
-    var inFlight = !!state.dispatches[st.id];
+    var launch = launchAction(findStory(st.id) || { story: st });
+    if (!launch) return null;
+    var entry = state.dispatches[st.id];
+    var resume = launch.kind === "resume" || !!(entry && entry.intent === "resume");
     return el("button", {
       id: "dispatch-btn",
       class: "btn btn-primary",
-      disabled: inFlight,
+      disabled: launch.disabled,
+      title: launch.disabled ? launch.disabledReason : null,
       // WebKit does not necessarily focus a button when it is clicked, so the
       // modal cannot infer its return-focus target from activeElement.
-      onClick: function(e) { openDispatchModal(st.id, e.currentTarget); }
-    }, [inFlight ? "Dispatching…" : "Dispatch"]);
+      onClick: function(e) {
+        openDispatchModal(st.id, e.currentTarget, launch.kind === "resume" ? launch.agent : null);
+      }
+    }, [entry ? (resume ? "Resuming…" : "Dispatching…") : (resume ? "Resume" : "Dispatch")]);
   }
 
   var dispatchModalStoryId = null;
@@ -6367,13 +6494,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * usually well before a person finishes reading the dialog. Availability
    * gates submission while that request is in flight; failure restores the
    * compatible, fully usable all-enabled fallback. */
-  function openDispatchModal(storyId, returnFocus) {
+  function openDispatchModal(storyId, returnFocus, resumeAgent) {
     if (state.dispatches[storyId]) return;
     dispatchModalStoryId = storyId;
+    // SH-850: Resume is this dialog with the lost launch's own settings.
+    // Every open resets the header, the Submit label and the note, so a
+    // Dispatch never inherits the previous Resume's wording.
+    dispatchModalResume = resumeAgent || null;
+    var launch = dispatchModalResume && dispatchModalResume.launch;
+    var recordedAgent = launch ? launch.provider : (dispatchModalResume && dispatchModalResume.provider);
+    $("dispatch-modal-header").textContent = dispatchModalResume ? "Resume " + storyId : "Dispatch story";
+    $("dispatch-modal-submit").textContent = dispatchModalResume ? "Resume" : "Dispatch";
+    renderResumeNote(null);
     $("dispatch-policy-preview").textContent = "Default model and effort follow story complexity.";
     $("dispatch-client").value = "localhost";
-    $("dispatch-agent").value = dispatchDefaults.agent;
-    $("dispatch-auto").checked = dispatchDefaults.auto;
+    $("dispatch-agent").value = recordedAgent === "claude" || recordedAgent === "codex"
+      ? recordedAgent : dispatchDefaults.agent;
+    $("dispatch-auto").checked = launch ? launch.autonomy !== "attended" : dispatchDefaults.auto;
     populateDispatchSelector("dispatch-model", null, "");
     populateDispatchSelector("dispatch-effort", null, "");
     populateDispatchSelector("dispatch-speed", null, "");
@@ -6383,11 +6520,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // switched provider while this was in flight -- reapply against
       // whichever provider is showing NOW, not the one at fetch time.
       if (dispatchModalStoryId === storyId) {
-        applyDispatchAvailability("dispatch", caps, $("dispatch-agent").value);
+        var selected = applyDispatchAvailability("dispatch", caps, $("dispatch-agent").value);
+        applyResumeLaunch(selected);
+        renderResumeNote(selected);
       }
     }).catch(function() {
       if (dispatchModalStoryId === storyId) {
-        applyDispatchAvailability("dispatch", null, $("dispatch-agent").value);
+        var selected = applyDispatchAvailability("dispatch", null, $("dispatch-agent").value);
+        applyResumeLaunch(selected);
+        renderResumeNote(selected);
       }
     });
     showBackdrop("dispatch-modal-backdrop");
@@ -6407,13 +6548,82 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Provider changed mid-draft: Model/Effort/Speed belong to the PREVIOUS
    * provider and must be rebuilt for the new one, restoring that provider's
-   * own remembered selection rather than leaving stale options selected. */
+   * own remembered selection rather than leaving stale options selected. A
+   * Resume restores the lost launch's selection for its own provider. */
   function onDispatchAgentChange() {
-    applyDispatchProviderOptions($("dispatch-agent").value, dispatchOptionsCache);
+    var agent = $("dispatch-agent").value;
+    applyDispatchProviderOptions(agent, dispatchOptionsCache);
+    applyResumeLaunch(agent);
+    renderResumeNote(agent);
+  }
+
+  /** The agent view (`api::agents`) of the story this dialog resumes, or
+   * `null` while it dispatches (SH-850). */
+  var dispatchModalResume = null;
+
+  var AGENT_LABELS = { claude: "Claude", codex: "Codex" };
+
+  /** Puts the lost launch's own model, effort and speed back in their
+   * selectors when `agent` is the provider it ran (SH-850). A recorded
+   * value the catalog does not list is still offered, marked "(recorded)",
+   * the way Full Auto's live-run editor marks a current value. */
+  function applyResumeLaunch(agent) {
+    var launch = dispatchModalResume && dispatchModalResume.launch;
+    if (!launch || launch.provider !== agent) return;
+    var providerCaps = (dispatchOptionsCache && dispatchOptionsCache[agent]) || {};
+    [["dispatch-model", providerCaps.models, launch.model],
+     ["dispatch-effort", providerCaps.efforts, launch.effort],
+     ["dispatch-speed", providerCaps.speeds, launch.speed === "fast" ? "fast" : ""]
+    ].forEach(function(row) {
+      populateDispatchSelector(row[0], row[1], row[2] || "");
+      if (row[2] && $(row[0]).value !== row[2]) {
+        $(row[0]).appendChild(el("option", { value: row[2] }, [row[2] + " (recorded)"]));
+        $(row[0]).value = row[2];
+      }
+    });
+    refreshDispatchPolicyPreview();
+  }
+
+  /** What a Resume will do, in plain words, before anyone presses it
+   * (SH-850 council C7): a NEW session, not the lost conversation. Also what
+   * this dialog could not recover: an unrecorded launch, a Full Auto lane
+   * that resumes as an ordinary autonomous session, and a recorded
+   * provider that is not installed here. Hidden for Dispatch. */
+  function renderResumeNote(selectedAgent) {
+    var note = $("dispatch-resume-note");
+    if (!dispatchModalResume) {
+      note.textContent = "";
+      note.hidden = true;
+      return;
+    }
+    var launch = dispatchModalResume.launch;
+    var recorded = launch ? launch.provider : dispatchModalResume.provider;
+    var parts = [
+      "Resume starts a new agent session in this story's worktree. The previous conversation is not restored: "
+        + "the agent rebuilds its understanding from the worktree, its Git history and the story's comments, "
+        + "and it may start the story over if the old work cannot be trusted.",
+      "Why Resume is offered: " + dispatchModalResume.detail + "."
+    ];
+    if (!launch) {
+      parts.push("Storyhook has no record of how this story was last launched. Check the settings below.");
+    } else if (launch.autonomy === "full-auto") {
+      parts.push("The story last ran in a Full Auto lane. Resume continues it as an ordinary autonomous session.");
+    }
+    if (selectedAgent && recorded && selectedAgent !== recorded) {
+      var installed = dispatchAgentsFrom(dispatchOptionsCache).some(function(agent) {
+        return agent.id === recorded && agent.installed;
+      });
+      parts.push("The story was last launched with " + (AGENT_LABELS[recorded] || recorded)
+        + (installed ? "" : ", which is not installed here")
+        + ". Resume will use " + (AGENT_LABELS[selectedAgent] || selectedAgent) + " instead.");
+    }
+    note.textContent = parts.join(" ");
+    note.hidden = false;
   }
 
   function closeDispatchModal() {
     dispatchModalStoryId = null;
+    dispatchModalResume = null;
     $("dispatch-options-notice").textContent = "";
     hideBackdrop("dispatch-modal-backdrop");
     $("dispatch-modal").classList.remove("open");
@@ -6429,9 +6639,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var model = $("dispatch-model").value;
     var effort = $("dispatch-effort").value;
     var speed = $("dispatch-speed").value;
-    saveDispatchDefaults(agent, auto, model, effort, speed);
+    var intent = dispatchModalResume ? "resume" : "dispatch";
+    // The remembered choice describes how this person dispatches NEW work; a
+    // Resume prefilled from a lost launch's record must not overwrite it.
+    if (intent === "dispatch") saveDispatchDefaults(agent, auto, model, effort, speed);
     closeDispatchModal();
-    startDispatch(storyId, agent, auto, model, effort, speed);
+    startDispatch(storyId, agent, auto, model, effort, speed, intent);
   }
 
   var engineModalProject = null;
@@ -6698,13 +6911,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * first is still running is just another entry, matching the daemon's
    * own support for several concurrent dispatches. No token handling here
    * -- `api()` prompts for one on a 401 and retries transparently. */
-  function startDispatch(storyId, agent, auto, model, effort, speed) {
+  function startDispatch(storyId, agent, auto, model, effort, speed, intent) {
     state.dispatches[storyId] = {
       handle: null, timer: null, agent: agent, auto: auto,
-      model: model || "", effort: effort || "", speed: speed || ""
+      model: model || "", effort: effort || "", speed: speed || "",
+      intent: intent === "resume" ? "resume" : "dispatch"
     };
     if (state.drawerId === storyId) renderDrawer();
     var query = "?agent=" + encodeURIComponent(agent) + (auto ? "&auto=1" : "");
+    if (intent === "resume") query += "&intent=resume";
     if (model) query += "&model=" + encodeURIComponent(model);
     if (effort) query += "&effort=" + encodeURIComponent(effort);
     if (speed === "fast") query += "&speed=fast";
@@ -6726,6 +6941,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         }
         if (resp.dispatch && (resp.dispatch.agent === "claude" || resp.dispatch.agent === "codex")) {
           entry.agent = resp.dispatch.agent;
+        }
+        // Same wrinkle, SH-850: a deduped answer reports the running
+        // attempt's intent, which the notice must name.
+        if (resp.dispatch && (resp.dispatch.intent === "resume" || resp.dispatch.intent === "dispatch")) {
+          entry.intent = resp.dispatch.intent;
         }
         entry.model = (resp.dispatch && typeof resp.dispatch.model === "string") ? resp.dispatch.model : "";
         entry.effort = (resp.dispatch && typeof resp.dispatch.effort === "string") ? resp.dispatch.effort : "";
@@ -6768,7 +6988,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           if (attempt + 1 >= DISPATCH_MAX_POLLS) {
             finishDispatch(storyId, "failed", current.auto,
               "Still running after " + storyId + "'s poll budget ran out -- check the tmux window, " +
-              "or `story show " + storyId + "`.");
+              "or `story show " + storyId + "`.", null, current.intent);
             return;
           }
           current.timer = setTimeout(function() { pollDispatch(storyId, handle, attempt + 1); }, DISPATCH_POLL_MS);
@@ -6784,7 +7004,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // assembled here, which is where `story.sh`'s own paragraph leaked
         // into the UI. The state and the detail travel separately now.
         var display = dispatchResultDetail(record);
-        finishDispatch(storyId, record.state, current.auto, display, record.reason);
+        finishDispatch(storyId, record.state, current.auto, display, record.reason, current.intent);
       })
       .catch(function(err) {
         var current = state.dispatches[storyId];
@@ -6793,7 +7013,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         // a mid-poll token re-prompt) retries rather than giving up on a
         // dispatch that is very possibly still running.
         if (attempt + 1 >= DISPATCH_MAX_POLLS) {
-          finishDispatch(storyId, "failed", current.auto, "Lost track of the dispatch: " + err.message);
+          finishDispatch(storyId, "failed", current.auto, "Lost track of the dispatch: " + err.message, null, current.intent);
           return;
         }
         current.timer = setTimeout(function() { pollDispatch(storyId, handle, attempt + 1); }, DISPATCH_POLL_MS);
@@ -6811,8 +7031,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * relaying it can hold, because the next thing the script chooses to say
    * lands here too. A verb per state, and nothing else, cannot regress that
    * way. */
-  function dispatchHeadline(storyId, state, auto) {
-    var verb = state === "ok" ? "dispatched" : state; // "refused" | "failed"
+  function dispatchHeadline(storyId, state, auto, intent) {
+    // SH-850: one verb per state still, and a Resume names itself --
+    // "resumed", "resume refused", "resume failed".
+    var resume = intent === "resume";
+    var verb = state === "ok"
+      ? (resume ? "resumed" : "dispatched")
+      : (resume ? "resume " + state : state); // "refused" | "failed"
     return storyId + " " + verb + (auto ? " (auto)" : "");
   }
 
@@ -6842,11 +7067,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * (SH-232's typed taxonomy) are both optional and both ride only on a
    * durable notice -- a client-side timeout never reached a `story.sh`
    * result to read a reason from, and a success has nothing to diagnose. */
-  function finishDispatch(storyId, dispatchState, auto, detail, reason) {
+  function finishDispatch(storyId, dispatchState, auto, detail, reason, intent) {
     delete state.dispatches[storyId];
-    var headline = dispatchHeadline(storyId, dispatchState, auto);
+    var headline = dispatchHeadline(storyId, dispatchState, auto, intent);
     if (dispatchState === "ok") {
-      toast(headline, "success");
+      // A success names nothing of story.sh's (SH-304). A Resume adds the one
+      // fact a person might otherwise assume the other way (SH-850 C7).
+      toast(headline, "success", intent === "resume"
+        ? "A new agent session started; the previous conversation was not restored." : undefined);
     } else if (auto) {
       addDispatchHistoryRow(storyId, headline, detail, reason);
     } else {
@@ -6859,6 +7087,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
     if (state.drawerId === storyId) renderDrawer();
     fetchData();
+    fetchAgents();
   }
 
   var dispatchHistorySeq = 0;
@@ -7042,8 +7271,10 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // SH-523 aligns this with renderDrawerFooter: dashboard dispatch always
     // carries --resume, so an open ordinary story can reconstruct surviving
     // work instead of needing the helper's narrower --force escape hatch.
-    var dispatchHidden = isClosed || st.story_type === "epic" || !currentRepoHasCheckout();
-    var dispatchInFlight = !!state.dispatches[st.id];
+    // SH-850 makes that one shared decision, `launchAction`: a claimed story
+    // whose agent was lost offers Resume instead, one whose agent works
+    // offers nothing.
+    var launch = launchAction(v);
     return compactSeparators([
       { label: "Copy ID", onSelect: function() { copyText(st.id, "ID"); } },
       { label: "Copy URL", onSelect: function() { copyText(storyPermalink(st.id), "URL"); } },
@@ -7054,14 +7285,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         onSelect: function() { copyText(description, "Description"); }
       },
       { separator: true },
-      dispatchHidden ? null : {
-        label: "Dispatch",
-        disabled: dispatchInFlight,
-        disabledReason: dispatchInFlight
-          ? "A dispatch is already in progress for this story"
-          : null,
-        onSelect: function() { openDispatchModal(st.id, invoker); }
-      },
+      launch ? {
+        label: launch.kind === "resume" ? "Resume" : "Dispatch",
+        disabled: launch.disabled,
+        disabledReason: launch.disabledReason,
+        onSelect: function() {
+          openDispatchModal(st.id, invoker, launch.kind === "resume" ? launch.agent : null);
+        }
+      } : null,
       { separator: true },
       (function() {
         var items = statusMenuItems(st);
@@ -7410,6 +7641,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function openStoryMenu(e, v, invoker) {
     e.preventDefault();
     closeAllPopovers();
+    // SH-850: a dead pane publishes no change event, so opening a claimed
+    // story's menu is when a stale census is refreshed -- for this menu's
+    // drawer twin and the next open, never by rebuilding this one mid-use.
+    if (isActiveStateSlug(v.story.state)
+        && (state.agents.project !== state.repoId || Date.now() - state.agents.fetchedAt > AGENTS_FRESH_MS)) {
+      fetchAgents();
+    }
     var model = storyMenuModel(v, invoker);
     if (!model.length) return;
     storyMenuInvoker = invoker;
@@ -12997,7 +13235,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           onClick: function(e) { openEngineModal(st.id, e.currentTarget); }
         }, [engineLabel]));
       } else {
-        next.appendChild(dispatchButton(st));
+        var launchButton = dispatchButton(st);
+        if (launchButton) next.appendChild(launchButton);
       }
     }
     var closeAvailable = canCloseStory(st);
@@ -13951,7 +14190,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         dataset: { story: record.story, state: record.state }
       }, [
         noticeBody(
-          dispatchHeadline(record.story, record.state, record.auto),
+          dispatchHeadline(record.story, record.state, record.auto, record.intent),
           detail,
           record.reason || null
         )
@@ -16585,6 +16824,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (state.screen === "repo" && state.repoId) {
       fetchData();
       fetchEngineRuns();
+      fetchAgents();
     }
     if (state.screen === "settings" && state.settingsRepoId) refreshStatusesIfIdle();
   }
@@ -16655,6 +16895,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       if (state.screen === "repo" && state.repoId === changed) {
         scheduleDataFetch();
         scheduleEngineFetch();
+        scheduleAgentsFetch();
       }
     });
     es.onerror = function() {
