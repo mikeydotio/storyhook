@@ -3014,5 +3014,5 @@ Tests:
 - `tests/engine_labels.rs`
 - `plugins/story/tests/test-dispatch-full-auto.sh`
 
-Decisions D1 to D7 are recorded on SH-837. The council trail is
-`.council/sh-837-live-lane-agent-on-reserved-label/`.
+Decisions D1 to D7 and D7a, including the council's unanimous vote on D7,
+are recorded on SH-837 (`story show SH-837`).
