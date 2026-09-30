@@ -3,6 +3,11 @@
 # a multi-line diagnosis is submitted as one bracketed-paste prompt.
 source "$(dirname "$0")/lib.sh"
 
+# One pane spans up to nine helper calls, each with a 30-second idle allowance.
+# Its identity must survive the whole scenario, including refusal cases.
+FAKE_TMUX_PANE_LIFETIME="$(python3 "$TESTS_DIR/../../../scripts/tests/load_grace.py" patience 270)" || exit 1
+export FAKE_TMUX_PANE_LIFETIME
+
 FAKE_TMUX_DIR="$TESTS_DIR/fakes"
 repo=$(mk_story_repo CDX)
 id=$(new_story "$repo" "Verifier remediation")
