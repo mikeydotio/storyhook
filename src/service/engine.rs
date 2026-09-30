@@ -1882,7 +1882,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 _ => String::new(),
             };
             let provenance = format!(
-                "Full Auto: {} on lane {} of run {run_id}{}{}{probe}. Worktree, branch and window are preserved for inspection; re-dispatch deliberately once you have looked.",
+                "Full Auto: {} on lane {} of run {run_id}{}{}{probe}. Worktree, branch and window are preserved for inspection; once you have looked, unblock the story and Resume it from the dashboard, or re-dispatch it deliberately.",
                 kind.as_str(),
                 lane.lane_index,
                 lane.window_name

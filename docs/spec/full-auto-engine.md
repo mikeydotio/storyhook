@@ -1976,7 +1976,12 @@ outcome" for this case, not a distinct one needing its own label.
 as_str()` is the vocabulary, and the shared template it already writes —
 naming the kind, the lane, the run, the window and the worktree, and
 promising all three are preserved for inspection — is D11's whole message
-regardless of which kind triggered it.
+regardless of which kind triggered it. SH-850 names the deliberate step at
+its end: once a person has looked, they unblock the story and Resume it from
+the dashboard (or re-dispatch it). Resume launches an ordinary session, never
+a Full Auto lane, and refuses while any agent still works in the worktree:
+on 2026-09-29 a lane was quarantined `window-gone` while its agent kept
+working on a tmux server whose socket path another server had taken over.
 
 **Testing.** `tests/engine_restart.rs` is the file this document has named
 since before this story existed — pure cases table-driven over `classify`
