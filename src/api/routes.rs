@@ -135,6 +135,11 @@ pub enum ProjectRoute<'a> {
     VerificationAck,
     /// `POST .../verification/control` — manually start, drain or stop.
     VerificationControl,
+    /// `GET .../agents` — whether each claimed story's agent still works
+    /// (SH-850). Answered by [`crate::api::agents::intercept`] in the accept
+    /// loop, like the engine routes; named here so `tests/route_authority.rs`
+    /// and the agreement test below can hold the two spellings together.
+    Agents,
     /// `GET|POST|PATCH .../engine` — inspect, start, or configure Full Auto.
     Engine,
     /// `POST .../engine/{action}` — control one engine run.
@@ -343,6 +348,10 @@ fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
             Method::Post => ProjectRoute::VerificationAck,
             _ => ProjectRoute::MethodNotAllowed,
         },
+        ["agents"] => match method {
+            Method::Get => ProjectRoute::Agents,
+            _ => ProjectRoute::MethodNotAllowed,
+        },
         ["engine"] => match method {
             Method::Get | Method::Post | Method::Patch => ProjectRoute::Engine,
             _ => ProjectRoute::MethodNotAllowed,
@@ -465,6 +474,7 @@ impl ProjectRoute<'_> {
             ProjectRoute::Visibility => "Visibility",
             ProjectRoute::VerificationAck => "VerificationAck",
             ProjectRoute::VerificationControl => "VerificationControl",
+            ProjectRoute::Agents => "Agents",
             ProjectRoute::Engine => "Engine",
             ProjectRoute::EngineAction { .. } => "EngineAction",
             ProjectRoute::EngineActionUnknown => "EngineActionUnknown",
@@ -621,6 +631,37 @@ mod tests {
             Route::Project {
                 id: "p",
                 route: ProjectRoute::Engine
+            }
+        );
+    }
+
+    #[test]
+    fn the_agents_route_is_spelled_the_same_here_as_in_its_worker_gate() {
+        for path in [
+            "/api/repos/p/agents",
+            "/api/repos/p/agents/SH-1",
+            "/api/repos/p/engine",
+            "/api/repos/p/story/SH-1",
+            "/api/agents",
+        ] {
+            let classified = matches!(
+                at(path, &Method::Get),
+                Route::Project {
+                    route: ProjectRoute::Agents,
+                    ..
+                }
+            );
+            assert_eq!(
+                crate::api::agents::is_agents_path(&segments(path)),
+                classified,
+                "{path}: the agents census's two spellings disagree"
+            );
+        }
+        assert_eq!(
+            at("/api/repos/p/agents", &Method::Post),
+            Route::Project {
+                id: "p",
+                route: ProjectRoute::MethodNotAllowed
             }
         );
     }
