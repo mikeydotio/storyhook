@@ -562,6 +562,10 @@ WORKTREE_IGNORE_COMMENT="# story per-story git worktrees (ephemeral — never co
 # lockstep with src/domain.rs; protocol/version tests pin the agreement.
 CLEANUP_LEASE_VERSION=1
 CLEANUP_LEASE_MARKER="storyhook-cleanup-lease-v1.json"
+# The reserved labels (src/domain.rs RESERVED_LABELS), stricter first. A story
+# that carries one is left for a person, so `dispatch --full-auto` refuses it
+# (SH-837). tests/engine_labels.rs pins this list to the Rust constant.
+RESERVED_LABELS_JSON='["human-only","no-auto"]'
 # Readiness gate before typing the prompt — see lib/session.sh's wait_ready
 # for the full two-tier rationale (marker footer match, or structural
 # frame+glyph+stabilise fallback), and wait_ready_sentinel for the
@@ -1767,6 +1771,20 @@ cmd_dispatch() {
         && fail "--model/--effort/--speed are not yet supported for an epic's Full Auto engine run -- $id is an epic. Omit the selector, or dispatch a single story instead."
       cmd_dispatch_epic "$id" "$auto" "$full_auto" "$force"
       return 0
+    fi
+
+    # SH-837: `--full-auto` marks an engine lane, and a Full Auto run never
+    # works a story left for a person. Every Full Auto launch passes this
+    # door -- the engine's fill, the verifier's and recovery's resumes, a
+    # continuation's resume -- so the refusal lands here, before any claim,
+    # worktree or window exists. A person may still dispatch it by hand.
+    if [ -n "$full_auto" ]; then
+      local reserved_label
+      reserved_label=$(printf '%s' "$show_json" | jq -r --argjson reserved "$RESERVED_LABELS_JSON" '
+        (.story.story.labels // []) as $labels
+        | [$reserved[] | select(. as $r | $labels | index($r) != null)] | first // ""')
+      [ -z "$reserved_label" ] \
+        || refuse "reserved-label" "story $id carries \`$reserved_label\`, so a Full Auto lane never works it: it is left for a person. Dispatch it by hand without --full-auto."
     fi
   fi
 

@@ -49,6 +49,7 @@ fn progressing() -> LaneObservation {
         seconds_since_output: None,
         awaiting_reason: None,
         returned_for_repair: false,
+        reserved_label: None,
     }
 }
 
@@ -335,6 +336,40 @@ fn an_interrupted_lane_is_quarantined_and_names_itself() {
     assert!(
         awaiting.contains("interrupted") && awaiting.contains(&run_id),
         "the reason names the kind and the run so a human can act on it: {awaiting}"
+    );
+}
+
+/// SH-837: a lane whose story gained a reserved label while the daemon was
+/// down is released at restart, not quarantined as `Interrupted`. Nobody
+/// will relaunch it, so there is nothing to wait for and nothing to report
+/// against the breaker — the story is simply left for a person, untouched.
+#[test]
+fn a_reserved_story_with_a_dead_window_at_restart_is_released_not_interrupted() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: "=fixture:=story-SH-1".into(),
+        alive: false,
+    }]);
+    let story = new_story(&fixture, "lane work", &[storyhook::domain::LABEL_NO_AUTO]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+
+    let report = reconcile_restart_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert!(report.quarantined.is_empty(), "{report:?}");
+    assert_eq!(report.reserved, [(0, storyhook::domain::LABEL_NO_AUTO)]);
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Idle);
+    assert_eq!(
+        lane.outcome.as_deref(),
+        Some(storyhook::service::engine::RESERVED)
+    );
+    assert_eq!(awaiting_of(&fixture, 1), None);
+    assert_eq!(streak(&fixture, &run_id), 0);
+    assert_eq!(
+        run_state(&fixture, &run_id),
+        EngineRunState::Running,
+        "a restart pass never terminates the run (D11)"
     );
 }
 
@@ -714,32 +749,40 @@ fn unanswered_restart_preserves_ownership_and_reseeds_before_steady_recovery() {
 
 #[test]
 fn unanswered_restart_still_obeys_every_store_classification_precedence() {
-    for closed in [false, true] {
-        for blocked in [false, true] {
-            for verifying in [false, true] {
-                let observation = LaneObservation {
-                    story_closed: closed,
-                    agent_blocked: blocked,
-                    story_verifying: verifying,
-                    window: WindowProbe::Unanswered {
-                        detail: "startup probe budget exhausted".into(),
-                    },
-                    seconds_since_progress: Some(STALL_CEILING_SECS * 2),
-                    ..progressing()
-                };
-                let expected = if closed {
-                    LaneClassification::Completed
-                } else if blocked {
-                    LaneClassification::HardStop(HardStopKind::AgentBlocked)
-                } else if verifying {
-                    LaneClassification::Verifying
-                } else {
-                    LaneClassification::Progressing
-                };
-                assert_eq!(
-                    classify(&observation, STALL_CEILING_SECS, ReconcilePass::Restart),
-                    expected
-                );
+    for reserved in [None, Some(storyhook::domain::LABEL_HUMAN_ONLY)] {
+        for closed in [false, true] {
+            for blocked in [false, true] {
+                for verifying in [false, true] {
+                    let observation = LaneObservation {
+                        story_closed: closed,
+                        agent_blocked: blocked,
+                        story_verifying: verifying,
+                        window: WindowProbe::Unanswered {
+                            detail: "startup probe budget exhausted".into(),
+                        },
+                        seconds_since_progress: Some(STALL_CEILING_SECS * 2),
+                        reserved_label: reserved,
+                        ..progressing()
+                    };
+                    // A reserved story (SH-837) keeps only the verdicts that
+                    // leave its lane alone; every other one releases it.
+                    let expected = if closed {
+                        LaneClassification::Completed
+                    } else if let Some(label) = reserved.filter(|_| blocked || verifying) {
+                        LaneClassification::Reserved(label)
+                    } else if blocked {
+                        LaneClassification::HardStop(HardStopKind::AgentBlocked)
+                    } else if verifying {
+                        LaneClassification::Verifying
+                    } else {
+                        LaneClassification::Progressing
+                    };
+                    assert_eq!(
+                        classify(&observation, STALL_CEILING_SECS, ReconcilePass::Restart),
+                        expected,
+                        "reserved {reserved:?}, closed {closed}, blocked {blocked}, verifying {verifying}"
+                    );
+                }
             }
         }
     }

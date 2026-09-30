@@ -120,6 +120,24 @@ pub fn process_one(
                 }
             }
             Some("absent") => {
+                // A resume launches an unattended session, and no automation
+                // launches one for a story left for a person (SH-837). A
+                // live provider is not touched either way: only this branch
+                // would start one.
+                let reserved = store.read(|tx| {
+                    Ok(tx
+                        .story(record.project_id, record.story_no)?
+                        .and_then(|row| crate::domain::reserved_label(&row.snapshot)))
+                })?;
+                if let Some(label) = reserved {
+                    record.status = ContinuationStatus::NeedsAttention;
+                    record.detail = format!(
+                        "story carries `{label}`, so automatic resume is withheld: it is left for a person; no replay"
+                    );
+                    persist(store, env, &mut record)?;
+                    changed = true;
+                    continue;
+                }
                 let expected = record.revision;
                 record.status = ContinuationStatus::Attempting;
                 record.phase = ContinuationPhase::Resume;

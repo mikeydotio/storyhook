@@ -36,7 +36,10 @@
 //! reporting the constants as unreachable public surface (SH-198).
 
 use assert_cmd::Command;
-use storyhook::domain::{LABEL_HUMAN_ONLY, LABEL_NO_AUTO, RESERVED_LABELS};
+use storyhook::domain::{
+    LABEL_HUMAN_ONLY, LABEL_NO_AUTO, RESERVED_LABELS, StorySnapshot, is_reserved,
+    is_reserved_label, reserved_label,
+};
 use storyhook::help_topics::get_help_topic;
 use storyhook::service::templates;
 use storyhook_test_support::{TestEnv, scratch_dir};
@@ -384,6 +387,45 @@ fn both_labels_at_once_reads_as_human_only() {
     assert_eq!(ids(&json(dir.path(), &["next"])), vec!["SH-2"]);
 }
 
+/// SH-837 — the one predicate every automated door reads. Labels go in
+/// through the CLI and come back out as the stored snapshot, so the test
+/// covers the spelling a person actually types, including case folding.
+#[test]
+fn reserved_label_names_each_reserved_label_and_prefers_human_only() {
+    let both = format!("{LABEL_NO_AUTO},{LABEL_HUMAN_ONLY}");
+    let upper = LABEL_NO_AUTO.to_uppercase();
+    let dir = project(&[
+        ("plain", Some("backend")),
+        ("no auto", Some(LABEL_NO_AUTO)),
+        ("human only", Some(LABEL_HUMAN_ONLY)),
+        ("both", Some(&both as &str)),
+        ("shouted", Some(&upper as &str)),
+        ("lookalike", Some("no-autonomy,human")),
+    ]);
+    let snapshot = |id: &str| -> StorySnapshot {
+        serde_json::from_value(view(dir.path(), id)["story"].clone())
+            .expect("`story show --json` carries the stored snapshot")
+    };
+    let expected = [
+        ("SH-1", None),
+        ("SH-2", Some(LABEL_NO_AUTO)),
+        ("SH-3", Some(LABEL_HUMAN_ONLY)),
+        ("SH-4", Some(LABEL_HUMAN_ONLY)),
+        ("SH-5", Some(LABEL_NO_AUTO)),
+        ("SH-6", None),
+    ];
+    for (id, label) in expected {
+        let story = snapshot(id);
+        assert_eq!(reserved_label(&story), label, "{id}: {:?}", story.labels);
+        assert_eq!(is_reserved(&story), label.is_some(), "{id}");
+    }
+    for label in RESERVED_LABELS {
+        assert!(is_reserved_label(label), "`{label}` is reserved");
+    }
+    assert!(!is_reserved_label("backend"));
+    assert!(!is_reserved_label("no-autonomy"));
+}
+
 // ---------------------------------------------------------------------------
 // The reservation is documented wherever label guidance lives
 // ---------------------------------------------------------------------------
@@ -435,4 +477,61 @@ fn the_label_topic_says_human_only_does_not_block() {
         lowered.contains("not blocked") || lowered.contains("does not block"),
         "`story help label` must state that `{LABEL_HUMAN_ONLY}` leaves a story ready"
     );
+}
+
+/// SH-837 — `story.sh dispatch --full-auto` refuses a story that carries a
+/// reserved label, and a bash script cannot call `domain::reserved_label`,
+/// so it declares the names once itself. This pins that declaration to
+/// [`RESERVED_LABELS`] as a set: a rename that reaches Rust but not the
+/// script would let a Full Auto lane work a story left for a person. The
+/// script lists the stricter label first; order is its business.
+#[test]
+fn story_sh_reserves_exactly_the_domain_labels() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/bin/story.sh");
+    let script = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} must be readable: {error}", path.display()));
+    let declarations: Vec<&str> = script
+        .lines()
+        .filter_map(|line| line.strip_prefix("RESERVED_LABELS_JSON="))
+        .collect();
+    assert_eq!(
+        declarations.len(),
+        1,
+        "story.sh must declare RESERVED_LABELS_JSON exactly once: {declarations:?}"
+    );
+    let literal = declarations[0]
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+        .expect("RESERVED_LABELS_JSON is one single-quoted JSON literal");
+    let mut declared: Vec<String> =
+        serde_json::from_str(literal).expect("RESERVED_LABELS_JSON is a JSON array of strings");
+    declared.sort();
+    let mut domain: Vec<String> = RESERVED_LABELS.iter().map(ToString::to_string).collect();
+    domain.sort();
+    assert_eq!(declared, domain);
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(literal).unwrap()[0],
+        LABEL_HUMAN_ONLY,
+        "the stricter label comes first, so a story carrying both names it"
+    );
+}
+
+/// SH-837 — the engine topic says what a reserved label does to a run that
+/// already holds the story: the run lets go, relaunches nothing, and names
+/// the verb that stops a live agent.
+#[test]
+fn the_engine_topic_says_a_reserved_label_releases_its_lane() {
+    let body = get_help_topic("engine").expect("the `engine` topic must exist");
+    for label in RESERVED_LABELS {
+        assert!(
+            body.contains(label),
+            "`story help engine` must name `{label}`"
+        );
+    }
+    for needle in ["released", "relaunches", "story block", "stays blocked"] {
+        assert!(
+            body.contains(needle),
+            "`story help engine` must say {needle:?} about a reserved story"
+        );
+    }
 }

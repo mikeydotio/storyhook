@@ -76,7 +76,9 @@ pub(super) fn red_diagnosis(
 /// same story into the same window and worktree succeeded (SH-650, decision
 /// D-E of `docs/spec/verification-workflow.md`). `Applied(false)` means the
 /// story is parked with `awaiting`: only when the re-dispatch itself was
-/// refused, or the refusal was not evidence of absence. The Conflict arm holds
+/// refused, the refusal was not evidence of absence, or the agent is absent
+/// from a story that carries a reserved label, which nothing relaunches
+/// (SH-837). The Conflict arm holds
 /// the queue on `true` and releases it on `false`, so the hold applies whether
 /// or not the FIRST paste landed, and never waits for a resubmission nobody
 /// will make.
@@ -141,6 +143,17 @@ pub(super) fn deliver_return<S: Store>(
             return park(queue, ctx, candidate, &reason);
         }
     };
+    // A re-dispatch launches an unattended session, and no automation
+    // launches one for a story left for a person (SH-837, amending D-E):
+    // the diagnosis waits in the story's comments instead. `human-only`
+    // never reaches here; `human_permits` ended the return above.
+    if let Some(label) = queue.reserved_label(candidate)? {
+        let reason = format!(
+            "verification remediation will not re-dispatch its agent: {} carries `{label}`, so it is left for a person. Read the diagnosis in the story's comments (after: {absent})",
+            candidate.story_id
+        );
+        return park(queue, ctx, candidate, &reason);
+    }
     // The trail is written BEFORE the respawn so a daemon that dies inside it
     // leaves a story that says what was attempted, not one that merely sits
     // in-progress with a dead pane (SH-306).

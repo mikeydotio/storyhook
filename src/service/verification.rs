@@ -327,6 +327,17 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
         Ok(self.store.read(|tx| human::permits(tx, candidate))?)
     }
 
+    /// The reserved label the candidate's story carries now, if any: the
+    /// story is left for a person, so no automation may launch an agent for
+    /// it (SH-837). Verifying it stays permitted; that is `human_permits`'s
+    /// question, not this one.
+    pub(crate) fn reserved_label(
+        &self,
+        candidate: &VerificationCandidate,
+    ) -> Result<Option<&'static str>, AppError> {
+        Ok(self.store.read(|tx| human::reserved_label(tx, candidate))?)
+    }
+
     /// Returns the highest-priority runnable submission, skipping held dependencies
     /// and unresolved landing intents without hiding them from `ordered`.
     pub fn next(&self) -> Result<Option<VerificationCandidate>, AppError> {

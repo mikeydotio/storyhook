@@ -107,8 +107,8 @@ otherwise — add and remove them with `story label` / `story unlabel`.
 
 | Label | Effect |
 |---|---|
-| `no-auto` | Needs a person in the loop — questions may be asked and a plan approved. `story next` still offers it and it is still claimable by hand; automation skips it. |
-| `human-only` | Only a person may do it. `story next` and `story claim --next` never return it. The verifier skips it; adding the label cancels an active verifier and releases its resources. |
+| `no-auto` | Needs a person in the loop — questions may be asked and a plan approved. `story next` still offers it and it is still claimable by hand; automation skips it: a Full Auto run never claims it or keeps it, and nothing relaunches its agent. |
+| `human-only` | Only a person may do it. `story next` and `story claim --next` never return it. The verifier skips it; adding the label cancels an active verifier and releases its resources. A Full Auto run never claims it or keeps it. |
 
 `human-only` is **not** a block. The story stays ready everywhere a person
 looks: `story list --ready` carries it, every ready count counts it, and an

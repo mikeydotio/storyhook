@@ -146,14 +146,12 @@ fn operator_replaced_hold_and_terminal_recovery_are_not_engine_exemptions() {
         lane.story_id = Some("SH-1".into());
         lane.window_name = Some("SH-1".into());
         f.store().write(|tx| tx.put_engine_lane(&lane)).unwrap();
-        assert_eq!(
-            engine
-                .reconcile_after_restart(&run.id)
-                .unwrap()
-                .quarantined
-                .len(),
-            1,
-            "{change}"
-        );
+        let report = engine.reconcile_after_restart(&run.id).unwrap();
+        // A reserved label ends the lane's claim outright (SH-837): the lane
+        // is released to the operator rather than quarantined, and either
+        // way recovery ownership exempted nothing.
+        let (quarantined, reserved) = if change == "label" { (0, 1) } else { (1, 0) };
+        assert_eq!(report.quarantined.len(), quarantined, "{change}");
+        assert_eq!(report.reserved.len(), reserved, "{change}");
     }
 }

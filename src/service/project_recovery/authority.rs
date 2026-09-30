@@ -1,7 +1,7 @@
 //! Recovery effects cannot inherit authority from a newer story or operator action.
 
 use super::{AssessmentHold, RecoveryView};
-use crate::domain::{LABEL_HUMAN_ONLY, LABEL_NO_AUTO, StoryEvent, StorySnapshot};
+use crate::domain::{StoryEvent, StorySnapshot, is_reserved, is_reserved_label};
 use crate::store::{GlobalSeq, ProjectId, ReadOps, StoreError, StoryNo};
 
 pub(super) fn state_revision(
@@ -33,7 +33,7 @@ pub(super) fn label_revision(
         .rev()
         .find_map(|event| {
             matches!(event.known(), Some(StoryEvent::StoryLabelsSet { labels, .. })
-            if labels.iter().any(|label| label == LABEL_HUMAN_ONLY || label == LABEL_NO_AUTO))
+            if labels.iter().any(|label| is_reserved_label(label)))
             .then_some(event.global_seq)
         }))
 }
@@ -46,11 +46,7 @@ pub(super) fn policy_hold(
     if !tx.verification_enabled(project)? {
         return Ok(Some(AssessmentHold::OperatorStop));
     }
-    if snapshot
-        .labels
-        .iter()
-        .any(|label| label == LABEL_HUMAN_ONLY || label == LABEL_NO_AUTO)
-    {
+    if is_reserved(snapshot) {
         return Ok(Some(AssessmentHold::ReservedLabel));
     }
     Ok(None)

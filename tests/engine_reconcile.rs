@@ -15,13 +15,15 @@
 
 mod store_support;
 
-use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget};
+use storyhook::domain::{
+    CLEANUP_LEASE_VERSION, LABEL_HUMAN_ONLY, LABEL_NO_AUTO, StoryCleanupLease, TmuxCleanupTarget,
+};
 use storyhook::lane_budget::WindowCensus;
 use storyhook::service::engine::{
-    AdmissionWait, BREAKER_TRIPPED, COMPLETED, ConfigureRequest, DispatchOutcome, EngineService,
-    HOST_TOOL_CALL_CEILING_SECS, HardStopKind, LaneClassification, LaneObservation,
-    OPERATOR_STOPPED, QUEUE_DRAINED, RECONCILE_TICK_SECS, ReconcilePass, STALL_CEILING_SECS,
-    STALL_MARGIN, StartRequest, WindowProbe, classify,
+    AdmissionWait, BREAKER_TRIPPED, COMPLETED, ConfigureRequest, DispatchOutcome, Dispatcher,
+    EngineService, HOST_TOOL_CALL_CEILING_SECS, HardStopKind, LaneClassification, LaneObservation,
+    OPERATOR_STOPPED, QUEUE_DRAINED, RECONCILE_TICK_SECS, RESERVED, RESERVED_HOLD_PREFIX,
+    ReconcilePass, STALL_CEILING_SECS, STALL_MARGIN, StartRequest, WindowProbe, classify,
 };
 use storyhook::service::{Clock, Ctx, NewStoryInput, StoryService};
 use storyhook::store::{
@@ -66,6 +68,7 @@ fn progressing() -> LaneObservation {
         seconds_since_output: None,
         awaiting_reason: None,
         returned_for_repair: false,
+        reserved_label: None,
     }
 }
 
@@ -524,6 +527,7 @@ fn a_closed_story_wins_over_every_other_signal() {
         seconds_since_output: Some(STALL_CEILING_SECS * 10),
         awaiting_reason: Some("the agent said why".to_string()),
         returned_for_repair: true,
+        reserved_label: Some(LABEL_HUMAN_ONLY),
     };
     assert_eq!(
         classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
@@ -580,6 +584,189 @@ fn an_agent_block_wins_over_the_verifying_handoff() {
         classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
         LaneClassification::HardStop(HardStopKind::AgentBlocked)
     );
+}
+
+// ---------------------------------------------------------------------------
+// A reserved label (SH-837, council D7)
+// ---------------------------------------------------------------------------
+
+/// Every observation that would end, quarantine or hold a lane for the
+/// verifier — each row paired with the verdict it reaches without a label.
+fn lane_endings() -> Vec<(
+    &'static str,
+    LaneObservation,
+    ReconcilePass,
+    LaneClassification,
+)> {
+    let gone = || WindowProbe::Gone {
+        detail: "scripted: gone".to_string(),
+    };
+    let stalled = || LaneObservation {
+        head_global_seq: Some(100),
+        last_progress_seq: Some(100),
+        seconds_since_progress: Some(STALL_CEILING_SECS + 1),
+        seconds_since_output: Some(STALL_CEILING_SECS + 1),
+        ..progressing()
+    };
+    vec![
+        (
+            "blocked or awaiting",
+            LaneObservation {
+                agent_blocked: true,
+                ..progressing()
+            },
+            ReconcilePass::Steady,
+            LaneClassification::HardStop(HardStopKind::AgentBlocked),
+        ),
+        (
+            "verifying",
+            LaneObservation {
+                story_verifying: true,
+                ..progressing()
+            },
+            ReconcilePass::Steady,
+            LaneClassification::Verifying,
+        ),
+        (
+            "verifying with its pane already gone",
+            LaneObservation {
+                story_verifying: true,
+                window: gone(),
+                ..progressing()
+            },
+            ReconcilePass::Steady,
+            LaneClassification::Verifying,
+        ),
+        (
+            "window gone",
+            LaneObservation {
+                window: gone(),
+                ..progressing()
+            },
+            ReconcilePass::Steady,
+            LaneClassification::HardStop(HardStopKind::WindowGone),
+        ),
+        (
+            "window gone across a restart",
+            LaneObservation {
+                window: gone(),
+                ..progressing()
+            },
+            ReconcilePass::Restart,
+            LaneClassification::HardStop(HardStopKind::Interrupted),
+        ),
+        (
+            "window gone just after a verifier return",
+            LaneObservation {
+                window: gone(),
+                returned_for_repair: true,
+                ..progressing()
+            },
+            ReconcilePass::Steady,
+            LaneClassification::Progressing,
+        ),
+        (
+            "silent on both channels past the ceiling",
+            stalled(),
+            ReconcilePass::Steady,
+            LaneClassification::HardStop(HardStopKind::Stalled),
+        ),
+        (
+            "stalled while tmux cannot be asked",
+            LaneObservation {
+                window: WindowProbe::Unanswered {
+                    detail: "scripted: timeout".to_string(),
+                },
+                seconds_since_output: None,
+                ..stalled()
+            },
+            ReconcilePass::Steady,
+            LaneClassification::HardStop(HardStopKind::Stalled),
+        ),
+    ]
+}
+
+/// The run lets go of a reserved story at every point where it would
+/// otherwise end, quarantine, defer or hold the lane — for either label, on
+/// either pass — and never with a hard stop, which would set `awaiting` and
+/// feed the breaker for what is an operator's decision.
+///
+/// The deferral row is the one a label changes from "wait": a story the
+/// verifier just returned is normally waiting for the verifier's resume
+/// re-dispatch (SH-650), and a reserved story never gets one.
+#[test]
+fn a_reserved_label_releases_the_lane_at_every_ending() {
+    for (name, observation, pass, unlabelled) in lane_endings() {
+        assert_eq!(
+            classify(&observation, STALL_CEILING_SECS, pass),
+            unlabelled,
+            "control: {name}"
+        );
+        for label in [LABEL_HUMAN_ONLY, LABEL_NO_AUTO] {
+            let reserved = LaneObservation {
+                reserved_label: Some(label),
+                ..observation.clone()
+            };
+            assert_eq!(
+                classify(&reserved, STALL_CEILING_SECS, pass),
+                LaneClassification::Reserved(label),
+                "{label}: {name}"
+            );
+        }
+    }
+}
+
+/// While its agent is live the run keeps a reserved story's lane (council
+/// D7): capacity stays honest, nothing is interrupted, and removing the
+/// label again changes nothing. An unanswered probe is no evidence either way
+/// (SH-626), so it holds too, until the stall ceiling decides.
+#[test]
+fn a_reserved_story_with_a_live_agent_keeps_its_lane() {
+    let live = [
+        WindowProbe::Alive {
+            last_output_at: None,
+        },
+        WindowProbe::Unanswered {
+            detail: "scripted: timeout".to_string(),
+        },
+    ];
+    for label in [LABEL_HUMAN_ONLY, LABEL_NO_AUTO] {
+        for window in &live {
+            for pass in [ReconcilePass::Steady, ReconcilePass::Restart] {
+                let observation = LaneObservation {
+                    window: window.clone(),
+                    reserved_label: Some(label),
+                    ..progressing()
+                };
+                assert_eq!(
+                    classify(&observation, STALL_CEILING_SECS, pass),
+                    LaneClassification::Progressing,
+                    "{label}, {window:?}, {pass:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Completion still comes first: a reserved story that closed frees its lane
+/// as a completion, which also zeroes the streak.
+#[test]
+fn a_closed_story_wins_over_a_reserved_label() {
+    for label in [LABEL_HUMAN_ONLY, LABEL_NO_AUTO] {
+        let observation = LaneObservation {
+            story_closed: true,
+            window: WindowProbe::Gone {
+                detail: "scripted: gone".to_string(),
+            },
+            reserved_label: Some(label),
+            ..progressing()
+        };
+        assert_eq!(
+            classify(&observation, STALL_CEILING_SECS, ReconcilePass::Steady),
+            LaneClassification::Completed,
+            "{label}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -700,7 +887,12 @@ fn every_hard_stop_kind_has_a_distinct_stable_spelling() {
         HardStopKind::DispatchRefused,
         HardStopKind::StoryMissing,
     ];
-    let spellings: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+    // The lane outcomes that are not hard stops share the same column.
+    let spellings: Vec<&str> = kinds
+        .iter()
+        .map(|kind| kind.as_str())
+        .chain([COMPLETED, RESERVED])
+        .collect();
     let mut unique = spellings.clone();
     unique.sort_unstable();
     unique.dedup();
@@ -2378,6 +2570,386 @@ fn a_draining_run_still_finishes_once_its_lane_clears_despite_a_parked_no_auto_s
         "a draining run is not gated on unclaimed no-auto work"
     );
     assert_eq!(report.stop_reason.as_deref(), Some(OPERATOR_STOPPED));
+}
+
+/// The stored row of story `number`, for before-and-after comparisons that
+/// prove a pass wrote nothing to it.
+fn story_row(fixture: &ServiceFixture, number: i64) -> storyhook::store::StoryRow {
+    fixture
+        .store()
+        .read(|tx| {
+            tx.story(
+                fixture.project(),
+                storyhook::store::ids::StoryNo::new(number),
+            )
+        })
+        .unwrap()
+        .unwrap()
+}
+
+fn label(fixture: &ServiceFixture, story: &str, label: &str) {
+    StoryService::new(&fixture.ctx())
+        .set_labels(story, &[label.to_string()], &[])
+        .unwrap();
+}
+
+/// The live SH-837 case: engine-dispatched stories moved to `verifying`, then
+/// an operator labelled them `human-only` as a verifier hold. The verifier
+/// never touches such a story, so the held lane never freed — three of four
+/// lanes of one run sat on them for 71 hours.
+///
+/// Now the lane is released to the operator, and nothing else happens: the
+/// story's row is byte-for-byte what it was (no `awaiting`, no comment, no
+/// state change), nothing is cleaned up or dispatched, and the breaker does
+/// not move. With nothing else to do, the run then drains (decision D6).
+#[test]
+fn a_lane_whose_verifying_story_gains_human_only_is_released_without_cleanup() {
+    let fixture = ServiceFixture::new();
+    let window = "=fixture:=story-SH-1".to_string();
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: window.clone(),
+            alive: false,
+        },
+        DispatcherStep::WindowAlive {
+            window,
+            alive: false,
+        },
+    ]);
+    let story = new_story(&fixture, "lane work", &[]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    StoryService::new(&fixture.ctx())
+        .set_state(&story, "verifying", None, None, None)
+        .unwrap();
+    let held = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+    assert_eq!(
+        held.verifying,
+        [0],
+        "control: an unlabelled handoff is held"
+    );
+
+    label(&fixture, &story, LABEL_HUMAN_ONLY);
+    let before = story_row(&fixture, 1);
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.reserved, [(0, LABEL_HUMAN_ONLY)]);
+    assert!(report.verifying.is_empty());
+    assert!(report.quarantined.is_empty());
+    assert!(report.completed.is_empty());
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Idle);
+    assert_eq!(lane.story_id, None);
+    assert_eq!(lane.outcome.as_deref(), Some(RESERVED));
+    assert_eq!(lane.outcome_detail.as_deref(), Some(story.as_str()));
+    assert_eq!(
+        story_row(&fixture, 1),
+        before,
+        "the story is left exactly as the operator left it"
+    );
+    assert_eq!(streak(&fixture, &run_id), 0);
+    assert!(
+        fake.calls()
+            .iter()
+            .all(|call| matches!(call, DispatcherCall::WindowAlive(_))),
+        "a release cleans up nothing and dispatches nothing: {:?}",
+        fake.calls()
+    );
+    assert_eq!(report.run_state, EngineRunState::Finished);
+    assert_eq!(report.stop_reason.as_deref(), Some(QUEUE_DRAINED));
+}
+
+/// Council D7: an in-progress story that gains `no-auto` while its agent is
+/// live keeps its lane — the run does not interrupt it or overshoot its
+/// capacity — and says so on the story exactly once, naming `story block`.
+/// When the agent's pane goes away, the lane is released instead of
+/// quarantined, and nothing ever relaunches the story.
+#[test]
+fn a_working_lane_whose_story_gains_no_auto_is_held_while_live_then_released() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "in flight", &[]);
+    let window = format!("=fixture:=story-{story}");
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: window.clone(),
+            alive: true,
+        },
+        DispatcherStep::WindowAlive {
+            window: window.clone(),
+            alive: true,
+        },
+        DispatcherStep::WindowAlive {
+            window,
+            alive: false,
+        },
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    StoryService::new(&fixture.ctx())
+        .set_state(&story, "in-progress", None, None, None)
+        .unwrap();
+    label(&fixture, &story, LABEL_NO_AUTO);
+
+    let holds = |fixture: &ServiceFixture| {
+        story_row(fixture, 1)
+            .snapshot
+            .comments
+            .iter()
+            .filter(|comment| comment.text.starts_with(RESERVED_HOLD_PREFIX))
+            .map(|comment| comment.text.clone())
+            .collect::<Vec<_>>()
+    };
+    for pass in 0..2 {
+        let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+        assert!(report.reserved.is_empty(), "pass {pass}");
+        assert!(report.quarantined.is_empty(), "pass {pass}");
+        assert_eq!(
+            lane_at(&fixture, &run_id, 0).state,
+            EngineLaneState::Working,
+            "pass {pass}: a live agent keeps its lane"
+        );
+        let holds = holds(&fixture);
+        assert_eq!(holds.len(), 1, "pass {pass}: one comment, never more");
+        for needle in [
+            format!("run `{run_id}` lane 0"),
+            format!("`{LABEL_NO_AUTO}`"),
+            "window `story-SH-1`".to_string(),
+            "Full Auto mode".to_string(),
+            format!("`story block {story} <reason>`"),
+        ] {
+            assert!(holds[0].contains(&needle), "{needle:?} in {:?}", holds[0]);
+        }
+    }
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.reserved, [(0, LABEL_NO_AUTO)]);
+    assert!(report.quarantined.is_empty());
+    assert_eq!(lane_at(&fixture, &run_id, 0).state, EngineLaneState::Idle);
+    assert_eq!(story_row(&fixture, 1).awaiting, None);
+    assert_eq!(story_row(&fixture, 1).state, "in-progress");
+    assert_eq!(streak(&fixture, &run_id), 0);
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|call| matches!(call, DispatcherCall::Dispatch(_))),
+        "a reserved story is never relaunched: {:?}",
+        fake.calls()
+    );
+}
+
+/// A release is neither a failure nor a completion, so it must leave an
+/// existing streak exactly where it was: a strike would halt runs over
+/// operator decisions, and a reset would hide real failures.
+#[test]
+fn a_reserved_release_neither_strikes_nor_resets_the_breaker() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "held", &[]);
+    // Keeps the run `Running` after the release, so the streak is read
+    // from a live run.
+    let _parked = new_story(&fixture, "human work", &[LABEL_NO_AUTO]);
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{story}"),
+        alive: false,
+    }]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    fixture
+        .store()
+        .write(|tx| {
+            let mut run = tx.engine_run(&run_id)?.unwrap();
+            run.consecutive_hard_stops = 2;
+            tx.update_engine_run(&run)
+        })
+        .unwrap();
+    label(&fixture, &story, LABEL_HUMAN_ONLY);
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.reserved, [(0, LABEL_HUMAN_ONLY)]);
+    assert_eq!(streak(&fixture, &run_id), 2);
+    assert_eq!(report.run_state, EngineRunState::Running);
+}
+
+/// A story whose agent blocked it keeps its own words: the release relays
+/// nothing and replaces nothing (SH-120), where a quarantine would have
+/// appended the engine's provenance to them.
+#[test]
+fn a_reserved_label_on_an_awaiting_story_leaves_its_reason_verbatim() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "blocked", &[]);
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{story}"),
+        alive: true,
+    }]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    StoryService::new(&fixture.ctx())
+        .set_awaiting(&story, "the agent said why")
+        .unwrap();
+    label(&fixture, &story, LABEL_HUMAN_ONLY);
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.reserved, [(0, LABEL_HUMAN_ONLY)]);
+    assert!(report.quarantined.is_empty());
+    assert_eq!(
+        awaiting_of(&fixture, 1).as_deref(),
+        Some("the agent said why")
+    );
+}
+
+/// A released lane is an idle lane: the same pass fills it with other ready
+/// work, and never with the reserved story.
+#[test]
+fn a_released_reserved_lane_refills_with_other_ready_work() {
+    let fixture = ServiceFixture::new();
+    let held = new_story(&fixture, "held", &[]);
+    let next = new_story(&fixture, "next", &[]);
+    let fake = FakeDispatcher::new([
+        DispatcherStep::WindowAlive {
+            window: format!("=fixture:=story-{held}"),
+            alive: false,
+        },
+        DispatcherStep::Dispatch(DispatchOutcome::from_payload(serde_json::json!({
+            "ok": true,
+            "pane": "%7",
+            "window_name": next,
+            "worktree_path": format!("/tmp/wt/{next}"),
+            "cleanup_lease": cleanup_lease(&next, &format!("/tmp/wt/{next}")),
+        }))),
+    ]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &held);
+    StoryService::new(&fixture.ctx())
+        .set_state(&held, "verifying", None, None, None)
+        .unwrap();
+    label(&fixture, &held, LABEL_HUMAN_ONLY);
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.reserved, [(0, LABEL_HUMAN_ONLY)]);
+    assert_eq!(report.filled, [(0, next.clone())]);
+    assert_eq!(lane_at(&fixture, &run_id, 0).story_id, Some(next));
+}
+
+/// An operator's graceful stop ends the run once its lanes clear, and a
+/// reserved release clears a lane like any other ending.
+#[test]
+fn a_draining_run_finishes_once_its_lane_is_released_for_a_reserved_label() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "in flight", &[]);
+    let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+        window: format!("=fixture:=story-{story}"),
+        alive: false,
+    }]);
+    let run_id = started_run(&fixture, &fake, 1);
+    occupy(&fixture, &run_id, 0, &story);
+    let stopped = EngineService::new(&fixture.ctx(), &fake)
+        .stop(&run_id, false)
+        .unwrap();
+    assert_eq!(stopped.run.state, EngineRunState::Draining);
+    StoryService::new(&fixture.ctx())
+        .set_state(&story, "verifying", None, None, None)
+        .unwrap();
+    label(&fixture, &story, LABEL_HUMAN_ONLY);
+
+    let report = reconcile_at(&fixture, &fake, &run_id, FIXTURE_NOW);
+
+    assert_eq!(report.reserved, [(0, LABEL_HUMAN_ONLY)]);
+    assert_eq!(report.run_state, EngineRunState::Finished);
+    assert_eq!(report.stop_reason.as_deref(), Some(OPERATOR_STOPPED));
+}
+
+/// A dispatcher that labels the story `no-auto` while the engine dispatches
+/// it — the one window between the engine's claim, which admits no reserved
+/// story, and `story.sh`, which refuses `--full-auto` for one.
+struct LabelledDuringDispatch {
+    store_path: std::path::PathBuf,
+    project: storyhook::store::ProjectId,
+    cwd: std::path::PathBuf,
+    env: storyhook::env::Environment,
+    inner: FakeDispatcher,
+}
+
+impl Dispatcher for LabelledDuringDispatch {
+    fn dispatch(
+        &self,
+        request: storyhook::service::engine::DispatchRequest,
+    ) -> Result<DispatchOutcome, storyhook::error::AppError> {
+        let store = storyhook::store::SqliteStore::open(&self.store_path).unwrap();
+        let ctx = Ctx::new(&store, self.project, &self.cwd, self.env.clone());
+        StoryService::new(&ctx)
+            .set_labels(&request.story, &[LABEL_NO_AUTO.to_string()], &[])
+            .unwrap();
+        self.inner.dispatch(request)
+    }
+
+    fn unclaim(
+        &self,
+        request: storyhook::service::engine::UnclaimRequest,
+    ) -> Result<DispatchOutcome, storyhook::error::AppError> {
+        self.inner.unclaim(request)
+    }
+
+    fn probe_window(&self, window: &str) -> WindowProbe {
+        self.inner.probe_window(window)
+    }
+
+    fn kill_window(&self, window: &str) -> Result<(), storyhook::error::AppError> {
+        self.inner.kill_window(window)
+    }
+
+    fn census(&self) -> WindowCensus {
+        self.inner.census()
+    }
+}
+
+/// Decision D4: when the label lands between the claim and the dispatch,
+/// `story.sh` refuses, and the lane is released as `reserved` without a
+/// strike or a quarantine. The refusal goes onto `awaiting` verbatim, so the
+/// person the story is left for sees why a claimed story has no agent.
+#[test]
+fn a_reserved_label_refusal_after_claim_releases_without_a_strike() {
+    let fixture = ServiceFixture::new();
+    let story = new_story(&fixture, "labelled mid-dispatch", &[]);
+    let refusal = "story SH-1 carries `no-auto`; a Full Auto lane never works it.";
+    let dispatcher = LabelledDuringDispatch {
+        store_path: fixture.env().store_path().to_path_buf(),
+        project: fixture.project(),
+        cwd: fixture.cwd().to_path_buf(),
+        env: fixture.env().clone(),
+        inner: FakeDispatcher::new([DispatcherStep::Dispatch(DispatchOutcome::from_payload(
+            serde_json::json!({"ok": false, "reason": "reserved-label", "display": refusal}),
+        ))]),
+    };
+    let run_id = EngineService::new(&fixture.ctx(), &dispatcher)
+        .start(StartRequest {
+            scope: EngineScope::Project,
+            lanes: 1,
+            agent: EngineAgent::Codex,
+            model: None,
+            effort: None,
+            speed: None,
+        })
+        .unwrap()
+        .id;
+
+    let report = EngineService::new(&fixture.ctx(), &dispatcher)
+        .reconcile(&run_id)
+        .unwrap();
+
+    assert!(report.filled.is_empty());
+    assert!(report.quarantined.is_empty(), "{report:?}");
+    assert_eq!(streak(&fixture, &run_id), 0);
+    let lane = lane_at(&fixture, &run_id, 0);
+    assert_eq!(lane.state, EngineLaneState::Idle);
+    assert_eq!(lane.outcome.as_deref(), Some(RESERVED));
+    assert_eq!(lane.outcome_detail.as_deref(), Some(story.as_str()));
+    let row = story_row(&fixture, 1);
+    assert_eq!(row.awaiting.as_deref(), Some(refusal));
+    assert_eq!(row.state, "in-progress", "the claim stays visible");
 }
 
 // ---------------------------------------------------------------------------
