@@ -48,7 +48,7 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 fn stub_script(mode: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=6
+DISPATCH_PROTOCOL=7
 set -u
 case "{mode}" in
   ok)
@@ -459,7 +459,7 @@ fn auto_equals_1_appends_auto_to_the_scripts_argv_and_is_relayed_in_the_record()
     let argv = record["payload"]["argv"]
         .as_str()
         .expect("argv echoed back");
-    assert!(argv.contains("dispatch CAL-12 --agent=claude --resume --auto"));
+    assert!(argv.contains("dispatch CAL-12 --agent=claude --resume --if-absent --auto"));
 }
 
 #[test]
@@ -482,7 +482,7 @@ fn codex_agent_is_relayed_and_passed_to_the_shared_helper() {
         record["payload"]["argv"]
             .as_str()
             .unwrap()
-            .contains("dispatch SH-1 --agent=codex --resume --auto")
+            .contains("dispatch SH-1 --agent=codex --resume --if-absent --auto")
     );
 }
 
@@ -686,7 +686,7 @@ fn an_unselected_dispatch_carries_no_model_effort_or_speed_flag() {
         .expect("argv echoed back");
     assert_eq!(
         argv.trim(),
-        "--project proj dispatch SH-1 --agent=claude --resume",
+        "--project proj dispatch SH-1 --agent=claude --resume --if-absent",
         "an unselected dashboard dispatch carries only automatic resume permission"
     );
     assert!(!record.as_object().unwrap().contains_key("model"));
@@ -753,7 +753,7 @@ fn model_effort_and_speed_append_their_own_flags_and_are_relayed_in_the_record()
         .expect("argv echoed back");
     assert!(
         argv.contains(
-            "dispatch SH-1 --agent=claude --resume --model=haiku --effort=max --speed=fast"
+            "dispatch SH-1 --agent=claude --resume --if-absent --model=haiku --effort=max --speed=fast"
         ),
         "argv: {argv}"
     );

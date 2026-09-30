@@ -3424,7 +3424,7 @@ fn shell_redispatch_asks_the_helper_for_a_resume_of_the_same_story() {
     assert_eq!(
         argv,
         format!(
-            "--project {} dispatch {} --resume --auto",
+            "--project {} dispatch {} --resume --if-absent --auto",
             candidate.project_slug, candidate.story_id
         ),
         "an attended story names no provider: the helper reads the dispatch's own record"
@@ -3455,7 +3455,7 @@ fn shell_redispatch_asks_the_helper_for_a_resume_of_the_same_story() {
     assert_eq!(
         argv,
         format!(
-            "--project {} dispatch {} --agent=codex --resume --auto --full-auto --model=gpt-5-codex --effort=high --speed=fast",
+            "--project {} dispatch {} --agent=codex --resume --if-absent --auto --full-auto --model=gpt-5-codex --effort=high --speed=fast",
             candidate.project_slug, candidate.story_id
         ),
         "a Full Auto lane's story is re-dispatched as that lane, and never with --force beside --resume"

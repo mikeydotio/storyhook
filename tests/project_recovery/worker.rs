@@ -576,6 +576,8 @@ fn proven_absence_resumes_only_the_exact_registered_lease_and_preserves_work() {
         if !changed_identity {
             let args: Vec<String> = serde_json::from_str(calls.lines().last().unwrap()).unwrap();
             assert!(args.iter().any(|arg| arg == "--resume"));
+            // A daemon resume never replaces a live agent (SH-850).
+            assert!(args.iter().any(|arg| arg == "--if-absent"));
         }
         assert_eq!(
             std::fs::read_to_string(worktree.join("preserved-work")).unwrap(),
