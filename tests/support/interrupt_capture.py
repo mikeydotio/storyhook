@@ -1,16 +1,22 @@
 """Pin interruption capture races at the native process-probe boundary."""
 
+from contextlib import closing
 import importlib.util
 import os
 from pathlib import Path
 import signal
+import select
 import subprocess
 import sys
 import unittest
 from unittest.mock import patch
 
 
-library = Path(__file__).resolve().parents[2] / "plugins/story/lib"
+root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(root / "scripts/tests"))
+import load_grace
+
+library = root / "plugins/story/lib"
 sys.path.insert(0, str(library))
 spec = importlib.util.spec_from_file_location("interrupt_agent", library / "interrupt-agent.py")
 interrupt = importlib.util.module_from_spec(spec)
@@ -81,6 +87,7 @@ class NativeLivenessTests(unittest.TestCase):
             except ProcessLookupError:
                 pass
         child.wait()
+        child.stdin.close()
 
     def test_target_binds_a_live_pane_without_a_census(self):
         """Binding reads the pane process natively, so a slow ps cannot refuse it."""
@@ -121,8 +128,22 @@ class NativeLivenessTests(unittest.TestCase):
     def test_an_exited_unreaped_child_reads_as_gone(self):
         """A zombie is dead: exit, not a probe failure, even before its parent reaps it."""
         child, owned = self.spawn()
-        child.stdin.close()
-        os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+        if sys.platform == "darwin":
+            # Subscribe before releasing the child: exit observation must not reap
+            # the zombie whose identity the production probe is about to read.
+            with closing(select.kqueue()) as events:
+                event = select.kevent(child.pid, filter=select.KQ_FILTER_PROC,
+                                      flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                      fflags=select.KQ_NOTE_EXIT)
+                events.control([event], 0, 0)
+                child.stdin.close()
+                exited = events.control([], 1, load_grace.patience(5, load_grace.contention()))
+                self.assertEqual(len(exited), 1, "child did not exit before fixture deadline")
+                self.assertEqual(exited[0].ident, child.pid)
+                self.assertTrue(exited[0].fflags & select.KQ_NOTE_EXIT)
+        else:
+            child.stdin.close()
+            os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
         with self.assertRaises(ProcessLookupError):
             interrupt.proc.process_identity(child.pid)
         self.assertFalse(interrupt.proc.alive(child.pid, owned[child.pid]))
