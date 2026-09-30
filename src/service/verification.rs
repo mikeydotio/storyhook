@@ -1857,9 +1857,10 @@ mod tests {
             .env("SH713_RECEIPTS_PATH", capture.path());
         let output = ChildGuard::spawn_with_output(&mut command)
             .unwrap()
-            .wait_with_output_within(std::time::Duration::from_secs(120), || {
-                "isolated submission-head helper regression".into()
-            });
+            .wait_with_output_within(
+                storyhook_test_support::load_grace::graced_now(std::time::Duration::from_secs(120)),
+                || "isolated submission-head helper regression".into(),
+            );
         let captured = std::fs::read_to_string(capture.path()).unwrap();
         let rows: Vec<serde_json::Value> = captured
             .lines()
