@@ -539,6 +539,52 @@ fn an_unrecognized_auto_value_is_400() {
     assert_eq!(status_of(&err), 400);
 }
 
+/// SH-850: the dashboard's Resume is a dispatch whose record says so. The
+/// helper argv is the same guarded resume either way; the intent travels in
+/// the record from the 202 through every poll, and an unknown or repeated
+/// intent is refused before any handle exists.
+#[test]
+fn a_resume_intent_is_recorded_and_the_argv_stays_the_guarded_resume() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub("echo-args");
+    let info = start_with_stub(&env, stub.path());
+
+    let resp = post_dispatch_query(&info, &info.token, "proj", "SH-7", "intent=resume&auto=1")
+        .expect("resume accepted");
+    let accepted = body_json(resp);
+    assert_eq!(accepted["dispatch"]["intent"], "resume");
+    let handle = accepted["dispatch"]["handle"]
+        .as_str()
+        .expect("a handle")
+        .to_string();
+    let record = poll_until_finished(&info, &info.token, "proj", "SH-7", &handle);
+    assert_eq!(record["intent"], "resume");
+    let argv = record["payload"]["argv"]
+        .as_str()
+        .expect("argv echoed back");
+    assert!(
+        argv.contains("dispatch SH-7 --agent=claude --resume --if-absent --auto"),
+        "{argv}"
+    );
+    assert!(
+        !argv.contains("intent"),
+        "the intent never reaches the helper: {argv}"
+    );
+
+    let plain = body_json(
+        post_dispatch_query(&info, &info.token, "proj", "SH-8", "agent=claude")
+            .expect("dispatch accepted"),
+    );
+    assert_eq!(plain["dispatch"]["intent"], "dispatch");
+
+    for refused in ["intent=restart", "intent=resume&intent=resume"] {
+        let err =
+            post_dispatch_query(&info, &info.token, "proj", "SH-9", refused).expect_err(refused);
+        assert_eq!(status_of(&err), 400, "{refused}");
+    }
+}
+
 /// The idempotency wrinkle: a story already dispatching (attended) is not
 /// restarted in autonomous mode by a `?auto=1` POST that loses the race —
 /// it reuses the running attempt's handle, and that handle's record still
