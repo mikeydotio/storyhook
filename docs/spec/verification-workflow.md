@@ -878,9 +878,9 @@ loop: a refused submission whose delivery fails after the agent resubmitted
 continues with the reservation still set, and the new generation replaces
 it before any refresh.
 
-Not included: SH-776, the stale per-story journal when a new attempt
-starts, which has its own evidence-policy decision. SH-815's
-helper-resolution deadline is also not in the bounds yet (decision D6 on
+SH-776 later removed the stale per-story journal a new attempt read; see
+`verifier-observability.md`, "A new attempt's journal". SH-815's
+helper-resolution deadline is not in the bounds yet (decision D6 on
 SH-768).
 
 Tests: `src/daemon/verification/reservation.rs` covers the snapshot rule, the
@@ -1383,7 +1383,10 @@ dispatch surface (it runs `story`) plus `GITHUB_CREDENTIAL_MAY_SEE`, the three
 names now shared with the verification list. The tick records through
 `record_generation_submitted` and re-derives the candidate (`refresh_authority`'s
 `Current` arm now returns the re-read candidate) so verification runs against
-the linked PR as the store folds it, never a `PrLink` built in Rust. The PR
+the linked PR as the store folds it, never a `PrLink` built in Rust. Since
+SH-776 the tick sets the link it recorded on the candidate before that
+refresh, so its own write compares equal and is not taken for a supersession
+(SH-656 made the comparison cover the whole link). The PR
 title is `<id>: <title>`, so `land-pr.sh`'s merge commit body carries the id for
 `commit-sync`; the Codex charter's old PR-title clause retired with it. The
 dead-pane handling of a returned submission is SH-650's, unchanged here.

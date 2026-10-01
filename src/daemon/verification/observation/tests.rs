@@ -436,7 +436,7 @@ fn admission_refuses_current_and_transient_human_reservations_without_ownership(
         let activity = VerificationActivity::new();
         assert!(
             activity
-                .try_acquire(f.store(), &c, f.env.now())
+                .try_acquire(f.store(), &f.env, &c, f.env.now())
                 .unwrap()
                 .is_none()
         );

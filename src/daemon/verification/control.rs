@@ -188,18 +188,23 @@ impl VerificationActivity {
     pub(super) fn try_acquire(
         &self,
         store: &impl Store,
+        env: &Environment,
         candidate: &VerificationCandidate,
         started_at: String,
     ) -> Result<Option<VerificationGuard>, AppError> {
-        self.admit(store, candidate, started_at, None)
+        self.admit(store, env, candidate, started_at, None)
     }
 
     /// [`Self::try_acquire`] for a candidate the verifying queue never holds:
     /// the slot is published already carrying `reservation`, retired, so no
     /// status read sees it without the reason it exists.
+    ///
+    /// Publishing the owner retires the story's previous progress journal
+    /// under the same lock (SH-776); a refused admission retires nothing.
     pub(super) fn admit(
         &self,
         store: &impl Store,
+        env: &Environment,
         candidate: &VerificationCandidate,
         started_at: String,
         reservation: Option<ReservationReason>,
@@ -261,7 +266,10 @@ impl VerificationActivity {
             }
             Ok((allowed, request_id, retry_origin))
         })?;
-        Ok(allowed.then(|| {
+        let admitted = allowed.then(|| {
+            // Before the owner is published and under its lock, so no status
+            // read sees the new attempt beside its predecessor's journal.
+            let retired = super::evidence::retire_journal(env, candidate);
             let reservation = reservation.map(|reason| Reservation {
                 reason,
                 reserved_at: started_at.clone(),
@@ -275,6 +283,13 @@ impl VerificationActivity {
             let slot = slots.get_mut(&candidate.project).expect("just acquired");
             slot.workspace = workspace.map(Arc::new);
             slot.reservation = reservation;
+            (guard, retired)
+        });
+        drop(slots);
+        Ok(admitted.map(|(guard, retired)| {
+            if let Err(detail) = retired {
+                super::evidence::report_unretired(candidate, &detail);
+            }
             guard
         }))
     }
@@ -449,7 +464,7 @@ mod tests {
         assert!(activity.active_for(project).is_none());
         assert!(
             activity
-                .try_acquire(&store, &candidate, env.now())
+                .try_acquire(&store, &env, &candidate, env.now())
                 .unwrap()
                 .is_none()
         );
@@ -630,7 +645,7 @@ mod tests {
         candidate.verifying_generation = Some(GlobalSeq::new(
             candidate.verifying_generation.unwrap().get() + 1,
         ));
-        guard.replace(&candidate, env.now());
+        guard.replace(&env, &candidate, env.now());
         assert!(guard.is_cancelled());
         assert!(activity.cancellation_for(project).is_cancelled());
         assert_eq!(
@@ -701,7 +716,9 @@ mod tests {
             std::thread::scope(|scope| {
                 let admission = scope.spawn(|| {
                     barrier.wait();
-                    activity.try_acquire(&store, &candidate, env.now()).unwrap()
+                    activity
+                        .try_acquire(&store, &env, &candidate, env.now())
+                        .unwrap()
                 });
                 let stopping = scope.spawn(|| {
                     barrier.wait();
@@ -821,7 +838,7 @@ PY
         .unwrap();
         let activity = VerificationActivity::new();
         let _guard = activity
-            .try_acquire(&store, &candidate, env.now())
+            .try_acquire(&store, &env, &candidate, env.now())
             .unwrap()
             .unwrap();
         let intent = crate::store::LandingIntent {
@@ -894,7 +911,7 @@ mod recovery_identity_tests {
             .unwrap();
         let expected = receipt.request.unwrap().id;
         let guard = activity
-            .try_acquire(&store, &candidate, env.now())
+            .try_acquire(&store, &env, &candidate, env.now())
             .unwrap()
             .unwrap();
         assert_eq!(
