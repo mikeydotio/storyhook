@@ -8,6 +8,65 @@ use storyhook::store::{EngineAgent, EngineLaneState, EngineScope};
 use storyhook_test_support::{DispatcherStep, FakeDispatcher};
 
 #[test]
+fn quarantined_lane_revokes_assessment_claim_and_delivery() {
+    for claimed in [false, true] {
+        let f = fixture();
+        let candidate = submitted(&f, "quarantined assessment");
+        let ctx = f.ctx();
+        let recovery = ProjectRecoveryService::new(&ctx);
+        let view = recovery
+            .observe(&candidate, &fault(), "quarantine")
+            .unwrap()
+            .unwrap();
+        if claimed {
+            recovery.claim_assessment(&view.record.id).unwrap().unwrap();
+        }
+        let endpoint = FakeDispatcher::new([]);
+        let run = EngineService::new(&ctx, &endpoint)
+            .start(StartRequest {
+                scope: EngineScope::Project,
+                lanes: 1,
+                agent: EngineAgent::Codex,
+                model: None,
+                effort: None,
+                speed: None,
+            })
+            .unwrap();
+        let mut lane = f
+            .store()
+            .read(|tx| tx.engine_lanes(&run.id))
+            .unwrap()
+            .remove(0);
+        lane.story_id = Some("SH-1".into());
+        lane.state = EngineLaneState::Quarantined;
+        f.store().write(|tx| tx.put_engine_lane(&lane)).unwrap();
+        if claimed {
+            assert!(
+                !recovery
+                    .delivery_permitted(&view.record.id, None, 1, false)
+                    .unwrap()
+            );
+        } else {
+            assert!(
+                recovery
+                    .claim_assessment(&view.record.id)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                recovery
+                    .show(&view.record.id)
+                    .unwrap()
+                    .state
+                    .assessment
+                    .hold,
+                Some(AssessmentHold::ResourceOrDependency)
+            );
+        }
+    }
+}
+
+#[test]
 fn restart_does_not_quarantine_pending_recovery_or_owned_repair_dependency() {
     for phase in ["pending", "in-flight", "delivered", "dependency", "work"] {
         let f = fixture();

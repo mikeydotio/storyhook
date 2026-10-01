@@ -86,15 +86,7 @@ pub(super) fn assessment_hold(
     }
     let stories = super::super::query::story_map(tx, project)?;
     if crate::domain::is_blocked(&row.snapshot, &stories)
-        || tx.story_resets(project)?.contains_key(&subject.story)
-        || tx
-            .story_reset(project, subject.story)?
-            .is_some_and(|reset| !reset.completed)
-        || tx.engine_reset(project, subject.story)?.is_some()
-        || tx
-            .landing_intents()?
-            .iter()
-            .any(|intent| intent.project == project && intent.story == subject.story)
+        || super::resume::resource_hold(tx, project, subject.story)?
     {
         return Ok(Some(AssessmentHold::ResourceOrDependency));
     }
