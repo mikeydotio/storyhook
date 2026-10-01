@@ -609,16 +609,10 @@ fn helper_diagnostic_is_literal_evidence_and_does_not_strand_delivery() {
     }));
 }
 
-/// How long the fake `codex` below waits before it exits: longer than the
-/// delivery wait, so a resolution that asks Codex first fails that wait,
-/// and bounded, so a fake started by that resolution does not outlive the
-/// test by much.
-const FAKE_CODEX_HANG_SECS: u64 = 30;
-
 /// SH-815: block delivery finds its helper without asking a provider CLI.
 ///
 /// The daemon starts with no `STORYHOOK_DISPATCH_SCRIPT`, so it resolves the
-/// helper itself, and the `codex` first on its `PATH` does not answer. Until
+/// helper itself, and any call to `codex` first on its `PATH` is recorded. Until
 /// SH-815 the delivery worker asked Codex's registry first and waited on that
 /// `codex` for as long as it ran, while this binary's release projection held
 /// the helper the whole time. The verifier's reap and notify took the same
@@ -646,7 +640,7 @@ fn block_delivery_never_waits_on_a_provider_cli_to_find_its_helper() {
     executable(
         &fake_bin.join("codex"),
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec sleep {FAKE_CODEX_HANG_SECS}\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 42\n",
             invocations.display()
         ),
     );
@@ -689,8 +683,15 @@ fi
         .args(["block", "BLK-1", "temporary repair"])
         .assert()
         .success();
-    let mut deadline = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(8));
+    let mut deadline = storyhook_test_support::load_grace::Patience::new(
+        storyhook::daemon::block_delivery::NOTIFY_TIMEOUT,
+    );
     while !p.path().join("native-interrupt").exists() {
+        assert!(
+            !invocations.exists(),
+            "block delivery asked a provider to find its installed helper: {:?}",
+            std::fs::read_to_string(&invocations).ok()
+        );
         assert!(
             !deadline.expired(),
             "{deadline}; the daemon never delivered the interrupt; codex was asked: {:?}",

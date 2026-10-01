@@ -55,6 +55,46 @@ with sqlite3.connect(db) as conn:
 PY
 }
 
+# Wait only for the protocol's transient ownership states. An optional lock
+# proves the first request refuses a real competing workspace owner.
+stop_now() {
+  python3 - "$repo" "$1" "$TESTS_DIR" "${2:-}" <<'PYWAIT'
+import fcntl,json,pathlib,subprocess,sys,time
+repo,run,tests,lock_path=sys.argv[1:]
+sys.path.insert(0,str(pathlib.Path(tests).parents[2]/"scripts/tests"))
+import load_grace
+allowance=load_grace.patience(120,load_grace.contention())
+deadline=time.monotonic()+allowance
+lock=None
+if lock_path:
+    pathlib.Path(lock_path).parent.mkdir(parents=True,exist_ok=True)
+    lock=open(lock_path,"a")
+    fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+try:
+    while True:
+        remaining=deadline-time.monotonic()
+        if remaining<=0:
+            sys.exit(f"Stop Now did not settle within {allowance}s; last response: {result.stdout}")
+        result=subprocess.run(["story","engine","stop","--run",run,"--now","--json"],
+            cwd=repo,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=remaining)
+        answer=json.loads(result.stdout)
+        busy=answer.get("result")=="error" and "workspace is busy" in answer.get("error","")
+        if lock is not None:
+            assert busy,result.stdout
+            lock.close()
+            lock=None
+        draining=answer.get("result")=="ok" and answer.get("run",{}).get("state")=="draining"
+        if not busy and not draining:
+            print(result.stdout,end="")
+            sys.exit(result.returncode)
+        print(f"Stop Now awaits workspace settlement: {result.stdout.strip()}",file=sys.stderr)
+        time.sleep(min(0.1,max(0,deadline-time.monotonic())))
+finally:
+    if lock is not None:
+        lock.close()
+PYWAIT
+}
+
 active=$(new_story "$repo" "discard unfinished work")
 verify=$(new_story "$repo" "preserve verification")
 unrelated=$(new_story "$repo" "preserve unrelated active work")
@@ -70,7 +110,7 @@ git -C "$active_wt" commit -qm unfinished
 git -C "$repo" worktree lock "$active_wt" --reason 'fixture explicit lock'
 verify_before=$(cd "$repo" && story show "$verify" --json | jq -c '.story.story')
 seed_run sh706-reset-real "$active_wt" "$verify_wt"
-out=$(cd "$repo" && story engine stop --run sh706-reset-real --now --json 2>&1)
+out=$(stop_now sh706-reset-real)
 if [ "$(jqf "$out" .result)" != ok ]; then
   fail_test "real reset returned: $out"
   exit 1
@@ -97,7 +137,7 @@ private=$(git -C "$bad_wt" rev-parse --absolute-git-dir)
 marker="$private/storyhook-cleanup-lease-v1.json"
 cp "$marker" "$socket_root/original-marker.json"
 jq '.branch="foreign-branch"' "$socket_root/original-marker.json" > "$marker"
-out=$(cd "$repo" && story engine stop --run sh706-reset-marker --now --json 2>&1)
+out=$(stop_now sh706-reset-marker "$repo/.git/storyhook/workspace-locks/$bad.lock")
 assert_contains "$out" 'cleanup lease marker' 'marker mismatch identifies its resource'
 assert_contains "$out" 'branch mismatch' 'marker mismatch is diagnosed'
 assert_contains "$(tmux -S "$socket" list-windows -a -F '#{window_name}')" "$bad" 'mismatched target window preserved'
@@ -110,11 +150,11 @@ cp "$socket_root/original-marker.json" "$marker"
 # refusal even though the operator confirmed discarding ordinary lane work.
 [ ! -e "$STORYHOOK_DATA_DIR/managed-paths" ] || exit 1
 printf '%s\n' "$bad_wt/installed-plugin" > "$STORYHOOK_DATA_DIR/managed-paths"
-out=$(cd "$repo" && story engine stop --run sh706-reset-marker --now --json 2>&1)
+out=$(stop_now sh706-reset-marker)
 assert_contains "$out" 'overlaps installed artifacts' 'leased reset preserves installed resources'
 [ -d "$bad_wt" ] || fail_test 'installed-resource worktree removed'
 rm "$STORYHOOK_DATA_DIR/managed-paths"
-out=$(cd "$repo" && story engine stop --run sh706-reset-marker --now --json 2>&1)
+out=$(stop_now sh706-reset-marker)
 assert_eq "$(jqf "$out" .run.state)" finished 'same reserved operation retries successfully'
 [ ! -e "$bad_wt" ] || fail_test 'repaired exact target was not removed'
 
@@ -128,11 +168,11 @@ private=$(git -C "$partial_wt" rev-parse --absolute-git-dir)
 marker="$private/storyhook-cleanup-lease-v1.json"
 cp "$marker" "$socket_root/partial-marker.json"
 jq '.branch="foreign-branch"' "$socket_root/partial-marker.json" > "$marker"
-out=$(cd "$repo" && story engine stop --run sh706-reset-partial --now --json 2>&1)
+out=$(stop_now sh706-reset-partial)
 assert_contains "$out" 'cleanup lease marker' 'partial fixture names its mismatched marker'
 assert_contains "$out" 'branch mismatch' 'partial fixture holds a durable reservation'
 git -C "$repo" worktree remove --force "$partial_wt" || exit 1
-out=$(cd "$repo" && story engine stop --run sh706-reset-partial --now --json 2>&1)
+out=$(stop_now sh706-reset-partial)
 assert_eq "$(jqf "$out" .run.state)" finished 'absent worktree retry finishes'
 git -C "$repo" show-ref --verify --quiet "refs/heads/worktree-$partial" && fail_test 'partial reset branch survived'
 assert_eq "$(cd "$repo" && story show "$partial" --json | jq -r '.story.story.state')" todo 'partial reset restores only after remaining cleanup'

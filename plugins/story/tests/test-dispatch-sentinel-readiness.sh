@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# plugin-runner: serial -- the late-sentinel negative case races a 2 s wall-clock
-# sentinel against a 5-poll budget; concurrent siblings stretch each poll.
 # SH-231 (SH-227 R2): wait_ready_sentinel itself, the mechanics that don't fit
 # test-dispatch-occupant-gate.sh's before/after framing (that file's Family A
 # and E cover the reason-taxonomy shift; this file covers the two failure
@@ -25,7 +23,7 @@ dispatch_run() {
   unset FAKE_TMUX_SESSIONS FAKE_TMUX_FAIL_NEW_SESSION FAKE_TMUX_DROP_PASTE \
         FAKE_TMUX_ENTER_ABSORB FAKE_TMUX_LAUNCH_MANGLE FAKE_TMUX_PANE_COMMAND \
         FAKE_TMUX_FAIL_SEND_KEYS FAKE_TMUX_CAPTURE FAKE_TMUX_SUPPRESS_SENTINEL \
-        FAKE_TMUX_PANE_LIFETIME FAKE_TMUX_SENTINEL_DELAY_SECS FAKE_TMUX_EXIT_ON_REPROBE
+        FAKE_TMUX_PANE_LIFETIME FAKE_TMUX_SENTINEL_DELAY_SECS FAKE_TMUX_SENTINEL_ON_PROBE FAKE_TMUX_EXIT_ON_REPROBE
   RUN_REPO=$(mk_story_repo)
   RUN_ID=$(new_story "$RUN_REPO" "Sentinel readiness case")
   out=$(
@@ -86,35 +84,25 @@ assert_eq "$(jqf "$out" .ok)" "true" "happy: sentinel + live pid + correct occup
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "happy: ...and says so"
 assert_eq "$(state_of)" "in-progress" "happy: the story is claimed"
 
-# ---- a LATE sentinel (SH-544): a live, correctly-named process whose
-#      SessionStart request just has not finished yet — the shape a busy
-#      daemon produces, distinct from every case above where the fake either
-#      never publishes at all (FAKE_TMUX_SUPPRESS_SENTINEL) or publishes
-#      instantly. FAKE_TMUX_SENTINEL_DELAY_SECS defers the write to past a
-#      poll budget shorter than the delay (proving the OLD, too-tight budget
-#      really would have missed this) and within one comfortably longer
-#      (proving the fix). Both runs share one delay so the only variable
-#      between them is the poll budget itself. -----------------------------
-readonly LATE_SENTINEL_DELAY=2
-dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SENTINEL_DELAY_SECS=$LATE_SENTINEL_DELAY \
-        STORY_READY_DELAY=0.1 STORY_READY_ATTEMPTS=5 # 0.5s budget, well under the delay
+# A late provider event appears on the eighth readiness probe. The real
+# SessionStart hook still publishes the witness. Comparing poll counts keeps
+# the short/long-budget boundary independent of machine scheduling (SH-860).
+readonly LATE_SENTINEL_PROBE=8
+dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SENTINEL_ON_PROBE=$LATE_SENTINEL_PROBE \
+        STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=5
 assert_eq "$(jqf "$out" .ok)" "false" \
-  "late sentinel: a poll budget shorter than the delay still cannot see it — this is the \
-   defect a bare, undocumented 15s literal (SH-544's own finding) reopens whenever a real \
-   daemon takes longer to answer than that"
+  "late sentinel: a budget shorter than the publication point refuses"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
-  "late sentinel: named the same as a hook that never published at all — indistinguishable \
-   from the caller's point of view, which is exactly why the budget has to be wide enough \
-   that this case does not arise in the first place"
+  "late sentinel: no witness exists before the provider event"
 assert_eq "$(state_of)" "todo" "late sentinel, short budget: the claim is rolled back"
 
-dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SENTINEL_DELAY_SECS=$LATE_SENTINEL_DELAY \
-        STORY_READY_DELAY=0.1 STORY_READY_ATTEMPTS=100 # 10s budget, comfortably over the delay
+dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SENTINEL_ON_PROBE=$LATE_SENTINEL_PROBE \
+        STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=12
 assert_eq "$(jqf "$out" .ok)" "true" \
-  "late sentinel: a poll budget comfortably wider than the delay catches it once it \
-   finally appears — the property story.sh's own widened default (45s, derived from \
-   SPAWN_LOCK_DEADLINE) now provides against a real, contended daemon"
+  "late sentinel: a wider poll budget observes the eventual provider event"
 assert_eq "$(state_of)" "in-progress" "late sentinel, wide budget: the story is claimed"
+[ -f "$FAKE_TMUX_STATE/claude-hook-output.json" ] \
+  || fail_test "late sentinel: the real SessionStart hook must publish the witness"
 
 # Package identity follows the physical directory, including cache aliases.
 alias_dir=$(mktemp -d /tmp/story-test-package-alias.XXXXXX)

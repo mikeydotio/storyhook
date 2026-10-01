@@ -4,7 +4,7 @@ use storyhook::service::project_recovery::{
     RecoveryView, RepairCompletion, RepairInput, RepairScope, WorkKind,
 };
 
-fn decided(f: &ServiceFixture) -> RecoveryView {
+pub(super) fn decided(f: &ServiceFixture) -> RecoveryView {
     let initial = decision::ready(f);
     let ctx = f.ctx();
     ProjectRecoveryService::new(&ctx)
@@ -15,7 +15,7 @@ fn decided(f: &ServiceFixture) -> RecoveryView {
         .unwrap()
 }
 
-fn land(f: &ServiceFixture, view: &RecoveryView) {
+pub(super) fn land(f: &ServiceFixture, view: &RecoveryView) {
     let ctx = f.ctx();
     let repair = view
         .state

@@ -23,10 +23,15 @@ struct Operation {
     epoch: u32,
     interrupted: bool,
     kind: Option<WorkKind>,
+    rearm: bool,
 }
 
 impl Operation {
-    fn next(view: &RecoveryView, now: &str) -> Result<Option<Self>, AppError> {
+    fn next(
+        view: &RecoveryView,
+        now: &str,
+        service: &ProjectRecoveryService<'_, impl Store>,
+    ) -> Result<Option<Self>, AppError> {
         let assessment = &view.state.assessment;
         if view.record.active {
             let expired = if assessment.status == AssessmentStatus::Delivered {
@@ -42,7 +47,10 @@ impl Operation {
             } else {
                 false
             };
+            let rearm = assessment.status == AssessmentStatus::Held
+                && service.policy_rearm_ready(&view.record.id, None)?;
             if expired
+                || rearm
                 || matches!(
                     assessment.status,
                     AssessmentStatus::Pending | AssessmentStatus::InFlight
@@ -54,24 +62,28 @@ impl Operation {
                     epoch: assessment.epoch,
                     interrupted: assessment.status == AssessmentStatus::InFlight,
                     kind: None,
+                    rearm,
                 }));
             }
         }
-        Ok(view
-            .state
-            .work
-            .iter()
-            .find(|w| {
-                matches!(w.status, WorkStatus::Pending | WorkStatus::InFlight)
-                    && (view.record.active || w.kind == WorkKind::Resume)
-            })
-            .map(|w| Self {
-                effect: Some(w.id.clone()),
-                story: w.story,
-                epoch: w.epoch,
-                interrupted: w.status == WorkStatus::InFlight,
-                kind: Some(w.kind),
-            }))
+        for w in &view.state.work {
+            if !view.record.active && w.kind != WorkKind::Resume {
+                continue;
+            }
+            let rearm = w.status == WorkStatus::Held
+                && service.policy_rearm_ready(&view.record.id, Some(&w.id))?;
+            if matches!(w.status, WorkStatus::Pending | WorkStatus::InFlight) || rearm {
+                return Ok(Some(Self {
+                    effect: Some(w.id.clone()),
+                    story: w.story,
+                    epoch: w.epoch,
+                    interrupted: w.status == WorkStatus::InFlight,
+                    kind: Some(w.kind),
+                    rearm,
+                }));
+            }
+        }
+        Ok(None)
     }
 
     fn settle(
@@ -156,7 +168,7 @@ fn process_record(
         return Ok(true);
     }
     let mut view = service.show(id)?;
-    let Some(mut operation) = Operation::next(&view, &ctx.now())? else {
+    let Some(mut operation) = Operation::next(&view, &ctx.now(), &service)? else {
         return Ok(false);
     };
     if let Some(active) = activity.active_for(ctx.project())
@@ -207,6 +219,9 @@ fn process_record(
     } else {
         None
     };
+    if operation.rearm && !service.rearm_policy_hold(id, operation.effect.as_deref())? {
+        return Ok(false);
+    }
     if !operation.interrupted {
         let claimed = if let Some(effect) = &operation.effect {
             service.claim_work(id, effect)?

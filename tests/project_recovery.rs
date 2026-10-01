@@ -12,6 +12,12 @@ mod engine;
 mod landing;
 #[path = "project_recovery/queue.rs"]
 mod queue;
+#[path = "project_recovery/rearm.rs"]
+mod rearm;
+#[path = "project_recovery/rearm_resources.rs"]
+mod rearm_resources;
+#[path = "project_recovery/rearm_work.rs"]
+mod rearm_work;
 #[path = "project_recovery/refusal.rs"]
 mod refusal;
 #[path = "project_recovery/resume.rs"]

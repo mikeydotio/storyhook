@@ -90,7 +90,13 @@ fn phase(
     if view.record.active
         && let Some(hold) = state.assessment.hold
     {
-        return Ok(("held", hold.detail().into()));
+        return Ok((
+            "held",
+            match super::rearm::assessment(tx, view)? {
+                Some(policy) => policy.detail(&view.record.id),
+                None => hold.detail().into(),
+            },
+        ));
     }
     if view.record.active
         && state.assessment.status != AssessmentStatus::Decided
@@ -101,7 +107,13 @@ fn phase(
     if let Some(work) = state.work.iter().rev().find(|w| {
         w.status == WorkStatus::Held && (view.record.active || w.kind == WorkKind::Resume)
     }) {
-        return Ok(("held", work.detail.clone()));
+        return Ok((
+            "held",
+            match super::rearm::work(tx, view, work)? {
+                Some(policy) => policy.detail(&view.record.id),
+                None => work.detail.clone(),
+            },
+        ));
     }
     if let Some(decision) = &state.decision {
         if decision.input.scope == RepairScope::External {

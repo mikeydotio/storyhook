@@ -273,6 +273,21 @@ if [ ! -d "$FAKE_TMUX_STATE" ]; then
 fi
 # A server has one socket identity across /tmp and /private/tmp callers.
 STATE="$(cd "$FAKE_TMUX_STATE" && pwd -P)" || exit 1
+
+# Mock the provider event and timing, never Storyhook publication.
+publish_claude_hook() {
+  local hook_root payload hook_cwd="$1"
+  hook_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+  payload=$(jq -cn --arg cwd "$hook_cwd" \
+    '{cwd:$cwd,session_id:"fake-claude-session",hook_event_name:"SessionStart",source:"startup"}')
+  printf '%s' "$payload" | STORYHOOK_DISPATCH=1 STORYHOOK_CODEX_BOOTSTRAP= \
+    bash "$hook_root/hooks/session-start.sh" > "$STATE/claude-hook-output.json" 2> "$STATE/claude-hook-stderr"
+  if [ -n "${FAKE_TMUX_CLAUDE_SENTINEL_ROOT:-}" ]; then
+    jq --arg root "$FAKE_TMUX_CLAUDE_SENTINEL_ROOT" '.plugin_root=$root' \
+      "$hook_cwd/.claude/dispatch-sentinel.json" > "$STATE/foreign-sentinel"
+    cp "$STATE/foreign-sentinel" "$hook_cwd/.claude/dispatch-sentinel.json"
+  fi
+}
 # Explicit sockets used by pane-identity receipts must stay inside this fake.
 if [ "${1:-}" = -S ]; then
   [ "${2:-}" = "$STATE/tmux.sock" ] || { printf 'unknown fixture socket\n' >&2; exit 1; }
@@ -538,7 +553,7 @@ case "${1:-}" in
           "$STATE/submitted" "$STATE/prompt_submits" "$STATE/pane_pid" \
           "$STATE/pane_command" "$STATE/launch_mangled" "$STATE/window_options.log" \
           "$STATE/storyhook_agent" "$STATE/pending_sentinel" "$STATE/pending_sentinel_path" "$STATE/bootstrap_file" "$STATE/pid_reads" \
-          "$STATE/pane_identity" \
+          "$STATE/pane_identity" "$STATE/pending_claude_hook_cwd" \
           "$STATE/plan_mode" "$STATE/submit_keys.log" "$STATE/codex_loading" \
           "$STATE/plan_keys_remaining" "$STATE/plan_key_ignored.log" "$STATE/sparkle_frame" \
           "$STATE/dialog_open" "$STATE/dialog_opened" "$STATE/dialog_answers" \
@@ -649,24 +664,12 @@ case "${1:-}" in
           printf '%s' "$sentinel_json" > "$STATE/pending_sentinel"
           printf '%s' "$nw_cwd/.claude/dispatch-sentinel.json" > "$STATE/pending_sentinel_path"
         else
-          # Mock the provider event and timing, never Storyhook publication.
-          publish_claude_hook() {
-            local hook_root payload
-            hook_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
-            payload=$(jq -cn --arg cwd "$nw_cwd" \
-              '{cwd:$cwd,session_id:"fake-claude-session",hook_event_name:"SessionStart",source:"startup"}')
-            printf '%s' "$payload" | STORYHOOK_DISPATCH=1 STORYHOOK_CODEX_BOOTSTRAP= \
-              bash "$hook_root/hooks/session-start.sh" > "$STATE/claude-hook-output.json" 2> "$STATE/claude-hook-stderr"
-            if [ -n "${FAKE_TMUX_CLAUDE_SENTINEL_ROOT:-}" ]; then
-              jq --arg root "$FAKE_TMUX_CLAUDE_SENTINEL_ROOT" '.plugin_root=$root' \
-                "$nw_cwd/.claude/dispatch-sentinel.json" > "$STATE/foreign-sentinel"
-              cp "$STATE/foreign-sentinel" "$nw_cwd/.claude/dispatch-sentinel.json"
-            fi
-          }
-          if [ -n "${FAKE_TMUX_SENTINEL_DELAY_SECS:-}" ]; then
-            (sleep "$FAKE_TMUX_SENTINEL_DELAY_SECS"; publish_claude_hook) </dev/null >/dev/null 2>&1 &
+          if [ -n "${FAKE_TMUX_SENTINEL_ON_PROBE:-}" ]; then
+            printf '%s' "$nw_cwd" > "$STATE/pending_claude_hook_cwd"
+          elif [ -n "${FAKE_TMUX_SENTINEL_DELAY_SECS:-}" ]; then
+            (sleep "$FAKE_TMUX_SENTINEL_DELAY_SECS"; publish_claude_hook "$nw_cwd") </dev/null >/dev/null 2>&1 &
           else
-            publish_claude_hook
+            publish_claude_hook "$nw_cwd"
           fi
         fi
       fi
@@ -866,6 +869,13 @@ case "${1:-}" in
         dm_pid=$(cat "$STATE/pane_pid" 2>/dev/null || printf '')
         reads=$(cat "$STATE/pid_reads" 2>/dev/null || printf 0)
         printf '%s' "$((reads + 1))" > "$STATE/pid_reads"
+        # Delay the provider event until a known readiness probe. Scheduler
+        # delays cannot publish it before a deliberately shorter poll budget.
+        if [ -f "$STATE/pending_claude_hook_cwd" ] \
+           && [ "$reads" -ge "$FAKE_TMUX_SENTINEL_ON_PROBE" ]; then
+          publish_claude_hook "$(cat "$STATE/pending_claude_hook_cwd")"
+          rm "$STATE/pending_claude_hook_cwd"
+        fi
         if [ "${FAKE_TMUX_EXIT_ON_REPROBE:-}" = 1 ] && [ "$reads" -gt 0 ]; then
           # End the owned process after launch-token capture, at readiness's
           # next OS observation; machine load cannot move this death earlier.
