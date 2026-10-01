@@ -11,6 +11,9 @@ HOOKS = Path(__file__).resolve().parents[1] / 'hooks'
 sys.path.insert(0, str(HOOKS))
 import session_handoff as handoff
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'scripts/tests'))
+import load_grace
+
 
 def request():
     """Return a fresh explicit context request for each mutation case."""
@@ -234,13 +237,14 @@ class HandoffProviderTests(unittest.TestCase):
         calls = []
         def endpoint(argv, **kwargs):
             calls.append(argv)
-            # External endpoint accepts the request, then fails to deliver a reply
-            # before its caller's deadline. The real process boundary owns timeout.
-            program = ('import pathlib,sys,time; '
+            # Persist before disconnecting: a short startup timeout can kill the
+            # fixture before acceptance and never exercise a lost response.
+            program = ('import pathlib,sys; '
                        f'pathlib.Path({str(accepted)!r}).write_text(sys.stdin.read()); '
-                       'time.sleep(2); print("{}")')
+                       'sys.exit(12)')
             return handoff.run_process([sys.executable, '-c', program],
-                                       timeout=0.2, cwd=kwargs['cwd'], text=kwargs['text'])
+                                       timeout=load_grace.patience(5, load_grace.contention()),
+                                       cwd=kwargs['cwd'], text=kwargs['text'])
         result = handoff.handle_stop(self.payload, {'STORYHOOK_AUTO': 'SH-1'}, 'claude', endpoint)
         self.assertEqual(json.loads(accepted.read_text())['handoff'], request())
         self.assertEqual(result.get('decision'), 'block', result)
