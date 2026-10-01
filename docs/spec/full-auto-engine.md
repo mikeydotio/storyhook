@@ -1868,7 +1868,8 @@ Every append to the attempt's journal renews it. `machine-lock.sh` also appends
 PID and recorded start time. Progressing work and a confirmed live lock wait
 may continue indefinitely. The lock's own shorter gate-idle watchdog remains
 responsible for a stalled gate holder; arbitrary stderr output renews neither
-deadline. Notification and cleanup helpers retain their absolute deadlines.
+deadline. A project gate renews both through the bundled progress writer
+(SH-777). Notification and cleanup helpers retain their absolute deadlines.
 
 Journal preparation is now required before spawning verification. Losing,
 replacing, or truncating the observed journal fails as infrastructure with its

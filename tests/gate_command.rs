@@ -248,6 +248,35 @@ fn the_project_settings_help_topic_documents_the_verify_table() {
     assert!(topic.contains("postlude gate"), "{topic}");
 }
 
+/// SH-777: the same topic documents the progress writer, what each call
+/// records, and both silence limits, stated from the constants that enforce
+/// them so the text cannot drift from the verifier.
+#[test]
+fn the_project_settings_help_topic_documents_the_progress_writer_and_its_limits() {
+    let topic = get_help_topic("project-settings").expect("the topic exists");
+    for expected in [
+        "STORYHOOK_GATE_PROGRESS_WRITER",
+        "leg start <leg>",
+        "leg pass|fail|skip <leg>",
+        "case <leg> pass|fail",
+        "release gate/<leg>",
+        "${STORYHOOK_GATE_PROGRESS_WRITER:-true}",
+    ] {
+        assert!(topic.contains(expected), "{expected:?} missing: {topic}");
+    }
+    let prose = topic.split_whitespace().collect::<Vec<_>>().join(" ");
+    let ceiling = storyhook::daemon::verification::GATE_SILENCE_CEILING.as_secs();
+    let interval = storyhook::daemon::verification_progress::PUBLISH_INTERVAL.as_secs();
+    for expected in [
+        format!("progress journal for {ceiling} seconds"),
+        format!("must finish within {ceiling} seconds"),
+        format!("quiet for more than {interval} seconds"),
+        "ordinary output does not".to_owned(),
+    ] {
+        assert!(prose.contains(&expected), "{expected:?} missing: {prose}");
+    }
+}
+
 #[test]
 fn a_batch_table_beside_verify_leaves_the_gate_as_configured() {
     // SH-834 put the smoothing allowlist in a `[batch]` table of its own so

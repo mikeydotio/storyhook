@@ -91,7 +91,9 @@
 #                         (EX_TEMPFAIL). The command did NOT run, and the
 #                         stderr line says so.
 #   124                   the holder made no journal progress before its
-#                         --max-idle budget; its process group was reaped
+#                         --max-idle budget; its process group was reaped,
+#                         after a {"kind":"watchdog"} journal record naming
+#                         the lock, the idle seconds and the ceiling (SH-777)
 #
 # STATED LIMITS, named rather than glossed:
 #   * Waiters are unordered. A `mkdir` lock has no queue, so a waiter can be
@@ -646,6 +648,11 @@ if [ -n "$max_idle" ]; then
                 descendant_snapshot "$child" >&2 \
                     || note "could not inspect descendant tree rooted at $child"
                 printf 'stalled after %ss\n' "$idle" > "$stalled"
+                # The stop names its own cause in the journal (SH-777): the
+                # verifier folds this record into the incident, so an operator
+                # reads "the gate was too quiet" rather than a bare SIGTERM.
+                printf '{"kind":"watchdog","lock":"%s","idle":%s,"ceiling":%s,"at":"%s"}\n' \
+                    "$name" "$idle" "$max_idle" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$journal" 2>/dev/null || true
                 printf '{"kind":"item","path":"release gate","status":"failed","at":"%s","seconds":%s}\n' \
                     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$idle" >> "$journal" 2>/dev/null || true
                 terminate_group "progress watchdog expired"

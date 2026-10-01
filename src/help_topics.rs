@@ -364,6 +364,35 @@ Repository configuration:
     scripts/gate-receipt.sh wrapper. A zero exit without a gate/full
     receipt is refused before landing; changed is insufficient.
 
+    The verifier also supplies STORYHOOK_GATE_PROGRESS_WRITER: an
+    absolute path to its portable progress writer. Each call adds one
+    line to the checklist the verifier shows on the story:
+
+      "$STORYHOOK_GATE_PROGRESS_WRITER" leg start <leg>
+          the row "release gate/<leg>" is running
+      "$STORYHOOK_GATE_PROGRESS_WRITER" leg pass|fail|skip <leg>
+          the row passed, failed, or was not run
+      "$STORYHOOK_GATE_PROGRESS_WRITER" case <leg> pass|fail
+          one test in that row finished
+
+    A leg may nest, as in unit/Parser. The writer needs python3 and
+    starts one short process for each call. It exits 0 when it added
+    the line, or when no journal is set; 1 when it could not write the
+    journal; 2 when it refused the call: an unknown word, or a leg that
+    is empty, has an empty "/" segment, holds a control character or
+    invalid UTF-8, or is longer than 256 bytes. A refused call writes
+    nothing. Outside verification the variable is not set. Write
+    "${STORYHOOK_GATE_PROGRESS_WRITER:-true}" in the script, so that a
+    local run does nothing.
+
+    Silence limits. The verifier stops a gate that adds no line to its
+    progress journal for 1746 seconds (about 29 minutes), counted from
+    the start of the gate, and records an infrastructure failure. Each
+    writer call starts that time again; ordinary output does not. A
+    gate that never calls the writer must finish within 1746 seconds.
+    Status shows a gate as needing attention only when its journal and
+    its output both stay quiet for more than 60 seconds.
+
   [github]
   poll = true
 
@@ -2896,8 +2925,10 @@ Inspect and control this project's centralized verifier.
   and story daemon logs for that evidence. The dashboard uses the same controls.
 
   load-context, next, summary, engine status and lane-budget expose unhealthy
-  verifier warnings. No progress evidence beyond the publisher interval is
-  overdue; waiting behind a progressing owner is ordinary queueing.
+  verifier warnings. A running gate is overdue only when its progress journal
+  and its captured output both stayed quiet beyond the publisher interval;
+  a gate that prints is active even when it reports no legs. Waiting behind
+  a progressing owner is ordinary queueing.
 
   Hooks: on_verification_halted and on_verification_resumed. A resumed event
   explicitly states whether admission was left stopped. Bind notifications

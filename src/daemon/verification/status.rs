@@ -48,6 +48,13 @@ pub struct VerifierStatus {
     /// Seconds since matching progress, ownership acquisition, or unowned queue entry.
     /// Absent while reserved; the reservation carries its own age.
     pub silence_seconds: Option<u64>,
+    /// Seconds since the owned gate's captured stdout/stderr last grew
+    /// (SH-777). Present only while an authenticated capture of the running
+    /// gate is observable. Raw output is activity, not progress: it stays
+    /// apart from `silence_seconds` (SH-713) and only keeps a gate that
+    /// prints from being reported as silent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_silence_seconds: Option<u64>,
     /// Diagnostic when progress cannot be inspected.
     pub evidence_error: Option<String>,
     /// One concise actionable unhealthy-queue notice.
@@ -154,6 +161,30 @@ pub(crate) fn snapshot(
         },
     };
     let reservation = held.ok().flatten();
+    // A running gate that prints is active even while its journal is quiet
+    // (SH-777). Only the journal's own attempt may bind the log, and this
+    // read never moves the publisher's baseline. A reservation runs no gate.
+    let output_silence_seconds = owner
+        .zip(evidence.progress.as_ref())
+        .filter(|_| reservation.is_none())
+        .map(|(owner, progress)| {
+            crate::daemon::verification_progress::current_output(
+                progress,
+                owner.active,
+                |reference| {
+                    owner.output.peek(
+                        reference,
+                        &owner.active.attempt_id,
+                        &owner.active.started_at,
+                        &now,
+                    )
+                },
+            )
+        })
+        .and_then(|output| match output {
+            crate::service::gate_output::OutputObservation::Observed(age) => Some(age),
+            _ => None,
+        });
     let incident_is_current = evidence.incident_is_current(&ordered, active, incident.as_ref());
     let statuses = crate::daemon::verification_progress::status_snapshot_with_evidence(
         &ordered,
@@ -258,11 +289,22 @@ pub(crate) fn snapshot(
         ))
     } else if let Some(seconds) = silence_seconds
         .filter(|s| *s > super::super::verification_progress::PUBLISH_INTERVAL.as_secs())
+        .filter(|_| {
+            output_silence_seconds.is_none_or(|output| {
+                output > super::super::verification_progress::PUBLISH_INTERVAL.as_secs()
+            })
+        })
     {
-        Some(format!(
-            "{} verifier has no progress evidence for {seconds}s; story verifier status; story daemon logs",
-            project.slug
-        ))
+        Some(match output_silence_seconds {
+            Some(output) => format!(
+                "{} verifier has no progress evidence for {seconds}s and no gate output for {output}s; story verifier status; story daemon logs",
+                project.slug
+            ),
+            None => format!(
+                "{} verifier has no progress evidence for {seconds}s; story verifier status; story daemon logs",
+                project.slug
+            ),
+        })
     } else {
         None
     };
@@ -287,6 +329,7 @@ pub(crate) fn snapshot(
             command_receipt: None,
             last_evidence_at,
             silence_seconds,
+            output_silence_seconds,
             evidence_error,
             warning,
             batch_preview,
@@ -366,6 +409,9 @@ impl VerifierStatus {
                 self.silence_seconds
                     .map_or_else(|| "unknown".into(), |s| s.to_string())
             ));
+        }
+        if let Some(seconds) = self.output_silence_seconds {
+            text.push_str(&format!("Last gate output: {seconds}s ago\n"));
         }
         for recovery in &self.project_recoveries {
             text.push_str(&format!("Project recovery {}: {} at {}; {}\nAffected: {}; assessor {}; repair {}; completed attempts {}/{}\nNext: {}\nInspect: story verifier repair show {} --json\n",

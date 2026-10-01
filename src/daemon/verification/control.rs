@@ -177,6 +177,7 @@ impl VerificationActivity {
                     reservation: slot.reservation.as_ref(),
                     preview: slot.preview.as_ref(),
                     batch: slot.batch.as_ref().map(|batch| &batch.view),
+                    output: &slot.output,
                 }),
                 state(tx.verification_enabled(project)?, slot),
             )

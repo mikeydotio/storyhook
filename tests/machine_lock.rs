@@ -938,6 +938,10 @@ fn a_silent_holder_is_diagnosed_and_its_process_group_is_reaped() {
         "the holder's own line must have reached the journal: {journal_text}"
     );
     assert_last_progress_was_reported(&err, &journal_text);
+    assert!(
+        journal_text.contains(&format!(r#""idle":{ceiling},"ceiling":{ceiling}"#)),
+        "the stop record carries the silence and the ceiling it enforced: {journal_text}"
+    );
     for expected in [
         format!("made no progress for {ceiling}s (ceiling {ceiling}s)").as_str(),
         "last gate progress",
@@ -1179,6 +1183,15 @@ fn assert_last_progress_was_reported(err: &str, journal_text: &str) {
     assert!(
         failed.contains(r#""path":"release gate","status":"failed""#),
         "the journal's last line must be the watchdog's own failed item: {failed}"
+    );
+    // SH-777: just before it, the watchdog names its own stop, so the
+    // verifier can tell the operator why the gate ended.
+    let (stop, before) = before
+        .split_last()
+        .expect("the watchdog records its stop before its failed item");
+    assert!(
+        stop.contains(r#""kind":"watchdog","lock":"gate""#),
+        "the watchdog's stop record must precede its failed item: {stop}"
     );
     let last_seen = before
         .last()
@@ -1912,6 +1925,13 @@ fn the_gate_idle_ceiling_stays_derived() {
     assert!(
         storyhook::daemon::verification::VERIFICATION_IDLE_TIMEOUT.as_secs() > gate_ceiling,
         "the outer verifier must not race the gate watchdog that owns stall diagnostics"
+    );
+    // `story help project-settings` states this ceiling from the Rust
+    // constant (SH-777), so the script and the constant must be one number.
+    assert_eq!(
+        storyhook::daemon::verification::GATE_SILENCE_CEILING.as_secs(),
+        gate_ceiling,
+        "the documented silence ceiling must be the one the gate lock enforces"
     );
 }
 

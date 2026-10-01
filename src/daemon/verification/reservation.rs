@@ -105,6 +105,10 @@ pub(crate) struct SlotView<'a> {
     pub(crate) preview: Option<&'a crate::service::batch_preview::BatchPreview>,
     /// The batch this attempt is running (SH-832).
     pub(crate) batch: Option<&'a super::status::ActiveBatch>,
+    /// The attempt's raw-output observer. Readers under the registry lock
+    /// may only [`peek`](crate::service::gate_output::OutputObserver::peek):
+    /// the progress publisher owns its baseline (SH-777).
+    pub(crate) output: &'a crate::service::gate_output::OutputObserver,
 }
 
 /// A reservation declared before the write that retires the owned generation.

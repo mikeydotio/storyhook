@@ -8,13 +8,15 @@
 #
 # CONTRACT: every emitter in this repository -- scripts/leg.sh,
 # scripts/run-tests.sh, plugins/story/tests/run-tests.sh, scripts/run-e2e.sh,
-# scripts/verify-pr.sh -- is a no-op when $STORYHOOK_GATE_PROGRESS is unset,
-# so interactive `make test` is byte-identical to before this file existed.
+# scripts/verify-pr.sh, and scripts/gate-progress-writer.py, the portable
+# writer a project gate calls (SH-777) -- is a no-op when
+# $STORYHOOK_GATE_PROGRESS is unset, so interactive `make test` is
+# byte-identical to before this file existed.
 # Never gate that no-op on anything else (a `-t 1` TTY check, an environment
 # guess): the daemon is the only caller that sets the variable, and its
 # absence is what makes an interactive run inert.
 #
-# Three line shapes, all objects with a "kind" field:
+# The line shapes, all objects with a "kind" field:
 #
 #   {"kind":"item","path":"release gate/fmt","status":"passed","at":"...",
 #    "seconds":2}
@@ -37,6 +39,10 @@
 #     machine-lock.sh rechecked this holder's PID and start time (SH-592).
 #     Renews verifier supervision without claiming a test completed. The
 #     checklist ignores this kind; human lock-wait diagnostics stay on stderr.
+#   {"kind":"watchdog","lock":"gate","idle":1746,"ceiling":1746,"at":"..."}
+#     machine-lock.sh's silence watchdog is stopping the holder (SH-777).
+#     The verifier adds it to the attempt's infrastructure failure, with the
+#     remedy; the checklist ignores it.
 #
 # Status vocabulary an "item" line's "status" may hold:
 #   pending | running | passed | failed | skipped | reused

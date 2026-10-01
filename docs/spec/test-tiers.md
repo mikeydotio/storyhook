@@ -1233,7 +1233,9 @@ Discovery and execution write combined Cargo output to regular files through
 descriptor can delay observer completion. One shared parser recognizes only
 Cargo build/running milestones and completed libtest cases for both live
 progress and the final test ledger. Arbitrary chatter remains visible in the
-raw log but cannot renew the watchdog. Each verification attempt also owns a
+raw log but cannot renew the watchdog. A project's own gate renews it through
+the bundled progress writer (SH-777); its output only keeps the verifier
+status from reporting it as silent. Each verification attempt also owns a
 distinct raw log, so a retry cannot overwrite the evidence from the attempt it
 is diagnosing.
 

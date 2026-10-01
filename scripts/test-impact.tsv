@@ -147,6 +147,8 @@ plugin_runner	plugins/story/tests/run-tests.sh
 plugin_runner	scripts/gate-progress.sh
 plugin_runner	scripts/test-env.sh
 plugin_skill_determinism	:(glob)**/*
+portable_progress	:(glob)scripts/*
+portable_progress	build.rs
 portable_receipt	:(glob)scripts/*
 portable_receipt	build.rs
 portfile_fixture_hygiene	:(glob)**/*

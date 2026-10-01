@@ -3,8 +3,10 @@
 //! `scripts/gate-progress.sh` and its producers (`scripts/leg.sh`,
 //! `scripts/run-tests.sh`, `plugins/story/tests/run-tests.sh`,
 //! `scripts/run-e2e.sh`, `e2e/gate-progress-reporter.ts`, and
-//! `scripts/machine-lock.sh`) append one JSON object per line to a journal file
-//! named by `$STORYHOOK_GATE_PROGRESS`. [`fold`] turns that raw text into a
+//! `scripts/machine-lock.sh`), and a project gate through the bundled
+//! `scripts/gate-progress-writer.py` (SH-777, rows under `release gate/`
+//! only), append one JSON object per line to a journal file named by
+//! `$STORYHOOK_GATE_PROGRESS`. [`fold`] turns that raw text into a
 //! tree of [`ProgressItem`]s; [`render`] turns the tree into the markdown
 //! checklist body the SH-524 progress comment carries. Both are pure — no
 //! clock, no I/O — so both are exhaustively table-tested.
@@ -72,8 +74,41 @@ enum JournalLine {
         #[serde(default)]
         at: Option<String>,
     },
+    /// Read leniently, like `Output`: a damaged stop record is a missing
+    /// explanation, never damaged recovery evidence.
+    Watchdog {
+        #[serde(flatten)]
+        fields: serde_json::Map<String, serde_json::Value>,
+    },
     #[serde(other)]
     Unknown,
+}
+
+/// The sentence every silence stop ends with (SH-777): what renews the
+/// ceiling, and where the limit is documented.
+pub const SILENCE_REMEDY: &str = "A project gate renews the silence ceiling with each \"$STORYHOOK_GATE_PROGRESS_WRITER\" call; see `story help project-settings`.";
+
+/// A silence watchdog's own record that it stopped the gate (SH-777), written
+/// by `scripts/machine-lock.sh` just before it signals the gate.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct WatchdogStop {
+    /// The lock whose watchdog fired (`gate` for a verification).
+    pub lock: String,
+    /// Seconds without a new journal line when it fired.
+    pub idle: u64,
+    /// The silence ceiling it enforced.
+    pub ceiling: u64,
+}
+
+impl WatchdogStop {
+    /// The cause and the remedy, for an operator reading the incident.
+    #[must_use]
+    pub fn explain(&self) -> String {
+        format!(
+            "The {} lock's silence watchdog stopped the gate after {}s without a new progress-journal line (ceiling {}s); gate output does not count as progress. {SILENCE_REMEDY}",
+            self.lock, self.idle, self.ceiling
+        )
+    }
 }
 
 /// The state of one checklist row.
@@ -287,6 +322,8 @@ pub struct GateProgress {
     pub output: Option<OutputReference>,
     /// A malformed output record replaces prior evidence with this diagnostic.
     pub output_error: Option<String>,
+    /// The silence watchdog's stop record, when one stopped this run.
+    pub watchdog: Option<WatchdogStop>,
     // Invalid complete records cannot establish recovery authority. This does
     // not discard otherwise useful checklist or output diagnostics.
     recovery_evidence_invalid: bool,
@@ -541,6 +578,11 @@ pub fn fold(journal_text: &str) -> GateProgress {
                 activity.status_started_at =
                     (status == ItemStatus::Running).then_some(at).flatten();
             }
+            JournalLine::Watchdog { fields } => {
+                if let Ok(stop) = serde_json::from_value::<WatchdogStop>(fields.into()) {
+                    progress.watchdog = Some(stop);
+                }
+            }
             JournalLine::Unknown => {}
         }
     }
@@ -752,6 +794,46 @@ mod tests {
             invalid_output.reached_verification_gate(),
             "output diagnostics do not authenticate or revoke lifecycle evidence"
         );
+    }
+
+    /// SH-777: the watchdog's stop record folds leniently. A damaged one, or
+    /// an unknown kind carrying fields, is a missing explanation and never
+    /// damaged recovery proof; a new run forgets the last run's stop.
+    #[test]
+    fn a_watchdog_stop_folds_leniently_and_belongs_to_its_run() {
+        let run = "{\"kind\":\"run\",\"generation\":1,\"attempt_id\":\"a\",\"at\":\"now\"}\n";
+        let reached = "{\"kind\":\"item\",\"path\":\"merge preflight\",\"status\":\"passed\"}\n{\"kind\":\"item\",\"path\":\"release gate\",\"status\":\"running\",\"at\":\"now\"}\n";
+        let stop = "{\"kind\":\"watchdog\",\"lock\":\"gate\",\"idle\":1746,\"ceiling\":1746,\"at\":\"now\"}\n";
+        let stopped = fold(&format!("{run}{reached}{stop}"));
+        assert_eq!(
+            stopped.watchdog,
+            Some(WatchdogStop {
+                lock: "gate".into(),
+                idle: 1746,
+                ceiling: 1746
+            })
+        );
+        assert!(stopped.reached_verification_gate());
+        let text = stopped.watchdog.unwrap().explain();
+        for needle in [
+            "gate lock's silence watchdog",
+            "after 1746s",
+            "(ceiling 1746s)",
+            SILENCE_REMEDY,
+        ] {
+            assert!(text.contains(needle), "{text}");
+        }
+        for damaged in [
+            "{\"kind\":\"watchdog\"}\n",
+            "{\"kind\":\"watchdog\",\"lock\":\"gate\",\"idle\":\"long\",\"ceiling\":1}\n",
+            "{\"kind\":\"future\",\"with\":{\"nested\":[1,2]}}\n",
+            "{\"kind\":\"lock-wait\",\"name\":\"gate\",\"pid\":123}\n",
+        ] {
+            let progress = fold(&format!("{run}{reached}{damaged}"));
+            assert_eq!(progress.watchdog, None, "{damaged}");
+            assert!(progress.reached_verification_gate(), "{damaged}");
+        }
+        assert_eq!(fold(&format!("{run}{reached}{stop}{run}")).watchdog, None);
     }
 
     #[test]

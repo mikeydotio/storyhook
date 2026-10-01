@@ -258,8 +258,11 @@ if [ "${1:-}" = "--speculative-run" ]; then
         # daemon store, the wrong project, or with a token it must not hold.
         # Admission and phase belong to the outer verifier. A nested verifier
         # in the gate must not call its repair callback or inherit its phase.
-        # The gate chooses when it certifies; the bundle supplies the writer.
-        # Set it here rather than trusting an inherited path from another run.
+        # The gate chooses when it certifies and what it reports; the bundle
+        # supplies both writers -- the SH-665 receipt writer and the SH-777
+        # progress writer, which appends to the $STORYHOOK_GATE_PROGRESS
+        # journal passed through above. Set both here rather than trusting
+        # an inherited path from another run.
         exec env -u GIT_OBJECT_DIRECTORY \
             -u STORYHOOK_GATE_RESULT_FILE \
             -u STORYHOOK_STORE_PATH \
@@ -279,6 +282,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
             -u GITHUB_ENTERPRISE_TOKEN \
             GIT_ALTERNATE_OBJECT_DIRECTORIES="$candidate_alternates" \
             STORYHOOK_GATE_RECEIPT="$script_dir/tree-receipt.sh" \
+            STORYHOOK_GATE_PROGRESS_WRITER="$script_dir/gate-progress-writer.py" \
             python3 "$script_dir/verifier-owner.py" gate "$common_dir" "$poller_wt" -- "$@"
     ) <&3 &
     child=$!

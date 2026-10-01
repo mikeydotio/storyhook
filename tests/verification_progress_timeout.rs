@@ -8,6 +8,7 @@ use storyhook::daemon::verification::{
     CompletedVerification, ShellVerificationActuator, VerificationActuator, VerificationOutcome,
 };
 use storyhook::domain::Priority;
+use storyhook::service::gate_progress::SILENCE_REMEDY;
 use storyhook::service::{VerificationCandidate, VerificationProblem};
 use storyhook::store::{PrLink, VerificationFailureDisposition};
 use storyhook_test_support::{
@@ -62,7 +63,11 @@ fn exercise<T>(
     // is the ordinary shape of a registered project now.
     let tools = scratch_dir();
     std::fs::write(tools.path().join("verify-pr.sh"), script).unwrap();
-    for name in ["machine-lock.sh", "gate-progress.sh"] {
+    for name in [
+        "machine-lock.sh",
+        "gate-progress.sh",
+        "gate-progress-writer.py",
+    ] {
         std::os::unix::fs::symlink(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("scripts")
@@ -132,6 +137,34 @@ fn progressing_verification_can_outlive_its_idle_budget() {
         IDLE.as_secs_f64() / 4.0
     );
     let outcome = verify_script(&script, IDLE);
+    assert!(
+        matches!(outcome, VerificationOutcome::Certified { .. }),
+        "{outcome:?}"
+    );
+}
+
+/// The idle budget of a fake that renews it through the bundled progress
+/// writer: each call starts python3, so the budget leaves room for one slow
+/// start on a loaded machine and is graced by contention when the case runs.
+const WRITER_IDLE: Duration = Duration::from_secs(3);
+
+/// SH-777: a project gate renews the outer deadline with the portable writer
+/// the verifier hands it, one leg at a time, for three whole idle budgets.
+#[test]
+fn a_gate_reporting_through_the_bundled_writer_outlives_its_idle_budget() {
+    let idle = storyhook_test_support::load_grace::graced_now(WRITER_IDLE);
+    let script = format!(
+        "set -eu
+for i in $(seq 1 12); do
+ {SIBLING}/gate-progress-writer.py leg start \"leg-$i\"
+ echo \"building leg $i\" >&2
+ sleep {}
+done
+{CERTIFIED}
+",
+        idle.as_secs_f64() / 4.0
+    );
+    let outcome = verify_script(&script, idle);
     assert!(
         matches!(outcome, VerificationOutcome::Certified { .. }),
         "{outcome:?}"
@@ -223,8 +256,72 @@ fn output_chatter_does_not_keep_a_stalled_verifier_alive() {
     let script = stalled_work(true);
     let outcome = verify_script(&script, IDLE);
     assert!(
-        matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. } if detail.contains("no progress")),
-        "{outcome:?}"
+        matches!(outcome, VerificationOutcome::InfrastructureFailure { ref detail, .. }
+            if detail.contains("no progress") && detail.contains(SILENCE_REMEDY)),
+        "the outer deadline names what renews it: {outcome:?}"
+    );
+}
+
+/// The stop record `scripts/machine-lock.sh` writes before it signals a
+/// gate that stayed quiet past its ceiling (SH-777).
+const STOP_RECORD: &str = r#"printf '%s\n' '{"kind":"watchdog","lock":"gate","idle":1746,"ceiling":1746,"at":"2026-01-01T00:00:00Z"}' >> "$STORYHOOK_GATE_PROGRESS""#;
+
+/// What an operator must read in the incident once the gate lock's
+/// watchdog stopped the gate: the cause, the numbers, and the remedy.
+fn assert_explains_the_stop(
+    outcome: &VerificationOutcome,
+    disposition: VerificationFailureDisposition,
+    prefix: &str,
+) {
+    let VerificationOutcome::InfrastructureFailure {
+        detail,
+        disposition: reported,
+    } = outcome
+    else {
+        panic!("a stopped gate is an infrastructure failure: {outcome:?}");
+    };
+    assert_eq!(*reported, disposition, "{detail}");
+    assert!(
+        detail.starts_with(prefix),
+        "the verdict's own words come first: {detail}"
+    );
+    for expected in [
+        "gate lock's silence watchdog stopped the gate after 1746s",
+        "(ceiling 1746s)",
+        SILENCE_REMEDY,
+    ] {
+        assert!(
+            detail.contains(expected),
+            "{expected:?} missing from: {detail}"
+        );
+    }
+}
+
+/// SH-777: a gate stopped by the gate lock's silence watchdog said only
+/// "terminated by SIGTERM" (or, killed before it could answer, "invalid
+/// JSON"). Both paths now carry the watchdog's own stop record.
+#[test]
+fn a_silence_stop_names_its_cause_and_remedy_on_every_path() {
+    let trap = format!(
+        "{STOP_RECORD}\nprintf '%s\\n' '{{\"result\":\"infrastructure-failure\",\"disposition\":\"retryable\",\"detail\":\"Verification attempt terminated by SIGTERM during release gate.\"}}'\n"
+    );
+    assert_explains_the_stop(
+        &verify_script(&trap, IDLE),
+        VerificationFailureDisposition::Retryable,
+        "Verification attempt terminated by SIGTERM during release gate.",
+    );
+    let killed =
+        format!("{STOP_RECORD}\necho 'machine-lock: progress watchdog expired' >&2\nexit 124\n");
+    assert_explains_the_stop(
+        &verify_script(&killed, IDLE),
+        VerificationFailureDisposition::Permanent,
+        "verify-pr.sh returned invalid JSON",
+    );
+    // Without a stop record, an infrastructure failure is left as it was.
+    let other = "printf '%s\\n' '{\"result\":\"infrastructure-failure\",\"disposition\":\"retryable\",\"detail\":\"the origin could not be read\"}'\n";
+    assert!(
+        matches!(verify_script(other, IDLE), VerificationOutcome::InfrastructureFailure { ref detail, .. }
+            if detail == "the origin could not be read"),
     );
 }
 

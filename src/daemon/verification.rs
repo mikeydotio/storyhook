@@ -62,8 +62,8 @@ use crate::env::spawn_env::{
 };
 use crate::error::AppError;
 use crate::process::{
-    CaptureError, Captured, TerminationPolicy, TimeoutTermination, run_captured_cancellable,
-    run_captured_with_progress_and_registration,
+    CaptureError, CaptureFailure, Captured, TerminationPolicy, TimeoutTermination,
+    run_captured_cancellable, run_captured_with_progress_and_registration,
 };
 use crate::service::engine::{
     DISPATCH_TIMEOUT, DispatchOptions, DispatchOutcomeState, WindowProbe,
@@ -412,23 +412,34 @@ impl VerificationGuard {
 
 /// Largest observed runtime of the default gate (`make test`) under this
 /// machine's ordinary concurrent workload, recorded by the Full Auto design
-/// investigation. A project's own `[verify] gate` (SH-649) runs under the
-/// same silence cap; one that emits no progress journal has only this.
+/// investigation. It is storyhook's own measurement, not the project's: a
+/// project's `[verify] gate` (SH-649) is held to the same silence ceiling,
+/// and renews it with each line it writes through the bundled progress
+/// writer (SH-777).
 const MEASURED_CONTENDED_GATE_SECS: u64 = 873;
 
 /// Multiplicative slack above the measured contended gate.
 const VERIFICATION_IDLE_TIMEOUT_MARGIN: u64 = 2;
 
+/// Longest progress-journal silence the gate lock's own watchdog tolerates
+/// before it stops the gate (`scripts/machine-lock.sh`'s
+/// `GATE_IDLE_CEILING_SECS`, bound to this value by `tests/machine_lock.rs`).
+///
+/// Twice the largest measured contended gate covers healthy silence. It is a
+/// ceiling on silence, never on runtime: every journal append renews it, so a
+/// gate that reports its legs may run indefinitely, and a gate that reports
+/// nothing must finish within it (`story help project-settings`).
+pub const GATE_SILENCE_CEILING: Duration =
+    Duration::from_secs(MEASURED_CONTENDED_GATE_SECS * VERIFICATION_IDLE_TIMEOUT_MARGIN);
+
 /// Maximum silence during centralized verification (SH-592).
 ///
-/// Twice the largest measured contended gate covers healthy silence. One
-/// recovery window beyond that gives the inner gate watchdog time to publish
-/// its last journal record, descendant tree, and bounded cleanup first.
-/// Journal appends renew this deadline, so progressing tests and
-/// identity-checked lock waits have no total runtime cap.
-pub const VERIFICATION_IDLE_TIMEOUT: Duration = Duration::from_secs(
-    MEASURED_CONTENDED_GATE_SECS * VERIFICATION_IDLE_TIMEOUT_MARGIN + RECOVERY_WAKE.as_secs(),
-);
+/// One recovery window beyond [`GATE_SILENCE_CEILING`] gives the inner gate
+/// watchdog time to publish its last journal record, descendant tree, and
+/// bounded cleanup first. Journal appends renew this deadline, so progressing
+/// tests and identity-checked lock waits have no total runtime cap.
+pub const VERIFICATION_IDLE_TIMEOUT: Duration =
+    Duration::from_secs(GATE_SILENCE_CEILING.as_secs() + RECOVERY_WAKE.as_secs());
 
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1493,15 +1504,26 @@ impl ShellVerificationActuator {
                     .map_err(|error| error.to_string())
             },
         );
+        // The journal was rewritten when this attempt started, so a stop
+        // record in it is this attempt's own.
+        explain_silence_stop(self.judge_verify_pr(capture, &candidate.checkout), &journal)
+    }
+
+    /// Turns one finished `verify-pr.sh` run into the attempt's outcome: an
+    /// independently validated completion, a typed capture failure, or the
+    /// wire verdict the script printed.
+    fn judge_verify_pr(
+        &self,
+        capture: Result<Captured, CaptureFailure>,
+        checkout: &std::path::Path,
+    ) -> VerificationOutcome {
         if let Err(failure) = &capture {
             // Termination may itself finish the shell's result publication.
             // Accept only independently validated completion, never a signal
             // status or partial JSON as a test verdict.
-            if let Some(outcome) = cleanup::interrupted_outcome(
-                &failure.stdout,
-                &failure.error.detail(),
-                &candidate.checkout,
-            ) {
+            if let Some(outcome) =
+                cleanup::interrupted_outcome(&failure.stdout, &failure.error.detail(), checkout)
+            {
                 return outcome;
             }
         }
@@ -1552,8 +1574,9 @@ impl ShellVerificationActuator {
                 };
                 return VerificationOutcome::InfrastructureFailure {
                     detail: format!(
-                        "verify-pr.sh made no progress for {:?}; {termination}",
-                        self.verification_idle_timeout
+                        "verify-pr.sh made no progress for {:?}; {termination}. {}",
+                        self.verification_idle_timeout,
+                        crate::service::gate_progress::SILENCE_REMEDY
                     ),
                     disposition: VerificationFailureDisposition::Permanent,
                 };
@@ -1587,6 +1610,38 @@ impl ShellVerificationActuator {
             }
         };
         parsed.into_outcome()
+    }
+}
+
+/// Adds a silence watchdog's stop record to the infrastructure failure of
+/// the attempt it stopped (SH-777). Every path a stop can take ends here:
+/// the signal trap's own verdict, a verifier killed before it printed one,
+/// and the outer deadline. Without this the incident read "terminated by
+/// SIGTERM" and neither the cause nor the remedy reached the operator. An
+/// unreadable journal adds nothing: the failure already stands, and journal
+/// loss is supervision's own fault to report.
+fn explain_silence_stop(
+    outcome: VerificationOutcome,
+    journal: &std::path::Path,
+) -> VerificationOutcome {
+    let VerificationOutcome::InfrastructureFailure {
+        detail,
+        disposition,
+    } = outcome
+    else {
+        return outcome;
+    };
+    let remedy = crate::service::gate_progress::SILENCE_REMEDY;
+    let stop = std::fs::read_to_string(journal)
+        .ok()
+        .and_then(|text| crate::service::gate_progress::fold(&text).watchdog);
+    let detail = match stop {
+        Some(stop) if !detail.contains(remedy) => format!("{detail} {}", stop.explain()),
+        _ => detail,
+    };
+    VerificationOutcome::InfrastructureFailure {
+        detail,
+        disposition,
     }
 }
 
