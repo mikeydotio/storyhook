@@ -13,6 +13,25 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hooks'))
 import codex_classifier as classifier
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'scripts/tests'))
+import load_grace
+
+
+def publish_pid(path, expression):
+    """Publish a complete PID; file existence must never expose an empty write."""
+    return (f'pathlib.Path({str(path.with_suffix(".tmp"))!r}).write_text(str({expression})); '
+            f'os.replace({str(path.with_suffix(".tmp"))!r}, {str(path)!r}); ')
+
+
+def wait_for_pid(path, process):
+    """Wait for a real child to publish readiness, within the fixture allowance."""
+    deadline = time.monotonic() + load_grace.patience(10, load_grace.contention())
+    while not path.exists():
+        if process.poll() is not None or time.monotonic() >= deadline:
+            raise AssertionError(f'child did not publish its PID: exit={process.poll()}')
+        time.sleep(0.02)
+    return int(path.read_text())
+
 
 def response(answer):
     """A provider-shaped completed text turn, with a controlled model answer."""
@@ -72,16 +91,27 @@ class ClassifierTests(unittest.TestCase):
     def test_timeout_kills_descendants(self):
         with tempfile.TemporaryDirectory(dir='/tmp') as root:
             pidfile = Path(root) / 'pid'
-            program = ('import subprocess,time,pathlib; '
+            program = ('import os,subprocess,time,pathlib; '
                        "p=subprocess.Popen(['sleep','60']); "
-                       f'pathlib.Path({str(pidfile)!r}).write_text(str(p.pid)); time.sleep(60)')
-            start = time.monotonic()
-            with self.assertRaisesRegex(RuntimeError, 'deadline'):
-                classifier.run_process([sys.executable, '-c', program], timeout=0.3)
-            self.assertLess(time.monotonic() - start, 3)
+                       + publish_pid(pidfile, 'p.pid') + 'time.sleep(60)')
+            popen = subprocess.Popen
+
+            def ready_process(*args, **kwargs):
+                """Start the timeout only after the real descendant exists."""
+                child = popen(*args, **kwargs)
+                try:
+                    wait_for_pid(pidfile, child)
+                except BaseException:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.communicate()
+                    raise
+                return child
+
+            with patch.object(classifier.subprocess, 'Popen', side_effect=ready_process):
+                with self.assertRaisesRegex(RuntimeError, 'deadline'):
+                    classifier.run_process([sys.executable, '-c', program], timeout=0.3)
             pid = int(pidfile.read_text())
             # A killed descendant can briefly remain a zombie until init reaps it.
-            import subprocess
             state = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True).stdout.strip()
             self.assertTrue(not state or state.startswith('Z'), state)
 
@@ -107,19 +137,16 @@ class ClassifierTests(unittest.TestCase):
     def test_parent_termination_kills_owned_child_group(self):
         with tempfile.TemporaryDirectory(dir='/tmp') as root:
             pidfile = Path(root) / 'pid'
-            child = f'import os,pathlib,time;pathlib.Path({str(pidfile)!r}).write_text(str(os.getpid()));time.sleep(60)'
+            child = ('import os,pathlib,time; ' + publish_pid(pidfile, 'os.getpid()')
+                     + 'time.sleep(60)')
             parent = (f'import sys;sys.path.insert(0,{str(classifier.ROOT)!r}); '
                       f'from codex_classifier import run_process;run_process({[sys.executable, "-c", child]!r},timeout=30)')
             worker = subprocess.Popen([sys.executable, '-c', parent], stderr=subprocess.DEVNULL)
             pid = None
             try:
-                deadline = time.monotonic() + 5
-                while not pidfile.exists() and time.monotonic() < deadline:
-                    time.sleep(0.02)
-                self.assertTrue(pidfile.exists(), 'child failed to start')
-                pid = int(pidfile.read_text())
+                pid = wait_for_pid(pidfile, worker)
                 worker.terminate()
-                worker.wait(timeout=3)
+                worker.wait(timeout=load_grace.patience(5, load_grace.contention()))
                 state = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True).stdout.strip()
                 self.assertTrue(not state or state.startswith('Z'), state)
             finally:
