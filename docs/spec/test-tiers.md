@@ -1740,7 +1740,9 @@ process's own executable, as every other helper spawn does.
 store, and `scripts/run-e2e.sh` must set it after it calls `storyhook_isolate`.
 The table excludes variables that a harness sets, and
 `no_script_that_uses_the_shared_isolation_also_sets_a_parameter` enforces that
-exclusion.
+exclusion. The agent-lane markers (`STORYHOOK_FULL_AUTO` and its siblings) are
+the contrast: no harness sets one after it isolates, so they joined the table
+(SH-781, `test-environments.md`).
 
 **The tests.** `test-binary-lease.sh` section 4 runs an owning child with an
 inherited decoy `STORY_BIN` (and with an empty one). It proves that the variable

@@ -95,6 +95,10 @@ else:
     let hook = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("plugins/story/hooks/session_handoff.py");
     let mut command = Command::new("python3");
+    // The environment of a Full Auto lane, where an agent runs this test: the
+    // lane's marker outranks the STORYHOOK_AUTO set below, so it must not
+    // survive `apply` (SH-781). Set before `apply`, where an inherited value sits.
+    command.env("STORYHOOK_FULL_AUTO", "SH-999999");
     env.apply(&mut command);
     let started = Instant::now();
     let mut patience = storyhook_test_support::load_grace::Patience::new(FIXTURE_MILESTONE_CEILING);

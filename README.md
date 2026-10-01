@@ -1053,7 +1053,7 @@ export STORYHOOK_PARENT_PID=$$             # the daemon dies with this run
 ```
 
 Those three are the minimum. **`story help test-environment` lists the whole
-set** — fourteen variables, what each one protects, and a shell block that
+set** — every variable, what each one protects, and a shell block that
 applies all of them to a throwaway root. It is the same set storyhook's own test
 suite runs under, and it ships in the binary rather than living here, so a suite
 in your repository can ask the tool it is driving rather than read this file.

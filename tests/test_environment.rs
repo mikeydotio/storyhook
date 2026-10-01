@@ -165,8 +165,8 @@ fn only_the_store_names_a_file() {
 // The shell rendering, and the harnesses that use it
 // ---------------------------------------------------------------------------
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path, PathBuf};
 use storyhook::env::test_environment::{Scope, Setting};
 use storyhook_test_support::scratch_dir;
 
@@ -362,6 +362,106 @@ fn the_shell_rendering_creates_every_directory_the_library_names() {
             dir.is_dir(),
             "{} was not created; a `story` pointed at this environment would \
              have to guess",
+            dir.display()
+        );
+    }
+}
+
+/// The shell recipe `story help test-environment` publishes does what the
+/// table says.
+///
+/// It is the rendering a suite in another repository copies by hand, so it is
+/// held to the contract `storyhook_isolate` is held to, and the same way: run
+/// in `bash` under a parent with every parameter poisoned, then compared with
+/// the table name by name, in both directions. When it was hand-written it had
+/// fallen nine parameters behind the table — among them four credentials and
+/// the switch that keeps a fixture from starting a paid provider session —
+/// with nothing to notice.
+#[test]
+fn the_published_shell_recipe_isolates_like_the_table() {
+    let body = topic_body();
+    let recipe: Vec<&str> = body
+        .lines()
+        .skip_while(|line| *line != "== A shell that does it ==")
+        .skip(1)
+        .skip_while(|line| line.trim().is_empty())
+        .take_while(|line| !line.trim().is_empty())
+        .map(str::trim_start)
+        .collect();
+    let (naming_the_root, rest) = recipe
+        .split_first()
+        .filter(|(first, _)| first.starts_with("root="))
+        .unwrap_or_else(|| {
+            panic!(
+                "`story help {TOPIC}` has no recipe block that starts by naming \
+                 its root:\n{body}"
+            )
+        });
+
+    // The root line is the one the reader chooses ("anywhere disposable"), so
+    // it is the one line replaced: by a root inside a fixture this test owns
+    // and reclaims. `mktemp -d` cannot be steered there — macOS ignores
+    // TMPDIR for it — and a root left in the Spotlight-indexed temp directory
+    // is a leak.
+    let fixture = scratch_dir();
+    let root = fixture.path().join("root");
+    let script = format!(
+        "set -e\nroot='{}'  # in place of: {naming_the_root}\n{}\nprintf '__SHELL_PID__=%s\\n' \"$$\"\nexec /usr/bin/env\n",
+        root.display(),
+        rest.join("\n"),
+    );
+    let out = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .envs(poison())
+        .output()
+        .expect("running bash");
+    assert!(
+        out.status.success(),
+        "the published recipe does not run: {}\n{script}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let mut pid = None;
+    let mut seen = BTreeMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if name == "__SHELL_PID__" {
+            pid = Some(value.parse::<u32>().expect("a pid"));
+        } else {
+            seen.insert(name.to_string(), value.to_string());
+        }
+    }
+    let pid = pid.expect("the recipe printed its shell's pid");
+
+    let mismatches: Vec<String> = shell_settings(&root, pid, Scope::Anywhere)
+        .iter()
+        .filter_map(|setting| {
+            let want = setting
+                .value
+                .as_ref()
+                .map(|value| value.to_str().expect("a UTF-8 value").to_string());
+            let got = seen.get(setting.name).cloned();
+            (got != want).then(|| {
+                format!(
+                    "{}: the recipe leaves {got:?}, the table requires {want:?}",
+                    setting.name
+                )
+            })
+        })
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "`story help {TOPIC}` publishes a recipe that isolates differently \
+         from the table it documents:\n{}",
+        mismatches.join("\n")
+    );
+    for dir in storyhook::env::test_environment::directories(&root) {
+        assert!(
+            dir.is_dir(),
+            "the recipe did not create {}, which the table needs",
             dir.display()
         );
     }
@@ -654,6 +754,83 @@ fn defines_the_shared_isolation(text: &str) -> bool {
     })
 }
 
+/// The two spellings of "a file beside this script" that [`sourced_scripts`]
+/// resolves — the two this repository uses. Any other spelling is left
+/// unresolved rather than guessed at.
+const BESIDE_THIS_SCRIPT: [&str; 2] = [
+    "\"$(dirname \"$0\")/",
+    "\"$(dirname \"${BASH_SOURCE[0]}\")/",
+];
+
+/// The scripts that `text`, the script at `relative`, sources by a path beside
+/// itself, as repository-relative paths.
+///
+/// An argument in any other spelling is ignored. That can only make a script
+/// look *less* isolated than it is, which the scan below then reports; it can
+/// never make a script look isolated when it is not.
+fn sourced_scripts(relative: &str, text: &str) -> Vec<String> {
+    let directory = Path::new(relative)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    text.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            let argument = trimmed
+                .strip_prefix("source ")
+                .or_else(|| trimmed.strip_prefix(". "))?;
+            let rest = BESIDE_THIS_SCRIPT
+                .iter()
+                .find_map(|beside| argument.strip_prefix(beside))?;
+            let (tail, _) = rest.split_once('"')?;
+            // Lexical, not `canonicalize`: the answer is compared with
+            // `git ls-files` paths, which never resolve a symlink either.
+            let mut resolved: Vec<String> = Vec::new();
+            for component in directory.join(tail).components() {
+                match component {
+                    Component::Normal(segment) => {
+                        resolved.push(segment.to_string_lossy().into_owned());
+                    }
+                    Component::ParentDir => {
+                        resolved.pop();
+                    }
+                    _ => {}
+                }
+            }
+            Some(resolved.join("/"))
+        })
+        .collect()
+}
+
+/// Every tracked script that runs under the shared isolation: each one that
+/// calls it and, to a fixed point, each one that sources a script under it.
+///
+/// A plugin test case sources `lib.sh`, and `lib.sh` isolates it before the
+/// case's own first line runs. What the case sets after that is an input to
+/// the code under test, not a second opinion about the contract — the shell
+/// twin of a Rust test that sets a variable after `TestEnv::apply`, which
+/// `storyhook-test-support` explicitly keeps working.
+fn runs_under_the_shared_isolation(scripts: &[(String, String)]) -> BTreeSet<String> {
+    let mut isolated: BTreeSet<String> = scripts
+        .iter()
+        .filter(|(_, text)| calls_the_shared_isolation(text))
+        .map(|(relative, _)| relative.clone())
+        .collect();
+    loop {
+        let before = isolated.len();
+        for (relative, text) in scripts {
+            if sourced_scripts(relative, text)
+                .iter()
+                .any(|sourced| isolated.contains(sourced))
+            {
+                isolated.insert(relative.clone());
+            }
+        }
+        if isolated.len() == before {
+            return isolated;
+        }
+    }
+}
+
 /// A script that constructs a storyhook environment uses the shared one.
 ///
 /// **Two or more parameters, not one.** Setting a single parameter is
@@ -663,13 +840,20 @@ fn defines_the_shared_isolation(text: &str) -> bool {
 /// exactly what produced six copies that had already drifted: three carried a
 /// path guard and three did not, one used a sentinel pid, and only the Rust
 /// harness cleared the developer's real credential.
+///
+/// **Running under it counts as using it.** A script that sources one that is
+/// already under the shared isolation was isolated before its first line (see
+/// [`runs_under_the_shared_isolation`]). The plugin cases that drive the
+/// agent-lane markers export and unset two parameters on purpose, and they are
+/// test inputs, not an environment built by hand.
 #[test]
 fn every_shell_script_that_builds_an_environment_uses_the_shared_one() {
     let scripts = tracked_shell_scripts();
+    let isolated = runs_under_the_shared_isolation(&scripts);
     let offenders: Vec<String> = scripts
         .iter()
         .filter(|(_, text)| !defines_the_shared_isolation(text))
-        .filter(|(_, text)| !calls_the_shared_isolation(text))
+        .filter(|(relative, _)| !isolated.contains(relative))
         .filter_map(|(relative, text)| {
             let by_hand = parameters_set_by_hand(text);
             (by_hand.len() >= 2).then(|| format!("{relative} sets {by_hand:?}"))
@@ -678,9 +862,10 @@ fn every_shell_script_that_builds_an_environment_uses_the_shared_one() {
     assert!(
         offenders.is_empty(),
         "{offenders:?} build a storyhook environment by hand. Source \
-         `scripts/test-env.sh` and call `storyhook_isolate` instead — it is one \
-         line, it carries the disposable-root refusal, and it cannot fall \
-         behind `story help test-environment` the way a seventh copy would."
+         `scripts/test-env.sh` and call `storyhook_isolate` instead (or source \
+         a harness beside you that does) — it is one line, it carries the \
+         disposable-root refusal, and it cannot fall behind `story help \
+         test-environment` the way a seventh copy would."
     );
 }
 
@@ -752,6 +937,50 @@ fn the_harness_scan_finds_the_harnesses() {
         [TEST_ENVIRONMENT[0].name, TEST_ENVIRONMENT[1].name],
         "the by-hand detector cannot see a hand-set parameter, so its silence \
          proves nothing"
+    );
+
+    // The sourcing resolver, provoked with both spellings and a parent step.
+    // A spelling it does not know resolves to nothing rather than a guess.
+    assert_eq!(
+        sourced_scripts(
+            "plugins/story/tests/test-planted.sh",
+            "source \"$(dirname \"$0\")/lib.sh\"\n  \
+             . \"$(dirname \"${BASH_SOURCE[0]}\")/../hooks/lib.sh\" || exit 1\n\
+             source \"$SOMEWHERE/else.sh\"\n",
+        ),
+        ["plugins/story/tests/lib.sh", "plugins/story/hooks/lib.sh"],
+        "the sourcing resolver cannot resolve the spellings this repository \
+         uses, so every case under `lib.sh` would be scanned as a harness"
+    );
+
+    // The fixed point, provoked: `deep` is listed before the `case` it
+    // sources, so it joins only on a second pass; a script that sources a
+    // helper under no isolation stays out.
+    let planted: Vec<(String, String)> = [
+        ("t/deep.sh", "source \"$(dirname \"$0\")/case.sh\"\n"),
+        ("t/case.sh", "source \"$(dirname \"$0\")/harness.sh\"\n"),
+        ("t/harness.sh", "storyhook_isolate \"$root\"\n"),
+        ("t/helper.sh", "echo helper\n"),
+        ("t/other.sh", "source \"$(dirname \"$0\")/helper.sh\"\n"),
+    ]
+    .into_iter()
+    .map(|(relative, text)| (relative.to_string(), text.to_string()))
+    .collect();
+    assert_eq!(
+        runs_under_the_shared_isolation(&planted)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["t/case.sh", "t/deep.sh", "t/harness.sh"],
+        "the isolated set must close over sourcing and include nothing else"
+    );
+
+    // On the real tree it reaches past the direct callers, or the exemption
+    // in the scan above is exempting nothing.
+    let isolated = runs_under_the_shared_isolation(&scripts);
+    assert!(
+        isolated.len() > users.len(),
+        "no tracked script sources a harness under the shared isolation, \
+         though every plugin case sources `lib.sh`: the resolver is broken"
     );
 }
 

@@ -252,6 +252,39 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  writes are recorded as somebody's",
     },
     Parameter {
+        name: "STORYHOOK_FULL_AUTO",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "the story a live Full Auto agent lane is working on, which \
+                 every test that agent runs inherits; a fixture's plugin hooks \
+                 then approve plans, refuse questions and forward handoffs in \
+                 that lane's name, and this marker outranks the STORYHOOK_AUTO \
+                 a test sets",
+    },
+    Parameter {
+        name: "STORYHOOK_AUTO",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "the same, for an agent lane started by an ordinary autonomous \
+                 dispatch",
+    },
+    Parameter {
+        name: "STORYHOOK_DISPATCH",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "marks a dispatched agent session; inherited, a fixture's \
+                 session hooks take that session's deadlines instead of the \
+                 ones an ordinary session gets",
+    },
+    Parameter {
+        name: "STORYHOOK_CODEX_BOOTSTRAP",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "a live Codex lane's pending start-up request; inherited, a \
+                 fixture's session hooks answer that lane's start-up in place \
+                 of their own session's",
+    },
+    Parameter {
         name: "STORYHOOK_ALLOW_TEMP_PROJECT",
         disposition: Disposition::Clear,
         scope: Scope::Anywhere,
@@ -350,9 +383,12 @@ impl Parameter {
 /// applies these to a `story` process itself and may therefore also redirect
 /// `HOME`.
 ///
-/// The order is [`TEST_ENVIRONMENT`]'s own, and callers depend on it: the
-/// equality test between this and the shell rendering compares sequences, so a
-/// reordering here is a change both sides have to make.
+/// The order is [`TEST_ENVIRONMENT`]'s own, and callers depend on it:
+/// `storyhook-test-support`'s `isolation_covers_every_parameter_in_the_table`
+/// compares `TestEnv`'s settings with the table as a sequence, and the rendered
+/// recipe in `story help test-environment` follows it. The equality test
+/// against the shell rendering compares by name, so there the shared order is a
+/// convention for readers of the two files, not a check.
 #[must_use]
 pub fn resolve(root: &Path, pid: u32, scope: Scope) -> Vec<Setting> {
     TEST_ENVIRONMENT
@@ -411,14 +447,16 @@ pub fn directories(root: &Path) -> Vec<PathBuf> {
 /// that long.
 pub static HELP_TOPIC: std::sync::LazyLock<String> = std::sync::LazyLock::new(render_help_topic);
 
-/// Wraps `text` into lines no wider than 78 columns once `indent` spaces are
-/// prepended, and returns them already indented.
+/// The widest line the topic prints, so it reads in an 80-column terminal.
+const TERMINAL_WIDTH: usize = 78;
+
+/// Wraps `text` into lines no wider than [`TERMINAL_WIDTH`] once `indent`
+/// spaces are prepended, and returns them already indented.
 ///
 /// The bound is on the *finished* line, not on the text before indenting: a
 /// wrap width that ignores its own indent produces a table nobody can read in
 /// an 80-column terminal, which is what the first draft of this did.
 fn wrap(text: &str, indent: usize) -> String {
-    const TERMINAL_WIDTH: usize = 78;
     let width = TERMINAL_WIDTH.saturating_sub(indent).max(20);
     let pad = " ".repeat(indent);
     let mut out = String::new();
@@ -441,6 +479,87 @@ fn wrap(text: &str, indent: usize) -> String {
         out.push('\n');
     }
     out
+}
+
+/// The indent of every shell line in the topic's recipe.
+const RECIPE_INDENT: &str = "  ";
+
+/// Appends `command` applied to each of `words` as recipe lines no wider than
+/// [`TERMINAL_WIDTH`]. A long list repeats the command on a new line rather
+/// than continuing it with a backslash, so every line still runs when a reader
+/// copies it on its own.
+fn push_command(lines: &mut Vec<String>, command: &str, words: &[String]) {
+    let mut line = String::new();
+    for word in words {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > TERMINAL_WIDTH {
+            lines.push(std::mem::take(&mut line));
+        }
+        if line.is_empty() {
+            line = format!("{RECIPE_INDENT}{command}");
+        }
+        line.push(' ');
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+}
+
+/// The topic's "A shell that does it" block, rendered from
+/// [`TEST_ENVIRONMENT`].
+///
+/// Rendered for the reason the parameter list above it is: a hand-written
+/// recipe is a second copy of the table, and the one this replaced had fallen
+/// nine parameters behind it — four credentials and the switch that keeps a
+/// fixture from starting a paid provider session among them.
+///
+/// Only the parameters a wrapper around a whole run may apply
+/// ([`Scope::Anywhere`]) appear, in the table's order; the prose above the
+/// block says why `HOME` is not one of them. Removals that sit next to each
+/// other share an `unset`, and the directories come from [`directories`], so
+/// its file-or-directory rule is stated once. `$root` is spelled as a path
+/// segment there, and only the deepest directories are listed because
+/// `mkdir -p` creates the rest.
+fn render_shell_recipe() -> String {
+    let mut lines = vec![format!(
+        "{RECIPE_INDENT}root=$(mktemp -d)                  # anywhere disposable"
+    )];
+    let mut removals: Vec<String> = Vec::new();
+    for parameter in TEST_ENVIRONMENT
+        .iter()
+        .filter(|parameter| parameter.applies_in(Scope::Anywhere))
+    {
+        let value = match parameter.disposition {
+            Disposition::Clear => {
+                removals.push(parameter.name.to_string());
+                continue;
+            }
+            Disposition::Root("") => "\"$root\"".to_string(),
+            Disposition::Root(tail) => format!("\"$root/{tail}\""),
+            Disposition::Literal(value) => value.to_string(),
+            Disposition::OwnPid => "$$".to_string(),
+            Disposition::OwnProcessStartTime => String::new(),
+        };
+        push_command(&mut lines, "unset", &std::mem::take(&mut removals));
+        lines.push(format!("{RECIPE_INDENT}export {}={value}", parameter.name));
+    }
+    push_command(&mut lines, "unset", &removals);
+
+    let needed = directories(Path::new("$root"));
+    let deepest: Vec<String> = needed
+        .iter()
+        .filter(|dir| {
+            !needed
+                .iter()
+                .any(|other| other != *dir && other.starts_with(dir))
+        })
+        .map(|dir| format!("\"{}\"", dir.display()))
+        .collect();
+    push_command(&mut lines, "mkdir -p", &deepest);
+
+    let mut recipe = lines.join("\n");
+    recipe.push('\n');
+    recipe
 }
 
 fn render_help_topic() -> String {
@@ -498,20 +617,11 @@ sees nothing wrong.
 
 == A shell that does it ==
 
-  root=$(mktemp -d)                  # anywhere disposable
-  export XDG_DATA_HOME="$root/home/.local/share"
-  export XDG_CONFIG_HOME="$root/home/.config"
-  export XDG_STATE_HOME="$root/home/.local/state"
-  export STORYHOOK_DATA_DIR="$root/home/.local/share/storyhook"
-  export STORYHOOK_STORE_PATH="$STORYHOOK_DATA_DIR/store.db"
-  export STORYHOOK_DAEMON_ADDR=127.0.0.1:0
-  export STORYHOOK_PARENT_PID=$$
-  export STORYHOOK_PARENT_START_TIME=
-  unset GH_TOKEN STORYHOOK_PROJECT STORYHOOK_ACTOR
-  unset STORYHOOK_ALLOW_TEMP_PROJECT STORYHOOK_ALLOW_PROJECT_BURST
-  unset STORYHOOK_ALLOW_UNINSTALLED_MIGRATION STORYHOOK_ALLOW_UNINSTALLED_DAEMON
-  mkdir -p "$STORYHOOK_DATA_DIR" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
-
+"#,
+    );
+    body.push_str(&render_shell_recipe());
+    body.push_str(
+        r#"
   story project new --prefix TST     # in the throwaway store, not yours
 
 Then delete $root. Nothing outside it was written.
@@ -703,6 +813,25 @@ mod tests {
         assert_eq!(full.len(), TEST_ENVIRONMENT.len());
         assert!(!wrapper.contains(&"HOME"));
         assert_eq!(wrapper.len() + 1, full.len());
+    }
+
+    /// The recipe reads in an 80-column terminal like the rest of the topic,
+    /// and it never exports `HOME`: the recipe wraps a whole run, which is the
+    /// one place `HOME` must not be redirected. What it sets is checked by
+    /// running it (`tests/test_environment.rs`); this is only its shape.
+    #[test]
+    fn the_shell_recipe_fits_a_terminal_and_leaves_home_alone() {
+        let recipe = render_shell_recipe();
+        for line in recipe.lines() {
+            assert!(
+                line.chars().count() <= TERMINAL_WIDTH,
+                "{line:?} is wider than {TERMINAL_WIDTH} columns"
+            );
+            assert!(
+                !line.trim_start().starts_with("export HOME="),
+                "the recipe redirects HOME around a whole run: {line:?}"
+            );
+        }
     }
 
     /// The store's parent is created; the store file is not.
