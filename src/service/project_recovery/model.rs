@@ -16,7 +16,7 @@ pub enum AssessmentStatus {
     Delivered,
     /// A valid decision proves receipt and ends the assessment deadline.
     Decided,
-    /// Delivery, policy, or response timeout requires explicit resolution.
+    /// Policy requires reconciliation; delivery and timeout holds require explicit resolution.
     Held,
 }
 

@@ -97,6 +97,44 @@ Allow at most three completed repair submissions per recovery lineage, each requ
 
 Honor manual stop, `human-only`, and `no-auto` before assessment, dispatch, decision acceptance, and resumption. Preserve uncertain landing intents and resource quarantine.
 
+### Release of enrollment policy holds (SH-860)
+
+A retained assessment initially held by a reservation or verifier stop is
+reconsidered on recovery-worker wake and daemon restart. Remove the reservation
+with `story unlabel <story-id> <label>`; use `story verifier start` to lift a
+verifier stop. Both controls must permit recovery. Status evaluates the current
+hold without writing, and names eligibility for managed reconciliation once
+policy clears. Existing version-1 records use this path without migration.
+
+Under the existing target and origin workspace locks, a service transaction
+rechecks the original generation, state event, reservation history, interruption
+history, dependencies, awaiting state, resets, quarantine and landing ownership.
+An unchanged submission that enrollment left in verifying is returned through
+the ordinary state-transition mechanism. Its mutable state and label authority
+are updated with that return and the assessment becomes pending atomically.
+The immutable observation, candidate, recovery ID, dispatch identity and original
+unjudged generation remain intact. The ordinary claim and delivery monitor
+still recheck authority before external effects.
+
+Only removal of the reservation present at enrollment may renew initial label
+authority. Successive removal of two reserved labels is allowed; addition or
+re-addition is a new reservation episode and revokes the older authority.
+Already-returned assessments and held repair/resume effects require unchanged
+authority. They cannot clear a retained terminal awaiting disposition, even if
+someone has subsequently cleared the story's awaiting text.
+
+Automatic rearming requires no previous delivery or a proven failed delivery
+below the existing attempt limit. A confirmed, uncertain or interrupted delivery,
+response expiry, exhausted budget, or terminal disposition never becomes fresh
+delivery merely because policy clears. This also applies when the stored policy
+hold masks the earlier transport result. Status directs inspection through
+`story verifier repair show <recovery-id> --json` when ownership reconciliation
+is required. There is no blanket retry or unblock command.
+
+Repeated checks of an unchanged hold append no events and revise no record.
+Previously observed generations stay excluded from the verifier queue; recovery
+requires a scope decision and later fresh submission, never replay of the old gate.
+
 For existing incidents, automatically convert only those whose retained structured execution, receipt, generation, and cleanup evidence proves a supported project fault. Preserve the old incident as historical evidence. Never clear an ambiguous legacy incident by matching its diagnostic text.
 
 ## Interfaces, diagnostics, and tests

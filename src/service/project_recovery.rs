@@ -14,6 +14,7 @@ mod legacy;
 mod managed_claim;
 mod model;
 mod persistence;
+mod rearm;
 mod refusal;
 mod repair_return;
 mod resume;
