@@ -264,9 +264,9 @@ raise SystemExit(status)
         f.env().clone(),
         root.join("absent-agent-helper"),
         callback.executable.clone(),
-        Duration::from_secs(60),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(60)),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(5)),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(5)),
     )
     .with_activity(activity.clone());
     fs::create_dir_all(f.env().daemon_state_dir()).unwrap();
@@ -319,7 +319,7 @@ raise SystemExit(status)
         &["push", "-q", "origin", &format!("{head}:refs/pull/1/head")],
     );
 
-    let result = thread::scope(|scope| {
+    let (result, final_journal) = thread::scope(|scope| {
         let running = scope.spawn(tick);
         let release = GateRelease(root.join("gate-release"));
         let mut deadline =
@@ -429,15 +429,23 @@ raise SystemExit(status)
             Some(&incident)
         );
         release.publish(if verdict == "green" { "0" } else { "3" });
-        running.join().unwrap()
+        let result = running.join().unwrap();
+        (
+            result,
+            fs::read_to_string(journal_path(f.env(), &ordered[0])),
+        )
     });
-    assert!(activity.active_for(f.project()).is_none());
-    assert!(storyhook::daemon::lifecycle::read_owned_processes(f.env()).is_empty());
+    let remaining_incident = f
+        .store()
+        .read(|tx| tx.verification_incident(f.project()))
+        .unwrap();
+    let remaining_activity = activity.active_for(f.project());
+    let remaining_processes = storyhook::daemon::lifecycle::read_owned_processes(f.env());
     assert!(
-        f.store()
-            .read(|tx| tx.verification_incident(f.project()))
-            .unwrap()
-            .is_none()
+        remaining_incident.is_none()
+            && remaining_activity.is_none()
+            && remaining_processes.is_empty(),
+        "{verdict} retry did not retire: tick={result:?}; incident={remaining_incident:?}; activity={remaining_activity:?}; owned={remaining_processes:?}; journal={final_journal:?}"
     );
     let row = f
         .store()
