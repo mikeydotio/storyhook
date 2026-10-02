@@ -839,7 +839,13 @@ drop compare.
 - A retired reservation whose story is still queued is a contradiction and
   is reported as one.
 - `remediation` and `cleanup` have bounds, derived from the production
-  control-verb deadline (`DISPATCH_TIMEOUT` plus the `RECOVERY_WAKE` grace).
+  control-verb deadline: helper resolution (`PROVIDER_CLI_TIMEOUT` plus
+  `PROVIDER_TERM_GRACE`) followed by execution (`DISPATCH_TIMEOUT` plus the
+  `RECOVERY_WAKE` grace). SH-817 added SH-815's helper-resolution budget for
+  each verb, so a slow provider lookup cannot cause a false overdue warning.
+  Remediation allows three verbs and cleanup one, each with one additional
+  `RECOVERY_WAKE` for the surrounding store work (855 s and 305 s respectively
+  with the current constants).
   A reservation older than its bound warns, so a wedged helper stays visible.
 - `reconcile` had no bound here: SH-770 decided it. SH-827 applied that
   decision when it merged SH-768 after SH-770. The bound is inactivity, not
