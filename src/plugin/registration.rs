@@ -22,7 +22,7 @@
 //! snapshots and restores its files); the registration was the odd one out.
 //!
 //! [`snapshot`] records what is registered before the removes; everything
-//! after them runs as one closure, and [`undo`] answers its failure: remove
+//! after the first successful removal runs as one closure, and [`undo`] answers its failure: remove
 //! whatever the failed run added, re-register the previous source, and say
 //! which happened — both errors when the restore fails too, never the first
 //! alone (SH-578: a diagnosis downstream of an unchecked failure names the
@@ -48,9 +48,10 @@
 //! deferred across the window: doing so needs the children reset to default
 //! dispositions so a hung provider stays interruptible, and the only test of
 //! it is a process-group signal race that is load-sensitive (SH-347, SH-394).
-//! The window is sub-second against a local directory source; SH-640's
-//! detector names the state it leaves, and the next `story plugin install`
-//! *is* the restore.
+//! SH-821 records every phase before it starts, outside the provider's
+//! configuration. The doctor names incomplete operations without claiming a
+//! signal caused them; the next explicit `story plugin install` repairs the
+//! registration. No background process retries a destructive operation.
 //!
 //! **An unreadable config never blocks the install.** A parser narrower than
 //! the provider's own format must not make `story plugin install` a dead end
@@ -122,7 +123,7 @@ pub(crate) fn configured_source(
 
 /// What a provider had registered as the storyhook marketplace before an
 /// install started removing it.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Previous {
     /// A storyhook marketplace registered at this source.
     Registered(String),

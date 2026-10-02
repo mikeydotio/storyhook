@@ -78,12 +78,14 @@ impl From<ProviderError> for AppError {
 
 /// Runs `<provider> <args>` until it exits or [`PROVIDER_CLI_TIMEOUT`] ends it.
 pub(super) fn run(target: PluginTarget, args: &[&str]) -> Result<Captured, ProviderError> {
-    run_at(
-        OsStr::new(target.executable()),
-        target,
-        args,
-        PROVIDER_CLI_TIMEOUT,
-    )
+    super::operation::provider(target, args, || {
+        run_at(
+            OsStr::new(target.executable()),
+            target,
+            args,
+            PROVIDER_CLI_TIMEOUT,
+        )
+    })
 }
 
 /// Whether the provider CLI is there to use. Claude keeps its historical
@@ -103,7 +105,9 @@ fn available_at(
     target: PluginTarget,
     deadline: Duration,
 ) -> Result<bool, ProviderError> {
-    match run_at(program, target, &["--version"], deadline) {
+    match super::operation::provider(target, &["--version"], || {
+        run_at(program, target, &["--version"], deadline)
+    }) {
         Ok(out) => Ok(target == PluginTarget::ClaudeCode || out.status.success()),
         Err(ProviderError::Missing(_)) => Ok(false),
         Err(error) => Err(error),
@@ -121,6 +125,7 @@ fn run_at(
     let shown = format!("{} {}", target.executable(), args.join(" "));
     let mut command = Command::new(program);
     apply_plugin_cli_allowlist(&mut command);
+    super::operation::inherit_lock(&mut command);
     command.args(args);
     let started = Instant::now();
     let captured = run_captured_answer(

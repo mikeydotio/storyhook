@@ -15,6 +15,8 @@ use storyhook_test_support::load_grace::{Patience, wait_for};
 use storyhook_test_support::{ChildGuard, PORTFILE_DEADLINE, daemon_containment, scratch_dir};
 use tempfile::TempDir;
 
+#[path = "support/plugin_operations.rs"]
+mod operation_tests;
 #[path = "support/protect_domain.rs"]
 mod protect_domain;
 #[path = "support/protect_helper.rs"]
