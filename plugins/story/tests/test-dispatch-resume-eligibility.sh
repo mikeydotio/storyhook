@@ -15,7 +15,7 @@ daemon_dispatch() {
   shift
   (
     cd "$repo" \
-      && PATH="${ELIGIBILITY_PATH_PREFIX:-}$FAKE_TMUX_DIR:$PATH" \
+      && PATH="$FAKE_TMUX_DIR:$PATH" \
         STORY_TARGET_SESSION="$(slug_for "$repo")" STORY_CREATE_SESSION=1 \
         STORY_COUNCIL=off STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
         STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
@@ -107,7 +107,7 @@ esac
 exec "$real_story" "\$@"
 SHIM
 chmod +x "$shim/story"
-out=$(ELIGIBILITY_PATH_PREFIX="$shim:" daemon_dispatch "$repo" dispatch "$id" --resume)
+out=$(PATH="$shim:$PATH" daemon_dispatch "$repo" dispatch "$id" --resume)
 assert_eq "$(jqf "$out" .ok)" "false" "unanswered: the resume is refused"
 assert_eq "$(jqf "$out" .reason)" "resume-eligibility-unavailable" "unanswered: the refusal names the missing answer"
 assert_contains "$(jqf "$out" .display)" "no unambiguous active state role" "unanswered: the verb's own words are kept"
