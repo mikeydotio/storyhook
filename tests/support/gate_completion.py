@@ -28,7 +28,7 @@ class GateCompletion(unittest.TestCase):
             source = ROOT / "scripts" / name
             if source.exists():
                 self.write("scripts/" + name, source.read_text())
-        self.write("Cargo.toml", '[package]\nname="fixture"\nversion="0.1.0"\n')
+        self.write("Cargo.toml", '[package]\nname="fixture"\nversion="0.1.0"\n[features]\ntest-seam=[]\n')
         self.write("src/lib.rs", "")
         self.write("tests/core.rs", "#[test] fn core() {}\n")
         self.write("tests/contract.rs", 'const ROOT: &str = env!("CARGO_MANIFEST_DIR");\n')
