@@ -289,3 +289,56 @@ and the test could not grace it.
 - One reading cannot follow a burst that starts after the declaration: the
   `graced_now` limit above. A capture the bound already killed cannot be
   extended.
+
+
+## Constructor bounds and CLI fixtures (SH-863)
+
+The raw-wait census now checks the idle, control and termination arguments of
+`ShellVerificationActuator::with_paths_and_timing` separately. An argument must
+use `load_grace::graced_now` or have an exact classification in `waits.json`.
+Grace on one argument does not exempt the others. The retry and withdrawal
+fixtures wait for results; their constructor budgets receive grace. Capture
+completion uses one graced local duration. Process-group timeout proofs retain
+their driven deadlines and named classifications. The retry callback's generated
+Python socket deadline receives grace before the program is written. Terminal
+retry failures include the tick, incident, activity, owned processes and journal.
+
+The sibling census found `ExchangeBound::After(DRIVEN)` calls in daemon-timeout
+experiments: those are the deadlines under test and stay literal. The progress
+writer experiment derives its publication cadence from the same graced idle
+budget it gives the actuator. This remains a lexical census, not data-flow
+analysis: aliases, wrappers and generated programs still require review.
+
+Churn classification is a test-only measurement component driven by elapsed
+observations. Deterministic tests cover clean early results, the exact stale
+threshold on both sides of publication, delayed results after a pause, clean
+stretch completion and budget exhaustion. The live adapter still publishes real
+in-flight records and receives real client results. A pause invalidates the
+whole attempt; later activity never turns that attempt into a pass.
+
+### Explicit patience across the CLI boundary
+
+Plugin tests build with `cargo build --features test-seam`. An owning `lib.sh`
+fixture clears any inherited `STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS`, computes a
+three-second base allowance through `scripts/tests/load_grace.py`, reports its
+contention reading, and exports the allowance in milliseconds before starting
+the fixture daemon. Nested fixtures sharing that daemon retain its declaration.
+
+`Environment::from_process` accepts a positive integer in `1..=900000` only in a
+`test-seam` build. Invalid values and attempts to enable it in a default build
+fail with a named error. An absent declaration preserves production policy.
+`Environment::at` does not read this ambient setting. The resolved declaration
+survives clones and `child_vars`; routed subprocess calls use the greater of the
+production bound and the declared floor. Existing lib-test proof/patience
+policies remain authoritative and are not widened by this CLI floor.
+
+Production deadlines, cancellation and resource-query failure semantics are
+unchanged. An unanswered tmux query still refuses mutation. The plugin regression
+injects a four-second resource answer: declared patience permits safe unclaim;
+without it the three-second timeout preserves the claim, worktree and branch.
+A test that deliberately proves a CLI timeout must establish its declaration
+before daemon startup, or stop its own daemon before changing it.
+
+The ceiling applies to each subprocess. Sampling once cannot account for a
+later load burst or guarantee scheduling; diagnostics remain necessary. This
+floor reaches only bounds routed through `Environment::subprocess_bound`.

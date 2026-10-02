@@ -26,6 +26,7 @@ pub mod git_env;
 /// (SH-153, SH-160) do not cover.
 pub mod spawn_env;
 mod store_location;
+mod subprocess_patience;
 #[cfg(test)]
 mod subprocess_policy;
 
@@ -102,6 +103,8 @@ pub struct Environment {
     busy_timeout: Duration,
     verifier_mirror_enabled: bool,
     verifier_agent_enabled: bool,
+    /// An explicit CLI fixture floor; default builds reject its declaration.
+    test_subprocess_patience: Option<Duration>,
     /// Test builds only: how the lib test that built this environment
     /// declared the production subprocess bounds it reaches (SH-836).
     #[cfg(test)]
@@ -127,6 +130,8 @@ impl Environment {
     ///   port would fight the developer's own dashboard for it.
     /// * `busy_timeout` — `$STORYHOOK_BUSY_TIMEOUT_MS`, else
     ///   [`DEFAULT_BUSY_TIMEOUT`].
+    /// * `test_subprocess_patience` — an optional, bounded fixture floor from
+    ///   `$STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS`; requires `test-seam`.
     /// * `verifier_mirror_enabled` — false only when
     ///   `$STORYHOOK_VERIFIER_MIRROR` is exactly `0`; otherwise true.
     /// * `verifier_agent_enabled` — false only when
@@ -180,6 +185,10 @@ impl Environment {
             clock: Clock::System,
             preferred_port,
             busy_timeout,
+            test_subprocess_patience: subprocess_patience::parse(
+                std::env::var_os(subprocess_patience::VARIABLE).as_deref(),
+            )
+            .map_err(AppError::Usage)?,
             verifier_mirror_enabled: std::env::var_os("STORYHOOK_VERIFIER_MIRROR").as_deref()
                 != Some(OsStr::new("0")),
             verifier_agent_enabled: std::env::var_os("STORYHOOK_VERIFIER_AGENT").as_deref()
@@ -207,6 +216,7 @@ impl Environment {
             clock: Clock::System,
             preferred_port: 0,
             busy_timeout: DEFAULT_BUSY_TIMEOUT,
+            test_subprocess_patience: None,
             verifier_mirror_enabled: false,
             verifier_agent_enabled: false,
             #[cfg(test)]
@@ -373,7 +383,7 @@ impl Environment {
             .expect("a state home is <XDG_STATE_HOME>/storyhook and always has a parent")
             .as_os_str()
             .to_owned();
-        vec![
+        let mut vars = vec![
             (
                 "STORYHOOK_STORE_PATH",
                 self.store_path().as_os_str().to_owned(),
@@ -397,7 +407,14 @@ impl Environment {
                 }
                 .into(),
             ),
-        ]
+        ];
+        if let Some(patience) = self.test_subprocess_patience {
+            vars.push((
+                subprocess_patience::VARIABLE,
+                patience.as_millis().to_string().into(),
+            ));
+        }
+        vars
     }
 
     /// The current time, from this environment's clock.
@@ -442,10 +459,10 @@ impl Environment {
         self.declared_bound(production)
     }
 
-    /// A shipped build's bound: the production value.
+    /// A CLI fixture may extend a bound, but cannot shorten production policy.
     #[cfg(not(test))]
     fn declared_bound(&self, production: Duration) -> Duration {
-        production
+        production.max(self.test_subprocess_patience.unwrap_or_default())
     }
 
     /// A lib test's bound: the production value under its declared policy.
