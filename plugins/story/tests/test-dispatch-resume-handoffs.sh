@@ -22,7 +22,7 @@ daemon_dispatch() {
   shift
   (
     cd "$repo" \
-      && PATH="${HANDOFF_PATH_PREFIX:-}$FAKE_TMUX_DIR:$PATH" \
+      && PATH="$FAKE_TMUX_DIR:$PATH" \
         STORY_TARGET_SESSION="$(slug_for "$repo")" STORY_CREATE_SESSION=1 \
         STORY_COUNCIL=off STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
         STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
@@ -95,13 +95,13 @@ export HANDOFF_PROJECT HANDOFF_STORY
 HANDOFF_PROJECT=$(slug_for "$repo")
 HANDOFF_STORY="$id"
 
-out=$(HANDOFF_MODE=attempting HANDOFF_PATH_PREFIX="$shim:" daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
+out=$(HANDOFF_MODE=attempting PATH="$shim:$PATH" daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
 assert_eq "$(jqf "$out" .ok)" "false" "chain: a delivery in flight refuses the resume"
 assert_eq "$(jqf "$out" .reason)" "continuation-attempting" "chain: the refusal names the monitor's gap"
 assert_contains "$(jqf "$out" .display)" "req-9" "chain: the refusal names the handoff"
 [ ! -f "$FAKE_TMUX_STATE/new_window_args.log" ] || fail_test "chain: a window was opened"
 
-out=$(HANDOFF_MODE=superseded HANDOFF_PATH_PREFIX="$shim:" daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
+out=$(HANDOFF_MODE=superseded PATH="$shim:$PATH" daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
 assert_eq "$(jqf "$out" .ok)" "true" "chain: the resume proceeds once the chain is retired"
 assert_eq "$(jqf "$out" '.superseded_continuations | join(",")')" "req-7" \
   "chain: the result names the superseded handoff"
@@ -112,7 +112,7 @@ assert_eq "$(grep -c . "$shim/calls")" "2" "chain: each resume asked exactly onc
 # A fresh dispatch replaces no session, so it retires no chain.
 fresh_id=$(new_story "$repo" "A story nobody dispatched before")
 rm -f "$shim/calls"
-out=$(HANDOFF_MODE=superseded HANDOFF_PATH_PREFIX="$shim:" daemon_dispatch "$repo" dispatch "$fresh_id")
+out=$(HANDOFF_MODE=superseded PATH="$shim:$PATH" daemon_dispatch "$repo" dispatch "$fresh_id")
 assert_eq "$(jqf "$out" .ok)" "true" "fresh: the dispatch succeeds"
 [ ! -f "$shim/calls" ] || fail_test "fresh: a fresh dispatch retired a handoff chain"
 assert_eq "$(jqf "$out" '.superseded_continuations // "absent"')" "absent" "fresh: no chain is reported"
