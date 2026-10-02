@@ -1800,3 +1800,41 @@ Regression coverage: submission helper real-Git cases, verifier queue and receip
 contracts, concurrent human reservations, exact-tree GREEN lookup, merged-PR shell
 observation, and existing landing/cleanup guards. The central verifier owns the
 full release gate.
+
+## Python runtime (SH-858)
+
+Central verification and repository test runners require Python >=3.11 and <4.
+The verifier's inherited PATH does not select Python. `python-runtime.sh` probes
+`/opt/homebrew/bin/python3`, `/usr/local/bin/python3`, `/usr/bin/python3`, then
+`/bin/python3`, accepting the first compatible interpreter. `STORYHOOK_PYTHON`
+explicitly overrides discovery with an absolute executable path; an empty,
+relative, missing or unsupported override is refused, never silently replaced.
+For central verification, configure this variable in the service environment.
+No installer, package download or global PATH change is performed.
+
+The probe validates the version and resolves the absolute interpreter executable,
+preserving a virtual environment's path instead of dereferencing its symlink. Owned
+Python calls use that absolute path. A bundled `python-bin/python3` launcher
+prepended to PATH carries the same choice through test binaries, shell children
+and env shebangs without changing how other tools are found. Python children
+use `sys.executable`. Nested entry points revalidate the inherited selection;
+the speculative gate keeps it across the credential/environment scrub.
+Any child environment that retains this PATH must also retain `STORYHOOK_PYTHON`,
+including shell Git policy, fixture Git, provider and tmux boundaries. A scrub
+must not rediscover a different interpreter after dropping an explicit override.
+The runtime regression executes Python Git shims through both shell Git policies;
+the Git fixture parity test checks the Rust and shell allowlists together.
+Bundle-copy fixtures create parent directories for nested payload names, and
+fixtures that link verifier entry points include the runtime helper and launcher.
+
+Runtime validation precedes verifier ownership, GitHub operations and gate
+execution. A refusal is a permanent infrastructure failure naming the paths
+tried, their version or execution error, the required version and the override.
+It creates no gate execution record, test verdict or certification receipt.
+Batch and standalone preflight retain their own existing refusal protocols.
+Local runners fail before starting tests, and Make dry runs remain read-only.
+
+The supported baseline does not require macOS `os.waitid` (added in Python
+3.13). The portable kqueue interruption fixture and existing platform-specific
+process supervision remain unchanged. This policy fixes interpreter selection;
+it does not attribute unrelated load-sensitive gate failures to Python.

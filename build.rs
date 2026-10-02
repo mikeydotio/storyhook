@@ -217,6 +217,8 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "merge-preflight.sh",
     "merge-watch.sh",
     "origin-default-branch.sh",
+    "python-bin/python3",
+    "python-runtime.sh",
     "test_output.py",
     "tracked-tree.sh",
     "tree-receipt.sh",

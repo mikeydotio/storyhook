@@ -47,6 +47,7 @@ impl Repo {
             // Managed Git hooks can transitively launch Storyhook children.
             .envs(daemon_containment())
             .env("PATH", std::env::var_os("PATH").unwrap())
+            .envs(std::env::var_os("STORYHOOK_PYTHON").map(|value| ("STORYHOOK_PYTHON", value)))
             .env("HOME", self.path().join("home"))
             .env("XDG_CONFIG_HOME", self.path().join("home/xdg"))
             .env("GIT_CONFIG_NOSYSTEM", "1")

@@ -54,6 +54,8 @@ impl LandRepo {
         std::fs::create_dir_all(repo.path().join("scripts"))
             .expect("fixture: creating scripts directory");
         for name in [
+            "python-runtime.sh",
+            "python-bin",
             "land-pr.sh",
             "github-access.sh",
             "machine-lock.sh",

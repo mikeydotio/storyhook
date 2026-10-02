@@ -121,6 +121,7 @@ TABLE
 _storyhook_git_environment() {
     cat <<'NAMES'
 PATH
+STORYHOOK_PYTHON
 HOME
 XDG_CONFIG_HOME
 GIT_CONFIG_GLOBAL

@@ -32,6 +32,9 @@
 
 set -uo pipefail
 
+. "$(dirname "${BASH_SOURCE[0]}")/python-runtime.sh" || exit 2
+storyhook_python_init || { printf '%s\n' "$STORYHOOK_PYTHON_ERROR" >&2; exit 2; }
+
 die() {
     printf 'run-changed: %s\n' "$1" >&2
     exit 1

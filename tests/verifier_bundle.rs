@@ -98,11 +98,15 @@ fn sibling_references(name: &str, body: &str) -> BTreeSet<String> {
         }
         return found;
     }
-    for prefix in ["$script_dir/", "$(dirname \"${BASH_SOURCE[0]}\")/"] {
+    for prefix in [
+        "$script_dir/",
+        "$_storyhook_python_dir/",
+        "$(dirname \"${BASH_SOURCE[0]}\")/",
+    ] {
         for (index, _) in body.match_indices(prefix) {
             let rest = &body[index + prefix.len()..];
             let end = rest
-                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+                .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
                 .unwrap_or(rest.len());
             let referenced = &rest[..end];
             if !referenced.is_empty() {
@@ -111,6 +115,41 @@ fn sibling_references(name: &str, body: &str) -> BTreeSet<String> {
         }
     }
     found
+}
+
+/// A reference must exist in the materialized bundle, as a file or directory.
+fn reference_is_bundled(bundled: &BTreeSet<&str>, reference: &str) -> bool {
+    // Materialization creates parent directories, but the manifest lists files.
+    bundled
+        .iter()
+        .any(|file| Path::new(file).starts_with(reference))
+}
+
+#[test]
+fn directory_references_require_a_bundled_descendant() {
+    let bundled = ["alpha.sh", "python-bin/python3", "tools/nested/helper.py"]
+        .into_iter()
+        .collect();
+    for present in [
+        "alpha.sh",
+        "python-bin/python3",
+        "python-bin",
+        "tools",
+        "tools/nested",
+    ] {
+        assert!(reference_is_bundled(&bundled, present), "missing {present}");
+    }
+    for absent in [
+        "empty",
+        "python",
+        "python-bin/python",
+        "python-bin/missing",
+        "alpha.sh/child",
+    ] {
+        assert!(!reference_is_bundled(&bundled, absent), "accepted {absent}");
+    }
+    let misleading = ["python-bin-extra/python3"].into_iter().collect();
+    assert!(!reference_is_bundled(&misleading, "python-bin"));
 }
 
 #[test]
@@ -122,7 +161,7 @@ fn every_sibling_a_bundled_script_reaches_through_its_own_directory_is_bundled()
         let body = String::from_utf8_lossy(bytes);
         for referenced in sibling_references(name, &strip_comments(&body)) {
             references_seen += 1;
-            if !bundled.contains(referenced.as_str()) {
+            if !reference_is_bundled(&bundled, &referenced) {
                 missing.push(format!("{name} reaches {referenced}"));
             }
         }
@@ -143,14 +182,20 @@ fn every_sibling_a_bundled_script_reaches_through_its_own_directory_is_bundled()
 fn the_reference_scanner_sees_every_shape_it_claims_to() {
     let shell = r#"x="$(bash "$script_dir/alpha.sh")"
 . "$(dirname "${BASH_SOURCE[0]}")/beta-two.sh" || exit 1
-python3 "$script_dir/gamma_3.py" <"$log""#;
+python3 "$script_dir/gamma_3.py" <"$log"
+test -x "$_storyhook_python_dir/python-bin/python3""#;
     let found = sibling_references("probe.sh", shell);
     assert_eq!(
         found,
-        ["alpha.sh", "beta-two.sh", "gamma_3.py"]
-            .into_iter()
-            .map(str::to_string)
-            .collect()
+        [
+            "alpha.sh",
+            "beta-two.sh",
+            "gamma_3.py",
+            "python-bin/python3"
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
     );
     let python = "import json\nfrom test_output import TestOutputParser\nfrom pathlib import Path\nfrom os.path import join\n";
     assert_eq!(
@@ -176,6 +221,32 @@ fn strip_comments(body: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[test]
+fn bundled_shell_python_calls_cannot_reintroduce_path_lookup() {
+    let unqualified =
+        regex::Regex::new(r"(^\s*|\b(exec|if|then|else|elif|do)\s+|--\s+|[=(|;&]\s*)python3(\s|$)")
+            .unwrap();
+    assert!(unqualified.is_match("exec python3 helper.py"));
+    assert!(unqualified.is_match("observer=(python3 helper.py)"));
+    assert!(unqualified.is_match("version=$(python3 --version)"));
+    assert!(unqualified.is_match("cargo metadata | python3 -c code"));
+    assert!(!unqualified.is_match("exec \"$STORYHOOK_PYTHON\" helper.py"));
+    assert!(!unqualified.is_match("printf 'warning: python3 unavailable\\n'"));
+    let mut owned_calls = 0;
+    for (name, _, bytes) in verifier_bundle::files().filter(|(name, _, _)| name.ends_with(".sh")) {
+        let body = strip_comments(&String::from_utf8_lossy(bytes));
+        owned_calls += body.matches("\"$STORYHOOK_PYTHON\"").count();
+        for (number, line) in body.lines().enumerate() {
+            assert!(
+                !unqualified.is_match(line),
+                "{name}:{} resolves Python through PATH: {line}",
+                number + 1
+            );
+        }
+    }
+    assert!(owned_calls > 0, "the fence inspected no owned Python calls");
 }
 
 /// The shapes that reached a sibling through the checkout before SH-654.
@@ -251,10 +322,24 @@ fn materialize_projects_the_bundle_under_the_daemon_state_dir_with_executable_bi
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o111 != 0, executable, "{name} executable bit");
     }
-    let on_disk: BTreeSet<String> = fs::read_dir(&dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
+    fn inventory(root: &Path, directory: &Path, files: &mut BTreeSet<String>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                inventory(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    let mut on_disk = BTreeSet::new();
+    inventory(&dir, &dir, &mut on_disk);
     let expected: BTreeSet<String> = bundled_names().into_iter().map(str::to_string).collect();
     assert_eq!(on_disk, expected, "the leaf holds exactly the bundle");
 }

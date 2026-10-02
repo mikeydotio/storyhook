@@ -1,0 +1,11 @@
+#!/bin/sh
+# The selected Python reaches Rust children and /usr/bin/env shebangs too.
+# A discovery probe must never execute this launcher, including through links.
+if [ "${STORYHOOK_PYTHON_PROBE:-}" = 1 ]; then
+    printf 'cannot select the StoryHook Python launcher as an interpreter\n' >&2
+    exit 2
+fi
+case "${STORYHOOK_PYTHON:-}" in
+(/*) exec "$STORYHOOK_PYTHON" "$@" ;;
+(*) printf 'Python launcher requires a validated absolute STORYHOOK_PYTHON\n' >&2; exit 2 ;;
+esac

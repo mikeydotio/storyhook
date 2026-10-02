@@ -30,6 +30,8 @@ class Fixture:
             "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C", "TZ": "UTC",
             "STORYHOOK_TEST_LOG": str(self.log),
         }
+        if "STORYHOOK_PYTHON" in os.environ:
+            self.env["STORYHOOK_PYTHON"] = os.environ["STORYHOOK_PYTHON"]
         (self.root / "home").mkdir()
         for name in [
             "Makefile", "scripts/gate-receipt.sh", "scripts/tree-receipt.sh",
@@ -39,6 +41,7 @@ class Fixture:
             "scripts/gate-progress.sh", "scripts/with-orphan-postlude.sh",
             "scripts/select-tests.sh", "scripts/run-changed.sh",
             "scripts/run-rust-battery.sh", "scripts/rust-test-targets.sh",
+            "scripts/python-runtime.sh", "scripts/python-bin/python3",
         ]:
             target = (override / name) if override and (override / name).is_file() else source / name
             destination = self.root / name

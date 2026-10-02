@@ -394,6 +394,8 @@ impl ManifestFixture {
         let scripts = self.path().join("scripts");
         std::fs::create_dir_all(&scripts).expect("fixture: scripts dir");
         for (name, _, _) in storyhook::daemon::verifier_bundle::files() {
+            std::fs::create_dir_all(scripts.join(name).parent().unwrap())
+                .expect("fixture: nested script directory");
             std::fs::copy(checkout().join("scripts").join(name), scripts.join(name))
                 .unwrap_or_else(|e| panic!("fixture: copying {name}: {e}"));
         }

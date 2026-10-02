@@ -24,7 +24,7 @@ class GateCompletion(unittest.TestCase):
         self.write("Makefile", (ROOT / "Makefile").read_text())
         for name in ["gate-legs.sh", "leg.sh", "gate-leg-fingerprint.sh", "rust-test-targets.sh",
                      "gate-progress.sh", "activity-log.sh", "with-orphan-postlude.sh",
-                     "cargo_diagnostics.py"]:
+                     "cargo_diagnostics.py", "python-runtime.sh", "python-bin/python3"]:
             source = ROOT / "scripts" / name
             if source.exists():
                 self.write("scripts/" + name, source.read_text())

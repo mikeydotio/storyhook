@@ -64,6 +64,9 @@ command -v jq >/dev/null 2>&1 || {
 }
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
     || refuse bundle-missing "verify-batch.sh: cannot resolve its own directory"
+# shellcheck source=python-runtime.sh
+. "$script_dir/python-runtime.sh" || refuse bundle-missing "missing Python runtime policy in $script_dir"
+storyhook_python_init || refuse python-runtime "$STORYHOOK_PYTHON_ERROR"
 # shellcheck source=github-access.sh
 . "$script_dir/github-access.sh" \
     || refuse bundle-missing "verify-batch.sh: the verifier bundle at $script_dir is missing github-access.sh"

@@ -72,7 +72,8 @@ class AgentIdentityTests(unittest.TestCase):
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self.env = {key: value for key, value in os.environ.items()
-                    if not key.startswith(("GIT_", "STORY_", "STORYHOOK_", "TMUX", "FAKE_TMUX"))}
+                    if key == "STORYHOOK_PYTHON" or not key.startswith(
+                        ("GIT_", "STORY_", "STORYHOOK_", "TMUX", "FAKE_TMUX"))}
         isolation = subprocess.run(["bash", "-c",
             'source "$1"; storyhook_isolate --home --parent-pid "$2" "$3"; '
             'exec python3 -c "import json,os; print(json.dumps(dict(os.environ)))"',

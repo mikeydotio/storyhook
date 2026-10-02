@@ -1842,8 +1842,11 @@ fn the_runner_routes_plugin_children_and_bare_story_calls_through_its_lease() {
 fn the_runner_preserves_no_color_intent_without_exporting_conflicting_node_flags() {
     let runner = read("scripts/run-e2e.sh");
     let entry = runner
-        .split_once("set -euo pipefail\n")
-        .expect("the runner must establish strict shell mode")
+        .split_once("# Playwright forces FORCE_COLOR=1 in workers.")
+        .expect("the runner must translate the caller's color intent")
+        .1
+        .split_once('\n')
+        .unwrap()
         .1
         .split_once("\ncd \"$(dirname \"$0\")/..\"")
         .expect("the runner entry must precede checkout setup")

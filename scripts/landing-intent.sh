@@ -11,6 +11,15 @@ verdict() {
     exit 0
 }
 case "$mode" in attempt|recover) ;; *) exit 1 ;; esac
+# Refusal before an attempt is distinct from an uncertain recovery observation.
+# shellcheck source=python-runtime.sh
+. "$script_dir/python-runtime.sh" || verdict uncertain "missing Python runtime policy in $script_dir"
+if ! storyhook_python_init; then
+    if [ "$mode" = attempt ] && [ ! -e "$marker" ]; then
+        verdict not-attempted "$STORYHOOK_PYTHON_ERROR"
+    fi
+    verdict uncertain "$STORYHOOK_PYTHON_ERROR"
+fi
 github_begin || verdict uncertain "cannot establish GitHub origin: ${GITHUB_ACCESS_ERROR:-origin unavailable}"
 # A recovery never retries a mutation. OPEN does not prove an earlier request
 # cannot finish, even when a new daemon cannot find the old local marker.

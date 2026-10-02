@@ -87,6 +87,7 @@ fn isolated_scenario(verdict: &str) {
         .args(["--ignored", "--exact", "retry_shell_worker", "--nocapture"])
         .env_clear()
         .envs(daemon_containment())
+        .envs(std::env::var_os("STORYHOOK_PYTHON").map(|value| ("STORYHOOK_PYTHON", value)))
         .env(
             "PATH",
             format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
