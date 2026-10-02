@@ -449,34 +449,36 @@ fn a_browser_edit_reruns_only_browser_and_checkout_contracts() {
 /// throw away the verdicts it cannot affect.
 #[test]
 fn a_test_pool_edit_reruns_only_the_rust_batteries() {
-    let repo = Repo::new();
-    repo.write("scripts/test-pool.py", "# pool fixture\n");
-    repo.git(&["add", "scripts/test-pool.py"]);
-    let labels = [
-        "fmt",
-        "clippy",
-        "rust-suite",
-        "rust-contracts",
-        "build",
-        "plugin",
-        "e2e",
-    ];
-    for label in labels {
-        let out = repo.run_leg(label, true);
-        assert!(out.status.success(), "seeding {label}: {out:?}");
-    }
+    for path in ["scripts/test-pool.py", "scripts/test_discovery.py"] {
+        let repo = Repo::new();
+        repo.write(path, "# pool fixture\n");
+        repo.git(&["add", path]);
+        let labels = [
+            "fmt",
+            "clippy",
+            "rust-suite",
+            "rust-contracts",
+            "build",
+            "plugin",
+            "e2e",
+        ];
+        for label in labels {
+            let out = repo.run_leg(label, true);
+            assert!(out.status.success(), "seeding {label}: {out:?}");
+        }
 
-    repo.write("scripts/test-pool.py", "# edited pool fixture\n");
+        repo.write(path, "# edited pool fixture\n");
 
-    for label in labels {
-        let out = repo.run_leg(label, true);
-        assert!(out.status.success(), "retrying {label}: {out:?}");
-        let expected = usize::from(matches!(label, "rust-suite" | "rust-contracts")) + 1;
-        assert_eq!(
-            repo.executions(label),
-            expected,
-            "a pool edit invalidated the wrong battery: {label}"
-        );
+        for label in labels {
+            let out = repo.run_leg(label, true);
+            assert!(out.status.success(), "retrying {label}: {out:?}");
+            let expected = usize::from(matches!(label, "rust-suite" | "rust-contracts")) + 1;
+            assert_eq!(
+                repo.executions(label),
+                expected,
+                "{path} invalidated the wrong battery: {label}"
+            );
+        }
     }
 }
 

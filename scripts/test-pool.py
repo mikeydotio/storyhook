@@ -29,22 +29,21 @@ Jobs still running after a grace period get their process trees terminated,
 for the case where only this process was signalled.
 """
 
-import json
 import os
 import signal
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.dont_write_bytecode = True
+from test_discovery import Discovery, DiscoveryError, process_tree
 
 POLL_SECONDS = 0.1
 DEFAULT_THREAD_CAP = 4
 GROUP_SIGNAL_GRACE = 10
 TERMINATE_GRACE = 5
-LIST_TIMEOUT = 120
 # Set by run-tests.sh for its pre-build; a job must not repeat that build.
 BUILD_ONLY_ENV = ("STORYHOOK_COMPILER_DIAGNOSTICS", "STORYHOOK_GATE_BUILD_OUTCOME")
 
@@ -77,7 +76,8 @@ class Job:
 
 def parse_arguments(argv):
     """Returns (options, jobs, cargo_extra, libtest_args)."""
-    options = {"budget": None, "log": None, "work": None, "progress": None, "durations": None}
+    options = {"budget": None, "log": None, "work": None, "progress": None,
+               "durations": None, "additional-total": "0", "discovery-ready": None}
     jobs = []
     index = 0
     while index < len(argv) and argv[index] != "--":
@@ -102,6 +102,10 @@ def parse_arguments(argv):
     if not budget.isdigit() or int(budget) < 1:
         raise ValueError(f"--budget must be a positive integer, got {budget!r}")
     options["budget"] = int(budget)
+    extra = options["additional-total"]
+    if not extra.isdigit():
+        raise ValueError(f"--additional-total must be a non-negative integer, got {extra!r}")
+    options["additional-total"] = int(extra)
     if not jobs:
         raise ValueError("no --job given")
     if "--" in rest:
@@ -134,53 +138,6 @@ def job_environment():
     for key in BUILD_ONLY_ENV:
         env.pop(key, None)
     return env
-
-
-def executables(jobs, cargo_extra, env):
-    """Maps (kind, name) to each job's built test executable.
-
-    `--no-run` after run-tests.sh's pre-build only reports the artifacts; it
-    builds nothing. A job whose executable is not found keeps the battery's
-    full thread cap rather than failing: its test count is an optimization.
-    """
-    found = {}
-    groups = {}
-    for job in jobs:
-        groups.setdefault(job.package, []).append(job)
-    for package, members in groups.items():
-        command = ["cargo", "test", "--no-run", "--message-format=json", "-p", package, *cargo_extra]
-        for job in members:
-            command += job.selector()
-        result = subprocess.run(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
-        for line in result.stdout.splitlines():
-            try:
-                message = json.loads(line)
-            except ValueError:
-                continue
-            if message.get("reason") != "compiler-artifact" or not message.get("executable"):
-                continue
-            target = message.get("target", {})
-            kind = "lib" if "lib" in target.get("kind", []) else "test"
-            found[(package, kind, target.get("name"))] = message["executable"]
-    return found
-
-
-def count_tests(executable, libtest_args, env):
-    """The number of tests `executable` would run with these libtest args."""
-    try:
-        result = subprocess.run(
-            [executable, "--list", *libtest_args],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=LIST_TIMEOUT,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    return sum(1 for line in result.stdout.decode(errors="replace").splitlines() if line.endswith(": test"))
 
 
 def read_durations(path):
@@ -254,20 +211,6 @@ def rebuilt_after_prebuild(log_path):
     except OSError:
         return False
     return False
-
-
-def process_tree(pid):
-    """`pid` and all of its descendants, parents first."""
-    tree = [pid]
-    try:
-        children = subprocess.run(
-            ["pgrep", "-P", str(pid)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
-        ).stdout.split()
-    except OSError:
-        return tree
-    for child in children:
-        tree += process_tree(int(child))
-    return tree
 
 
 class Pool:
@@ -390,27 +333,60 @@ def main(argv):
     work.mkdir(parents=True, exist_ok=True)
     env = job_environment()
 
-    built = executables(jobs, cargo_extra, env)
-
-    def listed(job):
-        executable = built.get((job.package, job.kind, job.name))
-        return count_tests(executable, libtest_args, env) if executable else None
-
-    # Listing executes each binary once. Where run-tests.sh's discovery has not
-    # already done that, the first exec of a freshly linked binary pays macOS's
-    # code-signature check, so the listings share the budget rather than
-    # queueing one behind another.
-    with ThreadPoolExecutor(max_workers=options["budget"]) as executor:
-        counts = list(executor.map(listed, jobs))
-    for job, tests in zip(jobs, counts):
-        job.log = str(work / f"{job.index}.log")
-        job.tests = tests
-        job.threads = cap if tests is None else max(1, min(cap, tests))
-
-    durations = read_durations(options["durations"])
     pool = Pool(options, jobs, cargo_extra, libtest_args, env)
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(signum, pool.cancel)
+    discovery = Discovery(env, lambda: pool.cancelled)
+
+    def progress(kind, *args):
+        """Use the existing protocol writer; an unwritable total is a refusal."""
+        if options["progress"]:
+            subprocess.run(
+                ["bash", str(Path(__file__).resolve().parent / "gate-progress.sh"),
+                 kind, options["progress"], *args], check=True,
+            )
+
+    try:
+        built = discovery.executables(jobs, cargo_extra)
+
+        def listed(job):
+            try:
+                return discovery.count_tests(built[(job.package, job.kind, job.name)], libtest_args)
+            except DiscoveryError as error:
+                raise DiscoveryError(f"{job.key}: {error}") from error
+
+        # No serial Cargo listing: each binary supplies both its exact runnable
+        # count and thread share. First launches (code-signature checks on macOS)
+        # share the existing budget rather than queueing behind each other.
+        with ThreadPoolExecutor(max_workers=options["budget"]) as executor:
+            futures = {executor.submit(listed, job): job for job in jobs}
+            try:
+                for future in as_completed(futures):
+                    job = futures[future]
+                    job.tests = future.result()
+                    job.log = str(work / f"{job.index}.log")
+                    job.threads = max(1, min(cap, job.tests))
+            except DiscoveryError:
+                discovery.stop()
+                for future in futures:
+                    future.cancel()
+                raise
+        if pool.cancelled is not None:
+            raise DiscoveryError("cancelled before publishing the total")
+        total = options["additional-total"] + sum(job.tests for job in jobs)
+        progress("item", "running", f"total={total}")
+        progress("activity", "discovering tests", "passed")
+        if options["discovery-ready"]:
+            Path(options["discovery-ready"]).touch()
+    except (DiscoveryError, OSError, subprocess.CalledProcessError) as error:
+        print(f"test-pool: test discovery failed before execution: {error}", file=sys.stderr)
+        try:
+            progress("activity", "discovering tests", "failed")
+        except (OSError, subprocess.CalledProcessError) as progress_error:
+            print(f"test-pool: could not report failed discovery: {progress_error}", file=sys.stderr)
+        return 128 + pool.cancelled if pool.cancelled is not None else 101
+
+    durations = read_durations(options["durations"])
     started = time.monotonic()
     pool.run(schedule(jobs, durations))
     if pool.cancelled is not None:
