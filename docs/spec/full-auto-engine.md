@@ -3022,3 +3022,19 @@ Tests:
 
 Decisions D1 to D7 and D7a, including the council's unanimous vote on D7,
 are recorded on SH-837 (`story show SH-837`).
+
+### SH-786: eligibility between claim and handoff
+
+The engine's `--auto --full-auto --force` dispatch reuses a claim, not its earlier
+readiness verdict. The helper checks current session eligibility before preparing
+that reused claim and again after exact session registration, before the charter.
+The workspace lock preserves delivery authority for blocks committed after the
+final query. Earlier blocks refuse the charter and use owned-startup rollback;
+the helper never unclaims the engine's pre-existing claim. Refusals follow the
+existing engine refusal/quarantine policy, without an automatic retry.
+
+Lane observation applies `domain::is_blocked` to engine-owned and adopted lanes
+alike. The lane story and dependency graph are read in the same transaction,
+using the query projection's computed epic states. An open dependency produces
+`AgentBlocked` on steady and restart passes; closed or removed dependencies do
+not. Existing completion, verification and reserved-label precedence still applies.
