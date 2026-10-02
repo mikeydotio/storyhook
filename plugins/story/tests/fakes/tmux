@@ -1167,6 +1167,11 @@ case "${1:-}" in
   list-panes)
     case "$*" in
       *'#{window_id}'*'#{pane_current_path}'*)
+        # A state file crosses the daemon allowlist without ambient fake knobs.
+        if [ -f "$STATE/resource_delay" ]; then
+          IFS= read -r resource_delay < "$STATE/resource_delay"
+          sleep "$resource_delay" || exit 1
+        fi
         python3 - "$STATE" <<'PY_ENDPOINT'
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1])

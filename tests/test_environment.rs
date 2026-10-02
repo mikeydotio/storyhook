@@ -869,6 +869,30 @@ fn every_shell_script_that_builds_an_environment_uses_the_shared_one() {
     );
 }
 
+/// A harness may set this one explicit workload input after isolation. The
+/// isolation table still clears its inherited value for every fixture.
+fn is_declared_workload_input(relative: &str, name: &str) -> bool {
+    relative == "plugins/story/tests/lib.sh" && name == "STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS"
+}
+
+#[test]
+fn workload_input_permission_is_exact_in_both_path_and_parameter() {
+    let harness = "plugins/story/tests/lib.sh";
+    let patience = "STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS";
+    assert!(is_declared_workload_input(harness, patience));
+    for parameter in TEST_ENVIRONMENT {
+        assert_eq!(
+            is_declared_workload_input(harness, parameter.name),
+            parameter.name == patience
+        );
+    }
+    assert!(!is_declared_workload_input("scripts/test.sh", patience));
+    assert!(!is_declared_workload_input(
+        "other/plugins/story/tests/lib.sh",
+        patience
+    ));
+}
+
 /// …and a script that uses the shared one does not also set parameters itself.
 ///
 /// The other half, and the one that catches a partial migration: a harness that
@@ -882,7 +906,10 @@ fn no_script_that_uses_the_shared_isolation_also_sets_a_parameter() {
         .iter()
         .filter(|(_, text)| calls_the_shared_isolation(text))
         .filter_map(|(relative, text)| {
-            let by_hand = parameters_set_by_hand(text);
+            let by_hand: Vec<_> = parameters_set_by_hand(text)
+                .into_iter()
+                .filter(|name| !is_declared_workload_input(relative, name))
+                .collect();
             (!by_hand.is_empty()).then(|| format!("{relative} also sets {by_hand:?}"))
         })
         .collect();
