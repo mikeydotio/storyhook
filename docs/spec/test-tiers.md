@@ -269,7 +269,11 @@ its measurements are `docs/spec/test-audit.md`.
   core battery failed on seconds-scale production bounds under load, so 8 it
   is (`tests/battery_completion.rs`; measurements in the audit).
 
-The legs themselves stay serial, for SH-701's reasons.
+The legs themselves stay serial. [SH-796's measured decision, 2026-10-02](test-audit.md#plugin-and-rust-legs-stay-serial-sh-796)
+retains that order: the pools still have recorded load-sensitive failures, and
+no paired experiment establishes a benefit from plugin/Rust overlap. SH-701's
+reporting, dependency, cancellation and receipt requirements remain the
+contract for any future concurrency design.
 
 ## Merge commits reach the gate a different way (SH-396)
 
