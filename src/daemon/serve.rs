@@ -1384,6 +1384,22 @@ fn worker(
         return;
     }
 
+    // The agents census (SH-850) probes tmux and Git once per claimed story,
+    // so it too is answered here rather than on a fixed store dispatcher.
+    if let Some(reply) = crate::api::agents::intercept(
+        &segments,
+        &method,
+        &headers,
+        token,
+        engine,
+        tokens,
+        cookie_name,
+        chrono::Utc::now(),
+    ) {
+        finish(request, reply);
+        return;
+    }
+
     // Engine controls can synchronously run `story.sh unclaim`, whose own
     // `story` calls return through `/api/v1/invoke`. Intercept after admission
     // and body acquisition, but before a `Job` can occupy the fixed store

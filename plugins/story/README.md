@@ -81,7 +81,7 @@ and then runs the same packaged helper, preserving the one-JSON-object contract.
 |---|---|
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
-| `dispatch <id> [--auto] [--force] [--resume] [--agent=claude\|codex]` | `/story do`; records the intended window transactionally with a fresh named claim, while `--resume` preserves and reconstructs an abandoned dispatch and `--force` only reuses an existing claim. Manual concurrency is operator-controlled; `story lane-budget` is informational. Legacy `--over-budget` is a deprecated no-op |
+| `dispatch <id> [--auto] [--force] [--resume [--if-absent]] [--agent=claude\|codex]` | `/story do`; records the intended window transactionally with a fresh named claim, while `--resume` preserves and reconstructs an abandoned dispatch and `--force` only reuses an existing claim. `--if-absent` (dispatch protocol 7, SH-850) makes the resume refuse `agent-live` instead of replacing a live agent; every daemon resume sends it. Manual concurrency is operator-controlled; `story lane-budget` is informational. Legacy `--over-budget` is a deprecated no-op |
 | `dispatch <id> --auto --full-auto [--force] [--agent=claude\|codex]` | engine-only lane launch; the dashboard, skills, and ordinary autonomous dispatch never add `--full-auto` |
 | `dispatch --next [--auto] [--agent=claude\|codex]` | not routed by any skill (SH-344) — the id-less sibling: claims whatever `story claim --next` picks atomically, then records its window, worktree, and branch after confirmed handoff |
 | `create --title …` | `/story new` |
@@ -224,6 +224,31 @@ Worth knowing before changing anything here:
   these same finds return typed `resume-available` plus a resource inventory;
   the interactive adapters ask once, while the dashboard always passes
   `--resume`. Engine lanes retain `resume:false`.
+- **A resume replaces only a lost agent, and says what it replaced (SH-850).**
+  - `--if-absent` refuses `agent-live`, before any write, when the story's pane
+    is not dead or when `lib/worktree_occupants.py` finds a provider process
+    working inside the worktree (a tmux server whose socket path was taken
+    over, or an agent started by hand). A dead pane is respawned without `-k`,
+    so tmux refuses one that came alive. The dashboard, the verifier and
+    project recovery always send it.
+  - A resume of a claimed story first asks `story session-eligibility`: an
+    awaiting, blocked or resetting story refuses `resume-ineligible`.
+  - It retires the story's context-handoff chain (`story internal
+    supersede-continuations`) and refuses `continuation-attempting` while a
+    handoff is delivering.
+  - The new session must report a new session id (`resume-session-reused`
+    otherwise); the lost one is named, unverified, in `previous_session` and
+    in the dispatch comment. A new window never inherits the lost session's
+    readiness witness.
+  - Every resume starts a NEW provider session: no launch form revives a
+    conversation (`claude --resume`, `codex resume`; SH-854 holds the
+    redesign trigger). The charter adds `RESUME_RESTART_CLAUSE`: the agent
+    may start over, after commenting what it found, keeping abandoned work on
+    a branch or WIP commit, never `git stash`, never rewriting pushed commits.
+    Guarded continuation never gets that clause.
+  - Every confirmed launch records its settings in
+    `storyhook-launch-v1.json` beside the cleanup marker, for the dashboard's
+    Resume to offer again.
 - **`complete` never forces anything by default**, and never touches tmux at
   all unless it is about to remove a worktree. `git worktree remove` runs
   without `--force` by default, and a branch is deleted only if merged into

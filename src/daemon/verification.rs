@@ -571,8 +571,9 @@ pub enum NotifyDelivery {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentPresence {
     /// No live dispatched agent occupies the window; a resume re-dispatch
-    /// (`dispatch --resume`, which respawns a dead pane in place or recreates
-    /// a missing window under the same name) cannot kill work in progress.
+    /// (`dispatch --resume --if-absent`, which respawns a dead pane in place
+    /// without `-k` or recreates a missing window under the same name, and
+    /// refuses a live agent itself, SH-850) cannot kill work in progress.
     Absent,
     /// Either the agent may be live, or tmux could not say — neither is
     /// evidence of absence, and a respawn over a live agent would kill it.

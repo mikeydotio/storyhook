@@ -18,7 +18,7 @@
 # boolean and a human-readable `display`, mirroring issue.sh/storywork's own
 # contract:
 #
-#   dispatch <id> [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex]
+#   dispatch <id> [--auto] [--full-auto] [--force] [--resume [--if-absent]] [--agent=claude|codex]
 #                   [--model=<id>] [--effort=<id>] [--speed=standard|fast]
 #                   Refuse unless <id> is READY (issue #40's core ask — see
 #                    the READY-GATE step below) and not already claimed, then
@@ -115,8 +115,8 @@ set -euo pipefail
 
 # The daemon<->script argv contract this file implements (SH-196). The
 # dashboard's dispatch endpoint (src/api/dispatch.rs) invokes this script as
-# `story.sh --project <slug> dispatch <id> [--auto] [--full-auto] [--force] [--resume]
-# [--agent=claude|codex] [--model=<id>] [--effort=<id>]
+# `story.sh --project <slug> dispatch <id> [--auto] [--full-auto] [--force] [--resume
+# [--if-absent]] [--agent=claude|codex] [--model=<id>] [--effort=<id>]
 # [--speed=standard|fast]`; before SH-196, a daemon
 # and a script that disagreed about that contract failed by relaying this
 # script's own generic top-level usage error as a well-formed business
@@ -143,7 +143,10 @@ set -euo pipefail
 # Protocol 6 adds `notify <id> <prompt> --registered-session` (SH-772): a resume
 # whose interrupt was never acknowledged. An older helper would read the flag
 # as an unknown argument or, worse, fall back to the adopting 2-argument form.
-DISPATCH_PROTOCOL=6
+# Protocol 7 adds `dispatch <id> --resume --if-absent` (SH-850): the daemon's
+# dashboard and verifier resumes always send it, and an older helper would
+# refuse the unknown flag -- or, had it ignored it, respawn over a live agent.
+DISPATCH_PROTOCOL=7
 
 # Shared tmux/worktree/pane-readiness mechanics (window/worktree naming,
 # git-safety helpers, the readiness gate, confirmed-send) live in
@@ -482,6 +485,12 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 CODEX_AUTO_PLAN_CLAUSE="In Codex Default mode, present a completed implementation plan as one JSON object with exactly four fields: type set to storyhook.implementation-plan, version set to integer 1, story_id set to <n>, and plan set to the complete plan text as a JSON string. Output only that object, without fences or surrounding prose. In Plan mode, use the native proposed_plan envelope instead. Use this declaration only for a complete implementation plan, never for operational permissions or unresolved choices. Approval applies to the decoded plan text and grants no additional permissions."
 CODEX_BUILTIN_CLAUSE="Codex Plan mode cannot write that comment before approval. In the plan you present, make ‘story comment <n> your-exact-approved-plan’ the first implementation step. After approval, execute that step before changing files or running tests, and post the plan verbatim rather than summarizing it."
 RESUME_PROMPT_CLAUSE="You are resuming work already started and left behind by a previous agent. Before changing anything, inspect the worktree, git status, git log, git diff, story comments, and relevant tests to determine exactly where it stopped. The previous agent may have encountered an error or stopped uncleanly. Preserve valid existing work, then continue under every remaining instruction in this charter."
+# SH-850: the start-over permission a resumed session needs when what it
+# inherits cannot be trusted, with the SH-850 council's C5 guard rails: say what
+# was found before touching anything, keep abandoned work reachable, never the
+# shared stash, never published history. Appended after RESUME_PROMPT_CLAUSE,
+# but never to guarded continuation, whose own clause preserves dirty work.
+RESUME_RESTART_CLAUSE="If the existing work seems corrupt, or you cannot understand it well enough to continue safely, you may start the story over. Before you change any file, comment on the story what you found and whether you continue or start over. To start over, first keep the abandoned work on a named branch or in a WIP commit. Never use git stash, because every worktree shares one stash. Never rewrite commits that were already pushed."
 # The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
 # last human interaction: plan approval is scoped by provider events (with one
 # exact-gated tmux Return for Claude), and question refusal is provider-native;
@@ -566,6 +575,13 @@ CLEANUP_LEASE_MARKER="storyhook-cleanup-lease-v1.json"
 # that carries one is left for a person, so `dispatch --full-auto` refuses it
 # (SH-837). tests/engine_labels.rs pins this list to the Rust constant.
 RESERVED_LABELS_JSON='["human-only","no-auto"]'
+# The settings a person chose for this story's last successful launch
+# (SH-850): read by the dashboard to prefill Resume after a reboot has erased
+# the pane's environment. Beside the cleanup marker, in the worktree's private
+# Git directory, so it lives exactly as long as the worktree. Not identity:
+# nothing selects, authorizes or removes anything by it. Mirrored by
+# LAUNCH_RECORD_FILE in src/service/launch_record.rs.
+LAUNCH_RECORD_FILE="storyhook-launch-v1.json"
 # Readiness gate before typing the prompt — see lib/session.sh's wait_ready
 # for the full two-tier rationale (marker footer match, or structural
 # frame+glyph+stabilise fallback), and wait_ready_sentinel for the
@@ -1600,6 +1616,113 @@ continuation_preflight() {
     || refuse "continuation-unsafe" "continuation ownership preflight refused: $(printf '%s' "$answer" | jq -r '.detail // "no diagnostic"'). Retained work was preserved."
 }
 
+# write_launch_record <project> <story> <worktree> <provider> <model> <effort>
+# <speed> <autonomy> — atomically publish LAUNCH_RECORD_FILE for a launch whose
+# handoff was confirmed. Only explicit selectors are recorded: an empty one
+# means the provider's (or the dispatch policy's) default, which a resume
+# re-resolves exactly as this launch did. Returns nonzero with a diagnostic.
+write_launch_record() {
+  local project="$1" story="$2" worktree="$3" provider="$4" model="$5" effort="$6" speed="$7" autonomy="$8"
+  local private_git_dir record temp
+  private_git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) \
+    || { printf 'cannot locate the private Git directory of %s' "$worktree"; return 1; }
+  record=$(jq -n --arg project "$project" --arg story "$story" --arg provider "$provider" \
+      --arg model "$model" --arg effort "$effort" --arg speed "$speed" --arg autonomy "$autonomy" \
+      --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{version:1, project_slug:$project, story_id:$story, provider:$provider,
+        model:(if $model == "" then null else $model end),
+        effort:(if $effort == "" then null else $effort end),
+        speed:(if $speed == "" then null else $speed end),
+        autonomy:$autonomy, recorded_at:$at}') \
+    || { printf 'cannot compose the launch record'; return 1; }
+  temp=$(mktemp "$private_git_dir/.storyhook-launch.XXXXXX") \
+    || { printf 'cannot create a temporary launch record in %s' "$private_git_dir"; return 1; }
+  if ! printf '%s\n' "$record" >"$temp" || ! mv -f "$temp" "$private_git_dir/$LAUNCH_RECORD_FILE"; then
+    rm -f "$temp"
+    printf 'cannot publish %s/%s' "$private_git_dir" "$LAUNCH_RECORD_FILE"
+    return 1
+  fi
+}
+
+# require_agent_absent <id> <pane> <worktree> <resources-json> — refuse unless
+# no live agent remains to be replaced (SH-850 --if-absent). Two witnesses,
+# because each one alone can be wrong:
+#   - the story's own window: a surviving pane must be dead (remain-on-exit
+#     keeps the corpse). A probe that cannot answer is not death (SH-626).
+#   - the kernel: no provider process may work inside the worktree. A tmux
+#     server whose socket path was taken over keeps its panes running where
+#     the recorded socket cannot see them (SH-850's own lane on 2026-09-29),
+#     and an agent started by hand never had a window.
+# Runs before every mutation, under the workspace reservation; the respawn
+# itself then omits -k, so tmux refuses a pane that came alive meanwhile.
+require_agent_absent() {
+  local rid="$1" rpane="$2" rworktree="$3" rresources="$4" probe census found
+  if [ -n "$rpane" ]; then
+    probe=$(pane_probe "$rpane") \
+      || refuse "resource-query-failed" "cannot ask tmux whether story $rid's pane \`$rpane\` still runs; nothing was changed."
+    if [ "$(printf '%s\n' "$probe" | cut -f 3)" != 1 ]; then
+      refuse_with "agent-live" \
+        "story $rid's window pane \`$rpane\` still runs \`$(printf '%s\n' "$probe" | cut -f 2)\`. Resume replaces only a lost agent; work with that session, or stop it first. Nothing was changed." \
+        "$(jq -n --argjson resources "$rresources" --arg pane "$rpane" '{resources:$resources, live_pane:$pane}')"
+    fi
+  fi
+  [ -d "$rworktree" ] || return 0
+  census=$(python3 "$STORY_PLUGIN_ROOT/lib/worktree_occupants.py" "$rworktree" \
+             --pattern "${STORY_READY_PROCESS_PATTERN:-^(claude|node|codex)\$}" \
+             --launch claude --launch codex 2>&1) \
+    || refuse "resource-query-failed" "cannot tell whether a live agent works in story $rid's worktree: $census. Nothing was changed."
+  found=$(printf '%s' "$census" | jq -c '.occupants // empty' 2>/dev/null || printf '')
+  [ -n "$found" ] || refuse "resource-query-failed" "the worktree census for story $rid answered without a verdict: $census. Nothing was changed."
+  if [ "$found" != "[]" ]; then
+    refuse_with "agent-live" \
+      "a live agent still works in story $rid's worktree ($(printf '%s' "$found" | jq -r 'map("pid \(.pid) \(.name)") | join(", ")')), outside the story's recorded window. Resume replaces only a lost agent; stop that process first. Nothing was changed." \
+      "$(jq -n --argjson resources "$rresources" --argjson occupants "$found" '{resources:$resources, occupants:$occupants}')"
+  fi
+}
+
+# supersede_resumed_continuations <id> <pre-claim-state> <transitioned> <state>
+# — retire the story's context-handoff chain before a resume launches a fresh
+# session (SH-850 council C3/C4), through the helper-only
+# `story internal supersede-continuations`. The daemon changes nothing while a
+# handoff is attempting delivery: the continuation monitor owns that gap, and a
+# second launcher must not race it, so the resume refuses. Publishes the
+# superseded request ids as SUPERSEDED_CONTINUATIONS (a JSON array).
+SUPERSEDED_CONTINUATIONS='[]'
+supersede_resumed_continuations() {
+  local rid="$1" pre_state="$2" transitioned="$3" claimed_state="$4" receipt attempting
+  receipt=$(story_cli internal supersede-continuations "$rid" --json 2>&1) \
+    || fail "could not retire story $rid's context handoffs: $receipt. No replacement session was launched.$(claim_rollback_note "$rid" "$pre_state" "$transitioned" "$claimed_state")"
+  printf '%s' "$receipt" | jq -e --arg id "$rid" --arg project "$PROJECT_SLUG" '
+    .protocol_version == 1 and .project == $project and .story_id == $id
+    and (.superseded | type == "array") and (.attempting | type == "array")' >/dev/null 2>&1 \
+    || fail "invalid context-handoff receipt for story $rid: $receipt. No replacement session was launched.$(claim_rollback_note "$rid" "$pre_state" "$transitioned" "$claimed_state")"
+  attempting=$(printf '%s' "$receipt" | jq -r '.attempting | join(", ")')
+  if [ -n "$attempting" ]; then
+    refuse "continuation-attempting" \
+      "story $rid's context handoff $attempting may be delivering right now, and the continuation monitor owns that gap. Retry after it settles (story continuation status $rid). No replacement session was launched.$(claim_rollback_note "$rid" "$pre_state" "$transitioned" "$claimed_state")"
+  fi
+  SUPERSEDED_CONTINUATIONS=$(printf '%s' "$receipt" | jq -c '.superseded')
+}
+
+# require_resume_eligibility <id> <show-json> — refuse to relaunch an agent on a
+# claimed story the tracker would not let its session continue (SH-850). A
+# blocked, awaiting or resetting story must not get an agent back (SH-690): its
+# block interrupted the last one. The question is `story session-eligibility`,
+# the tracker's own predicate, so this helper restates no block rule. A verb
+# that cannot answer is its own refusal, never a pass.
+require_resume_eligibility() {
+  local rid="$1" rshow="$2" answer eligible reason
+  answer=$(story_cli session-eligibility "$rid" --json 2>&1) \
+    || refuse "resume-eligibility-unavailable" "cannot ask whether $rid may resume: $answer. Nothing was changed."
+  eligible=$(printf '%s' "$answer" | jq -r '.session_eligibility.eligible | if type == "boolean" then tostring else empty end' 2>/dev/null || printf '')
+  reason=$(printf '%s' "$answer" | jq -r '.session_eligibility.reason // "unknown"' 2>/dev/null || printf 'unknown')
+  case "$eligible" in
+    true) return 0 ;;
+    false) refuse "resume-ineligible" "story $rid cannot resume ($reason): $(ready_gate_reason "$rshow" "$rid"). Lift the hold or resolve the blocker first. Nothing was changed." ;;
+    *) refuse "resume-eligibility-unavailable" "story session-eligibility $rid gave no verdict: $answer. Nothing was changed." ;;
+  esac
+}
+
 # Hold the reset/verifier exclusion through dispatch handoff. Descriptor 9 is
 # inherited by preparation children; no explicit unlock can strand an orphan.
 reserve_dispatch_workspace() {
@@ -1621,8 +1744,8 @@ cmd_dispatch() {
   # see the NEXT MODE section below for why this is a second mode and not a
   # rewrite of the id-directed claim, which since SH-482 goes through the same
   # verb as `story claim <id>`.
-  local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
-  local id="" auto="" full_auto="" want_next="" force="" resume="" over_budget="" requested_agent=""
+  local usage='story.sh dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume [--if-absent]] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]'
+  local id="" auto="" full_auto="" want_next="" force="" resume="" if_absent="" over_budget="" requested_agent=""
   local requested_model="" requested_effort="" requested_speed=""
   local require_absent="" continuation_file="" continuation_record=""
   while [ "$#" -gt 0 ]; do
@@ -1642,6 +1765,9 @@ cmd_dispatch() {
       --require-absent)
         [ -z "$require_absent" ] || fail "--require-absent may be specified only once"
         require_absent=1; shift ;;
+      --if-absent)
+        [ -z "$if_absent" ] || fail "--if-absent may be specified only once — usage: $usage"
+        if_absent=1; shift ;;
       --continuation-file=*)
         [ -z "$continuation_file" ] || fail "--continuation-file may be specified only once"
         continuation_file="${1#--continuation-file=}"
@@ -1693,6 +1819,14 @@ cmd_dispatch() {
     || fail "--require-absent requires --resume and --continuation-file"
   [ -z "$continuation_file" ] || [ -n "$require_absent" ] \
     || fail "--continuation-file requires --require-absent"
+  # --if-absent (SH-850) is the resume that never replaces a live agent: a
+  # person's or the verifier's resume after a reboot. --require-absent is the
+  # continuation monitor's stricter form of the same promise (the exact
+  # retained pane, no window creation), so naming both is a caller error.
+  [ -z "$if_absent" ] || [ -n "$resume" ] \
+    || fail "--if-absent requires --resume — usage: $usage"
+  [ -z "$if_absent" ] || [ -z "$require_absent" ] \
+    || fail "--if-absent cannot be combined with --require-absent, which already refuses a live owner"
   [ -z "$want_next" ] || [ -z "$force" ] \
     || fail "--force requires a named story id and cannot be combined with --next — usage: story.sh dispatch <story-id> [--auto] [--full-auto] [--force] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast]"
   [ -z "$want_next" ] || [ -z "$resume" ] \
@@ -1990,6 +2124,7 @@ cmd_dispatch() {
         "story $id's surviving window is the current pane \`$existing_pane\`; refusing to kill and respawn the dispatcher itself." \
         "$(jq -n --argjson resources "$resources_json" '{resources:$resources}')"
     fi
+    [ -z "$if_absent" ] || require_agent_absent "$id" "$existing_pane" "$worktree_path" "$resources_json"
     [ -z "$resume" ] || [ "$resources_exist" != true ] || resumed=true
   fi
 
@@ -2097,6 +2232,10 @@ cmd_dispatch() {
       fi
       reused_claim=true
       [ -z "$resume" ] || resumed=true
+      # A reused claim skips the ready gate below, so a resume must ask the
+      # tracker itself whether the claimed session may continue (SH-850). The
+      # guarded continuation form already asked, before its own effects.
+      [ -z "$resume" ] || [ -n "$require_absent" ] || require_resume_eligibility "$id" "$show_json"
     fi
 
     # Step 6 (deviation #2 — see header): READY-STATE GATE, issue #40's core
@@ -2282,6 +2421,7 @@ cmd_dispatch() {
   fi
   prompt=$(render_template "$prompt_tpl" "$id" "$wname" "$dir" "$reap_cmd" "$completion_state")
   [ "$resumed" != true ] || prompt="$prompt $RESUME_PROMPT_CLAUSE"
+  [ "$resumed" != true ] || [ -n "$require_absent" ] || prompt="$prompt $RESUME_RESTART_CLAUSE"
   [ -n "$PROMPT_EXTRA" ] && prompt="$prompt $PROMPT_EXTRA"
 
   # Surfaced in both the dry-run and real result. SH-511 removed autonomous
@@ -2348,6 +2488,7 @@ cmd_dispatch() {
       --argjson reused_claim "$reused_claim" \
       --argjson resume_requested "$([ -n "$resume" ] && echo true || echo false)" \
       --argjson require_absent "$([ -n "$require_absent" ] && echo true || echo false)" \
+      --argjson if_absent "$([ -n "$if_absent" ] && echo true || echo false)" \
       --argjson resumed "$resumed" --argjson resources "$resources_json" \
       --argjson worktree_reused "$worktree_reused" --argjson branch_reused "$branch_reused" \
       --argjson window_reused "$window_reused" --arg pane "$existing_pane" \
@@ -2371,7 +2512,7 @@ cmd_dispatch() {
              elif $branch_reused then [("git worktree add " + $wtpath + " " + $wtbranch)]
              else [("git worktree add --no-track -b " + $wtbranch + " " + $wtpath + " <base-oid>")] end)
           + [(if $window_reused or $require_absent then
-               ("tmux respawn-pane " + (if $require_absent then "" else "-k " end) + "-c " + $wtpath + $marker_tmux_args + "-t " + $pane + " " + $launch)
+               ("tmux respawn-pane " + (if $require_absent or $if_absent then "" else "-k " end) + "-c " + $wtpath + $marker_tmux_args + "-t " + $pane + " " + $launch)
              else
                ("tmux new-window " + $target + $detach + $marker_tmux_args + "-c " + $wtpath + " -n " + $wname + " -P -F #{pane_id} " + $launch
                 + " \\; set-window-option -t " + $wname + " remain-on-exit on"
@@ -2413,6 +2554,16 @@ cmd_dispatch() {
       + (if $effort == "" then {} else {effort: $effort} end)
       + {speed: $speed}'
     return 0
+  fi
+
+  # A resume replaces the story's context-handoff chain too (SH-850 council
+  # C3/C4): the lost receiving session can never acknowledge it, and an
+  # outstanding or acknowledged handoff would refuse the fresh session's own
+  # handoff and fence its submission. Guarded continuation IS that chain.
+  local superseded_continuations='[]'
+  if [ "$resumed" = true ] && [ -z "$require_absent" ]; then
+    supersede_resumed_continuations "$id" "$pre_claim_state" "$claim_transitioned" "$state"
+    superseded_continuations="$SUPERSEDED_CONTINUATIONS"
   fi
 
   if ! supersede_block_deliveries "$id"; then
@@ -2588,6 +2739,20 @@ cmd_dispatch() {
       fail "could not prepare Codex initialization metadata. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
   fi
+  # The lost session's own witness, read before either launch branch removes
+  # it (SH-850 council C2). Diagnostic only: the file is writable by anything
+  # in the worktree and proves only that a hook once ran (SH-231), so it never
+  # selects or launches anything. It lets the result and the dispatch comment
+  # name what was replaced, and lets readiness refuse a "new" session that
+  # reports the old id.
+  local previous_session='null' previous_session_id=""
+  if [ "$resumed" = true ] && [ -f "$worktree_path/.claude/dispatch-sentinel.json" ]; then
+    previous_session=$(jq -c 'select((.session_id // "") != "")
+        | {session_id, transcript_path: (.transcript_path // null)}' \
+      "$worktree_path/.claude/dispatch-sentinel.json" 2>/dev/null || printf '')
+    [ -n "$previous_session" ] || previous_session='null'
+    previous_session_id=$(printf '%s' "$previous_session" | jq -r '.session_id // empty' 2>/dev/null || printf '')
+  fi
   local new_window_args pane="" window set_target
   set_target="$wname"
   [ -n "$TARGET_SESSION" ] && set_target="$TARGET_SESSION:$wname"
@@ -2596,8 +2761,10 @@ cmd_dispatch() {
     revalidate_story_resources
     pane="$existing_pane"
     local respawn_flag=-k respawn_command="$launch_cmd"
-    if [ -n "$require_absent" ]; then
-      continuation_preflight
+    if [ -n "$require_absent" ] || [ -n "$if_absent" ]; then
+      [ -z "$require_absent" ] || continuation_preflight
+      # Without -k, tmux itself refuses a pane whose process came alive after
+      # the preflight (SH-850 --if-absent shares the continuation form).
       respawn_flag=""
       # This runs only after tmux atomically accepts the dead pane. Removing
       # the witness earlier can erase a replacement session's evidence even
@@ -2620,6 +2787,12 @@ cmd_dispatch() {
     tmux set-window-option -t "$pane" @storyhook-agent "$AGENT" >/dev/null 2>&1 || true
     window_reused=true
   else
+    # A reused worktree still holds the lost session's readiness witness
+    # (SH-850): launching over it would let wait_ready_sentinel accept the old
+    # session's evidence and bind continuation registration to its id. A live
+    # session also cites its witness in a context handoff, so this is safe
+    # only because the story has no window left here to hold that session.
+    rm -f "$worktree_path/.claude/dispatch-sentinel.json"
     new_window_args=(-c "$worktree_path" -n "$wname" -P -F '#{pane_id}')
     # shellcheck disable=SC2206 # lane_ceiling_tmux_args is a deliberate word list
     new_window_args=(-e "STORYHOOK_AUTO=$auto_marker" -e "STORYHOOK_FULL_AUTO=$full_auto_marker" -e "STORYHOOK_DISPATCH=1" -e "STORYHOOK_CODEX_BOOTSTRAP=$CODEX_BOOTSTRAP_FILE" $lane_ceiling_tmux_args "${new_window_args[@]}")
@@ -2702,6 +2875,19 @@ cmd_dispatch() {
               pane_tail:$tail, claimed:$claimed}')"
   fi
   local readiness_confirmed=true
+  # A replacement must be a NEW session (SH-850 council C2), the rule
+  # continuation_runtime.resume already enforces for its own replacements. A
+  # launch that reports the lost session's id resumed a conversation, or read
+  # a witness that was not its own; either way it is not the fresh session
+  # this charter is written for.
+  if [ -n "$previous_session_id" ] \
+     && [ "$(jq -r '.session_id // empty' "$worktree_path/.claude/dispatch-sentinel.json" 2>/dev/null || printf '')" = "$previous_session_id" ]; then
+    rollback_dispatch_attempt
+    refuse_with resume-session-reused \
+      "[story] $id → the replacement in window \`$wname\` reported the lost session's id \`$previous_session_id\`, so it is not a fresh session. No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
+      "$(jq -n --arg id "$id" --arg wname "$wname" --arg pane "$pane" --argjson previous "$previous_session" \
+            '{id:$id, window_name:$wname, pane:$pane, readiness_confirmed:true, previous_session:$previous}')"
+  fi
 
   # The ready launch owns this exact pane/PID. Registration is required before
   # the story charter, so a failed metadata write cannot strand remediation.
@@ -2840,6 +3026,12 @@ cmd_dispatch() {
   # failed dispatch postcondition, but rolling back would make the same story
   # ready while that agent may be working. Refuse with the complete resource
   # identity and preserve everything for a safe resume or explicit teardown.
+  if [ -n "$post_dispatch_comment" ] && [ "$previous_session" != null ]; then
+    post_dispatch_comment="$post_dispatch_comment It replaces the lost session $previous_session_id (unverified: read from the worktree's readiness witness$(printf '%s' "$previous_session" | jq -r 'if .transcript_path then "; transcript " + .transcript_path else "" end'))."
+  fi
+  if [ -n "$post_dispatch_comment" ] && [ "$superseded_continuations" != '[]' ]; then
+    post_dispatch_comment="$post_dispatch_comment Superseded context handoffs: $(printf '%s' "$superseded_continuations" | jq -r 'join(", ")')."
+  fi
   if [ -n "$post_dispatch_comment" ]; then
     local comment_json comment_result comment_error
     comment_json=$(story_cli --actor dispatch comment "$id" "$post_dispatch_comment" --json 2>/dev/null) || true
@@ -2856,6 +3048,16 @@ cmd_dispatch() {
                 claimed:true, dispatch_comment_recorded:false, error:$error}')"
     fi
   fi
+
+  # The confirmed launch's settings, for a later Resume to offer again
+  # (SH-850). A failed write is reported, never fatal: the agent is already
+  # working, and a Resume without the record falls back to the person's
+  # remembered choice and says so.
+  local launch_autonomy=attended launch_record_error=""
+  [ -z "$auto" ] || launch_autonomy=auto
+  [ -z "$full_auto" ] || launch_autonomy=full-auto
+  launch_record_error=$(write_launch_record "$PROJECT_SLUG" "$id" "$worktree_path" "$AGENT" \
+    "$requested_model" "$requested_effort" "$requested_speed" "$launch_autonomy") || true
 
   # Result. Reaching here means BOTH readiness and submission were confirmed —
   # every other outcome refused above. `ok:true` therefore now means "the story
@@ -2875,6 +3077,9 @@ cmd_dispatch() {
   base="[story] $id ($title) → $session_action on worktree \`$worktree_path\` @ \`${base_oid:0:8}\`, launched $AGENT_LABEL with \`$launch_cmd\` (plan mode), submitted the prompt with \`$SUBMIT_KEY\`, $claim_success_note."
   if [ -n "$base_note" ]; then
     warning="${warning:+$warning }${base_note}."
+  fi
+  if [ -n "$launch_record_error" ]; then
+    warning="${warning:+$warning }The launch settings were not recorded for a later Resume: $launch_record_error."
   fi
 
   local tail_evidence=""
@@ -2913,6 +3118,8 @@ cmd_dispatch() {
     --arg session "$TARGET_SESSION" --argjson session_created "$session_created" \
     --arg pane_pid "$pane_pid" \
     --argjson cleanup_lease "$DISPATCH_CLEANUP_LEASE" \
+    --argjson previous_session "$previous_session" \
+    --argjson superseded_continuations "$superseded_continuations" \
     --arg model_source "$model_source" --arg effort_source "$effort_source" --arg policy_note "$policy_note" \
     --arg model "$effective_model" --arg effort "$resolved_effort" --arg speed "$resolved_speed" '
     {
@@ -2941,6 +3148,9 @@ cmd_dispatch() {
         launch_overridden: $launch_overridden
       } else {} end)
     + (if $full_auto then {full_auto: true} else {} end)
+    + (if $previous_session == null then {} else {previous_session: $previous_session} end)
+    + (if $superseded_continuations == [] then {}
+       else {superseded_continuations: $superseded_continuations} end)
     + (if $ignored_general_override == "" then {}
        else {ignored_general_override: $ignored_general_override} end)
     + (if $warning == "" then {} else {warning: $warning} end)
@@ -5757,5 +5967,5 @@ case "${1:-}" in
   triage)     shift; cmd_triage "$@" ;;
   scaffold-claude-md) shift; cmd_scaffold_claude_md "$@" ;;
   scaffold-agents-md) shift; cmd_scaffold_agents_md "$@" ;;
-  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] [--blocked-by <id> ...] | complete <plan|execute> <story-id> | reap <story-id> | submit <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] [--story <id>] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
+  *)          fail "usage: story.sh <list | view <story-id> | dispatch (<story-id> | --next) [--auto] [--full-auto] [--force] [--resume [--if-absent]] [--agent=claude|codex] [--model=<id>] [--effort=<id>] [--speed=standard|fast] | capabilities [--agent=claude|codex] | create --title <t> [--description-file <p>] [--blocked-by <id> ...] | complete <plan|execute> <story-id> | reap <story-id> | submit <story-id> | unclaim <story-id> [--comment <t> | --no-comment] | reset <story-id> [--force] [--comment <t> | --no-comment] | doctor | capture <story-id> | notify <story-id> <message> | ensure-cli | context [--full] [--story <id>] | sync [--since <d>] | handoff [--since <d>] | triage | scaffold-agents-md [--path <file>] | scaffold-claude-md [--path <file>]>" ;;
 esac

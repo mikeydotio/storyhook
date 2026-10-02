@@ -501,6 +501,8 @@ PY
         )
         .unwrap();
         assert_eq!(args.iter().any(|a| a == "--resume"), resume);
+        // A daemon resume never replaces a live agent (SH-850).
+        assert_eq!(args.iter().any(|a| a == "--if-absent"), resume);
         assert!(args.iter().any(|a| a == "--auto"));
         assert!(!args.iter().any(|a| a == "--full-auto" || a == "--force"));
     }

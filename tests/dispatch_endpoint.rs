@@ -48,7 +48,7 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 fn stub_script(mode: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=6
+DISPATCH_PROTOCOL=7
 set -u
 case "{mode}" in
   ok)
@@ -459,7 +459,7 @@ fn auto_equals_1_appends_auto_to_the_scripts_argv_and_is_relayed_in_the_record()
     let argv = record["payload"]["argv"]
         .as_str()
         .expect("argv echoed back");
-    assert!(argv.contains("dispatch CAL-12 --agent=claude --resume --auto"));
+    assert!(argv.contains("dispatch CAL-12 --agent=claude --resume --if-absent --auto"));
 }
 
 #[test]
@@ -482,7 +482,7 @@ fn codex_agent_is_relayed_and_passed_to_the_shared_helper() {
         record["payload"]["argv"]
             .as_str()
             .unwrap()
-            .contains("dispatch SH-1 --agent=codex --resume --auto")
+            .contains("dispatch SH-1 --agent=codex --resume --if-absent --auto")
     );
 }
 
@@ -537,6 +537,52 @@ fn an_unrecognized_auto_value_is_400() {
     let err = post_dispatch_query(&info, &info.token, "proj", "SH-1", "auto=0")
         .expect_err("auto=0 must be rejected, not silently treated as attended");
     assert_eq!(status_of(&err), 400);
+}
+
+/// SH-850: the dashboard's Resume is a dispatch whose record says so. The
+/// helper argv is the same guarded resume either way; the intent travels in
+/// the record from the 202 through every poll, and an unknown or repeated
+/// intent is refused before any handle exists.
+#[test]
+fn a_resume_intent_is_recorded_and_the_argv_stays_the_guarded_resume() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub("echo-args");
+    let info = start_with_stub(&env, stub.path());
+
+    let resp = post_dispatch_query(&info, &info.token, "proj", "SH-7", "intent=resume&auto=1")
+        .expect("resume accepted");
+    let accepted = body_json(resp);
+    assert_eq!(accepted["dispatch"]["intent"], "resume");
+    let handle = accepted["dispatch"]["handle"]
+        .as_str()
+        .expect("a handle")
+        .to_string();
+    let record = poll_until_finished(&info, &info.token, "proj", "SH-7", &handle);
+    assert_eq!(record["intent"], "resume");
+    let argv = record["payload"]["argv"]
+        .as_str()
+        .expect("argv echoed back");
+    assert!(
+        argv.contains("dispatch SH-7 --agent=claude --resume --if-absent --auto"),
+        "{argv}"
+    );
+    assert!(
+        !argv.contains("intent"),
+        "the intent never reaches the helper: {argv}"
+    );
+
+    let plain = body_json(
+        post_dispatch_query(&info, &info.token, "proj", "SH-8", "agent=claude")
+            .expect("dispatch accepted"),
+    );
+    assert_eq!(plain["dispatch"]["intent"], "dispatch");
+
+    for refused in ["intent=restart", "intent=resume&intent=resume"] {
+        let err =
+            post_dispatch_query(&info, &info.token, "proj", "SH-9", refused).expect_err(refused);
+        assert_eq!(status_of(&err), 400, "{refused}");
+    }
 }
 
 /// The idempotency wrinkle: a story already dispatching (attended) is not
@@ -686,7 +732,7 @@ fn an_unselected_dispatch_carries_no_model_effort_or_speed_flag() {
         .expect("argv echoed back");
     assert_eq!(
         argv.trim(),
-        "--project proj dispatch SH-1 --agent=claude --resume",
+        "--project proj dispatch SH-1 --agent=claude --resume --if-absent",
         "an unselected dashboard dispatch carries only automatic resume permission"
     );
     assert!(!record.as_object().unwrap().contains_key("model"));
@@ -753,7 +799,7 @@ fn model_effort_and_speed_append_their_own_flags_and_are_relayed_in_the_record()
         .expect("argv echoed back");
     assert!(
         argv.contains(
-            "dispatch SH-1 --agent=claude --resume --model=haiku --effort=max --speed=fast"
+            "dispatch SH-1 --agent=claude --resume --if-absent --model=haiku --effort=max --speed=fast"
         ),
         "argv: {argv}"
     );

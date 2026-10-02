@@ -20,7 +20,10 @@
 #                        SUB-COMMANDS below.
 #   respawn-pane      -> record its argv, then reset the same process/input/
 #                        sentinel model as new-window without creating or
-#                        logging a second window.
+#                        logging a second window. Without `-k` it refuses,
+#                        as real tmux does, while the pane's process is still
+#                        alive (SH-850: a guarded resume relies on that
+#                        refusal to never replace a live agent).
 #   display-message   -> print a window id (@1), exit 0
 #   set-window-option -> as its own top-level call (the respawn path in
 #                        story.sh re-pins the window options one call at a
@@ -222,6 +225,8 @@
 # except when the launch was mangled (a non-claude shell's hook never fires)
 # or a test sets $FAKE_TMUX_SUPPRESS_SENTINEL=1 (models "claude started, but
 # its SessionStart hook never published" — hooks.json missing/disabled).
+# Each launch's session id is new, as a real provider's is; a test sets
+# $FAKE_TMUX_SESSION_ID to model a launch that reports a given (old) id.
 #
 # `\;`-CHAINED SUB-COMMANDS (SH-230). Real tmux sends each `;`-separated argv
 # segment to the server as its own command; this fake models only what
@@ -278,8 +283,10 @@ STATE="$(cd "$FAKE_TMUX_STATE" && pwd -P)" || exit 1
 publish_claude_hook() {
   local hook_root payload hook_cwd="$1"
   hook_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+  # Each new provider launch has a fresh session identity.
   payload=$(jq -cn --arg cwd "$hook_cwd" \
-    '{cwd:$cwd,session_id:"fake-claude-session",hook_event_name:"SessionStart",source:"startup"}')
+    --arg sid "${FAKE_TMUX_SESSION_ID:-fake-claude-session-$$-$RANDOM}" \
+    '{cwd:$cwd,session_id:$sid,hook_event_name:"SessionStart",source:"startup"}')
   printf '%s' "$payload" | STORYHOOK_DISPATCH=1 STORYHOOK_CODEX_BOOTSTRAP= \
     bash "$hook_root/hooks/session-start.sh" > "$STATE/claude-hook-output.json" 2> "$STATE/claude-hook-stderr"
   if [ -n "${FAKE_TMUX_CLAUDE_SENTINEL_ROOT:-}" ]; then
@@ -575,7 +582,14 @@ case "${1:-}" in
       # really-execed process becomes the pane's foreground command
       # immediately — there is no later typed Enter to derive it from (see
       # _submit_box's own comment for the typed form doctor still uses).
-      launch_bin="${launch_line%% *}"
+      launch_bin="$launch_line"
+      # A guarded respawn removes the stale readiness witness first
+      # (`rm -f -- <sentinel> && exec <launch>`); the process that remains in
+      # the pane is the exec'd launch, never `rm`.
+      case "$launch_bin" in
+        "rm -f -- "*" && exec "*) launch_bin="${launch_bin#* && exec }" ;;
+      esac
+      launch_bin="${launch_bin%% *}"
       launch_bin="${launch_bin##*/}"
       if [ "${FAKE_TMUX_LAUNCH_MANGLE:-}" = 1 ]; then
         # SH-230 retired the specific oh-my-zsh keystroke-swallow cause this
@@ -702,10 +716,11 @@ case "${1:-}" in
     rp_cwd=""
     rp_pane=""
     rp_launch=""
+    rp_kill=""
     rp_env=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        -k) ;;
+        -k) rp_kill=1 ;;
         -c) shift || true; rp_cwd="${1-}" ;;
         -e) shift || true; rp_env+=(-e "${1-}") ;;
         -t) shift || true; rp_pane="${1-}" ;;
@@ -715,6 +730,11 @@ case "${1:-}" in
     done
     [ -n "$rp_pane" ] || exit 1
     [ -n "$rp_launch" ] || exit 1
+    rp_pid=$(cat "$STATE/pane_pid" 2>/dev/null || printf '')
+    if [ -z "$rp_kill" ] && [[ "$rp_pid" =~ ^[0-9]+$ ]] && kill -0 "$rp_pid" 2>/dev/null; then
+      printf 'respawn pane failed: pane %s still active\n' "$rp_pane" >&2
+      exit 1
+    fi
     FAKE_TMUX_INTERNAL_RESPAWN=1 "$0" new-window \
       "${rp_env[@]}" -c "$rp_cwd" -n __respawn__ -P -F '#{pane_id}' "$rp_launch" \; \
       set-window-option -t "$rp_pane" remain-on-exit on \

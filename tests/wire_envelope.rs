@@ -2103,6 +2103,7 @@ fn invocation_corpus() -> Vec<Invocation> {
         // most of all: unlike a claim's, it is *meant* to arrive unresolved
         // and be composed by the store (SH-483).
         Invocation::SupersedeBlockDeliveries { id: "SH-42".into() },
+        Invocation::SupersedeContinuations { id: "SH-42".into() },
         Invocation::Reset {
             id: "SH-42".into(),
             force: false,
@@ -2251,6 +2252,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Unclaim { .. } => "Unclaim",
         Invocation::Reset { .. } => "Reset",
         Invocation::SupersedeBlockDeliveries { .. } => "SupersedeBlockDeliveries",
+        Invocation::SupersedeContinuations { .. } => "SupersedeContinuations",
         Invocation::Engine { .. } => "Engine",
         Invocation::Verifier { .. } => "Verifier",
         Invocation::Cleanup { .. } => "Cleanup",
@@ -2323,7 +2325,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        73,
+        74,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

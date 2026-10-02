@@ -5,8 +5,9 @@
 //! story into its own window when — and only when — `notify` refused with a
 //! slug that means "no live dispatched agent is there" (`pane-dead`,
 //! `pane-unavailable`); every other slug parks the story,
-//! because a `dispatch --resume` respawns over whatever the pane holds and a
-//! respawn over a live agent kills it. That decision is a table,
+//! because a respawn over a live agent kills it. (Since SH-850 the re-dispatch
+//! is `dispatch --resume --if-absent`, which also refuses a live pane itself;
+//! the table stays the first fence.) That decision is a table,
 //! `NOTIFY_REFUSALS`, keyed by the exact slugs `cmd_notify` emits. A slug the
 //! helper grows that the table does not know is classified "not absent" —
 //! which is safe, and which is also silent: the verifier would park every

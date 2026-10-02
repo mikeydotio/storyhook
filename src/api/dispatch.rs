@@ -108,6 +108,24 @@ pub const RETAIN_FINISHED: usize = 32;
 /// as [`Retention::seconds`].
 pub const RETAIN_FOR: Duration = Duration::from_secs(30 * 60);
 
+/// What a person asked one dashboard launch to do (SH-850).
+///
+/// The helper argv is the same for both: every dashboard launch sends
+/// `--resume --if-absent`, so it reconstructs a story's surviving resources
+/// and replaces only an absent agent. The intent is the record's own word for
+/// notices and the dispatch log ("resumed", "resume refused"), never an
+/// authority. Absent from a request, and from a record persisted by an older
+/// daemon, it is [`Dispatch`](Self::Dispatch).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DispatchIntent {
+    /// Start work on the story (the dashboard's Dispatch).
+    #[default]
+    Dispatch,
+    /// Relaunch the lost agent of a claimed story (the dashboard's Resume).
+    Resume,
+}
+
 /// The agent host one dispatch launches through the shared Storyhook helper.
 ///
 /// `claude` is intentionally the public token rather than the product's
@@ -356,6 +374,10 @@ pub struct DispatchRecord {
     /// `skip_serializing_if`, unlike the fields below: this is never
     /// absent, only ever true or false, for the lifetime of the record.
     pub auto: bool,
+    /// Dispatch or Resume (SH-850). Always serialized, like `auto`;
+    /// `#[serde(default)]` reads an older record as a Dispatch.
+    #[serde(default)]
+    pub intent: DispatchIntent,
     pub state: DispatchState,
     /// RFC3339, when this record was created.
     pub started_at: String,
@@ -621,6 +643,7 @@ impl DispatchRegistry {
         effort: Option<OptionToken>,
         fast: bool,
         auto: bool,
+        intent: DispatchIntent,
         started_at: String,
     ) -> StartOutcome {
         let mut inner = self.inner.lock().expect("dispatch registry lock");
@@ -643,6 +666,7 @@ impl DispatchRegistry {
                     effort,
                     fast,
                     auto,
+                    intent,
                     state: DispatchState::Running,
                     started_at,
                     finished_at: None,
@@ -675,6 +699,7 @@ impl DispatchRegistry {
             None,
             false,
             auto,
+            DispatchIntent::Dispatch,
             started_at,
         )
     }
@@ -1149,8 +1174,12 @@ pub fn intercept(
                 Ok(fast) => fast,
                 Err(reply) => return Some(reply),
             };
+            let intent = match parse_intent(query) {
+                Ok(intent) => intent,
+                Err(reply) => return Some(reply),
+            };
             Some(handle_post(
-                project, story, agent, model, effort, fast, auto, env, bus, registry,
+                project, story, agent, model, effort, fast, auto, intent, env, bus, registry,
             ))
         }
         (Method::Get, 7) => Some(handle_get(segments[6], registry)),
@@ -1402,6 +1431,38 @@ fn parse_speed(query: Option<&str>) -> Result<bool, Reply> {
     }
 }
 
+/// Parses the dispatch endpoint's `intent` query parameter (SH-850).
+///
+/// Absent or `intent=dispatch` is a Dispatch; `intent=resume` is a Resume.
+/// Mirrors [`parse_agent`]: a repeated key, even with agreeing values, or any
+/// other value is a 400, never a silently chosen default.
+fn parse_intent(query: Option<&str>) -> Result<DispatchIntent, Reply> {
+    let values = query
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .filter_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == "intent").then_some(value)
+        })
+        .collect::<Vec<_>>();
+    if values.len() > 1 {
+        return Err(text_reply(
+            400,
+            "dispatch: `intent` may be specified only once",
+        ));
+    }
+    match values.first().copied() {
+        None | Some("dispatch") => Ok(DispatchIntent::Dispatch),
+        Some("resume") => Ok(DispatchIntent::Resume),
+        Some(value) => Err(text_reply(
+            400,
+            format!(
+                "dispatch: unrecognized `intent` value `{value}` — use `intent=dispatch` or `intent=resume`"
+            ),
+        )),
+    }
+}
+
 /// `POST /api/repos/{project}/story/{id}/dispatch`.
 ///
 /// Resolving the dispatch script is the one check made synchronously,
@@ -1423,6 +1484,7 @@ fn handle_post(
     effort: Option<OptionToken>,
     fast: bool,
     auto: bool,
+    intent: DispatchIntent,
     env: &Environment,
     bus: &ChangeBus,
     registry: &Arc<DispatchRegistry>,
@@ -1442,6 +1504,7 @@ fn handle_post(
         effort.clone(),
         fast,
         auto,
+        intent,
         env.now(),
     ) {
         StartOutcome::AtCapacity => text_reply(
@@ -1599,7 +1662,7 @@ fn classify(stdout: std::fs::File, stderr: std::fs::File) -> Classification {
 /// story.sh` declares the contract it implements in its own
 /// `DISPATCH_PROTOCOL` constant; bump both together, and see that
 /// constant's doc comment for the rule on when a bump is actually needed.
-pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 6;
+pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 7;
 
 /// Locates `plugins/story/bin/story.sh`, in order:
 ///
@@ -2282,6 +2345,7 @@ mod tests {
             None,
             false,
             false,
+            DispatchIntent::Dispatch,
             "t0".to_string(),
         ) {
             StartOutcome::Started(handle) => handle,
@@ -2295,6 +2359,7 @@ mod tests {
             None,
             false,
             false,
+            DispatchIntent::Resume,
             "t1".to_string(),
         ) {
             StartOutcome::AlreadyRunning(handle) => handle,
@@ -2302,6 +2367,11 @@ mod tests {
         };
         assert_eq!(reused, first);
         assert_eq!(registry.get(&reused).unwrap().agent, DispatchAgent::Codex);
+        // SH-850: a deduped Resume reports the running Dispatch's intent too.
+        assert_eq!(
+            registry.get(&reused).unwrap().intent,
+            DispatchIntent::Dispatch
+        );
     }
 
     #[test]
@@ -2336,6 +2406,56 @@ mod tests {
         assert_eq!(record.model, None);
         assert_eq!(record.effort, None);
         assert!(!record.fast);
+    }
+
+    /// SH-850: a record persisted before Resume existed reads as a Dispatch,
+    /// and a Resume survives the history file's round trip.
+    #[test]
+    fn a_record_without_intent_is_a_dispatch_and_a_resume_round_trips() {
+        let record: DispatchRecord = serde_json::from_value(serde_json::json!({
+            "handle": "old",
+            "project": "proj",
+            "story": "SH-1",
+            "auto": false,
+            "state": "ok",
+            "started_at": "t0"
+        }))
+        .expect("pre-SH-850 persisted record");
+        assert_eq!(record.intent, DispatchIntent::Dispatch);
+        let mut resumed = record;
+        resumed.intent = DispatchIntent::Resume;
+        let wire = serde_json::to_value(&resumed).unwrap();
+        assert_eq!(wire["intent"], "resume");
+        let back: DispatchRecord = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.intent, DispatchIntent::Resume);
+    }
+
+    /// SH-850: `intent` follows `agent`'s query contract exactly.
+    #[test]
+    fn intent_is_dispatch_by_default_resume_by_name_and_nothing_else() {
+        assert_eq!(parse_intent(None).unwrap(), DispatchIntent::Dispatch);
+        assert_eq!(
+            parse_intent(Some("agent=codex")).unwrap(),
+            DispatchIntent::Dispatch
+        );
+        assert_eq!(
+            parse_intent(Some("intent=dispatch")).unwrap(),
+            DispatchIntent::Dispatch
+        );
+        assert_eq!(
+            parse_intent(Some("agent=claude&intent=resume&auto=1")).unwrap(),
+            DispatchIntent::Resume
+        );
+        for refused in [
+            "intent=resume&intent=resume",
+            "intent=resume&intent=dispatch",
+            "intent=Resume",
+            "intent=",
+            "intent=restart",
+        ] {
+            let reply = parse_intent(Some(refused)).expect_err(refused);
+            assert_eq!(reply.status, 400, "{refused}");
+        }
     }
 
     #[test]
@@ -2803,6 +2923,7 @@ mod tests {
             effort: None,
             fast: false,
             auto: false,
+            intent: DispatchIntent::Dispatch,
             state: DispatchState::Running,
             started_at: "t0".to_string(),
             finished_at: None,
@@ -3369,7 +3490,7 @@ mod tests {
     /// `check_dispatch_protocol` now requires, so these tests keep
     /// exercising resolution order rather than tripping the protocol check
     /// that has its own tests, below.
-    const FAKE_STORY_SH: &str = "#!/usr/bin/env bash\nDISPATCH_PROTOCOL=6\n";
+    const FAKE_STORY_SH: &str = "#!/usr/bin/env bash\nDISPATCH_PROTOCOL=7\n";
 
     #[test]
     fn resolve_dispatch_script_honours_the_env_override() {

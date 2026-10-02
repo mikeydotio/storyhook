@@ -493,7 +493,9 @@ Without permission, recoverable finds return `reason:"resume-available"` and the
 the attended adapters ask once and rerun the identical call only after yes. With permission,
 the helper preserves dirty files and commits, reattaches a branch-only worktree, creates a
 missing window, or uses documented `tmux respawn-pane -k -c ... -e ... -t ...` to replace the
-abandoned occupant while preserving pane identity. It removes the generated readiness
+abandoned occupant while preserving pane identity. (SH-850: that `-k` killed a *live* occupant
+too. Every daemon resume now adds `--if-absent`, which refuses a live agent and respawns a dead
+pane without `-k`; see "As built — SH-850" below.) It removes the generated readiness
 sentinel before respawn, so the replacement process must publish its own witness. The
 current pane, a wrong/protected branch, and an unregistered path are `resume-unsafe` and
 untouched. Failure cleanup owns only resources created by that attempt.
@@ -1191,6 +1193,80 @@ SH-671's lane and was left to it.
 unresolvable, Codex intact) on both launchers, a healthy catalog showing nothing, a slot
 with no `reason` string, and a 500 that clears once a later fetch succeeds.
 `tests/web_test.rs` fences the two ids.
+
+## As built — SH-850 (Resume a lost agent)
+
+**The ask.** A reboot or a crashed tmux server leaves an in-progress story with its claim,
+worktree and branch, but no window or agent. Its menu should offer **Resume**: rebuild what is
+missing, and tell the agent to find where the work stopped, starting over if the work cannot be
+trusted.
+
+**Resume is the Dispatch dialog, for a claimed story whose agent was lost.** One function,
+`launchAction(v)`, decides the launch item for the context menu and the drawer footer alike. For
+an ordinary open story in the active-role state, with a checkout:
+
+| Census (`GET /api/repos/{p}/agents`) | Item |
+|---|---|
+| A live Full Auto lane holds the story | none (the engine owns it) |
+| No dispatch evidence (claimed by hand) | Dispatch |
+| `live` | none |
+| `lost` | Resume |
+| `unknown` | Resume, disabled, with the census's words |
+| not loaded, or the fetch failed | Dispatch (the daemon guards it, below) |
+
+A blocked claimed story keeps its item disabled with the reason and "Unblock the story first":
+the Full Auto reboot case (a quarantine's `awaiting`) stays findable. Other states are unchanged.
+Resume opens the Dispatch dialog titled "Resume SH-n", with a note that a **new** session starts
+and the previous conversation is not restored, why Resume is offered, and what could not be
+recovered. The provider, model, effort, speed and Auto are prefilled from the story's launch
+record; a Resume never overwrites the remembered choice for new work. The request adds
+`intent=resume`; the record, notices and the dispatch log say "resumed" / "resume refused".
+
+**The census** (`src/api/agents.rs`, `src/service/agents.rs`) is token-gated and intercepted
+before the store pool, on the engine controller's store handle. For each claimed ordinary story
+it calls `ResourceService::resolve`, the reader the resume helper itself uses: the private cleanup
+marker in the worktree (the store lease exists only after verifying), engine lanes, and the
+window's pane on the recorded tmux server. No evidence: omitted. A live pane: `live`. No pane, no
+server, or a dead pane: `lost`. Ambiguous, invalid or unreadable evidence: `unknown`. The dashboard
+refreshes it with Full Auto's status, after every launch, and when a claimed story's menu opens
+on a census older than 10 s (a dying pane publishes no change event).
+
+**The helper never replaces a live agent** (`dispatch --resume --if-absent`, protocol 7). Two
+witnesses, checked under the workspace reservation before any write: the story's pane must be
+dead, and a kernel census (`lib/worktree_occupants.py`) must find no provider process working in
+the worktree. The second covers a tmux server whose socket path another server took over, which
+is how SH-850's own lane was reported lost while it worked (2026-09-29), and an agent started by
+hand. A dead pane is respawned without `-k`. `run_shell_dispatch` sends `--if-absent` with every
+daemon resume: dashboard, verifier redispatch, project recovery and batch culprit redispatch.
+
+**Adopted with it:**
+- a resume of a claimed story asks `story session-eligibility` first (`resume-ineligible`), so a
+  blocked story never gets its agent back;
+- a new window never launches over the lost session's readiness witness, which used to let
+  readiness pass early and bind the old session id;
+- the resume retires the story's context-handoff chain (`story internal
+  supersede-continuations`), including an acknowledged handoff that would otherwise fence every
+  later submission on a review only the lost session could refresh, and refuses while a handoff
+  is attempting delivery;
+- the replacement must report a new session id (`resume-session-reused`), and the lost one is
+  named, unverified, in the result and the dispatch comment;
+- every confirmed launch writes `storyhook-launch-v1.json` beside the cleanup marker (explicit
+  selectors and autonomy), which the census returns as `launch`.
+
+**The prompt.** The charter plus `RESUME_PROMPT_CLAUSE` plus `RESUME_RESTART_CLAUSE`: the agent
+may start over after commenting what it found, keeping abandoned work on a branch or WIP commit,
+never with `git stash` and never by rewriting pushed commits. Guarded continuation keeps its own
+clause and never gets the start-over permission.
+
+**Rejected: reviving the lost conversation.** The council (SH-850 D1, unanimous) chose a fresh
+session over `claude --resume` / `codex resume`: the Codex bootstrap accepts only a startup
+SessionStart, a revived session id breaks the rule that a replacement session is new, the witness
+that names the old id is untrusted (SH-231), and a revived transcript carries the charter of the
+plugin version that first dispatched it. `test-dispatch-fresh-session-launch.sh` pins every
+launch form. SH-854 holds the redesign trigger: measured re-investigation cost, a daemon-owned
+session record bound at registration, a live-provider probe of resume readiness for both
+providers, safe session-id reuse in the continuation and identity bookkeeping, and tolerance of
+crash-truncated transcripts.
 
 ## Verification
 

@@ -29,6 +29,7 @@
 //! `story`, which needs a second connection to the same database, and holding
 //! a write transaction open across that is a deadlock with a five-second fuse.
 
+pub mod agents;
 pub mod attachment;
 pub mod batch_assembly;
 pub mod batch_landing;
@@ -57,6 +58,7 @@ pub mod history;
 pub mod integrity;
 mod isolated_merge;
 pub mod landing;
+pub mod launch_record;
 pub mod migrate;
 #[cfg(feature = "github-pr")]
 pub mod pr_check;

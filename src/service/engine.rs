@@ -492,7 +492,7 @@ fn classify_unreserved(
         WindowProbe::Alive { .. } | WindowProbe::Unanswered { .. } => {}
         // A window gone on a story the verifier has just returned is the
         // verifier's own re-dispatch in flight (SH-650): the pane is normally
-        // already dead at the handoff, and `dispatch --resume` respawns it
+        // already dead at the handoff, and `dispatch --resume --if-absent` respawns it
         // in place after a readiness wait this pass would otherwise read as
         // a hard stop. No evidence, same as an unanswered probe — the stall
         // clock below still bounds it, and `DISPATCH_TIMEOUT` is inside that
@@ -645,6 +645,10 @@ pub struct DispatchOptions {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub fast: bool,
+    /// Reconstruct the story's surviving worktree, branch and window instead
+    /// of refusing them (SH-523), and only where no live agent remains to be
+    /// replaced (SH-850): the helper gets `--resume --if-absent`. The daemon
+    /// never asks for a plain `--resume`, whose respawn kills a live pane.
     pub resume: bool,
 }
 
@@ -2044,7 +2048,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 _ => String::new(),
             };
             let provenance = format!(
-                "Full Auto: {} on lane {} of run {run_id}{}{}{probe}. Worktree, branch and window are preserved for inspection; re-dispatch deliberately once you have looked.",
+                "Full Auto: {} on lane {} of run {run_id}{}{}{probe}. Worktree, branch and window are preserved for inspection; once you have looked, unblock the story and Resume it from the dashboard, or re-dispatch it deliberately.",
                 kind.as_str(),
                 lane.lane_index,
                 lane.window_name
@@ -3345,7 +3349,10 @@ pub(crate) fn run_shell_dispatch_cancellable(
         command.arg(format!("--agent={}", agent.as_str()));
     }
     if options.resume {
-        command.arg("--resume");
+        // Every daemon resume replaces only an ABSENT agent (SH-850): the
+        // dashboard's, the verifier's and project recovery's. Plain `--resume`
+        // respawns a surviving pane with `-k`, which kills a live one.
+        command.args(["--resume", "--if-absent"]);
     }
     if auto {
         command.arg("--auto");
