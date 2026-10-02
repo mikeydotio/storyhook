@@ -40,6 +40,65 @@
 
 mod store_support;
 
+#[test]
+fn halted_intent_without_a_reservation_survives_restart_then_steady_tick_finishes() {
+    use storyhook::service::engine::OPERATOR_STOPPED_NOW;
+    use storyhook::store::EngineRunState;
+    with_fake_dispatch_script(|| {
+        let fixture = ServiceFixture::new();
+        // Cleanup canonicalizes the caller directory; the default fixture
+        // checkout is synthetic and only suitable for observation tests.
+        fixture
+            .store()
+            .write(|tx| tx.set_checkout_path(fixture.project(), Some(fixture.cwd())))
+            .unwrap();
+        let old = started_run(&fixture, 1);
+        fixture
+            .store()
+            .write(|tx| {
+                let mut run = tx.engine_run(&old)?.unwrap();
+                run.state = EngineRunState::Halted;
+                run.stop_reason = Some(OPERATOR_STOPPED_NOW.into());
+                tx.update_engine_run(&run)
+            })
+            .unwrap();
+        let live = started_run(&fixture, 1);
+        fixture
+            .store()
+            .write(|tx| {
+                let mut run = tx.engine_run(&live)?.unwrap();
+                run.state = EngineRunState::Paused;
+                tx.update_engine_run(&run)
+            })
+            .unwrap();
+        let before = fixture.store().read(|tx| tx.engine_run(&live)).unwrap();
+        reconcile_restart_tick(fixture.store(), fixture.env());
+        assert_eq!(
+            fixture
+                .store()
+                .read(|tx| tx.engine_run(&old))
+                .unwrap()
+                .unwrap()
+                .state,
+            EngineRunState::Halted
+        );
+        reconcile_tick(fixture.store(), fixture.env());
+        assert_eq!(
+            fixture
+                .store()
+                .read(|tx| tx.engine_run(&old))
+                .unwrap()
+                .unwrap()
+                .state,
+            EngineRunState::Finished
+        );
+        assert_eq!(
+            fixture.store().read(|tx| tx.engine_run(&live)).unwrap(),
+            before
+        );
+    });
+}
+
 use storyhook::api::dispatch::REQUIRED_DISPATCH_PROTOCOL;
 use storyhook::daemon::engine::{reconcile_restart_tick, reconcile_tick};
 use storyhook::service::engine::{EngineService, HardStopKind, StartRequest};

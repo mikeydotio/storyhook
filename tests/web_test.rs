@@ -5063,6 +5063,56 @@ fn response_json(response: ureq::http::Response<ureq::Body>) -> serde_json::Valu
 // --- Full Auto engine HTTP control (SH-468) ---
 
 #[test]
+fn engine_http_stop_now_cleans_a_halted_run_beside_a_live_run() {
+    use storyhook::store::{EngineRunState, WriteOps};
+    let fixture = served();
+    fixture.seed(&["new", "Human review", "--labels", "no-auto"]);
+    let base = format!(
+        "http://127.0.0.1:{}/api/repos/{}/engine",
+        fixture.port, fixture.repo_id
+    );
+    let old = response_json(post_json(&fixture, &base, "{}").unwrap());
+    let old_id = old["run"]["id"].as_str().unwrap();
+    fixture
+        .store
+        .write(|tx| {
+            let mut run = tx.engine_run(old_id)?.unwrap();
+            run.state = EngineRunState::Halted;
+            run.stop_reason = Some("breaker-tripped".into());
+            tx.update_engine_run(&run)
+        })
+        .unwrap();
+    let live = response_json(post_json(&fixture, &base, "{}").unwrap());
+    let live_id = live["run"]["id"].as_str().unwrap();
+    let before = fixture
+        .store
+        .read(|tx| Ok((tx.engine_run(live_id)?, tx.engine_lanes(live_id)?)))
+        .unwrap();
+    let stopped = response_json(
+        post_json(
+            &fixture,
+            &format!("{base}/stop"),
+            &serde_json::json!({"run":old_id,"now":true}).to_string(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(stopped["run"]["state"], "finished");
+    assert_eq!(stopped["run"]["stop_reason"], "operator-stopped-now");
+    fixture
+        .store
+        .read(|tx| {
+            assert_eq!(
+                tx.engine_run(old_id)?.unwrap().state,
+                EngineRunState::Finished
+            );
+            assert_eq!(tx.engine_run(live_id)?, before.0);
+            assert_eq!(tx.engine_lanes(live_id)?, before.1);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn engine_http_serves_every_control_and_stable_run_views() {
     let fixture = served();
     // The production reconcile loop wakes after every engine mutation. Keep

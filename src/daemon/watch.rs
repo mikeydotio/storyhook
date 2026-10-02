@@ -41,7 +41,7 @@ struct Baseline {
 struct Snapshot {
     /// Every project's slug and the highest `global_seq` its event log held.
     seqs: BTreeMap<String, i64>,
-    /// Only live runs, keyed by identity rather than count or timestamp.
+    /// Live runs and pending cleanup, keyed by identity rather than count or timestamp.
     runs: BTreeMap<String, EngineRunRecord>,
 }
 
@@ -53,7 +53,7 @@ impl Snapshot {
                 seqs.insert(project.slug, tx.max_global_seq(project.id)?.get());
             }
             let runs = tx
-                .live_engine_runs()?
+                .reconcilable_engine_runs()?
                 .into_iter()
                 .map(|run| (run.id.clone(), run))
                 .collect();
@@ -108,7 +108,7 @@ impl ChangeWatcher {
     ///
     /// The token is the cheap gate — one pragma, whatever the store holds.
     /// Only when it has moved does this pay for the sharper question: which
-    /// projects' histories or live engine runs changed? Those get a precise
+    /// projects' histories or reconcilable engine runs changed? Those get a precise
     /// [`Change::Project`], and a project appearing or disappearing gets
     /// [`Change::Catalog`].
     ///
