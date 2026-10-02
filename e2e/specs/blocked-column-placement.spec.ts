@@ -1,3 +1,4 @@
+import { gracedOperationBudget } from "../load-grace";
 import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
@@ -8,6 +9,9 @@ import {
   seedToken,
   waitForDisplayedStoryBlockDeliveries,
 } from "./support";
+
+/** Existing idle patience for board update; SH-804 adds contention grace. */
+const BOARD_UPDATE_BASE_MS = 8_000;
 
 /**
  * Exercises SH-407's third ask, narrowed by SH-487: a story shows in the
@@ -149,7 +153,7 @@ test("a story blocked by an ordinary open story stays in Todo with its badge int
 
   await expect(
     page.locator('.column[data-state="blocked"] .card', { hasText: workerTitle }),
-  ).toBeVisible({ timeout: 8000 });
+  ).toBeVisible({ timeout: gracedOperationBudget(BOARD_UPDATE_BASE_MS) });
   await expect(
     page.locator('.column[data-state="blocked"] .card', { hasText: blockerTitle }),
   ).toBeVisible();
@@ -186,7 +190,7 @@ test("a story blocked by an ordinary open story stays in Todo with its badge int
 
   await expect(
     page.locator('.column[data-state="todo"] .card', { hasText: workerTitle }),
-  ).toBeVisible({ timeout: 8000 });
+  ).toBeVisible({ timeout: gracedOperationBudget(BOARD_UPDATE_BASE_MS) });
   await expect(
     page.locator('.column[data-state="todo"] .card', { hasText: blockerTitle }),
   ).toBeVisible();
@@ -222,7 +226,7 @@ test("an awaiting reason alone, with no blocked-by edge, also promotes a story t
 
   await expect(
     page.locator('.column[data-state="blocked"] .card', { hasText: title }),
-  ).toBeVisible({ timeout: 8000 });
+  ).toBeVisible({ timeout: gracedOperationBudget(BOARD_UPDATE_BASE_MS) });
   await expect(
     page.locator('.column[data-state="todo"] .card', { hasText: title }),
   ).toHaveCount(0);
@@ -239,7 +243,7 @@ test("an awaiting reason alone, with no blocked-by edge, also promotes a story t
 
   await expect(
     page.locator('.column[data-state="todo"] .card', { hasText: title }),
-  ).toBeVisible({ timeout: 8000 });
+  ).toBeVisible({ timeout: gracedOperationBudget(BOARD_UPDATE_BASE_MS) });
 
   await deleteStory(page, title);
 });

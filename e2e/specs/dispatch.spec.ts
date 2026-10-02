@@ -1,8 +1,18 @@
+import { gracedOperationBudget } from "../load-grace";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { basename, join } from "node:path";
 import { test, expect } from "./support";
 import { dispatchStory, openProject, requiredEnv, seedToken, storyBinary } from "./support";
+
+/** Existing idle patience for verifier override; SH-804 adds contention grace. */
+const VERIFIER_OVERRIDE_BASE_MS = 10_000;
+
+/** Existing idle patience for story read; SH-804 adds contention grace. */
+const STORY_READ_BASE_MS = 15_000;
+
+/** Existing setup allowance; the whole-test watchdog grants its grace. */
+const DISPATCH_SETUP_BASE_MS = 30_000;
 
 /**
  * Exercises the dashboard's Dispatch button (SH-50) against a real daemon
@@ -73,7 +83,8 @@ const DELTA_CHECKOUT = requiredEnv("DASHBOARD_DELTA_CHECKOUT");
  * A green run pays nothing for the larger number: the assertion resolves
  * the moment the notice appears. The only cost is a slower
  * report on a dispatch that genuinely never finishes, which the per-test
- * timeout still bounds.
+ * timeout still bounds. This is idle patience, not a product deadline:
+ * each assertion samples gracedOperationBudget at entry (SH-804).
  */
 const DISPATCH_COMPLETION_TIMEOUT = 45_000;
 
@@ -202,7 +213,7 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   page,
 }) => {
   // Two dispatches to wait out here, at DISPATCH_COMPLETION_TIMEOUT apiece.
-  test.setTimeout(2 * DISPATCH_COMPLETION_TIMEOUT + 30_000);
+  test.setTimeout(2 * DISPATCH_COMPLETION_TIMEOUT + DISPATCH_SETUP_BASE_MS);
 
   // No token seeded. SH-255 deleted SH-250's tokenless loopback read
   // exemption, so the very first read this tab makes (`fetchReposOnce`'s
@@ -238,7 +249,7 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   await expect(dispatchButton).toBeDisabled();
   await expect(dispatchButton).toHaveText("Dispatching…");
   const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
+  await expect(toast).toBeVisible({ timeout: gracedOperationBudget(DISPATCH_COMPLETION_TIMEOUT) });
   await expect(toast).toHaveText(`${ALPHA_STORY_ID} dispatched`);
 
   // The provider double has exited: SH-850 offers Resume for its lost lane.
@@ -270,11 +281,11 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   // in-flight state to end before interpreting a notice as its result.
   await expect(dispatchButton).toBeDisabled();
   await expect(dispatchButton).toHaveText("Resuming…");
-  await expect(dispatchButton).toBeEnabled({ timeout: DISPATCH_COMPLETION_TIMEOUT });
+  await expect(dispatchButton).toBeEnabled({ timeout: gracedOperationBudget(DISPATCH_COMPLETION_TIMEOUT) });
   const resumedToast = page.locator("#toast-stack .toast.success").filter({
     has: page.locator(".notice-headline", { hasText: `${ALPHA_STORY_ID} resumed` }),
   });
-  await expect(resumedToast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
+  await expect(resumedToast).toBeVisible({ timeout: gracedOperationBudget(DISPATCH_COMPLETION_TIMEOUT) });
   await expect(resumedToast.locator(".notice-headline")).toHaveText(`${ALPHA_STORY_ID} resumed`);
   await expect(resumedToast.locator(".notice-detail")).toHaveText(
     "A new agent session started; the previous conversation was not restored.",
@@ -287,7 +298,7 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
 test("Auto mode sends agent=claude&auto=1, plus model/effort/speed when selected, and runs a real autonomous dispatch (SH-208, SH-517)", async ({
   page,
 }) => {
-  test.setTimeout(DISPATCH_COMPLETION_TIMEOUT + 30_000);
+  test.setTimeout(DISPATCH_COMPLETION_TIMEOUT + DISPATCH_SETUP_BASE_MS);
 
   // Seeded directly rather than driven through the token modal -- that flow
   // is AC2's own test; this one is scoped to Auto mode's own behavior.
@@ -323,7 +334,7 @@ test("Auto mode sends agent=claude&auto=1, plus model/effort/speed when selected
   // success -- and says `(auto)`, which is this spec's observation that the
   // daemon forwarded the flag all the way to the script and back.
   const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
+  await expect(toast).toBeVisible({ timeout: gracedOperationBudget(DISPATCH_COMPLETION_TIMEOUT) });
   await expect(toast).toHaveText(`${DELTA_STORY_ID} dispatched (auto)`);
   // story.sh's own paragraph -- the ~90 words SH-304 was filed about -- no
   // longer reaches the UI at all on the success path.
@@ -349,14 +360,14 @@ test("Auto mode sends agent=claude&auto=1, plus model/effort/speed when selected
   // refused --auto dispatch (which a real story.sh cannot be asked for on
   // demand) and holds its row to the same 5.5s probe this used to.
   await expect(page.locator("#toast-stack .toast")).toHaveCount(0, {
-    timeout: 10_000,
+    timeout: gracedOperationBudget(VERIFIER_OVERRIDE_BASE_MS),
   });
 });
 
 test("a saved token dispatches Codex Astra from the real catalog to the executed provider (SH-584)", async ({
   page,
 }) => {
-  test.setTimeout(DISPATCH_COMPLETION_TIMEOUT + 30_000);
+  test.setTimeout(DISPATCH_COMPLETION_TIMEOUT + DISPATCH_SETUP_BASE_MS);
 
   // Dispatching Alpha's other story reuses a token already in this tab's
   // cookie jar -- Playwright starts each test with a fresh context, so
@@ -388,7 +399,7 @@ test("a saved token dispatches Codex Astra from the real catalog to the executed
   await expect(dispatchButton).toBeDisabled();
 
   const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
+  await expect(toast).toBeVisible({ timeout: gracedOperationBudget(DISPATCH_COMPLETION_TIMEOUT) });
   const state = requiredEnv("FAKE_TMUX_STATE");
   const provider = JSON.parse(readFileSync(join(state, "provider-argv.json"), "utf8"));
   expect(provider.argv.filter((argument: string) => argument === "-m")).toHaveLength(1);
@@ -397,7 +408,7 @@ test("a saved token dispatches Codex Astra from the real catalog to the executed
   expect(existsSync(join(provider.cwd, ".git"))).toBe(true);
   const claimed = JSON.parse(execFileSync(storyBinary(),
     ["show", basename(provider.cwd), "--json"],
-    { cwd: ALPHA_CHECKOUT, encoding: "utf8", timeout: 15_000 },
+    { cwd: ALPHA_CHECKOUT, encoding: "utf8", timeout: gracedOperationBudget(STORY_READ_BASE_MS) },
   )).story.story;
   expect(claimed.state).toBe("in-progress");
   const session = readFileSync(join(state, "session_name"), "utf8").trim();

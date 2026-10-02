@@ -1,10 +1,16 @@
 import { expect, test } from "./support";
+import { request as playwrightRequest } from "@playwright/test";
+import { createServer } from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
+import { BASE_REQUEST_TIMEOUT_MS, gracedRequestBudget } from "../fixture-api";
 import {
   BASE_EXPECT_TIMEOUT_MS,
   BASE_TEST_TIMEOUT_MS,
   MAX_GRACE_MULTIPLIER,
   MAX_TEST_TIMEOUT_MS,
   gracedBudget,
+  gracedOperationBudget,
+  gracedPatience,
   gracedTestBudget,
   graceMultiplier,
   resetTestBudget,
@@ -21,6 +27,31 @@ import {
  */
 
 test.describe("load-grace pure functions", () => {
+  test("operation patience preserves idle bases, samples grace and clamps large bases", () => {
+    const original = process.env.E2E_LOAD_GRACE;
+    try {
+      delete process.env.E2E_LOAD_GRACE;
+      for (const base of [1_000, 5_000, 8_000, 10_000, 15_000, 20_000, 30_000, 45_000]) {
+        for (const ratio of [0, 0.3, 1]) expect(gracedOperationBudget(base, ratio)).toBe(base);
+        expect(gracedOperationBudget(base, 2)).toBe(base * 2);
+        expect(gracedOperationBudget(base, 1_000_000)).toBe(Math.min(MAX_TEST_TIMEOUT_MS, base * MAX_GRACE_MULTIPLIER));
+      }
+      for (const ratio of [0, 2, 100]) {
+        expect(gracedPatience(ratio)).toBe(gracedBudget(BASE_EXPECT_TIMEOUT_MS, ratio));
+      }
+      expect(BASE_REQUEST_TIMEOUT_MS).toBe(30_000);
+      expect(gracedRequestBudget(0)).toBe(BASE_REQUEST_TIMEOUT_MS);
+      expect(gracedRequestBudget(2)).toBe(BASE_REQUEST_TIMEOUT_MS * 2);
+      expect(gracedRequestBudget(100)).toBe(MAX_TEST_TIMEOUT_MS);
+      process.env.E2E_LOAD_GRACE = "0";
+      expect(gracedOperationBudget(45_000, 100)).toBe(45_000);
+      expect(gracedPatience(100)).toBe(BASE_EXPECT_TIMEOUT_MS);
+      expect(gracedRequestBudget(100)).toBe(BASE_REQUEST_TIMEOUT_MS);
+    } finally {
+      if (original === undefined) delete process.env.E2E_LOAD_GRACE;
+      else process.env.E2E_LOAD_GRACE = original;
+    }
+  });
   test("idle contention (ratio <= 1) leaves both config budgets bit-identical to SH-222's own numbers", () => {
     for (const ratio of [0, 0.3, 0.94, 1]) {
       expect(graceMultiplier(ratio)).toBe(1);
@@ -83,4 +114,32 @@ test.describe("load-grace pure functions", () => {
   test("MAX_TEST_TIMEOUT_MS is exactly the user's own 15-minute determination", () => {
     expect(MAX_TEST_TIMEOUT_MS).toBe(15 * 60 * 1000);
   });
+});
+
+/** An intentionally short context default; the explicit request budget must
+ * override it. The delayed endpoint crosses that default by construction. */
+const SHORT_REQUEST_PROOF_MS = 100;
+
+test("explicit request patience overrides the context default and still bounds a held endpoint", async () => {
+  const server = createServer(async (req, res) => {
+    if (req.url === "/held") return;
+    await delay(SHORT_REQUEST_PROOF_MS * 3);
+    res.end("ready");
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("missing fixture server address");
+  const api = await playwrightRequest.newContext({ timeout: SHORT_REQUEST_PROOF_MS });
+  try {
+    const url = `http://127.0.0.1:${address.port}`;
+    const response = await api.get(`${url}/delayed`, { timeout: gracedRequestBudget() });
+    expect(await response.text()).toBe("ready");
+    await expect(api.get(`${url}/held`, {
+      timeout: gracedOperationBudget(SHORT_REQUEST_PROOF_MS, 1),
+    })).rejects.toThrow(/Timeout.*exceeded/);
+  } finally {
+    await api.dispose();
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
 });
