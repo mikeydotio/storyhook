@@ -298,6 +298,9 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
                     if gate and supervisor_gone(record_path, child):
                         signal_session(gate, signal.SIGTERM)
             if deadline is not None and time.monotonic() >= deadline:
+                if killed_at is None:
+                    print(f"verifier-owner: {field} {child} cleanup grace expired; sending SIGKILL;"
+                          f" owner record {record_path}", file=sys.stderr, flush=True)
                 # A member can fork after a kill census and before delivery.
                 # Every later pass must signal newly discovered members too.
                 signal_session(child, signal.SIGKILL)

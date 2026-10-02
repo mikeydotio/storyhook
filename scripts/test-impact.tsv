@@ -235,6 +235,7 @@ verification_queue	:(glob)**/*
 verification_retry_shell	scripts/test-git-endpoint.py
 verifier_bundle	:(glob)scripts/*
 verifier_bundle	build.rs
+verifier_case_runner	:(glob)scripts/tests/*.py
 verifier_fixture_hygiene	:(glob)**/*
 verifier_foreign_checkout	:(glob)scripts/*
 verifier_lifecycle	:(glob)scripts/**

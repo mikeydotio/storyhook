@@ -165,6 +165,18 @@ or unkillable execution retains its records and inherited ownership lock;
 recovery never guesses that it finished. Tracked gate edits retain the existing
 archive behavior, including their private Git administration and object lease.
 
+SIGKILL can interrupt restoration after the gate is quiet. Session quiescence
+proves writer exclusion, not successful restoration. Each supervisor logs its
+session identity when its cleanup grace expires. The cancellation fixtures
+require immediate restoration unless the **lifecycle** owner escalated. After
+that escalation they prove quiescence and cleared gate ownership first, then
+drive ordinary admission to recover the journal under a new owner. The pinned
+base, clean checkout and tracked-evidence assertions still apply. A gate-only
+escalation or an unexplained missing restoration cannot use this path.
+Two real-process regressions stall recovery until the owner kills it, retain
+the private lease, and check both clean recovery and damaged-state retention.
+See [the SH-793 diagnosis](../rca/sh-793-cancelled-restoration.md).
+
 The complete council decision and nested-budget reasoning are recorded on
 SH-686. Authority monitoring stops before verifier-owned story transitions;
 this process contract also applies to manual cancellation and timeouts.
