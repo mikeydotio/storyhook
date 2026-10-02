@@ -35,6 +35,9 @@ use std::process::{Command, Output};
 use storyhook_test_support::scratch_dir;
 use tempfile::TempDir;
 
+#[path = "battery_completion/discovery.rs"]
+mod discovery;
+
 #[path = "battery_completion/workspace.rs"]
 mod workspace;
 

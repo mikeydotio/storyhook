@@ -137,7 +137,7 @@ is_input() {
                 return 0
             fi
             ;;
-        (tests/* | scripts/run-tests.sh | scripts/test-pool.py | scripts/run-rust-battery.sh | scripts/rust-test-targets.sh) return 0 ;;
+        (tests/* | scripts/run-tests.sh | scripts/test-pool.py | scripts/test_discovery.py | scripts/run-rust-battery.sh | scripts/rust-test-targets.sh) return 0 ;;
         (scripts/test-env.sh | scripts/machine-lock.sh | scripts/activity-run.py | scripts/test-delta.sh | scripts/test_output.py) return 0 ;;
         esac
         ;;
