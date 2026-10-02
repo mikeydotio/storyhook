@@ -1,4 +1,5 @@
 import { test, expect } from "./support";
+import { withDrainedRoutes } from "../route-lifetime";
 import type { Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
@@ -617,114 +618,115 @@ test("a stale global draft row cannot open an editor for a draft that is gone", 
   page,
   request,
 }) => {
-  const alphaSlug = await projectSlug(request, "Alpha Project");
-  const title = "Stale catalog draft";
-  const created = page.waitForResponse(
-    (resp) =>
-      resp.request().method() === "POST" &&
-      new URL(resp.url()).pathname === `/api/repos/${alphaSlug}/story`,
-  );
-  await page.locator("#new-story-btn").click();
-  await page.locator("#create-title").fill(title);
-  await page.locator("#create-save-draft").click();
-  const createdPayload = await (await created).json();
-  const id: string = createdPayload.story.story.id;
-  await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
+  await withDrainedRoutes(page, async () => {
+    const alphaSlug = await projectSlug(request, "Alpha Project");
+    const title = "Stale catalog draft";
+    const created = page.waitForResponse(
+      (resp) =>
+        resp.request().method() === "POST" &&
+        new URL(resp.url()).pathname === `/api/repos/${alphaSlug}/story`,
+    );
+    await page.locator("#new-story-btn").click();
+    await page.locator("#create-title").fill(title);
+    await page.locator("#create-save-draft").click();
+    const createdPayload = await (await created).json();
+    const id: string = createdPayload.story.story.id;
+    await expect(page.locator("#drafts-btn-text")).toHaveText("1 Drafts");
 
-  await page.route(
-    (url) => url.pathname === `/api/repos/${alphaSlug}/data`,
-    async (route) => {
-      const response = await route.fetch({
-        headers: {
-          ...route.request().headers(),
-          "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
-        },
-      });
-      const data = await response.json();
-      data.drafts = [];
-      await route.fulfill({ response, json: data });
-    },
-  );
+    await page.route(
+      (url) => url.pathname === `/api/repos/${alphaSlug}/data`,
+      async (route) => {
+        const response = await route.fetch({
+          headers: {
+            ...route.request().headers(),
+            "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+          },
+        });
+        const data = await response.json();
+        data.drafts = [];
+        await route.fulfill({ response, json: data });
+      },
+    );
 
-  await page.locator("#drafts-btn").click();
-  const refreshedCatalog = page.waitForResponse(
-    (resp) =>
-      resp.request().method() === "GET" &&
-      new URL(resp.url()).pathname === "/api/repos",
-  );
-  await page.locator("#drafts-list .drafts-row", { hasText: title }).click();
-  await refreshedCatalog;
+    await page.locator("#drafts-btn").click();
+    const refreshedCatalog = page.waitForResponse(
+      (resp) =>
+        resp.request().method() === "GET" &&
+        new URL(resp.url()).pathname === "/api/repos",
+    );
+    await page.locator("#drafts-list .drafts-row", { hasText: title }).click();
+    await refreshedCatalog;
 
-  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
-  await expect(page.locator("#toast-stack .toast.error")).toContainText(
-    `${id} is no longer an available draft.`,
-  );
+    await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+    await expect(page.locator("#toast-stack .toast.error")).toContainText(
+      `${id} is no longer an available draft.`,
+    );
+  });
 });
 
 test("a global draft editor closes when its owning project is deleted elsewhere", async ({
   page,
   request,
 }) => {
-  const betaSlug = await projectSlug(request, "Beta Project");
-  const title = "Owner disappears while editing from Home";
+  await withDrainedRoutes(page, async () => {
+    const betaSlug = await projectSlug(request, "Beta Project");
+    const title = "Owner disappears while editing from Home";
 
-  await page.locator("#new-story-btn").click();
-  await page.locator("#create-project").selectOption(betaSlug);
-  await expect(
-    page.locator("#create-state option", { hasText: "review" }),
-  ).toHaveCount(0);
-  await page.locator("#create-title").fill(title);
-  await page.locator("#create-save-draft").click();
-  await page.locator("#home-btn").click();
-  await page.locator("#drafts-btn").click();
-  await page.locator("#drafts-list .drafts-row", { hasText: title }).click();
-  await expect(page.locator("#create-modal")).toHaveClass(/open/);
-  await expect(page.locator("#create-project")).toHaveValue(betaSlug);
+    await page.locator("#new-story-btn").click();
+    await page.locator("#create-project").selectOption(betaSlug);
+    await expect(
+      page.locator("#create-state option", { hasText: "review" }),
+    ).toHaveCount(0);
+    await page.locator("#create-title").fill(title);
+    await page.locator("#create-save-draft").click();
+    await page.locator("#home-btn").click();
+    await page.locator("#drafts-btn").click();
+    await page.locator("#drafts-list .drafts-row", { hasText: title }).click();
+    await expect(page.locator("#create-modal")).toHaveClass(/open/);
+    await expect(page.locator("#create-project")).toHaveValue(betaSlug);
 
-  await page.route("**/api/repos", async (route) => {
-    const response = await route.fetch({
-      headers: {
-        ...route.request().headers(),
-        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
-      },
+    await page.route("**/api/repos", async (route) => {
+      const response = await route.fetch({
+        headers: {
+          ...route.request().headers(),
+          "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+        },
+      });
+      const repos = (await response.json()) as Array<{ id: string }>;
+      await route.fulfill({
+        response,
+        json: repos.filter((repo) => repo.id !== betaSlug),
+      });
     });
-    const repos = (await response.json()) as Array<{ id: string }>;
-    await route.fulfill({
-      response,
-      json: repos.filter((repo) => repo.id !== betaSlug),
-    });
-  });
-  const catalog = page.waitForResponse(
-    (resp) =>
-      resp.request().method() === "GET" &&
-      new URL(resp.url()).pathname === "/api/repos",
-  );
-  const alphaSlug = await projectSlug(request, "Alpha Project");
-  const nudge = await request.post(
-    `/api/repos/${encodeURIComponent(alphaSlug)}/story`,
-    {
-      headers: {
-        "X-Storyhook": "1",
-        "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
-      },
-      data: { title: "Trigger the external catalog refresh" },
-    },
-  );
-  if (!nudge.ok()) {
-    throw new Error(
-      `catalog-refresh nudge answered ${nudge.status()}: ${await nudge.text()}`,
+    const catalog = page.waitForResponse(
+      (resp) =>
+        resp.request().method() === "GET" &&
+        new URL(resp.url()).pathname === "/api/repos",
     );
-  }
-  await catalog;
+    const alphaSlug = await projectSlug(request, "Alpha Project");
+    const nudge = await request.post(
+      `/api/repos/${encodeURIComponent(alphaSlug)}/story`,
+      {
+        headers: {
+          "X-Storyhook": "1",
+          "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN"),
+        },
+        data: { title: "Trigger the external catalog refresh" },
+      },
+    );
+    if (!nudge.ok()) {
+      throw new Error(
+        `catalog-refresh nudge answered ${nudge.status()}: ${await nudge.text()}`,
+      );
+    }
+    await catalog;
 
-  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
-  await expect(page.locator("#home-view")).toBeVisible();
-  await expect(page.locator("#toast-stack .toast.error")).toContainText(
-    "This project was deleted",
-  );
-  // Cleanup emits another catalog refresh. Drain the response-rewriting
-  // handler before fixture teardown can dispose its fetched response.
-  await page.unrouteAll({ behavior: "wait" });
+    await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+    await expect(page.locator("#home-view")).toBeVisible();
+    await expect(page.locator("#toast-stack .toast.error")).toContainText(
+      "This project was deleted",
+    );
+  });
 });
 
 test("a held Beta reply cannot clear pending, replace Alpha vocabulary, or target Beta after Delta is selected", async ({
