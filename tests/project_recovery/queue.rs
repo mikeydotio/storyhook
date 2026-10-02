@@ -8,15 +8,15 @@ use storyhook::error::AppError;
 use storyhook::service::project_recovery::{RepairAdmission, RepairInput, RepairScope};
 use storyhook::store::{LandingIntent, PrLink, SqliteStore};
 
-struct GateEndpoint<'a> {
-    store: &'a SqliteStore,
-    env: &'a storyhook::env::Environment,
-    activity: &'a VerificationActivity,
-    input: RepairInput,
-    mismatch: bool,
-    fail_tests: bool,
-    project_fault: bool,
-    executions: AtomicUsize,
+pub(super) struct GateEndpoint<'a> {
+    pub(super) store: &'a SqliteStore,
+    pub(super) env: &'a storyhook::env::Environment,
+    pub(super) activity: &'a VerificationActivity,
+    pub(super) input: RepairInput,
+    pub(super) mismatch: bool,
+    pub(super) fail_tests: bool,
+    pub(super) project_fault: bool,
+    pub(super) executions: AtomicUsize,
 }
 impl VerificationActuator for GateEndpoint<'_> {
     fn submit(&self, _: &VerificationCandidate) -> Result<SubmittedPullRequest, SubmissionFailure> {

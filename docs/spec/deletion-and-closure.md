@@ -376,3 +376,29 @@ no safe integer watermark also falls back to plain text.
 `tests/web_test.rs` pins the empty and post-delete wire values.
 `e2e/specs/story-status-light.spec.ts` drives both description and comment rendering in a
 real browser across the full predicate boundary.
+
+### SH-848: a durable owner refuses the delete
+
+A permanent delete purges the story's events, and some durable records keep references
+into them for as long as they live. A project recovery is the one that outlives the
+purge: it keeps exact event sequences in its JSON state, retired or not, so a purge left
+every later read of it failing as store corruption — with the "restore a snapshot" advice
+that loses every record written since.
+
+`story delete` and its preview now refuse, as an ordinary validation error that names the
+record, a story that any of these depends on:
+
+- a project recovery that names it (subject, assessor, dependency hold, owned edge, repair,
+  work target, attempt, refusal, landing or legacy incident — `project_recovery::references`
+  destructures each struct without `..`, so a new field has to be classified);
+- a pending landing intent, a native `story reset` reservation, a card or engine reset, an
+  unreleased dropped cleanup, or an in-flight block delivery.
+
+The second group was already fenced by the store — `RESTRICT` foreign keys and the
+ownership fence — but that refusal arrived as a raw integrity error (exit 5). The store
+keeps those as the backstop. The recovery check lives in the service, not in
+`WriteOps::purge_story`, because the store holds recovery state as opaque JSON.
+
+The remedy the refusal names is `story close`, which keeps the story and its history.
+Tolerating the missing story instead was rejected: an active recovery whose repair story or
+assessor vanished stays held forever, since no command retires a recovery.

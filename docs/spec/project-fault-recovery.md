@@ -54,6 +54,14 @@ Create or reuse repairs, attach relationships, record decisions, and enqueue del
 
 Use the existing change bus and periodic recovery wake to resume unfinished coordination after restart. Recovery work must run independently of verifier workspace ownership.
 
+### Story deletion, prefix changes and record isolation (SH-848)
+
+A recovery record keeps story numbers and exact event sequences for as long as it lives, active or retired, and `read_view` fails closed (`StoreError::Corrupt`) when one no longer resolves. Three rules keep a supported command from producing that state, and keep one invalid record from stopping unrelated work.
+
+- **Delete refuses a named story.** `story delete` and its preview refuse any story a recovery names (`project_recovery::references::stories`, plus the record's observation rows) and point at `story close`. Tolerating the missing story was rejected: no command retires a recovery, so one whose repair or assessor vanished would stay held forever.
+- **A prefix change keeps retained leases valid.** A retained managed lease records the story id its worktree, branch and pane were created under. Validation compares the number that id was minted with, not the id under the current prefix.
+- **Readers validate only the records that name their story.** `attempts::owner` (admission, completion, observation, landing), `owns_resume` (block-edge derivation in every story write), `owns_coordination` (Full Auto lanes) and `reconcile_incident` read only the records that name their story, or whose own observations corroborate the incident. The queue reads judged generations from the immutable observation rows. For a valid store every answer is unchanged. An invalid record still fails closed for the stories it names, for a new fault with its code and locus, and in `repair show` and the status snapshot; status-snapshot isolation is SH-851.
+
 ### Bounded agent scope judgment
 
 Use the stopped story’s managed agent to assess scope. Reuse notification and proven-absent resume dispatch; do not add an autonomous fixer inside the verifier.

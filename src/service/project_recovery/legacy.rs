@@ -14,14 +14,21 @@ pub(crate) fn reconcile_incident(
         return Ok(false);
     }
     for record in tx.project_recoveries(project)? {
-        let mut view = persistence::read_view(tx, record)?;
-        if !view.observations.iter().any(|observation| {
-            observation.project == incident.project
-                && observation.story == incident.story
-                && observation.generation == incident.generation
-        }) {
+        // Only a record whose own observation corroborates the incident can
+        // take it, so only that record is validated: an invalid record that
+        // cannot take it must not fail every verifier tick (SH-848).
+        if !tx
+            .project_recovery_observations(project, &record.id)?
+            .iter()
+            .any(|observation| {
+                observation.project == incident.project
+                    && observation.story == incident.story
+                    && observation.generation == incident.generation
+            })
+        {
             continue;
         }
+        let mut view = persistence::read_view(tx, record)?;
         // This receipt was written only after the verifier settled owned work.
         // Retain the full incident before releasing its queue-wide authority.
         if !view.state.legacy_incidents.contains(&incident) {

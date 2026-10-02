@@ -6,8 +6,12 @@ mod attempts;
 mod callback;
 #[path = "project_recovery/decision.rs"]
 mod decision;
+#[path = "project_recovery/deletion.rs"]
+mod deletion;
 #[path = "project_recovery/engine.rs"]
 mod engine;
+#[path = "project_recovery/isolation.rs"]
+mod isolation;
 #[path = "project_recovery/landing.rs"]
 mod landing;
 #[path = "project_recovery/queue.rs"]

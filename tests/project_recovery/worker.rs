@@ -583,3 +583,76 @@ fn proven_absence_resumes_only_the_exact_registered_lease_and_preserves_work() {
         );
     }
 }
+
+/// A retained managed lease records the story id its resources were created
+/// under. A later prefix change must not make the recovery read as damaged
+/// (SH-848): the lease still names the same story by number.
+#[test]
+fn a_retained_managed_lease_survives_a_project_prefix_change() {
+    use storyhook::domain::{StoryCleanupLease, TmuxCleanupTarget};
+    use storyhook::service::engine::{EngineService, StartRequest};
+    use storyhook::service::project::ProjectService;
+    use storyhook::store::{EngineAgent, EngineLaneState, EngineScope};
+    let f = fixture();
+    let initial = decision::ready(&f);
+    let ctx = f.ctx();
+    let service = ProjectRecoveryService::new(&ctx);
+    let view = service
+        .decide(
+            &initial.record.id,
+            &decision::input(&initial, RepairScope::SeparateStory),
+        )
+        .unwrap();
+    let run = EngineService::new(&ctx, &storyhook_test_support::FakeDispatcher::default())
+        .start(StartRequest {
+            scope: EngineScope::Project,
+            lanes: 1,
+            agent: EngineAgent::Codex,
+            model: None,
+            effort: None,
+            speed: None,
+        })
+        .unwrap();
+    StoryService::new(&ctx).claim_story("SH-2", None).unwrap();
+    let checkout = &initial.state.subjects[0].candidate.checkout;
+    let lease = StoryCleanupLease {
+        version: 1,
+        project_slug: initial.state.subjects[0].candidate.project_slug.clone(),
+        story_id: "SH-2".into(),
+        repository_path: checkout.clone(),
+        worktree_path: checkout.join(".codex/worktrees/SH-2"),
+        branch: "worktree-SH-2".into(),
+        tmux: TmuxCleanupTarget {
+            socket_path: checkout.join("tmux.sock"),
+        },
+    };
+    let mut lane = f
+        .store()
+        .read(|tx| tx.engine_lanes(&run.id))
+        .unwrap()
+        .remove(0);
+    lane.state = EngineLaneState::Working;
+    lane.story_id = Some("SH-2".into());
+    lane.cleanup_lease = Some(lease.clone());
+    f.store().write(|tx| tx.put_engine_lane(&lane)).unwrap();
+    assert!(
+        process_one(
+            f.store(),
+            f.env(),
+            &helper(&f, r#"{"ok":true}"#),
+            &VerificationActivity::new(),
+            &AtomicBool::new(false)
+        )
+        .unwrap()
+    );
+    let delivered = service.show(&view.record.id).unwrap();
+    assert_eq!(delivered.state.work[0].managed_lease, Some(lease.clone()));
+
+    ProjectService::new(f.store(), f.cwd())
+        .set_prefix(f.project(), "NW", &f.env().maintenance_backups_dir())
+        .unwrap();
+
+    let renamed = service.show(&view.record.id).unwrap();
+    assert_eq!(renamed.state.work[0].managed_lease, Some(lease));
+    VerificationActivity::new().status(&ctx).unwrap();
+}

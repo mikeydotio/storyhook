@@ -74,6 +74,7 @@ pub mod session;
 pub mod settings;
 mod state_set;
 pub mod story;
+mod story_deletion;
 pub mod story_reset;
 pub mod system;
 pub mod templates;
