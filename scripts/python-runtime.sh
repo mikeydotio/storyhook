@@ -68,7 +68,13 @@ storyhook_python_init() {
     export STORYHOOK_PYTHON="$selected"
     case "${PATH:-}" in
     ("${launcher%/*}" | "${launcher%/*}:"*) ;;
-    (*) export PATH="${launcher%/*}${PATH:+:$PATH}" ;;
+    (*)
+        if [ -n "${PATH:-}" ]; then
+            export PATH="$_storyhook_python_dir/python-bin:$PATH"
+        else
+            export PATH="$_storyhook_python_dir/python-bin"
+        fi
+        ;;
     esac
     hash -r
 }

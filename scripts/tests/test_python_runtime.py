@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -212,6 +213,28 @@ class RuntimeTests(unittest.TestCase):
                             '[ "$PATH" = "$before" ]; another-tool')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "original tool\n")
+
+    def test_shell_git_scrubs_preserve_the_selected_runtime(self):
+        """Both Git policies must retain the interpreter needed by PATH shims."""
+        real_git = shutil.which("git")
+        repository = self.root / "repository"
+        repository.mkdir()
+        subprocess.run([real_git, "init", "-q", str(repository)], check=True)
+        wrapper = self.root / "tools/git"
+        wrapper.parent.mkdir()
+        wrapper.write_text('#!/usr/bin/env python3\nimport os,sys\n'
+                           'assert os.path.samefile(sys.executable, os.environ["STORYHOOK_PYTHON"])\n'
+                           f'os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n')
+        wrapper.chmod(0o755)
+        self.env["PATH"] = f"{wrapper.parent}:{self.env['PATH']}"
+        self.env["STORYHOOK_PYTHON"] = sys.executable
+        for body in (
+            '. "$2/test-env.sh"; storyhook_fixture_git -C "$1" status --porcelain',
+            'cd "$1"; /bin/bash "$2/git-identity.sh" audit',
+        ):
+            with self.subTest(body=body):
+                result = self.shell('storyhook_python_init; ' + body, repository, SCRIPTS)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

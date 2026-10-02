@@ -1777,6 +1777,13 @@ prepended to PATH carries the same choice through test binaries, shell children
 and env shebangs without changing how other tools are found. Python children
 use `sys.executable`. Nested entry points revalidate the inherited selection;
 the speculative gate keeps it across the credential/environment scrub.
+Any child environment that retains this PATH must also retain `STORYHOOK_PYTHON`,
+including shell Git policy, fixture Git, provider and tmux boundaries. A scrub
+must not rediscover a different interpreter after dropping an explicit override.
+The runtime regression executes Python Git shims through both shell Git policies;
+the Git fixture parity test checks the Rust and shell allowlists together.
+Bundle-copy fixtures create parent directories for nested payload names, and
+fixtures that link verifier entry points include the runtime helper and launcher.
 
 Runtime validation precedes verifier ownership, GitHub operations and gate
 execution. A refusal is a permanent infrastructure failure naming the paths
