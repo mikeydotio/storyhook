@@ -43,6 +43,15 @@ Git/tmux subprocesses inherit it, so an orphaned cleanup child retains ownership
 until it exits. The lock remains held through the final store transaction and
 is released before state-change hooks run.
 
+An engine lane's `dispatching` state alone does not prove a live dispatch
+(SH-791). Card reset probes the run's existing dispatch controller lock and
+refreshes its exact lane/story identity. Contention waits within the existing
+dispatch deadline; successful acquisition identifies a remaining dispatching
+lane as orphaned. Lock errors fail the reset with context. The durable card
+reservation prevents new claims while the probe releases its lock. Normal
+resource discovery, cleanup and completion still own the orphan's resources
+and lane release; HTTP dispatch and verifier quiescence are unchanged.
+
 ResourceService pins exact resource identities. Device/inode observations pin
 the common Git directory, worktree directory, and private Git directory, so a
 retry refuses a replacement even when its path and branch are unchanged. Cleanup

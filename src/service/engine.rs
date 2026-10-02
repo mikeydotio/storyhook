@@ -7,7 +7,10 @@
 
 /// Read-only inspection and transactional adoption of manual dispatches.
 pub mod adoption;
+mod dispatch_quiescence;
 pub mod reset;
+
+pub(crate) use dispatch_quiescence::card_reset_dispatching;
 
 #[cfg(test)]
 mod restart_probe_tests;

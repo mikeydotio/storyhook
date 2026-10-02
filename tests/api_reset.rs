@@ -5,6 +5,9 @@ use storyhook::service::{NewStoryInput, StoryService};
 use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, WriteOps};
 use storyhook_test_support::{ServiceFixture, serve};
 
+#[path = "api_reset/dispatch.rs"]
+mod dispatch;
+
 #[test]
 fn reset_requires_auth_and_confirmation_then_polls_a_scoped_durable_receipt() {
     let fixture = ServiceFixture::new();
