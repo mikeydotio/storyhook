@@ -10,11 +10,8 @@ printf 'uncommitted work\n' > "$repo/.claude/worktrees/$wname/scratch.txt"
 (cd "$repo" && story claim "$id" --no-comment --json >/dev/null) || exit 1
 
 # This is a deliberate stimulus beyond the production 3 s probe, not a wait
-# for readiness. The patient attempt gets 30 s plus the shared load allowance.
+# for readiness. The patient attempt uses the shared harness declaration.
 printf '4\n' > "$FAKE_TMUX_STATE/resource_delay"
-patient_seconds=$(python3 "$TESTS_DIR/../../../scripts/tests/load_grace.py" patience 30) || exit 1
-story daemon stop --force >/dev/null || exit 1
-export STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS="$((patient_seconds * 1000))"
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" unclaim "$id" 2>&1)
 assert_eq "$(jqf "$out" .ok)" true "delayed probe: unclaim succeeds: $out"
 assert_eq "$(jqf "$out" .worktree_status)" dirty "delayed probe: dirty worktree remains visible"

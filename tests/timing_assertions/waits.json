@@ -404,6 +404,13 @@
       "reason": "RECEIVE_POLL is the receive polling quantum. recv_patiently checks its outer load_grace Patience after each empty receive and returns disconnection immediately."
     }
   },
+  "tests/verification_retry_shell.rs": {
+    ".wait_within(storyhook_test_support::load_grace::PATIENCE_CEILING": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The complete retry experiment uses the shared finite 15-minute harness ceiling so its phase deadlines and cleanup can finish; this is patience, not a production timing proof."
+    }
+  },
   "tests/verification_shutdown_drain.rs": {
     ".recv_timeout(lifecycle::CONTROL_DEADLINE/10": {
       "count": 1,

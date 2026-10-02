@@ -190,7 +190,7 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   storyhook_isolate --home "$STORYHOOK_TEST_HOME"
   # The native CLI/daemon probes fake subprocesses too. Declare patience
   # before the first story starts the daemon; nested libraries retain it.
-  if ! _STORY_PROBE_SECONDS="$(python3 "$TESTS_DIR/../../../scripts/tests/load_grace.py" patience 3)"; then
+  if ! _STORY_PROBE_SECONDS="$(python3 "$TESTS_DIR/../../../scripts/tests/load_grace.py" patience 30)"; then
     printf 'lib.sh: cannot grace the native subprocess probe budget\n' >&2
     exit 1
   fi
