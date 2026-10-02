@@ -30,8 +30,8 @@
 //! 4. A failed project stops the matrix or a later project's Playwright
 //!    invocation erases its failure artifacts --
 //!    `the_matrix_records_failures_continues_and_keeps_each_projects_artifacts`.
-//! 5. The real-dispatch post-check selects exactly `specs/dispatch.spec.ts`
-//!    and `specs/engine.spec.ts`, not another stubbed spec whose filename
+//! 5. The real-dispatch post-check selects exactly `dispatch.spec.ts`
+//!    and `engine.spec.ts`, not another stubbed spec whose filename
 //!    happens to contain dispatch --
 //!    `the_real_dispatch_postcheck_matches_only_the_two_exact_specs`.
 //! 6. Every Playwright project invocation creates its daemon, seed and
@@ -862,85 +862,71 @@ fn the_matrix_records_failures_continues_and_keeps_each_slices_artifacts() {
 // 5. The real-dispatch post-check selects exactly two specs
 // ---------------------------------------------------------------------------
 
-/// Reads the basic-regex argument from run-e2e.sh's live `grep -c` assignment
-/// rather than copying the expression into this test. The assertion below
-/// therefore exercises the pattern the harness will actually run.
-fn real_dispatch_selected_pattern(runner: &str) -> &str {
-    let assignment = runner
-        .lines()
-        .find(|line| line.trim_start().starts_with("real_dispatch_selected="))
-        .expect("scripts/run-e2e.sh must assign real_dispatch_selected");
-    let marker = "grep -c \"";
-    let after = assignment
-        .split_once(marker)
-        .unwrap_or_else(|| {
-            panic!("real_dispatch_selected does not contain `{marker}`: {assignment}")
-        })
-        .1;
-    let end = after.find('"').unwrap_or_else(|| {
-        panic!("real_dispatch_selected's grep pattern never closes: {assignment}")
-    });
-    &after[..end]
-}
-
-fn grep_count(pattern: &str, input: &str) -> usize {
+fn dispatch_count(input: &str) -> usize {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
-    let mut command = Command::new("grep");
+    let mut command = Command::new("/bin/bash");
     command
-        .args(["-c", pattern])
+        .args([
+            "-c",
+            ". \"$1\"; e2e_selection_real_dispatch",
+            "dispatch-coverage",
+        ])
+        .arg(repo_root().join("scripts/e2e-selection.sh"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped());
     let mut child = ChildGuard::spawn_with_output(&mut command)
-        .expect("spawning the same grep scripts/run-e2e.sh uses");
+        .expect("spawning the dispatch selector scripts/run-e2e.sh uses");
     child
         .stdin()
-        .expect("grep stdin was piped")
+        .expect("selector stdin was piped")
         .write_all(input.as_bytes())
-        .expect("writing synthetic Playwright list output to grep");
+        .expect("writing root-relative Playwright file counts to the selector");
     let output = child.wait_with_output_within(
         storyhook_test_support::load_grace::graced_now(UTILITY_DEADLINE),
-        || "the grep coverage probe did not finish".to_string(),
+        || "the dispatch coverage probe did not finish".to_string(),
     );
     assert!(
-        output.status.success() || output.status.code() == Some(1),
-        "grep failed unexpectedly: {}",
+        output.status.success(),
+        "selector failed unexpectedly: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout)
-        .expect("grep -c output is UTF-8")
+        .expect("selector output is UTF-8")
         .trim()
         .parse()
-        .expect("grep -c output is a count")
+        .expect("selector output is a count")
 }
 
 #[test]
 fn the_real_dispatch_postcheck_matches_only_the_two_exact_specs() {
     let runner = read("scripts/run-e2e.sh");
-    let pattern = real_dispatch_selected_pattern(&runner);
-    let dispatch = "[chromium] › specs/dispatch.spec.ts:83:5 › Dispatch is absent\n";
-    let engine = "[mobile-webkit] › specs/engine.spec.ts:157:5 › Full Auto runs\n";
-    let stubbed =
-        "[chromium] › specs/story-context-menu-dispatch.spec.ts:72:5 › Dispatch is present\n";
+    assert!(runner.lines().any(
+        |line| line.trim_start().starts_with("real_dispatch_selected=")
+            && line.contains("e2e_selection_real_dispatch")
+    ));
+    let dispatch = "chromium\tdispatch.spec.ts\t2\n";
+    let engine = "mobile-webkit\tengine.spec.ts\t2\n";
+    let stubbed = "chromium\tstory-context-menu-dispatch.spec.ts\t2\n";
 
     assert_eq!(
-        grep_count(pattern, dispatch),
+        dispatch_count(dispatch),
         1,
         "the post-check must recognize dispatch.spec.ts"
     );
     assert_eq!(
-        grep_count(pattern, engine),
+        dispatch_count(engine),
         1,
         "the post-check must recognize engine.spec.ts"
     );
     assert_eq!(
-        grep_count(pattern, stubbed),
+        dispatch_count(stubbed),
         0,
         "the post-check must not mistake the stubbed context-menu spec for dispatch.spec.ts"
     );
     assert_eq!(
-        grep_count(pattern, &format!("{stubbed}{dispatch}{engine}")),
+        dispatch_count(&format!("{stubbed}{dispatch}{engine}")),
         2,
         "a mixed Playwright list must count only the two exact real-dispatch specs"
     );
