@@ -103,7 +103,11 @@ dashboard address for sharing; local status does not confirm remote reachability
   story daemon gc [--force]
   story daemon logs [--directory PATH] [--follow] [--json]
 
-install captures only PATH from the current shell into the login agent. PATH
+install registers a launchd agent on macOS or a systemd user service on Linux.
+On Linux it captures the resolved state/configuration roots and PATH; on macOS
+it captures PATH. Without a Linux user manager or installed unit, startup forks
+and warns that scheduling and cgroup membership are inherited. Linux status
+reports measured nice, I/O priority and cgroup. Lingering is not enabled. PATH
 must contain nonempty absolute directories. Reinstall from the desired shell
 environment after changing tool locations, then restart the daemon. Run
 `story doctor install` to compare the saved PATH with the running daemon's PATH

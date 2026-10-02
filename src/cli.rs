@@ -5166,7 +5166,13 @@ fn parse_port_flag(rest: &[String], usage: &str) -> Result<Option<u16>, AppError
 /// to [`parse_serve_flags`] rather than exported: nothing outside this
 /// process's own internal callers (`spawn_child`, the installed plist) is
 /// meant to type this flag, so there is no reason to name the values twice.
-const OWNER_VALUES: [&str; 3] = ["launchd", "fork-test-build", "fork-no-agent"];
+const OWNER_VALUES: [&str; 5] = [
+    "launchd",
+    "systemd",
+    "fork-test-build",
+    "fork-no-agent",
+    "fork-no-manager",
+];
 
 /// `--serve`'s own flags: an optional `--port <PORT>` and an optional
 /// `--owner <VALUE>`, in either order, each at most once.

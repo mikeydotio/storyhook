@@ -8,7 +8,7 @@ use crate::plugin::PluginTarget;
 use std::ffi::OsStr;
 use std::path::Path;
 
-const PATH_REMEDY: &str = if cfg!(target_os = "macos") {
+const PATH_REMEDY: &str = if cfg!(any(target_os = "macos", target_os = "linux")) {
     "run `story daemon install` from a shell with the required absolute PATH, then `story daemon restart`"
 } else {
     "set an absolute PATH in the daemon's service or launch-shell environment, then restart it"
@@ -40,6 +40,16 @@ pub(super) fn rows(env: &Environment, home: &Path) -> Vec<Row> {
 }
 
 fn installed(env: &Environment) -> (Row, Option<agent::ExecutionPath>) {
+    if cfg!(target_os = "linux") {
+        return match crate::daemon::systemd::registered_path(env) {
+            Ok(Some(path)) => (Row::ok("agent PATH", path.as_str()), Some(path)),
+            Ok(None) => (Row::ok("agent PATH", "not installed"), None),
+            Err(error) => (
+                Row::flagged("agent PATH", "unknown", error.to_string()),
+                None,
+            ),
+        };
+    }
     let path = agent::path(env);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
