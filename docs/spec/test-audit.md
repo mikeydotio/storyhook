@@ -417,10 +417,28 @@ above establish the stale-default correction. All card-exit and board-sort
 cases passed in every arm. Remaining failures were the transient disabled
 controls and animation-owned classes retained by SH-812, plus response-rewriting
 routes reading disposed responses during teardown. The latter occurred in the
-stale-draft case and `injectVerifyingCard`; SH-813 adopted that separate
-lifetime repair and remains open until its regression acceptance is complete.
+stale-draft case and `injectVerifyingCard`; SH-813 repaired that separate
+lifetime defect after the comparison, as described below.
 The raw logs, per-second samples and traces are retained under
 `/tmp/SH-813-final-pairs` and summarized in SH-813's discussion.
+
+`withDrainedRoutes(page, body)` now waits for response-rewriting handlers in
+`finally`, before their page context can dispose fetched responses. The two
+verifier-injection files use it inside their page fixture. The stale-draft and
+project-deletion tests use local scopes; the latter previously drained only
+after success. Other tests that intentionally hold requests remain unchanged:
+a suite-wide drain could wait forever for a test-owned latch that was never
+released. Callers must release such holds before ending this scope. The helper
+uses [Playwright's native wait behavior](https://playwright.dev/docs/api/class-page#page-unroute-all)
+and does not suppress handler failures.
+
+A real fetched response held beyond both successful and failed body completion
+made all four new desktop cases fail against the non-draining stub. They pass
+with the helper, preserving the body's value or error. All 34 new or affected
+browser cases pass: the four lifetime cases, 20 override cases, six verifier
+status cases and four create-dialog cases. The four affected source-corpus
+guards and strict TypeScript checking also pass. Evidence is in
+`/tmp/SH-813-route-{red,green}.log` and `/tmp/SH-813-create-routes-green.log`.
 
 ## Verifier Python cases: bounded process concurrency (SH-793)
 

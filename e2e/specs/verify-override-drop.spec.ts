@@ -1,4 +1,5 @@
 import { test, expect } from "./support";
+import { withDrainedRoutes } from "../route-lifetime";
 import { focusMenuItemByLabel, holdKey, openProject, projectSlug, seedToken } from "./support";
 
 /**
@@ -19,6 +20,14 @@ import { focusMenuItemByLabel, holdKey, openProject, projectSlug, seedToken } fr
 
 const TITLE = "SH-692 verifying card dropped on Done";
 const ID = "SH-94692";
+
+// Only completing rewrite handlers run here; keep their responses alive until
+// the handlers finish, including when an assertion fails before normal cleanup.
+test.use({
+  page: async ({ page }, use) => {
+    await withDrainedRoutes(page, () => use(page));
+  },
+});
 
 type Page = import("@playwright/test").Page;
 type View = "board" | "list";
