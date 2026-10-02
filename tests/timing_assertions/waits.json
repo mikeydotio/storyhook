@@ -337,6 +337,11 @@
     }
   },
   "tests/verification_progress_timeout.rs": {
+    "started.elapsed()>idle": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The successful bundled-writer run must exceed its own graced silence deadline; this is a lower bound proving renewal, not a harness timeout."
+    },
     "with_paths_and_timing[control](idle": {
       "count": 1,
       "kind": "delegated",
