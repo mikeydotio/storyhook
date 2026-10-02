@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 # SH-859: production readiness, real process identity, external terminal boundary.
 set -euo pipefail
+source "$(dirname "$0")/lib.sh"
 root=$(cd "$(dirname "$0")/../../.." && pwd)
 fixture=$(mktemp -d /tmp/story-trust-readiness.XXXXXX)
+_TMP_REPOS+=("$fixture")
 cleanup() {
-  local pidfile
+  local status=$? pidfile
+  # Finish both cleanup layers even after an assertion failed; keep its status.
+  set +e
   for pidfile in "$fixture"/*/pane_pid; do
     [ ! -f "$pidfile" ] || kill "$(cat "$pidfile")" 2>/dev/null || true
   done
-  rm -rf "$fixture"
+  (exit "$status")
+  _cleanup
 }
 trap cleanup EXIT
 mkdir "$fixture/bin" "$fixture/worktree" "$fixture/other"
