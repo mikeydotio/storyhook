@@ -70,6 +70,13 @@ permission remain unchanged. Failed operations retain ownership and diagnosis;
 an explicit retry reuses their token and pinned identity. After daemon restart,
 polling an unfinished operation reports interruption and offers retry.
 
+Full Auto defers a quarantined lane while an unfinished card reset, native
+reset reservation, or unreleased dropped cleanup owns its story (SH-791).
+The ownership check and lane clearing share one transaction. Reconciliation
+continues for other lanes, preserving the deferred lane and its diagnosis
+even when cleanup has failed. A draining run remains unfinished until the
+owner releases the lane or releases ownership so normal clearing can resume.
+
 ## Shared ownership and upgrades
 
 Native reset, active card reset, Stop Now engine reset, and durable landing

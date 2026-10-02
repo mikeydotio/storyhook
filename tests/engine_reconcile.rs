@@ -15,6 +15,9 @@
 
 mod store_support;
 
+#[path = "engine_reconcile/reset_ownership.rs"]
+mod reset_ownership;
+
 use storyhook::domain::{
     CLEANUP_LEASE_VERSION, LABEL_HUMAN_ONLY, LABEL_NO_AUTO, StoryCleanupLease, TmuxCleanupTarget,
 };

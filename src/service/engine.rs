@@ -2751,6 +2751,18 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             {
                 return Ok(());
             }
+            let project = self.ctx.project();
+            let prefix = project_prefix(tx, project)?;
+            if let Some(story) = lane
+                .story_id
+                .as_deref()
+                .and_then(|id| crate::store::StoryNo::parse_id(&prefix, id).ok())
+                && super::story_reset::foreign_owner(tx, project, story)?.is_some()
+            {
+                // Cleanup owns this lane until it releases the story. Defer
+                // only this lane so unrelated work can still fill the run.
+                return Ok(());
+            }
             put_or_retire_idle_lane(tx, &idle)
         })?;
         Ok(())
