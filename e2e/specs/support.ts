@@ -30,6 +30,7 @@ import {
 import { fixtureApiUrl, requiredEnv } from "../fixture-api";
 import { fixtureBaseline, projectStories } from "../fixture-baseline";
 import type { BoardStory } from "../fixture-baseline";
+import { withAssertionGrace, reportAssertionGrace } from "../expect-grace";
 
 export { requiredEnv };
 
@@ -108,7 +109,7 @@ interface HiddenText {
  * spec's `expect` is this one; `text-assertion-door.spec.ts` is what proves
  * the door refuses.
  */
-export const expect = baseExpect.extend({
+export const expect = withAssertionGrace(baseExpect.extend({
   async toHaveText(
     this: ExpectMatcherState,
     locator: Locator,
@@ -125,7 +126,16 @@ export const expect = baseExpect.extend({
   ): Promise<MatcherReturnType> {
     return guardedTextAssertion.call(this, "toContainText", locator, expected, options);
   },
-});
+}), gracedPatience, reportCurrentAssertionGrace);
+
+// Set only for the fixture lifetime, so assertions during module collection
+// remain valid and finished tests cannot receive another test's annotation.
+let assertionOwner: TestInfo | undefined;
+
+/** Reports the sampled default without changing the assertion verdict. */
+function reportCurrentAssertionGrace(budgetMs: number): void {
+  if (assertionOwner) reportAssertionGrace(assertionOwner, budgetMs);
+}
 
 /** The shared body of both shadowing matchers. See `expect` above. */
 async function guardedTextAssertion(
@@ -142,7 +152,7 @@ async function guardedTextAssertion(
   const delegate = isNot ? baseExpect(locator).not : baseExpect(locator);
   let delegatedFailure: { message?: string } | undefined;
   try {
-    await delegate[name](expected, options);
+    await delegate[name](expected, { ...options, timeout: options?.timeout ?? this.timeout });
   } catch (error) {
     delegatedFailure = matcherResultOf(error);
   }
@@ -290,7 +300,18 @@ const LOAD_GRACE_RESET_INTERVAL_MS = 5_000;
  * can see is the SH-306 shape one layer up: a gate whose verdict depends on
  * state it never reported.
  */
-export const test = base.extend<{ loadGrace: void; testToken: void; fixtureHeal: void }>({
+export const test = base.extend<{ assertionGrace: void; loadGrace: void; testToken: void; fixtureHeal: void }>({
+  assertionGrace: [
+    async ({}, use, testInfo) => {
+      assertionOwner = testInfo;
+      try {
+        await use();
+      } finally {
+        assertionOwner = undefined;
+      }
+    },
+    { auto: true },
+  ],
   testToken: [
     async ({ request }, use) => {
       await resetFixtureTokenPreferences(request);

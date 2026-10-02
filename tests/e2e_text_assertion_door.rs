@@ -240,11 +240,11 @@ fn asserts_text(stripped: &str) -> bool {
     stripped.contains(".toHaveText(") || stripped.contains(".toContainText(")
 }
 
-/// The argument block of `baseExpect.extend({ … })` in the door, brace-matched
+/// The argument block of the load-graced `baseExpect.extend({ … })` door, brace-matched
 /// from its opening `{`, so a matcher defined elsewhere in the file and never
 /// registered cannot satisfy the shape.
 fn door_matchers(stripped: &str) -> Option<&str> {
-    let signature = "export const expect = baseExpect.extend(";
+    let signature = "export const expect = withAssertionGrace(baseExpect.extend(";
     let start = stripped.find(signature)? + signature.len();
     let open = start + stripped[start..].find('{')?;
     let mut depth = 0usize;
@@ -308,7 +308,7 @@ fn the_door_exports_the_guarded_expect_and_never_the_bare_one() {
     );
 
     let matchers = door_matchers(&stripped).unwrap_or_else(|| {
-        panic!("{DOOR} no longer defines `export const expect = baseExpect.extend({{ … }})`")
+        panic!("{DOOR} must export withAssertionGrace(baseExpect.extend(...)) so both guards apply")
     });
     for matcher in ["toHaveText", "toContainText"] {
         assert!(
@@ -317,6 +317,14 @@ fn the_door_exports_the_guarded_expect_and_never_the_bare_one() {
              through that matcher would reach Playwright's own, unguarded"
         );
     }
+    assert!(
+        stripped.contains("}), gracedPatience, reportCurrentAssertionGrace);"),
+        "the assertion adapter must use the live patience reader and test diagnostics"
+    );
+    assert!(
+        stripped.contains("timeout: options?.timeout ?? this.timeout"),
+        "the custom text matchers must forward their effective timeout, preserving explicit zero"
+    );
 }
 
 #[test]
@@ -465,7 +473,7 @@ fn imports_reads_the_shapes_the_suite_actually_writes() {
 
 #[test]
 fn door_matchers_is_brace_matched_and_absent_when_the_signature_is() {
-    let door = "export const expect = baseExpect.extend({\n  async toHaveText(a) { return { pass: true }; },\n});\nasync function toContainText() {}\n";
+    let door = "export const expect = withAssertionGrace(baseExpect.extend({\n  async toHaveText(a) { return { pass: true }; },\n}));\nasync function toContainText() {}\n";
     let block = door_matchers(door).expect("the signature is present");
     assert!(block.contains("async toHaveText("));
     assert!(
@@ -476,6 +484,21 @@ fn door_matchers_is_brace_matched_and_absent_when_the_signature_is() {
         door_matchers("export { expect };").is_none(),
         "the pre-SH-622 shape has no door, and must read as none rather than as an empty block"
     );
+    for bypass in [
+        door.replace(
+            "withAssertionGrace(baseExpect.extend(",
+            "baseExpect.extend(",
+        ),
+        door.replace(
+            "withAssertionGrace(baseExpect.extend(",
+            "withAssertionGrace(",
+        ),
+    ] {
+        assert!(
+            door_matchers(&bypass).is_none(),
+            "a missing guard must fail: {bypass}"
+        );
+    }
 }
 
 #[test]
