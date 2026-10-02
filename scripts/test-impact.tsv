@@ -41,6 +41,7 @@ completion_state_search	:(glob)src/**/*.rs
 continuation_lost_reply	:(glob)plugins/story/hooks/*
 continuation_runtime	:(glob)plugins/story/lib/*
 continuation_runtime	plugins/story/tests/test_continuation_runtime.py
+continuation_runtime	plugins/story/tests/test_continuation_budget.py
 council_citations	:(glob)**/*
 coupled_snapshot	:(glob)**/*
 coupled_snapshot	:(glob)src/**/*.rs

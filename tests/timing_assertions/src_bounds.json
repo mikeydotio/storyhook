@@ -165,10 +165,10 @@
     }
   },
   "src/service/continuation/runtime.rs": {
-    "production run_captured_with_input(Duration::from_secs(ifoperation=={125}else{45})": {
+    "production run_captured_with_input(operation_timeout(operation)": {
       "count": 1,
       "kind": "unrouted",
-      "reason": "45 s or 125 s for the continuation runtime helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+      "reason": "SH-798: operation_timeout selects 45 s for a 30 s observation operation or 225 s for a 150 s resume operation. Unit tests pin both helper budgets to at most two thirds of the outer bound. Not routed through Environment::subprocess_bound; SH-846 owns the broader census of such bounds."
     }
   },
   "src/service/engine.rs": {

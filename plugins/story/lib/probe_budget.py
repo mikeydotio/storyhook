@@ -10,6 +10,8 @@ The budget is two thirds of the tightest caller bound. The daemon runs
 `dropped-cleanup-pane.py` for 45 s (CLEANUP_HELPER_TIMEOUT, SIGKILL with no
 SIGTERM). The embedded verification reader uses the same 45 s outer bound
 (VIEW_RECONCILE_TIMEOUT) and observes daemon shutdown independently (SH-808).
+Continuation observations use 30 s inside a 45 s caller bound; resume uses
+one 150 s operation inside 225 s, including dispatch (SH-798).
 The last third covers interpreter start and exit under load. Unit
 tests beside those constants pin the relation.
 
