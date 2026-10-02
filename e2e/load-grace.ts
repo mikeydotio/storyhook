@@ -15,7 +15,8 @@ import os from "node:os";
  * extend the deadline before it can fire, never after. Two layers apply this
  * (`e2e/playwright.config.ts` for the config-evaluation layer, the
  * `loadGrace` fixture in `e2e/specs/support.ts` for the per-test watchdog) --
- * this module is only the pure policy both of them call into. This is the
+ * assertion construction also samples gracedPatience through the shared
+ * expect adapter (SH-813). This module owns their common policy. This is the
  * ONLY file under `e2e/` that may call `os.loadavg()`
  * (`tests/e2e_load_grace.rs` fences that).
  *
@@ -157,9 +158,9 @@ export function resetTestBudget(
  * The harness's patience for one wait it expects to succeed, sampled when the
  * wait begins (SH-765): {@link BASE_EXPECT_TIMEOUT_MS} graced by the current
  * (or supplied) contention, or the bare base when grace is disabled
- * (`E2E_LOAD_GRACE=0`). `expect.timeout` is graded once, when the config is
- * evaluated. A wait that must also bound its own subprocess needs the
- * patience it is actually granted, so it samples at the moment it starts.
+ * (`E2E_LOAD_GRACE=0`). Config evaluation supplies only the initial fallback;
+ * the shared expect and waits that bound their own subprocess sample at
+ * entry, so concurrent slices cannot retain stale assertion defaults.
  * Same clamp as {@link gracedBudget}: at most `MAX_GRACE_MULTIPLIER` times
  * the base.
  */

@@ -127,11 +127,10 @@ export default defineConfig({
   // fixed: at this machine's own idle load the multiplier is exactly 1, so
   // both numbers below are bit-identical to the two SH-222 literals above
   // whenever nothing is contending for the machine -- this sampling adds no
-  // patience an idle run didn't already have. Sampled once per project
-  // (`scripts/run-e2e.sh` invokes Playwright once per project), which is
-  // also the only way `expect.timeout` can be graced at all: it cannot be
-  // retuned mid-run, unlike the per-test watchdog in `specs/support.ts`
-  // that grants the *test* budget more room as a run goes on.
+  // patience an idle run didn't already have. These are startup defaults
+  // for each slice. The shared expect samples again when each assertion is
+  // constructed (SH-813), and the per-test watchdog grants the whole test
+  // more room while it runs. Neither retains a stale startup load reading.
   timeout: loadGraceEnabled() ? gracedBudget(BASE_TEST_TIMEOUT_MS) : BASE_TEST_TIMEOUT_MS,
   expect: {
     timeout: loadGraceEnabled() ? gracedBudget(BASE_EXPECT_TIMEOUT_MS) : BASE_EXPECT_TIMEOUT_MS,
