@@ -7364,9 +7364,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Applies a Set Status choice.
    *
-   * Open story: the board's own optimistic `moveStory()` (`:3112` — see
-   * that function) verbatim, so dragging a card and picking a state from
-   * this menu can never drift apart into two behaviors.
+   * Open story: the board's own `moveStory()`, including its required
+   * verification-override prompt before any optimistic mutation (SH-782).
    *
    * Closed story: `moveStory()`'s own reopen branch calls `POST /reopen`
    * and stops there -- the server always lands a reopen in the project's
@@ -10534,6 +10533,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   /** Optimistically moves a card to `targetSlug`, calls the API, and either
    * applies the server's story on success or reverts + toasts on failure.
+   * A verification override without a comment first collects its reason.
    * The next poll ignores `pending` ids so it can't fight the in-flight move.
    * `reason` (SH-205) is optional and only meaningful alongside a move into
    * an OPEN state — the server refuses it combined with a close, so it is
@@ -10542,6 +10542,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var story = findStory(id);
     if (!story) return;
     var originSlug = story.story.state;
+    // Every caller, including Set Status, must collect the override before
+    // changing the card or sending a request. Modal submission supplies it.
+    if (originSlug === "verifying" && targetSlug === "done" && !(comment || "").trim()) {
+      openVerifyOverrideModal(id);
+      return;
+    }
     story.story.state = targetSlug; // optimistic
     state.pending[id] = true;
     renderView();
@@ -16270,9 +16276,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   }
 
   /** The story id the verification-override prompt (SH-692) is open for, or
-   * `null`. Opened by a Verifying -> Done drop on the board and by the
-   * drawer's state select; both are the same override, so both read the
-   * same reason and send the same `/move` with `comment`. */
+   * `null`. Board drops, the drawer's state select, and board/list Set Status
+   * menus all collect the same reason and send the same `/move` with
+   * `comment`. */
   var verifyOverrideStoryId = null;
   var verifyOverrideInFlight = false;
   var verifyOverrideOpenFrame = null;
