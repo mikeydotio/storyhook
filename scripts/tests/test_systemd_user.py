@@ -14,6 +14,15 @@ from pathlib import Path
 import subprocess
 import sys
 
+import load_grace
+
+
+# The Linux spawn lock permits 70 seconds for manager control and health;
+# allow another 20 seconds for CLI startup, replies and process teardown.
+CLI_STARTUP_ALLOWANCE = 90
+# Cleanup stops only this disposable account's idle service, with no agent work.
+MANAGER_CLEANUP_ALLOWANCE = 30
+
 
 def main():
     """Compare the inherited control with the managed daemon's kernel metadata."""
@@ -35,7 +44,7 @@ def main():
     env["XDG_STATE_HOME"] = str(home / "state")
 
     def run(*tail, prefix=(), overrides=None, check=True):
-        result = subprocess.run([*prefix, *base, *tail], env={**env, **(overrides or {})}, text=True, capture_output=True, timeout=90)
+        result = subprocess.run([*prefix, *base, *tail], env={**env, **(overrides or {})}, text=True, capture_output=True, timeout=load_grace.patience(CLI_STARTUP_ALLOWANCE, load_grace.contention()))
         if check:
             assert result.returncode == 0, (result.args, result.stdout, result.stderr)
         return result
@@ -98,7 +107,7 @@ def main():
     finally:
         run("daemon", "stop", "--force", check=False)
         if unit:
-            subprocess.run(["systemctl", "--user", "disable", "--now", unit], env=env, check=False, capture_output=True, timeout=30)
+            subprocess.run(["systemctl", "--user", "disable", "--now", unit], env=env, check=False, capture_output=True, timeout=load_grace.patience(MANAGER_CLEANUP_ALLOWANCE, load_grace.contention()))
 
 
 if __name__ == "__main__":

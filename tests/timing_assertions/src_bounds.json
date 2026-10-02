@@ -13,6 +13,13 @@
       "reason": "NOTIFY_TIMEOUT (45 s) bounds the story.sh notify helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
     }
   },
+  "src/daemon/systemd/command.rs": {
+    "production run_captured_quiet(COMMAND_DEADLINE": {
+      "count": 1,
+      "kind": "unrouted",
+      "reason": "Fixed 10 s systemctl control deadline, also used to derive the Linux spawn-lock budget. Lib tests inject the Runner boundary and never call systemctl; test-build lifecycle paths bypass the user manager. The real Linux acceptance harness graces its outer process allowance without changing this production deadline."
+    }
+  },
   "src/daemon/verification.rs": {
     "production run_captured_with_progress_and_registration(self.verification_idle_timeout": {
       "count": 2,

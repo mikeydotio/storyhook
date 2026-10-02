@@ -12,7 +12,7 @@ fn reply(text: &str) -> Result<Reply, AppError> {
 
 #[test]
 fn absent_manager_and_absent_unit_are_distinct() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = storyhook_test_support::scratch_dir();
     let env = Environment::at(dir.path());
     assert!(
         matches!(select(&env, &|_| Err(AppError::Storage("no bus".into()))).unwrap(), Selection::Unavailable(reason) if reason.contains("no bus"))
@@ -25,7 +25,7 @@ fn absent_manager_and_absent_unit_are_distinct() {
 
 #[test]
 fn installed_unit_refusal_does_not_turn_into_a_fork() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = storyhook_test_support::scratch_dir();
     let env = Environment::at(dir.path());
     std::fs::create_dir_all(path(&env).parent().unwrap()).unwrap();
     std::fs::write(path(&env), "broken").unwrap();
@@ -34,7 +34,7 @@ fn installed_unit_refusal_does_not_turn_into_a_fork() {
 
 #[test]
 fn start_refusal_and_control_timeout_keep_their_diagnostics() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = storyhook_test_support::scratch_dir();
     let env = Environment::at(dir.path());
     let run = |args: &[&str]| {
         if args[0] == "show" {
@@ -66,7 +66,7 @@ fn start_refusal_and_control_timeout_keep_their_diagnostics() {
 
 #[test]
 fn manager_start_is_idempotent_and_rejects_overrides() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = storyhook_test_support::scratch_dir();
     let env = Environment::at(dir.path());
     let calls = RefCell::new(Vec::new());
     let run = |args: &[&str]| {
@@ -106,7 +106,7 @@ fn manager_start_is_idempotent_and_rejects_overrides() {
 
 #[test]
 fn generated_unit_cannot_name_another_store_or_runtime_root() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = storyhook_test_support::scratch_dir();
     let env = Environment::at(dir.path());
     let other = Environment::at(dir.path().join("other"));
     let execution = ExecutionPath::parse(Some(std::ffi::OsStr::new("/usr/bin"))).unwrap();
@@ -121,7 +121,7 @@ fn generated_unit_cannot_name_another_store_or_runtime_root() {
 #[test]
 #[cfg(unix)]
 fn loaded_fragment_may_be_the_managers_symlink_to_the_same_definition() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = storyhook_test_support::scratch_dir();
     let env = Environment::at(dir.path());
     fs::create_dir_all(path(&env).parent().unwrap()).unwrap();
     fs::write(path(&env), "definition").unwrap();
@@ -142,7 +142,7 @@ fn loaded_fragment_may_be_the_managers_symlink_to_the_same_definition() {
 
 #[test]
 fn installed_path_and_gc_guard_use_the_same_store_identity() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = storyhook_test_support::scratch_dir();
     let env = Environment::at(dir.path());
     let store = dir.path().join("other.db");
     let other = env.clone().with_store(

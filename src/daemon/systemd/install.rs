@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn failed_start_restores_previous_bytes_and_enabled_state() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = storyhook_test_support::scratch_dir();
         let env = Environment::at(dir.path());
         let target = super::super::path(&env);
         atomic_write(&target, b"previous").unwrap();
@@ -258,7 +258,7 @@ mod tests {
     }
     #[test]
     fn failed_new_install_removes_definition_and_keeps_rollback_diagnostics() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = storyhook_test_support::scratch_dir();
         let env = Environment::at(dir.path());
         let run = |args: &[&str]| {
             if args[0] == "disable" {
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn unreadable_or_unconfirmed_prior_state_is_never_overwritten() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = storyhook_test_support::scratch_dir();
         let env = Environment::at(dir.path());
         let target = super::super::path(&env);
         atomic_write(&target, b"previous").unwrap();
@@ -307,7 +307,7 @@ mod tests {
     }
     #[test]
     fn uninstall_stops_before_disabling_the_unit_link() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = storyhook_test_support::scratch_dir();
         let env = Environment::at(dir.path());
         atomic_write(&super::super::path(&env), b"definition").unwrap();
         let other = super::super::path(&env).with_file_name("another-store.service");
