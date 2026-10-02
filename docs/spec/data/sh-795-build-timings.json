@@ -1,0 +1,4345 @@
+{
+  "story": "SH-795",
+  "base": "3b6cc7c6c339caccd51695b402abc8305b2dd2a5",
+  "date": "2026-10-02",
+  "command": "cargo test --workspace --no-run --offline --timings",
+  "rustc": "1.98.0 (88d9e12ae 2026-08-18)",
+  "cargo": "1.98.0 (797e8a9bc 2026-08-05)",
+  "linker_driver": "Apple clang 21.0.0 (clang-2100.3.34.2), /usr/bin/cc",
+  "integration_targets": 350,
+  "build_slots": 8,
+  "initial_cache_note": "Initial sandbox attempt was stopped when the compiler slot lock was denied. Its partial dependency cache remains; its timings are excluded.",
+  "phases": [
+    {
+      "phase": "cold",
+      "wall_seconds": 1167.1340450409916,
+      "status": 0,
+      "load_at_start": [
+        65.3046875,
+        57.46875,
+        42.93505859375
+      ],
+      "link_count": 353,
+      "link_seconds_sum": 320.34083771693986,
+      "link_seconds_union": 266.9087488777004,
+      "non_link_wall_seconds": 900.2252961632912,
+      "link_seconds_median": 0.7663091249996796,
+      "link_seconds_max": 6.614673083007801,
+      "link_samples": [
+        {
+          "output": "new_command-a02c3914bb5ab464",
+          "start_relative": 187.56548374996055,
+          "seconds": 0.993894207989797,
+          "status": 0
+        },
+        {
+          "output": "help_topic_claims-9ca84600c7d2b105",
+          "start_relative": 187.85718545794953,
+          "seconds": 0.821421625034418,
+          "status": 0
+        },
+        {
+          "output": "daemon_timeouts-4e5f2e997fcb1f57",
+          "start_relative": 191.435222415952,
+          "seconds": 1.5714279999956489,
+          "status": 0
+        },
+        {
+          "output": "daemon_parent_identity-e610ac3966905cb2",
+          "start_relative": 192.6339450829546,
+          "seconds": 1.398552083002869,
+          "status": 0
+        },
+        {
+          "output": "story_flow-69923db9c0e0e712",
+          "start_relative": 193.56494062498678,
+          "seconds": 1.02995783300139,
+          "status": 0
+        },
+        {
+          "output": "story_search-3cc87bf151bd7d97",
+          "start_relative": 193.86245600000257,
+          "seconds": 0.9384996249573305,
+          "status": 0
+        },
+        {
+          "output": "illegal_state_pair-75c0e0aa684fef42",
+          "start_relative": 198.14704187499592,
+          "seconds": 0.9714386249543168,
+          "status": 0
+        },
+        {
+          "output": "daemon_login_agent-c1ff87f7ef071a14",
+          "start_relative": 198.54422170796897,
+          "seconds": 0.7107842080295086,
+          "status": 0
+        },
+        {
+          "output": "block_notice_paths-f95abdb56a73a0cf",
+          "start_relative": 202.79988512495765,
+          "seconds": 1.1137245830032043,
+          "status": 0
+        },
+        {
+          "output": "shell_negated_status-aca71196af1b7858",
+          "start_relative": 206.87437399994815,
+          "seconds": 0.22774691600352526,
+          "status": 0
+        },
+        {
+          "output": "dashboard_deadline_knobs-42c5b07945877f32",
+          "start_relative": 207.37771862494992,
+          "seconds": 0.16416766605107114,
+          "status": 0
+        },
+        {
+          "output": "tailnet_rebind-f48ddecf0a1dee87",
+          "start_relative": 208.68197350000264,
+          "seconds": 0.8570198329980485,
+          "status": 0
+        },
+        {
+          "output": "scratch_env-896b05de53d0046c",
+          "start_relative": 209.13770329096587,
+          "seconds": 0.792049334035255,
+          "status": 0
+        },
+        {
+          "output": "tui_undo-5f83e51a026f9f7c",
+          "start_relative": 209.18503112497274,
+          "seconds": 1.0770847499952652,
+          "status": 0
+        },
+        {
+          "output": "event_hooks-e096a2a118fa2478",
+          "start_relative": 209.7686708329711,
+          "seconds": 0.8353764170315117,
+          "status": 0
+        },
+        {
+          "output": "service_project-eae87479d488d0da",
+          "start_relative": 213.57891133299563,
+          "seconds": 1.1715118329739198,
+          "status": 0
+        },
+        {
+          "output": "change_watcher_engine-88acb3797fb1e12a",
+          "start_relative": 215.91314216598403,
+          "seconds": 0.8543118750094436,
+          "status": 0
+        },
+        {
+          "output": "checkout_path_readers-9971e5b838a964f5",
+          "start_relative": 216.6191348329885,
+          "seconds": 0.4032043750048615,
+          "status": 0
+        },
+        {
+          "output": "version_identity-2e412bc3596c1c25",
+          "start_relative": 217.73476979095722,
+          "seconds": 0.14945816702675074,
+          "status": 0
+        },
+        {
+          "output": "store_inject-ccd68bc90218307d",
+          "start_relative": 219.6459736249526,
+          "seconds": 0.7138522080495022,
+          "status": 0
+        },
+        {
+          "output": "event_kind_vocabulary-13f60a2e8e6f3762",
+          "start_relative": 219.9467026659986,
+          "seconds": 0.5647279999684542,
+          "status": 0
+        },
+        {
+          "output": "route_authority-4edb72182843f205",
+          "start_relative": 223.9086882499978,
+          "seconds": 2.356833707948681,
+          "status": 0
+        },
+        {
+          "output": "store_migrations-b523235d574327ca",
+          "start_relative": 231.43886679096613,
+          "seconds": 1.0568002089858055,
+          "status": 0
+        },
+        {
+          "output": "engine_reset-b8f81504869419f3",
+          "start_relative": 231.92785379098495,
+          "seconds": 1.4029898339649662,
+          "status": 0
+        },
+        {
+          "output": "story_log-f1b90d979e070e90",
+          "start_relative": 232.57249916595174,
+          "seconds": 0.8288217090303078,
+          "status": 0
+        },
+        {
+          "output": "service_relations-ba33dff3324990ac",
+          "start_relative": 235.3757886249805,
+          "seconds": 0.9379704159800895,
+          "status": 0
+        },
+        {
+          "output": "dispatch_endpoint-a641e7bbba62c38d",
+          "start_relative": 235.60429649997968,
+          "seconds": 1.184401375008747,
+          "status": 0
+        },
+        {
+          "output": "dashboard_enter_submit_guard-f10ba3a6571daa40",
+          "start_relative": 271.7190003749565,
+          "seconds": 0.15985408303095028,
+          "status": 0
+        },
+        {
+          "output": "continuation_runtime-464f19851b754296",
+          "start_relative": 273.06347766600084,
+          "seconds": 0.1931492089643143,
+          "status": 0
+        },
+        {
+          "output": "dashboard_reserved_labels-8bc30ba3bb49bd0b",
+          "start_relative": 272.7599167909939,
+          "seconds": 0.5440279999747872,
+          "status": 0
+        },
+        {
+          "output": "continuation_replacement-ceb7d8ae546faf0d",
+          "start_relative": 272.75450258294586,
+          "seconds": 0.9216518330504186,
+          "status": 0
+        },
+        {
+          "output": "daemon_fd_hygiene-09418c483569b4b4",
+          "start_relative": 275.463159832987,
+          "seconds": 0.6674979169620201,
+          "status": 0
+        },
+        {
+          "output": "state_set_funnel-7931921a27d4b8f3",
+          "start_relative": 276.3752803749521,
+          "seconds": 0.16210245800903067,
+          "status": 0
+        },
+        {
+          "output": "project_recovery_store-e8d8deabd8aa39d1",
+          "start_relative": 276.6895201249863,
+          "seconds": 0.8796642500092275,
+          "status": 0
+        },
+        {
+          "output": "store_schema_fixture-4bf97c005858bf18",
+          "start_relative": 277.552595999965,
+          "seconds": 0.8407151660067029,
+          "status": 0
+        },
+        {
+          "output": "e2e_browser_coverage-47f7e0525d07f188",
+          "start_relative": 281.5984106249525,
+          "seconds": 0.6106101660407148,
+          "status": 0
+        },
+        {
+          "output": "story_publish-0fd01ff57ca4bb5f",
+          "start_relative": 284.323102040973,
+          "seconds": 0.4287161669926718,
+          "status": 0
+        },
+        {
+          "output": "engine_labels-6036b3d9a2d03f97",
+          "start_relative": 285.17307324998546,
+          "seconds": 0.5360374159645289,
+          "status": 0
+        },
+        {
+          "output": "story_state_archive-195e1d0c7b348b74",
+          "start_relative": 286.5563709579874,
+          "seconds": 0.3395453749690205,
+          "status": 0
+        },
+        {
+          "output": "session_start_hook-21f28b7b29db3264",
+          "start_relative": 287.7379619999556,
+          "seconds": 0.3473351660068147,
+          "status": 0
+        },
+        {
+          "output": "remove_assignees-a78a7908a0104d65",
+          "start_relative": 288.29734358296264,
+          "seconds": 0.8274097500252537,
+          "status": 0
+        },
+        {
+          "output": "engine_dispatcher-d8b71d1bfd55327d",
+          "start_relative": 288.64627341600135,
+          "seconds": 0.480918874964118,
+          "status": 0
+        },
+        {
+          "output": "type_slug_call_sites-04bd5ca6a3980732",
+          "start_relative": 289.60042241599876,
+          "seconds": 0.14971358398906887,
+          "status": 0
+        },
+        {
+          "output": "service_transfer-323e23ce68fd1e62",
+          "start_relative": 289.80997412494617,
+          "seconds": 0.9071304580429569,
+          "status": 0
+        },
+        {
+          "output": "verification_retry_shell-f609ce52aadb9c89",
+          "start_relative": 292.0850105409627,
+          "seconds": 1.0963531670277007,
+          "status": 0
+        },
+        {
+          "output": "readonly_store-3846389fad030cb7",
+          "start_relative": 292.57789899996715,
+          "seconds": 0.8109350409940816,
+          "status": 0
+        },
+        {
+          "output": "service_system-f5ed40977a0f8ce7",
+          "start_relative": 292.80111995799234,
+          "seconds": 0.7663091249996796,
+          "status": 0
+        },
+        {
+          "output": "cli_deadline-bed8f4bc0f949fa4",
+          "start_relative": 296.085332040966,
+          "seconds": 1.2659143339842558,
+          "status": 0
+        },
+        {
+          "output": "story_complexity-3cafb0ddc0dbbc42",
+          "start_relative": 300.9412277499796,
+          "seconds": 0.6918539999751374,
+          "status": 0
+        },
+        {
+          "output": "story_new_blocked_by-507eeabf606c80c2",
+          "start_relative": 301.138264624984,
+          "seconds": 0.8079549579997547,
+          "status": 0
+        },
+        {
+          "output": "token_test-c39d7df60ff4c9ff",
+          "start_relative": 308.6709508749773,
+          "seconds": 0.4076654160162434,
+          "status": 0
+        },
+        {
+          "output": "story_context-ae5631e83c37c987",
+          "start_relative": 312.2926815410028,
+          "seconds": 0.6161065839696676,
+          "status": 0
+        },
+        {
+          "output": "invoker_seam-ee82fb41d676a9d9",
+          "start_relative": 312.73271387495333,
+          "seconds": 1.0822582910186611,
+          "status": 0
+        },
+        {
+          "output": "story_types-48345be177dde215",
+          "start_relative": 318.09548516594805,
+          "seconds": 1.0947367920307443,
+          "status": 0
+        },
+        {
+          "output": "story_obviation-f95320cae56535ed",
+          "start_relative": 319.04863366595237,
+          "seconds": 1.1839995420305058,
+          "status": 0
+        },
+        {
+          "output": "session_start-cf976ebc80527e0f",
+          "start_relative": 322.82104641594924,
+          "seconds": 0.9273997090058401,
+          "status": 0
+        },
+        {
+          "output": "plugin_contract-dc10cfd1f30ad1f3",
+          "start_relative": 323.64270816597855,
+          "seconds": 0.6371685420162976,
+          "status": 0
+        },
+        {
+          "output": "scaffold-81058de0d6674f9e",
+          "start_relative": 324.82148820796283,
+          "seconds": 1.0586442920030095,
+          "status": 0
+        },
+        {
+          "output": "verifier_fixture_hygiene-9a34b9fbefb2792e",
+          "start_relative": 327.2983838329674,
+          "seconds": 0.9825491670053452,
+          "status": 0
+        },
+        {
+          "output": "foreign_gate_reporting-69f6d82f1bd770c3",
+          "start_relative": 330.62361591594527,
+          "seconds": 0.8109524170286022,
+          "status": 0
+        },
+        {
+          "output": "plugin_runner-40083ba149ec6b6e",
+          "start_relative": 335.0216466659913,
+          "seconds": 1.0378949999576434,
+          "status": 0
+        },
+        {
+          "output": "daemon_token_clipboard-6c5f1e17200c3b40",
+          "start_relative": 335.5640209579724,
+          "seconds": 1.0462499579880387,
+          "status": 0
+        },
+        {
+          "output": "merge_attributes-e026cdfe42b5d5df",
+          "start_relative": 340.2107058329857,
+          "seconds": 1.2010172919835895,
+          "status": 0
+        },
+        {
+          "output": "engine_restart-49c38fd9704a814e",
+          "start_relative": 340.0964323329972,
+          "seconds": 1.3213708749972284,
+          "status": 0
+        },
+        {
+          "output": "help_new_flags-26f831559102207f",
+          "start_relative": 345.32714504096657,
+          "seconds": 1.0936712920083664,
+          "status": 0
+        },
+        {
+          "output": "complexity_migration-4588912f08b30839",
+          "start_relative": 347.27869120799005,
+          "seconds": 1.33768549998058,
+          "status": 0
+        },
+        {
+          "output": "unassessed_priority_paths-995dce5883bc2aba",
+          "start_relative": 358.9027041249792,
+          "seconds": 0.3004834160092287,
+          "status": 0
+        },
+        {
+          "output": "store_pr_links-aa7fd530475b29b0",
+          "start_relative": 358.4154664579546,
+          "seconds": 1.3203049580333754,
+          "status": 0
+        },
+        {
+          "output": "api_agents-587ee61ba78fb68e",
+          "start_relative": 359.6127206249512,
+          "seconds": 1.365390082995873,
+          "status": 0
+        },
+        {
+          "output": "daemon_engine_controls-81ad2284c1f584ff",
+          "start_relative": 360.4542818329646,
+          "seconds": 0.9913042919943109,
+          "status": 0
+        },
+        {
+          "output": "github_access-cab373f0f2c89046",
+          "start_relative": 361.2933743749745,
+          "seconds": 0.8888062909827568,
+          "status": 0
+        },
+        {
+          "output": "story_list_flagged-e192bd90991cca2f",
+          "start_relative": 368.30407654098235,
+          "seconds": 0.8728145000059158,
+          "status": 0
+        },
+        {
+          "output": "block_interrupt-41b24dcc12defe73",
+          "start_relative": 368.72799187497003,
+          "seconds": 0.8266973749850877,
+          "status": 0
+        },
+        {
+          "output": "story_states-7d56e34a3e1811cb",
+          "start_relative": 373.87973570794566,
+          "seconds": 0.9289088750374503,
+          "status": 0
+        },
+        {
+          "output": "project_delete-350187c46f420219",
+          "start_relative": 374.1792679159553,
+          "seconds": 0.8802668339922093,
+          "status": 0
+        },
+        {
+          "output": "e2e_provider_doubles-e8de25c9558883b3",
+          "start_relative": 374.2014879999915,
+          "seconds": 0.8675649579963647,
+          "status": 0
+        },
+        {
+          "output": "store_isolation-0aff1368ffc1cdf1",
+          "start_relative": 376.09513058298035,
+          "seconds": 0.563820208015386,
+          "status": 0
+        },
+        {
+          "output": "activity_log-d45935e1a6c9718e",
+          "start_relative": 376.86941262497567,
+          "seconds": 1.0852887500077486,
+          "status": 0
+        },
+        {
+          "output": "spawned_child_environment-28da59739e6737e8",
+          "start_relative": 377.8419342080015,
+          "seconds": 0.7978160419734195,
+          "status": 0
+        },
+        {
+          "output": "story_import-257b3dd642d4970b",
+          "start_relative": 380.05695541598834,
+          "seconds": 0.9077415419742465,
+          "status": 0
+        },
+        {
+          "output": "block_delivery_paths-c8927bbab3f6a27a",
+          "start_relative": 382.8183803749853,
+          "seconds": 0.6304044999997132,
+          "status": 0
+        },
+        {
+          "output": "priority_rubric-c71659a4075f167e",
+          "start_relative": 382.92409499996575,
+          "seconds": 0.6676615410251543,
+          "status": 0
+        },
+        {
+          "output": "corruption_recovery-c057aa5459d80360",
+          "start_relative": 385.0462002499844,
+          "seconds": 0.4720017910003662,
+          "status": 0
+        },
+        {
+          "output": "story_delete_owners-b2ea9b744e8bbaac",
+          "start_relative": 386.1612881249748,
+          "seconds": 0.8386802910245024,
+          "status": 0
+        },
+        {
+          "output": "daemon_git_env-a6b87f729b90c5a3",
+          "start_relative": 386.69486408296507,
+          "seconds": 0.7280472500133328,
+          "status": 0
+        },
+        {
+          "output": "proxy_trusted_hosts-ba206195454fc39c",
+          "start_relative": 387.02908304095035,
+          "seconds": 0.7922682500211522,
+          "status": 0
+        },
+        {
+          "output": "story_labels-5a307a334fc30118",
+          "start_relative": 390.2467077909969,
+          "seconds": 0.646859125001356,
+          "status": 0
+        },
+        {
+          "output": "gate_leg_reuse-7f8e273d5bb625bc",
+          "start_relative": 390.2948766659829,
+          "seconds": 0.6240584590123035,
+          "status": 0
+        },
+        {
+          "output": "binary_lease-11285e841333f9f7",
+          "start_relative": 393.6663068329799,
+          "seconds": 0.6870989169692621,
+          "status": 0
+        },
+        {
+          "output": "handoff_notes-d8223f1b9dfabb66",
+          "start_relative": 395.9750229579513,
+          "seconds": 0.09610266704112291,
+          "status": 0
+        },
+        {
+          "output": "project_command-3e720ae101e7a777",
+          "start_relative": 396.2416576249525,
+          "seconds": 0.4571351250051521,
+          "status": 0
+        },
+        {
+          "output": "hook_bounds-f018aee3abeeb451",
+          "start_relative": 396.93279045796953,
+          "seconds": 0.6089248330099508,
+          "status": 0
+        },
+        {
+          "output": "blocked_transitions-c860d959f5cf3059",
+          "start_relative": 397.6461298749782,
+          "seconds": 0.8168431660160422,
+          "status": 0
+        },
+        {
+          "output": "dispatch_options_endpoint-00bbc26390fff738",
+          "start_relative": 397.9277472909889,
+          "seconds": 0.7393988749827258,
+          "status": 0
+        },
+        {
+          "output": "ste_comments-f996c08cd826b306",
+          "start_relative": 398.845370874973,
+          "seconds": 0.5571669160271995,
+          "status": 0
+        },
+        {
+          "output": "landing_intents-c3d6fa249ac997d9",
+          "start_relative": 399.7012507499894,
+          "seconds": 0.704340374970343,
+          "status": 0
+        },
+        {
+          "output": "engine_configuration-986f408c690eb25a",
+          "start_relative": 402.06326562498,
+          "seconds": 0.554176457982976,
+          "status": 0
+        },
+        {
+          "output": "migrate_round_trip-e016a3edbc823803",
+          "start_relative": 402.9836204579915,
+          "seconds": 0.6941943329875357,
+          "status": 0
+        },
+        {
+          "output": "plugin_reinstall_cwd-112d057125881efb",
+          "start_relative": 405.22781999997096,
+          "seconds": 0.7138212909922004,
+          "status": 0
+        },
+        {
+          "output": "gate_output_reporting-2237704a3498c37f",
+          "start_relative": 408.4248881249805,
+          "seconds": 0.45295812498079613,
+          "status": 0
+        },
+        {
+          "output": "plugin_skill_determinism-ddbfeac20b0dfec7",
+          "start_relative": 411.4729019579827,
+          "seconds": 0.1790477919857949,
+          "status": 0
+        },
+        {
+          "output": "tracked_tree_linked_worktree-473cac2be2493730",
+          "start_relative": 411.2390220409725,
+          "seconds": 0.4757827090215869,
+          "status": 0
+        },
+        {
+          "output": "configurable_prefix-7e4368d223bc0917",
+          "start_relative": 411.356637082994,
+          "seconds": 0.5015243329689838,
+          "status": 0
+        },
+        {
+          "output": "timing_assertions-d46d5409f7760092",
+          "start_relative": 412.5385074579972,
+          "seconds": 0.4426031250040978,
+          "status": 0
+        },
+        {
+          "output": "daemon_engine-0ec55ddcab9f1018",
+          "start_relative": 413.475980624964,
+          "seconds": 0.6403060409938917,
+          "status": 0
+        },
+        {
+          "output": "story_handoff-d48958ca736195d1",
+          "start_relative": 414.40280320798047,
+          "seconds": 0.747204250015784,
+          "status": 0
+        },
+        {
+          "output": "land_pr-c571f36a651d4323",
+          "start_relative": 414.44473904097686,
+          "seconds": 0.8438817919814028,
+          "status": 0
+        },
+        {
+          "output": "daemon_lifecycle-55d2d39b90d66f3e",
+          "start_relative": 414.7203433329705,
+          "seconds": 0.9949267079937272,
+          "status": 0
+        },
+        {
+          "output": "service_pr_link-9365d257c16cbd98",
+          "start_relative": 417.3528208749485,
+          "seconds": 0.6810043750447221,
+          "status": 0
+        },
+        {
+          "output": "dispatch_policy-f70f11bdb4e76c19",
+          "start_relative": 419.55328979098704,
+          "seconds": 0.7893579169758596,
+          "status": 0
+        },
+        {
+          "output": "service_git-3fd4ae7194d231f0",
+          "start_relative": 421.02806029096246,
+          "seconds": 0.8562017499934882,
+          "status": 0
+        },
+        {
+          "output": "daemon_ownership-119972c836337c78",
+          "start_relative": 428.78426370798843,
+          "seconds": 0.6657983749755658,
+          "status": 0
+        },
+        {
+          "output": "release_tagging-3675216fc54b56eb",
+          "start_relative": 429.89971995796077,
+          "seconds": 0.7923160830396228,
+          "status": 0
+        },
+        {
+          "output": "notify_reasons-1daf806757e85fb2",
+          "start_relative": 430.70810099999653,
+          "seconds": 0.9187817909987643,
+          "status": 0
+        },
+        {
+          "output": "daemon_execution_path-cc7ce5cef3e71a0c",
+          "start_relative": 430.65836991596734,
+          "seconds": 1.096077750029508,
+          "status": 0
+        },
+        {
+          "output": "ownership_compatibility-6f3bd9b37f1f542b",
+          "start_relative": 433.74368270795094,
+          "seconds": 0.8292572080390528,
+          "status": 0
+        },
+        {
+          "output": "scope_rubric-f9854f9e571d1284",
+          "start_relative": 434.6616560409893,
+          "seconds": 0.3982913749641739,
+          "status": 0
+        },
+        {
+          "output": "story-4cbc0e092c5cc26f",
+          "start_relative": 435.2278155409731,
+          "seconds": 0.48125862499000505,
+          "status": 0
+        },
+        {
+          "output": "release_body-ea1615191e6c4f49",
+          "start_relative": 437.8517348750029,
+          "seconds": 0.4055837499909103,
+          "status": 0
+        },
+        {
+          "output": "plugin_guard-459a177356096fbc",
+          "start_relative": 440.37328720797086,
+          "seconds": 0.7345274580293335,
+          "status": 0
+        },
+        {
+          "output": "service_obviation-2727a5d9a8e0a8e9",
+          "start_relative": 441.51111374999164,
+          "seconds": 0.9940651250071824,
+          "status": 0
+        },
+        {
+          "output": "project_link-ea5440b0745d41f8",
+          "start_relative": 442.0219335409929,
+          "seconds": 0.6780647920095362,
+          "status": 0
+        },
+        {
+          "output": "service_story-97bb9fe1dca4e43a",
+          "start_relative": 443.1807554579573,
+          "seconds": 0.8904834170243703,
+          "status": 0
+        },
+        {
+          "output": "daemon_gc-2c0927eeb648f64a",
+          "start_relative": 446.7079797499464,
+          "seconds": 0.4567536250106059,
+          "status": 0
+        },
+        {
+          "output": "doctor_block_delivery-2396e984e7e6653b",
+          "start_relative": 447.4609977909713,
+          "seconds": 0.7602911670110188,
+          "status": 0
+        },
+        {
+          "output": "unknown_flag_sweep-568ff5bcfd8c9d66",
+          "start_relative": 447.93442970799515,
+          "seconds": 0.5251279579824768,
+          "status": 0
+        },
+        {
+          "output": "build_number-e7d297b664768985",
+          "start_relative": 449.19676158297807,
+          "seconds": 0.5994564999709837,
+          "status": 0
+        },
+        {
+          "output": "verification_withdrawal-3090bdd2b1d9d64e",
+          "start_relative": 452.6545286659966,
+          "seconds": 1.009911666973494,
+          "status": 0
+        },
+        {
+          "output": "local_time_display-12cfb22a966c62f0",
+          "start_relative": 452.7297435409855,
+          "seconds": 0.9426920419791713,
+          "status": 0
+        },
+        {
+          "output": "gate_completion-82b0fb5441e51b6e",
+          "start_relative": 455.5471006659791,
+          "seconds": 0.19626316701760516,
+          "status": 0
+        },
+        {
+          "output": "project_new-c95d184fd7cb73f3",
+          "start_relative": 457.65465537499404,
+          "seconds": 0.6336164999520406,
+          "status": 0
+        },
+        {
+          "output": "continuation_lost_reply-1222d61b2d9e4c90",
+          "start_relative": 458.6578752909554,
+          "seconds": 0.6561572499922477,
+          "status": 0
+        },
+        {
+          "output": "verifier_observability-2467617933062eb8",
+          "start_relative": 458.91663641599007,
+          "seconds": 0.8194269589730538,
+          "status": 0
+        },
+        {
+          "output": "retired_work_verb-467f3bd4c8b4b0a7",
+          "start_relative": 461.93081079097465,
+          "seconds": 0.1518449999857694,
+          "status": 0
+        },
+        {
+          "output": "council_citations-831a6616816b9c72",
+          "start_relative": 464.8590638329624,
+          "seconds": 0.19254733301931992,
+          "status": 0
+        },
+        {
+          "output": "engine_graph_progress-5b1da33b5e331bed",
+          "start_relative": 465.41677616594825,
+          "seconds": 1.0074265000293963,
+          "status": 0
+        },
+        {
+          "output": "spawn_daemon_port-9cc7188d92851cc1",
+          "start_relative": 465.7117147909594,
+          "seconds": 0.7946003749966621,
+          "status": 0
+        },
+        {
+          "output": "readme_command_reference-f87a19a4d39b707b",
+          "start_relative": 467.44586816598894,
+          "seconds": 0.5443176249973476,
+          "status": 0
+        },
+        {
+          "output": "story_list_filters-0e09a111c11c16c1",
+          "start_relative": 468.9223192499485,
+          "seconds": 0.46320012502837926,
+          "status": 0
+        },
+        {
+          "output": "tailnet_startup-13dbefbe162589bd",
+          "start_relative": 470.74083349999273,
+          "seconds": 0.5489152499940246,
+          "status": 0
+        },
+        {
+          "output": "store_backup_naming-e3a3771acc69e7a2",
+          "start_relative": 471.901437374996,
+          "seconds": 0.5167558749672025,
+          "status": 0
+        },
+        {
+          "output": "commit_scan_receipt-6f6baf36534643eb",
+          "start_relative": 473.01253945799544,
+          "seconds": 0.4878051249543205,
+          "status": 0
+        },
+        {
+          "output": "continuation-409eb76ed36717e7",
+          "start_relative": 475.3413983749924,
+          "seconds": 0.5891480830032378,
+          "status": 0
+        },
+        {
+          "output": "engine_shell_dispatcher_claim_reuse-571c214c9c83706c",
+          "start_relative": 476.89368933299556,
+          "seconds": 0.7598165829549544,
+          "status": 0
+        },
+        {
+          "output": "dispatch_route_stubs-b83e5693124551c5",
+          "start_relative": 478.2160948329838,
+          "seconds": 0.13001254200935364,
+          "status": 0
+        },
+        {
+          "output": "internal_delivery-bab033a41765b065",
+          "start_relative": 477.4423180829617,
+          "seconds": 1.0931855420349166,
+          "status": 0
+        },
+        {
+          "output": "create_modal_project_scope-0b6a944976aac6fa",
+          "start_relative": 481.5917939579813,
+          "seconds": 0.1160286670201458,
+          "status": 0
+        },
+        {
+          "output": "help_topic_usage-62bfaaa2ae4092f5",
+          "start_relative": 481.97478724998655,
+          "seconds": 0.73326804098906,
+          "status": 0
+        },
+        {
+          "output": "help_flag_sweep-13b7dd80b5e12c9a",
+          "start_relative": 482.4301255829632,
+          "seconds": 0.6112384999869391,
+          "status": 0
+        },
+        {
+          "output": "release_targets-1c64cfc575743af6",
+          "start_relative": 489.07847154099727,
+          "seconds": 0.7196047499892302,
+          "status": 0
+        },
+        {
+          "output": "retired_next_claim-243c8faa415dd089",
+          "start_relative": 491.37778891599737,
+          "seconds": 0.21102145896293223,
+          "status": 0
+        },
+        {
+          "output": "install_status-cedf0180b8ffd560",
+          "start_relative": 492.24414979096036,
+          "seconds": 0.9018733749981038,
+          "status": 0
+        },
+        {
+          "output": "story_unclaim-1668d25782addc52",
+          "start_relative": 496.4284301250009,
+          "seconds": 0.7354567499714904,
+          "status": 0
+        },
+        {
+          "output": "service_integrity-5910b73566229f74",
+          "start_relative": 499.4169881659909,
+          "seconds": 0.8279243339784443,
+          "status": 0
+        },
+        {
+          "output": "e2e_load_grace-dcd85d31f0321847",
+          "start_relative": 506.18227195797954,
+          "seconds": 0.16388687497237697,
+          "status": 0
+        },
+        {
+          "output": "tui_integration-34c23118c24d5564",
+          "start_relative": 508.7731782079791,
+          "seconds": 0.8974414999829605,
+          "status": 0
+        },
+        {
+          "output": "wire_envelope-d671f1109dca2d5f",
+          "start_relative": 521.3033867079648,
+          "seconds": 0.9395893330220133,
+          "status": 0
+        },
+        {
+          "output": "selective_gate-73af8372a36c893f",
+          "start_relative": 525.7822859579464,
+          "seconds": 0.9224285000236705,
+          "status": 0
+        },
+        {
+          "output": "verification_control-8d2e298092fe5e9c",
+          "start_relative": 534.4730167909875,
+          "seconds": 1.031011542014312,
+          "status": 0
+        },
+        {
+          "output": "dispatch_tmux_context-a1d110ec52e1f62f",
+          "start_relative": 538.7912903749966,
+          "seconds": 0.724742290971335,
+          "status": 0
+        },
+        {
+          "output": "story_list_drafts-3be1c6a814b1bf35",
+          "start_relative": 539.901517249993,
+          "seconds": 0.4835762910079211,
+          "status": 0
+        },
+        {
+          "output": "story_graph-8b71c3c30280fd22",
+          "start_relative": 543.625731707958,
+          "seconds": 0.5885798330418766,
+          "status": 0
+        },
+        {
+          "output": "harness_path_entries-3c23a09c7ac044d6",
+          "start_relative": 548.7365471249796,
+          "seconds": 0.1809650000068359,
+          "status": 0
+        },
+        {
+          "output": "rest_routing-175f3d171685439d",
+          "start_relative": 548.1169167909538,
+          "seconds": 0.9102114170091227,
+          "status": 0
+        },
+        {
+          "output": "dashboard_focus_coverage-797f98bd1719c966",
+          "start_relative": 551.0497503749793,
+          "seconds": 0.1536982500110753,
+          "status": 0
+        },
+        {
+          "output": "story_claim-e3a13a03eec13ca2",
+          "start_relative": 552.780520790955,
+          "seconds": 0.7929820840363391,
+          "status": 0
+        },
+        {
+          "output": "handoff_endpoint-cb93044e2c9db98f",
+          "start_relative": 553.9914732079487,
+          "seconds": 0.9770570830442011,
+          "status": 0
+        },
+        {
+          "output": "gate_command-2465e9791020b920",
+          "start_relative": 561.1750818750006,
+          "seconds": 0.45972024998627603,
+          "status": 0
+        },
+        {
+          "output": "e2e_text_assertion_door-4b882ea347ccd12e",
+          "start_relative": 565.4761472909595,
+          "seconds": 0.17585862503619865,
+          "status": 0
+        },
+        {
+          "output": "portfile_fixture_hygiene-017108fd0a43a367",
+          "start_relative": 568.1842059159535,
+          "seconds": 0.11918779200641438,
+          "status": 0
+        },
+        {
+          "output": "dropped_state_migration-94dd64eda9372e14",
+          "start_relative": 570.1592652499676,
+          "seconds": 0.48588504100916907,
+          "status": 0
+        },
+        {
+          "output": "project_recovery-dbb42afefd3459d9",
+          "start_relative": 573.2927157079685,
+          "seconds": 1.4337154580280185,
+          "status": 0
+        },
+        {
+          "output": "member_add-25220ba59e46ff04",
+          "start_relative": 590.1867385829682,
+          "seconds": 0.3816609170171432,
+          "status": 0
+        },
+        {
+          "output": "engine_adoption-f17bd8673d4fd347",
+          "start_relative": 591.9026852079551,
+          "seconds": 0.4491182920173742,
+          "status": 0
+        },
+        {
+          "output": "e2e_launch_probe-45dbcf29ca527c15",
+          "start_relative": 592.5087084999541,
+          "seconds": 0.1157729160040617,
+          "status": 0
+        },
+        {
+          "output": "lane_budget-8f4b340e3d503369",
+          "start_relative": 593.4990492909565,
+          "seconds": 0.3208729170146398,
+          "status": 0
+        },
+        {
+          "output": "push_gate-2bb511f8f511f353",
+          "start_relative": 594.6423036249471,
+          "seconds": 0.35669895802857354,
+          "status": 0
+        },
+        {
+          "output": "fault_injection-7dd340c06b8fd3fd",
+          "start_relative": 595.8599857499939,
+          "seconds": 0.39771508297417313,
+          "status": 0
+        },
+        {
+          "output": "dispatch_ready_budget-54cd8486a96353aa",
+          "start_relative": 596.6614642079803,
+          "seconds": 0.31735174998175353,
+          "status": 0
+        },
+        {
+          "output": "service_config-a324f83f3b9ba38f",
+          "start_relative": 598.8112509159837,
+          "seconds": 0.4248480419628322,
+          "status": 0
+        },
+        {
+          "output": "obviation_startup-e07ea1cf99c3a0fe",
+          "start_relative": 599.6861439159838,
+          "seconds": 0.43209558399394155,
+          "status": 0
+        },
+        {
+          "output": "store_properties-a10d471e5f6c9bf2",
+          "start_relative": 603.8692296659574,
+          "seconds": 0.48568741703638807,
+          "status": 0
+        },
+        {
+          "output": "token_endpoint-2d3b91b30630844c",
+          "start_relative": 607.4390582499909,
+          "seconds": 0.8669544159783982,
+          "status": 0
+        },
+        {
+          "output": "verification_queue-d3dc46a3eb5d8b0e",
+          "start_relative": 607.6461492909584,
+          "seconds": 0.9306552089983597,
+          "status": 0
+        },
+        {
+          "output": "story_new_fields-642635bbfee2cf18",
+          "start_relative": 608.3162489159731,
+          "seconds": 0.37792341702152044,
+          "status": 0
+        },
+        {
+          "output": "dropped_cleanup-2ffad4b29289baa8",
+          "start_relative": 612.3897919159499,
+          "seconds": 0.50087066704873,
+          "status": 0
+        },
+        {
+          "output": "daemon_install_flag-da8a65a9dfd9fac2",
+          "start_relative": 622.4075884579797,
+          "seconds": 0.4482510829693638,
+          "status": 0
+        },
+        {
+          "output": "verification_progress_timeout-f2a5eba52680a72d",
+          "start_relative": 624.9556970829726,
+          "seconds": 0.6854463330237195,
+          "status": 0
+        },
+        {
+          "output": "dropped_state-a1a5e305c82403ce",
+          "start_relative": 626.1973713329644,
+          "seconds": 0.9004713330068626,
+          "status": 0
+        },
+        {
+          "output": "engine_reconcile-1c83609374181b52",
+          "start_relative": 628.9592166660004,
+          "seconds": 0.9112939589540474,
+          "status": 0
+        },
+        {
+          "output": "dashboard_local_time-c4b91f112cdec26f",
+          "start_relative": 631.6207792079658,
+          "seconds": 0.20169408299261704,
+          "status": 0
+        },
+        {
+          "output": "plugin_install_freshness-ae06b337bab577e2",
+          "start_relative": 632.6925876250025,
+          "seconds": 0.937793665973004,
+          "status": 0
+        },
+        {
+          "output": "blocked_filing_guidance-18211444fde11485",
+          "start_relative": 636.515930457972,
+          "seconds": 0.6344197079888545,
+          "status": 0
+        },
+        {
+          "output": "test_environment-5d03a2388f30bd68",
+          "start_relative": 636.5160464579822,
+          "seconds": 0.9262105000088923,
+          "status": 0
+        },
+        {
+          "output": "build_identity-aa8207bb7f2c6edd",
+          "start_relative": 641.2360384579515,
+          "seconds": 0.8037673330400139,
+          "status": 0
+        },
+        {
+          "output": "verifier_foreign_checkout-ce4e3630420f5b1d",
+          "start_relative": 643.600343625003,
+          "seconds": 1.1755197499878705,
+          "status": 0
+        },
+        {
+          "output": "plugin_install-8ea132d8503222a6",
+          "start_relative": 644.1145999579458,
+          "seconds": 1.0540241670096293,
+          "status": 0
+        },
+        {
+          "output": "implementer_test_scope-f65f4b8a3f0c16df",
+          "start_relative": 644.2634226660011,
+          "seconds": 0.9182825419702567,
+          "status": 0
+        },
+        {
+          "output": "story_reopen-8d4d59be5b212103",
+          "start_relative": 646.4648284159484,
+          "seconds": 0.6536988340085372,
+          "status": 0
+        },
+        {
+          "output": "mcp_removal-9e48aa6205e3fef7",
+          "start_relative": 648.8245907079545,
+          "seconds": 0.6675750000285916,
+          "status": 0
+        },
+        {
+          "output": "relationships-bb8221ca175737db",
+          "start_relative": 651.2594571659574,
+          "seconds": 0.4851620420231484,
+          "status": 0
+        },
+        {
+          "output": "build_slots-fd2a8415cc6a5565",
+          "start_relative": 651.8222511659842,
+          "seconds": 0.37760208401596174,
+          "status": 0
+        },
+        {
+          "output": "story_next-d042a48dad633b12",
+          "start_relative": 653.1253024579491,
+          "seconds": 0.514515292015858,
+          "status": 0
+        },
+        {
+          "output": "schema_lineage-19aeea40f5139997",
+          "start_relative": 656.0564737079549,
+          "seconds": 0.8775047500384971,
+          "status": 0
+        },
+        {
+          "output": "github_auth_retired-fe453d5ee9bf5dd6",
+          "start_relative": 656.4632295409683,
+          "seconds": 0.7161103340331465,
+          "status": 0
+        },
+        {
+          "output": "cli_error_streams-baa620bc6bf6bc07",
+          "start_relative": 656.8688167499495,
+          "seconds": 0.6628498330246657,
+          "status": 0
+        },
+        {
+          "output": "batch_preview-6f73a03494a03d01",
+          "start_relative": 657.6115559159662,
+          "seconds": 0.7296101670362987,
+          "status": 0
+        },
+        {
+          "output": "story-dba8d90e5147b9fb",
+          "start_relative": 658.8643142909859,
+          "seconds": 1.1165179999661632,
+          "status": 0
+        },
+        {
+          "output": "story_report-949f1a3bc8725a5e",
+          "start_relative": 661.0638624579879,
+          "seconds": 0.6558104169671424,
+          "status": 0
+        },
+        {
+          "output": "dashboard_error_reporting-d565d93fe0e19d0a",
+          "start_relative": 663.2199195409776,
+          "seconds": 0.17545712500577793,
+          "status": 0
+        },
+        {
+          "output": "fault_injection_guard-cf84bb53535ef117",
+          "start_relative": 663.5781855409732,
+          "seconds": 0.4623845419846475,
+          "status": 0
+        },
+        {
+          "output": "change_feed_subscriber-343ab7a92e022138",
+          "start_relative": 664.61129862495,
+          "seconds": 0.8128645000397228,
+          "status": 0
+        },
+        {
+          "output": "cli_grammar-7f1718c0a9490b12",
+          "start_relative": 666.9911474579712,
+          "seconds": 0.7021339170169085,
+          "status": 0
+        },
+        {
+          "output": "dashboard_dom_removal-36c51c54c664b4f0",
+          "start_relative": 667.7594234159915,
+          "seconds": 0.14206099999137223,
+          "status": 0
+        },
+        {
+          "output": "machine_lock-87a2f53499cdfb9d",
+          "start_relative": 668.4310346659622,
+          "seconds": 1.0249065840034746,
+          "status": 0
+        },
+        {
+          "output": "daemon_github_poll-2fd94c914d38459a",
+          "start_relative": 672.8107325829915,
+          "seconds": 0.7855644169612788,
+          "status": 0
+        },
+        {
+          "output": "dashboard_icon_glyphs-88cea4d57b8c430a",
+          "start_relative": 675.0348673329572,
+          "seconds": 0.12969391699880362,
+          "status": 0
+        },
+        {
+          "output": "tmux_server_start_sites-3968eab95d33da29",
+          "start_relative": 676.5965635409812,
+          "seconds": 0.19367204199079424,
+          "status": 0
+        },
+        {
+          "output": "crash_reports-abe3a1222e3694f4",
+          "start_relative": 676.5425656249863,
+          "seconds": 0.6788029579911381,
+          "status": 0
+        },
+        {
+          "output": "verification_shutdown_drain-c81276654fc1eff3",
+          "start_relative": 680.0830598329776,
+          "seconds": 1.7266169170034118,
+          "status": 0
+        },
+        {
+          "output": "project_burst_refusal-6c325ae96a0c93ff",
+          "start_relative": 689.4012073749909,
+          "seconds": 0.7458949160063639,
+          "status": 0
+        },
+        {
+          "output": "verifier_lifecycle-f91205d939d5bf63",
+          "start_relative": 691.0600241249776,
+          "seconds": 0.14648749999469146,
+          "status": 0
+        },
+        {
+          "output": "story_list_visibility-2d54c5ae13d95669",
+          "start_relative": 694.3684330830001,
+          "seconds": 0.9663759999675676,
+          "status": 0
+        },
+        {
+          "output": "e2e_selection-9c3328e4e27820a5",
+          "start_relative": 699.1036653749761,
+          "seconds": 1.5019722909783013,
+          "status": 0
+        },
+        {
+          "output": "semver_hook_test-c15917335baaf703",
+          "start_relative": 702.2171967909671,
+          "seconds": 1.1681496670353226,
+          "status": 0
+        },
+        {
+          "output": "trailing_arguments-87c794d8e7522568",
+          "start_relative": 708.462747374957,
+          "seconds": 1.1181650410289876,
+          "status": 0
+        },
+        {
+          "output": "hooks-e7617b77989bfb97",
+          "start_relative": 710.246697207971,
+          "seconds": 1.0364239169866778,
+          "status": 0
+        },
+        {
+          "output": "verification_batches-967b4ba318f1c3d1",
+          "start_relative": 710.9885878329515,
+          "seconds": 1.3720060830237344,
+          "status": 0
+        },
+        {
+          "output": "coupled_snapshot-b9415c4c50d1791e",
+          "start_relative": 717.8963817909826,
+          "seconds": 0.16849845898104832,
+          "status": 0
+        },
+        {
+          "output": "engine_adoption_identity-0e95b2e1dde046fe",
+          "start_relative": 719.19014099997,
+          "seconds": 1.4599468749947846,
+          "status": 0
+        },
+        {
+          "output": "daemon_concurrency-0b13fe929756336b",
+          "start_relative": 721.8116512909764,
+          "seconds": 1.1098017920157872,
+          "status": 0
+        },
+        {
+          "output": "story_summary-646a050e038b8284",
+          "start_relative": 730.9707890829886,
+          "seconds": 0.8061938330065459,
+          "status": 0
+        },
+        {
+          "output": "lifecycle_audit-c95a2514965340df",
+          "start_relative": 734.1195519579924,
+          "seconds": 0.1653300829930231,
+          "status": 0
+        },
+        {
+          "output": "cargo_diagnostics-22363c7ab91bd37d",
+          "start_relative": 735.1064213749487,
+          "seconds": 0.11183437501313165,
+          "status": 0
+        },
+        {
+          "output": "closure_cleanup-4c863bfc3e9cf076",
+          "start_relative": 736.4427440409781,
+          "seconds": 0.8981821250054054,
+          "status": 0
+        },
+        {
+          "output": "store_sqlite_conformance-1e7422a3c49db590",
+          "start_relative": 738.1708834159654,
+          "seconds": 0.4665557090193033,
+          "status": 0
+        },
+        {
+          "output": "dashboard_mutation_deadline-ec3c9b7909822ece",
+          "start_relative": 738.3884843749693,
+          "seconds": 0.42539708298863843,
+          "status": 0
+        },
+        {
+          "output": "dispatch_release_projection-c2525ee71053b411",
+          "start_relative": 739.9402634159778,
+          "seconds": 0.5404152090195566,
+          "status": 0
+        },
+        {
+          "output": "worktree_truth-ca5ba838e521e8a0",
+          "start_relative": 745.652346791001,
+          "seconds": 0.41639666695846245,
+          "status": 0
+        },
+        {
+          "output": "service_project_set_prefix-f6e27690e9737494",
+          "start_relative": 746.5550970409531,
+          "seconds": 0.5942574590444565,
+          "status": 0
+        },
+        {
+          "output": "service_settings-3ceb6caab8e0dbe4",
+          "start_relative": 748.1889032079489,
+          "seconds": 0.429784833046142,
+          "status": 0
+        },
+        {
+          "output": "story_update-5ef6badadcd11015",
+          "start_relative": 750.0835214160034,
+          "seconds": 0.5072861669468693,
+          "status": 0
+        },
+        {
+          "output": "help_topic_references-b295e2f72ea6f69b",
+          "start_relative": 755.1796256249654,
+          "seconds": 0.4289693750324659,
+          "status": 0
+        },
+        {
+          "output": "commit_identity-95caccd75bc3c275",
+          "start_relative": 755.6664940409828,
+          "seconds": 0.580783709010575,
+          "status": 0
+        },
+        {
+          "output": "e2e_fixture_hygiene-b5ea6b23606ebfd3",
+          "start_relative": 757.1153624579892,
+          "seconds": 0.1589659170131199,
+          "status": 0
+        },
+        {
+          "output": "token_exchange-0b3f3b1cdefc2ec5",
+          "start_relative": 756.5280469579739,
+          "seconds": 1.0838544170255773,
+          "status": 0
+        },
+        {
+          "output": "portable_receipt-b2caff481a58b75a",
+          "start_relative": 758.519196499954,
+          "seconds": 0.6608160000178032,
+          "status": 0
+        },
+        {
+          "output": "attachment_http-d02672ef48262662",
+          "start_relative": 759.8316582499538,
+          "seconds": 1.019265250011813,
+          "status": 0
+        },
+        {
+          "output": "completion_state_search-28499cde7d9ab21c",
+          "start_relative": 761.0643152080011,
+          "seconds": 0.12820595799712464,
+          "status": 0
+        },
+        {
+          "output": "gate_tiers-defc47b8e053d437",
+          "start_relative": 761.8989918329753,
+          "seconds": 0.11709050001809373,
+          "status": 0
+        },
+        {
+          "output": "move_reason-4b8686d38d7c332f",
+          "start_relative": 762.1712976249983,
+          "seconds": 0.5653124999953434,
+          "status": 0
+        },
+        {
+          "output": "fixture_isolation-08ff1a883fb4b2fb",
+          "start_relative": 763.5491752079688,
+          "seconds": 0.3578428329783492,
+          "status": 0
+        },
+        {
+          "output": "store_rebuild-083581cbf88359a6",
+          "start_relative": 765.0442894159933,
+          "seconds": 0.4952180839609355,
+          "status": 0
+        },
+        {
+          "output": "e2e_daemon_check-4e39863b30a29e27",
+          "start_relative": 765.5781096659484,
+          "seconds": 0.4233770000282675,
+          "status": 0
+        },
+        {
+          "output": "storyhook_test_support-d5f5986e517ca97c",
+          "start_relative": 766.0669984159758,
+          "seconds": 0.8686201249947771,
+          "status": 0
+        },
+        {
+          "output": "epic_is_a_type-6304f6a1799afd3b",
+          "start_relative": 767.7402425829787,
+          "seconds": 0.4195882499916479,
+          "status": 0
+        },
+        {
+          "output": "legacy_reader-2f7e6007a755cb92",
+          "start_relative": 768.8601275409455,
+          "seconds": 0.5249020420014858,
+          "status": 0
+        },
+        {
+          "output": "commit_sync_termination-6395614bfc2b7fcd",
+          "start_relative": 772.568891999952,
+          "seconds": 0.4334928330499679,
+          "status": 0
+        },
+        {
+          "output": "default_branch_contract-c1398d77a008d219",
+          "start_relative": 773.6378207499511,
+          "seconds": 0.37689450004836544,
+          "status": 0
+        },
+        {
+          "output": "crash_matrix-7392450d297499f0",
+          "start_relative": 776.5760761659476,
+          "seconds": 0.6695288339979015,
+          "status": 0
+        },
+        {
+          "output": "bare_integer_ids-892125ca45a21a54",
+          "start_relative": 777.3389520409983,
+          "seconds": 0.3796332919737324,
+          "status": 0
+        },
+        {
+          "output": "service_grouping-91b0e04b23fcf044",
+          "start_relative": 782.9378967079683,
+          "seconds": 0.7963248750311323,
+          "status": 0
+        },
+        {
+          "output": "verifier_mirror_isolation-563830bedc43a687",
+          "start_relative": 785.5217674999731,
+          "seconds": 0.7399930829997174,
+          "status": 0
+        },
+        {
+          "output": "doctor-3fbe702d17da1c44",
+          "start_relative": 789.7826370409457,
+          "seconds": 0.8205815840046853,
+          "status": 0
+        },
+        {
+          "output": "protect_install_hook-9a5d1aca07bc396f",
+          "start_relative": 793.6385840829462,
+          "seconds": 0.7041982920491137,
+          "status": 0
+        },
+        {
+          "output": "e2e_pool-79a8676ffc852151",
+          "start_relative": 794.8554692079779,
+          "seconds": 0.585763750015758,
+          "status": 0
+        },
+        {
+          "output": "daemon_wedge-419cbeac17d54698",
+          "start_relative": 799.1891289579798,
+          "seconds": 0.7913653330178931,
+          "status": 0
+        },
+        {
+          "output": "verify_batch-59ea6acbae2dfe9e",
+          "start_relative": 800.8722746659769,
+          "seconds": 1.0119317920180038,
+          "status": 0
+        },
+        {
+          "output": "dead_public_surface-0698931a3b4f4944",
+          "start_relative": 803.0275152079994,
+          "seconds": 0.21084891696227714,
+          "status": 0
+        },
+        {
+          "output": "landing_block_delivery-908bdb98e0633f6d",
+          "start_relative": 802.6003573329654,
+          "seconds": 1.260591000027489,
+          "status": 0
+        },
+        {
+          "output": "press_gate_failsafe-a540928b1d89d8ef",
+          "start_relative": 806.2692977909464,
+          "seconds": 0.28811641701031476,
+          "status": 0
+        },
+        {
+          "output": "portable_progress-754d70a3c6254749",
+          "start_relative": 810.251810582995,
+          "seconds": 1.9206742919632234,
+          "status": 0
+        },
+        {
+          "output": "gate_lock-a07c0ea2a6500daa",
+          "start_relative": 811.6965602499549,
+          "seconds": 1.7945623330306262,
+          "status": 0
+        },
+        {
+          "output": "engine_run_model-b5f2fa3c8a5ff292",
+          "start_relative": 812.6215300829499,
+          "seconds": 1.794486875005532,
+          "status": 0
+        },
+        {
+          "output": "e2e_display_awake-2016e7bad879b2d4",
+          "start_relative": 816.6029739579535,
+          "seconds": 0.2706061250064522,
+          "status": 0
+        },
+        {
+          "output": "origin_ownership-e09b550045bdab00",
+          "start_relative": 822.0402970829746,
+          "seconds": 1.6267947499873117,
+          "status": 0
+        },
+        {
+          "output": "project_selection-38a6f81549d9bff5",
+          "start_relative": 824.884848415968,
+          "seconds": 2.1277837500092573,
+          "status": 0
+        },
+        {
+          "output": "storyhook-1566eb8e616b8b3c",
+          "start_relative": 823.6631706659682,
+          "seconds": 4.305609125003684,
+          "status": 0
+        },
+        {
+          "output": "github_shell-ebb614736f46b291",
+          "start_relative": 853.480158790946,
+          "seconds": 2.0530286250286736,
+          "status": 0
+        },
+        {
+          "output": "install_source-85ef72e145162248",
+          "start_relative": 856.9292565829819,
+          "seconds": 2.6042179579962976,
+          "status": 0
+        },
+        {
+          "output": "verifier_bundle-42b544d1313c991d",
+          "start_relative": 863.6271967079956,
+          "seconds": 1.9810646249679849,
+          "status": 0
+        },
+        {
+          "output": "tailnet_probe_budget-1ca3d52a42dda047",
+          "start_relative": 871.569171332987,
+          "seconds": 3.3717213749769144,
+          "status": 0
+        },
+        {
+          "output": "migration_guard-66b77d859c69676c",
+          "start_relative": 873.542773041001,
+          "seconds": 2.793936916976236,
+          "status": 0
+        },
+        {
+          "output": "block_delivery_authority-d5623b42bd2c7da6",
+          "start_relative": 874.0707440829719,
+          "seconds": 3.540980125020724,
+          "status": 0
+        },
+        {
+          "output": "verification_retry_progress-a66635d64f8b55d0",
+          "start_relative": 874.3399352909764,
+          "seconds": 4.15272825001739,
+          "status": 0
+        },
+        {
+          "output": "web_test-9ce228ef63b2fab9",
+          "start_relative": 880.9392832079902,
+          "seconds": 6.614673083007801,
+          "status": 0
+        },
+        {
+          "output": "complexity_rubric-4ff68d21cbf3d872",
+          "start_relative": 884.7536274999729,
+          "seconds": 3.4617591249989346,
+          "status": 0
+        },
+        {
+          "output": "hook_execution-fc20e977a6e4ec9f",
+          "start_relative": 912.1746283749817,
+          "seconds": 3.6577495830133557,
+          "status": 0
+        },
+        {
+          "output": "hook_budgets-a80dfb0befaf82d2",
+          "start_relative": 914.3451876249746,
+          "seconds": 3.4719559579971246,
+          "status": 0
+        },
+        {
+          "output": "battery_completion-5a835a2285dc50f7",
+          "start_relative": 916.8150795829715,
+          "seconds": 3.144341000006534,
+          "status": 0
+        },
+        {
+          "output": "story_cleanup-0768b08a512b96d6",
+          "start_relative": 921.9777693329961,
+          "seconds": 3.575874166970607,
+          "status": 0
+        },
+        {
+          "output": "tailnet_advertise-f28b93cbc38b23ef",
+          "start_relative": 935.9219892499968,
+          "seconds": 4.166131790960208,
+          "status": 0
+        },
+        {
+          "output": "block_delivery-1ca1df18c8b838cb",
+          "start_relative": 941.4122728749644,
+          "seconds": 5.125703333003912,
+          "status": 0
+        },
+        {
+          "output": "read_model_column_coverage-a38023b812e2f0a7",
+          "start_relative": 975.5287680409965,
+          "seconds": 3.551416749949567,
+          "status": 0
+        },
+        {
+          "output": "service_catalog-7e4511ea3c401afa",
+          "start_relative": 997.0923407079536,
+          "seconds": 2.417703542043455,
+          "status": 0
+        },
+        {
+          "output": "spawn_inventory-c500ba579740a73b",
+          "start_relative": 998.9639480829937,
+          "seconds": 0.5875065419822931,
+          "status": 0
+        },
+        {
+          "output": "test_build_guard-33ea6cb383fc0d65",
+          "start_relative": 1006.1004511659849,
+          "seconds": 2.3972184999729507,
+          "status": 0
+        },
+        {
+          "output": "release_observer-f5bfa71f740ed4c8",
+          "start_relative": 1012.9014166659908,
+          "seconds": 1.7828190840082243,
+          "status": 0
+        },
+        {
+          "output": "hook_silence-eac34ba5c0bb7daa",
+          "start_relative": 1016.1683219579863,
+          "seconds": 1.2691411249688827,
+          "status": 0
+        },
+        {
+          "output": "story_attachments-6d576b465e77cd55",
+          "start_relative": 1020.2893844579812,
+          "seconds": 1.6187047919956967,
+          "status": 0
+        },
+        {
+          "output": "fix_cycle_5-3b63a49c53ef878c",
+          "start_relative": 1020.86772083299,
+          "seconds": 1.4549962919554673,
+          "status": 0
+        },
+        {
+          "output": "verification_override-e2a078713b28488e",
+          "start_relative": 1024.2104827079456,
+          "seconds": 2.0456274580210447,
+          "status": 0
+        },
+        {
+          "output": "project_settings-8102dd77ce5070da",
+          "start_relative": 1026.4159472909523,
+          "seconds": 1.0262602500151843,
+          "status": 0
+        },
+        {
+          "output": "git_fixture_isolation-0b889964aeb29e4f",
+          "start_relative": 1029.1038687079563,
+          "seconds": 1.372948042000644,
+          "status": 0
+        },
+        {
+          "output": "remote_identity-7b40384161e141f8",
+          "start_relative": 1033.3681869159918,
+          "seconds": 1.4074130419758148,
+          "status": 0
+        },
+        {
+          "output": "merge_gate-3dfe9c4419df9d57",
+          "start_relative": 1037.035893415974,
+          "seconds": 0.9407520840177312,
+          "status": 0
+        },
+        {
+          "output": "session_start_degraded-e7316ae1fe9a9ac6",
+          "start_relative": 1039.0505343749537,
+          "seconds": 1.0438980830367655,
+          "status": 0
+        },
+        {
+          "output": "dashboard_merge_contract-7627a60d783ec7ee",
+          "start_relative": 1040.7233365409775,
+          "seconds": 0.225263541971799,
+          "status": 0
+        },
+        {
+          "output": "story_sync_git-bf472f2954d3fcd7",
+          "start_relative": 1042.6332732499577,
+          "seconds": 0.7705300830421038,
+          "status": 0
+        },
+        {
+          "output": "git_hook_deadlines-32b121b1f746174e",
+          "start_relative": 1044.8770069999737,
+          "seconds": 0.6744290000060573,
+          "status": 0
+        },
+        {
+          "output": "backup_restore-a15514f096f49e6a",
+          "start_relative": 1045.5550204159808,
+          "seconds": 0.78710079198936,
+          "status": 0
+        },
+        {
+          "output": "ste_story_text-c8707518c68f2ff6",
+          "start_relative": 1045.7031258749776,
+          "seconds": 0.8245605829870328,
+          "status": 0
+        },
+        {
+          "output": "session_eligibility-1338f923e09850d2",
+          "start_relative": 1048.0670608749497,
+          "seconds": 0.6323322080424987,
+          "status": 0
+        },
+        {
+          "output": "cli_help-66103b6c21cc6ce1",
+          "start_relative": 1054.296884249954,
+          "seconds": 0.5972460000193678,
+          "status": 0
+        },
+        {
+          "output": "service_pr_check-6a51189041e4b632",
+          "start_relative": 1057.1477122909855,
+          "seconds": 0.8291390839731321,
+          "status": 0
+        },
+        {
+          "output": "retired_story_purge-641f0542a9073a48",
+          "start_relative": 1059.6832822909928,
+          "seconds": 1.006392708979547,
+          "status": 0
+        },
+        {
+          "output": "error_contract-2d4716ed2f64ac62",
+          "start_relative": 1059.8592774159624,
+          "seconds": 1.2109100840170868,
+          "status": 0
+        },
+        {
+          "output": "story_hard_delete-e406d77c7fd2041f",
+          "start_relative": 1062.202007749991,
+          "seconds": 1.1629526659962721,
+          "status": 0
+        },
+        {
+          "output": "engine_hardening-ceff6d213fd4e3fb",
+          "start_relative": 1062.6399981659488,
+          "seconds": 1.3124566250480711,
+          "status": 0
+        },
+        {
+          "output": "project_set_prefix-c5311262bbd24760",
+          "start_relative": 1067.0911224579904,
+          "seconds": 0.682910792005714,
+          "status": 0
+        },
+        {
+          "output": "project_visibility-5d1b5d7ebb8cb0ef",
+          "start_relative": 1068.872235540999,
+          "seconds": 0.8234413339523599,
+          "status": 0
+        },
+        {
+          "output": "branch_policy-1ea59df64c851042",
+          "start_relative": 1070.5781294579501,
+          "seconds": 0.11434070800896734,
+          "status": 0
+        },
+        {
+          "output": "resource_resolution-06c67bc8b77dd57c",
+          "start_relative": 1076.5284230829566,
+          "seconds": 0.7107782500097528,
+          "status": 0
+        },
+        {
+          "output": "tap_target_comparison-c9a1177b059e330b",
+          "start_relative": 1077.5544732079725,
+          "seconds": 0.3320044170250185,
+          "status": 0
+        },
+        {
+          "output": "project_path_hygiene-e9599c8aa247f187",
+          "start_relative": 1077.269202165946,
+          "seconds": 1.2932013340177946,
+          "status": 0
+        },
+        {
+          "output": "batch_landing-c021e1e9636e991a",
+          "start_relative": 1079.819503207982,
+          "seconds": 0.9478798750205897,
+          "status": 0
+        },
+        {
+          "output": "required_states-34720096d253b19a",
+          "start_relative": 1079.9981706249528,
+          "seconds": 0.8844738750485703,
+          "status": 0
+        },
+        {
+          "output": "verification_queue_order-c27d4267fceb6361",
+          "start_relative": 1080.427024540957,
+          "seconds": 0.8179530000197701,
+          "status": 0
+        },
+        {
+          "output": "service_query-5721c3cda5027310",
+          "start_relative": 1088.8637982499786,
+          "seconds": 0.6126817080075853,
+          "status": 0
+        },
+        {
+          "output": "story_decompose-2bc770057f80f0cb",
+          "start_relative": 1090.5105537079507,
+          "seconds": 0.8049690000480041,
+          "status": 0
+        },
+        {
+          "output": "daemon_invoke-a5b25995131e9a4c",
+          "start_relative": 1093.6007090409985,
+          "seconds": 0.5733699999982491,
+          "status": 0
+        },
+        {
+          "output": "temp_project_refusal-258d816baaf175aa",
+          "start_relative": 1094.65147087496,
+          "seconds": 0.5036801660316996,
+          "status": 0
+        },
+        {
+          "output": "batch_assembly-1c6b807bff1cc7c2",
+          "start_relative": 1094.6525847909506,
+          "seconds": 0.5085485420422629,
+          "status": 0
+        },
+        {
+          "output": "story_export-8b3dab009b47d535",
+          "start_relative": 1095.1329061249853,
+          "seconds": 0.636464832990896,
+          "status": 0
+        },
+        {
+          "output": "github_client-a3f142febec8a83b",
+          "start_relative": 1098.9523401249899,
+          "seconds": 0.4731733329826966,
+          "status": 0
+        },
+        {
+          "output": "block_delivery_resume-7cc72235cec77b68",
+          "start_relative": 1101.4669629159616,
+          "seconds": 0.540889292024076,
+          "status": 0
+        },
+        {
+          "output": "service_session-b02109d5822b23bb",
+          "start_relative": 1101.375792207953,
+          "seconds": 1.7107783750398085,
+          "status": 0
+        },
+        {
+          "output": "orphan_check-5dc5ccab5f4e92ed",
+          "start_relative": 1103.319704540947,
+          "seconds": 0.4291824590181932,
+          "status": 0
+        },
+        {
+          "output": "story_priority-e2cec895fa6d3148",
+          "start_relative": 1104.6201786659658,
+          "seconds": 0.3035740000195801,
+          "status": 0
+        },
+        {
+          "output": "story_reset-c156bfba11058b54",
+          "start_relative": 1106.569214832969,
+          "seconds": 1.0967934579821303,
+          "status": 0
+        },
+        {
+          "output": "release_gate_order-a01405740f662588",
+          "start_relative": 1108.391027582984,
+          "seconds": 0.5761085830163211,
+          "status": 0
+        },
+        {
+          "output": "browser_gate-e37e2be6c170817b",
+          "start_relative": 1110.4765832079574,
+          "seconds": 0.44857308303471655,
+          "status": 0
+        },
+        {
+          "output": "pty_interactive-4deb91a74b06642d",
+          "start_relative": 1111.685253249947,
+          "seconds": 0.917965708009433,
+          "status": 0
+        },
+        {
+          "output": "seat_guard-bb40a11b062e4b3c",
+          "start_relative": 1111.581159290974,
+          "seconds": 1.1494691250263713,
+          "status": 0
+        },
+        {
+          "output": "epic_deleted_children-86776e8103a15540",
+          "start_relative": 1113.7036991659552,
+          "seconds": 0.7941883750027046,
+          "status": 0
+        },
+        {
+          "output": "activity_script-811a2351e4beb915",
+          "start_relative": 1114.110754165973,
+          "seconds": 0.5991480840020813,
+          "status": 0
+        },
+        {
+          "output": "golden_cli-9d9f597cee5b0d64",
+          "start_relative": 1116.3879793749657,
+          "seconds": 1.6913840000052005,
+          "status": 0
+        },
+        {
+          "output": "verify_window-38500ee03281e2f2",
+          "start_relative": 1118.337554040947,
+          "seconds": 0.5632238340331241,
+          "status": 0
+        },
+        {
+          "output": "api_reset-6db143b25a2d1da1",
+          "start_relative": 1121.8363335829927,
+          "seconds": 1.7227310829912312,
+          "status": 0
+        },
+        {
+          "output": "concurrency_soak-8afd202a27fd294e",
+          "start_relative": 1124.0517348329886,
+          "seconds": 1.6589723330107518,
+          "status": 0
+        },
+        {
+          "output": "service_migrate-ace17a2a6893e364",
+          "start_relative": 1128.5696996659972,
+          "seconds": 1.2350243339897133,
+          "status": 0
+        },
+        {
+          "output": "attachment_upload-39c35380b1331531",
+          "start_relative": 1132.438140165992,
+          "seconds": 2.460075666953344,
+          "status": 0
+        },
+        {
+          "output": "move_if_state-6871c05d0b98c658",
+          "start_relative": 1133.9007270829752,
+          "seconds": 1.218111999973189,
+          "status": 0
+        }
+      ]
+    },
+    {
+      "phase": "warm",
+      "wall_seconds": 2.9409235409693792,
+      "status": 0,
+      "load_at_start": [
+        99.18701171875,
+        105.97509765625,
+        86.7236328125
+      ],
+      "link_count": 0,
+      "link_seconds_sum": 0,
+      "link_seconds_union": 0,
+      "non_link_wall_seconds": 2.9409235409693792,
+      "link_seconds_median": 0,
+      "link_seconds_max": 0,
+      "link_samples": []
+    },
+    {
+      "phase": "edited",
+      "wall_seconds": 764.5484164159861,
+      "status": 0,
+      "load_at_start": [
+        99.892578125,
+        106.00830078125,
+        86.84814453125
+      ],
+      "link_count": 353,
+      "link_seconds_sum": 527.2775689199916,
+      "link_seconds_union": 371.42715449776733,
+      "non_link_wall_seconds": 393.1212619182188,
+      "link_seconds_median": 1.2258164579980075,
+      "link_seconds_max": 6.408167624962516,
+      "link_samples": [
+        {
+          "output": "cli_help-66103b6c21cc6ce1",
+          "start_relative": 19.710166583012324,
+          "seconds": 1.1671180419507436,
+          "status": 0
+        },
+        {
+          "output": "story_priority-e2cec895fa6d3148",
+          "start_relative": 19.975960250012577,
+          "seconds": 0.9584343750029802,
+          "status": 0
+        },
+        {
+          "output": "release_observer-f5bfa71f740ed4c8",
+          "start_relative": 19.43981608300237,
+          "seconds": 1.494771541969385,
+          "status": 0
+        },
+        {
+          "output": "activity_script-811a2351e4beb915",
+          "start_relative": 19.7635127499816,
+          "seconds": 1.173620874993503,
+          "status": 0
+        },
+        {
+          "output": "engine_adoption-f17bd8673d4fd347",
+          "start_relative": 20.011802707973402,
+          "seconds": 1.678324667038396,
+          "status": 0
+        },
+        {
+          "output": "landing_intents-c3d6fa249ac997d9",
+          "start_relative": 22.832023290975485,
+          "seconds": 0.9994506670045666,
+          "status": 0
+        },
+        {
+          "output": "store_schema_fixture-4bf97c005858bf18",
+          "start_relative": 24.258392540970817,
+          "seconds": 0.8508010420482606,
+          "status": 0
+        },
+        {
+          "output": "error_contract-2d4716ed2f64ac62",
+          "start_relative": 24.533326958015095,
+          "seconds": 0.9685017919982783,
+          "status": 0
+        },
+        {
+          "output": "storyhook_test_support-d5f5986e517ca97c",
+          "start_relative": 28.795251125004143,
+          "seconds": 1.1515985410078429,
+          "status": 0
+        },
+        {
+          "output": "story_delete_owners-b2ea9b744e8bbaac",
+          "start_relative": 32.464414249989204,
+          "seconds": 0.5904959160252474,
+          "status": 0
+        },
+        {
+          "output": "council_citations-831a6616816b9c72",
+          "start_relative": 34.57675312500214,
+          "seconds": 0.20808316598413512,
+          "status": 0
+        },
+        {
+          "output": "story_hard_delete-e406d77c7fd2041f",
+          "start_relative": 35.37588916596724,
+          "seconds": 0.40159008401678875,
+          "status": 0
+        },
+        {
+          "output": "plugin_skill_determinism-ddbfeac20b0dfec7",
+          "start_relative": 36.00108329101931,
+          "seconds": 0.1101926249684766,
+          "status": 0
+        },
+        {
+          "output": "gate_leg_reuse-7f8e273d5bb625bc",
+          "start_relative": 36.89739004097646,
+          "seconds": 0.4842532920301892,
+          "status": 0
+        },
+        {
+          "output": "engine_configuration-986f408c690eb25a",
+          "start_relative": 36.85027812496992,
+          "seconds": 0.6764843330020085,
+          "status": 0
+        },
+        {
+          "output": "portable_receipt-b2caff481a58b75a",
+          "start_relative": 39.71397724997951,
+          "seconds": 0.4846149160293862,
+          "status": 0
+        },
+        {
+          "output": "gate_completion-82b0fb5441e51b6e",
+          "start_relative": 40.76696916599758,
+          "seconds": 0.1817282919655554,
+          "status": 0
+        },
+        {
+          "output": "story_reopen-8d4d59be5b212103",
+          "start_relative": 40.42032174998894,
+          "seconds": 0.6582543330150656,
+          "status": 0
+        },
+        {
+          "output": "store_properties-a10d471e5f6c9bf2",
+          "start_relative": 40.59006966598099,
+          "seconds": 0.673323958995752,
+          "status": 0
+        },
+        {
+          "output": "dispatch_ready_budget-54cd8486a96353aa",
+          "start_relative": 42.440056874998845,
+          "seconds": 0.3921522080199793,
+          "status": 0
+        },
+        {
+          "output": "tracked_tree_linked_worktree-473cac2be2493730",
+          "start_relative": 42.789585040998645,
+          "seconds": 0.5444008749909699,
+          "status": 0
+        },
+        {
+          "output": "store_inject-ccd68bc90218307d",
+          "start_relative": 42.76912645797711,
+          "seconds": 0.6187762080226094,
+          "status": 0
+        },
+        {
+          "output": "continuation_lost_reply-1222d61b2d9e4c90",
+          "start_relative": 43.68946791597409,
+          "seconds": 0.4132358750212006,
+          "status": 0
+        },
+        {
+          "output": "dashboard_deadline_knobs-42c5b07945877f32",
+          "start_relative": 44.568636999989394,
+          "seconds": 0.15203441597986966,
+          "status": 0
+        },
+        {
+          "output": "block_delivery-1ca1df18c8b838cb",
+          "start_relative": 44.99792691599578,
+          "seconds": 0.4948942919727415,
+          "status": 0
+        },
+        {
+          "output": "priority_rubric-c71659a4075f167e",
+          "start_relative": 45.45398395799566,
+          "seconds": 0.321282249991782,
+          "status": 0
+        },
+        {
+          "output": "story_graph-8b71c3c30280fd22",
+          "start_relative": 46.388810291013215,
+          "seconds": 0.43152837496018037,
+          "status": 0
+        },
+        {
+          "output": "dashboard_enter_submit_guard-f10ba3a6571daa40",
+          "start_relative": 47.377134040987585,
+          "seconds": 0.13035737501922995,
+          "status": 0
+        },
+        {
+          "output": "service_session-b02109d5822b23bb",
+          "start_relative": 47.18509537499631,
+          "seconds": 0.4895096250111237,
+          "status": 0
+        },
+        {
+          "output": "readonly_store-3846389fad030cb7",
+          "start_relative": 47.52292958297767,
+          "seconds": 0.33313916699262336,
+          "status": 0
+        },
+        {
+          "output": "dropped_state-a1a5e305c82403ce",
+          "start_relative": 48.06356300000334,
+          "seconds": 0.4360887910006568,
+          "status": 0
+        },
+        {
+          "output": "resource_resolution-06c67bc8b77dd57c",
+          "start_relative": 48.191512165998574,
+          "seconds": 0.46953254198888317,
+          "status": 0
+        },
+        {
+          "output": "story_new_fields-642635bbfee2cf18",
+          "start_relative": 48.31449329096358,
+          "seconds": 0.37200462503824383,
+          "status": 0
+        },
+        {
+          "output": "story_search-3cc87bf151bd7d97",
+          "start_relative": 50.33629041601671,
+          "seconds": 0.39264933398226276,
+          "status": 0
+        },
+        {
+          "output": "story_list_flagged-e192bd90991cca2f",
+          "start_relative": 50.5743041249807,
+          "seconds": 0.3295981250121258,
+          "status": 0
+        },
+        {
+          "output": "move_if_state-6871c05d0b98c658",
+          "start_relative": 51.229087083018385,
+          "seconds": 0.5078736249706708,
+          "status": 0
+        },
+        {
+          "output": "tailnet_advertise-f28b93cbc38b23ef",
+          "start_relative": 52.78245329100173,
+          "seconds": 0.42519741697469726,
+          "status": 0
+        },
+        {
+          "output": "gate_command-2465e9791020b920",
+          "start_relative": 53.26441454101587,
+          "seconds": 0.6257747919880785,
+          "status": 0
+        },
+        {
+          "output": "push_gate-2bb511f8f511f353",
+          "start_relative": 53.097006333002355,
+          "seconds": 0.7938793749781325,
+          "status": 0
+        },
+        {
+          "output": "story_cleanup-0768b08a512b96d6",
+          "start_relative": 54.84122733300319,
+          "seconds": 0.8472174580092542,
+          "status": 0
+        },
+        {
+          "output": "ownership_compatibility-6f3bd9b37f1f542b",
+          "start_relative": 55.925068540964276,
+          "seconds": 0.8892099590157159,
+          "status": 0
+        },
+        {
+          "output": "service_migrate-ace17a2a6893e364",
+          "start_relative": 56.55942512501497,
+          "seconds": 0.8807180830044672,
+          "status": 0
+        },
+        {
+          "output": "test_environment-5d03a2388f30bd68",
+          "start_relative": 56.86463120800909,
+          "seconds": 0.6299771249759942,
+          "status": 0
+        },
+        {
+          "output": "epic_is_a_type-6304f6a1799afd3b",
+          "start_relative": 58.962145790981594,
+          "seconds": 0.8465408339980058,
+          "status": 0
+        },
+        {
+          "output": "storyhook-1566eb8e616b8b3c",
+          "start_relative": 60.95018820796395,
+          "seconds": 1.4901260000187904,
+          "status": 0
+        },
+        {
+          "output": "story_obviation-f95320cae56535ed",
+          "start_relative": 62.20101258298382,
+          "seconds": 0.6943638329976238,
+          "status": 0
+        },
+        {
+          "output": "plugin_contract-dc10cfd1f30ad1f3",
+          "start_relative": 62.60725329100387,
+          "seconds": 0.4447736669681035,
+          "status": 0
+        },
+        {
+          "output": "scope_rubric-f9854f9e571d1284",
+          "start_relative": 63.1213829999906,
+          "seconds": 0.5428247079835273,
+          "status": 0
+        },
+        {
+          "output": "remote_identity-7b40384161e141f8",
+          "start_relative": 64.01483483298216,
+          "seconds": 0.4909839580068365,
+          "status": 0
+        },
+        {
+          "output": "story_sync_git-bf472f2954d3fcd7",
+          "start_relative": 66.28957924997667,
+          "seconds": 0.744309208006598,
+          "status": 0
+        },
+        {
+          "output": "verifier_fixture_hygiene-9a34b9fbefb2792e",
+          "start_relative": 66.29140454099979,
+          "seconds": 0.8650974169722758,
+          "status": 0
+        },
+        {
+          "output": "daemon_parent_identity-e610ac3966905cb2",
+          "start_relative": 67.37227424996672,
+          "seconds": 0.5836729580187239,
+          "status": 0
+        },
+        {
+          "output": "change_feed_subscriber-343ab7a92e022138",
+          "start_relative": 67.83086462499341,
+          "seconds": 0.44271512498380616,
+          "status": 0
+        },
+        {
+          "output": "store_isolation-0aff1368ffc1cdf1",
+          "start_relative": 69.0699517079629,
+          "seconds": 0.6638711250270717,
+          "status": 0
+        },
+        {
+          "output": "verification_override-e2a078713b28488e",
+          "start_relative": 69.02593091601739,
+          "seconds": 0.7932170419953763,
+          "status": 0
+        },
+        {
+          "output": "continuation-409eb76ed36717e7",
+          "start_relative": 69.04450391599676,
+          "seconds": 0.8520240419893526,
+          "status": 0
+        },
+        {
+          "output": "corruption_recovery-c057aa5459d80360",
+          "start_relative": 69.78459733299678,
+          "seconds": 0.5278336249757558,
+          "status": 0
+        },
+        {
+          "output": "unassessed_priority_paths-995dce5883bc2aba",
+          "start_relative": 70.70977499999572,
+          "seconds": 0.12530625000363216,
+          "status": 0
+        },
+        {
+          "output": "commit_sync_termination-6395614bfc2b7fcd",
+          "start_relative": 71.42057141597616,
+          "seconds": 0.3668022089987062,
+          "status": 0
+        },
+        {
+          "output": "default_branch_contract-c1398d77a008d219",
+          "start_relative": 72.46493758301949,
+          "seconds": 0.3776187499752268,
+          "status": 0
+        },
+        {
+          "output": "obviation_startup-e07ea1cf99c3a0fe",
+          "start_relative": 73.22555487498175,
+          "seconds": 0.4442024580202997,
+          "status": 0
+        },
+        {
+          "output": "batch_assembly-1c6b807bff1cc7c2",
+          "start_relative": 73.80263141600881,
+          "seconds": 0.30463966698152944,
+          "status": 0
+        },
+        {
+          "output": "dashboard_reserved_labels-8bc30ba3bb49bd0b",
+          "start_relative": 74.54624270799104,
+          "seconds": 0.35055204201489687,
+          "status": 0
+        },
+        {
+          "output": "daemon_login_agent-c1ff87f7ef071a14",
+          "start_relative": 76.22599420801271,
+          "seconds": 0.49457958299899474,
+          "status": 0
+        },
+        {
+          "output": "tailnet_startup-13dbefbe162589bd",
+          "start_relative": 76.39515845797723,
+          "seconds": 0.46973308303859085,
+          "status": 0
+        },
+        {
+          "output": "project_delete-350187c46f420219",
+          "start_relative": 76.54784658300923,
+          "seconds": 0.4035855829715729,
+          "status": 0
+        },
+        {
+          "output": "land_pr-c571f36a651d4323",
+          "start_relative": 77.0128788750153,
+          "seconds": 0.3836472079856321,
+          "status": 0
+        },
+        {
+          "output": "e2e_browser_coverage-47f7e0525d07f188",
+          "start_relative": 77.19670699996641,
+          "seconds": 0.38157683302415535,
+          "status": 0
+        },
+        {
+          "output": "story_update-5ef6badadcd11015",
+          "start_relative": 78.9716110409936,
+          "seconds": 0.32307312497869134,
+          "status": 0
+        },
+        {
+          "output": "dashboard_error_reporting-d565d93fe0e19d0a",
+          "start_relative": 79.5168774999911,
+          "seconds": 0.21694583300268278,
+          "status": 0
+        },
+        {
+          "output": "tailnet_probe_budget-1ca3d52a42dda047",
+          "start_relative": 79.33489829098107,
+          "seconds": 0.71470287500415,
+          "status": 0
+        },
+        {
+          "output": "project_visibility-5d1b5d7ebb8cb0ef",
+          "start_relative": 79.44772254099371,
+          "seconds": 0.8330736249918118,
+          "status": 0
+        },
+        {
+          "output": "lane_budget-8f4b340e3d503369",
+          "start_relative": 80.38208050001413,
+          "seconds": 0.5269837079686113,
+          "status": 0
+        },
+        {
+          "output": "batch_landing-c021e1e9636e991a",
+          "start_relative": 80.9554457499762,
+          "seconds": 0.7824150830274448,
+          "status": 0
+        },
+        {
+          "output": "dashboard_dom_removal-36c51c54c664b4f0",
+          "start_relative": 81.56414566596504,
+          "seconds": 0.18677662505069748,
+          "status": 0
+        },
+        {
+          "output": "service_transfer-323e23ce68fd1e62",
+          "start_relative": 80.9426612079842,
+          "seconds": 1.2415014579892159,
+          "status": 0
+        },
+        {
+          "output": "gate_tiers-defc47b8e053d437",
+          "start_relative": 82.22424054099247,
+          "seconds": 0.1285795000148937,
+          "status": 0
+        },
+        {
+          "output": "blocked_filing_guidance-18211444fde11485",
+          "start_relative": 82.94385524996324,
+          "seconds": 0.41351075004786253,
+          "status": 0
+        },
+        {
+          "output": "help_topic_references-b295e2f72ea6f69b",
+          "start_relative": 83.48240795801394,
+          "seconds": 0.3464077079552226,
+          "status": 0
+        },
+        {
+          "output": "story_log-f1b90d979e070e90",
+          "start_relative": 83.8455954999663,
+          "seconds": 0.4876560000120662,
+          "status": 0
+        },
+        {
+          "output": "story_next-d042a48dad633b12",
+          "start_relative": 86.22676991601475,
+          "seconds": 0.7602988339494914,
+          "status": 0
+        },
+        {
+          "output": "service_project-eae87479d488d0da",
+          "start_relative": 87.95269766601268,
+          "seconds": 0.9700819999561645,
+          "status": 0
+        },
+        {
+          "output": "blocked_transitions-c860d959f5cf3059",
+          "start_relative": 87.97328304097755,
+          "seconds": 1.0641983340028673,
+          "status": 0
+        },
+        {
+          "output": "story_list_visibility-2d54c5ae13d95669",
+          "start_relative": 89.27992816601181,
+          "seconds": 1.0867169169941917,
+          "status": 0
+        },
+        {
+          "output": "story_types-48345be177dde215",
+          "start_relative": 89.29359341599047,
+          "seconds": 1.0838914170162752,
+          "status": 0
+        },
+        {
+          "output": "fault_injection-7dd340c06b8fd3fd",
+          "start_relative": 89.13184983300744,
+          "seconds": 1.3700740829808637,
+          "status": 0
+        },
+        {
+          "output": "e2e_pool-79a8676ffc852151",
+          "start_relative": 92.85775208298583,
+          "seconds": 1.7131520829861984,
+          "status": 0
+        },
+        {
+          "output": "press_gate_failsafe-a540928b1d89d8ef",
+          "start_relative": 96.15482929098653,
+          "seconds": 0.4870527500170283,
+          "status": 0
+        },
+        {
+          "output": "release_gate_order-a01405740f662588",
+          "start_relative": 96.84809454099741,
+          "seconds": 1.9847618750063702,
+          "status": 0
+        },
+        {
+          "output": "service_settings-3ceb6caab8e0dbe4",
+          "start_relative": 99.66479999996955,
+          "seconds": 1.8070077910088003,
+          "status": 0
+        },
+        {
+          "output": "gate_lock-a07c0ea2a6500daa",
+          "start_relative": 102.39854833297431,
+          "seconds": 1.5436929170391522,
+          "status": 0
+        },
+        {
+          "output": "checkout_path_readers-9971e5b838a964f5",
+          "start_relative": 106.25676883297274,
+          "seconds": 0.282657542033121,
+          "status": 0
+        },
+        {
+          "output": "service_project_set_prefix-f6e27690e9737494",
+          "start_relative": 105.91843074996723,
+          "seconds": 1.3244985000346787,
+          "status": 0
+        },
+        {
+          "output": "block_delivery_authority-d5623b42bd2c7da6",
+          "start_relative": 106.34360233298503,
+          "seconds": 1.1023114580311812,
+          "status": 0
+        },
+        {
+          "output": "shell_negated_status-aca71196af1b7858",
+          "start_relative": 108.10139475000324,
+          "seconds": 0.3584827909944579,
+          "status": 0
+        },
+        {
+          "output": "daemon_fd_hygiene-09418c483569b4b4",
+          "start_relative": 109.0791260409751,
+          "seconds": 1.3539795420365408,
+          "status": 0
+        },
+        {
+          "output": "story_summary-646a050e038b8284",
+          "start_relative": 110.35519612499047,
+          "seconds": 1.4868180829798803,
+          "status": 0
+        },
+        {
+          "output": "story_unclaim-1668d25782addc52",
+          "start_relative": 110.65725325001404,
+          "seconds": 1.5093463749508373,
+          "status": 0
+        },
+        {
+          "output": "mcp_removal-9e48aa6205e3fef7",
+          "start_relative": 110.353971250006,
+          "seconds": 1.8146944579784758,
+          "status": 0
+        },
+        {
+          "output": "daemon_github_poll-2fd94c914d38459a",
+          "start_relative": 110.35449820797658,
+          "seconds": 2.0652348329895176,
+          "status": 0
+        },
+        {
+          "output": "help_topic_usage-62bfaaa2ae4092f5",
+          "start_relative": 117.02729708299739,
+          "seconds": 1.281984624976758,
+          "status": 0
+        },
+        {
+          "output": "build_number-e7d297b664768985",
+          "start_relative": 118.07796658296138,
+          "seconds": 1.5413198330206797,
+          "status": 0
+        },
+        {
+          "output": "github_access-cab373f0f2c89046",
+          "start_relative": 118.91141958301887,
+          "seconds": 1.1995817499700934,
+          "status": 0
+        },
+        {
+          "output": "wire_envelope-d671f1109dca2d5f",
+          "start_relative": 123.82985149999149,
+          "seconds": 2.9956051249755546,
+          "status": 0
+        },
+        {
+          "output": "schema_lineage-19aeea40f5139997",
+          "start_relative": 126.25721966597484,
+          "seconds": 1.8662022090284154,
+          "status": 0
+        },
+        {
+          "output": "hook_execution-fc20e977a6e4ec9f",
+          "start_relative": 129.19782008300535,
+          "seconds": 1.575152417004574,
+          "status": 0
+        },
+        {
+          "output": "lifecycle_audit-c95a2514965340df",
+          "start_relative": 130.48766037501628,
+          "seconds": 0.36274116596905515,
+          "status": 0
+        },
+        {
+          "output": "block_delivery_resume-7cc72235cec77b68",
+          "start_relative": 129.35453129099915,
+          "seconds": 1.8389061670168303,
+          "status": 0
+        },
+        {
+          "output": "cli_error_streams-baa620bc6bf6bc07",
+          "start_relative": 132.38832329097204,
+          "seconds": 2.2622139590093866,
+          "status": 0
+        },
+        {
+          "output": "daemon_git_env-a6b87f729b90c5a3",
+          "start_relative": 132.3750713749905,
+          "seconds": 2.698639207985252,
+          "status": 0
+        },
+        {
+          "output": "seat_guard-bb40a11b062e4b3c",
+          "start_relative": 138.54017175000627,
+          "seconds": 2.1756008329684846,
+          "status": 0
+        },
+        {
+          "output": "session_start_degraded-e7316ae1fe9a9ac6",
+          "start_relative": 139.83361841598526,
+          "seconds": 2.2024709170218557,
+          "status": 0
+        },
+        {
+          "output": "e2e_launch_probe-45dbcf29ca527c15",
+          "start_relative": 143.91583000001265,
+          "seconds": 0.45002216595457867,
+          "status": 0
+        },
+        {
+          "output": "verification_retry_progress-a66635d64f8b55d0",
+          "start_relative": 142.13666616601404,
+          "seconds": 3.0687861669575796,
+          "status": 0
+        },
+        {
+          "output": "verification_batches-967b4ba318f1c3d1",
+          "start_relative": 147.3627497080015,
+          "seconds": 1.9215682919602841,
+          "status": 0
+        },
+        {
+          "output": "daemon_gc-2c0927eeb648f64a",
+          "start_relative": 151.54324849997647,
+          "seconds": 2.1921174160088412,
+          "status": 0
+        },
+        {
+          "output": "release_body-ea1615191e6c4f49",
+          "start_relative": 156.70121516601648,
+          "seconds": 1.872059374989476,
+          "status": 0
+        },
+        {
+          "output": "project_burst_refusal-6c325ae96a0c93ff",
+          "start_relative": 157.84595087496564,
+          "seconds": 2.937885166029446,
+          "status": 0
+        },
+        {
+          "output": "block_notice_paths-f95abdb56a73a0cf",
+          "start_relative": 164.10888733301545,
+          "seconds": 2.9758569169789553,
+          "status": 0
+        },
+        {
+          "output": "move_reason-4b8686d38d7c332f",
+          "start_relative": 164.3218498749775,
+          "seconds": 3.719075958011672,
+          "status": 0
+        },
+        {
+          "output": "member_add-25220ba59e46ff04",
+          "start_relative": 166.91862520796712,
+          "seconds": 3.1852502500405535,
+          "status": 0
+        },
+        {
+          "output": "project_set_prefix-c5311262bbd24760",
+          "start_relative": 169.12972237501526,
+          "seconds": 3.18656016595196,
+          "status": 0
+        },
+        {
+          "output": "handoff_endpoint-cb93044e2c9db98f",
+          "start_relative": 173.64005591598107,
+          "seconds": 3.5984690000186674,
+          "status": 0
+        },
+        {
+          "output": "concurrency_soak-8afd202a27fd294e",
+          "start_relative": 178.45412766601657,
+          "seconds": 2.742478416999802,
+          "status": 0
+        },
+        {
+          "output": "store_rebuild-083581cbf88359a6",
+          "start_relative": 179.0573906659847,
+          "seconds": 2.422107958991546,
+          "status": 0
+        },
+        {
+          "output": "engine_adoption_identity-0e95b2e1dde046fe",
+          "start_relative": 180.41321266599698,
+          "seconds": 3.2503675839980133,
+          "status": 0
+        },
+        {
+          "output": "story_decompose-2bc770057f80f0cb",
+          "start_relative": 184.78737658297177,
+          "seconds": 2.6926058750250377,
+          "status": 0
+        },
+        {
+          "output": "verify_batch-59ea6acbae2dfe9e",
+          "start_relative": 185.03718812501756,
+          "seconds": 2.520852665998973,
+          "status": 0
+        },
+        {
+          "output": "service_system-f5ed40977a0f8ce7",
+          "start_relative": 185.34164287499152,
+          "seconds": 2.6116085409885272,
+          "status": 0
+        },
+        {
+          "output": "worktree_truth-ca5ba838e521e8a0",
+          "start_relative": 198.3311194999842,
+          "seconds": 2.3406407909933478,
+          "status": 0
+        },
+        {
+          "output": "e2e_display_awake-2016e7bad879b2d4",
+          "start_relative": 201.72916191600962,
+          "seconds": 0.40121508395532146,
+          "status": 0
+        },
+        {
+          "output": "verification_withdrawal-3090bdd2b1d9d64e",
+          "start_relative": 206.04429879097734,
+          "seconds": 3.22707745898515,
+          "status": 0
+        },
+        {
+          "output": "local_time_display-12cfb22a966c62f0",
+          "start_relative": 211.4088549159933,
+          "seconds": 1.5314425000105985,
+          "status": 0
+        },
+        {
+          "output": "service_grouping-91b0e04b23fcf044",
+          "start_relative": 216.9843279159977,
+          "seconds": 3.3340186669956893,
+          "status": 0
+        },
+        {
+          "output": "dispatch_release_projection-c2525ee71053b411",
+          "start_relative": 223.88885154097807,
+          "seconds": 2.2445983340148814,
+          "status": 0
+        },
+        {
+          "output": "daemon_token_clipboard-6c5f1e17200c3b40",
+          "start_relative": 228.58441816596314,
+          "seconds": 2.684140124998521,
+          "status": 0
+        },
+        {
+          "output": "dropped_state_migration-94dd64eda9372e14",
+          "start_relative": 241.17306741600623,
+          "seconds": 1.966102292004507,
+          "status": 0
+        },
+        {
+          "output": "service_story-97bb9fe1dca4e43a",
+          "start_relative": 246.08301487501012,
+          "seconds": 2.3344054999761283,
+          "status": 0
+        },
+        {
+          "output": "project_link-ea5440b0745d41f8",
+          "start_relative": 249.17178179096663,
+          "seconds": 2.8925518339965492,
+          "status": 0
+        },
+        {
+          "output": "backup_restore-a15514f096f49e6a",
+          "start_relative": 253.33901175000938,
+          "seconds": 2.2322351659531705,
+          "status": 0
+        },
+        {
+          "output": "remove_assignees-a78a7908a0104d65",
+          "start_relative": 265.68139966600575,
+          "seconds": 3.456291541981045,
+          "status": 0
+        },
+        {
+          "output": "dashboard_icon_glyphs-88cea4d57b8c430a",
+          "start_relative": 268.6841309159645,
+          "seconds": 1.119472709018737,
+          "status": 0
+        },
+        {
+          "output": "verifier_bundle-42b544d1313c991d",
+          "start_relative": 266.54280083300546,
+          "seconds": 3.760231166961603,
+          "status": 0
+        },
+        {
+          "output": "origin_ownership-e09b550045bdab00",
+          "start_relative": 275.06152645801194,
+          "seconds": 4.233462582982611,
+          "status": 0
+        },
+        {
+          "output": "dashboard_focus_coverage-797f98bd1719c966",
+          "start_relative": 282.0737876659841,
+          "seconds": 1.1816697500180453,
+          "status": 0
+        },
+        {
+          "output": "story-4cbc0e092c5cc26f",
+          "start_relative": 284.6687208749936,
+          "seconds": 3.2073771660216153,
+          "status": 0
+        },
+        {
+          "output": "hook_silence-eac34ba5c0bb7daa",
+          "start_relative": 289.2605453329743,
+          "seconds": 3.46334245800972,
+          "status": 0
+        },
+        {
+          "output": "service_obviation-2727a5d9a8e0a8e9",
+          "start_relative": 290.640019915998,
+          "seconds": 4.749569625011645,
+          "status": 0
+        },
+        {
+          "output": "dispatch_endpoint-a641e7bbba62c38d",
+          "start_relative": 292.8357527079643,
+          "seconds": 4.38657716702437,
+          "status": 0
+        },
+        {
+          "output": "protect_install_hook-9a5d1aca07bc396f",
+          "start_relative": 294.3731296249898,
+          "seconds": 3.6730712500284426,
+          "status": 0
+        },
+        {
+          "output": "harness_path_entries-3c23a09c7ac044d6",
+          "start_relative": 299.9112990410067,
+          "seconds": 1.0656082089990377,
+          "status": 0
+        },
+        {
+          "output": "story_handoff-d48958ca736195d1",
+          "start_relative": 305.3356250830111,
+          "seconds": 4.38216137496056,
+          "status": 0
+        },
+        {
+          "output": "migration_guard-66b77d859c69676c",
+          "start_relative": 305.7597529999912,
+          "seconds": 5.719417374988552,
+          "status": 0
+        },
+        {
+          "output": "cli_grammar-7f1718c0a9490b12",
+          "start_relative": 308.5689184999792,
+          "seconds": 4.338115582999308,
+          "status": 0
+        },
+        {
+          "output": "tailnet_rebind-f48ddecf0a1dee87",
+          "start_relative": 317.5941514999722,
+          "seconds": 2.957869833044242,
+          "status": 0
+        },
+        {
+          "output": "branch_policy-1ea59df64c851042",
+          "start_relative": 322.0728936250089,
+          "seconds": 0.41900308296317235,
+          "status": 0
+        },
+        {
+          "output": "story_claim-e3a13a03eec13ca2",
+          "start_relative": 322.59039475000463,
+          "seconds": 2.293512083007954,
+          "status": 0
+        },
+        {
+          "output": "route_authority-4edb72182843f205",
+          "start_relative": 326.16649070801213,
+          "seconds": 2.7309455829672515,
+          "status": 0
+        },
+        {
+          "output": "timing_assertions-d46d5409f7760092",
+          "start_relative": 329.2569031249732,
+          "seconds": 3.310698750021402,
+          "status": 0
+        },
+        {
+          "output": "event_kind_vocabulary-13f60a2e8e6f3762",
+          "start_relative": 333.413232040999,
+          "seconds": 2.487098541983869,
+          "status": 0
+        },
+        {
+          "output": "batch_preview-6f73a03494a03d01",
+          "start_relative": 337.9417811660096,
+          "seconds": 2.2072107499698177,
+          "status": 0
+        },
+        {
+          "output": "plugin_runner-40083ba149ec6b6e",
+          "start_relative": 339.29943449998973,
+          "seconds": 2.9184930410119705,
+          "status": 0
+        },
+        {
+          "output": "test_build_guard-33ea6cb383fc0d65",
+          "start_relative": 341.4487203329918,
+          "seconds": 3.2925527499755844,
+          "status": 0
+        },
+        {
+          "output": "crash_matrix-7392450d297499f0",
+          "start_relative": 350.7102433749824,
+          "seconds": 3.518361041031312,
+          "status": 0
+        },
+        {
+          "output": "binary_lease-11285e841333f9f7",
+          "start_relative": 356.95874220796395,
+          "seconds": 3.761219792009797,
+          "status": 0
+        },
+        {
+          "output": "plugin_guard-459a177356096fbc",
+          "start_relative": 356.7243667499861,
+          "seconds": 4.285312207997777,
+          "status": 0
+        },
+        {
+          "output": "service_git-3fd4ae7194d231f0",
+          "start_relative": 360.8730418329942,
+          "seconds": 3.462658541975543,
+          "status": 0
+        },
+        {
+          "output": "story_new_blocked_by-507eeabf606c80c2",
+          "start_relative": 363.69732620799914,
+          "seconds": 3.590129582968075,
+          "status": 0
+        },
+        {
+          "output": "change_watcher_engine-88acb3797fb1e12a",
+          "start_relative": 366.19707374996506,
+          "seconds": 3.607695291051641,
+          "status": 0
+        },
+        {
+          "output": "project_path_hygiene-e9599c8aa247f187",
+          "start_relative": 365.4097634580103,
+          "seconds": 4.55855941696791,
+          "status": 0
+        },
+        {
+          "output": "landing_block_delivery-908bdb98e0633f6d",
+          "start_relative": 371.6863018749864,
+          "seconds": 5.148669666028582,
+          "status": 0
+        },
+        {
+          "output": "verification_queue-d3dc46a3eb5d8b0e",
+          "start_relative": 371.4962516250089,
+          "seconds": 6.408167624962516,
+          "status": 0
+        },
+        {
+          "output": "temp_project_refusal-258d816baaf175aa",
+          "start_relative": 385.32494808296906,
+          "seconds": 2.3582993330201134,
+          "status": 0
+        },
+        {
+          "output": "help_topic_claims-9ca84600c7d2b105",
+          "start_relative": 405.0746964159771,
+          "seconds": 3.143843542027753,
+          "status": 0
+        },
+        {
+          "output": "store_migrations-b523235d574327ca",
+          "start_relative": 404.91893245797837,
+          "seconds": 3.8703140420257114,
+          "status": 0
+        },
+        {
+          "output": "github_shell-ebb614736f46b291",
+          "start_relative": 413.2522639579838,
+          "seconds": 3.449445625010412,
+          "status": 0
+        },
+        {
+          "output": "dispatch_options_endpoint-00bbc26390fff738",
+          "start_relative": 418.2313901250018,
+          "seconds": 3.70815424999455,
+          "status": 0
+        },
+        {
+          "output": "store_backup_naming-e3a3771acc69e7a2",
+          "start_relative": 423.7058622909826,
+          "seconds": 4.47850050003035,
+          "status": 0
+        },
+        {
+          "output": "e2e_load_grace-dcd85d31f0321847",
+          "start_relative": 435.2078893749858,
+          "seconds": 0.5664070830098353,
+          "status": 0
+        },
+        {
+          "output": "verifier_lifecycle-f91205d939d5bf63",
+          "start_relative": 438.51821533299517,
+          "seconds": 0.6604744169744663,
+          "status": 0
+        },
+        {
+          "output": "legacy_reader-2f7e6007a755cb92",
+          "start_relative": 437.29397737496765,
+          "seconds": 2.4718094580457546,
+          "status": 0
+        },
+        {
+          "output": "spawn_daemon_port-9cc7188d92851cc1",
+          "start_relative": 438.55124912498286,
+          "seconds": 2.1865767909912392,
+          "status": 0
+        },
+        {
+          "output": "plugin_reinstall_cwd-112d057125881efb",
+          "start_relative": 442.6897663749987,
+          "seconds": 2.7627800829941407,
+          "status": 0
+        },
+        {
+          "output": "battery_completion-5a835a2285dc50f7",
+          "start_relative": 447.6043260829756,
+          "seconds": 1.9056920420262031,
+          "status": 0
+        },
+        {
+          "output": "verification_control-8d2e298092fe5e9c",
+          "start_relative": 451.910918041016,
+          "seconds": 4.164181542000733,
+          "status": 0
+        },
+        {
+          "output": "daemon_engine-0ec55ddcab9f1018",
+          "start_relative": 452.9827184579917,
+          "seconds": 3.693257500010077,
+          "status": 0
+        },
+        {
+          "output": "service_relations-ba33dff3324990ac",
+          "start_relative": 461.46533220796846,
+          "seconds": 2.1597972080344334,
+          "status": 0
+        },
+        {
+          "output": "project_settings-8102dd77ce5070da",
+          "start_relative": 462.78346183296526,
+          "seconds": 1.990814250020776,
+          "status": 0
+        },
+        {
+          "output": "complexity_migration-4588912f08b30839",
+          "start_relative": 463.3199028329691,
+          "seconds": 2.0036047500325367,
+          "status": 0
+        },
+        {
+          "output": "daemon_lifecycle-55d2d39b90d66f3e",
+          "start_relative": 466.5916728749871,
+          "seconds": 2.3177884580218233,
+          "status": 0
+        },
+        {
+          "output": "attachment_http-d02672ef48262662",
+          "start_relative": 466.36857604101533,
+          "seconds": 3.054544416954741,
+          "status": 0
+        },
+        {
+          "output": "fault_injection_guard-cf84bb53535ef117",
+          "start_relative": 479.04662995797116,
+          "seconds": 2.361049958039075,
+          "status": 0
+        },
+        {
+          "output": "epic_deleted_children-86776e8103a15540",
+          "start_relative": 484.32237187499413,
+          "seconds": 1.7496932909707539,
+          "status": 0
+        },
+        {
+          "output": "verification_queue_order-c27d4267fceb6361",
+          "start_relative": 489.83094241598155,
+          "seconds": 1.784911499998998,
+          "status": 0
+        },
+        {
+          "output": "story-dba8d90e5147b9fb",
+          "start_relative": 491.422509624972,
+          "seconds": 2.448167333030142,
+          "status": 0
+        },
+        {
+          "output": "build_slots-fd2a8415cc6a5565",
+          "start_relative": 494.1811397499987,
+          "seconds": 1.2323008329840377,
+          "status": 0
+        },
+        {
+          "output": "engine_labels-6036b3d9a2d03f97",
+          "start_relative": 494.38335458299844,
+          "seconds": 1.1147527919965796,
+          "status": 0
+        },
+        {
+          "output": "api_agents-587ee61ba78fb68e",
+          "start_relative": 495.7195911660092,
+          "seconds": 1.0743897919892333,
+          "status": 0
+        },
+        {
+          "output": "continuation_runtime-464f19851b754296",
+          "start_relative": 500.2898893749807,
+          "seconds": 0.3427670000237413,
+          "status": 0
+        },
+        {
+          "output": "doctor_block_delivery-2396e984e7e6653b",
+          "start_relative": 502.01172125001904,
+          "seconds": 1.392180582974106,
+          "status": 0
+        },
+        {
+          "output": "verifier_foreign_checkout-ce4e3630420f5b1d",
+          "start_relative": 502.37513649999164,
+          "seconds": 1.1459468330140226,
+          "status": 0
+        },
+        {
+          "output": "bare_integer_ids-892125ca45a21a54",
+          "start_relative": 502.60235666600056,
+          "seconds": 1.201834167004563,
+          "status": 0
+        },
+        {
+          "output": "coupled_snapshot-b9415c4c50d1791e",
+          "start_relative": 507.8789637499722,
+          "seconds": 0.27792254101950675,
+          "status": 0
+        },
+        {
+          "output": "session_eligibility-1338f923e09850d2",
+          "start_relative": 508.2528197079664,
+          "seconds": 1.185693875013385,
+          "status": 0
+        },
+        {
+          "output": "dispatch_policy-f70f11bdb4e76c19",
+          "start_relative": 507.9643697079737,
+          "seconds": 1.5011238750303164,
+          "status": 0
+        },
+        {
+          "output": "completion_state_search-28499cde7d9ab21c",
+          "start_relative": 509.87221987498924,
+          "seconds": 0.22858674998860806,
+          "status": 0
+        },
+        {
+          "output": "spawned_child_environment-28da59739e6737e8",
+          "start_relative": 510.44443958299235,
+          "seconds": 1.3627671250142157,
+          "status": 0
+        },
+        {
+          "output": "daemon_ownership-119972c836337c78",
+          "start_relative": 512.1013696250156,
+          "seconds": 1.5775683329557069,
+          "status": 0
+        },
+        {
+          "output": "spawn_inventory-c500ba579740a73b",
+          "start_relative": 514.77831879101,
+          "seconds": 0.2417882499867119,
+          "status": 0
+        },
+        {
+          "output": "story_flow-69923db9c0e0e712",
+          "start_relative": 516.0427981659886,
+          "seconds": 1.3593722090008669,
+          "status": 0
+        },
+        {
+          "output": "store_pr_links-aa7fd530475b29b0",
+          "start_relative": 516.0006169999833,
+          "seconds": 1.4275847910321318,
+          "status": 0
+        },
+        {
+          "output": "scaffold-81058de0d6674f9e",
+          "start_relative": 519.9761612080038,
+          "seconds": 1.7024024580023251,
+          "status": 0
+        },
+        {
+          "output": "event_hooks-e096a2a118fa2478",
+          "start_relative": 520.1494879159727,
+          "seconds": 1.6510089170187712,
+          "status": 0
+        },
+        {
+          "output": "install_source-85ef72e145162248",
+          "start_relative": 521.7968826249707,
+          "seconds": 1.1965102080139332,
+          "status": 0
+        },
+        {
+          "output": "engine_restart-49c38fd9704a814e",
+          "start_relative": 521.6112290410092,
+          "seconds": 1.6184075420023873,
+          "status": 0
+        },
+        {
+          "output": "store_sqlite_conformance-1e7422a3c49db590",
+          "start_relative": 521.8361977909808,
+          "seconds": 1.4019212090061046,
+          "status": 0
+        },
+        {
+          "output": "service_catalog-7e4511ea3c401afa",
+          "start_relative": 523.4041202910012,
+          "seconds": 1.0315796249778941,
+          "status": 0
+        },
+        {
+          "output": "daemon_wedge-419cbeac17d54698",
+          "start_relative": 526.6114362080116,
+          "seconds": 0.7689214579877444,
+          "status": 0
+        },
+        {
+          "output": "complexity_rubric-4ff68d21cbf3d872",
+          "start_relative": 527.3866331250174,
+          "seconds": 0.905073415953666,
+          "status": 0
+        },
+        {
+          "output": "relationships-bb8221ca175737db",
+          "start_relative": 527.4926964580081,
+          "seconds": 1.1436572920065373,
+          "status": 0
+        },
+        {
+          "output": "migrate_round_trip-e016a3edbc823803",
+          "start_relative": 527.8926119160024,
+          "seconds": 1.0932634170167148,
+          "status": 0
+        },
+        {
+          "output": "cargo_diagnostics-22363c7ab91bd37d",
+          "start_relative": 532.0155677080038,
+          "seconds": 0.27392858295934275,
+          "status": 0
+        },
+        {
+          "output": "retired_next_claim-243c8faa415dd089",
+          "start_relative": 532.3088664159877,
+          "seconds": 0.27783049998106435,
+          "status": 0
+        },
+        {
+          "output": "verify_window-38500ee03281e2f2",
+          "start_relative": 533.9445475409739,
+          "seconds": 1.185091542021837,
+          "status": 0
+        },
+        {
+          "output": "story_attachments-6d576b465e77cd55",
+          "start_relative": 534.9447650410002,
+          "seconds": 0.7911522089852951,
+          "status": 0
+        },
+        {
+          "output": "install_status-cedf0180b8ffd560",
+          "start_relative": 535.673576332978,
+          "seconds": 1.781943375011906,
+          "status": 0
+        },
+        {
+          "output": "service_pr_check-6a51189041e4b632",
+          "start_relative": 535.8157376659801,
+          "seconds": 1.991487084014807,
+          "status": 0
+        },
+        {
+          "output": "proxy_trusted_hosts-ba206195454fc39c",
+          "start_relative": 536.665201457974,
+          "seconds": 1.5272744169924408,
+          "status": 0
+        },
+        {
+          "output": "engine_reconcile-1c83609374181b52",
+          "start_relative": 538.0987267500022,
+          "seconds": 1.8668444160139188,
+          "status": 0
+        },
+        {
+          "output": "readme_command_reference-f87a19a4d39b707b",
+          "start_relative": 538.7959410409676,
+          "seconds": 1.3004723340272903,
+          "status": 0
+        },
+        {
+          "output": "fixture_isolation-08ff1a883fb4b2fb",
+          "start_relative": 545.0057083329884,
+          "seconds": 1.1633535000146367,
+          "status": 0
+        },
+        {
+          "output": "service_integrity-5910b73566229f74",
+          "start_relative": 546.8306192079908,
+          "seconds": 1.3513396669877693,
+          "status": 0
+        },
+        {
+          "output": "retired_work_verb-467f3bd4c8b4b0a7",
+          "start_relative": 548.1923885829747,
+          "seconds": 0.23413929203525186,
+          "status": 0
+        },
+        {
+          "output": "state_set_funnel-7931921a27d4b8f3",
+          "start_relative": 549.002956375014,
+          "seconds": 0.16653779096668586,
+          "status": 0
+        },
+        {
+          "output": "trailing_arguments-87c794d8e7522568",
+          "start_relative": 549.4368177909637,
+          "seconds": 1.0194686670438386,
+          "status": 0
+        },
+        {
+          "output": "daemon_install_flag-da8a65a9dfd9fac2",
+          "start_relative": 550.5169549579732,
+          "seconds": 1.2018701250199229,
+          "status": 0
+        },
+        {
+          "output": "pty_interactive-4deb91a74b06642d",
+          "start_relative": 551.1736561660073,
+          "seconds": 1.130894834001083,
+          "status": 0
+        },
+        {
+          "output": "story_context-ae5631e83c37c987",
+          "start_relative": 551.6583788329735,
+          "seconds": 1.2258164579980075,
+          "status": 0
+        },
+        {
+          "output": "activity_log-d45935e1a6c9718e",
+          "start_relative": 552.6782999159768,
+          "seconds": 1.7017600840190426,
+          "status": 0
+        },
+        {
+          "output": "create_modal_project_scope-0b6a944976aac6fa",
+          "start_relative": 557.2204746659845,
+          "seconds": 0.2528604590333998,
+          "status": 0
+        },
+        {
+          "output": "story_list_drafts-3be1c6a814b1bf35",
+          "start_relative": 557.9513431249652,
+          "seconds": 1.0810276250122115,
+          "status": 0
+        },
+        {
+          "output": "ste_story_text-c8707518c68f2ff6",
+          "start_relative": 557.5647370410152,
+          "seconds": 1.5316663339617662,
+          "status": 0
+        },
+        {
+          "output": "version_identity-2e412bc3596c1c25",
+          "start_relative": 559.2923083329806,
+          "seconds": 0.6192211250308901,
+          "status": 0
+        },
+        {
+          "output": "project_selection-38a6f81549d9bff5",
+          "start_relative": 559.9639900000184,
+          "seconds": 1.339795415988192,
+          "status": 0
+        },
+        {
+          "output": "dispatch_route_stubs-b83e5693124551c5",
+          "start_relative": 562.9217790829716,
+          "seconds": 0.14575787499779835,
+          "status": 0
+        },
+        {
+          "output": "story_reset-c156bfba11058b54",
+          "start_relative": 561.9064874160103,
+          "seconds": 1.8422999589820392,
+          "status": 0
+        },
+        {
+          "output": "git_fixture_isolation-0b889964aeb29e4f",
+          "start_relative": 562.497124415997,
+          "seconds": 1.3489573340048082,
+          "status": 0
+        },
+        {
+          "output": "story_complexity-3cafb0ddc0dbbc42",
+          "start_relative": 564.8638356659794,
+          "seconds": 1.2345316670252942,
+          "status": 0
+        },
+        {
+          "output": "api_reset-6db143b25a2d1da1",
+          "start_relative": 565.1425373749807,
+          "seconds": 1.7962262909859419,
+          "status": 0
+        },
+        {
+          "output": "daemon_concurrency-0b13fe929756336b",
+          "start_relative": 568.4973397079739,
+          "seconds": 1.2355189580121078,
+          "status": 0
+        },
+        {
+          "output": "story_states-7d56e34a3e1811cb",
+          "start_relative": 571.1791004160186,
+          "seconds": 1.604274583980441,
+          "status": 0
+        },
+        {
+          "output": "type_slug_call_sites-04bd5ca6a3980732",
+          "start_relative": 574.893887165992,
+          "seconds": 0.453451709006913,
+          "status": 0
+        },
+        {
+          "output": "git_hook_deadlines-32b121b1f746174e",
+          "start_relative": 577.5635632500052,
+          "seconds": 0.9109861659817398,
+          "status": 0
+        },
+        {
+          "output": "help_new_flags-26f831559102207f",
+          "start_relative": 578.0994387079845,
+          "seconds": 0.6878292079782113,
+          "status": 0
+        },
+        {
+          "output": "golden_cli-9d9f597cee5b0d64",
+          "start_relative": 579.2309457079973,
+          "seconds": 0.8362782080075704,
+          "status": 0
+        },
+        {
+          "output": "dashboard_mutation_deadline-ec3c9b7909822ece",
+          "start_relative": 581.8763548330171,
+          "seconds": 0.9141519999830052,
+          "status": 0
+        },
+        {
+          "output": "unknown_flag_sweep-568ff5bcfd8c9d66",
+          "start_relative": 583.1289123329916,
+          "seconds": 0.7385887079872191,
+          "status": 0
+        },
+        {
+          "output": "github_auth_retired-fe453d5ee9bf5dd6",
+          "start_relative": 584.4855569159845,
+          "seconds": 1.1894912919960916,
+          "status": 0
+        },
+        {
+          "output": "token_exchange-0b3f3b1cdefc2ec5",
+          "start_relative": 584.1480317499954,
+          "seconds": 2.3574804160161875,
+          "status": 0
+        },
+        {
+          "output": "dashboard_merge_contract-7627a60d783ec7ee",
+          "start_relative": 589.1335144999903,
+          "seconds": 0.2660458749742247,
+          "status": 0
+        },
+        {
+          "output": "e2e_fixture_hygiene-b5ea6b23606ebfd3",
+          "start_relative": 590.1762124579982,
+          "seconds": 0.33802441699663177,
+          "status": 0
+        },
+        {
+          "output": "verification_shutdown_drain-c81276654fc1eff3",
+          "start_relative": 588.6685396250105,
+          "seconds": 1.8660216659773141,
+          "status": 0
+        },
+        {
+          "output": "daemon_invoke-a5b25995131e9a4c",
+          "start_relative": 589.5033077910193,
+          "seconds": 1.615338374977,
+          "status": 0
+        },
+        {
+          "output": "project_recovery_store-e8d8deabd8aa39d1",
+          "start_relative": 591.3393700409797,
+          "seconds": 1.6901572089991532,
+          "status": 0
+        },
+        {
+          "output": "dead_public_surface-0698931a3b4f4944",
+          "start_relative": 593.5369802499772,
+          "seconds": 0.48821037501329556,
+          "status": 0
+        },
+        {
+          "output": "tui_undo-5f83e51a026f9f7c",
+          "start_relative": 596.505098457972,
+          "seconds": 2.1886605000472628,
+          "status": 0
+        },
+        {
+          "output": "web_test-9ce228ef63b2fab9",
+          "start_relative": 597.8277856659843,
+          "seconds": 2.536057959019672,
+          "status": 0
+        },
+        {
+          "output": "tui_integration-34c23118c24d5564",
+          "start_relative": 598.753548290988,
+          "seconds": 2.1762771669891663,
+          "status": 0
+        },
+        {
+          "output": "engine_hardening-ceff6d213fd4e3fb",
+          "start_relative": 607.2773878750158,
+          "seconds": 0.9821141659631394,
+          "status": 0
+        },
+        {
+          "output": "block_delivery_paths-c8927bbab3f6a27a",
+          "start_relative": 609.0641852910048,
+          "seconds": 1.049788958975114,
+          "status": 0
+        },
+        {
+          "output": "portfile_fixture_hygiene-017108fd0a43a367",
+          "start_relative": 611.4494128749939,
+          "seconds": 0.3709398750215769,
+          "status": 0
+        },
+        {
+          "output": "plugin_install-8ea132d8503222a6",
+          "start_relative": 614.9099784580176,
+          "seconds": 1.917428332963027,
+          "status": 0
+        },
+        {
+          "output": "commit_scan_receipt-6f6baf36534643eb",
+          "start_relative": 615.1645665409742,
+          "seconds": 1.7186516250367276,
+          "status": 0
+        },
+        {
+          "output": "daemon_execution_path-cc7ce5cef3e71a0c",
+          "start_relative": 617.884086999984,
+          "seconds": 1.72518512501847,
+          "status": 0
+        },
+        {
+          "output": "merge_gate-3dfe9c4419df9d57",
+          "start_relative": 626.2818246660172,
+          "seconds": 1.0666754589765333,
+          "status": 0
+        },
+        {
+          "output": "tmux_server_start_sites-3968eab95d33da29",
+          "start_relative": 630.7742950830143,
+          "seconds": 0.18166608299361542,
+          "status": 0
+        },
+        {
+          "output": "notify_reasons-1daf806757e85fb2",
+          "start_relative": 631.1161985829822,
+          "seconds": 0.9871124170022085,
+          "status": 0
+        },
+        {
+          "output": "daemon_engine_controls-81ad2284c1f584ff",
+          "start_relative": 633.0893779579783,
+          "seconds": 1.629884292022325,
+          "status": 0
+        },
+        {
+          "output": "doctor-3fbe702d17da1c44",
+          "start_relative": 633.0256220409647,
+          "seconds": 1.7522330840001814,
+          "status": 0
+        },
+        {
+          "output": "project_new-c95d184fd7cb73f3",
+          "start_relative": 633.2509688329883,
+          "seconds": 1.5561844169860706,
+          "status": 0
+        },
+        {
+          "output": "machine_lock-87a2f53499cdfb9d",
+          "start_relative": 633.2260987079935,
+          "seconds": 1.6118980000028387,
+          "status": 0
+        },
+        {
+          "output": "story_report-949f1a3bc8725a5e",
+          "start_relative": 633.3387212909875,
+          "seconds": 1.6144080000231043,
+          "status": 0
+        },
+        {
+          "output": "required_states-34720096d253b19a",
+          "start_relative": 634.3761769160046,
+          "seconds": 1.156734541989863,
+          "status": 0
+        },
+        {
+          "output": "gate_output_reporting-2237704a3498c37f",
+          "start_relative": 638.3676087079803,
+          "seconds": 0.5057849169825204,
+          "status": 0
+        },
+        {
+          "output": "cli_deadline-bed8f4bc0f949fa4",
+          "start_relative": 638.8917817909969,
+          "seconds": 0.8848403340089135,
+          "status": 0
+        },
+        {
+          "output": "implementer_test_scope-f65f4b8a3f0c16df",
+          "start_relative": 640.3071516659693,
+          "seconds": 1.5194707090267912,
+          "status": 0
+        },
+        {
+          "output": "story_list_filters-0e09a111c11c16c1",
+          "start_relative": 641.299683374993,
+          "seconds": 1.552311874984298,
+          "status": 0
+        },
+        {
+          "output": "engine_dispatcher-d8b71d1bfd55327d",
+          "start_relative": 642.3428200829658,
+          "seconds": 1.1682240000227466,
+          "status": 0
+        },
+        {
+          "output": "invoker_seam-ee82fb41d676a9d9",
+          "start_relative": 641.6951512909727,
+          "seconds": 2.169549167039804,
+          "status": 0
+        },
+        {
+          "output": "verifier_mirror_isolation-563830bedc43a687",
+          "start_relative": 644.0441141659976,
+          "seconds": 1.2731289999792352,
+          "status": 0
+        },
+        {
+          "output": "retired_story_purge-641f0542a9073a48",
+          "start_relative": 647.2100422499934,
+          "seconds": 1.002987125015352,
+          "status": 0
+        },
+        {
+          "output": "session_start-cf976ebc80527e0f",
+          "start_relative": 649.3005348329898,
+          "seconds": 1.75719404197298,
+          "status": 0
+        },
+        {
+          "output": "verification_progress_timeout-f2a5eba52680a72d",
+          "start_relative": 649.8314614159754,
+          "seconds": 1.3390975419897586,
+          "status": 0
+        },
+        {
+          "output": "project_recovery-dbb42afefd3459d9",
+          "start_relative": 648.4614046660136,
+          "seconds": 2.994170833961107,
+          "status": 0
+        },
+        {
+          "output": "attachment_upload-39c35380b1331531",
+          "start_relative": 649.426997750008,
+          "seconds": 2.092809290974401,
+          "status": 0
+        },
+        {
+          "output": "daemon_timeouts-4e5f2e997fcb1f57",
+          "start_relative": 650.3770735000144,
+          "seconds": 1.7378831660025753,
+          "status": 0
+        },
+        {
+          "output": "verifier_observability-2467617933062eb8",
+          "start_relative": 653.1294294580002,
+          "seconds": 2.068027417000849,
+          "status": 0
+        },
+        {
+          "output": "rest_routing-175f3d171685439d",
+          "start_relative": 656.082620916015,
+          "seconds": 1.7774723749607801,
+          "status": 0
+        },
+        {
+          "output": "internal_delivery-bab033a41765b065",
+          "start_relative": 663.0711902079638,
+          "seconds": 1.3398345000459813,
+          "status": 0
+        },
+        {
+          "output": "engine_run_model-b5f2fa3c8a5ff292",
+          "start_relative": 664.9345700829872,
+          "seconds": 0.7818959170253947,
+          "status": 0
+        },
+        {
+          "output": "service_config-a324f83f3b9ba38f",
+          "start_relative": 666.6904639999848,
+          "seconds": 0.8659434160217643,
+          "status": 0
+        },
+        {
+          "output": "orphan_check-5dc5ccab5f4e92ed",
+          "start_relative": 673.3310443329974,
+          "seconds": 0.5278814170160331,
+          "status": 0
+        },
+        {
+          "output": "tap_target_comparison-c9a1177b059e330b",
+          "start_relative": 676.3386021250044,
+          "seconds": 0.19536962499842048,
+          "status": 0
+        },
+        {
+          "output": "fix_cycle_5-3b63a49c53ef878c",
+          "start_relative": 677.8145544159925,
+          "seconds": 1.1391232499736361,
+          "status": 0
+        },
+        {
+          "output": "crash_reports-abe3a1222e3694f4",
+          "start_relative": 677.7043542079628,
+          "seconds": 1.3772748750052415,
+          "status": 0
+        },
+        {
+          "output": "semver_hook_test-c15917335baaf703",
+          "start_relative": 680.4434376250138,
+          "seconds": 0.9693413749919273,
+          "status": 0
+        },
+        {
+          "output": "e2e_selection-9c3328e4e27820a5",
+          "start_relative": 683.0461567500024,
+          "seconds": 1.4041039159637876,
+          "status": 0
+        },
+        {
+          "output": "ste_comments-f996c08cd826b306",
+          "start_relative": 683.7102087080129,
+          "seconds": 1.5550500829704106,
+          "status": 0
+        },
+        {
+          "output": "e2e_provider_doubles-e8de25c9558883b3",
+          "start_relative": 685.2568225829746,
+          "seconds": 1.0872410419979133,
+          "status": 0
+        },
+        {
+          "output": "plugin_install_freshness-ae06b337bab577e2",
+          "start_relative": 685.1921154999873,
+          "seconds": 1.2689382079988718,
+          "status": 0
+        },
+        {
+          "output": "browser_gate-e37e2be6c170817b",
+          "start_relative": 688.3502763750148,
+          "seconds": 0.9646837909822352,
+          "status": 0
+        },
+        {
+          "output": "engine_reset-b8f81504869419f3",
+          "start_relative": 687.7554543329752,
+          "seconds": 2.5696146250120364,
+          "status": 0
+        },
+        {
+          "output": "dashboard_local_time-c4b91f112cdec26f",
+          "start_relative": 689.6647167910123,
+          "seconds": 0.8995387500035577,
+          "status": 0
+        },
+        {
+          "output": "block_interrupt-41b24dcc12defe73",
+          "start_relative": 691.5715181250125,
+          "seconds": 1.1272058750037104,
+          "status": 0
+        },
+        {
+          "output": "hooks-e7617b77989bfb97",
+          "start_relative": 692.1929051249754,
+          "seconds": 1.155503916030284,
+          "status": 0
+        },
+        {
+          "output": "build_identity-aa8207bb7f2c6edd",
+          "start_relative": 692.6974995409837,
+          "seconds": 1.5887929170276038,
+          "status": 0
+        },
+        {
+          "output": "commit_identity-95caccd75bc3c275",
+          "start_relative": 693.0876748330193,
+          "seconds": 1.3597320419503376,
+          "status": 0
+        },
+        {
+          "output": "release_targets-1c64cfc575743af6",
+          "start_relative": 693.4917497080169,
+          "seconds": 1.2004950419650413,
+          "status": 0
+        },
+        {
+          "output": "foreign_gate_reporting-69f6d82f1bd770c3",
+          "start_relative": 695.2894362909719,
+          "seconds": 1.2416930420440622,
+          "status": 0
+        },
+        {
+          "output": "engine_shell_dispatcher_claim_reuse-571c214c9c83706c",
+          "start_relative": 699.0599222499877,
+          "seconds": 0.6962400000193156,
+          "status": 0
+        },
+        {
+          "output": "service_pr_link-9365d257c16cbd98",
+          "start_relative": 699.9057375409757,
+          "seconds": 1.8050929590244778,
+          "status": 0
+        },
+        {
+          "output": "release_tagging-3675216fc54b56eb",
+          "start_relative": 700.4774351249798,
+          "seconds": 1.3162419160362333,
+          "status": 0
+        },
+        {
+          "output": "hook_budgets-a80dfb0befaf82d2",
+          "start_relative": 700.4071370830061,
+          "seconds": 1.5792810000129975,
+          "status": 0
+        },
+        {
+          "output": "session_start_hook-21f28b7b29db3264",
+          "start_relative": 700.6311781660188,
+          "seconds": 1.6282178339897655,
+          "status": 0
+        },
+        {
+          "output": "continuation_replacement-ceb7d8ae546faf0d",
+          "start_relative": 701.3714166659629,
+          "seconds": 2.4268189590075053,
+          "status": 0
+        },
+        {
+          "output": "hook_bounds-f018aee3abeeb451",
+          "start_relative": 703.32163154101,
+          "seconds": 1.4942917499574833,
+          "status": 0
+        },
+        {
+          "output": "e2e_daemon_check-4e39863b30a29e27",
+          "start_relative": 706.1346607909654,
+          "seconds": 1.0776510420255363,
+          "status": 0
+        },
+        {
+          "output": "token_test-c39d7df60ff4c9ff",
+          "start_relative": 707.6056775409961,
+          "seconds": 0.6620728750131093,
+          "status": 0
+        },
+        {
+          "output": "new_command-a02c3914bb5ab464",
+          "start_relative": 707.7400245000026,
+          "seconds": 0.7097213749657385,
+          "status": 0
+        },
+        {
+          "output": "story_publish-0fd01ff57ca4bb5f",
+          "start_relative": 709.3322112499736,
+          "seconds": 0.6610821660142392,
+          "status": 0
+        },
+        {
+          "output": "token_endpoint-2d3b91b30630844c",
+          "start_relative": 708.5068472080166,
+          "seconds": 1.6295632499968633,
+          "status": 0
+        },
+        {
+          "output": "story_export-8b3dab009b47d535",
+          "start_relative": 711.0414061250049,
+          "seconds": 0.9990506659960374,
+          "status": 0
+        },
+        {
+          "output": "portable_progress-754d70a3c6254749",
+          "start_relative": 712.2664246659842,
+          "seconds": 1.50496120902244,
+          "status": 0
+        },
+        {
+          "output": "e2e_text_assertion_door-4b882ea347ccd12e",
+          "start_relative": 713.0686592909624,
+          "seconds": 0.9193910000030883,
+          "status": 0
+        },
+        {
+          "output": "help_flag_sweep-13b7dd80b5e12c9a",
+          "start_relative": 713.815550957981,
+          "seconds": 1.0769246250274591,
+          "status": 0
+        },
+        {
+          "output": "story_state_archive-195e1d0c7b348b74",
+          "start_relative": 716.2118535829941,
+          "seconds": 0.9933050419786014,
+          "status": 0
+        },
+        {
+          "output": "merge_attributes-e026cdfe42b5d5df",
+          "start_relative": 717.8871427910053,
+          "seconds": 0.7475732919992879,
+          "status": 0
+        },
+        {
+          "output": "scratch_env-896b05de53d0046c",
+          "start_relative": 721.3271136250114,
+          "seconds": 0.8727099159732461,
+          "status": 0
+        },
+        {
+          "output": "illegal_state_pair-75c0e0aa684fef42",
+          "start_relative": 725.3893943749717,
+          "seconds": 0.6623938750126399,
+          "status": 0
+        },
+        {
+          "output": "github_client-a3f142febec8a83b",
+          "start_relative": 725.9505013329908,
+          "seconds": 1.0326585830189288,
+          "status": 0
+        },
+        {
+          "output": "selective_gate-73af8372a36c893f",
+          "start_relative": 726.2148452500114,
+          "seconds": 0.7782339580007829,
+          "status": 0
+        },
+        {
+          "output": "dispatch_tmux_context-a1d110ec52e1f62f",
+          "start_relative": 727.1842601249809,
+          "seconds": 1.373731957981363,
+          "status": 0
+        },
+        {
+          "output": "engine_graph_progress-5b1da33b5e331bed",
+          "start_relative": 727.1279449579888,
+          "seconds": 1.8163512499886565,
+          "status": 0
+        },
+        {
+          "output": "read_model_column_coverage-a38023b812e2f0a7",
+          "start_relative": 727.9343354160083,
+          "seconds": 1.5423885000054725,
+          "status": 0
+        },
+        {
+          "output": "closure_cleanup-4c863bfc3e9cf076",
+          "start_relative": 730.3736356659792,
+          "seconds": 2.5837468749959953,
+          "status": 0
+        },
+        {
+          "output": "configurable_prefix-7e4368d223bc0917",
+          "start_relative": 733.354147874983,
+          "seconds": 0.8190510830027051,
+          "status": 0
+        },
+        {
+          "output": "story_labels-5a307a334fc30118",
+          "start_relative": 733.8880909580039,
+          "seconds": 1.0815726249711588,
+          "status": 0
+        },
+        {
+          "output": "story_import-257b3dd642d4970b",
+          "start_relative": 734.8667976660072,
+          "seconds": 1.22396466700593,
+          "status": 0
+        },
+        {
+          "output": "handoff_notes-d8223f1b9dfabb66",
+          "start_relative": 736.6749273329624,
+          "seconds": 0.16891566704725847,
+          "status": 0
+        },
+        {
+          "output": "project_command-3e720ae101e7a777",
+          "start_relative": 737.9833813330042,
+          "seconds": 0.5524257079814561,
+          "status": 0
+        },
+        {
+          "output": "service_query-5721c3cda5027310",
+          "start_relative": 738.682278540975,
+          "seconds": 1.6373192920000292,
+          "status": 0
+        },
+        {
+          "output": "dropped_cleanup-2ffad4b29289baa8",
+          "start_relative": 739.588099540968,
+          "seconds": 1.287747209018562,
+          "status": 0
+        },
+        {
+          "output": "verification_retry_shell-f609ce52aadb9c89",
+          "start_relative": 741.2493708750117,
+          "seconds": 1.6690427080029622,
+          "status": 0
+        }
+      ]
+    }
+  ],
+  "instrumentation_probe": [
+    {
+      "driver": 0.3728169579990208,
+      "instrumented": 1.0067277090274729
+    },
+    {
+      "driver": 0.3604966669809073,
+      "instrumented": 0.7551673330017366
+    },
+    {
+      "driver": 0.43898862501373515,
+      "instrumented": 0.8595498750219122
+    },
+    {
+      "driver": 0.5510562920244411,
+      "instrumented": 0.9454217500169761
+    },
+    {
+      "driver": 0.6204445830080658,
+      "instrumented": 0.5077782910084352
+    },
+    {
+      "driver": 0.3845417909906246,
+      "instrumented": 0.4681506250053644
+    },
+    {
+      "driver": 0.37382941599935293,
+      "instrumented": 0.9385209170286544
+    },
+    {
+      "driver": 0.02796579198911786,
+      "instrumented": 0.8842976670130156
+    },
+    {
+      "driver": 0.1976364579750225,
+      "instrumented": 0.6271842080168426
+    },
+    {
+      "driver": 0.1591739589930512,
+      "instrumented": 0.6561685409978963
+    }
+  ]
+}
