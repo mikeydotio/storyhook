@@ -440,7 +440,7 @@ pub(crate) fn check_submission(
             return Err(StoreError::Validation("continuation submission requires a clean worktree; commit tracked, staged and untracked work before verifying".into()));
         }
         if request.reviewed_head.as_ref() != Some(&evidence.head) {
-            return Err(StoreError::Validation("continuation submitted HEAD differs from the reviewed HEAD; rerun impacted tests and refresh acknowledgement".into()));
+            return Err(StoreError::Validation("continuation submitted HEAD differs from the reviewed HEAD; rerun the tests this story adds or changes and refresh acknowledgement".into()));
         }
         if request.capture["lease"]["worktree_path"].as_str() != evidence.worktree.to_str()
             || request.capture["lease"]["branch"] != evidence.branch

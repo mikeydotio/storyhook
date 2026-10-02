@@ -126,6 +126,9 @@ harness_path_entries	:(glob)**/*
 help_topic_references	:(glob)**/*
 hook_budgets	:(glob)**/*
 hooks	:(glob)**/*
+implementer_test_scope	:(glob)plugins/story/**
+implementer_test_scope	:(glob)src/**
+implementer_test_scope	AGENTS.md
 install_source	install.sh
 install_source	src/update_source.rs
 invoker_seam	:(glob)**/*

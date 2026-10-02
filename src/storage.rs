@@ -244,7 +244,7 @@ This project uses **storyhook** (`story` CLI) for work tracking.
 2. Run `story next` to find the highest-priority ready task.
 3. Update story status as you work: `story move {prefix}-<n> in-progress`
 4. Add progress notes: `story comment {prefix}-<n> "what changed and why"`
-5. Run new and impacted tests, push one PR, and link it with `story link-pr {prefix}-<n> <pr-url>`.
+5. {test_scope} Commit the work. Do not push or open a PR: the verifier pushes your branch and opens one.
 6. Record final context, then make `story move {prefix}-<n> verifying` your last action. The verifier runs the full suite, lands green work, and moves the story to `{done_state}`.
 
 ## Planning mode
@@ -340,6 +340,7 @@ Run `story help <command>` for detailed usage on any command, or `story help --c
 "#,
         prefix = prefix,
         done_state = done_state,
+        test_scope = crate::service::verification::IMPLEMENTER_TEST_SCOPE,
     )
 }
 
