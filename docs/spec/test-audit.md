@@ -314,6 +314,93 @@ entirely would still land at about 5.3-6.4 minutes on this machine. The levers
 left are SH-812 (duration-weighted packing; per-file times run 0.1-94 s while
 slices are packed by count) and less fixed setup per slice (6-15 s each).
 
+### Duration history and one discovery per planned slice (SH-812)
+
+The planner accepts an optional fourth input column of seconds, keeping its
+four-column output and test counts unchanged. Recorded time controls allocation
+between projects, whole-file longest-first packing and slice admission. Ties
+retain configuration/listing order. Missing history or a changed test count uses
+the count as its weight; the default remains eight jobs and two slices per job.
+
+Playwright's `--list`, `--test-list` and reporter receipts all use file names
+relative to `config.rootDir` (currently `e2e/specs`). Canonicalizing the root and
+file first handles macOS `/tmp`/`/private/tmp` aliases. The old dispatch post-check
+expected a `specs/` prefix absent from real listings; exact root-relative matches
+now select `dispatch.spec.ts` and `engine.spec.ts`, excluding stubbed namesakes.
+
+Each slice writes a completed JSON receipt beside its artifacts. It contains
+the discovered project/file counts, completed/pass/skip/retry counts and summed
+Playwright test durations in seconds. The shell independently requires a
+successful receipt matching its manifest: Playwright swallows exceptions thrown
+by reporters, so reporter presence alone is insufficient evidence. This also
+refuses a caller's reporter override if it suppresses the required receipt.
+
+Planner-owned slices reuse the outer selection and omit the second Playwright
+listing. Caller-supplied shards/test-lists retain their per-project listing.
+Five-project seeding, the launch probe, per-run baseline and isolation are
+unchanged. Timing artifacts separate preparation, seeding, daemon readiness,
+listing, Playwright execution and cleanup using Bash's one-second clock;
+individual test durations retain Playwright's millisecond precision.
+
+`<git-common-dir>/storyhook/e2e-durations.tsv` is disposable scheduling history;
+`STORYHOOK_E2E_DURATIONS` can select a separate file for experiments. Rows are
+`version<TAB>project<TAB>file<TAB>count<TAB>seconds<TAB>observed-unix-seconds`,
+currently version 1. Only complete successful files from a successful unfiltered,
+planner-owned harness run train it. Failed, retried, interrupted and skipped files retain
+previous history. A newer observation wins; an invalid row is diagnosed and
+ignored. The parent reloads under a nonblocking advisory lock and atomically
+replaces the file. A busy/unwritable cache is reported without changing the test
+verdict. No shared store or seeded template is copied.
+
+Measurement protocol: identical source/spec/dependency snapshots and the same
+prebuilt binary; compilation excluded explicitly in both benchmark copies.
+One optimized warm-up trains history, followed by baseline/optimized twice, at
+eight jobs and sixteen slices. Sample machine load once per second; pairs whose
+mean load differs by more than 20% are inconclusive. Retain outcomes and coverage
+counts alongside wall time, setup time and longest-slice time. Compare the paired
+result separately from SH-792's historical 625 seconds at mean load 52.
+
+**2026-10-02 measurement: acceptance not established.** The first optimized
+warm-up was stopped through normal pool cleanup after it exposed stale dispatch
+assertions that active SH-804 owns. No baseline/optimized comparison pair ran,
+and no timing history was promoted. The interrupted wall time below is a
+diagnostic duration, not a completed-leg performance result.
+
+| Measurement | Result |
+|---|---|
+| Selection | 1,477 tests, 129 files, 16 slices, 8 jobs |
+| Interrupted warm-up | 1,575.7 s, including cleanup; exit by TERM |
+| Sampled one-minute load | Mean 173.36; maximum 335.01 |
+| Complete receipts | 8 slices; 933 results: 913 passed, 14 skipped, 6 failed |
+| Longest completed slice | 1,537 s; incomplete slices excluded |
+| Completed-slice seeding | Median 7 s; range 7–8 s |
+| Completed-slice daemon readiness | Median 1 s; range 0–1 s |
+| Completed-slice redundant listing | 0 s; planned manifests reused |
+
+Two failures require `Dispatch` after a successful launch although the product
+now shows `Resume` (`dispatch.spec.ts:247,323`). SH-804 owns that contract repair.
+The other four failures are retained for diagnosis: an `entering` class remained
+(`card-transient-classes.spec.ts:71`); Save Draft became enabled and restoring the
+project left submit disabled (`create-story-project.spec.ts:343,370`); and a
+frozen-clock footer did not change (`settings-version.spec.ts:58`). SH-813 owns
+dynamic assertion patience, but this run does not prove the cause of those
+four failures. Residual diagnosis stays in SH-812 after those independent fixes.
+
+Raw local evidence is retained in
+`.storyhook/logs/sh812-performance/`: `warmup.json` contains load samples;
+`warmup.log`, `interrupted-pool/` and `warmup-artifacts/` contain logs, selection
+manifests, receipts, phase timings and browser traces. The same initial evidence
+is at `/tmp/sh812-bench/`. The benchmark driver is preserved beside the evidence;
+refresh its optimized snapshot from the final implementation before reuse.
+Its earlier snapshot predates the final whole-harness-success cache guard and
+tiny-weight serialization correction; neither was exercised as a successful
+history update in this interrupted run.
+
+The shared machine's load is not comparable to SH-792's mean 52. Do not infer a
+speedup or regression from these wall times. Resume with the independently owned
+test repairs, account for remaining failures, then run a successful warm-up and
+the two interleaved pairs before accepting this story's performance claim.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The
