@@ -241,10 +241,9 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   await expect(toast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
   await expect(toast).toHaveText(`${ALPHA_STORY_ID} dispatched`);
 
-  // The button returns to its normal, clickable state once the poll
-  // resolves.
+  // The provider double has exited: SH-850 offers Resume for its lost lane.
   await expect(dispatchButton).toBeEnabled();
-  await expect(dispatchButton).toHaveText("Dispatch");
+  await expect(dispatchButton).toHaveText("Resume");
 
   // The real side effect: story.sh actually created the worktree, via the
   // same script and the same git commands the CLI's own `/story do` uses.
@@ -254,20 +253,32 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
     `expected a real worktree at ${worktreePath}`,
   ).toBe(true);
 
-  // Leave evidence that belongs to the first agent, then dispatch the active
-  // story again. Dashboard dispatch intentionally opts into story.sh's resume
-  // path: the same worktree survives and the replacement agent receives the
-  // resume charter instead of a fresh checkout.
+  // Resume must preserve the first agent's work and send explicit intent,
+  // rather than relying on implicit redispatch of an already claimed story.
   const proofPath = join(worktreePath, "resume-proof.txt");
   writeFileSync(proofPath, "preserve the abandoned agent's work\n");
-  await dispatchStory(page);
-  // The earlier success can still be visible. Wait for this dispatch's
+  await dispatchButton.click();
+  await expect(page.locator("#dispatch-modal")).toHaveClass(/open/);
+  await expect(page.locator("#dispatch-modal-header")).toHaveText(`Resume ${ALPHA_STORY_ID}`);
+  await expect(page.locator("#dispatch-modal-submit")).toHaveText("Resume");
+  const resumeRequest = page.waitForRequest(req => req.method() === "POST"
+    && new URL(req.url()).pathname.endsWith(`/story/${ALPHA_STORY_ID}/dispatch`));
+  await page.locator("#dispatch-modal-submit").click();
+  expect(new URL((await resumeRequest).url()).searchParams.get("intent")).toBe("resume");
+  await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
+  // The earlier success can still be visible. Wait for this resume's
   // in-flight state to end before interpreting a notice as its result.
   await expect(dispatchButton).toBeDisabled();
+  await expect(dispatchButton).toHaveText("Resuming…");
   await expect(dispatchButton).toBeEnabled({ timeout: DISPATCH_COMPLETION_TIMEOUT });
-  const resumedToast = page.locator("#toast-stack .toast.success").first();
+  const resumedToast = page.locator("#toast-stack .toast.success").filter({
+    has: page.locator(".notice-headline", { hasText: `${ALPHA_STORY_ID} resumed` }),
+  });
   await expect(resumedToast).toBeVisible({ timeout: DISPATCH_COMPLETION_TIMEOUT });
-  await expect(resumedToast).toHaveText(`${ALPHA_STORY_ID} dispatched`);
+  await expect(resumedToast.locator(".notice-headline")).toHaveText(`${ALPHA_STORY_ID} resumed`);
+  await expect(resumedToast.locator(".notice-detail")).toHaveText(
+    "A new agent session started; the previous conversation was not restored.",
+  );
   expect(readFileSync(proofPath, "utf8")).toBe(
     "preserve the abandoned agent's work\n",
   );
@@ -320,7 +331,7 @@ test("Auto mode sends agent=claude&auto=1, plus model/effort/speed when selected
   await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
 
   await expect(page.locator("#dispatch-btn")).toBeEnabled();
-  await expect(page.locator("#dispatch-btn")).toHaveText("Dispatch");
+  await expect(page.locator("#dispatch-btn")).toHaveText("Resume");
 
   const worktreePath = join(
     DELTA_CHECKOUT,
