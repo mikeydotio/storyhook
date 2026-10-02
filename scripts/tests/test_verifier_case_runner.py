@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """SH-793: process isolation, bounded concurrency and trustworthy case results."""
 
+import ast
 import importlib
 import io
 import json
@@ -115,11 +116,19 @@ class Discovery(unittest.TestCase):
     def test_verdict_does_not_select_imported_lifecycle_tests(self):
         """The runner matches the verdict file's explicit defaultTest boundary."""
         module = importlib.import_module('test_verifier_verdict')
+        tree = ast.parse(Path(module.__file__).read_text())
+        declarations = [keyword.value for call in ast.walk(tree)
+                        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                        and isinstance(call.func.value, ast.Name)
+                        and (call.func.value.id, call.func.attr) == ('unittest', 'main')
+                        for keyword in call.keywords if keyword.arg == 'defaultTest']
+        self.assertEqual(len(declarations), 1, 'one explicit direct-file inventory')
         expected = unittest.TestLoader().loadTestsFromNames(
-            ['VerdictPreservation', 'ExecutionEvidence'], module)
+            ast.literal_eval(declarations[0]), module)
         names = sorted(case.id().removeprefix(module.__name__ + '.')
                        for group in expected for case in group)
         self.assertEqual(runner.discover(module), names)
+        self.assertFalse(any(name.startswith('VerifierLifecycle.') for name in names))
 
 
 class Processes(unittest.TestCase):
