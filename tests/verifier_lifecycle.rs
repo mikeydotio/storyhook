@@ -6,7 +6,9 @@ use std::process::Command;
 #[test]
 fn shared_verifier_lifecycle_recovers_without_losing_evidence() {
     let result = Command::new("python3")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tests/test_verifier_lifecycle.py"))
+        .arg("-B")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tests/run_verifier_tests.py"))
+        .arg("lifecycle")
         .output()
         .expect("run isolated verifier lifecycle regressions");
     assert!(
@@ -20,7 +22,9 @@ fn shared_verifier_lifecycle_recovers_without_losing_evidence() {
 #[test]
 fn completed_verifier_verdicts_survive_cleanup_failures() {
     let result = Command::new("python3")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tests/test_verifier_verdict.py"))
+        .arg("-B")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/tests/run_verifier_tests.py"))
+        .arg("verdict")
         .output()
         .expect("run isolated completed-verdict regressions");
     assert!(
