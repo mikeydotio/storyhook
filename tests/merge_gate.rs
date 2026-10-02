@@ -89,6 +89,7 @@
 //! tree the old tree's receipt.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -98,6 +99,9 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 
 use storyhook_test_support::{ChildGuard, load_grace, scratch_dir};
 use tempfile::TempDir;
+
+#[path = "support/merge_gate_wait.rs"]
+mod blocking_fixture;
 
 /// A fetch during verification must not restore newer bytes under the old
 /// shared index when private Git administration is detached at gate exit.
@@ -341,19 +345,22 @@ fn a_gate_terminated_by_signal_is_infrastructure_never_red() {
     let poller = poller_container.path().join("poller");
     let expected_tree = stdout(&repo.preflight(&base, &head));
     let pid_file = repo.path().join("gate-pid");
-    // A busy loop rather than `sleep`: the gate must have no grandchild for
-    // the owner to count as a live writer once the leaf is gone.
+    // Block in the leaf itself: a sleep grandchild would change the owner
+    // census after the signalled leaf exits.
     let mut verifier = repo.spawn_verification_gate(
         &expected_tree,
         &base,
         &head,
         &poller,
         &[
-            "bash",
-            "-c",
-            "printf '%s' $$ > \"$1.tmp\"; mv \"$1.tmp\" \"$1\"; while :; do :; done",
-            "signal-probe",
-            &pid_file.display().to_string(),
+            "python3",
+            checkout()
+                .join("tests/support/merge_gate_wait.py")
+                .to_str()
+                .unwrap(),
+            "signal",
+            pid_file.to_str().unwrap(),
+            "0",
         ],
     );
     wait_for_within(&pid_file, Duration::from_secs(60));
@@ -438,11 +445,14 @@ fn a_terminated_verifier_reports_the_termination_and_leaves_no_completion_record
         &head,
         &poller,
         &[
-            "bash",
-            "-c",
-            "printf '%s' $$ > \"$1.tmp\"; mv \"$1.tmp\" \"$1\"; while :; do :; done",
-            "signal-probe",
-            &pid_file.display().to_string(),
+            "python3",
+            checkout()
+                .join("tests/support/merge_gate_wait.py")
+                .to_str()
+                .unwrap(),
+            "signal",
+            pid_file.to_str().unwrap(),
+            "0",
         ],
     );
     wait_for_within(&pid_file, Duration::from_secs(60));
@@ -992,7 +1002,7 @@ fn foreign_gate_lifecycle_preserves_completed_exit_when_cleanup_is_signalled() {
         let poller = poller_container.path().join("poller");
         let armed = repo.path().join("gate-completed");
         let restoring = repo.path().join("cleanup-started");
-        let release = repo.path().join("cleanup-release");
+        let release = blocking_fixture::ReleaseBarrier::new();
         let hooks = repo.path().join("cleanup-hooks");
         fs::create_dir(&hooks).unwrap();
         let hook = hooks.join("post-checkout");
@@ -1002,8 +1012,9 @@ fn foreign_gate_lifecycle_preserves_completed_exit_when_cleanup_is_signalled() {
         fs::write(
             &hook,
             format!(
-                "#!/bin/bash\n[ -f '{}' ] || exit 0\nready='{}'\n[ ! -f \"$ready\" ] || exit 0\npid=$PPID\nwhile [ \"$pid\" -gt 1 ]; do\n command=$(ps -p \"$pid\" -o command=)\n case \"$command\" in bash*scripts/verify-pr.sh\\ --run-gate*) break ;; esac\n pid=$(ps -p \"$pid\" -o ppid= | tr -d ' ')\ndone\n[ \"$pid\" -gt 1 ] || exit 1\nprintf '%s' \"$pid\" > \"$ready.tmp\"\nmv \"$ready.tmp\" \"$ready\"\nwhile [ ! -f '{}' ]; do :; done\n",
-                armed.display(), restoring.display(), release.display()
+                "#!/bin/bash\n[ -f '{}' ] || exit 0\nready='{}'\n[ ! -f \"$ready\" ] || exit 0\npid=$PPID\nwhile [ \"$pid\" -gt 1 ]; do\n command=$(ps -p \"$pid\" -o command=)\n case \"$command\" in bash*scripts/verify-pr.sh\\ --run-gate*) break ;; esac\n pid=$(ps -p \"$pid\" -o ppid= | tr -d ' ')\ndone\n[ \"$pid\" -gt 1 ] || exit 1\nexec python3 '{}' barrier \"$ready\" '{}' \"$pid\"\n",
+                armed.display(), restoring.display(),
+                checkout().join("tests/support/merge_gate_wait.py").display(), release.path().display()
             ),
         ).unwrap();
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1026,9 +1037,16 @@ fn foreign_gate_lifecycle_preserves_completed_exit_when_cleanup_is_signalled() {
             ],
         );
         wait_for_within(&restoring, Duration::from_secs(60));
-        let verifier_shell: i32 = fs::read_to_string(&restoring).unwrap().parse().unwrap();
+        let verifier_shell: i32 = fs::read_to_string(&restoring)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let mut connection = release.accept();
         assert_eq!(unsafe { libc::kill(verifier_shell, libc::SIGTERM) }, 0);
-        fs::write(&release, "continue restoration\n").unwrap();
+        connection
+            .write_all(b"1")
+            .expect("release signalled restoration");
         let result = verifier
             .wait_with_output_within(load_grace::graced_now(Duration::from_secs(120)), || {
                 "the signalled cleanup did not report the completed gate".to_owned()
@@ -1592,11 +1610,14 @@ impl MergeRepo {
                 head,
                 &poller.display().to_string(),
                 "--",
-                "bash",
-                "-c",
-                "trap 'sleep 4; exit 129' HUP; trap 'sleep 4; exit 130' INT; trap 'sleep 4; exit 143' TERM; printf ready > \"$1\"; while :; do :; done",
-                "merge-watch-signal-probe",
-                &marker.display().to_string(),
+                "python3",
+                checkout()
+                    .join("tests/support/merge_gate_wait.py")
+                    .to_str()
+                    .unwrap(),
+                "signal",
+                marker.to_str().unwrap(),
+                "4",
             ])
             .current_dir(self.path())
             // A four-second gate cleanup exceeds machine-lock's generic two
