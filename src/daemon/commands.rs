@@ -336,16 +336,14 @@ fn offer_token_to_the_clipboard(token: &str) {
 
 /// What an install would do, once the gate has permitted it.
 ///
-/// Separated from [`apply`] so the decision is a pure function of the
+/// Separated from installation so the decision is a pure function of the
 /// environment: a test can provoke a refusal and then assert that **no file
 /// exists**, which is the only observable that distinguishes a gate placed
 /// ahead of every side effect from one placed a line too low. Both produce the
 /// same exit code and the same message.
 ///
-/// `label` travels with the plan rather than being re-derived by `apply` and
-/// `bootstrap_via_launchctl` separately, so the bootout target, the plist
-/// bytes, and the success message are three uses of one fact (SH-136) instead
-/// of three derivations that could drift.
+/// The plan and launchctl adapter use [`agent::label`] for the same store;
+/// an installation for a named store must never target the default label.
 #[derive(Debug)]
 struct Plan {
     label: String,
@@ -413,10 +411,18 @@ pub fn install(env: &Environment, this_binary: bool) -> Result<LoginAgentReport,
         .ok_or_else(|| AppError::Storage("failed to find the running executable".to_string()))?;
     let inputs = install_guard::gather(user_id(), this_binary, running);
     let execution_path = std::env::var_os("PATH");
-    let mut report = apply(
-        &install_plan(env, &inputs, execution_path.as_deref())?,
-        &bootstrap_via_launchctl,
-    )?;
+    let plan = install_plan(env, &inputs, execution_path.as_deref())?;
+    let mut report = lifecycle::with_registration_lock(env, || {
+        super::launchd::install_agent(env, &plan.path, &plan.contents)?;
+        Ok(LoginAgentReport::new(
+            format!(
+                "installed the storyhook daemon as a launchd agent ({})\n  {}\n  PATH captured from this shell; run `story daemon install` again after changing tool directories.",
+                plan.label,
+                plan.path.display()
+            ),
+            None,
+        ))
+    })?;
     // Named at the moment a machine grows past one store, not only when
     // someone happens to run `status` later.
     let others = agent::describe_others(env);
@@ -485,121 +491,10 @@ pub(crate) fn refuse_temporary_store_for_durable_agent(
     )))
 }
 
-/// Writes the plist and hands it to launchd.
-///
-/// `load` is a parameter so both failure paths below are testable without
-/// bootstrapping anything into the developer's own login session — a fixture
-/// that ran real `launchctl` would register an agent pointing at the test
-/// binary, under a label this project owns. It takes the whole [`Plan`],
-/// not just the path, because `bootstrap_via_launchctl` needs the label to
-/// boot out the *right* agent — never always the default store's.
-fn apply(
-    plan: &Plan,
-    load: &dyn Fn(&Plan) -> Result<Option<String>, AppError>,
-) -> Result<LoginAgentReport, AppError> {
-    if let Some(parent) = plan.path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // Read before writing: `bootout` below unloads whatever is there, so a
-    // failure past this point has already cost the operator their working
-    // agent. See `undo`.
-    let previous = std::fs::read(&plan.path).ok();
-    std::fs::write(&plan.path, &plan.contents)
-        .map_err(|e| AppError::Storage(format!("failed to write {}: {e}", plan.path.display())))?;
-    match load(plan) {
-        Ok(warning) => Ok(LoginAgentReport::new(
-            format!(
-                "installed the storyhook daemon as a launchd agent ({})\n  {}\n  PATH captured from this shell; run `story daemon install` again after changing tool directories.",
-                plan.label,
-                plan.path.display()
-            ),
-            warning,
-        )),
-        Err(failure) => Err(undo(&plan.path, previous.as_deref(), failure)),
-    }
-}
-
-/// `bootout` the old agent, then `bootstrap` the new one.
-///
-/// `bootout` first so a reinstall replaces rather than conflicts. A missing
-/// service is expected; every other refusal is returned as a warning while
-/// bootstrap still gets its chance. Both operations target `plan`'s own label
-/// — never [`agent::LAUNCHD_LABEL`] directly — so a non-default store's install
-/// can never boot out the default store's running agent.
-fn bootstrap_via_launchctl(plan: &Plan) -> Result<Option<String>, AppError> {
-    bootstrap_with_launchctl(plan, &super::launchd::run)
-}
-
-fn bootstrap_with_launchctl(
-    plan: &Plan,
-    launchctl: &dyn Fn(&[&str]) -> std::io::Result<Output>,
-) -> Result<Option<String>, AppError> {
-    let target = format!("gui/{}", user_id());
-    let service_target = format!("{target}/{}", plan.label);
-    let warning = bootout_warning(&service_target, launchctl(&["bootout", &service_target]));
-    let path = plan.path.to_string_lossy();
-    let loaded = launchctl(&["bootstrap", &target, &path]).map_err(|e| {
-        AppError::Storage(with_prior_bootout(
-            format!("failed to run launchctl: {e}"),
-            warning.as_deref(),
-        ))
-    })?;
-    if loaded.status.success() {
-        return Ok(warning);
-    }
-    Err(AppError::Storage(with_prior_bootout(
-        format!(
-            "launchctl refused to load {}: {}",
-            plan.path.display(),
-            String::from_utf8_lossy(&loaded.stderr).trim()
-        ),
-        warning.as_deref(),
-    )))
-}
-
 fn with_prior_bootout(message: String, warning: Option<&str>) -> String {
     match warning {
         Some(warning) => format!("{message}\n\nBefore this failure, {warning}"),
         None => message,
-    }
-}
-
-/// Puts the machine back the way it was after `launchctl` refused, and says
-/// which way that was.
-///
-/// **Restoring rather than deleting is the point.** By the time `load` fails,
-/// the new plist is already on disk and `bootout` has already unloaded whatever
-/// was running — and `RunAtLoad` means launchd honours a plist in
-/// `~/Library/LaunchAgents` at the next login whether or not anything
-/// bootstrapped it. So leaving the new file behind makes a *failed* install a
-/// durable one, and plain removal silently uninstalls a previously working
-/// agent nobody asked to lose. Errors travel with context; this one names what
-/// happened to the file.
-fn undo(path: &std::path::Path, previous: Option<&[u8]>, failure: AppError) -> AppError {
-    let note = match previous {
-        Some(bytes) => match std::fs::write(path, bytes) {
-            Ok(()) => "\n\nThe agent that was there before has been put back, but launchd has \
-                       already unloaded it — run `story daemon install` again once launchctl is \
-                       happy."
-                .to_string(),
-            Err(e) => format!(
-                "\n\nThe agent that was there before could NOT be put back ({e}); {} now holds \
-                 the new plist, which launchd will honour at the next login.",
-                path.display()
-            ),
-        },
-        None => match std::fs::remove_file(path) {
-            Ok(()) => "\n\nNothing was left behind.".to_string(),
-            Err(e) => format!(
-                "\n\nThe plist could not be removed ({e}); {} will be honoured at the next \
-                 login even though launchctl refused it now.",
-                path.display()
-            ),
-        },
-    };
-    match failure {
-        AppError::Storage(message) => AppError::Storage(format!("{message}{note}")),
-        other => other,
     }
 }
 
@@ -608,10 +503,10 @@ pub fn uninstall(env: &Environment) -> Result<LoginAgentReport, AppError> {
     if cfg!(target_os = "linux") {
         return super::systemd::uninstall(env);
     }
-    uninstall_with(env, &bootout_via_launchctl)
+    lifecycle::with_registration_lock(env, || uninstall_with(env, &bootout_via_launchctl))
 }
 
-/// `unload` is a parameter for the same reason [`apply`]'s `load` is: a
+/// `unload` is injected so a
 /// fixture that ran real `launchctl` would touch the developer's own login
 /// session.
 ///
@@ -730,6 +625,57 @@ pub fn user_id() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Preserve the file/guard tests through the real install transaction.
+    // Manager and daemon observations are inert; transaction behavior is not mocked.
+    fn apply(
+        plan: &Plan,
+        load: &dyn Fn(&Plan) -> Result<Option<String>, AppError>,
+    ) -> Result<LoginAgentReport, AppError> {
+        use super::super::launchd::install::{self, Incumbent, Runtime};
+        struct Fake<'a> {
+            plan: &'a Plan,
+            load: &'a dyn Fn(&Plan) -> Result<Option<String>, AppError>,
+            loaded: std::cell::Cell<bool>,
+        }
+        impl Runtime for Fake<'_> {
+            fn registered(&self) -> Result<bool, AppError> {
+                Ok(self.plan.path.exists())
+            }
+            fn incumbent(&self) -> Result<Option<Incumbent>, AppError> {
+                Ok(None)
+            }
+            fn drain(&self) -> Result<(), AppError> {
+                Ok(())
+            }
+            fn unload(&self) -> Result<(), AppError> {
+                Ok(())
+            }
+            fn register(&self) -> Result<(), AppError> {
+                if self.loaded.replace(true) {
+                    Ok(())
+                } else {
+                    (self.load)(self.plan).map(|_| ())
+                }
+            }
+            fn start(&self, _: bool) -> Result<(), AppError> {
+                Ok(())
+            }
+            fn restore_unmanaged(&self) -> Result<(), AppError> {
+                panic!("no fixture incumbent")
+            }
+        }
+        install::apply(
+            &plan.path,
+            &plan.contents,
+            &Fake {
+                plan,
+                load,
+                loaded: std::cell::Cell::new(false),
+            },
+        )?;
+        Ok(LoginAgentReport::new("installed".into(), None))
+    }
 
     fn install_plan(env: &Environment, inputs: &install_guard::Inputs) -> Result<Plan, AppError> {
         super::install_plan(env, inputs, Some(std::ffi::OsStr::new("/usr/bin:/bin")))
@@ -1012,42 +958,6 @@ mod tests {
             Some(PathBuf::from("/home/dev/.local/bin/story")),
             "the plist must name the path the gate enthroned"
         );
-    }
-
-    #[test]
-    fn a_bootout_warning_survives_a_successful_install() {
-        let dir = scratch();
-        let env = Environment::at(dir.path());
-        let plan = install_plan(&env, &permitting_inputs()).expect("must permit");
-        let report = apply(&plan, &|_| {
-            Ok(Some("launchctl refused the bootout".to_string()))
-        })
-        .expect("bootstrap still succeeded");
-
-        assert!(report.message().contains("installed"));
-        assert_eq!(
-            report.warnings(),
-            vec!["launchctl refused the bootout".to_string()]
-        );
-        assert!(agent::path(&env).exists());
-    }
-
-    #[test]
-    fn a_failed_bootstrap_keeps_the_earlier_bootout_diagnostic() {
-        let dir = scratch();
-        let env = Environment::at(dir.path());
-        let plan = install_plan(&env, &permitting_inputs()).expect("must permit");
-        let failed = bootstrap_with_launchctl(&plan, &|args| match args[0] {
-            "bootout" => Ok(shell_output("printf 'permission denied' >&2; exit 77")),
-            "bootstrap" => Ok(shell_output("printf 'bad plist' >&2; exit 78")),
-            other => panic!("unexpected launchctl action: {other}"),
-        })
-        .expect_err("bootstrap must fail");
-        let message = failed.to_string();
-
-        assert!(message.contains("bad plist"), "{message}");
-        assert!(message.contains("permission denied"), "{message}");
-        assert!(message.contains("bootout"), "{message}");
     }
 
     /// A failed `bootstrap` must not leave the machine holding a plist launchd

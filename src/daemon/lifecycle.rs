@@ -1494,6 +1494,10 @@ const fn managed_launch_budget_secs() -> u64 {
     if cfg!(target_os = "linux") {
         super::systemd::command::LAUNCH_CONTROL_CALLS
             * super::systemd::command::COMMAND_DEADLINE.as_secs()
+    } else if cfg!(target_os = "macos") {
+        // Two ensure-running paths (kickstart/bootstrap/kickstart), one
+        // diagnostic print, one shared reseat budget and a second health wait.
+        8 * super::launchd::registration::REGISTRATION_DEADLINE.as_secs() + SPAWN_DEADLINE.as_secs()
     } else {
         0
     }
@@ -1711,6 +1715,16 @@ pub(crate) fn with_registration_lock<T>(
     action()
 }
 
+/// Restores the previously observed unmanaged mode while the caller owns the
+/// registration lock and has proved launchd's replacement is absent.
+pub(crate) fn restore_unmanaged(env: &Environment) -> Result<(), AppError> {
+    ForkLauncher {
+        reason: ForkReason::NoAgentInstalled,
+    }
+    .launch(env)
+    .map(|_| ())
+}
+
 /// Which [`DaemonLauncher`] a given `ensure`/`start`/`restart` call should
 /// use, and why, decided before either the warning or the launch itself
 /// (SH-784's approved design).
@@ -1850,23 +1864,59 @@ fn launch_daemon(env: &Environment) -> Result<DaemonInfo, AppError> {
 /// during the wait is trustworthy evidence rather than stale residue, even
 /// without a pid to confirm it against.
 pub(crate) fn await_launchd_healthy(env: &Environment) -> Result<(), AppError> {
-    await_managed_healthy(env, "launchd", "launchctl print gui/<uid>/<label>", None)
+    await_launchd_build(env, true)
 }
 
-/// Waits for this build and store; systemd additionally requires the expected owner.
+/// Rollback can restore an older build, but never a different store or owner.
+pub(crate) fn await_launchd_build(env: &Environment, this_build: bool) -> Result<(), AppError> {
+    let label = super::agent::label(env);
+    await_managed_build(
+        env,
+        "launchd",
+        &format!("launchctl print gui/{}/{label}", super::commands::user_id()),
+        Some(&DaemonOwner::Launchd { label }),
+        this_build,
+    )
+}
+
+/// Waits for this build, store and the supplied service-manager owner.
 pub(crate) fn await_managed_healthy(
     env: &Environment,
     manager: &str,
     inspect: &str,
     owner: Option<&DaemonOwner>,
 ) -> Result<(), AppError> {
+    await_managed_build(env, manager, inspect, owner, true)
+}
+
+fn managed_identity_matches(
+    info: &DaemonInfo,
+    env: &Environment,
+    owner: Option<&DaemonOwner>,
+    this_build: bool,
+) -> bool {
+    (!this_build || info.is_this_binary())
+        && info.serves(env.store_path())
+        && owner.is_none_or(|expected| info.owner.as_ref() == Some(expected))
+}
+
+fn await_managed_build(
+    env: &Environment,
+    manager: &str,
+    inspect: &str,
+    owner: Option<&DaemonOwner>,
+    this_build: bool,
+) -> Result<(), AppError> {
     let deadline = Instant::now() + SPAWN_DEADLINE;
     while Instant::now() < deadline {
         if let Some(info) = read_info(env)
-            && info.is_this_binary()
-            && info.serves(env.store_path())
-            && owner.is_none_or(|expected| info.owner.as_ref() == Some(expected))
-            && hello(&info).is_ok()
+            && managed_identity_matches(&info, env, owner, this_build)
+            && is_live(env)
+            && hello_with_timeout(
+                &info,
+                CONTROL_DEADLINE.min(deadline.saturating_duration_since(Instant::now())),
+            )
+            .is_ok()
         {
             return Ok(());
         }
@@ -1875,7 +1925,7 @@ pub(crate) fn await_managed_healthy(
                 &format!("the {manager}-owned daemon could not start; this is what it reported on its way out:"),
             ));
         }
-        std::thread::sleep(SPAWN_POLL);
+        std::thread::sleep(SPAWN_POLL.min(deadline.saturating_duration_since(Instant::now())));
     }
     Err(AppError::Storage(format!(
         "{manager} did not report a healthy daemon within {}s.\n{}\nInspect `{inspect}` and the daemon's own log.",
@@ -2350,7 +2400,7 @@ pub const CONTROL_DEADLINE: Duration = Duration::from_secs(5);
 /// |---|---|---|
 /// | [`CONTROL_DEADLINE`] 5s | a round trip carrying no work | chosen — no legitimate slow case exists |
 /// | `SPAWN_DEADLINE` 5s | a process coming up | chosen — bounded by the OS |
-/// | [`SPAWN_LOCK_DEADLINE`] 30s | storyhook's own bounded code | derived — the sum of what the holder can spend |
+/// | [`SPAWN_LOCK_DEADLINE`] platform-derived | storyhook's own bounded code | derived — the sum of what the holder can spend |
 /// | `SERVED_DEADLINE` 120s | the user's own data | calibrated — see above |
 /// | [`GIT_HOOK_DEADLINE`] 10s | a git command a human is watching | chosen — git imposes no budget of its own |
 pub const SERVED_DEADLINE: Duration = Duration::from_secs(120);
@@ -2425,7 +2475,7 @@ pub const UNPUBLISHED_DEADLINE: Duration = Duration::from_secs(120);
 ///   it would abandon a cold start `await_healthy` itself would have accepted,
 ///   which stops the sync firing after every reboot — silently, since these
 ///   hooks must stay quiet ([`tests/hook_silence.rs`]).
-/// - **Below [`SPAWN_LOCK_DEADLINE`] (30s).** So *contention* — another client
+/// - **Below [`SPAWN_LOCK_DEADLINE`].** So *contention* — another client
 ///   mid-spawn — is abandoned rather than queued. That is correct here and
 ///   nowhere else in this family: the client we would queue behind leaves a
 ///   warm daemon behind for the next hook, and every managed hook's own answer
@@ -2720,8 +2770,18 @@ fn control_agent_with_timeout(timeout: Duration) -> ureq::Agent {
 /// that wrote it. The answer has to agree with the portfile about the version
 /// and the pid, or the thing on that port is somebody else.
 pub fn hello(info: &DaemonInfo) -> Result<(), AppError> {
+    hello_with_timeout(info, CONTROL_DEADLINE)
+}
+
+/// Authenticates daemon identity within the caller's remaining operation budget.
+pub(crate) fn hello_with_timeout(info: &DaemonInfo, timeout: Duration) -> Result<(), AppError> {
+    if timeout.is_zero() {
+        return Err(AppError::Storage(
+            "the daemon health budget expired before hello".into(),
+        ));
+    }
     let url = format!("http://127.0.0.1:{}/api/v1/hello", info.port);
-    let response = control_agent()
+    let response = control_agent_with_timeout(timeout)
         .get(&url)
         .header("X-Storyhook-Token", &info.token)
         .call()
@@ -4119,6 +4179,89 @@ mod tests {
     }
 
     #[test]
+    fn managed_health_requires_build_store_and_owner_even_during_install() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let mut info = info_for(
+            &loopback_only(1),
+            "token".into(),
+            "2026-01-01T00:00:00Z",
+            env.store_path(),
+        )
+        .unwrap();
+        let owner = DaemonOwner::Launchd {
+            label: super::super::agent::label(&env),
+        };
+        info.owner = Some(owner.clone());
+        assert!(managed_identity_matches(&info, &env, Some(&owner), true));
+        info.owner = None;
+        assert!(!managed_identity_matches(&info, &env, Some(&owner), true));
+        info.owner = Some(owner.clone());
+        info.version = "old build".into();
+        assert!(!managed_identity_matches(&info, &env, Some(&owner), true));
+        assert!(managed_identity_matches(&info, &env, Some(&owner), false));
+        info.store_path = dir.path().join("other.db");
+        assert!(!managed_identity_matches(&info, &env, Some(&owner), false));
+    }
+
+    #[test]
+    fn registration_holds_the_same_lock_that_serializes_client_starts() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        with_registration_lock(&env, || {
+            let contender = std::fs::OpenOptions::new()
+                .write(true)
+                .open(env.daemon_spawn_lock())?;
+            assert!(contender.try_lock_exclusive().is_err());
+            Ok(())
+        })
+        .unwrap();
+        let contender = std::fs::OpenOptions::new()
+            .write(true)
+            .open(env.daemon_spawn_lock())
+            .unwrap();
+        contender.try_lock_exclusive().unwrap();
+    }
+
+    #[test]
+    fn a_managed_health_hello_obeys_its_remaining_budget() {
+        use std::{io::Read, net::TcpListener, sync::mpsc};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (release, hold) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).unwrap();
+            // The peer supplies no response until the bounded client returns.
+            let _ = hold.recv();
+        });
+        let info = info_for(
+            &loopback_only(port),
+            "token".into(),
+            "2026-01-01T00:00:00Z",
+            Path::new("/fixture/store.db"),
+        )
+        .unwrap();
+        let budget = CONTROL_DEADLINE / 10;
+        let (finished, result) = mpsc::channel();
+        let client = std::thread::spawn(move || {
+            finished.send(hello_with_timeout(&info, budget)).unwrap();
+        });
+        let result = result.recv_timeout(storyhook_test_support::load_grace::graced_now(
+            CONTROL_DEADLINE / 2,
+        ));
+        release.send(()).unwrap();
+        server.join().unwrap();
+        client.join().unwrap();
+        assert!(
+            result
+                .expect("hello exceeded its containing health budget")
+                .is_err()
+        );
+    }
+
+    #[test]
     fn a_token_is_unpredictable_and_url_safe() {
         let first = mint_token();
         let second = mint_token();
@@ -4150,7 +4293,13 @@ mod tests {
         );
         assert_eq!(
             SPAWN_LOCK_DEADLINE,
-            Duration::from_secs(if cfg!(target_os = "linux") { 70 } else { 30 })
+            Duration::from_secs(if cfg!(target_os = "linux") {
+                70
+            } else if cfg!(target_os = "macos") {
+                115
+            } else {
+                30
+            })
         );
     }
 
