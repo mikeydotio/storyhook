@@ -467,7 +467,18 @@ LAUNCH_TPL="${STORY_LAUNCH_CMD:-$DEFAULT_LAUNCH_TPL}"
 # Review pointers shared by attended and autonomous built-in charters.
 OBVIATION_REVIEW_CLAUSE="Before implementation, run ‘story help obviation-review’ and ‘story load-context --story <n>’, then follow the review procedure for every candidate. Repeat the review when resuming work."
 SCOPE_REVIEW_CLAUSE="Before filing a prerequisite or blocking <n>, read ‘story help scope-rubric’."
-PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. $OBVIATION_REVIEW_CLAUSE $SCOPE_REVIEW_CLAUSE When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story <n>. Then, from inside this worktree, move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move <n> back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them.}"
+# SH-864: which tests the child runs. Only the ones its story adds or changes;
+# the verifier runs the full suite on the merge tree, and the judgment word
+# this replaced let lanes sweep dozens of targets on a machine the gate shares.
+# The one exception, settled by council on SH-864, is a failed central gate:
+# rerun exactly the cases its log names, by exact name, and nothing wider.
+# Both clauses are the exact bytes of the Rust constants IMPLEMENTER_TEST_SCOPE
+# and FAILED_GATE_RERUN_SCOPE (src/service/verification.rs), which the
+# verifier's own return texts interpolate; tests/implementer_test_scope.rs
+# holds the two sides together.
+TEST_SCOPE_CLAUSE="Run only the tests this story adds or changes. Leave every other test to the central verifier and the release gates."
+FAILED_GATE_RERUN_CLAUSE="When a central gate failed, you may also rerun each test case that its log names as failing, by its exact name only. Never rerun a whole target, file, script, or suite for it. Never edit or weaken a test that this story did not write to make it pass. If a named test does not fail when you rerun it, change no code for it and say so in a comment before you resubmit."
+PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. $OBVIATION_REVIEW_CLAUSE $SCOPE_REVIEW_CLAUSE When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Implement the approved work. $TEST_SCOPE_CLAUSE Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story <n>. Then, from inside this worktree, move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history. $FAILED_GATE_RERUN_CLAUSE Commit, move <n> back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them.}"
 # Claude's ExitPlanMode tool gives the PreToolUse hook an approval boundary at
 # which it can remind the model to persist the plan. Codex may surface the
 # compatibility event, but rejects its bare allow decision; the TUI watcher
@@ -494,7 +505,8 @@ RESUME_RESTART_CLAUSE="If the existing work seems corrupt, or you cannot underst
 # The autonomous charter `--auto` swaps in for PROMPT_TPL. SH-511 removed its
 # last human interaction: plan approval is scoped by provider events (with one
 # exact-gated tmux Return for Claude), and question refusal is provider-native;
-# targeted testing and repair remain the child's own call. The daemon-owned
+# repair remains the child's own call, within the tests TEST_SCOPE_CLAUSE
+# allows it to run (SH-864). The daemon-owned
 # verifier takes over after the child commits and moves the story to
 # `verifying` from inside its worktree (SH-647); it owns submission -- pushing
 # the branch and opening the pull request -- and then the full suite, merge,
@@ -542,7 +554,7 @@ AUTO_SOLO_CLAUSE="When a decision has two or more genuinely defensible answers -
 # with a single right answer independent of whether council-vote is
 # reachable, so it does not vary between COUNCIL and SOLO.
 AUTO_SCOPE_CLAUSE="$SCOPE_REVIEW_CLAUSE Adopt actionable prerequisite work into <n>, even in another module. Record the prerequisite and acceptance criteria in a comment on <n>, then apply the scope and context rules below. Do not file a new blocker and leave <n> waiting for work you can do. Preserve external dependencies and work owned by another active session. When you uncover a second problem while working <n>, prefer adopting it into <n> over filing a new story: fix it in its own commit with its own regression test, and comment on <n> what you adopted and why -- that is two hats intact, since two hats governs commits, not stories. Adopt and fix it now only while at least half your context window is still unused and the extra work is small enough to finish and test in this session. Otherwise widen <n> to cover it without doing the work now -- comment what you found and leave <n> open rather than closing it, so the next session picks up where you stopped. If you cannot tell how much context remains, treat it as spent. File a new story only for work that is genuinely separate, genuinely too large for one story, or blocked on something you cannot reach."
-AUTO_PROMPT_TAIL="Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story <n>. Then, from inside this worktree, move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move <n> back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them. If you hit a hard stop you cannot resolve before submission, post a comment on <n> with full diagnostics, run ‘story block <n> the-reason’, leave the worktree intact, and stop."
+AUTO_PROMPT_TAIL="Implement the approved work. $TEST_SCOPE_CLAUSE Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story <n>. Then, from inside this worktree, move the story with ‘story move <n> verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history. $FAILED_GATE_RERUN_CLAUSE Commit, move <n> back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move <n> done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them. If you hit a hard stop you cannot resolve before submission, post a comment on <n> with full diagnostics, run ‘story block <n> the-reason’, leave the worktree intact, and stop."
 AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-$AUTO_PROMPT_HEAD $AUTO_COUNCIL_CLAUSE $AUTO_SCOPE_CLAUSE $AUTO_PROMPT_TAIL}"
 AUTO_PROMPT_SOLO_TPL="${STORY_AUTO_PROMPT_SOLO:-$AUTO_PROMPT_HEAD $AUTO_SOLO_CLAUSE $AUTO_SCOPE_CLAUSE $AUTO_PROMPT_TAIL}"
 # Which charter --auto gets: 'auto' (default) probes council_vote_available
@@ -1075,6 +1087,9 @@ schedule_plan_approval() {
 
 dispatch_ready_note() {
   case "$WAIT_READY_REASON" in
+    trust-*)
+      printf 'workspace trust could not be confirmed (%s; phase %s); no trust input was retried. Inspect pane_tail for the provider dialog' "$WAIT_READY_REASON" "${STARTUP_TRUST_PHASE:-unseen}"
+      ;;
     wrong-process)
       printf 'that pane is running `%s`, not a process matching `%s` — the launch never started. Set STORY_READY_PROCESS_PATTERN if your %s reports a different name; `.` matches anything' \
         "${WAIT_READY_COMMAND:-?}" "$READY_PROCESS_PATTERN" "$AGENT_LABEL"
@@ -1704,23 +1719,42 @@ supersede_resumed_continuations() {
   SUPERSEDED_CONTINUATIONS=$(printf '%s' "$receipt" | jq -c '.superseded')
 }
 
-# require_resume_eligibility <id> <show-json> — refuse to relaunch an agent on a
-# claimed story the tracker would not let its session continue (SH-850). A
-# blocked, awaiting or resetting story must not get an agent back (SH-690): its
-# block interrupted the last one. The question is `story session-eligibility`,
-# the tracker's own predicate, so this helper restates no block rule. A verb
-# that cannot answer is its own refusal, never a pass.
-require_resume_eligibility() {
-  local rid="$1" rshow="$2" answer eligible reason
-  answer=$(story_cli session-eligibility "$rid" --json 2>&1) \
-    || refuse "resume-eligibility-unavailable" "cannot ask whether $rid may resume: $answer. Nothing was changed."
-  eligible=$(printf '%s' "$answer" | jq -r '.session_eligibility.eligible | if type == "boolean" then tostring else empty end' 2>/dev/null || printf '')
-  reason=$(printf '%s' "$answer" | jq -r '.session_eligibility.reason // "unknown"' 2>/dev/null || printf 'unknown')
-  case "$eligible" in
-    true) return 0 ;;
-    false) refuse "resume-ineligible" "story $rid cannot resume ($reason): $(ready_gate_reason "$rshow" "$rid"). Lift the hold or resolve the blocker first. Nothing was changed." ;;
-    *) refuse "resume-eligibility-unavailable" "story session-eligibility $rid gave no verdict: $answer. Nothing was changed." ;;
-  esac
+# A fresh tracker snapshot, never a shell reimplementation of readiness. Return
+# status distinguishes permission from refusal; ERROR distinguishes unavailable
+# evidence from a valid negative verdict. Call directly, not in a subshell, so
+# the caller can roll back its own stage before emitting the refusal (SH-786).
+DISPATCH_ELIGIBILITY_REASON=""
+DISPATCH_ELIGIBILITY_ERROR=""
+check_dispatch_eligibility() {
+  local rid="$1" answer
+  DISPATCH_ELIGIBILITY_REASON=""
+  DISPATCH_ELIGIBILITY_ERROR=""
+  if ! answer=$(story_cli session-eligibility "$rid" --json 2>&1); then
+    DISPATCH_ELIGIBILITY_ERROR="cannot ask whether $rid may work: $answer"
+    return 1
+  fi
+  if ! printf '%s' "$answer" | jq -e -s --arg id "$rid" '
+    length == 1 and (.[0] | .result == "ok" and
+      (.session_eligibility | .schema_version == 1 and .story_id == $id
+        and (.eligible | type == "boolean")
+        and (.reason | type == "string" and length > 0)))
+  ' >/dev/null 2>&1; then
+    DISPATCH_ELIGIBILITY_ERROR="story session-eligibility $rid gave an invalid verdict: $answer"
+    return 1
+  fi
+  DISPATCH_ELIGIBILITY_REASON=$(printf '%s' "$answer" | jq -r '.session_eligibility.reason')
+  [ "$(printf '%s' "$answer" | jq -r '.session_eligibility.eligible')" = true ]
+}
+
+# A reused claim bypasses the ready list, but never tracker eligibility. Keep
+# resume's established refusal names while also covering force/engine claims.
+require_dispatch_eligibility() {
+  local rid="$1" rshow="$2" mode="$3"
+  if check_dispatch_eligibility "$rid"; then return 0; fi
+  if [ -n "$DISPATCH_ELIGIBILITY_ERROR" ]; then
+    refuse "$mode-eligibility-unavailable" "$DISPATCH_ELIGIBILITY_ERROR. Nothing was changed."
+  fi
+  refuse "$mode-ineligible" "story $rid cannot $mode ($DISPATCH_ELIGIBILITY_REASON): $(ready_gate_reason "$rshow" "$rid"). Lift the hold or resolve the blocker first. Nothing was changed."
 }
 
 # Hold the reset/verifier exclusion through dispatch handoff. Descriptor 9 is
@@ -1883,8 +1917,7 @@ cmd_dispatch() {
       [ -n "$TARGET_SESSION" ] || refuse "continuation-unsafe" "retained pane has no session."
       [ "$(story_cli --deadline 2 continuation capabilities --json | jq -r '.continuation_protocol // 0')" = 1 ] \
         || refuse "continuation-unavailable" "guarded resume requires the installed continuation protocol."
-      [ "$(story_cli session-eligibility "$id" --json | jq -r '.session_eligibility.eligible // false')" = true ] \
-        || refuse "continuation-ineligible" "the retained story is not eligible to continue."
+      require_dispatch_eligibility "$id" "$show_json" continuation
     fi
 
 
@@ -2232,10 +2265,13 @@ cmd_dispatch() {
       fi
       reused_claim=true
       [ -z "$resume" ] || resumed=true
-      # A reused claim skips the ready gate below, so a resume must ask the
-      # tracker itself whether the claimed session may continue (SH-850). The
-      # guarded continuation form already asked, before its own effects.
-      [ -z "$resume" ] || [ -n "$require_absent" ] || require_resume_eligibility "$id" "$show_json"
+      # Guarded continuation already checked its retained claim. Force must
+      # check too: the engine's earlier claim cannot authorize a later launch.
+      if [ -z "$require_absent" ]; then
+        local eligibility_mode=dispatch
+        [ -z "$resume" ] || eligibility_mode=resume
+        require_dispatch_eligibility "$id" "$show_json" "$eligibility_mode"
+      fi
     fi
 
     # Step 6 (deviation #2 — see header): READY-STATE GATE, issue #40's core
@@ -2497,7 +2533,8 @@ cmd_dispatch() {
       --arg model_source "$model_source" --arg effort_source "$effort_source" --arg policy_note "$policy_note" \
     --arg model "$effective_model" --arg effort "$resolved_effort" --arg speed "$resolved_speed" '
       {
-        ok: true, dry_run: true,
+        ok: true, dry_run: true, eligibility_phase: "preflight",
+        handoff_eligibility_checked: false,
         id: $id, title: $title, dir: $dir,
         window_name: $wname, prompt: $prompt, state: $state, auto: $auto, council: $council,
         forced: $forced, reused_claim: $reused_claim, claim_transitioned: false,
@@ -2848,6 +2885,26 @@ cmd_dispatch() {
   # hook. Capture failure evidence before terminating this attempt's process
   # tree; only confirmed termination permits Git/claim rollback. An uncertain
   # owner or a potentially submitted charter preserves resources instead.
+  # Only this managed autonomous launch may answer workspace consent.
+  local STARTUP_TRUST_ENABLED=false STARTUP_TRUST_PHASE=unseen
+  local STARTUP_TRUST_PANE="$pane" STARTUP_TRUST_PROVIDER="$AGENT"
+  local STARTUP_TRUST_PID="$pane_pid" STARTUP_TRUST_START="$launch_start"
+  local STARTUP_TRUST_WORKTREE="$worktree_path" STARTUP_TRUST_ROOT=''
+  local STARTUP_TRUST_FINGERPRINT='' STARTUP_TRUST_SINCE='' STARTUP_TRUST_OBSERVATION=''
+  if [ -n "$auto" ]; then
+    # Git's first worktree is its primary checkout, including linked lanes.
+    # This reads registration metadata, not files in the primary checkout.
+    IFS= read -r -d '' STARTUP_TRUST_ROOT < <(
+      git -C "$worktree_path" worktree list --porcelain -z | python3 -c '
+import sys
+listing = sys.stdin.buffer.read()
+if not listing.startswith(b"worktree ") or not listing.endswith(b"\0\0"):
+    sys.exit(1)
+sys.stdout.buffer.write(listing.split(b"\0", 1)[0][len(b"worktree "):] + b"\0")
+'
+    ) || STARTUP_TRUST_ROOT=''
+    STARTUP_TRUST_ENABLED=true
+  fi
   local provider_ready=false
   if [ "$AGENT" = "codex" ] && [ -n "$auto" ]; then
     codex_bootstrap_ready "$pane" "$pane_pid" "$worktree_path" "$launch_cmd" \
@@ -2857,6 +2914,7 @@ cmd_dispatch() {
   else
     wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" "$STORY_PLUGIN_ROOT" && provider_ready=true
   fi
+  STARTUP_TRUST_ENABLED=false
   if [ "$provider_ready" != true ]; then
     local ready_tail
     ready_tail=$(pane_tail "$pane")
@@ -2866,12 +2924,12 @@ cmd_dispatch() {
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg cmd "$WAIT_READY_COMMAND" \
             --arg wreason "$WAIT_READY_REASON" --arg tail "$ready_tail" \
-            --arg bootstrap "$CODEX_BOOTSTRAP_PHASE" \
+            --arg bootstrap "$CODEX_BOOTSTRAP_PHASE" --arg trust "$STARTUP_TRUST_PHASE" \
             --arg pattern "$READY_PROCESS_PATTERN" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:false, pane_command:$cmd,
               wait_ready_reason:$wreason, ready_process_pattern:$pattern,
-              bootstrap_phase:$bootstrap,
+              bootstrap_phase:$bootstrap, trust_phase:$trust,
               pane_tail:$tail, claimed:$claimed}')"
   fi
   local readiness_confirmed=true
@@ -2974,6 +3032,26 @@ cmd_dispatch() {
     refuse_with "pane-identity-unavailable" \
       "[story] $id → its registered identity changed before handoff: $(printf '%s' "$identity_result" | jq -r '.display'). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
       "$(jq -n --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" '{claimed:$claimed}')"
+  fi
+
+  # Revocation and registration precede this snapshot under the workspace
+  # lock. Earlier holds forbid the charter; a later hold keeps its Pending
+  # interrupt until the worker can acquire this lock and reach this session.
+  # Never revoke delivery authority after this check (SH-786).
+  if ! check_dispatch_eligibility "$id"; then
+    local eligibility_refusal=dispatch-ineligible
+    local eligibility_detail="story $id cannot work ($DISPATCH_ELIGIBILITY_REASON)"
+    if [ -n "$DISPATCH_ELIGIBILITY_ERROR" ]; then
+      eligibility_refusal=dispatch-eligibility-unavailable
+      eligibility_detail="$DISPATCH_ELIGIBILITY_ERROR"
+    fi
+    rollback_dispatch_attempt
+    refuse_with "$eligibility_refusal" \
+      "[story] $id → $eligibility_detail. No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
+      "$(jq -n --arg id "$id" --arg reason "$DISPATCH_ELIGIBILITY_REASON" \
+          --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
+          '{id:$id, eligibility_phase:"handoff", eligibility_reason:$reason,
+            handoff_eligibility_checked:true, claimed:$claimed}')"
   fi
 
   # Step 12: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes

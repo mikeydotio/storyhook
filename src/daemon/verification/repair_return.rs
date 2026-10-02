@@ -8,6 +8,7 @@
 //! a lock that belongs to another story.
 
 use super::*;
+use crate::service::verification::{FAILED_GATE_RERUN_SCOPE, IMPLEMENTER_TEST_SCOPE};
 
 /// How a returned story's diagnosis reaches its agent.
 pub(super) trait ReturnTransport {
@@ -61,7 +62,7 @@ pub(super) fn red_diagnosis(
 ) -> String {
     let found_by = found_by.map_or_else(String::new, |found_by| format!(" {found_by}"));
     format!(
-        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`.{found_by} Fix the branch in its worktree. Run new and impacted tests. Commit the work. Move {} back to verifying. {}.\n\n{}",
+        "CENTRAL VERIFICATION RED — merge tree `{tree}` failed `{gate}`. Full log: `{log}`.{found_by} Fix the branch in its worktree. {IMPLEMENTER_TEST_SCOPE} {FAILED_GATE_RERUN_SCOPE} Commit the work. Move {} back to verifying. {}.\n\n{}",
         candidate.story_id,
         push_promise(candidate.cleanup_lease.is_some(), false),
         crate::text_lint::quote_evidence(detail)

@@ -255,6 +255,89 @@ slices are packed by count) and less fixed setup per slice (6-15 s each).
   section on 2026-09-21: the browser suite runs only in the release tier. A
   leg measured in minutes can run far more often.
 
+## Verifier Python cases: bounded process concurrency (SH-793)
+
+The lifecycle and verdict Rust wrappers now call
+`scripts/tests/run_verifier_tests.py`. Each suite admits two cases at a time,
+each in a fresh interpreter, so their combined default bound is four cases.
+The gate-scheduling suite stays unchanged. This small fixed bound does not
+multiply by the host's CPU count or increase the outer Rust battery budget.
+
+The runner discovers methods of module-owned unittest classes. In particular,
+the verdict suite's imported `VerifierLifecycle` fixture is not another copy
+of the lifecycle tests. Each child uses the parent's `sys.executable`, `-B`,
+and the original file's exact `Class.method` selector. Case globals, mocks,
+repositories and locks remain isolated, and no bytecode enters the checkout.
+
+Each child's stdout and stderr share a temporary capture. The parent emits
+whole captures with the case name and exit status, followed by aggregate
+counts and elapsed time. Failed or crashed cases cannot hide later cases.
+INT, TERM and HUP stop admissions and drain active cases before returning a
+cancellation status. Children remain in the enclosing process group; the
+verifier retains cancellation authority. Existing load-graced case deadlines
+remain authoritative, without a second, shorter runner deadline.
+
+```sh
+python3 -B scripts/tests/run_verifier_tests.py lifecycle --list
+python3 -B scripts/tests/run_verifier_tests.py verdict --jobs 1
+python3 -B scripts/tests/run_verifier_tests.py lifecycle --jobs 2 VerifierLifecycle.test_invalid_cleanup_budget_cannot_launch_a_session
+```
+
+Direct execution of the original unittest files still works. Runner contracts
+exercise real children with release barriers to prove overlap and the bound,
+process isolation, exactly-once execution, serial mode, complete diagnostics,
+failures, crashes, launch refusal, and all three cancellation signals. The
+Cargo contract is `verifier_case_runner`; its checkout inputs are declared in
+the impact manifest. Python 3.9 and 3.14 both run the contracts.
+
+The lifecycle suite now has 79 cases and the verdict suite 27. The ordinary
+orphan case moved entirely to
+`merge_gate::a_red_gate_whose_test_left_an_orphan_is_red_not_infrastructure`.
+That retained regression also checks the completed owner's cleared gate fields
+and the exact survivor PID in the cleanup log. TERM-resistant, slow-census,
+pinned-leader and cancellation cases remain distinct coverage.
+
+The first parallel run reproduced the cancellation/restoration failure described
+by SH-862. A controlled reproduction established that forced lifecycle
+cancellation can stop restoration after gate quiescence. The fixture now tests
+the documented owned recovery boundary after a matching escalation; ordinary
+cancellation still requires immediate restoration. This adopted repair adds
+three cases, explaining the increase from the planned 76 to 79. Production
+deadlines remain unchanged. See [the diagnosis](../rca/sh-793-cancelled-restoration.md).
+The landed SH-789 change adds four verdict cases. Its repeated-kill behavior
+and fixed reaping deadline are preserved; the runner's inventory contract reads
+the direct verdict command's declared test classes instead of keeping a second
+manual class list.
+
+All three Rust verifier wrappers pass, as do the new runner contract, retained
+orphan regression, and directly affected isolation, timing, impact-selection
+and fixture-containment contracts. Formatting and targeted Clippy with warnings
+denied pass. The full suite remains with the centralized verifier.
+
+Measured on 2026-10-02, on the ten-core M1 Max with Python 3.14.7. All runs
+used the reconciled implementation in `c775c476` (the later ancestry merge
+changed no source). Runs were sequential, with no concurrent build from this
+lane. Serial commands used `python3 -B scripts/tests/test_verifier_<suite>.py -v`;
+parallel commands used `python3 -B scripts/tests/run_verifier_tests.py <suite>
+--jobs 2`. Wall time includes interpreter startup. One-minute machine load
+was sampled approximately once per second. Every selected case passed.
+
+| Suite | Execution | Cases | Wall time | Mean load | Load range |
+|---|---|---:|---:|---:|---:|
+| Lifecycle | Original serial | 79 | 330.004 s | 15.212 | 8.965–26.996 |
+| Lifecycle | Two workers | 79 | 159.879 s | 10.493 | 8.725–13.479 |
+| Verdict | Original serial | 27 | 239.259 s | 23.529 | 12.309–35.563 |
+| Verdict | Two workers | 27 | 57.854 s | 11.874 | 8.674–16.023 |
+| Lifecycle | Serial confirmation after parallel | 79 | 290.868 s | 16.954 | 7.857–40.284 |
+| Verdict | Serial confirmation after parallel | 27 | 140.869 s | 8.912 | 7.396–13.200 |
+
+Against the faster serial observations, elapsed time fell 45.0% for lifecycle
+and 58.9% for verdict. Ambient contention varied; the lifecycle serial samples
+had higher mean load, while the verdict confirmation had lower mean load than
+its parallel sample. The figures include those effects. The barrier-based
+runner contracts independently prove overlap and the concurrency ceiling.
+No timing ratio is encoded as a test assertion.
+
 ## Roadmap to 15 minutes
 
 What this story leaves, in order of leverage. Each is a story related to

@@ -7,7 +7,10 @@ use super::{
 use crate::{
     domain::StoryEvent,
     error::AppError,
-    service::VerificationCandidate,
+    service::{
+        VerificationCandidate,
+        verification::{FAILED_GATE_RERUN_SCOPE, IMPLEMENTER_TEST_SCOPE},
+    },
     store::{ReadOps, Store, StoreError, StoryNo},
 };
 
@@ -54,7 +57,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 .ok_or_else(|| StoreError::Validation("failed repair has no in-progress state".into()))?;
             crate::service::story::append_state_transition(tx, project, story, &row, &prefix,
                 &states, target, &now, vec![StoryEvent::StoryCommentAdded {
-                    at: now.clone(), text: format!("PROJECT REPAIR TESTS FAILED — attempt {attempt}, tree {tree}. Continue the accepted scope in `story verifier repair show {} --json`. Preserve this worktree, run new and impacted tests, commit, then move {} to verifying. The central verifier owns submission and the full suite.\n\n{}", view.record.id, candidate.story_id, crate::text_lint::quote_evidence(detail)),
+                    at: now.clone(), text: format!("PROJECT REPAIR TESTS FAILED — attempt {attempt}, tree {tree}. Continue the accepted scope in `story verifier repair show {} --json`. Preserve this worktree. {IMPLEMENTER_TEST_SCOPE} {FAILED_GATE_RERUN_SCOPE} Commit, then move {} to verifying. The central verifier owns submission and the full suite.\n\n{}", view.record.id, candidate.story_id, crate::text_lint::quote_evidence(detail)),
                 }], self.ctx.provenance())?;
             view.state.subjects.push(AffectedSubmission {
                 candidate: candidate.clone(), story, returned: true,

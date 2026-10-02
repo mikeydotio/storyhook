@@ -297,7 +297,12 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
                     gate = read(record_path).get("gate_session")
                     if gate and supervisor_gone(record_path, child):
                         signal_session(gate, signal.SIGTERM)
-            if deadline is not None and time.monotonic() >= deadline and killed_at is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                if killed_at is None:
+                    print(f"verifier-owner: {field} {child} cleanup grace expired; sending SIGKILL;"
+                          f" owner record {record_path}", file=sys.stderr, flush=True)
+                # A member can fork after a kill census and before delivery.
+                # Every later pass must signal newly discovered members too.
                 signal_session(child, signal.SIGKILL)
                 # Escalation must also cover the recorded arbitrary execution
                 # session if its supervisor died before completing the record.
@@ -305,7 +310,8 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
                     gate = read(record_path).get("gate_session")
                     if gate:
                         signal_session(gate, signal.SIGKILL)
-                killed_at = time.monotonic()
+                if killed_at is None:
+                    killed_at = time.monotonic()
             # The reaping eighth runs from the delivered SIGKILL, and only members
             # found by a census begun after it closed prove survival. Under load
             # one census can outlast the eighth, and a census taken before the

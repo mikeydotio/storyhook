@@ -117,6 +117,41 @@ fn sibling_references(name: &str, body: &str) -> BTreeSet<String> {
     found
 }
 
+/// A reference must exist in the materialized bundle, as a file or directory.
+fn reference_is_bundled(bundled: &BTreeSet<&str>, reference: &str) -> bool {
+    // Materialization creates parent directories, but the manifest lists files.
+    bundled
+        .iter()
+        .any(|file| Path::new(file).starts_with(reference))
+}
+
+#[test]
+fn directory_references_require_a_bundled_descendant() {
+    let bundled = ["alpha.sh", "python-bin/python3", "tools/nested/helper.py"]
+        .into_iter()
+        .collect();
+    for present in [
+        "alpha.sh",
+        "python-bin/python3",
+        "python-bin",
+        "tools",
+        "tools/nested",
+    ] {
+        assert!(reference_is_bundled(&bundled, present), "missing {present}");
+    }
+    for absent in [
+        "empty",
+        "python",
+        "python-bin/python",
+        "python-bin/missing",
+        "alpha.sh/child",
+    ] {
+        assert!(!reference_is_bundled(&bundled, absent), "accepted {absent}");
+    }
+    let misleading = ["python-bin-extra/python3"].into_iter().collect();
+    assert!(!reference_is_bundled(&misleading, "python-bin"));
+}
+
 #[test]
 fn every_sibling_a_bundled_script_reaches_through_its_own_directory_is_bundled() {
     let bundled = bundled_names();
@@ -126,7 +161,7 @@ fn every_sibling_a_bundled_script_reaches_through_its_own_directory_is_bundled()
         let body = String::from_utf8_lossy(bytes);
         for referenced in sibling_references(name, &strip_comments(&body)) {
             references_seen += 1;
-            if !bundled.contains(referenced.as_str()) {
+            if !reference_is_bundled(&bundled, &referenced) {
                 missing.push(format!("{name} reaches {referenced}"));
             }
         }
