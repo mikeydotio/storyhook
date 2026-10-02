@@ -411,11 +411,103 @@ the two interleaved pairs before accepting this story's performance claim.
   not quarantined, since it may be a product defect.
 - **First-wave load grace.** Slices that start together sample the lagging
   1-minute load at config evaluation and keep an ungraced `expect.timeout` for
-  their whole life. SH-813.
+  their whole life. SH-813 corrects this at assertion entry, as described below.
 - **A dead release gate nobody saw.** The baseline found
   `settings-version.spec.ts` red on both engines since SH-756 added a Settings
   section on 2026-09-21: the browser suite runs only in the release tier. A
   leg measured in minutes can run far more often.
+
+### Assertion defaults after startup (SH-813)
+
+The shared `expect` now calls the existing `gracedPatience()` policy when an
+assertion is constructed. `expect.configure()` supplies that default to
+Playwright, which still owns matching, polling and failures. Saved `soft` and
+`poll` functions also sample on invocation; configuring or extending an expect
+preserves this behavior. Explicit matcher, poll and configured timeouts remain
+exact, including zero. Configuring a timeout of `undefined` restores dynamic
+sampling. `toPass` retains its separate native timeout policy.
+
+The two custom text guards forward `options.timeout ?? this.timeout` to their
+native delegates. Otherwise those delegates would discard the new default and
+fall back to startup patience. The hidden-decoration checks remain in place.
+The source fence requires both the text guards and the grace adapter.
+
+Idle assertions still have 5,000 ms; `E2E_LOAD_GRACE=0` still disables grace;
+the assertion ceiling remains 300,000 ms. Startup config and the whole-test
+watchdog retain their existing roles. Each test reports each distinct graced
+default once, on stderr and in annotations. These reports describe defaults,
+not overrides of explicit proof deadlines.
+
+Call-time sampling was selected over a jobs/core floor and staggered startup.
+At SH-792's recorded mean load 87 on 10 cores, the existing policy calculates
+43,500 ms, whereas a 12-jobs/core floor calculates only 6,000 ms. Staggering
+cannot refresh a default retained for an entire slice. The one-minute metric
+still lags new bursts; this change neither predicts them nor extends an
+assertion that has already started.
+
+Controlled regression evidence uses the pinned Playwright 1.63 runtime:
+
+| Check | Before | After |
+|---|---|---|
+| Sample changes from ratio 0.3 to 8.7 | Matcher receives 5,000 ms | Matcher receives 43,500 ms |
+| DOM becomes ready after 6,000 ms; new ratio is 2 | Startup budget is only 5,000 ms | Visibility and both text matchers pass with 10,000 ms on Chromium and WebKit |
+| Remove effective timeout forwarding from text delegates | Exact-budget regression rejects the config's 50 ms fallback | Correct delegates report the requested 100/200 ms on both engines |
+
+The eight Node regression cases and the original seven text-guard cases per
+desktop engine pass. Tests also preserve explicit deadlines, disabled grace,
+the ceiling, soft failures, promises, custom messages, asymmetric matchers,
+derived instances and `toPass` behavior. Strict TypeScript checking passes.
+
+The comparison also reproduced a different cause in `card-exit-reclaim`:
+freezing JavaScript time does not freeze the 200 ms CSS exit animation. Its
+real `animationend` could detach the card between driver calls, before the
+test reclaimed it. The adopted repair pauses only `.card.exiting` animation
+playback in a scoped helper, alongside the JavaScript clock, and removes the
+rule in `finally`. The renderer and both removal callbacks remain real.
+The new regression was red on both engines (`running` instead of `paused`).
+All five card-exit cases now pass on both engines. A separate native animation
+witnesses more than one exit duration of CSS time while the card stays held;
+the production fallback then preserves it at 599 ms and removes it at 600 ms.
+This distinguishes controlled completion from merely increasing a timeout.
+See the timing APIs covered by [Playwright's clock](https://playwright.dev/docs/clock).
+
+The 2026-10-02 comparison used the five files named by SH-813 on both desktop
+engines: `card-exit-reclaim`, `board-sort`, `create-story-project`,
+`verify-override-drop` and `card-transient-classes`. Each arm selected 86 cases
+in 10 concurrent slices with `STORYHOOK_E2E_JOBS=12`, one worker per slice and
+no retries. The card-exit repair and its new case were identical in both arms;
+only baseline versus corrected assertion integration changed. The locked
+Playwright dependencies and Rust binary bytes were identical throughout.
+The binary SHA-256 was
+`861dd08b694705cbf681b8ddbe013b57725347912a4a702a1dabf299eb939507`.
+
+A temporary runner copy excluded compilation and otherwise retained the
+production selection, binary lease, isolated fixtures, browsers and cleanup.
+Two preliminary runs were discarded when their build changed the binary hash;
+even a fixed `STORYHOOK_BUILD_ID` did not establish byte equality. The table
+contains only the four valid, interleaved prebuilt-binary runs. Wall time
+includes setup; pool time covers the concurrent slices. Load was sampled each
+second on 10 cores. Budget ranges include config/worker startup samples and
+the corrected adapter's assertion-entry diagnostics.
+
+| Run | Wall / pool (s) | Load mean / max | Pass / fail | Startup default (ms) | Assertion-entry default (ms) |
+|---|---:|---:|---:|---:|---:|
+| Baseline 1 | 223.0 / 216 | 98.0 / 134.9 | 82 / 4 | 24,531–64,954 | Retained startup default |
+| Corrected 1 | 282.1 / 277 | 128.7 / 155.7 | 83 / 3 | 51,536–76,463 | 50,361–77,868 |
+| Baseline 2 | 202.7 / 200 | 130.5 / 150.4 | 82 / 4 | 56,753–69,923 | Retained startup default |
+| Corrected 2 | 260.5 / 252 | 136.1 / 161.4 | 81 / 5 | 53,224–80,663 | 55,337–80,693 |
+
+These runs do **not** establish a speed or failure-rate improvement. Load was
+unequal, and startup was already contended: the original ungraced 5-second
+first-wave signature was not reproduced. The controlled runtime regressions
+above establish the stale-default correction. All card-exit and board-sort
+cases passed in every arm. Remaining failures were the transient disabled
+controls and animation-owned classes retained by SH-812, plus response-rewriting
+routes reading disposed responses during teardown. The latter occurred in the
+stale-draft case and `injectVerifyingCard`; SH-813 adopted that separate
+lifetime repair and remains open until its regression acceptance is complete.
+The raw logs, per-second samples and traces are retained under
+`/tmp/SH-813-final-pairs` and summarized in SH-813's discussion.
 
 ## Verifier Python cases: bounded process concurrency (SH-793)
 
