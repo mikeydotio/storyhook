@@ -335,6 +335,34 @@ fn every_session_registration_first_revokes_pending_deliveries_under_the_lock() 
 }
 
 #[test]
+fn dispatch_checks_current_eligibility_after_registration_before_the_charter() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let source = std::fs::read_to_string(root.join("plugins/story/bin/story.sh")).unwrap();
+    let body = bash_functions(&source)
+        .into_iter()
+        .find(|(name, _)| name == "cmd_dispatch")
+        .unwrap()
+        .1;
+    let register = body.find("lib/agent_identity.py\" register").unwrap();
+    let validate = body[register..]
+        .find("lib/agent_identity.py\" validate")
+        .map(|at| at + register)
+        .unwrap();
+    let handoff = body[validate..]
+        .find("send_prompt_confirmed \"$pane\" \"$prompt\"")
+        .map(|at| at + validate)
+        .unwrap();
+    assert!(
+        body[validate..handoff].contains("check_dispatch_eligibility \"$id\""),
+        "every dispatch, including guarded continuation, must check current eligibility after registration"
+    );
+    assert!(
+        !body[validate..].contains("supersede_block_deliveries"),
+        "a block committed after final eligibility must retain delivery authority"
+    );
+}
+
+#[test]
 fn the_function_scanner_reads_top_level_bodies() {
     let script = "helper() {\n  a\n}\n\ncmd_x() {\n  reserve_story_workspace\n  b() { c; }\n}\n";
     let functions = bash_functions(script);

@@ -1704,23 +1704,42 @@ supersede_resumed_continuations() {
   SUPERSEDED_CONTINUATIONS=$(printf '%s' "$receipt" | jq -c '.superseded')
 }
 
-# require_resume_eligibility <id> <show-json> — refuse to relaunch an agent on a
-# claimed story the tracker would not let its session continue (SH-850). A
-# blocked, awaiting or resetting story must not get an agent back (SH-690): its
-# block interrupted the last one. The question is `story session-eligibility`,
-# the tracker's own predicate, so this helper restates no block rule. A verb
-# that cannot answer is its own refusal, never a pass.
-require_resume_eligibility() {
-  local rid="$1" rshow="$2" answer eligible reason
-  answer=$(story_cli session-eligibility "$rid" --json 2>&1) \
-    || refuse "resume-eligibility-unavailable" "cannot ask whether $rid may resume: $answer. Nothing was changed."
-  eligible=$(printf '%s' "$answer" | jq -r '.session_eligibility.eligible | if type == "boolean" then tostring else empty end' 2>/dev/null || printf '')
-  reason=$(printf '%s' "$answer" | jq -r '.session_eligibility.reason // "unknown"' 2>/dev/null || printf 'unknown')
-  case "$eligible" in
-    true) return 0 ;;
-    false) refuse "resume-ineligible" "story $rid cannot resume ($reason): $(ready_gate_reason "$rshow" "$rid"). Lift the hold or resolve the blocker first. Nothing was changed." ;;
-    *) refuse "resume-eligibility-unavailable" "story session-eligibility $rid gave no verdict: $answer. Nothing was changed." ;;
-  esac
+# A fresh tracker snapshot, never a shell reimplementation of readiness. Return
+# status distinguishes permission from refusal; ERROR distinguishes unavailable
+# evidence from a valid negative verdict. Call directly, not in a subshell, so
+# the caller can roll back its own stage before emitting the refusal (SH-786).
+DISPATCH_ELIGIBILITY_REASON=""
+DISPATCH_ELIGIBILITY_ERROR=""
+check_dispatch_eligibility() {
+  local rid="$1" answer
+  DISPATCH_ELIGIBILITY_REASON=""
+  DISPATCH_ELIGIBILITY_ERROR=""
+  if ! answer=$(story_cli session-eligibility "$rid" --json 2>&1); then
+    DISPATCH_ELIGIBILITY_ERROR="cannot ask whether $rid may work: $answer"
+    return 1
+  fi
+  if ! printf '%s' "$answer" | jq -e -s --arg id "$rid" '
+    length == 1 and (.[0] | .result == "ok" and
+      (.session_eligibility | .schema_version == 1 and .story_id == $id
+        and (.eligible | type == "boolean")
+        and (.reason | type == "string" and length > 0)))
+  ' >/dev/null 2>&1; then
+    DISPATCH_ELIGIBILITY_ERROR="story session-eligibility $rid gave an invalid verdict: $answer"
+    return 1
+  fi
+  DISPATCH_ELIGIBILITY_REASON=$(printf '%s' "$answer" | jq -r '.session_eligibility.reason')
+  [ "$(printf '%s' "$answer" | jq -r '.session_eligibility.eligible')" = true ]
+}
+
+# A reused claim bypasses the ready list, but never tracker eligibility. Keep
+# resume's established refusal names while also covering force/engine claims.
+require_dispatch_eligibility() {
+  local rid="$1" rshow="$2" mode="$3"
+  if check_dispatch_eligibility "$rid"; then return 0; fi
+  if [ -n "$DISPATCH_ELIGIBILITY_ERROR" ]; then
+    refuse "$mode-eligibility-unavailable" "$DISPATCH_ELIGIBILITY_ERROR. Nothing was changed."
+  fi
+  refuse "$mode-ineligible" "story $rid cannot $mode ($DISPATCH_ELIGIBILITY_REASON): $(ready_gate_reason "$rshow" "$rid"). Lift the hold or resolve the blocker first. Nothing was changed."
 }
 
 # Hold the reset/verifier exclusion through dispatch handoff. Descriptor 9 is
@@ -1883,8 +1902,7 @@ cmd_dispatch() {
       [ -n "$TARGET_SESSION" ] || refuse "continuation-unsafe" "retained pane has no session."
       [ "$(story_cli --deadline 2 continuation capabilities --json | jq -r '.continuation_protocol // 0')" = 1 ] \
         || refuse "continuation-unavailable" "guarded resume requires the installed continuation protocol."
-      [ "$(story_cli session-eligibility "$id" --json | jq -r '.session_eligibility.eligible // false')" = true ] \
-        || refuse "continuation-ineligible" "the retained story is not eligible to continue."
+      require_dispatch_eligibility "$id" "$show_json" continuation
     fi
 
 
@@ -2232,10 +2250,13 @@ cmd_dispatch() {
       fi
       reused_claim=true
       [ -z "$resume" ] || resumed=true
-      # A reused claim skips the ready gate below, so a resume must ask the
-      # tracker itself whether the claimed session may continue (SH-850). The
-      # guarded continuation form already asked, before its own effects.
-      [ -z "$resume" ] || [ -n "$require_absent" ] || require_resume_eligibility "$id" "$show_json"
+      # Guarded continuation already checked its retained claim. Force must
+      # check too: the engine's earlier claim cannot authorize a later launch.
+      if [ -z "$require_absent" ]; then
+        local eligibility_mode=dispatch
+        [ -z "$resume" ] || eligibility_mode=resume
+        require_dispatch_eligibility "$id" "$show_json" "$eligibility_mode"
+      fi
     fi
 
     # Step 6 (deviation #2 — see header): READY-STATE GATE, issue #40's core
@@ -2497,7 +2518,8 @@ cmd_dispatch() {
       --arg model_source "$model_source" --arg effort_source "$effort_source" --arg policy_note "$policy_note" \
     --arg model "$effective_model" --arg effort "$resolved_effort" --arg speed "$resolved_speed" '
       {
-        ok: true, dry_run: true,
+        ok: true, dry_run: true, eligibility_phase: "preflight",
+        handoff_eligibility_checked: false,
         id: $id, title: $title, dir: $dir,
         window_name: $wname, prompt: $prompt, state: $state, auto: $auto, council: $council,
         forced: $forced, reused_claim: $reused_claim, claim_transitioned: false,
@@ -2974,6 +2996,26 @@ cmd_dispatch() {
     refuse_with "pane-identity-unavailable" \
       "[story] $id → its registered identity changed before handoff: $(printf '%s' "$identity_result" | jq -r '.display'). No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
       "$(jq -n --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" '{claimed:$claimed}')"
+  fi
+
+  # Revocation and registration precede this snapshot under the workspace
+  # lock. Earlier holds forbid the charter; a later hold keeps its Pending
+  # interrupt until the worker can acquire this lock and reach this session.
+  # Never revoke delivery authority after this check (SH-786).
+  if ! check_dispatch_eligibility "$id"; then
+    local eligibility_refusal=dispatch-ineligible
+    local eligibility_detail="story $id cannot work ($DISPATCH_ELIGIBILITY_REASON)"
+    if [ -n "$DISPATCH_ELIGIBILITY_ERROR" ]; then
+      eligibility_refusal=dispatch-eligibility-unavailable
+      eligibility_detail="$DISPATCH_ELIGIBILITY_ERROR"
+    fi
+    rollback_dispatch_attempt
+    refuse_with "$eligibility_refusal" \
+      "[story] $id → $eligibility_detail. No story charter was delivered. $(dispatch_cleanup_note).$DISPATCH_ROLLBACK_NOTE" \
+      "$(jq -n --arg id "$id" --arg reason "$DISPATCH_ELIGIBILITY_REASON" \
+          --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
+          '{id:$id, eligibility_phase:"handoff", eligibility_reason:$reason,
+            handoff_eligibility_checked:true, claimed:$claimed}')"
   fi
 
   # Step 12: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes
