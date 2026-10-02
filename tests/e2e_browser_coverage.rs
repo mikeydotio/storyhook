@@ -846,7 +846,9 @@ fn the_matrix_records_failures_continues_and_keeps_each_slices_artifacts() {
          slice, and the runner must report failure only after every slice had its turn"
     );
     assert!(
-        runner.contains("results_root=\"$repo_root/e2e/test-results/current\""),
+        runner.contains(
+            "results_root=\"${STORYHOOK_E2E_RESULTS_DIR-$repo_root/e2e/test-results/current}\""
+        ),
         "scripts/run-e2e.sh must establish one artifact root for the whole invocation; without \
          it a later Playwright project can clear the earlier project's screenshots and traces"
     );
@@ -974,10 +976,13 @@ fn each_project_invocation_owns_its_daemon_seed_and_fake_tmux_state() {
         );
     }
     assert!(
-        runner.contains("run_one_project \"${slice_projects[$i]}\" \"$1\" \"${slice_lists[$i]}\"")
-            && runner.matches("run_one_project \"").count() == 1,
+        runner
+            .matches("run_one_project \"${slice_projects[$i]}\" \"$1\" \"${slice_lists[$i]}\"")
+            .count()
+            == 2
+            && runner.matches("run_one_project \"").count() == 2,
         "every slice, of the full matrix or of an explicit --project, must enter the same \
-         isolated runner through one call"
+         isolated runner: one ordinary call or one isolation call with retained logs"
     );
 }
 

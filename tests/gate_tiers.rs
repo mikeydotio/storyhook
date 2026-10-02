@@ -212,6 +212,31 @@ fn the_browser_tier_detection_targets_reach_their_scripts() {
     );
 }
 
+#[test]
+fn isolation_targets_are_explicit_and_outside_merge_and_release_gates() {
+    assert!(
+        dry_run("e2e-isolation")
+            .iter()
+            .any(|line| line.contains("scripts/run-e2e.sh --isolate-files"))
+    );
+    for (target, action) in [
+        ("e2e-isolation-watch", "watch"),
+        ("e2e-isolation-status", "status"),
+        ("e2e-isolation-plist", "plist"),
+    ] {
+        assert!(
+            dry_run(target)
+                .iter()
+                .any(|line| { line.contains(&format!("scripts/e2e-isolation-watch.sh {action}")) })
+        );
+    }
+    for target in ["test", "test-full", "test-changed"] {
+        assert!(dry_run(target).iter().all(|line| {
+            !line.contains("--isolate-files") && !line.contains("e2e-isolation-watch.sh")
+        }));
+    }
+}
+
 /// The coverage tier's own detection layer (SH-429) — the same shape as the
 /// browser tier's, fenced the same way just above: a target that stopped
 /// invoking its script would restore silence without failing anything.

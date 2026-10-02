@@ -162,7 +162,7 @@ is_input() {
         is_production_rust "$path" && return 0
         case "$path" in
         (e2e/* | plugins/story/* | scripts/run-e2e.sh | scripts/test-browser-launch-reporter.py | .storyhook.toml) return 0 ;;
-        (scripts/e2e-*.sh | scripts/test-env.sh | scripts/binary-lease.sh) return 0 ;;
+        (scripts/e2e-*.sh | scripts/e2e-*.py | scripts/test-env.sh | scripts/binary-lease.sh) return 0 ;;
         esac
         ;;
     esac

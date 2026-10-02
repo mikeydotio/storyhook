@@ -291,6 +291,20 @@ e2e-install:
 e2e:
 	bash scripts/run-e2e.sh $(ARGS)
 
+.PHONY: e2e-isolation e2e-isolation-watch e2e-isolation-status e2e-isolation-plist
+# The scheduled detector is independent of merge/release gate receipts.
+e2e-isolation:
+	bash scripts/run-e2e.sh --isolate-files $(ARGS)
+
+e2e-isolation-watch:
+	bash scripts/e2e-isolation-watch.sh watch
+
+e2e-isolation-status:
+	@bash scripts/e2e-isolation-watch.sh status
+
+e2e-isolation-plist:
+	@bash scripts/e2e-isolation-watch.sh plist
+
 # Retained as a migration aid after SH-521 retired the every-open-PR sweep.
 # Verification now begins when one linked story moves to `verifying`.
 merge-watch:

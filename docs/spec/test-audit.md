@@ -413,6 +413,145 @@ its parallel sample. The figures include those effects. The barrier-based
 runner contracts independently prove overlap and the concurrency ceiling.
 No timing ratio is encoded as a test assertion.
 
+## Scheduled file-isolation proof (SH-814)
+
+SH-811 passed only after another spec moved a seeded story. A fresh fixture
+exposed it. The normal sliced leg changes its grouping over time and cannot
+guarantee that each file passes alone. This detector runs every selected
+project/file pair in its own production fixture. It does not change the
+normal slice planner, browser matrix, workers, retries, or gate receipts.
+
+| Command | Contract |
+|---|---|
+| `make e2e-isolation ARGS=--project=webkit` | Isolate every selected file in this checkout; optional ordinary selection filters |
+| `make e2e-isolation-watch` | Fetch integration and run one complete scheduled observation |
+| `make e2e-isolation-status` | Read the latest result and age; no fetch or test |
+| `make e2e-isolation-plist` | Render the daily LaunchAgent; does not install or start it |
+
+**Cadence: daily at 04:17, machine-local time, eight concurrent slices.** The
+historical 807-second proof supports daily execution instead of adding this
+cost to each merge. The schedule repeats even when the tree is unchanged.
+It uses the integration role in `scripts/branch-policy.sh` (currently `dev`),
+so it detects a merged regression before the next stable release. There is no
+GitHub Actions job and no change to `make test` or `make test-full`.
+[Apple's calendar scheduling](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/ScheduledJobs.html)
+catches up after sleep; a powered-off or logged-out machine cannot run a user
+LaunchAgent. Status becomes stale after two daily intervals or a locally known
+integration-tree change. Missing and interrupted observations never mean success.
+The proof retains the runner's display-wake assertion for WebKit safety and can
+turn on the display. Its child sets `CI=1` so the existing `forbidOnly` policy
+rejects an accidental focused test.
+
+### Evidence and diagnosis
+
+The isolation planner writes one exact Playwright test-list for each selected
+project/file pair, independent of test counts and duration weights. The built-in
+JSON reporter proves the executed project/file, test count and completed
+results agree with the plan. Empty selections, discovery errors and missing
+evidence fail. Caller-owned partitions and overrides of the config, reporters,
+output, concurrency or retries are incompatible with isolation mode.
+
+After the initial pool finishes, a one-job pool repeats only its failed files,
+each with a fresh daemon and seed. Initial failures remain failures even when
+the repeat passes. Reports say `failed again`, `not reproduced on serial rerun`,
+or `rerun infrastructure failure`; none automatically diagnoses an order
+dependency or proves a load flake. Failure output gives the exact filename,
+artifacts and a serial command using its retained test-list. Normal Playwright
+selection filters still apply within each isolated file.
+
+`STORYHOOK_E2E_RESULTS_DIR` selects an absolute, new output directory. Its parent
+must exist; an existing output directory is refused without deleting it.
+Without this variable the runner retains its existing `e2e/test-results/current`
+behavior. A run contains `slices/manifest.json`, per-slice `logs/`, `reports/`,
+`selected/`, `executed/` and `verdicts/`, separate `reruns/` evidence, and the
+final `isolation.json`. Use the reported command from the same checkout and
+revision. Set a new output directory to keep the rerun's output too.
+
+The scheduled controller and subject checkout live under
+`~/.local/share/storyhook/e2e-isolation`. Each attempt retains a unique
+`runs/<attempt>/run.log`, `record.json` and `artifacts/`; `latest.json` is replaced
+atomically. An advisory lock prevents overlapping passes. The watcher refuses
+dirty tracked files, unavailable remotes and absent or mismatched toolchains.
+Reports are retained for investigation; no automatic deletion is performed.
+
+### One-time schedule activation
+
+Run from a clean committed implementation checkout. This creates a durable
+controller, not a linked worktree. It never reads or changes the main checkout.
+The controller must remain at the recorded commit. Each pass requires that
+commit to be an ancestor of fetched integration; until merge, status is
+`awaiting integration` and no proof runs. Installation does not run the proof.
+
+```sh
+set -e
+bash scripts/python-runtime.sh -- python3 - <<'PY'
+import json, pathlib, subprocess
+source = pathlib.Path.cwd()
+base = pathlib.Path.home() / '.local/share/storyhook/e2e-isolation'
+if base.exists():
+    raise SystemExit(f'{base} exists; inspect it instead of overwriting it')
+def git(*args):
+    return subprocess.check_output(['git', *args], text=True).strip()
+if git('status', '--porcelain', '--untracked-files=no'):
+    raise SystemExit('Commit tracked edits first')
+revision = git('rev-parse', 'HEAD')
+remote = git('config', '--get', 'remote.origin.url')
+base.mkdir(parents=True)
+for name in ('controller', 'checkout'):
+    destination = base / name
+    subprocess.run(['git', 'clone', '--no-hardlinks', '--no-checkout',
+                    str(source), str(destination)], check=True)
+    subprocess.run(['git', '-C', str(destination), 'checkout', '--detach', revision], check=True)
+    subprocess.run(['git', '-C', str(destination), 'remote', 'set-url', 'origin', remote], check=True)
+(base / 'settings.json').write_text(json.dumps({'schema': 1, 'required_commit': revision}) + '\n')
+PY
+observer="$HOME/.local/share/storyhook/e2e-isolation"
+(cd "$observer/checkout" && make e2e-install)
+shasum -a 256 "$observer/checkout/e2e/package-lock.json" | awk '{print $1}' > "$observer/checkout/e2e/node_modules/.storyhook-lock-sha256"
+make -s e2e-isolation-plist > /tmp/io.mikey.storyhook.e2e-isolation.plist
+plutil -lint /tmp/io.mikey.storyhook.e2e-isolation.plist
+mkdir -p "$HOME/Library/LaunchAgents"
+test ! -e "$HOME/Library/LaunchAgents/io.mikey.storyhook.e2e-isolation.plist"
+install -m 644 /tmp/io.mikey.storyhook.e2e-isolation.plist "$HOME/Library/LaunchAgents/"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.mikey.storyhook.e2e-isolation.plist"
+launchctl print "gui/$(id -u)/io.mikey.storyhook.e2e-isolation"
+```
+
+The plist captures the invoking PATH. Use a durable PATH containing `story`,
+`cargo`, `node`, `npm`, `git` and the supported Python; do not capture an agent
+worktree's runtime shim. HTTPS credentials must work without interaction.
+Console output goes to `launchd.log` under the observer directory. If integration
+changes its package lock, rerun the provisioning and digest commands above in
+the subject checkout identified by the failure. Update controller code only by
+deliberately installing a new tested commit and matching `settings.json`.
+
+To stop recurrence, run
+`launchctl bootout "gui/$(id -u)/io.mikey.storyhook.e2e-isolation"`, then remove
+only its LaunchAgent plist. Keep the durable checkout and reports for inspection.
+
+### Regression coverage
+
+`tests/e2e_isolation.rs` runs planner, evidence and watcher contracts. Watcher
+contracts use real temporary Git repositories; only the external proof command
+is a fixture. The Makefile and reusable-leg contracts also fence target wiring
+and Python-helper fingerprint invalidation.
+
+Run the new production-flow regression explicitly with
+`bash scripts/python-runtime.sh -- python3 -B tests/support/e2e_isolation_live.py`.
+It creates two temporary Node-project specs that use the real daemon and seed:
+the first writes a fixture marker and the second incorrectly needs it. Together
+they pass. Isolation must identify only the second file, reproduce its failure
+in a different fresh fixture, and keep the result red. The temporary specs are
+removed after the test. This targeted regression does not run the existing
+browser suite.
+
+Validation on 2026-10-02: the live regression passed with two shared-fixture
+tests, two isolated files and one fresh serial repeat. The planner/evidence
+contracts cover nine cases; the watcher contracts cover eleven, including a
+child deliberately forked during cancellation. After normal teardown, the
+watcher kills remaining members of its owned process group. Wiring, fingerprint,
+selection, fixture ownership and display-safety contracts passed independently.
+
 ## Roadmap to 15 minutes
 
 What this story leaves, in order of leverage. Each is a story related to

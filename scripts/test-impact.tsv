@@ -80,6 +80,7 @@ e2e_daemon_check	scripts/e2e-daemon-check.sh
 e2e_display_awake	scripts/e2e-selection.sh
 e2e_display_awake	scripts/run-e2e.sh
 e2e_fixture_hygiene	:(glob)**/*
+e2e_isolation	:(glob)**/*
 e2e_launch_probe	:(glob)**/*
 e2e_load_grace	:(glob)**/*
 e2e_pool	scripts/e2e-pool.sh
