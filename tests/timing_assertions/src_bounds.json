@@ -100,11 +100,6 @@
       "kind": "proof",
       "reason": "A silent answer must be cut off at its 200 ms deadline; the test expects the timeout to fire."
     },
-    "test run_captured_quiescent(Duration::from_millis(100)": {
-      "count": 1,
-      "kind": "proof",
-      "reason": "Descendants that outlive a 100 ms deadline must turn success into a failure; the test expects the deadline to pass."
-    },
     "test run_captured_with_registration(Duration::ZERO": {
       "count": 1,
       "kind": "proof",

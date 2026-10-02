@@ -202,16 +202,6 @@
       "kind": "delegated",
       "reason": "The driver honors its caller-supplied absolute deadline. Normal measurements use one graced CHURN_PATIENCE budget; expiry regressions supply literal short or expired deadlines."
     },
-    "Instant::now()>=deadline": {
-      "count": 2,
-      "kind": "delegated",
-      "reason": "The driver honors its caller-supplied absolute deadline. Normal measurements use one graced CHURN_PATIENCE budget; expiry regressions supply literal short or expired deadlines."
-    },
-    "ifclean_since.elapsed()>=stretch": {
-      "count": 1,
-      "kind": "proof",
-      "reason": "A clean stretch is measured against the injected client deadline; scaling the duration would alter the liveness experiment."
-    },
     "started.elapsed()<REFUSED_CONNECTION_CEILING": {
       "count": 1,
       "kind": "proof",

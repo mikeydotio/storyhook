@@ -224,6 +224,19 @@ pub(crate) fn run_captured_quiescent(
     termination: TerminationPolicy,
 ) -> Result<Captured, CaptureError> {
     let deadline = Instant::now() + timeout;
+    run_captured_quiescent_until(command, termination, || {
+        Ok(deadline.saturating_duration_since(Instant::now()))
+    })
+    .map_err(|failure| failure.error)
+}
+
+/// Shares group-quiescence routing with a caller-owned deadline. The production
+/// wrapper uses one absolute deadline; tests can establish readiness first.
+fn run_captured_quiescent_until(
+    command: Command,
+    termination: TerminationPolicy,
+    remaining: impl FnMut() -> std::io::Result<Duration>,
+) -> Result<Captured, CaptureFailure> {
     run_captured_until(
         command,
         termination,
@@ -234,9 +247,8 @@ pub(crate) fn run_captured_quiescent(
         },
         None,
         |_| Ok(()),
-        || Ok(deadline.saturating_duration_since(Instant::now())),
+        remaining,
     )
-    .map_err(|failure| failure.error)
 }
 
 /// Runs a command with capture while retaining a caller-owned registration
@@ -730,21 +742,59 @@ mod tests {
 
     #[test]
     fn quiescent_capture_rejects_success_while_descendants_survive_the_deadline() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "trap '' TERM; sleep 30 & printf '{\"ok\":true}'"]);
-        let result = run_captured_quiescent(
-            command,
-            Duration::from_millis(100),
-            TerminationPolicy::TerminateThenKill {
-                grace: Duration::from_millis(100),
-            },
-        );
-        assert!(matches!(
-            result,
-            Err(CaptureError::Timeout(
-                TimeoutTermination::KilledAfterTerminate
-            ))
-        ));
+        // Startup is not the timeout proof. A delayed shell must first establish
+        // its resistant descendant; only then does the driven 100 ms begin.
+        for delay in ["0", "0.2"] {
+            let root = storyhook_test_support::scratch_dir();
+            let ready = root.path().join("ready");
+            let mut command = Command::new("sh");
+            command.args([
+                "-c",
+                "sleep \"$1\"; trap '' TERM; (printf ready > \"$2\"; while :; do sleep 30; done) & printf '{\"ok\":true}'",
+                "fixture",
+                delay,
+            ]).arg(&ready);
+            let mut startup =
+                storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
+            let mut proof_deadline = None;
+            let result = run_captured_quiescent_until(
+                command,
+                TerminationPolicy::TerminateThenKill {
+                    grace: Duration::from_millis(100),
+                },
+                || {
+                    if ready.exists() {
+                        let deadline = proof_deadline
+                            .get_or_insert_with(|| Instant::now() + Duration::from_millis(100));
+                        Ok(deadline.saturating_duration_since(Instant::now()))
+                    } else if startup.expired() {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("descendant never became ready: {startup}"),
+                        ))
+                    } else {
+                        Ok(Duration::from_millis(10))
+                    }
+                },
+            );
+            let failure = match result {
+                Err(failure) => failure,
+                Ok(captured) => panic!(
+                    "capture accepted leader success with a live descendant: {:?}",
+                    captured.status
+                ),
+            };
+            assert!(proof_deadline.is_some(), "{}", failure.error.detail());
+            assert!(
+                matches!(
+                    failure.error,
+                    CaptureError::Timeout(TimeoutTermination::KilledAfterTerminate)
+                ),
+                "{}",
+                failure.error.detail()
+            );
+            assert_eq!(failure.stdout, br#"{"ok":true}"#);
+        }
     }
 
     #[test]
