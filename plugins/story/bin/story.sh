@@ -1075,6 +1075,9 @@ schedule_plan_approval() {
 
 dispatch_ready_note() {
   case "$WAIT_READY_REASON" in
+    trust-*)
+      printf 'workspace trust could not be confirmed (%s; phase %s); no trust input was retried. Inspect pane_tail for the provider dialog' "$WAIT_READY_REASON" "${STARTUP_TRUST_PHASE:-unseen}"
+      ;;
     wrong-process)
       printf 'that pane is running `%s`, not a process matching `%s` — the launch never started. Set STORY_READY_PROCESS_PATTERN if your %s reports a different name; `.` matches anything' \
         "${WAIT_READY_COMMAND:-?}" "$READY_PROCESS_PATTERN" "$AGENT_LABEL"
@@ -2848,6 +2851,26 @@ cmd_dispatch() {
   # hook. Capture failure evidence before terminating this attempt's process
   # tree; only confirmed termination permits Git/claim rollback. An uncertain
   # owner or a potentially submitted charter preserves resources instead.
+  # Only this managed autonomous launch may answer workspace consent.
+  local STARTUP_TRUST_ENABLED=false STARTUP_TRUST_PHASE=unseen
+  local STARTUP_TRUST_PANE="$pane" STARTUP_TRUST_PROVIDER="$AGENT"
+  local STARTUP_TRUST_PID="$pane_pid" STARTUP_TRUST_START="$launch_start"
+  local STARTUP_TRUST_WORKTREE="$worktree_path" STARTUP_TRUST_ROOT=''
+  local STARTUP_TRUST_FINGERPRINT='' STARTUP_TRUST_SINCE='' STARTUP_TRUST_OBSERVATION=''
+  if [ -n "$auto" ]; then
+    # Git's first worktree is its primary checkout, including linked lanes.
+    # This reads registration metadata, not files in the primary checkout.
+    IFS= read -r -d '' STARTUP_TRUST_ROOT < <(
+      git -C "$worktree_path" worktree list --porcelain -z | python3 -c '
+import sys
+listing = sys.stdin.buffer.read()
+if not listing.startswith(b"worktree ") or not listing.endswith(b"\0\0"):
+    sys.exit(1)
+sys.stdout.buffer.write(listing.split(b"\0", 1)[0][len(b"worktree "):] + b"\0")
+'
+    ) || STARTUP_TRUST_ROOT=''
+    STARTUP_TRUST_ENABLED=true
+  fi
   local provider_ready=false
   if [ "$AGENT" = "codex" ] && [ -n "$auto" ]; then
     codex_bootstrap_ready "$pane" "$pane_pid" "$worktree_path" "$launch_cmd" \
@@ -2857,6 +2880,7 @@ cmd_dispatch() {
   else
     wait_ready_sentinel "$pane" "$pane_pid" "$worktree_path" "$STORY_PLUGIN_ROOT" && provider_ready=true
   fi
+  STARTUP_TRUST_ENABLED=false
   if [ "$provider_ready" != true ]; then
     local ready_tail
     ready_tail=$(pane_tail "$pane")
@@ -2866,12 +2890,12 @@ cmd_dispatch() {
       "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
             --arg pane "$pane" --arg cmd "$WAIT_READY_COMMAND" \
             --arg wreason "$WAIT_READY_REASON" --arg tail "$ready_tail" \
-            --arg bootstrap "$CODEX_BOOTSTRAP_PHASE" \
+            --arg bootstrap "$CODEX_BOOTSTRAP_PHASE" --arg trust "$STARTUP_TRUST_PHASE" \
             --arg pattern "$READY_PROCESS_PATTERN" --argjson claimed "$DISPATCH_ROLLBACK_CLAIMED" \
             '{id:$id, window:$window, window_name:$wname, pane:$pane,
               readiness_confirmed:false, pane_command:$cmd,
               wait_ready_reason:$wreason, ready_process_pattern:$pattern,
-              bootstrap_phase:$bootstrap,
+              bootstrap_phase:$bootstrap, trust_phase:$trust,
               pane_tail:$tail, claimed:$claimed}')"
   fi
   local readiness_confirmed=true

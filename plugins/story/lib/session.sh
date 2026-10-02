@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/plugin-identity.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/startup-trust.sh"
 # session.sh — shared tmux/worktree/pane-readiness mechanics.
 #
 # FORKED from mikeydotio/agentics' plugins/issue/lib/session.sh (as of
@@ -721,6 +722,14 @@ wait_ready() {
   WAIT_READY_COMMAND=""
   WAIT_READY_REASON="timeout"
   while [ "$attempt" -lt "$READY_ATTEMPTS" ]; do
+    local trust_status=0
+    startup_trust_poll "$pane" || trust_status=$?
+    if [ "$trust_status" = 1 ]; then return 1; fi
+    if [ "$trust_status" = 2 ]; then
+      sleep "$READY_DELAY"
+      attempt=$((attempt + 1))
+      continue
+    fi
     if content=$(tmux capture-pane -p -t "$pane" 2>/dev/null); then
       last_line=$(printf '%s\n' "$content" | grep -v '^[[:space:]]*$' | tail -1 || true)
       launch_gone=false
@@ -849,6 +858,14 @@ wait_ready_sentinel() {
   [ -n "$captured_pid" ] || { WAIT_READY_REASON="pid-mismatch"; return 1; }
 
   while [ "$attempt" -lt "$READY_ATTEMPTS" ]; do
+    local trust_status=0
+    startup_trust_poll "$pane" || trust_status=$?
+    if [ "$trust_status" = 1 ]; then return 1; fi
+    if [ "$trust_status" = 2 ]; then
+      sleep "$READY_DELAY"
+      attempt=$((attempt + 1))
+      continue
+    fi
     local current_pid
     current_pid=$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || printf '')
     # Diagnostic only, and unconditional: whatever is actually running in the

@@ -95,6 +95,7 @@ codex_bootstrap_ready() {
   local pane="$1" pid="$2" worktree="$3" launch="$4" attempt=0
   CODEX_BOOTSTRAP_PHASE="not-started"
   wait_ready "$pane" "$launch" || return 1
+  STARTUP_TRUST_ENABLED=false
   codex_bootstrap_pane_owned "$pane" "$pid" || return 1
   ensure_provider_plan_mode "$pane" || { WAIT_READY_REASON="bootstrap-plan-unconfirmed"; return 1; }
   codex_bootstrap_pane_owned "$pane" "$pid" || return 1
