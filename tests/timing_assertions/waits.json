@@ -336,6 +336,13 @@
       "reason": "ANSWER_AFTER_ACCEPT is shorter than TAILNET_PROBE_TIMEOUT: a listener that accepts must answer before a wedged tailscale probe could complete. Binding readiness is separately graced."
     }
   },
+  "tests/verification_progress_timeout.rs": {
+    "started.elapsed()>idle": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The successful bundled-writer run must exceed its own graced silence deadline; this is a lower bound proving renewal, not a harness timeout."
+    }
+  },
   "tests/verification_queue.rs": {
     "Instant::now()+Duration::from_secs(2)": {
       "count": 1,

@@ -144,31 +144,37 @@ fn progressing_verification_can_outlive_its_idle_budget() {
 }
 
 /// The idle budget of a fake that renews it through the bundled progress
-/// writer: each call starts python3, so the budget leaves room for one slow
-/// start on a loaded machine and is graced by contention when the case runs.
-const WRITER_IDLE: Duration = Duration::from_secs(3);
+/// writer: each call starts python3. Use the same 30-second base as CLI
+/// fixtures, plus load grace; load average alone cannot bound process startup.
+const WRITER_IDLE: Duration = Duration::from_secs(30);
 
 /// SH-777: a project gate renews the outer deadline with the portable writer
-/// the verifier hands it, one leg at a time, for three whole idle budgets.
+/// the verifier hands it, one leg at a time, beyond one whole idle budget.
 #[test]
 fn a_gate_reporting_through_the_bundled_writer_outlives_its_idle_budget() {
     let idle = storyhook_test_support::load_grace::graced_now(WRITER_IDLE);
+    // Reuse the same sampled multiplier for the four-second startup stimulus.
+    let startup_delay = idle.as_secs_f64() * 4.0 / WRITER_IDLE.as_secs_f64();
     let script = format!(
         "set -eu
-for i in $(seq 1 12); do
+# A low load average does not bound interpreter startup or scheduling delay.
+sleep {startup_delay}
+for i in 1 2 3 4; do
  {SIBLING}/gate-progress-writer.py leg start \"leg-$i\"
  echo \"building leg $i\" >&2
  sleep {}
 done
 {CERTIFIED}
 ",
-        idle.as_secs_f64() / 4.0
+        idle.as_secs_f64() / 3.0
     );
+    let started = std::time::Instant::now();
     let outcome = verify_script(&script, idle);
     assert!(
         matches!(outcome, VerificationOutcome::Certified { .. }),
         "{outcome:?}"
     );
+    assert!(started.elapsed() > idle, "progress must renew the deadline");
 }
 
 /// A stalled probe cannot publish a verdict, even if supervision is delayed.
