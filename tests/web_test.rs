@@ -624,8 +624,8 @@ fn web_address_copies_a_location_and_never_a_credential() {
 }
 
 /// How long [`web_start_status_address_advertise_the_host_the_daemon_bound`]
-/// waits for the daemon's first tailnet probe to settle before treating
-/// loopback as the final answer.
+/// waits for the daemon's first tailnet probe before using the currently
+/// published address, which can still be loopback.
 ///
 /// Since SH-186, `web start` no longer waits for the probe at all — its
 /// portfile can read `tailnet: None` for a moment after a fresh spawn even on
@@ -633,12 +633,24 @@ fn web_address_copies_a_location_and_never_a_credential() {
 /// answered yet (`serve::tailnet_reprobe`'s first attempt fires immediately,
 /// but "immediately" is still asynchronous). This test polls rather than
 /// reading the portfile once, the same shape `tests/tailnet_rebind.rs` already
-/// proved out for its own self-heal assertion. Generous relative to the
-/// production case it is bounding — a healthy `tailscale` typically answers
-/// in well under a second — because this test must mean something on a
-/// machine with no tailnet too: the poll notices nothing ever arrives and
-/// proceeds with loopback as `expected`, rather than skip.
-const TAILNET_SETTLE_DEADLINE: Duration = Duration::from_secs(5);
+/// proved out for its own self-heal assertion. Idle patience covers one
+/// production probe window plus one for scheduling and publication; `Patience`
+/// adds load grace. On a machine without a tailnet, expiry uses the published
+/// loopback address. It does not prove that background retries have ended.
+const TAILNET_SETTLE_DEADLINE: Duration = TAILNET_PROBE_TIMEOUT.saturating_mul(2);
+
+/// Fixed negative observation with a shim that always fails. Five seconds
+/// preserves the existing sample window; it is neither readiness patience nor
+/// proof that the background retry loop has reached a terminal state.
+const TAILNET_ABSENCE_OBSERVATION: Duration = Duration::from_secs(5);
+
+#[test]
+fn first_probe_patience_includes_publication_margin() {
+    assert!(
+        TAILNET_SETTLE_DEADLINE.saturating_sub(TAILNET_PROBE_TIMEOUT) >= TAILNET_PROBE_TIMEOUT,
+        "first-bind patience must leave one probe window for scheduling and publication"
+    );
+}
 
 /// The CLI advertises the host the *daemon* bound, never one this process
 /// probed for. Direction A of SH-110, mechanized.
@@ -724,12 +736,9 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
         .success();
 }
 
-/// The fallback half of [`web_start_status_address_advertise_the_host_the_
-/// daemon_bound`]'s settle poll: a daemon with genuinely no tailnet to bind
-/// must settle on loopback and stay there, not merely time out once. Every
-/// `web status`/`web address` call after the settle deadline reports the
-/// same loopback URL every time — never an error, never a stale claim of a
-/// tailnet it does not have.
+/// The fallback half of [`web_start_status_address_advertise_the_host_the_daemon_bound`]:
+/// a daemon whose shim always fails reports loopback on each sampled status
+/// and address call. The finite observation does not stop or exhaust retries.
 #[test]
 fn web_start_settles_on_loopback_when_there_is_never_a_tailnet() {
     let env = TestEnv::isolated();
@@ -759,16 +768,15 @@ fn web_start_settles_on_loopback_when_there_is_never_a_tailnet() {
         .assert()
         .success();
     assert!(
-        started.elapsed() < TAILNET_SETTLE_DEADLINE,
+        started.elapsed() < CONTROL_DEADLINE,
         "`web start` must return promptly even though this machine's `tailscale` \
          never answers — SH-186's whole point is that nothing on this path waits \
          on the probe"
     );
 
-    // Give the background probe every chance it will ever get, then confirm
-    // it never produced a tailnet bind — the honest terminal state for a
-    // machine with none.
-    std::thread::sleep(TAILNET_SETTLE_DEADLINE);
+    // Sample after a fixed negative observation. The always-failing shim
+    // cannot supply an identity, even though background retries continue.
+    std::thread::sleep(TAILNET_ABSENCE_OBSERVATION);
     let info = env
         .daemon()
         .expect("the daemon published a portfile after binding");

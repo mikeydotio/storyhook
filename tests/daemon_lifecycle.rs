@@ -25,6 +25,16 @@ use storyhook_test_support::{
 #[path = "daemon_lifecycle/restart_budget.rs"]
 mod restart_budget;
 
+/// Negative observation while accepted work remains held. Three nominal
+/// 250 ms `serve::SHUTDOWN_CHECK` polls can expose a premature drain exit.
+/// Keep this fixed: it measures absence, not readiness under contention.
+const DRAIN_OBSERVATION: Duration = Duration::from_millis(750);
+
+/// Negative observation of a competing start while the predecessor drains.
+/// Two nominal shutdown polls preserve the existing 500 ms sample window;
+/// this is not a patience budget for the successor to become ready.
+const START_OBSERVATION: Duration = Duration::from_millis(500);
+
 /// Whether `info` describes a daemon running the `story` binary this build
 /// produced.
 ///
@@ -753,7 +763,7 @@ fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
     // sampled once: the daemon notices a shutdown request on a 250ms poll
     // (`daemon::serve`'s `SHUTDOWN_CHECK`), and a single sample taken before
     // the first of those would pass against a daemon that exits on the next.
-    let watched_until = Instant::now() + Duration::from_millis(750);
+    let watched_until = Instant::now() + DRAIN_OBSERVATION;
     while Instant::now() < watched_until {
         if let Some(status) = stop.try_wait() {
             panic!(
@@ -858,7 +868,7 @@ fn restart_drains_in_flight_work_before_starting_the_successor() {
     let mut restart =
         ChildGuard::spawn_with_output(&mut restart_command).expect("spawning daemon restart");
 
-    let watched_until = Instant::now() + Duration::from_millis(750);
+    let watched_until = Instant::now() + DRAIN_OBSERVATION;
     while Instant::now() < watched_until {
         if let Some(status) = restart.try_wait() {
             panic!("`daemon restart` returned ({status}) while accepted work was still blocked");
@@ -895,7 +905,7 @@ fn restart_drains_in_flight_work_before_starting_the_successor() {
     start_command.args(["daemon", "start"]);
     let mut concurrent_start =
         ChildGuard::spawn_with_output(&mut start_command).expect("spawning concurrent start");
-    let start_watch = Instant::now() + Duration::from_millis(500);
+    let start_watch = Instant::now() + START_OBSERVATION;
     while Instant::now() < start_watch {
         if let Some(status) = concurrent_start.try_wait() {
             panic!(
