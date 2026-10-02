@@ -2833,6 +2833,8 @@ Inspect and control this project's centralized verifier.
   project_recoveries adds fault, affected stories, assessment and repair owner,
   repair PR, phase, completed-attempt budget, and next action. These records
   are distinct from infrastructure halts. Old payloads have no recovery rows.
+  Only unresolved recoveries are listed. A landed recovery leaves the list
+  when no affected story is held or still owes a fresh generation.
   The dashboard reads the same snapshot. Use repair show for full evidence.
 
   A story that the verifier returns keeps the verifier reserved while its

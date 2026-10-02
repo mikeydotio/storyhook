@@ -18,6 +18,7 @@ mod rearm;
 mod references;
 mod refusal;
 mod repair_return;
+mod resolution;
 mod resume;
 mod status;
 mod test_return;
