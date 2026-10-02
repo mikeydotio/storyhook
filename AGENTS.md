@@ -16,15 +16,14 @@ follow the workflow below.
   and `story load-context --story SH-<n>`. Follow the review procedure for
   every candidate; likely-obviated work stays open and blocked for human review.
 - Make the change. Add tests for new behavior and defects.
-- If the repository provides an impacted-test selector, run it against the actual changed tree before choosing direct test commands. Run the new and selected tests directly.
-- Leave the full suite and its lock to the central verifier.
+- Run only the tests this story adds or changes. Leave every other test to the central verifier and the release gates.
 - Commit the work. Do not push or open a PR: the verifier pushes your branch and opens a PR against the repository's default branch.
 - Record test results and final context: `story comment SH-<n> "<context>"`.
 - Move the story to Verifying: `story move SH-<n> verifying`, from inside the story's worktree so the verifier can find your branch. Make this your last action.
 - Stop work. Do not push, open a PR, run `story link-pr`, merge, close the story, or remove the work lane yourself.
 - The verifier pushes the branch, opens or adopts the PR, then runs `make test` on the proposed merge.
 - If tests pass, it merges the PR and moves the story to `done`. It then removes the work lane.
-- If the story returns to In Progress, read its comments. Fix it in the worktree, test, commit, and submit again.
+- If the story returns to In Progress, read its comments. After a failed gate they name the only other tests you may rerun. Fix it in the worktree, commit, and submit again.
 
 ## Planning
 

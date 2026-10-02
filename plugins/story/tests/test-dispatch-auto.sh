@@ -33,7 +33,7 @@ dry() {
 # treats as special -- see tests/test-charter-inert.sh for the invariant and
 # why it has to be structural. The pin itself is unchanged in kind: it still
 # asserts the attended prompt byte-for-byte, which is what catches drift.
-expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. Before implementation, run ‘story help obviation-review’ and ‘story load-context --story ${id}’, then follow the review procedure for every candidate. Repeat the review when resuming work. Before filing a prerequisite or blocking $id, read ‘story help scope-rubric’. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Implement the approved work and run only its new and directly impacted tests. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story $id. Then, from inside this worktree, move the story with ‘story move $id verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history, run the new and impacted tests, commit, move $id back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move $id done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them."
+expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. Before implementation, run ‘story help obviation-review’ and ‘story load-context --story ${id}’, then follow the review procedure for every candidate. Repeat the review when resuming work. Before filing a prerequisite or blocking $id, read ‘story help scope-rubric’. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Implement the approved work. Run only the tests this story adds or changes. Leave every other test to the central verifier and the release gates. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story $id. Then, from inside this worktree, move the story with ‘story move $id verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history. When a central gate failed, you may also rerun each test case that its log names as failing, by its exact name only. Never rerun a whole target, file, script, or suite for it. Never edit or weaken a test that this story did not write to make it pass. If a named test does not fail when you rerun it, change no code for it and say so in a comment before you resubmit. Commit, move $id back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move $id done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them."
 
 out=$(dry)
 assert_eq "$(jqf "$out" .ok)" "true" "attended: ok:true"
@@ -81,7 +81,8 @@ prompt=$(jqf "$out" .prompt)
 for marker in \
   "AUTONOMOUS" \
   "council-vote" \
-  "new and directly impacted tests" \
+  "Run only the tests this story adds or changes. Leave every other test to the central verifier and the release gates." \
+  "may also rerun each test case that its log names as failing, by its exact name only" \
   "the verifier pushes your branch and opens or adopts the pull request" \
   "story block $id" \
   "story move $id verifying" \
@@ -126,7 +127,8 @@ assert_eq "$(jqf "$solo_out" .council)" "false" "auto+council-off: council:false
 solo_prompt=$(jqf "$solo_out" .prompt)
 for marker in \
   "AUTONOMOUS" \
-  "new and directly impacted tests" \
+  "Run only the tests this story adds or changes. Leave every other test to the central verifier and the release gates." \
+  "may also rerun each test case that its log names as failing, by its exact name only" \
   "the verifier pushes your branch and opens or adopts the pull request" \
   "story block $id" \
   "story move $id verifying" \
@@ -138,6 +140,13 @@ for marker in \
   case "$solo_prompt" in
     *"$marker"*) : ;;
     *) fail_test "auto+council-off: solo prompt missing charter obligation [$marker]" ;;
+  esac
+done
+# SH-864: the retired judgment word stays out of every rendered charter.
+for variant in "attended:$(jqf "$(dry)" .prompt)" "auto:$prompt" "solo:$solo_prompt"; do
+  label="${variant%%:*}"; text="${variant#*:}"
+  case "$text" in
+    *[Ii]mpacted*) fail_test "$label: charter still tells the agent to run impacted tests" ;;
   esac
 done
 case "$solo_prompt" in

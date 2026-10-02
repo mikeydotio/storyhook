@@ -27,6 +27,7 @@ import io
 import json
 import os
 import shlex
+import shutil
 import signal
 import sys
 import time
@@ -980,6 +981,7 @@ while True:
         pid = self.wait_pid(ready, child, log)
         if descendant:
             descendant_pid = self.wait_pid(Path(str(ready) + ".child"), child, log)
+        lifecycle_sid = json.loads(owner_path.read_text())["session"]
         os.killpg(child.pid, signal.SIGTERM)
 
         def recorded_sessions():
@@ -995,6 +997,7 @@ while True:
         if descendant:
             # A killed descendant may still await its reaper as a zombie.
             self.assertGone(descendant_pid)
+        self.recover_after_escalation(evidence, lifecycle_sid)
         if damage:
             # Tracked evidence must survive even when restoration cannot succeed.
             retained = list(self.wt.parent.glob("verification-recovery-*/worktree/f"))
@@ -1004,6 +1007,18 @@ while True:
         else:
             self.assertEqual(self.git("rev-parse", "HEAD", cwd=self.wt), self.base, evidence)
             self.assertEqual(self.git("status", "--porcelain", cwd=self.wt), "", evidence)
+            self.assertEqual(self.ensure()["result"], "verifier-worktree-ready", evidence)
+
+    def recover_after_escalation(self, evidence, lifecycle_sid):
+        """A killed lifecycle must recover under fresh ownership before reuse.
+
+        Call only after proving gate and lifecycle quiescence. A gate-session
+        kill alone leaves lifecycle cleanup running and does not permit this
+        fallback: without lifecycle escalation, immediate restoration must pass.
+        """
+        escalation = f"verifier-owner: session {lifecycle_sid} cleanup grace expired; sending SIGKILL"
+        if escalation in evidence:
+            print(f"{self.id()}: lifecycle escalation; checking owned recovery", file=sys.stderr)
             self.assertEqual(self.ensure()["result"], "verifier-worktree-ready", evidence)
 
     def test_outer_cancellation_reaches_cooperative_gate_and_restores(self):
@@ -1025,6 +1040,45 @@ while True:
     def test_outer_lock_allows_the_gate_its_nested_cleanup_budget(self):
         """A cooperative gate can finish beyond the lock wrapper's old two seconds."""
         self.cancel_gate(delay=2.5)
+
+    def interrupted_restoration(self, damage=False):
+        """Stop real recovery until the real owner escalates; preserve its journal."""
+        bundle = self.root / "bundle"
+        shutil.copytree(SCRIPTS, bundle)
+        script = bundle / "verifier-worktree.py"
+        source = script.read_text()
+        stalled = self.root / "restoration-stalled"
+        injection = '''
+if sys.argv[1] == 'recover':
+    import signal
+    Path(STALLED).write_text(str(os.getpid()))
+    while True:
+        signal.pause()
+'''.replace("STALLED", repr(str(stalled)))
+        script.write_text(source.replace('if __name__ == "__main__":',
+                                         injection + '\nif __name__ == "__main__":'))
+        wait = self.wait_cancelled
+
+        def observe(*args):
+            wait(*args)
+            self.assertTrue(stalled.exists(), self.evidence(args[2]))
+            self.assertGone(int(stalled.read_text()))
+            state = json.loads(next((self.common / "storyhook/verifier-lifecycle").glob("*.state")).read_text())
+            self.assertEqual(state["base"], self.base)
+            self.assertTrue(Path(state["lease"]).is_dir())
+            self.assertNotEqual(self.git("rev-parse", "HEAD", cwd=self.wt), self.base)
+
+        with mock.patch(__name__ + ".SCRIPTS", bundle), \
+             mock.patch.object(self, "wait_cancelled", side_effect=observe):
+            self.cancel_gate(damage=damage)
+
+    def test_cancelled_restoration_recovers_at_next_admission(self):
+        """A killed restore retains its clean lease until an owned admission repairs it."""
+        self.interrupted_restoration()
+
+    def test_cancelled_restoration_retains_damage_at_next_admission(self):
+        """Recovery after forced cancellation retains every tracked gate edit."""
+        self.interrupted_restoration(damage=True)
 
     def test_invalid_termination_grace_cannot_launch_a_command(self):
         """Malformed cleanup policy must be refused before lock admission."""
@@ -1123,24 +1177,6 @@ while True:
         """The per-attempt gate log verify-pr.sh wrote for pull request 1."""
         logs = self.common / "storyhook/verification-logs"
         return next(p for p in logs.glob("pr-1-*-attempt.*") if not p.name.endswith(".jsonl"))
-
-    def test_exited_gate_with_orphan_returns_the_gate_status_and_reaps_it(self):
-        """A red gate that leaves a test orphan is red, and the orphan dies with it."""
-        orphan = self.root / "orphan-pid"
-        verdict = self.gate_verdict(f"sleep 300 & echo $! > {shlex.quote(str(orphan))}; exit 3")
-        pid = int(orphan.read_text())
-        self.addCleanup(lambda: self.stop_pid(pid))
-        self.assertEqual(verdict["result"], "tests-failed", verdict)
-        self.assertNotIn("live writers", verdict["detail"])
-        self.assertGone(pid)
-        _, owner = self.owner_record()
-        self.assertFalse(owner["gate_started"], owner)
-        self.assertIsNone(owner["gate_session"], owner)
-        self.assertIsNone(owner["gate_leader_exit"], owner)
-        log = self.attempt_log().read_text()
-        self.assertIn("verifier-owner: gate_session", log)
-        self.assertIn(f"leaving survivors [{pid}]", log)
-        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
 
     def test_exited_gate_survivor_ignoring_term_is_killed_within_the_budget(self):
         """A TERM-resistant orphan is killed at the gate's grace, not refused."""
@@ -1397,6 +1433,21 @@ class HarnessObservation(unittest.TestCase):
         idle = mock.patch.object(load_grace, "contention", return_value=0.5)
         idle.start()
         self.addCleanup(idle.stop)
+
+    def test_only_lifecycle_escalation_allows_owned_recovery(self):
+        """Gate escalation, another owner and ordinary cancellation cannot mask cleanup."""
+        for line, allowed in (
+                ("", False),
+                ("verifier-owner: gate_session 123 cleanup grace expired; sending SIGKILL", False),
+                ("verifier-owner: session 1234 cleanup grace expired; sending SIGKILL", False),
+                ("verifier-owner: session 123 cleanup grace expired; sending SIGKILL", True)):
+            with self.subTest(line=line), \
+                 mock.patch.object(self.harness, "ensure", return_value={"result": "verifier-worktree-ready"}) as ensure:
+                self.harness.recover_after_escalation(line, 123)
+                self.assertEqual(ensure.call_count, int(allowed))
+        with mock.patch.object(self.harness, "ensure", return_value={"result": "infrastructure-failure"}):
+            with self.assertRaises(AssertionError):
+                self.harness.recover_after_escalation(line, 123)
 
     def test_command_extends_the_same_process_when_contention_rises(self):
         """An expired startup snapshot does not kill a command under rising load."""

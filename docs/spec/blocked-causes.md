@@ -157,9 +157,10 @@ As built:
 - Every filing guide teaches the flag; `tests/blocked_filing_guidance.rs` fails when a
   shipped surface shows filing and a blocker written afterwards without it.
 
-Not covered here, filed as SH-786: a block recorded between the engine's claim and
-the agent's launch. The engine's `--force` dispatch skips the ready gate, and dispatch
-supersedes a pending Interrupt enqueued after the claim.
+SH-786 closes the later claim-to-launch window: forced claim reuse checks session
+eligibility, and every dispatch checks again after registration before sending its
+work charter. Earlier holds prevent handoff; later holds retain their interrupt.
+See `block-interruption.md`, "A block between claim and charter".
 
 ## Deliberately out of scope
 

@@ -5,7 +5,9 @@ use super::{
 };
 use crate::{
     domain::StoryEvent,
-    service::{Ctx, NewStoryInput, append_and_fold, project_prefix},
+    service::{
+        Ctx, NewStoryInput, append_and_fold, project_prefix, verification::IMPLEMENTER_TEST_SCOPE,
+    },
     store::{EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo, WriteOps},
 };
 
@@ -21,7 +23,7 @@ pub(super) fn create_repair<S: Store>(
         .as_ref()
         .ok_or_else(|| StoreError::Validation("separate repair has no specification".into()))?;
     let description = format!(
-        "{}\n\nAcceptance criteria:\n{}\n\nRecovery: {}\n{}\n\nPreserve all required test coverage. Run new and impacted tests, commit, and submit to central verification. Do not create another repair story for a fault in this repair; retain the same recovery lineage.",
+        "{}\n\nAcceptance criteria:\n{}\n\nRecovery: {}\n{}\n\nPreserve all required test coverage. {IMPLEMENTER_TEST_SCOPE} Commit, and submit to central verification. Do not create another repair story for a fault in this repair; retain the same recovery lineage.",
         spec.description,
         spec.acceptance,
         view.record.id,
@@ -118,7 +120,7 @@ pub(super) fn apply<S: Store>(
                     ),
                 });
             } else {
-                events.push(StoryEvent::StoryCommentAdded { at: now.into(), text: format!("Repair this fault in this story and worktree. Read recovery {}. Preserve required coverage, run new and impacted tests, commit changed input, and resubmit to central verification.", view.record.id) });
+                events.push(StoryEvent::StoryCommentAdded { at: now.into(), text: format!("Repair this fault in this story and worktree. Read recovery {}. Preserve required coverage. {IMPLEMENTER_TEST_SCOPE} Commit changed input, and resubmit to central verification.", view.record.id) });
             }
         } else if receipt.input.scope == RepairScope::External {
             events.push(StoryEvent::StoryAwaitingSet {

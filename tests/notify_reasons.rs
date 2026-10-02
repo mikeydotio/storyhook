@@ -176,7 +176,7 @@ fn the_shell_pane_probe_asks_the_engines_own_question() {
 /// with its reason, and [`every_key_sent_into_a_pane_is_a_listed_sender`]
 /// demands that the plugin's source holds exactly these: a new sender fails
 /// the build until someone states why it is safe.
-const KEY_SENDERS: [(&str, &str, &str); 6] = [
+const KEY_SENDERS: [(&str, &str, &str); 7] = [
     (
         "plugins/story/bin/story.sh",
         "cmd_notify",
@@ -206,6 +206,11 @@ const KEY_SENDERS: [(&str, &str, &str); 6] = [
         "plugins/story/lib/session.sh",
         "send_prompt_confirmed",
         "the dispatch submit key, only into a composer that read idle and only while composer_holds sees this very prompt",
+    ),
+    (
+        "plugins/story/lib/startup-trust.sh",
+        "startup_trust_poll",
+        "autonomous startup only: exact provider/worktree dialog, stable consent, live launch identity, reobserved affirmative selection, one Enter",
     ),
 ];
 

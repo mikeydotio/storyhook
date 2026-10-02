@@ -33,6 +33,29 @@ pub const VERIFYING_STATE: &str = VERIFYING_STATE_SLUG;
 /// spelling the verifier writes (SH-650, `returned_for_repair`).
 pub const RETURNED_STATE: &str = "in-progress";
 
+/// Which tests an implementer runs (SH-864): only the ones its story adds or
+/// changes. The central verifier runs the full suite on the merge tree, so a
+/// lane-side sweep of every test that looked related bought machine
+/// contention, not safety.
+///
+/// Every return and recovery text interpolates this, and the static surfaces
+/// (both built-in dispatch charters, the scaffolded instruction files, the
+/// agent guide) carry the same bytes; `tests/implementer_test_scope.rs`
+/// holds them to it. The charters require it to be charter-inert: no shell
+/// metacharacter, quote, parenthesis or newline (SH-226).
+pub const IMPLEMENTER_TEST_SCOPE: &str = "Run only the tests this story adds or changes. Leave every other test to the central verifier and the release gates.";
+
+/// The one exception to [`IMPLEMENTER_TEST_SCOPE`], for a story whose central
+/// gate failed: rerun exactly the test cases the gate's log names as failing,
+/// by exact name, and nothing wider. Decided by council on SH-864: one
+/// mistaken repair costs a serialized gate round, and without the rerun the
+/// only red-to-green loop left on a pre-existing test is to change it.
+///
+/// A local pass does not prove the RED false — the lane is not the merge tree
+/// — so the agent changes no code for it and resubmits, and the verifier
+/// stays the judge. Charter-inert for the same reason as the base rule.
+pub const FAILED_GATE_RERUN_SCOPE: &str = "When a central gate failed, you may also rerun each test case that its log names as failing, by its exact name only. Never rerun a whole target, file, script, or suite for it. Never edit or weaken a test that this story did not write to make it pass. If a named test does not fail when you rerun it, change no code for it and say so in a comment before you resubmit.";
+
 /// Whether the story's own state history ends with the verifier's return:
 /// its latest `StoryStateChanged` is [`RETURNED_STATE`] and the one before it
 /// is [`VERIFYING_STATE`], with no state change since (SH-650).

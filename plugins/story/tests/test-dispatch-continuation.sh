@@ -38,6 +38,12 @@ cat >"$fixture/bin/story" <<'STORY'
 #!/usr/bin/env bash
 case "$*" in
   *'continuation capabilities'*) printf '{"result":"ok","continuation_protocol":1}' ;;
+  *'internal supersede-block-deliveries'*)
+    "$CONTINUATION_REAL_STORY" "$@" || exit
+    if [ -n "${CONTINUATION_BLOCK_PROJECT:-}" ]; then
+      "$CONTINUATION_REAL_STORY" --project "$CONTINUATION_BLOCK_PROJECT" \
+        block "$CONTINUATION_BLOCK_STORY" 'hold during guarded startup' >/dev/null || exit
+    fi ;;
   *) exec "$CONTINUATION_REAL_STORY" "$@" ;;
 esac
 STORY
@@ -137,4 +143,19 @@ missing=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
     --continuation-file="$record" 2>&1)
 # A missing pane is not an invitation to allocate another story window.
 assert_eq "$(jqf "$missing" .ok)" false 'missing retained pane refuses automatic recreation'
+
+# SH-786: even a continuation whose earlier preflight was eligible must stop
+# before its charter when a hold arrives while preparing the replacement.
+export FAKE_TMUX_PANES="$id"$'\t1\t%1' FAKE_TMUX_DEAD=1
+kill -9 "$(cat "$FAKE_TMUX_STATE/pane_pid")"
+rm -f "$FAKE_TMUX_STATE/submitted" "$FAKE_TMUX_STATE/pane_pid"
+out=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
+  CONTINUATION_BLOCK_PROJECT="$(slug_for "$repo")" CONTINUATION_BLOCK_STORY="$id" \
+  TMUX="$socket,0,0" TMUX_PANE=%0 STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
+  STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
+  bash "$SCRIPT" dispatch "$id" --auto --resume --require-absent \
+    --continuation-file="$record" 2>&1)
+assert_eq "$(jqf "$out" .reason)" dispatch-ineligible "guarded continuation checks eligibility at handoff: $out"
+[ ! -e "$FAKE_TMUX_STATE/submitted" ] || fail_test 'guarded continuation submitted a blocked charter'
+assert_eq "$(cat "$worktree/retained.txt")" 'preserve this' 'held continuation preserves retained work'
 finish

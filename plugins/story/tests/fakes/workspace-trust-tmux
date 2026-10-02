@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# External provider boundary: trust blocks hooks and the ordinary composer.
+set -eu
+[ "${1:-}" != -u ] || shift
+if [ "${1:-}" = -S ]; then
+  case "${2:-}" in
+    /tmp/story-*/*|/private/tmp/story-*/*) export FAKE_TMUX_STATE="${2%/*}"; shift 2 ;;
+    *) printf 'workspace trust fake: unowned socket\n' >&2; exit 64 ;;
+  esac
+fi
+state=${FAKE_TMUX_STATE:?}
+base=${WORKSPACE_TRUST_BASE_TMUX:?}
+case "${1:-}" in
+  new-window|respawn-pane)
+    rm -f "$state/trust_open" "$state/trust_accepted" "$state/trust_held_sentinel" \
+      "$state/trust_keys" "$state/trust_rejected" "$state/trust_premature_key" "$state/trust_first_seen"
+    "$base" "$@"
+    [ "${WORKSPACE_TRUST_PRETRUSTED:-0}" != 1 ] || exit 0
+    printf no > "$state/trust_selection"
+    if [ "$(cat "$state/pane_command")" = codex ]; then
+      printf yes > "$state/trust_selection"
+    fi
+    : > "$state/trust_open"
+    cwd=$(cat "$state/pane_cwd")
+    if [ -f "$cwd/.claude/dispatch-sentinel.json" ]; then
+      mv "$cwd/.claude/dispatch-sentinel.json" "$state/trust_held_sentinel"
+    fi
+    exit 0
+    ;;
+  display-message)
+    for arg in "$@"; do
+      if [ "$arg" = '#{pane_current_path}' ]; then
+        : > "$state/trust_owner_probed"
+        cat "$state/pane_cwd"
+        exit 0
+      fi
+      if [ "$arg" = '#{pane_pid}' ] && [ -f "$state/trust_report_pid" ]; then
+        cat "$state/trust_report_pid"
+        exit 0
+      fi
+    done
+    ;;
+esac
+if [ -f "$state/trust_open" ]; then
+  case "${1:-}" in
+    capture-pane)
+      if [ -f "$state/trust_owner_probed" ] && [ -f "$state/trust_recheck_change" ]; then
+        case "$(cat "$state/trust_recheck_change")" in
+          pid) printf 1 > "$state/trust_report_pid" ;;
+          selection) printf no > "$state/trust_selection" ;;
+          disappear) exit 0 ;;
+        esac
+      fi
+      if [ -f "$state/trust_delay" ]; then
+        remaining=$(cat "$state/trust_delay")
+        if [ "$remaining" -gt 0 ]; then
+          printf '%s' "$((remaining - 1))" > "$state/trust_delay"
+          printf 'Starting provider...\n'
+          exit 0
+        fi
+      fi
+      if [ -f "$state/trust_screen" ]; then cat "$state/trust_screen"; exit 0; fi
+      if [ ! -f "$state/trust_first_seen" ]; then
+        python3 -c 'import time; print(time.clock_gettime(time.CLOCK_MONOTONIC))' > "$state/trust_first_seen"
+      fi
+      cwd=$(cat "$state/pane_cwd")
+      [ ! -f "$state/trust_display_path" ] || cwd=$(cat "$state/trust_display_path")
+      selected=$(cat "$state/trust_selection")
+      if [ "$(cat "$state/pane_command")" = codex ]; then
+        printf '  Folder access\n\n  %s\n\n  Trust this folder?\n\n' "$cwd"
+        if [ "$selected" = yes ]; then
+          printf '› 1. Trust and continue\n  2. Quit\n'
+        else
+          printf '  1. Trust and continue\n› 2. Quit\n'
+        fi
+        printf '\n  Press enter to confirm\n'
+      else
+        printf 'Accessing workspace:\n\n %s\n\n Quick safety check: Is this a project you created or one you trust?\n\n Claude Code can read, edit, and execute files in this directory.\n\n' "$cwd"
+        if [ "$selected" = yes ]; then
+          printf '  No, exit\n❯ Yes, I trust this folder\n'
+        else
+          printf '❯ No, exit\n  Yes, I trust this folder\n'
+        fi
+        printf '\n Enter to confirm · Esc to cancel\n'
+      fi
+      exit 0
+      ;;
+    send-keys)
+      for key in "$@"; do
+        case "$key" in
+          Up|Down|Enter|C-m)
+            printf '%s\n' "$key" >> "$state/trust_keys"
+            if ! python3 - "$state/trust_first_seen" <<'PY'
+import pathlib, sys, time
+p = pathlib.Path(sys.argv[1])
+sys.exit(0 if p.exists() and time.clock_gettime(time.CLOCK_MONOTONIC) - float(p.read_text()) >= 1 else 1)
+PY
+            then
+              : > "$state/trust_premature_key"
+              exit 0
+            fi
+            [ ! -f "$state/trust_send_failure" ] || exit 1
+            ;;
+        esac
+        case "$key" in
+          Up|Down)
+            [ ! -f "$state/trust_ignore_arrow" ] || exit 0
+            if { [ "$(cat "$state/pane_command")" = codex ] && [ "$key" = Up ]; } \
+               || { [ "$(cat "$state/pane_command")" = claude ] && [ "$key" = Down ]; }; then
+              printf yes > "$state/trust_selection"
+            else
+              printf no > "$state/trust_selection"
+            fi
+            if [ -f "$state/trust_change_after_arrow" ]; then
+              printf '/different/workspace' > "$state/trust_display_path"
+            fi
+            ;;
+          Enter|C-m)
+            if [ "$(cat "$state/trust_selection")" != yes ]; then
+              : > "$state/trust_rejected"
+              exit 0
+            fi
+            [ ! -f "$state/trust_keep_open" ] || exit 0
+            mv "$state/trust_open" "$state/trust_accepted"
+            if [ -f "$state/trust_held_sentinel" ]; then
+              cwd=$(cat "$state/pane_cwd")
+              mv "$state/trust_held_sentinel" "$cwd/.claude/dispatch-sentinel.json"
+            fi
+            ;;
+        esac
+      done
+      exit 0
+      ;;
+    paste-buffer)
+      : > "$state/trust_unsafe_paste"
+      exit 0
+      ;;
+  esac
+fi
+if [ "${1:-}" = capture-pane ] && [ -f "$state/trust_no_composer" ]; then
+  printf 'Starting provider...\n'
+  exit 0
+fi
+exec "$base" "$@"

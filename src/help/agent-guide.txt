@@ -33,8 +33,10 @@ Read and claim
    An empty queue is a successful answer, not an error to retry.
 3. Before implementation or resumption, run story help obviation-review and
    story load-context --story <id>. Follow the procedure for every candidate.
-4. Use the repository's workflow for tests, commits, and submission. Claiming
-   a story does not approve a plan or authorize deployment.
+4. Run only the tests this story adds or changes. Leave every other test to
+   the central verifier and the release gates. Use the repository's workflow
+   for commits and submission. Claiming a story does not approve a plan or
+   authorize deployment.
 
 Write with care
 - Read story help priority-rubric before choosing a priority. Read story help

@@ -116,6 +116,21 @@ for variant in "auto:$auto" "solo:$solo" \
   done
 done
 
+# SH-864: implementers run only the tests their story adds or changes. The
+# rule reaches every built-in charter, attended ones included, and the
+# judgment word it retired -- which let lanes sweep dozens of targets on the
+# machine the central gate shares -- stays out of all of them.
+for pair in "attended:$attended" "auto:$auto" "solo:$solo" \
+            "Codex attended:$codex_attended" "Codex auto:$codex_auto" \
+            "Codex solo:$codex_solo"; do
+  label="${pair%%:*}"; text="${pair#*:}"
+  assert_contains "$text" "Run only the tests this story adds or changes." \
+    "$label: charter states the SH-864 test rule"
+  case "$text" in
+    *[Ii]mpacted*) fail_test "charter-inert: the $label charter still says 'impacted' -- SH-864 retired it" ;;
+  esac
+done
+
 # An even quote count: an unbalanced double quote wedges a shell at a
 # continuation prompt rather than executing anything, but it is still a wedge.
 for pair in "attended:$attended" "auto:$auto" "solo:$solo" \
@@ -133,7 +148,8 @@ done
 # Shared between both --auto charters (the head/tail SH-219 split in two):
 for needle in "story show $id --json" "story move $id verifying" \
               "the verifier pushes your branch and opens or adopts the pull request" \
-              "new and directly impacted tests" \
+              "Run only the tests this story adds or changes. Leave every other test to the central verifier and the release gates." \
+              "may also rerun each test case that its log names as failing, by its exact name only" \
               "story block $id" "prefer adopting it into" \
               "context window is still unused" "before you resume the work"; do
   for variant in "auto:$auto" "solo:$solo"; do

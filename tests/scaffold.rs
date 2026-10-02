@@ -241,3 +241,25 @@ fn scaffold_invalid_kind_returns_error() {
         .assert()
         .code(2);
 }
+
+/// The legacy tree's own instruction file (`storage::init_project` writes
+/// `.storyhook/CLAUDE.md`) says what every current one says since SH-647: the
+/// verifier pushes the branch and opens the PR, so the agent is never told to
+/// push one or link it itself. It still said both until SH-864 adopted it.
+#[test]
+fn the_legacy_instruction_file_leaves_submission_to_the_verifier() {
+    let dir = scratch_dir();
+    storyhook::storage::init_project(dir.path(), None).expect("seeding a legacy tree");
+    let text = std::fs::read_to_string(dir.path().join(".storyhook/CLAUDE.md"))
+        .expect("the legacy tree carries its instruction file");
+    assert!(
+        text.contains("Do not push or open a PR"),
+        "the legacy instruction file does not leave submission to the verifier:\n{text}"
+    );
+    for forbidden in ["push one PR", "link it with `story link-pr"] {
+        assert!(
+            !text.contains(forbidden),
+            "the legacy instruction file still says '{forbidden}':\n{text}"
+        );
+    }
+}
