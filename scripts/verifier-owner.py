@@ -298,6 +298,8 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
                     if gate and supervisor_gone(record_path, child):
                         signal_session(gate, signal.SIGTERM)
             if deadline is not None and time.monotonic() >= deadline and killed_at is None:
+                print(f"verifier-owner: {field} {child} cleanup grace expired; sending SIGKILL;"
+                      f" owner record {record_path}", file=sys.stderr, flush=True)
                 signal_session(child, signal.SIGKILL)
                 # Escalation must also cover the recorded arbitrary execution
                 # session if its supervisor died before completing the record.
