@@ -105,6 +105,10 @@ if [ "${1:-}" = plugin ] && [ "${2:-}" = remove ]; then
 fi
 
 if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = remove ]; then
+  if [ "$mode" = "marketplace-remove-fail-once" ] && [ ! -f "$HOME/codex-remove-failed" ]; then
+    : > "$HOME/codex-remove-failed"
+    echo 'marketplace removal interrupted' >&2; exit 20
+  fi
   [ "$mode" = "marketplace-remove-fail" ] && { echo 'unrelated marketplace failure' >&2; exit 20; }
   if [ "$mode" = "marketplace-absent" ]; then
     echo 'Error: marketplace `storyhook` is not configured or installed' >&2
@@ -148,6 +152,10 @@ if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = add ]; th
   exit 0
 fi
 if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = remove ]; then
+  if [ "$mode" = "marketplace-remove-fail-once" ] && [ ! -f "$HOME/claude-remove-failed" ]; then
+    : > "$HOME/claude-remove-failed"
+    echo 'marketplace removal interrupted' >&2; exit 20
+  fi
   mkdir -p "$HOME/.claude/plugins"
   printf '{}\n' > "$HOME/.claude/plugins/known_marketplaces.json"
   exit 0
@@ -763,6 +771,39 @@ fn provider_fixture_owns_readiness_beyond_the_client_startup_deadline() {
         "fixture daemon leaked"
     );
     assert!(!home.exists(), "fixture HOME leaked");
+}
+
+#[test]
+fn failed_marketplace_removal_restores_the_plugin_already_removed() {
+    for provider in ["claude", "codex"] {
+        let harness = Harness::for_provider(provider);
+        let previous = harness.seed_previous_registration(provider);
+        harness.set_mode(provider, "marketplace-remove-fail-once");
+        let output = harness.run(&["plugin", "install", provider]);
+        let message = combined(&output);
+        assert!(!output.status.success(), "{message}");
+        assert!(
+            message.contains("marketplace removal interrupted"),
+            "{message}"
+        );
+        assert!(
+            message.contains("re-registered the previous marketplace"),
+            "{message}"
+        );
+        assert_eq!(
+            harness.registered_source(provider),
+            Some(previous.display().to_string())
+        );
+        let installed = if provider == "claude" {
+            "claude-installed"
+        } else {
+            "codex-installed-version"
+        };
+        assert!(
+            harness.home.join(installed).exists(),
+            "{provider}: plugin not restored"
+        );
+    }
 }
 
 #[test]

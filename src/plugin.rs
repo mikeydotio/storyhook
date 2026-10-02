@@ -717,12 +717,12 @@ fn append_settings_guidance(message: &mut String, project_root: &Path) {
 fn install_claude(project_root: &Path, source: &str) -> Result<String, AppError> {
     let target = PluginTarget::ClaudeCode;
     // Recorded before anything is removed, so a failure after the removes can
-    // put it back (`registration`'s module doc). A failing remove still stops
-    // here: nothing has been destroyed yet, so there is nothing to undo.
+    // put it back (`registration`'s module doc). Once the plugin is removed,
+    // a marketplace-removal failure must also restore the registration.
     let previous = registration::snapshot(target);
     remove_claude_plugin()?;
-    remove_claude_marketplace()?;
     (|| {
+        remove_claude_marketplace()?;
         add_claude_marketplace(source)?;
         install_claude_plugin()
     })()
@@ -819,16 +819,16 @@ fn verify_codex_install(installed_path: &str) -> Result<(), AppError> {
 fn install_codex(project_root: &Path, source: &str) -> Result<String, AppError> {
     let target = PluginTarget::Codex;
     // Recorded before anything is removed, so a failure after the removes can
-    // put it back (`registration`'s module doc). A failing remove still stops
-    // here: nothing has been destroyed yet, so there is nothing to undo.
+    // put it back (`registration`'s module doc). Once the plugin is removed,
+    // a marketplace-removal failure must also restore the registration.
     let previous = registration::snapshot(target);
     remove_codex_plugin()?;
-    remove_codex_marketplace()?;
     // The sandbox step is inside the transaction on purpose: a plugin whose
     // skills exec a launcher that was just rolled back is half-installed, and
     // that step restores its own files, so the two rollbacks compose — files
     // first, then registration — into exactly the previous state.
     let (installed_path, launcher_path, rule_path) = (|| {
+        remove_codex_marketplace()?;
         add_codex_marketplace(source)?;
         let installed_path = add_codex_plugin()?;
         verify_codex_install(&installed_path)?;
