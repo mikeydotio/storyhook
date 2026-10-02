@@ -127,20 +127,9 @@ confirm() {
 # you got here.
 install_locally() {
   step "Building and installing the binary"
-  # The daemon is stopped BEFORE the binary is replaced: a running daemon holds
-  # the old executable, answers reads from its own page cache, and would keep
-  # serving the build just replaced. `make install` uses `install(1)` rather
-  # than `cp`, which is what keeps this from SIGKILLing a running process on
-  # macOS.
-  if [ "$skip_daemon" = 0 ]; then
-    if story daemon status >/dev/null 2>&1; then
-      info "stopping the running daemon first"
-      run story daemon stop || warn "\`story daemon stop\` reported a problem; continuing"
-    else
-      note "no daemon currently running"
-    fi
-  fi
-
+  # Keep the incumbent through build failures. install(1) preserves its old
+  # inode; the installed client's plugin refresh owns the daemon transition.
+  # A failed refresh must propagate without stranding a pre-stopped daemon.
   run github_without_credentials make install
 
   # Read back what is now on PATH. Under --dry-run nothing was installed, so
