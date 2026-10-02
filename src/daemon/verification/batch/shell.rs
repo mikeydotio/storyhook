@@ -88,7 +88,7 @@ impl BatchActuator for ShellVerificationActuator {
         member: &VerificationCandidate,
         owner: MemberOwner<'_>,
         cancellation: &Cancellation,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<SubmissionOutcome, SubmissionFailure> {
         self.submit_owned(
             member,
             ControlOwner {

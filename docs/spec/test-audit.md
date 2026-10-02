@@ -186,6 +186,81 @@ to other worktrees' leftovers. If that ever shows up as a failure in the
 sibling, run `orphan_check` alone after the pool, the Rust counterpart of the
 plugin runner's serial lane.
 
+## Plugin and Rust legs stay serial (SH-796)
+
+Decision of **2026-10-02**, v3.0.3, reviewed at `3b6cc7c6`: keep the plugin
+leg after both Rust batteries and the production build. SH-796 asked for a
+decision after the pools had a clean central-verifier history. The recorded
+load failures do not support increasing concurrency yet. This resolves that
+decision under current conditions; it is not a permanent prohibition.
+
+### Evidence and limits
+
+Dates below are UTC. Story descriptions and comments retain the evidence even
+when a machine-local attempt log is no longer available; read them with
+`story show <id> --json`.
+
+| Evidence | Measurement and outcome | Source |
+|---|---|---|
+| SH-783 budget experiment, 2026-09-26 | Core: 694 s at eight threads, green; 351 s at sixteen, seven failures on production timing bounds. The contracts results have the manifest/rebuild qualifications in the table above. | SH-783 decision D7, 05:08:16Z; local experiment, not a central merge tree |
+| First pooled central attempt, 2026-09-26 | Core 727 s, contracts 615 s, plugin 412 s. Plugin passed 110 scripts; contracts failed the machine-wide orphan-report assertion described above. | SH-783 repair comment, 07:46:15Z; PR 865, merge tree `47eac3b4225262984bf068d52a836a3107915f30` |
+| Repaired pooled gate, 2026-09-26 | GREEN on a different tree; the preceding row's durations do not describe this attempt. | SH-783 GREEN comment, 09:11:23Z; merge tree `a01976529eb1b7344217e31e760576b278933219` |
+| Central load failures, 2026-10-01 | Sampled contention median 6.28, maximum 8.47 on ten cores. Rust retry/early-result tests and plugin `test-unclaim.sh` failed; plugin leg 1,331 s. Targeted reproductions passed at lower load. | SH-863 description and SH-776 RED comment, 19:38:20Z; PR 895, merge tree `f521851a360d3019bc40d3fc1cf639ab46c647af` |
+| Recent returned gate, 2026-10-02 | Plugin passed 121 scripts in 563 s; Rust failed `story_list_visibility::all_parses_identically_to_both_include_flags`. That summary alone does not establish the failure's cause. | SH-864 RED comment, 14:34:08Z; PR 904, merge tree `bc93e0bac0235977640ebb94cdca1f5142f258d8` |
+| Subsequent central success, 2026-10-02 | GREEN on another merge tree; one success does not establish a stable load baseline. | SH-864 GREEN comment, 15:29:00Z; merge tree `6793ea1d69b7352816e928a47ac4959b63244289` |
+
+Hiding all 412 s of the historical plugin leg would save at most 6 min 52 s
+**if every leg kept its duration and build ordering added no cost**. No paired
+serial-versus-overlap experiment was performed for SH-796. These different
+trees and workloads establish neither causation nor a reliable speedup, and
+their durations must not be averaged into one benchmark. A reused leg is not
+a fresh execution. An ordinary code failure or an infrastructure halt is not
+evidence of a load flake; classify it separately. In particular, SH-858's Python
+runtime mismatch is distinct from SH-863's load evidence, whose originating
+gate had no Xcode Python 3.9 trace.
+
+### Capacity and orchestration constraints
+
+SH-655's old lane-admission argument no longer bounds machine load.
+[SH-672](full-auto-engine.md#sh-672--concurrency-belongs-to-each-run-or-to-the-operator)
+removed those admission gates: each engine run has its own lane limit, manual
+concurrency belongs to the operator, and the lane census is informational.
+The machine-wide compiler bound limits compiler processes, not the Rust and
+plugin pools' combined test processes. Eight Rust test threads and four plugin
+scripts are different units; each can start descendants. Utility QoS controls
+scheduling priority, not total admission.
+
+The plugin needs a successful production build, so overlap would require
+moving that dependency earlier. Any future design must also preserve
+[SH-701's gate contract](test-tiers.md#as-built-independent-gate-legs-finish-after-red-sh-701):
+independent legs finish after ordinary REDs; confirmed shared compilation
+failures skip later dependent Rust/build work, and a failed build skips plugin
+and browser execution; each leg retains its log, progress and reuse evidence;
+cancellation or corrupt control evidence stops the gate; cleanup finishes
+before the final receipt, which requires every required leg to pass.
+The current helper shares mutable outcome/status state in one shell, so merely
+backgrounding its calls would not preserve that contract.
+
+GNU make's [parallel-execution controls](https://www.gnu.org/software/make/manual/html_node/Parallel.html)
+limit recipe admission. They do not provide a shared test budget to these two
+custom pools inside one recipe. Neither unconditional overlap nor an opt-in
+switch is justified without measured benefit and the orchestration proofs.
+
+### Reconsideration
+
+SH-793, SH-794 and SH-795 own lifecycle, merge-gate and discovery optimizations;
+SH-858 and SH-863 own runtime and load-failure repairs. At this review they
+remain separately owned work; SH-863 records a dependency on SH-793. SH-796
+does not take them over or create a blocker for its completed decision.
+
+Reconsider after the relevant repairs land and central history supports a
+stable baseline. Compare repeated runs of the same tree at comparable load,
+record cache/reuse state and both pools' settings, and measure aggregate wall
+time alongside per-leg time and failures. Prove dependency reporting,
+cancellation, cleanup and progress integrity before enabling overlap. Until
+then, retain serial legs and the existing budgets, with no new concurrency
+switch or benchmark infrastructure.
+
 ## The browser leg as concurrent slices (SH-792)
 
 Design of record for **SH-792**, measured 2026-09-26.

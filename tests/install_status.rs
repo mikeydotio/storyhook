@@ -123,6 +123,7 @@ fn it_reports_a_stopped_daemon_without_starting_one() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn it_reports_a_legacy_agents_missing_path() {
     let env = TestEnv::isolated();
     let path = storyhook::daemon::agent::path(&env.environment());
@@ -131,6 +132,26 @@ fn it_reports_a_legacy_agents_missing_path() {
     let report = doctor_install(&env);
     assert!(report.contains("agent PATH"), "{report}");
     assert!(report.contains("no explicit PATH"), "{report}");
+    assert!(report.contains("story daemon install"), "{report}");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn it_reports_a_malformed_systemd_registration() {
+    let env = TestEnv::isolated();
+    let environment = env.environment();
+    let path = environment.config_home().join("systemd/user").join(format!(
+        "{}.service",
+        storyhook::daemon::agent::label(&environment)
+    ));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, "[Service]\nExecStart=/unknown/story\n").unwrap();
+    let report = doctor_install(&env);
+    assert!(report.contains("agent PATH"), "{report}");
+    assert!(
+        report.contains("not a storyhook-generated systemd unit"),
+        "{report}"
+    );
     assert!(report.contains("story daemon install"), "{report}");
 }
 

@@ -77,8 +77,8 @@ impl WorkClass {
     }
 
     /// No-op off macOS: neither `QOS_CLASS_*` nor `pthread_set_qos_class_self_np`
-    /// exist on Linux, and SH-787 tracks that platform's own mechanism
-    /// (`nice`/`ionice`/cgroups) separately.
+    /// exist on Linux. Its systemd user unit sets ordinary process scheduling
+    /// explicitly; per-thread nice changes cannot be safely reversed without privilege.
     #[cfg(not(target_os = "macos"))]
     pub(crate) fn enter(self) {}
 }

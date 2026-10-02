@@ -13,7 +13,6 @@ use storyhook::daemon::verification::{
 use storyhook::daemon::verification_progress::{
     VerificationStatus, publish_once, status_snapshot_with_incident,
 };
-use storyhook::domain::SubmittedPullRequest;
 use storyhook::error::AppError;
 use storyhook::service::gate_progress::GATE_PROGRESS_PREFIX;
 use storyhook::service::{
@@ -45,7 +44,10 @@ impl VerificationActuator for RetryObserver<'_> {
         panic!("retryable infrastructure never acquires landing authority")
     }
 
-    fn submit(&self, _: &VerificationCandidate) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    fn submit(
+        &self,
+        _: &VerificationCandidate,
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         panic!("linked, unleased fixture must not submit")
     }
 

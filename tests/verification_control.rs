@@ -366,7 +366,7 @@ impl VerificationActuator for Gate {
     fn submit(
         &self,
         _: &VerificationCandidate,
-    ) -> Result<storyhook::domain::SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         panic!("unleased fixture must not submit")
     }
     fn notify(&self, _: &VerificationCandidate, _: &str) -> Result<NotifyDelivery, AppError> {

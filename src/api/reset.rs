@@ -134,12 +134,7 @@ impl ResetController {
                     service.execute(&target.story_id, &target.token, || {
                         let deadline = Instant::now() + crate::service::engine::DISPATCH_TIMEOUT;
                         loop {
-                            let engine_dispatching = controller.store.read(|tx| {
-                                for owner in &target.lanes {
-                                    if tx.engine_lanes(&owner.run_id)?.iter().any(|lane| lane.lane_index == owner.lane_index && lane.story_id.as_deref() == Some(&target.story_id) && lane.state == crate::store::EngineLaneState::Dispatching) { return Ok(true); }
-                                }
-                                Ok(false)
-                            })?;
+                            let engine_dispatching = crate::service::engine::card_reset_dispatching(&ctx, &target)?;
                             if dispatch.running_handle(&target.story_id).is_none() && !engine_dispatching { break; }
                             if Instant::now() >= deadline { return Err(AppError::Validation("Reset is waiting for an existing dispatch to finish; retry reset".into())); }
                             std::thread::sleep(Duration::from_millis(50));

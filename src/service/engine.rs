@@ -7,7 +7,10 @@
 
 /// Read-only inspection and transactional adoption of manual dispatches.
 pub mod adoption;
+mod dispatch_quiescence;
 pub mod reset;
+
+pub(crate) use dispatch_quiescence::card_reset_dispatching;
 
 #[cfg(test)]
 mod restart_probe_tests;
@@ -66,7 +69,7 @@ const DISPATCH_SETTLE_POLL: Duration = Duration::from_millis(20);
 pub const MAX_ENGINE_LANES: u32 = u8::MAX as u32;
 
 pub const OPERATOR_STOPPED: &str = "operator-stopped";
-pub const OPERATOR_STOPPED_NOW: &str = "operator-stopped-now";
+pub use crate::store::OPERATOR_STOPPED_NOW;
 
 /// The run-level stop reason the breaker writes (D10).
 pub const BREAKER_TRIPPED: &str = "breaker-tripped";
@@ -1436,7 +1439,7 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     /// The daemon-start reconcile pass (D11, SH-466) — see
     /// [`ReconcilePass::Restart`].
     ///
-    /// Run once per live run before any run resumes claiming;
+    /// Run once per live or explicitly stopping run before any run resumes claiming;
     /// `crate::daemon::engine::poll_engine` is the only caller.
     pub fn reconcile_after_restart(&self, run_id: &RunId) -> Result<ReconcileReport, AppError> {
         self.reconcile_pass(run_id, ReconcilePass::Restart)
@@ -2739,6 +2742,18 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 .iter()
                 .any(|current| current == lane)
             {
+                return Ok(());
+            }
+            let project = self.ctx.project();
+            let prefix = project_prefix(tx, project)?;
+            if let Some(story) = lane
+                .story_id
+                .as_deref()
+                .and_then(|id| crate::store::StoryNo::parse_id(&prefix, id).ok())
+                && super::story_reset::foreign_owner(tx, project, story)?.is_some()
+            {
+                // Cleanup owns this lane until it releases the story. Defer
+                // only this lane so unrelated work can still fill the run.
                 return Ok(());
             }
             put_or_retire_idle_lane(tx, &idle)

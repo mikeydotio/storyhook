@@ -20,7 +20,7 @@ verification-view program, so it must never act on import or define a
 import os
 
 # spawn_env.rs COMMON_MAY_SEE, pinned equal by a Rust unit test there.
-COMMON_MAY_SEE = ("PATH", "HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "TMPDIR",
+COMMON_MAY_SEE = ("PATH", "STORYHOOK_PYTHON", "HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "TMPDIR",
                   "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TERM")
 # How a client finds its server and current pane. A server started by this
 # client lives at the socket they select, so they also describe that server.

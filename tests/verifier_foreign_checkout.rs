@@ -76,6 +76,12 @@ fn a_checkout_with_no_scripts_tree_is_verified_from_the_daemons_own_bundle() {
     // A fake `gh` whose only answer is a closed PR with every field the
     // verifier reads — the wire shape, one door over, never a GitHub model.
     let bin = scratch_dir();
+    // Default-branch discovery still uses real Git; only its remote endpoint
+    // is local. Unmapped network destinations are refused by the adapter.
+    storyhook_test_support::install_git_endpoint(
+        bin.path(),
+        &[("https://github.com/acme/widgets.git", checkout.path())],
+    );
     let gh = bin.path().join("gh");
     fs::write(
         &gh,

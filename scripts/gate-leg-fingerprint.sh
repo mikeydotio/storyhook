@@ -76,6 +76,7 @@ is_gate_contract() {
     case "$1" in
     (Makefile | scripts/gate-legs.sh | scripts/leg.sh | scripts/gate-leg-fingerprint.sh | scripts/cargo_diagnostics.py) return 0 ;;
     (scripts/gate-progress.sh | scripts/activity-log.sh) return 0 ;;
+    (scripts/python-runtime.sh | scripts/python-bin/python3) return 0 ;;
     (*) return 1 ;;
     esac
 }
@@ -136,7 +137,7 @@ is_input() {
                 return 0
             fi
             ;;
-        (tests/* | scripts/run-tests.sh | scripts/test-pool.py | scripts/run-rust-battery.sh | scripts/rust-test-targets.sh) return 0 ;;
+        (tests/* | scripts/run-tests.sh | scripts/test-pool.py | scripts/test_discovery.py | scripts/run-rust-battery.sh | scripts/rust-test-targets.sh) return 0 ;;
         (scripts/test-env.sh | scripts/machine-lock.sh | scripts/activity-run.py | scripts/test-delta.sh | scripts/test_output.py) return 0 ;;
         esac
         ;;

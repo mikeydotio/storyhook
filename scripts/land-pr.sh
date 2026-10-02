@@ -68,6 +68,9 @@ cd "$root" || die "cannot enter $root"
 # projected (SH-654), against a checkout that need not be storyhook's.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
     || die "could not resolve the directory holding land-pr.sh"
+# shellcheck source=python-runtime.sh
+. "$script_dir/python-runtime.sh" || die "missing Python runtime policy in $script_dir"
+storyhook_python_init || die "$STORYHOOK_PYTHON_ERROR"
 script="$script_dir/land-pr.sh"
 # shellcheck source=github-access.sh
 . "$script_dir/github-access.sh" || exit 1

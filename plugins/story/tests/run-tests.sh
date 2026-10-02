@@ -28,6 +28,8 @@
 # never leaves a script behind it.
 set -uo pipefail
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$TESTS_DIR/../../../scripts/python-runtime.sh" || exit 2
+storyhook_python_init || { printf '%s\n' "$STORYHOOK_PYTHON_ERROR" >&2; exit 2; }
 FILTER="${1:-}"
 
 # 4, measured on 2026-09-25 at load average 18-25, with the verifier's own gate

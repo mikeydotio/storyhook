@@ -188,6 +188,14 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   # header carries the parameters and the reason for each. `--home` IS passed:
   # this suite runs nothing but `story` and `git`.
   storyhook_isolate --home "$STORYHOOK_TEST_HOME"
+  # The native CLI/daemon probes fake subprocesses too. Declare patience
+  # before the first story starts the daemon; nested libraries retain it.
+  if ! _STORY_PROBE_SECONDS="$(python3 "$TESTS_DIR/../../../scripts/tests/load_grace.py" patience 30)"; then
+    printf 'lib.sh: cannot grace the native subprocess probe budget\n' >&2
+    exit 1
+  fi
+  export STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS="$((_STORY_PROBE_SECONDS * 1000))"
+  unset _STORY_PROBE_SECONDS
   # Read-only native resource queries must never inspect the operator server.
   export TMUX_TMPDIR="$STORYHOOK_TEST_HOME/tmux"
   mkdir -p "$TMUX_TMPDIR"
@@ -275,7 +283,7 @@ if [ ! -x "$_STORY_TARGET_DIR/debug/story" ]; then
   echo "refusing to run: $_STORY_TARGET_DIR/debug/story does not exist." >&2
   echo "  This suite tests the \`story\` THIS checkout builds, never the one" >&2
   echo "  installed on the machine -- an installed binary is a different" >&2
-  echo "  version whose failures read as product bugs. Run \`cargo build\`" >&2
+  echo "  version whose failures read as product bugs. Run \`cargo build --features test-seam\`" >&2
   echo "  first, or \`make test\`, which does." >&2
   exit 1
 fi

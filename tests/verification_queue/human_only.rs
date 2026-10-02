@@ -89,7 +89,10 @@ impl ReservingActuator<'_> {
 }
 
 impl VerificationActuator for ReservingActuator<'_> {
-    fn submit(&self, c: &VerificationCandidate) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    fn submit(
+        &self,
+        c: &VerificationCandidate,
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         self.enter("submit", c);
         self.inner.submit(c)
     }
@@ -294,5 +297,31 @@ fn ordinary_and_no_auto_labels_remain_verifier_eligible() {
             VerificationQueue::new(f.store()).next().unwrap().is_none(),
             labels.iter().any(|l| l == "human-only")
         );
+    }
+}
+
+#[test]
+fn human_reservation_during_landed_inspection_prevents_completion() {
+    for transient in [false, true] {
+        let fixture = ServiceFixture::new();
+        fixture.github_checkout("https://github.com/acme/widgets");
+        let root = scratch_dir();
+        let (id, _) = leased_submission(&fixture, root.path(), "landed but reserved", None);
+        let actuator = ReservingActuator {
+            fixture: &fixture,
+            phase: "submit",
+            transient,
+            inner: FakeActuator::new(VerificationOutcome::Cancelled).with_submission(Ok(
+                storyhook::domain::landing::SubmissionOutcome::AlreadyLanded(
+                    super::already_landed::landed_evidence(),
+                ),
+            )),
+        };
+        assert_eq!(
+            tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap(),
+            TickResult::Returned
+        );
+        assert_eq!(story_row(&fixture, &id).state, "verifying");
+        assert!(actuator.inner.notified.lock().unwrap().is_empty());
     }
 }

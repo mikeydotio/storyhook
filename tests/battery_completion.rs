@@ -35,6 +35,9 @@ use std::process::{Command, Output};
 use storyhook_test_support::scratch_dir;
 use tempfile::TempDir;
 
+#[path = "battery_completion/discovery.rs"]
+mod discovery;
+
 #[path = "battery_completion/workspace.rs"]
 mod workspace;
 
@@ -53,6 +56,12 @@ impl Fixture {
     fn new() -> Self {
         let root = scratch_dir();
         let path = root.path();
+        fs::create_dir_all(path.join("scripts/python-bin")).unwrap();
+        std::os::unix::fs::symlink(
+            checkout().join("scripts/python-bin/python3"),
+            path.join("scripts/python-bin/python3"),
+        )
+        .unwrap();
         for dir in ["scripts", "bin", "locks", "src", "tests"] {
             fs::create_dir_all(path.join(dir))
                 .unwrap_or_else(|e| panic!("fixture: creating {dir}/: {e}"));

@@ -112,9 +112,9 @@ pub use sqlite::{Access, SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
     AdoptedIdentity, AttachmentBlobRow, DeletedProject, EngineAgent, EngineLaneRecord,
     EngineLaneState, EngineQuarantineRecord, EngineRunRecord, EngineRunState, EngineScope,
-    EngineSpeed, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord,
-    ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
-    StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic,
+    EngineSpeed, FeedEvent, LinkSource, MigrationReport, NewProject, OPERATOR_STOPPED_NOW, PrLink,
+    ProjectRecord, ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge,
+    StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic,
     VerificationFailureDisposition, VerificationIncident, partition_known,
 };
 pub use verification_batch::{
@@ -277,8 +277,8 @@ pub struct WriteWithSnapshot<T> {
 /// fail — it quietly returns a different project's story with the same number.
 /// Making the scope a required argument turns that whole class of bug into a
 /// compile error. Engine operations use their globally unique run id or the
-/// project slug stored on the run; [`Self::live_engine_runs`] is deliberately
-/// machine-wide for restart reconciliation and lane-budget accounting.
+/// project slug stored on the run; machine-wide operational reads support
+/// reconciliation and lane-budget accounting.
 pub trait ReadOps {
     /// Project-fault coordinators in creation order, including retained history.
     fn project_recoveries(&self, project: ProjectId) -> Result<Vec<ProjectRecovery>, StoreError>;
@@ -330,10 +330,15 @@ pub trait ReadOps {
 
     /// Every live engine run across the store, ordered by project then age.
     ///
-    /// This is intentionally the one machine-wide operational read in the
-    /// trait: restart reconciliation and the machine lane budget must see all
-    /// projects before either can make a safe decision.
+    /// Admission and capacity exclude halted runs, even during their cleanup.
     fn live_engine_runs(&self) -> Result<Vec<EngineRunRecord>, StoreError>;
+
+    /// Live runs and halted runs with explicit immediate-stop intent, across
+    /// the store, ordered by project, creation time, then id.
+    ///
+    /// Cleanup intent must be discoverable even before the first lane reset
+    /// is reserved. Finished runs and ordinary halted history are excluded.
+    fn reconcilable_engine_runs(&self) -> Result<Vec<EngineRunRecord>, StoreError>;
 
     /// This project's verifier incident, if infrastructure owns its queue
     /// (SH-648: one worker, one queue and one incident per project).

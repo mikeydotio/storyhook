@@ -2158,8 +2158,9 @@ back to `todo`, never `verifying`), clear free-text awaiting, release the lane
 and remove the reservation. Relationships, labels and history remain.
 
 Partial failure retains the reservation and contextual diagnostics, processes
-independent targets, and leaves the run draining without creating a story
-block. Retry accepts already absent resources but rejects changed ownership.
+independent targets, and leaves the run draining (or halted if it was already
+halted) without creating a story block. Retry accepts already absent resources
+but rejects changed ownership.
 
 ### SH-774 — Stop Now always converges (as built)
 
@@ -2175,7 +2176,7 @@ lane to exactly one `StopTarget`, and no target refuses forever:
 | Leased, story active | Reset | Leased helper cleanup (SH-706) |
 | No cleanup lease (refused dispatch, breaker halt, pre-lease lane) | Settled | Lane released; story keeps its claim and resources; awaiting set if empty; comment names card reset |
 | Story purged, or its ID no longer parses | Settled | Lane released with a diagnostic |
-| Story owned by a card reset, native `story reset` or dropped cleanup | Deferred | Lane unchanged, success, run still draining; the owner leaves the story non-active or closed, and the next attempt releases the lane |
+| Story owned by a card reset, native `story reset` or dropped cleanup | Deferred | Lane unchanged, success, cleanup intent retained; the owner leaves the story non-active or closed, and the next attempt releases the lane |
 | Dispatching, dispatcher dead | Settled | Released as leaseless; a card-reset-owned orphan is freed, not deferred |
 
 The lease stays the only authority for destructive cleanup: a lane without
@@ -2207,12 +2208,41 @@ Request handling:
   <error>`). It counts toward the breaker. It no longer leaves a lane
   dispatching.
 
-Out of scope, filed separately: Stop Now on a halted run while another run of
-the project is live (the one-live-run index refuses Halted→Draining).
 Restart preserves pending explicit cancellation during startup and resumes
 cleanup in the first steady pass, once helper callbacks can be served. Normal
 and stale reconciliation cannot quarantine or free stop-owned targets.
 Ordinary interrupted runs retain D11's non-destructive recovery policy.
+
+### SH-790 — halted cleanup does not reacquire live admission
+
+Stop Now keeps an already halted run `halted` until every lane is idle, then
+changes it directly to `finished`. It does not enter `draining`, even when no
+other run is live. The one-live-run index remains unchanged, so a newer run
+in the same project can continue while the old run's cleanup retries.
+
+| Source state | Pending Stop Now state | Stop reason |
+|---|---|---|
+| Running, paused, draining | Draining | `operator-stopped-now` |
+| Halted | Halted | `operator-stopped-now` |
+| Finished | Unchanged | Unchanged |
+
+The new stop reason records the operator's current intent. A new intent clears
+acknowledgement; it preserves the breaker count and recent quarantine history.
+`EngineRunRecord::is_stopping` authorizes both pending states. Helper tokens,
+exact leases, reserved-label unclaims, external-cleanup deferral, stale-observer
+exclusion and idempotent retries follow the same rules for both states.
+
+`ReadOps::reconcilable_engine_runs` selects live runs plus halted runs with
+explicit immediate-stop intent. The engine poller and change watcher use this
+query, including when a crash left intent but no lane reservation. Startup
+retains the intent without invoking helpers; steady reconciliation resumes it.
+Ordinary halted history and completed cleanup are not polled. Run timestamps
+remain unchanged on retries that change no run facts, avoiding self-wakes.
+
+`live_engine_runs`, capacity accounting and implicit CLI run selection remain
+live-only. No schema or wire-format change is required. Regression coverage
+spans the store state/reason matrix, service cleanup and retry paths, daemon
+restart/steady discovery, change attribution, and the explicit REST stop route.
 
 ### SH-467 — a singular operational CLI
 

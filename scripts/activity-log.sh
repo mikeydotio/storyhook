@@ -6,10 +6,12 @@ activity_run() {
     shift
     if [ -z "${STORYHOOK_ACTIVITY_LOG_DIR:-}" ]; then
         "$@"
-    elif command -v python3 >/dev/null 2>&1; then
-        python3 "$(dirname "${BASH_SOURCE[0]}")/activity-run.py" "$source" -- "$@"
+    elif . "$(dirname "${BASH_SOURCE[0]}")/python-runtime.sh" && storyhook_python_init; then
+        "$STORYHOOK_PYTHON" "$(dirname "${BASH_SOURCE[0]}")/activity-run.py" "$source" -- "$@"
     else
-        printf '%s\n' "warning: activity capture unavailable for $source: python3 not found" >&2
+        # Entry points enforce the runtime; optional observation preserves status.
+        printf 'warning: activity capture unavailable for %s: python3 runtime unavailable: %s\n' \
+            "$source" "${STORYHOOK_PYTHON_ERROR:-could not load runtime policy}" >&2
         "$@"
     fi
 }

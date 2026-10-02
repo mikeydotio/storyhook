@@ -90,40 +90,46 @@ fn compiler_adapter_changes_invalidate_compilation_and_test_evidence() {
 
 #[test]
 fn orchestration_changes_invalidate_every_leg() {
-    let repo = Repo::new();
-    repo.write("scripts/gate-legs.sh", "# initial orchestration contract\n");
-    repo.git(&["add", "scripts/gate-legs.sh"]);
-    repo.git(&["commit", "-qm", "orchestration input"]);
-    for leg in [
-        "fmt",
-        "clippy",
-        "rust-suite",
-        "rust-contracts",
-        "build",
-        "plugin",
-        "e2e",
+    for input in [
+        "scripts/gate-legs.sh",
+        "scripts/python-runtime.sh",
+        "scripts/python-bin/python3",
     ] {
-        assert!(repo.run_leg(leg, true).status.success());
-        assert!(repo.run_leg(leg, true).status.success());
-        assert_eq!(repo.executions(leg), 1);
-    }
-    repo.write("scripts/gate-legs.sh", "# changed orchestration contract\n");
-    for leg in [
-        "fmt",
-        "clippy",
-        "rust-suite",
-        "rust-contracts",
-        "build",
-        "plugin",
-        "e2e",
-    ] {
-        let result = repo.run_leg(leg, true);
-        assert!(result.status.success(), "{result:?}");
-        assert_eq!(
-            repo.executions(leg),
-            2,
-            "{leg} reused stale orchestration evidence"
-        );
+        let repo = Repo::new();
+        repo.replace_with_tracked_copy(input, "\n# initial orchestration contract\n");
+        repo.git(&["add", input]);
+        repo.git(&["commit", "-qm", "orchestration input"]);
+        for leg in [
+            "fmt",
+            "clippy",
+            "rust-suite",
+            "rust-contracts",
+            "build",
+            "plugin",
+            "e2e",
+        ] {
+            assert!(repo.run_leg(leg, true).status.success());
+            assert!(repo.run_leg(leg, true).status.success());
+            assert_eq!(repo.executions(leg), 1);
+        }
+        repo.replace_with_tracked_copy(input, "\n# changed orchestration contract\n");
+        for leg in [
+            "fmt",
+            "clippy",
+            "rust-suite",
+            "rust-contracts",
+            "build",
+            "plugin",
+            "e2e",
+        ] {
+            let result = repo.run_leg(leg, true);
+            assert!(result.status.success(), "{result:?}");
+            assert_eq!(
+                repo.executions(leg),
+                2,
+                "{leg} reused stale orchestration evidence after {input} changed"
+            );
+        }
     }
 }
 
@@ -160,7 +166,10 @@ impl Repo {
             "gate-progress.sh",
             "gate-leg-fingerprint.sh",
             "rust-test-targets.sh",
+            "python-runtime.sh",
+            "python-bin/python3",
         ] {
+            fs::create_dir_all(repo.path().join("scripts").join(script).parent().unwrap()).unwrap();
             std::os::unix::fs::symlink(
                 checkout().join("scripts").join(script),
                 repo.path().join("scripts").join(script),
@@ -194,6 +203,13 @@ impl Repo {
             fs::remove_file(&path).unwrap_or_else(|e| panic!("unlinking fixture {relative}: {e}"));
         }
         self.write(relative, &format!("{original}{suffix}"));
+        fs::set_permissions(
+            &path,
+            fs::metadata(checkout().join(relative))
+                .unwrap()
+                .permissions(),
+        )
+        .unwrap();
     }
 
     fn git(&self, args: &[&str]) -> Output {
@@ -449,34 +465,36 @@ fn a_browser_edit_reruns_only_browser_and_checkout_contracts() {
 /// throw away the verdicts it cannot affect.
 #[test]
 fn a_test_pool_edit_reruns_only_the_rust_batteries() {
-    let repo = Repo::new();
-    repo.write("scripts/test-pool.py", "# pool fixture\n");
-    repo.git(&["add", "scripts/test-pool.py"]);
-    let labels = [
-        "fmt",
-        "clippy",
-        "rust-suite",
-        "rust-contracts",
-        "build",
-        "plugin",
-        "e2e",
-    ];
-    for label in labels {
-        let out = repo.run_leg(label, true);
-        assert!(out.status.success(), "seeding {label}: {out:?}");
-    }
+    for path in ["scripts/test-pool.py", "scripts/test_discovery.py"] {
+        let repo = Repo::new();
+        repo.write(path, "# pool fixture\n");
+        repo.git(&["add", path]);
+        let labels = [
+            "fmt",
+            "clippy",
+            "rust-suite",
+            "rust-contracts",
+            "build",
+            "plugin",
+            "e2e",
+        ];
+        for label in labels {
+            let out = repo.run_leg(label, true);
+            assert!(out.status.success(), "seeding {label}: {out:?}");
+        }
 
-    repo.write("scripts/test-pool.py", "# edited pool fixture\n");
+        repo.write(path, "# edited pool fixture\n");
 
-    for label in labels {
-        let out = repo.run_leg(label, true);
-        assert!(out.status.success(), "retrying {label}: {out:?}");
-        let expected = usize::from(matches!(label, "rust-suite" | "rust-contracts")) + 1;
-        assert_eq!(
-            repo.executions(label),
-            expected,
-            "a pool edit invalidated the wrong battery: {label}"
-        );
+        for label in labels {
+            let out = repo.run_leg(label, true);
+            assert!(out.status.success(), "retrying {label}: {out:?}");
+            let expected = usize::from(matches!(label, "rust-suite" | "rust-contracts")) + 1;
+            assert_eq!(
+                repo.executions(label),
+                expected,
+                "{path} invalidated the wrong battery: {label}"
+            );
+        }
     }
 }
 
@@ -738,7 +756,7 @@ fn reusable_leg_entries() -> Vec<(String, Option<String>)> {
             .collect();
         let entry = tokens
             .windows(2)
-            .find(|pair| matches!(pair[0], "bash" | "python3") && is_script(pair[1]))
+            .find(|pair| is_interpreter(pair[0]) && is_script(pair[1]))
             .map(|pair| pair[1].to_owned());
         if !legs.iter().any(|(known, _)| *known == label) {
             legs.push((label, entry));
@@ -778,7 +796,7 @@ fn script_references(path: &str, text: &str) -> Vec<String> {
             .filter(|token| !token.is_empty())
             .collect();
         for pair in tokens.windows(2) {
-            if !matches!(pair[0], "." | "source" | "bash" | "python3") {
+            if !matches!(pair[0], "." | "source") && !is_interpreter(pair[0]) {
                 continue;
             }
             let operand = pair[1].trim_matches(|c| c == '"' || c == '\'');
@@ -801,6 +819,13 @@ fn script_references(path: &str, text: &str) -> Vec<String> {
         }
     }
     found
+}
+
+fn is_interpreter(token: &str) -> bool {
+    matches!(
+        token.trim_matches('"'),
+        "bash" | "python3" | "$STORYHOOK_PYTHON" | "$${STORYHOOK_PYTHON}"
+    )
 }
 
 fn is_script(token: &str) -> bool {

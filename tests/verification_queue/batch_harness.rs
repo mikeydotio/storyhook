@@ -68,6 +68,7 @@ pub(super) struct Batcher<'a> {
     pub(super) gate: Gate,
     pub(super) refuse: BTreeSet<String>,
     pub(super) moved: BTreeSet<String>,
+    pub(super) landed: BTreeSet<String>,
     pub(super) calls: Mutex<Vec<String>>,
     pub(super) publications: Mutex<Vec<BatchPublication>>,
     /// What `land` answers.
@@ -163,6 +164,7 @@ impl<'a> Batcher<'a> {
             gate,
             refuse: BTreeSet::new(),
             moved: BTreeSet::new(),
+            landed: BTreeSet::new(),
             calls: Mutex::new(Vec::new()),
             publications: Mutex::new(Vec::new()),
             landing: LandingOutcome::Merged {
@@ -445,9 +447,9 @@ impl VerificationActuator for Batcher<'_> {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         self.call(format!("submit {}", candidate.story_id));
-        Ok(self.receipt(candidate, self.branch_head(candidate)))
+        Ok(self.receipt(candidate, self.branch_head(candidate)).into())
     }
 
     fn verify(
@@ -553,8 +555,13 @@ impl BatchActuator for Batcher<'_> {
         member: &VerificationCandidate,
         _owner: MemberOwner<'_>,
         _cancellation: &VerificationCancellation,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         self.call(format!("submit-member {}", member.story_id));
+        if self.landed.contains(&member.story_id) {
+            let mut evidence = super::already_landed::landed_evidence();
+            evidence.head_oid = self.branch_head(member);
+            return Ok(storyhook::domain::landing::SubmissionOutcome::AlreadyLanded(evidence));
+        }
         if self.refuse.contains(&member.story_id) {
             return Err(SubmissionFailure::Refused {
                 reason: "dirty-worktree".into(),
@@ -566,7 +573,7 @@ impl BatchActuator for Batcher<'_> {
         } else {
             self.branch_head(member)
         };
-        Ok(self.receipt(member, head))
+        Ok(self.receipt(member, head).into())
     }
 
     fn publish(

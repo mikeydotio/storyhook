@@ -159,6 +159,12 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // was terminated before this contract ran (SH-692); classified in SH-693.
     ("src/daemon/block_delivery.rs", "\"bash\"", Kind::Waited),
     ("src/daemon/launchd.rs", "\"launchctl\"", Kind::Reads),
+    // Bounded file-backed capture; manager jobs use --no-block.
+    (
+        "src/daemon/systemd/command.rs",
+        "\"systemctl\"",
+        Kind::Waited,
+    ),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
     // Centralized verification waits for bounded bash orchestration commands.
@@ -243,7 +249,7 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ),
     // Continuation stages JSON stdin and captures stdout/stderr in regular
     // files, so descendants cannot hold an output-pipe EOF. The shared runner
-    // waits at most 45 s (125 s for resume) and kills its group on timeout.
+    // waits at most 45 s (225 s for resume) and kills its group on timeout.
     (
         "src/service/continuation/runtime.rs",
         "\"python3\"",

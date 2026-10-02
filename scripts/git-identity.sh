@@ -17,7 +17,8 @@ trap 'exit 143' TERM
 # Baseline and history readers must not inherit the very overrides they detect.
 # HOME/XDG name persistent policy; command-scope Git configuration is not policy.
 gi_environment=("PATH=$PATH" "HOME=${HOME:?HOME is required}" "LC_ALL=C" "GIT_CONFIG_NOSYSTEM=1" "GIT_NO_REPLACE_OBJECTS=1" "GIT_GRAFT_FILE=/dev/null")
-for gi_variable in XDG_CONFIG_HOME DEVELOPER_DIR TMPDIR; do
+# PATH can contain the verifier's Python launcher; keep its runtime paired.
+for gi_variable in XDG_CONFIG_HOME DEVELOPER_DIR TMPDIR STORYHOOK_PYTHON; do
     if [ "${!gi_variable+x}" = x ]; then
         gi_environment+=("$gi_variable=${!gi_variable}")
     fi

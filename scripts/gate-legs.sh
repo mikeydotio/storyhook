@@ -7,6 +7,8 @@ gate_cleanup() {
 }
 
 gate_init() {
+    . "$(dirname "${BASH_SOURCE[0]}")/python-runtime.sh" || exit 125
+    storyhook_python_init || { printf '%s\n' "$STORYHOOK_PYTHON_ERROR" >&2; exit 125; }
     gate_status=0
     gate_shared_failure=""
     gate_build_failure=""
@@ -56,7 +58,7 @@ gate_run() {
     fi
     case "$label" in
     (rust-suite | rust-contracts)
-        python3 scripts/cargo_diagnostics.py --validate-outcome "$gate_outcome" || exit 125
+        "$STORYHOOK_PYTHON" scripts/cargo_diagnostics.py --validate-outcome "$gate_outcome" || exit 125
         ;;
     esac
     if [ "$status" -ne 0 ]; then
@@ -66,7 +68,7 @@ gate_run() {
         case "$label" in
         (build) gate_build_failure=build ;;
         (rust-suite | rust-contracts)
-            python3 scripts/cargo_diagnostics.py --confirm-shared "$gate_outcome" || confirmation=$?
+            "$STORYHOOK_PYTHON" scripts/cargo_diagnostics.py --confirm-shared "$gate_outcome" || confirmation=$?
             case "$confirmation" in
             (0) ;;
             (10) gate_shared_failure="$label" ;;

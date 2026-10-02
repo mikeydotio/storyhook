@@ -46,7 +46,13 @@ impl Suite {
             tests.join("run-tests.sh"),
         )
         .expect("fixture: linking the runner");
-        for helper in ["gate-progress.sh", "test-env.sh"] {
+        for helper in [
+            "gate-progress.sh",
+            "test-env.sh",
+            "python-runtime.sh",
+            "python-bin/python3",
+        ] {
+            fs::create_dir_all(scripts.join(helper).parent().unwrap()).unwrap();
             symlink(
                 checkout().join("scripts").join(helper),
                 scripts.join(helper),

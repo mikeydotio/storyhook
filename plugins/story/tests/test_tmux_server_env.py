@@ -103,9 +103,12 @@ class PolicyTests(unittest.TestCase):
         for name in policy.SERVER_MAY_SEE - {"PATH"}:
             self.assertEqual(client[name], environ[name])
 
-    def test_routing_is_allowed_and_no_storyhook_or_credential_name_is(self):
+    def test_routing_and_python_runtime_are_allowed_but_not_session_or_credential_names(self):
         self.assertTrue({"TMUX_TMPDIR", "TMUX", "TMUX_PANE"} <= policy.SERVER_MAY_SEE)
-        for name in policy.SERVER_MAY_SEE:
+        self.assertEqual(policy.client_environment({"PATH": "/runtime/python-bin:/usr/bin",
+                                                   "STORYHOOK_PYTHON": "/runtime/python3"}),
+                         {"PATH": "/runtime/python-bin:/usr/bin", "STORYHOOK_PYTHON": "/runtime/python3"})
+        for name in policy.SERVER_MAY_SEE - {"STORYHOOK_PYTHON"}:
             self.assertFalse(name.startswith(("STORY_", "STORYHOOK_", "CLAUDE", "CODEX_", "GH_", "GITHUB_")), name)
 
     def test_selectors_are_not_retained_by_a_server(self):

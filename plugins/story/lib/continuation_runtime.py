@@ -14,10 +14,16 @@ import tempfile
 sys.dont_write_bytecode = True
 from workspace_ownership import inherited_fds
 from continuation_identity import handoff_message_id
+import probe_budget
 
 MAX_BYTES = 64 * 1024 * 1024
 OPTION = '@storyhook-continuation'
 MARKER = 'storyhook-cleanup-lease-v1.json'
+
+# Pool the former 120 s dispatch allowance with 30 s for observations. Nested
+# preflight and final ownership checks spend this same deadline, never renew it.
+# The Rust caller allows 225 s, leaving the usual one-third startup/exit margin.
+RESUME_BUDGET_SECONDS = 150
 
 
 def require(condition, detail):
@@ -26,11 +32,11 @@ def require(condition, detail):
         raise RuntimeError(detail)
 
 
-def command(argv, cwd=None, timeout=2, env=None):
+def command(argv, cwd=None, env=None):
     """Bound subprocess lifetime and output without an in-memory output pipe."""
     with tempfile.TemporaryFile(dir='/tmp') as out, tempfile.TemporaryFile(dir='/tmp') as err:
-        result = subprocess.run(argv, cwd=cwd, env=env, stdout=out, stderr=err,
-                                timeout=timeout, check=False, pass_fds=inherited_fds())
+        result = probe_budget.run(argv, cwd=cwd, env=env, stdout=out, stderr=err,
+                                  check=False, pass_fds=inherited_fds())
         require(out.tell() <= MAX_BYTES and err.tell() <= MAX_BYTES,
                 'continuation subprocess output exceeds 64 MiB: ' + argv[0])
         out.seek(0)
@@ -218,6 +224,7 @@ def owner(capture):
     return 'present'
 
 
+@probe_budget.operation()
 def capture_request(value):
     """Bind a root native Stop to its dispatch lease, process, session, and dirty work."""
     origin = value['origin']
@@ -251,6 +258,7 @@ def capture_request(value):
     return {'ok': True, 'capture': result}
 
 
+@probe_budget.operation()
 def observe(value):
     """Observe retained resources; this operation never injects input or restarts."""
     capture = value['capture']
@@ -291,6 +299,7 @@ def observe(value):
             'detail': 'exact native session observed; native queue delivery is not inferred'}
 
 
+@probe_budget.operation()
 def register(value):
     """Publish the dispatcher's session binding before it sends the story charter."""
     lease = cleanup_lease(value['cwd'], value['story_id'])
@@ -323,6 +332,7 @@ def register(value):
     return {'ok': True, 'capture': metadata}
 
 
+@probe_budget.operation()
 def resume_preflight(value):
     """Require retained resources and the exact dead pane before any replacement effect."""
     capture = value['capture']
@@ -337,6 +347,7 @@ def resume_preflight(value):
     return {'ok': True, 'capture': capture, 'phase': 'absent'}
 
 
+@probe_budget.operation(budget=RESUME_BUDGET_SECONDS)
 def resume(value):
     """Recover only an absent provider through the helper's atomic no-k guarded path."""
     resume_preflight(value)
@@ -373,7 +384,7 @@ def resume(value):
             'new root session identity before changing work. Unknown context alone is not a '
             'dependency or a reason to defer already assigned work. Record corrections that '
             'must fence submission on the story; acknowledgement cannot observe the native queue.')
-        answer = json.loads(command(argv, cwd=lease['worktree_path'], timeout=120, env=env))
+        answer = json.loads(command(argv, cwd=lease['worktree_path'], env=env))
     require(answer.get('ok') is True and answer.get('window_reused') is True
             and answer.get('worktree_reused') is True and answer.get('branch_reused') is True,
             'guarded dispatch did not confirm retained resources')

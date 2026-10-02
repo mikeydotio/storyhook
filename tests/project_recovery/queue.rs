@@ -3,7 +3,6 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use storyhook::cli::{Invocation, VerifierAction};
 use storyhook::daemon::{lifecycle::InFlight, verification::*};
-use storyhook::domain::SubmittedPullRequest;
 use storyhook::error::AppError;
 use storyhook::service::project_recovery::{RepairAdmission, RepairInput, RepairScope};
 use storyhook::store::{LandingIntent, PrLink, SqliteStore};
@@ -19,7 +18,10 @@ pub(super) struct GateEndpoint<'a> {
     pub(super) executions: AtomicUsize,
 }
 impl VerificationActuator for GateEndpoint<'_> {
-    fn submit(&self, _: &VerificationCandidate) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    fn submit(
+        &self,
+        _: &VerificationCandidate,
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         panic!("linked fixture")
     }
     fn verify(&self, candidate: &VerificationCandidate, _: &PrLink) -> VerificationOutcome {

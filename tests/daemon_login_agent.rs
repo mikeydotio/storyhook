@@ -26,6 +26,8 @@
 //! session, under the one label this project owns — so the plist is planted by
 //! hand and only ever read back.
 
+#![cfg(target_os = "macos")]
+
 use storyhook_test_support::{Project, TestEnv};
 
 /// The label `storyhook::daemon::agent` writes under. Spelled out rather than

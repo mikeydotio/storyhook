@@ -53,6 +53,9 @@ case "$self" in
 esac
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=python-runtime.sh
+. "$script_dir/python-runtime.sh"
+storyhook_python_init || { printf '%s\n' "$STORYHOOK_PYTHON_ERROR" >&2; exit 2; }
 # shellcheck source=gate-progress.sh
 . "$script_dir/gate-progress.sh"
 
@@ -184,6 +187,11 @@ if [ "${1:-}" = "--only" ] || [ "${1:-}" = "--only-no-doc" ]; then
     done
 fi
 
+pooled_mode=0
+if [ "$only_mode" -eq 1 ] && [ "${#only_names[@]}" -gt 0 ] && [ "$thread_budget" -gt 0 ]; then
+    pooled_mode=1
+fi
+
 data_root="$(mktemp -d /private/tmp/storyhook-gate.XXXXXX)"
 trap 'rm -rf "$data_root"' EXIT
 
@@ -235,18 +243,18 @@ log="$data_root/test-output.log"
 # output cannot renew the holder watchdog. `leg.sh` still owns the item's
 # running/passed/failed lifecycle because it wraps this whole invocation.
 run_leg() {
-    observer=(python3 "$script_dir/activity-run.py" --capture "$log")
+    observer=("$STORYHOOK_PYTHON" "$script_dir/activity-run.py" --capture "$log")
     if [ -n "$(gate_progress_journal)" ]; then
         observer+=(--test-progress "$gate_progress_case_path")
     fi
-    observer+=(run-tests.sh/cargo -- python3 "$script_dir/cargo_diagnostics.py" -- "$@")
+    observer+=(run-tests.sh/cargo -- "$STORYHOOK_PYTHON" "$script_dir/cargo_diagnostics.py" -- "$@")
     "${observer[@]}"
 }
 
 # Cargo target names and package names differ, including hyphens and underscores.
 # Resolve both integration and library targets from the same metadata as the classifier.
 resolve_workspace_target() {
-    cargo metadata --no-deps --format-version=1 | python3 -c '
+    cargo metadata --no-deps --format-version=1 | "$STORYHOOK_PYTHON" -c '
 import json, sys
 d = json.load(sys.stdin)
 name = sys.argv[1]
@@ -334,11 +342,11 @@ listed_test_count() {
     fi
 
     output="$(mktemp "$data_root/test-list.XXXXXX")"
-    observer=(python3 "$script_dir/activity-run.py" --capture "$output")
+    observer=("$STORYHOOK_PYTHON" "$script_dir/activity-run.py" --capture "$output")
     if [ -n "$(gate_progress_journal)" ]; then
         observer+=(--test-progress "$gate_progress_case_path")
     fi
-    observer+=(run-tests.sh/discovery -- python3 "$script_dir/cargo_diagnostics.py" -- "${command[@]}")
+    observer+=(run-tests.sh/discovery -- "$STORYHOOK_PYTHON" "$script_dir/cargo_diagnostics.py" -- "${command[@]}")
     if ! "${observer[@]}" >/dev/null; then
         cat "$output" >&2
         echo "run-tests.sh: test discovery failed before execution; refusing an estimated progress total" >&2
@@ -378,7 +386,17 @@ add_to_exact_total() {
     exact_total=$((exact_total + count))
 }
 
-if [ -n "$(gate_progress_journal)" ]; then
+# The pool lists binaries once for both scheduling and the exact denominator.
+# Doctests still belong to Cargo; count them first so the initial total covers
+# the complete leg before any pooled case can execute.
+if [ "$pooled_mode" -eq 1 ]; then
+    if [ "$run_docs" -eq 1 ]; then
+        add_to_exact_total cargo test --workspace --doc "$@" || {
+            gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
+            exit 1
+        }
+    fi
+elif [ -n "$(gate_progress_journal)" ]; then
     if [ "$only_mode" -eq 0 ]; then
         add_to_exact_total cargo test --workspace "$@" || {
             gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
@@ -416,7 +434,9 @@ if [ -n "$(gate_progress_journal)" ]; then
     fi
     gate_progress_emit_item "$gate_progress_case_path" running "total=$exact_total"
 fi
-gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" passed
+if [ "$pooled_mode" -eq 0 ]; then
+    gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" passed
+fi
 
 # EVERY BINARY OF A BATTERY RUNS, EVEN AFTER ONE GOES RED -- SH-697.
 #
@@ -450,7 +470,8 @@ cargo_test_flags=(--no-fail-fast)
 # see the same shape as the serial run. Doctests stay serial, after it.
 run_pool() {
     local build_status=0 i common
-    local pool=(python3 "$script_dir/test-pool.py" --budget "$thread_budget" --log "$log" --work "$data_root/pool")
+    local pool=("$STORYHOOK_PYTHON" "$script_dir/test-pool.py" --budget "$thread_budget" --log "$log" --work "$data_root/pool"
+        --additional-total "$exact_total" --discovery-ready "$data_root/discovery-ready")
     if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
         run_leg cargo test "${cargo_test_flags[@]}" --no-run -p storyhook "${storyhook_test_args[@]}" "$@" || build_status=$?
     fi
@@ -464,7 +485,10 @@ run_pool() {
         run_leg cargo test "${cargo_test_flags[@]}" --no-run -p "${lib_packages[$i]}" --lib "$@" || build_status=$?
         i=$((i + 1))
     done
-    [ "$build_status" -eq 0 ] || return "$build_status"
+    if [ "$build_status" -ne 0 ]; then
+        gate_progress_emit_activity "$gate_progress_case_path" "$discovery_activity" failed
+        return "$build_status"
+    fi
 
     # Where the pool remembers each binary's run time, to start the longest
     # first next time: shared by every worktree of this clone, like receipts.
@@ -499,8 +523,14 @@ if [ "$only_mode" -eq 0 ]; then
 else
     if [ "${#only_names[@]}" -eq 0 ]; then
         echo "run-tests.sh: --only given with no binaries -- nothing to run" >&2
-    elif [ "$thread_budget" -gt 0 ]; then
+    elif [ "$pooled_mode" -eq 1 ]; then
         run_pool "$@" || status=$?
+        # A red test still permits every remaining test and doctest. Failed
+        # discovery permits neither, even if the pool could not write progress.
+        if [ ! -f "$data_root/discovery-ready" ]; then
+            [ "$status" -ne 0 ] || status=101
+            exit "$status"
+        fi
     else
 
         if [ "${#storyhook_test_args[@]}" -gt 0 ]; then

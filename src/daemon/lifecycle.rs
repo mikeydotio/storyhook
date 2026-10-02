@@ -141,6 +141,11 @@ pub struct DaemonIdentity {
 /// the daemon that answers is actually running.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DaemonOwner {
+    /// Started by the Linux user service manager in its own service cgroup.
+    Systemd {
+        /// This store's systemd service name.
+        unit: String,
+    },
     /// Started by launchd — kickstarted, or booted via `RunAtLoad` — rather
     /// than forked by any client. Its plist's `ProcessType = Interactive`
     /// (`agent::plist`) is what lets a
@@ -170,17 +175,15 @@ pub enum DaemonOwner {
 /// Why [`DaemonOwner::Forked`] was chosen instead of launchd (SH-784).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForkReason {
+    /// No usable systemd user manager is available to this client.
+    NoUserManager,
     /// This binary carries `fault-injection` (`crate::env::is_test_build`) —
     /// every test daemon, regardless of OS or of whether an agent happens to
     /// be installed on the development machine. Tests must not depend on a
     /// launchd agent existing, and must never register one for real (every
     /// `launchd`-touching test in this codebase already avoids that).
     TestBuild,
-    /// No launchd agent serves this exact store. macOS only in practice —
-    /// every other OS forks unconditionally today and reports this same
-    /// reason (SH-787 tracks giving Linux its own service-manager path;
-    /// until then, `story daemon install` refusing there means "no agent
-    /// installed" is simply always true).
+    /// No platform service is installed for this exact store.
     NoAgentInstalled,
     /// Nothing internal passed `--owner` at all: a human ran
     /// `story daemon --serve` directly rather than through
@@ -1155,6 +1158,13 @@ fn enter_stable_working_directory(env: &Environment) -> Result<(), AppError> {
 /// all [`DaemonOwner::Forked::parent_pid`]'s diagnostic purpose needs.
 fn resolve_owner(env: &Environment, flag: Option<&str>) -> DaemonOwner {
     match flag {
+        Some("systemd") => DaemonOwner::Systemd {
+            unit: super::systemd::unit(env),
+        },
+        Some("fork-no-manager") => DaemonOwner::Forked {
+            parent_pid: native_parent_pid(),
+            reason: ForkReason::NoUserManager,
+        },
         Some("launchd") => DaemonOwner::Launchd {
             label: super::agent::label(env),
         },
@@ -1459,7 +1469,8 @@ fn usable(env: &Environment) -> Option<DaemonInfo> {
 /// lock can legitimately spend three [`CONTROL_DEADLINE`]s inside it —
 /// [`request_shutdown`] against a stale daemon, then [`hello`] and another
 /// `request_shutdown` inside [`stand_down_legacy_daemon`] — and three
-/// [`SPAWN_DEADLINE`]s — two [`wait_until`] calls and [`await_healthy`]. A
+/// [`SPAWN_DEADLINE`]s — two [`wait_until`] calls and [`await_healthy`].
+/// Linux also budgets its four bounded systemd controls. A
 /// waiter that gave up before that sum could abort a spawn that was going to
 /// succeed, which is a worse defect than the one this bound exists to fix.
 /// A graceful restart may hold the same lock longer while draining user work;
@@ -1475,8 +1486,18 @@ fn usable(env: &Environment) -> Option<DaemonInfo> {
 /// ordered — a client that exhausts this bound and correctly reports so must not
 /// race the harness meant to outlive it — and an import is the only form of that
 /// promise which cannot drift.
-pub const SPAWN_LOCK_DEADLINE: Duration =
-    Duration::from_secs(3 * CONTROL_DEADLINE.as_secs() + 3 * SPAWN_DEADLINE.as_secs());
+pub const SPAWN_LOCK_DEADLINE: Duration = Duration::from_secs(
+    3 * CONTROL_DEADLINE.as_secs() + 3 * SPAWN_DEADLINE.as_secs() + managed_launch_budget_secs(),
+);
+
+const fn managed_launch_budget_secs() -> u64 {
+    if cfg!(target_os = "linux") {
+        super::systemd::command::LAUNCH_CONTROL_CALLS
+            * super::systemd::command::COMMAND_DEADLINE.as_secs()
+    } else {
+        0
+    }
+}
 
 /// Takes the spawn lock within [`SPAWN_LOCK_DEADLINE`], or gives up loudly.
 ///
@@ -1664,7 +1685,7 @@ pub(crate) trait DaemonLauncher {
 
 /// Forks [`spawn_child`] and waits for it ([`await_healthy`]) — the path
 /// every daemon took before SH-784, and the only one a test build or an OS
-/// with no launchd equivalent yet (SH-787) ever takes after it.
+/// without an installed platform service takes.
 struct ForkLauncher {
     reason: ForkReason,
 }
@@ -1680,6 +1701,16 @@ impl DaemonLauncher for ForkLauncher {
     }
 }
 
+/// Serializes registration changes with every client-driven daemon launch.
+pub(crate) fn with_registration_lock<T>(
+    env: &Environment,
+    action: impl FnOnce() -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    std::fs::create_dir_all(env.daemon_state_dir())?;
+    let _lock = acquire_spawn_lock(&env.daemon_spawn_lock(), SPAWN_LOCK_DEADLINE)?;
+    action()
+}
+
 /// Which [`DaemonLauncher`] a given `ensure`/`start`/`restart` call should
 /// use, and why, decided before either the warning or the launch itself
 /// (SH-784's approved design).
@@ -1687,22 +1718,38 @@ impl DaemonLauncher for ForkLauncher {
 enum LauncherChoice {
     /// This store has a launchd agent installed for it.
     Launchd,
-    /// No launchd agent applies; fall back to forking, for `reason`.
+    /// The exact store has a systemd user service.
+    Systemd,
+    /// No managed service applies; fall back to forking, for `reason`.
     Fork(ForkReason),
 }
 
-/// A pure function of this build and this store's login-agent health —
-/// **never** of the calling process's own scheduling class or coalition, so
-/// the daemon's ownership cannot itself become an accident of whichever
-/// client happened to trigger a start (the exact defect this story exists to
-/// close). Unit-tested directly against synthetic [`super::agent::Health`]
-/// values; no I/O of its own beyond the one `agent::health` read.
-fn choose_launcher(env: &Environment) -> LauncherChoice {
-    decide_launcher(
+/// Selects ownership from this build, the store's registration and manager
+/// availability, never from the calling process's scheduling class. Test
+/// builds return before any manager probe or registration read.
+fn choose_launcher(env: &Environment) -> Result<LauncherChoice, AppError> {
+    if crate::env::is_test_build() {
+        return Ok(LauncherChoice::Fork(ForkReason::TestBuild));
+    }
+    if cfg!(target_os = "linux") {
+        return match super::systemd::select(env, &super::systemd::command::run)? {
+            super::systemd::Selection::Installed => Ok(LauncherChoice::Systemd),
+            super::systemd::Selection::NotInstalled => {
+                Ok(LauncherChoice::Fork(ForkReason::NoAgentInstalled))
+            }
+            super::systemd::Selection::Unavailable(reason) => {
+                eprintln!(
+                    "storyhook: no usable systemd user manager ({reason}); starting the daemon directly with the client's scheduling class and cgroup."
+                );
+                Ok(LauncherChoice::Fork(ForkReason::NoUserManager))
+            }
+        };
+    }
+    Ok(decide_launcher(
         crate::env::is_test_build(),
         cfg!(target_os = "macos"),
         super::agent::health(env),
-    )
+    ))
 }
 
 /// The pure decision table [`choose_launcher`] gathers inputs for — split out
@@ -1743,6 +1790,7 @@ impl LauncherChoice {
     fn launcher(self) -> Box<dyn DaemonLauncher> {
         match self {
             LauncherChoice::Launchd => Box::new(super::launchd::LaunchdLauncher),
+            LauncherChoice::Systemd => Box::new(super::systemd::SystemdUserLauncher),
             LauncherChoice::Fork(reason) => Box::new(ForkLauncher { reason }),
         }
     }
@@ -1751,12 +1799,16 @@ impl LauncherChoice {
 /// Tells a human at a terminal that this daemon is running unmanaged, and how
 /// to fix it — the fork-path sibling of [`note_stale_login_agent`], for the
 /// state that function does not cover (no agent at all, rather than a broken
-/// one). Same two guards: terminal-only, and silent on Linux, where
-/// `story daemon install` itself refuses (SH-787 tracks giving that platform
-/// its own remedy), so naming it here would send an operator to a command
-/// that cannot help them yet.
+/// one). Linux warnings also reach redirected stderr so unmanaged startup
+/// is never silent in containers and hooks.
 fn warn_no_agent_installed() {
     use std::io::IsTerminal;
+    if cfg!(target_os = "linux") {
+        eprintln!(
+            "storyhook: no systemd user service is installed for this store; starting the daemon directly with the client's scheduling class and cgroup. Run `story daemon install` to fix this."
+        );
+        return;
+    }
     if !std::io::stderr().is_terminal() {
         return;
     }
@@ -1773,7 +1825,7 @@ fn warn_no_agent_installed() {
 /// [`DaemonLauncher`] [`choose_launcher`] selects, and returns its published
 /// [`DaemonInfo`] once healthy.
 fn launch_daemon(env: &Environment) -> Result<DaemonInfo, AppError> {
-    let choice = choose_launcher(env);
+    let choice = choose_launcher(env)?;
     if choice == LauncherChoice::Fork(ForkReason::NoAgentInstalled) {
         warn_no_agent_installed();
     }
@@ -1798,26 +1850,35 @@ fn launch_daemon(env: &Environment) -> Result<DaemonInfo, AppError> {
 /// during the wait is trustworthy evidence rather than stale residue, even
 /// without a pid to confirm it against.
 pub(crate) fn await_launchd_healthy(env: &Environment) -> Result<(), AppError> {
+    await_managed_healthy(env, "launchd", "launchctl print gui/<uid>/<label>", None)
+}
+
+/// Waits for this build and store; systemd additionally requires the expected owner.
+pub(crate) fn await_managed_healthy(
+    env: &Environment,
+    manager: &str,
+    inspect: &str,
+    owner: Option<&DaemonOwner>,
+) -> Result<(), AppError> {
     let deadline = Instant::now() + SPAWN_DEADLINE;
     while Instant::now() < deadline {
         if let Some(info) = read_info(env)
             && info.is_this_binary()
             && info.serves(env.store_path())
+            && owner.is_none_or(|expected| info.owner.as_ref() == Some(expected))
             && hello(&info).is_ok()
         {
             return Ok(());
         }
         if let Some(failure) = read_startup_failure(env) {
             return Err(failure.with_context(
-                "the launchd-owned daemon could not start; this is what it reported on its \
-                 way out:",
+                &format!("the {manager}-owned daemon could not start; this is what it reported on its way out:"),
             ));
         }
         std::thread::sleep(SPAWN_POLL);
     }
     Err(AppError::Storage(format!(
-        "launchd did not report a healthy daemon within {}s.\n{}\nInspect \
-         `launchctl print gui/<uid>/<label>` and the daemon's own log.",
+        "{manager} did not report a healthy daemon within {}s.\n{}\nInspect `{inspect}` and the daemon's own log.",
         SPAWN_DEADLINE.as_secs(),
         describe_paths(env),
     )))
@@ -2049,6 +2110,7 @@ fn spawn_child(env: &Environment, reason: ForkReason) -> Result<std::process::Ch
     // `Manual`: this function is reached only from [`ForkLauncher`], which
     // always knows why it was chosen.
     let owner = match reason {
+        ForkReason::NoUserManager => "fork-no-manager",
         ForkReason::TestBuild => "fork-test-build",
         ForkReason::NoAgentInstalled => "fork-no-agent",
         ForkReason::Manual => {
@@ -4081,10 +4143,15 @@ mod tests {
         let spawn_waits = 3;
         assert_eq!(
             SPAWN_LOCK_DEADLINE,
-            control_waits * CONTROL_DEADLINE + spawn_waits * SPAWN_DEADLINE,
+            control_waits * CONTROL_DEADLINE
+                + spawn_waits * SPAWN_DEADLINE
+                + Duration::from_secs(managed_launch_budget_secs()),
             "the spawn-lock bound must cover every wait its holder can make"
         );
-        assert_eq!(SPAWN_LOCK_DEADLINE, Duration::from_secs(30));
+        assert_eq!(
+            SPAWN_LOCK_DEADLINE,
+            Duration::from_secs(if cfg!(target_os = "linux") { 70 } else { 30 })
+        );
     }
 
     /// A record naming `command`, with `served_deadline_secs` set to exactly

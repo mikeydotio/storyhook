@@ -902,6 +902,10 @@ macro_rules! impl_read_ops {
                 read::live_engine_runs(&self.conn)
             }
 
+            fn reconcilable_engine_runs(&self) -> Result<Vec<EngineRunRecord>, StoreError> {
+                read::reconcilable_engine_runs(&self.conn)
+            }
+
             fn verification_incident(
                 &self,
                 project: ProjectId,

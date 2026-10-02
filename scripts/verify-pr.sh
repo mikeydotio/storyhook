@@ -13,6 +13,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 # shellcheck source=github-access.sh
 . "$script_dir/github-access.sh" || exit 1
 if [ "${1:-}" = --landing ]; then
+    # Landing validates Python itself and retains its distinct result protocol.
     shift
     exec bash "$script_dir/landing-intent.sh" "$@"
 fi
@@ -46,6 +47,11 @@ invalid_json() {
     exit 0
 }
 
+# Validate before ownership, GitHub or any gate mutation.
+# shellcheck source=python-runtime.sh
+. "$script_dir/python-runtime.sh" || die_json "missing Python runtime policy in $script_dir"
+storyhook_python_init || die_json "$STORYHOOK_PYTHON_ERROR"
+
 root="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || die_json "not inside a git worktree"
 cd "$root" || die_json "cannot enter repository root $root"
@@ -75,7 +81,7 @@ case "${1:-}" in
 --run-gate) owner_wt="${6:-$verifier_wt}" ;;
 --validate-metadata | --refresh-submission | --reconcile-land-refusal) owner_wt="" ;;
 esac
-if [ -n "$owner_wt" ] && ! python3 "$script_dir/verifier-owner.py" held "$common_dir" "$owner_wt"; then
+if [ -n "$owner_wt" ] && ! "$STORYHOOK_PYTHON" "$script_dir/verifier-owner.py" held "$common_dir" "$owner_wt"; then
     # The lock wrapper must remain the PID supervised by Rust. Its deadline
     # encloses both session owners, leaving the final quarter for outer reap.
     cleanup_budget="${STORYHOOK_VERIFIER_CLEANUP_GRACE_MS:-30000}"
@@ -88,7 +94,7 @@ if [ -n "$owner_wt" ] && ! python3 "$script_dir/verifier-owner.py" held "$common
     export STORYHOOK_VERIFIER_CLEANUP_GRACE_MS="$cleanup_budget"
     export STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH="release gate"
     exec bash "$script_dir/machine-lock.sh" --termination-grace "$((cleanup_budget * 3 / 4000))" gate -- \
-        python3 "$script_dir/verifier-owner.py" run-json "$common_dir" "$owner_wt" -- \
+        "$STORYHOOK_PYTHON" "$script_dir/verifier-owner.py" run-json "$common_dir" "$owner_wt" -- \
         bash "$script_dir/verify-pr.sh" "$@"
 fi
 
@@ -120,13 +126,13 @@ on_verification_signal() {
     # A signal during restoration does not undo a normal command completion.
     # The saved descriptor bypasses the gate-log redirection active in this trap.
     if [ "$verification_phase" = "release gate" ] && [ -n "${execution_file:-}" ]; then
-        execution_status="$(python3 "$script_dir/verifier_result.py" read "$execution_file" \
+        execution_status="$("$STORYHOOK_PYTHON" "$script_dir/verifier_result.py" read "$execution_file" \
             "$gate_tree" "$gate_base" "$gate_head" 2>>"$log")"
         if [ "$?" -eq 0 ]; then
             exec 1>&9
             gate_status="$execution_status"
             gate_progress_emit_item "release gate" "$([ "$gate_status" -eq 0 ] && printf passed || printf failed)"
-            gate_cleanup="$(python3 "$script_dir/verifier_result.py" cleanup "$common_dir" "$gate_worktree" \
+            gate_cleanup="$("$STORYHOOK_PYTHON" "$script_dir/verifier_result.py" cleanup "$common_dir" "$gate_worktree" \
                 "interrupted post-gate cleanup" "Gate exited $gate_status before SIG$signal interrupted cleanup. Retained execution evidence: $execution_file")" \
                 || die_json "could not describe interrupted cleanup after completed gate"
             if [ -n "${pr:-}" ]; then
@@ -151,7 +157,7 @@ ensure_verifier_worktree() {
     fallback="$1"
     git cat-file -e "$fallback^{commit}" 2>/dev/null \
         || die_json "cannot repair the verifier worktree from unavailable commit $fallback"
-    lifecycle_detail="$(python3 "$script_dir/verifier-worktree.py" ensure \
+    lifecycle_detail="$("$STORYHOOK_PYTHON" "$script_dir/verifier-worktree.py" ensure \
         "$common_dir" "$verifier_wt" "$fallback" 2>&1)" \
         || die_json "$lifecycle_detail"
     if [ -n "$lifecycle_detail" ]; then
@@ -181,7 +187,7 @@ verification_failure_detail() {
     failure_status="$1"
     failure_log="$2"
 
-    raw_failed="$(python3 "$script_dir/test_output.py" <"$failure_log" \
+    raw_failed="$("$STORYHOOK_PYTHON" "$script_dir/test_output.py" <"$failure_log" \
         | awk -F '\t' '$3 == "FAIL" { print $1 "::" $2 }')"
     delta_failed="$(awk '
         /^test-delta: (newly RED|still red) \([0-9]+\):$/ {
@@ -204,7 +210,7 @@ verification_failure_detail() {
     # Test stdout/stderr may print any error text, even Cargo-shaped JSON.
     # Only the build-only adapter owns this per-attempt evidence (SH-685).
     compiler_problem=""
-    compiler_diagnostics="$(python3 "$script_dir/cargo_diagnostics.py" \
+    compiler_diagnostics="$("$STORYHOOK_PYTHON" "$script_dir/cargo_diagnostics.py" \
         --summarize "$failure_log.compiler.jsonl" 2>&1)" || {
         compiler_problem="$compiler_diagnostics"
         compiler_diagnostics=""
@@ -397,7 +403,7 @@ run_verification_gate() {
     executions="$common_dir/storyhook/verification-executions"
     mkdir -p "$executions" || die_json "could not create gate execution evidence directory"
     execution_file="$executions/${log##*/}.json"
-    python3 "$script_dir/verifier_result.py" init "$execution_file" "$gate_tree" "$gate_base" "$gate_head" \
+    "$STORYHOOK_PYTHON" "$script_dir/verifier_result.py" init "$execution_file" "$gate_tree" "$gate_base" "$gate_head" \
         || die_json "could not initialize gate execution evidence $execution_file"
     gate_cleanup='null'
     verifier_window_tail "$log"
@@ -416,7 +422,7 @@ run_verification_gate() {
     # Execution is observed by the owner before cleanup (SH-702). The old
     # completion record still proves restoration; disagreement affects cleanup,
     # never the independently observed command answer.
-    execution_status="$(python3 "$script_dir/verifier_result.py" read "$execution_file" \
+    execution_status="$("$STORYHOOK_PYTHON" "$script_dir/verifier_result.py" read "$execution_file" \
         "$gate_tree" "$gate_base" "$gate_head" 2>>"$log")"
     if [ "$?" -ne 0 ]; then
         disarm_verification_signal_trap
@@ -430,7 +436,7 @@ run_verification_gate() {
     gate_progress_emit_item "release gate" "$([ "$execution_status" -eq 0 ] && printf passed || printf failed)"
     if [ "$completed_status" != "$execution_status" ] || [ "$gate_status" != "$execution_status" ] || [ -n "$result_removal_error" ]; then
         cleanup_detail="Gate command exited $execution_status; post-gate cleanup/restoration failed (supervisor exit $gate_status, restoration record ${completed_status:-missing}). Execution evidence: $execution_file. $result_removal_error $(bounded_log_context "$log")"
-        gate_cleanup="$(python3 "$script_dir/verifier_result.py" cleanup "$common_dir" "$gate_worktree" \
+        gate_cleanup="$("$STORYHOOK_PYTHON" "$script_dir/verifier_result.py" cleanup "$common_dir" "$gate_worktree" \
             "gate cleanup/restoration" "$cleanup_detail")" \
             || die_json "could not describe retained gate ownership: $cleanup_detail"
     fi
@@ -871,25 +877,43 @@ head_ref="refs/remotes/origin/pr/$pr"
 fallback="$(git rev-parse 'HEAD^{commit}' 2>/dev/null)" \
     || die_json "could not resolve a local commit for verifier worktree recovery"
 ensure_verifier_worktree "$fallback"
+# The base must be the repository's integration branch — origin's own default,
+# asked of origin (SH-691). Until SH-691 the base was only checked for
+# stability, and five PRs opened against `main` by a stale local cache were
+# certified, merged and closed as green. Checked before any gate runs, and
+# again independently by land-pr.sh under the merge lock. Merged PR observations
+# must prove containment in this same integration branch.
+expected_base="$(bash "$script_dir/origin-default-branch.sh" 2>&1)" \
+    || retry_json "could not establish the repository's integration branch from origin for PR #$pr: $expected_base"
+[ "$base" = "$expected_base" ] \
+    || invalid_json "PR #$pr targets \`$base\`, but the repository's integration branch (origin's default) is \`$expected_base\`; a story pull request lands only there"
 if [ "$state" = MERGED ]; then
     merge_oid="$(printf '%s' "$metadata" | jq -er '.mergeCommit.oid // empty')" \
         || die_json "merged PR #$pr returned no merge commit"
     github_git fetch -q origin "+refs/heads/$base:$base_ref" \
         || retry_json "could not refresh origin/$base for merged PR #$pr"
+    if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
+        landed_base="$(git rev-parse --verify "$base_ref^{commit}" 2>/dev/null)" \
+            || retry_json "cannot resolve fetched base $base_ref"
+        ancestry_status=0
+        ancestry_detail=$(git merge-base --is-ancestor "$reported_head" "$landed_base" 2>&1) || ancestry_status=$?
+        case "$ancestry_status" in
+            0) ;;
+            1) invalid_json "merged PR #$pr head $reported_head is not contained by origin/$base at $landed_base" ;;
+            *) retry_json "cannot establish ancestry of $reported_head and $landed_base (exit $ancestry_status): $ancestry_detail" ;;
+        esac
+        landed_tree="$(git rev-parse --verify "$landed_base^{tree}" 2>/dev/null)" \
+            || retry_json "cannot resolve containing base tree $landed_base"
+        disarm_verification_signal_trap
+        jq -n --arg repository "$STORYHOOK_GITHUB_EXPECTED" --arg head "$reported_head" \
+            --arg base "$base" --arg commit "$landed_base" --arg tree "$landed_tree" --arg pr "$submitted_pr" \
+            '{result:"already-landed",evidence:{repository:$repository,head_oid:$head,base:$base,base_oid:$commit,base_tree:$tree,merged_pr:$pr}}'
+        exit 0
+    fi
     recover_merged "$base_ref" "$merge_oid" "$pr" "after verifier restart"
 fi
 
 [ "$state" = OPEN ] || invalid_json "PR #$pr is $state, not OPEN or MERGED"
-# The base must be the repository's integration branch — origin's own default,
-# asked of origin (SH-691). Until SH-691 the base was only checked for
-# stability, and five PRs opened against `main` by a stale local cache were
-# certified, merged and closed as green. Checked before any gate runs, and
-# again independently by land-pr.sh under the merge lock. A PR already MERGED
-# into the wrong base was recovered above as merged: nothing left to prevent.
-expected_base="$(bash "$script_dir/origin-default-branch.sh" 2>&1)" \
-    || retry_json "could not establish the repository's integration branch from origin for PR #$pr: $expected_base"
-[ "$base" = "$expected_base" ] \
-    || invalid_json "PR #$pr targets \`$base\`, but the repository's integration branch (origin's default) is \`$expected_base\`; a story pull request lands only there"
 verification_phase="pull request refs"
 gate_progress_emit_item "pull request refs" running
 _refs_start=$(date +%s)

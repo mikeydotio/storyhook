@@ -321,6 +321,12 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  under this process's HOME",
     },
     Parameter {
+        name: "STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS",
+        disposition: Disposition::Clear,
+        scope: Scope::Anywhere,
+        reason: "a subprocess patience declaration belongs to one fixture; an inherited override can mask timeout proofs or make a default binary refuse startup",
+    },
+    Parameter {
         name: "STORYHOOK_VERIFIER_MIRROR",
         disposition: Disposition::Literal("0"),
         scope: Scope::Anywhere,

@@ -169,17 +169,14 @@ pub fn run_check<S: Store>(
                 // by hand is not reopened-and-reclosed by this.
                 if link.close_on_merge && !row.archived && !has_children(&row.snapshot) {
                     if row.state == VERIFYING_STATE_SLUG {
-                        // A merge the central verifier did not make is a fact
-                        // to record, never a completion (SH-692): nothing
-                        // certified the merge tree. The story stays
-                        // `verifying`; the verifier's own entry path
-                        // classifies a merged pull request, and an operator
-                        // can complete it by hand with a recorded reason.
+                        // Polling records the remote merge, but does not prove
+                        // head ancestry in the current default branch. The
+                        // verifier supplies that completion evidence (SH-857).
                         let id = story_no.to_id(&prefix);
                         events.push(StoryEvent::StoryCommentAdded {
                             at: now.clone(),
                             text: format!(
-                                "{VERIFICATION_UNCERTIFIED_MERGE_PREFIX} pull request {} merged outside central verification. This story was verifying. Its merge tree carries no receipt from this verifier. The story stays in `verifying`. The verifier's next attempt classifies the merged pull request. To complete it by hand, run `story move {id} done \"<reason>\"`.",
+                                "{VERIFICATION_UNCERTIFIED_MERGE_PREFIX} pull request {} merged outside central verification. This story was verifying. Certification has not been checked by this poller. The story stays in `verifying`. The verifier checks whether its head is contained by the remote default branch and completes already-landed work. To complete it by hand, run `story move {id} done \"<reason>\"`.",
                                 link.url
                             ),
                         });

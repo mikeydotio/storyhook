@@ -91,7 +91,7 @@ pub enum KeepReason {
     NotUnderTemp,
     /// The store is still there.
     StoreExists,
-    /// A launchd login agent still names the store.
+    /// A launchd agent or systemd user service still names the store.
     LoginAgent,
     /// Younger than [`RECLAIM_AGE_FLOOR`].
     TooYoung,
@@ -469,12 +469,14 @@ fn classify(env: &Environment, exclusions: &Exclusions, path: &Path) -> Verdict 
             format!("{} still exists", store.display()),
         );
     }
-    if let Some(plist) = super::agent::agent_serving(env, &store) {
+    if let Some(plist) = super::agent::agent_serving(env, &store)
+        .or_else(|| super::systemd::agent_serving(env, &store))
+    {
         return keep(
             KeepReason::LoginAgent,
             Some(store.clone()),
             format!(
-                "a login agent still names {} ({}); launchd would recreate this at login — \
+                "a login agent still names {} ({}); the service manager would recreate this at login — \
                  story --store-path {} daemon uninstall",
                 store.display(),
                 plist.display(),

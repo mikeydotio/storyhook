@@ -86,12 +86,12 @@ assert_contains "$(jqf "$out" .display)" "untracked.txt" "the display names the 
 rm -f "$worktree/untracked.txt"
 git -C "$worktree" checkout -q -- .storyhook.toml
 
-# --- nothing to submit: the tip is already on origin/<default> ---------------------
+# --- already landed: equal to the current base ----------------------------------
 out=$(submit); status=$?
-assert_eq "$status" "1" "a branch with no commits past the base is refused"
-assert_eq "$(jqf "$out" .reason)" "nothing-to-submit" "…by name"
-assert_eq "$(jqf "$out" .class)" "repair" "…as the agent's to repair"
-assert_eq "$(create_count)" "0" "nothing-to-submit opens no pull request"
+assert_eq "$status" "0" "a branch on the base succeeds as already landed"
+assert_eq "$(jqf "$out" .already_landed.head_oid)" "$(git -C "$worktree" rev-parse HEAD)" "landed evidence pins the head"
+assert_eq "$(jqf "$out" .already_landed.base_oid)" "$(git -C "$worktree" rev-parse HEAD)" "equal-base evidence pins the base"
+assert_eq "$(create_count)" "0" "already-landed opens no pull request"
 
 # --- the create path: push for real, open the PR, receipt ---------------------------
 printf 'work\n' >"$worktree/work.txt"
@@ -119,6 +119,11 @@ while [ "$#" -gt 0 ]; do
 done
 stage=""
 case "${1:-}" in
+  merge-base)
+    if [ "${SH725_FAIL:-}" = ancestry ]; then
+      printf 'fixture ancestry failed\n' >&2
+      exit 2
+    fi ;;
   fetch) stage=fetch ;;
   push) stage=push ;;
   ls-remote)
@@ -157,6 +162,14 @@ exec "$SH725_REAL_GIT" "${args[@]}"
 GIT_ENDPOINT
 chmod +x "$FAKE_GH_STATE/git-bin/git"
 export SH725_HEAD="$head" SH725_BRANCH="$branch"
+
+out=$(submit PATH="$FAKE_GH_STATE/git-bin:$VERIFYING_PATH" SH725_FAIL=ancestry); status=$?
+assert_eq "$status" "1" "an ancestry error stops submission"
+assert_eq "$(jqf "$out" .class)" "infrastructure" "an ancestry error is not a repair"
+assert_eq "$(jqf "$out" .reason)" "ancestry-unverifiable" "an ancestry error retains its cause"
+assert_contains "$(jqf "$out" .display)" "fixture ancestry failed" "ancestry diagnostics survive"
+assert_eq "$(create_count)" "0" "an ancestry error opens no PR"
+[ -z "$(remote_tip)" ] || fail_test "an ancestry error must not push"
 
 for pair in default:default-branch-unknown fetch:base-fetch-failed before:remote-read-failed push:push-failed after:remote-read-failed; do
   stage=${pair%%:*}
@@ -360,5 +373,21 @@ assert_eq "$(create_count)" "$((before + 1))" "…opened beside the fork's"
 assert_contains "$(router_verbs "$SCRIPT")" "submit" "submit is a router verb"
 usage=$(jqf "$(bash "$SCRIPT" bogus-subcommand 2>&1)" .display)
 assert_contains "$usage" "submit <story-id>" "usage names submit"
+
+# SH-857: another merge carries the branch, without any gate receipt.
+head=$(git -C "$worktree" rev-parse HEAD)
+base=$(git --git-dir="$origin" rev-parse refs/heads/dev)
+landed=$(git --git-dir="$origin" -c user.name=t -c user.email=t@e commit-tree \
+  "$head^{tree}" -p "$base" -p "$head" -m "manual batch")
+git --git-dir="$origin" update-ref refs/heads/dev "$landed"
+before=$(create_count)
+out=$(submit); status=$?
+assert_eq "$status" "0" "a branch contained by a batch succeeds: $out"
+assert_eq "$(jqf "$out" .already_landed.head_oid)" "$head" "the receipt pins the contained branch"
+assert_eq "$(jqf "$out" .already_landed.base_oid)" "$landed" "the receipt names the containing commit"
+assert_eq "$(jqf "$out" .already_landed.base_tree)" "$(git --git-dir="$origin" rev-parse "$landed^{tree}")" "the receipt names the exact tree"
+assert_eq "$(jqf "$out" .pushed)" "false" "landed work is not pushed"
+assert_eq "$(jqf "$out" .pull_request)" "null" "landed work invents no open PR"
+assert_eq "$(create_count)" "$before" "landed work creates no PR"
 
 finish
