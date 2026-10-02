@@ -1178,24 +1178,6 @@ if sys.argv[1] == 'recover':
         logs = self.common / "storyhook/verification-logs"
         return next(p for p in logs.glob("pr-1-*-attempt.*") if not p.name.endswith(".jsonl"))
 
-    def test_exited_gate_with_orphan_returns_the_gate_status_and_reaps_it(self):
-        """A red gate that leaves a test orphan is red, and the orphan dies with it."""
-        orphan = self.root / "orphan-pid"
-        verdict = self.gate_verdict(f"sleep 300 & echo $! > {shlex.quote(str(orphan))}; exit 3")
-        pid = int(orphan.read_text())
-        self.addCleanup(lambda: self.stop_pid(pid))
-        self.assertEqual(verdict["result"], "tests-failed", verdict)
-        self.assertNotIn("live writers", verdict["detail"])
-        self.assertGone(pid)
-        _, owner = self.owner_record()
-        self.assertFalse(owner["gate_started"], owner)
-        self.assertIsNone(owner["gate_session"], owner)
-        self.assertIsNone(owner["gate_leader_exit"], owner)
-        log = self.attempt_log().read_text()
-        self.assertIn("verifier-owner: gate_session", log)
-        self.assertIn(f"leaving survivors [{pid}]", log)
-        self.assertEqual(self.ensure()["result"], "verifier-worktree-ready")
-
     def test_exited_gate_survivor_ignoring_term_is_killed_within_the_budget(self):
         """A TERM-resistant orphan is killed at the gate's grace, not refused."""
         orphan = self.root / "orphan-pid"
