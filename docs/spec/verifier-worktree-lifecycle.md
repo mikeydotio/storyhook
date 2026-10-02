@@ -146,8 +146,12 @@ Rust supplies its cleanup grace as `STORYHOOK_VERIFIER_CLEANUP_GRACE_MS`
 (normally 30 seconds). The gate session receives one quarter for TERM cleanup,
 the lifecycle session one half, the outer machine-lock wrapper three quarters,
 and Rust the full budget. Session owners reserve another eighth for bounded
-reaping after KILL, measured from the delivered KILL and judged only by a census
-begun after it closes (SH-767). Deadlines are checked between censuses, so each
+reaping after KILL, measured from the first delivered KILL and judged only by a census
+begun after it closes (SH-767). Each subsequent cleanup pass signals the confirmed
+members again, including the lifecycle owner's recorded gate session: a member
+can fork between a kill census and signal delivery (SH-789). Repeated kills never
+renew the reaping eighth; unkillable writers still cause a refusal with retained
+evidence. Deadlines are checked between censuses, so each
 layer's worst case also grows by its census latency. The wrapper's explicit `--termination-grace` leaves other
 callers' existing policy unchanged. The bundled shell entry requires at least
 four seconds so each layer has a positive whole-second wrapper budget.
