@@ -57,6 +57,9 @@ use std::time::Duration;
 
 use storyhook_test_support::ChildGuard;
 
+#[path = "support/e2e_subprocess.rs"]
+mod e2e_subprocess;
+
 /// A local utility process gets twice the operating-system process-start budget.
 const UTILITY_DEADLINE: Duration =
     Duration::from_secs(2 * storyhook::daemon::lifecycle::SPAWN_DEADLINE.as_secs());
@@ -1352,7 +1355,8 @@ fn the_runner_hands_the_lease_to_the_specs_before_the_daemon_starts() {
     );
 }
 
-/// Two reviewed SQLite-only commands, not a general interpreter exception.
+/// Two reviewed SQLite commands and one reporter test, never a general
+/// interpreter exception. The reporter script is additionally pinned by digest.
 /// Full invocation text pins executable, literal Python payload, argument shape,
 /// and process bound. A body/argv edit needs a new audit; moving a command into
 /// a helper does not remove it from this inventory. Neither payload can invoke
@@ -1362,7 +1366,7 @@ fn the_runner_hands_the_lease_to_the_specs_before_the_daemon_starts() {
 /// `boundMs`: the time left of the cleanup wait's graced patience. The reader
 /// refuses an unusable bound before it spawns
 /// (`the_barrier_read_refuses_an_unusable_bound_before_it_spawns`).
-const AUDITED_SQLITE_COMMANDS: [(&str, &str); 2] = [
+const AUDITED_COMMANDS: [(&str, &str); 3] = [
     (
         "e2e/specs/cleanup-delivery-barrier.node.spec.ts",
         r#"execFileSync("python3", ["-c", `
@@ -1400,20 +1404,26 @@ with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
     print(json.dumps({"identity": identity, "deliveries": deliveries}))
 `, storePath, project, story], { encoding: "utf8", timeout: boundMs }, "#,
     ),
+    (
+        "e2e/reporter-command.ts",
+        r#"execFile("python3", [
+      resolve(__dirname, "../scripts/test-browser-launch-reporter.py"), "--watch-parent",
+    ], { encoding: "utf8", timeout: boundMs, signal }, "#,
+    ),
 ];
 
 /// The authority required by one browser-harness subprocess invocation.
 #[derive(Debug, PartialEq, Eq)]
 enum E2eSubprocessOwner {
     StoryLease,
-    AuditedSqlite(usize),
+    AuditedCommand(usize),
 }
 
 /// The two `node:child_process` calls this audit classifies. Both are direct
 /// calls: the synchronous form, and the asynchronous one the cleanup barrier's
 /// reader uses so the worker's timers keep running (SH-765). The anchors are
 /// disjoint, because `execFileSync(` does not contain `execFile(`.
-const SUBPROCESS_CALLS: [&str; 2] = ["execFileSync(", "execFile("];
+const SUBPROCESS_CALLS: [&str; 2] = e2e_subprocess::CALLS;
 
 /// Byte offsets of every audited subprocess call in `code`, in file order.
 fn subprocess_call_offsets(code: &str) -> Vec<usize> {
@@ -1448,18 +1458,18 @@ fn e2e_subprocess_owner(relative: &str, code: &str, offset: usize) -> Option<E2e
     {
         return Some(E2eSubprocessOwner::StoryLease);
     }
-    AUDITED_SQLITE_COMMANDS
+    AUDITED_COMMANDS
         .iter()
         .position(|(path, approved)| *path == relative && invocation.starts_with(*approved))
-        .map(E2eSubprocessOwner::AuditedSqlite)
+        .map(E2eSubprocessOwner::AuditedCommand)
 }
 
 #[test]
 fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
-    for (index, (path, approved)) in AUDITED_SQLITE_COMMANDS.iter().enumerate() {
+    for (index, (path, approved)) in AUDITED_COMMANDS[..2].iter().enumerate() {
         assert_eq!(
             e2e_subprocess_owner(path, approved, 0),
-            Some(E2eSubprocessOwner::AuditedSqlite(index))
+            Some(E2eSubprocessOwner::AuditedCommand(index))
         );
         assert_eq!(
             e2e_subprocess_owner("e2e/other-helper.cjs", approved, 0),
@@ -1498,6 +1508,95 @@ fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
     }
 }
 
+#[test]
+fn reporter_command_requires_its_exact_site_arguments_and_bound() {
+    let (path, approved) = AUDITED_COMMANDS[2];
+    assert_eq!(
+        e2e_subprocess_owner(path, approved, 0),
+        Some(E2eSubprocessOwner::AuditedCommand(2))
+    );
+    assert_eq!(
+        e2e_subprocess_owner("e2e/other-helper.ts", approved, 0),
+        None
+    );
+    for changed in [
+        approved.replace("\"python3\"", "\"story\""),
+        approved.replace("test-browser-launch-reporter.py", "other.py"),
+        approved.replace("\"--watch-parent\"", "\"-c\", \"import subprocess\""),
+        approved.replace("timeout: boundMs, ", ""),
+        approved.replace("timeout: boundMs", "timeout: 0"),
+        approved.replace("timeout: boundMs", "timeout: 60000"),
+        approved.replace(", signal", ""),
+    ] {
+        assert_ne!(changed, approved);
+        assert_eq!(e2e_subprocess_owner(path, &changed, 0), None, "{changed}");
+    }
+}
+
+/// The exception authorizes this reviewed script, never arbitrary Python code.
+fn is_reviewed_reporter_script(source: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(source.as_bytes()))
+        == "c7ad2d0ee26cc09112575f876ba15990e46c8e3b4ce4d86a25635778946f87b8"
+}
+
+#[test]
+fn reporter_script_and_derived_budget_require_reaudit_when_they_change() {
+    let script = read("scripts/test-browser-launch-reporter.py");
+    assert!(
+        is_reviewed_reporter_script(&script),
+        "reporter script changed: review its subprocesses and refresh the SHA-256 pin"
+    );
+    assert!(!is_reviewed_reporter_script(&format!(
+        "{script}\nsubprocess.run(['story'])\n"
+    )));
+    let helper = read("e2e/reporter-command.ts");
+    let case_count = script
+        .lines()
+        .filter(|line| line.starts_with("    def test_"))
+        .count();
+    assert_eq!(
+        case_count, 4,
+        "update the Node budget with the Python suite"
+    );
+    assert!(script.contains("CASE_TIMEOUT_SECONDS = 60"));
+    for required in [
+        "REPORTER_CASE_COUNT = 4;",
+        "REPORTER_CASE_TIMEOUT_MS = 60_000;",
+        "REPORTER_CASE_COUNT * REPORTER_CASE_TIMEOUT_MS + BASE_TEST_TIMEOUT_MS",
+        "loadGraceEnabled() ? gracedTestBudget(REPORTER_BASE_MS, ratio) : REPORTER_BASE_MS",
+        "testMs - gracedPatience(ratio)",
+    ] {
+        assert!(helper.contains(required), "reporter budget lost {required}");
+    }
+    let guard = helper
+        .find("if (!Number.isSafeInteger(boundMs) || boundMs < 1)")
+        .unwrap();
+    let spawn = helper.find("execFile(\"python3\"").unwrap();
+    assert!(guard < spawn, "invalid bounds must fail before spawning");
+}
+
+#[test]
+fn reporter_cleanup_reaps_nested_processes_on_every_exit_path() {
+    let mut command = std::process::Command::new("python3");
+    command
+        .arg("-B")
+        .arg(repo_root().join("scripts/tests/test_browser_reporter_cleanup.py"));
+    // Six scenarios, each allowing startup, cancellation/exit and the reap receipt.
+    let budget = storyhook_test_support::load_grace::graced_now(UTILITY_DEADLINE * 6 * 3);
+    let output = ChildGuard::spawn_with_output(&mut command)
+        .expect("start reporter lifecycle regressions")
+        .wait_with_output_within(budget, || {
+            "reporter lifecycle regressions did not finish".into()
+        });
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Whether a process bound is a bare millisecond literal (`5_000`, `15000`).
 fn is_bare_numeric(bound: &str) -> bool {
     !bound.is_empty() && bound.chars().all(|c| c.is_ascii_digit() || c == '_')
@@ -1513,7 +1612,7 @@ fn no_audited_command_carries_a_bare_numeric_bound() {
     // Controls, so the predicate below cannot pass by seeing nothing.
     assert!(is_bare_numeric("5_000") && is_bare_numeric("15000"));
     assert!(!is_bare_numeric("boundMs") && !is_bare_numeric("gracedPatience()"));
-    for (path, approved) in AUDITED_SQLITE_COMMANDS {
+    for (path, approved) in AUDITED_COMMANDS {
         let bound = approved_bound(approved);
         assert!(
             !is_bare_numeric(bound),
@@ -1553,7 +1652,7 @@ fn the_barrier_read_refuses_an_unusable_bound_before_it_spawns() {
 
 #[test]
 fn a_data_fixture_exception_cannot_authorize_another_subprocess() {
-    let (path, approved) = AUDITED_SQLITE_COMMANDS[0];
+    let (path, approved) = AUDITED_COMMANDS[0];
     for unapproved in [
         r#"execFileSync("story", ["daemon", "stop"]);"#,
         r#"execFileSync("/Users/example/.local/bin/story", ["show", "SH-1"]);"#,
@@ -1567,7 +1666,7 @@ fn a_data_fixture_exception_cannot_authorize_another_subprocess() {
             .into_iter()
             .map(|offset| e2e_subprocess_owner(path, &code, offset))
             .collect();
-        assert_eq!(calls, [Some(E2eSubprocessOwner::AuditedSqlite(0)), None]);
+        assert_eq!(calls, [Some(E2eSubprocessOwner::AuditedCommand(0)), None]);
     }
 }
 
@@ -1622,21 +1721,22 @@ fn no_tracked_e2e_file_names_cargos_artifact_and_every_cli_call_goes_through_sto
         "support.ts must define storyBinary() as the required-env read of DASHBOARD_STORY_BIN"
     );
 
-    // Story CLI calls require the lease. SQLite fixture commands require their
+    // Story CLI calls require the lease. Reviewed fixture commands require their
     // entire audited invocation, not just an interpreter name. Include helpers
     // outside specs/: moving an unleased call must not make it invisible.
     let mut checked = 0;
-    let mut audited = [0; AUDITED_SQLITE_COMMANDS.len()];
+    let mut audited = [0; AUDITED_COMMANDS.len()];
     for (relative, text) in &files {
-        let code = without_comment_only_lines(text);
-        for offset in subprocess_call_offsets(&code) {
-            match e2e_subprocess_owner(relative, &code, offset) {
+        for offset in
+            e2e_subprocess::calls(relative, text).unwrap_or_else(|error| panic!("{error}"))
+        {
+            match e2e_subprocess_owner(relative, text, offset) {
                 Some(E2eSubprocessOwner::StoryLease) => checked += 1,
-                Some(E2eSubprocessOwner::AuditedSqlite(index)) => audited[index] += 1,
+                Some(E2eSubprocessOwner::AuditedCommand(index)) => audited[index] += 1,
                 None => panic!(
                     "{relative}: unowned subprocess invocation at byte {offset}; Story CLI calls \
                      must use storyBinary() or a const bound to it. Only the exact reviewed \
-                     SQLite data-fixture commands have separate authority (SH-635/SH-718)"
+                     SQLite and reporter commands have separate authority (SH-635/SH-718/SH-805)"
                 ),
             }
         }
@@ -1648,8 +1748,8 @@ fn no_tracked_e2e_file_names_cargos_artifact_and_every_cli_call_goes_through_sto
     );
     assert_eq!(
         audited,
-        [1, 1],
-        "both audited data-fixture commands must be present exactly once; re-audit changed sites"
+        [1, 1, 1],
+        "every audited command must be present exactly once; re-audit changed sites"
     );
 }
 
