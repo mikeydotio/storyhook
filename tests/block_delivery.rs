@@ -347,7 +347,7 @@ fn cli_block_and_unblock_reach_the_daemon_delivery_worker() {
     let script = env.home().join("notify.sh");
     std::fs::write(
         &script,
-        r#"DISPATCH_PROTOCOL=6
+        r#"DISPATCH_PROTOCOL=7
 printf '%s' "$STORY_BIN" > helper-story-bin
 "$STORY_BIN" --project "$2" show "$4" --json > helper-story-read.json 2> helper-story-error || exit 23
 if [ "$5" = --interrupt ]; then
@@ -651,7 +651,7 @@ fn block_delivery_never_waits_on_a_provider_cli_to_find_its_helper() {
             .join(env!("CARGO_PKG_VERSION"))
             .join("plugins/story/bin/story.sh"),
         r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=6
+DISPATCH_PROTOCOL=7
 if [ "$5" = --interrupt ]; then
   printf sent > native-interrupt
   printf '{"ok":true,"target":"daemon-session","display":"native interrupt acknowledged"}'

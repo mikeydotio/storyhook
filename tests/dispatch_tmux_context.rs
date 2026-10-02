@@ -233,7 +233,7 @@ temporary.replace(target)
         &helper,
         format!(
             r#"#!/usr/bin/env bash
-DISPATCH_PROTOCOL=6
+DISPATCH_PROTOCOL=7
 set -eu
 export TMUX_TMPDIR='{}'
 auth=false

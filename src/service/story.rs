@@ -1151,13 +1151,16 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     ///
     /// The first half of the two-step: this travels to whichever process has a
     /// terminal and becomes a prompt there, or — with `--json`, or no terminal
-    /// — a refusal naming `--force`.
+    /// — a refusal naming `--force`. A story that a durable record still
+    /// depends on is refused here too, so no one is asked to confirm a
+    /// deletion the second step would refuse.
     pub fn delete_plan(&self, id: &str) -> Result<StoryDeletePlan, AppError> {
         let project = self.ctx.project();
         Ok(self.ctx.store().read(|tx| {
             let prefix = project_prefix(tx, project)?;
             let (story_no, row) = resolve_story(tx, project, &prefix, id)?;
             let canonical = story_no.to_id(&prefix);
+            super::story_deletion::refuse_deletion(tx, project, story_no, &canonical)?;
             Ok(StoryDeletePlan {
                 title: row.snapshot.title.clone(),
                 events: tx.events_for(project, story_no)?.len(),
@@ -1184,6 +1187,12 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     ///    to write it.
     /// 2. The story itself goes, through [`WriteOps::purge_story`].
     ///
+    /// Before either, a story that a durable record still depends on is
+    /// refused by name, through `story_deletion::refuse_deletion`: a reset, a
+    /// landing, an in-flight block delivery, or a project recovery, which
+    /// keeps exact event references into every story it names that the purge
+    /// would strand (SH-848).
+    ///
     /// The retractions are real events on real stories rather than a silent
     /// table edit, because that is what makes the claimant's history true: the
     /// edge genuinely was removed, at this moment, by this act.
@@ -1193,8 +1202,8 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         let (canonical, title, retracted, removed) = self.ctx.write_stories(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
-            super::engine::reset::refuse_reserved(&*tx, project, story_no)?;
             let canonical = story_no.to_id(&prefix);
+            super::story_deletion::refuse_deletion(&*tx, project, story_no, &canonical)?;
             let retracted = surviving_claims(&*tx, project, &prefix, story_no, &canonical)?;
             let states = tx.state_map(project)?;
 

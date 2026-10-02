@@ -479,15 +479,10 @@ fn a_failed_delivery_after_a_resubmission_continues_with_the_new_generation() {
 }
 
 #[test]
-fn a_certified_landing_reserves_the_verifier_while_it_reaps() {
+fn a_certified_landing_releases_verifier_ownership_to_durable_cleanup() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "lands", Priority::Low, PR_ONE);
-    let landed = VerificationQueue::new(fixture.store())
-        .next()
-        .unwrap()
-        .unwrap()
-        .verifying_generation;
     let activity = VerificationActivity::new();
     std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
     let inflight = InFlight::new(fixture.env().clone());
@@ -513,16 +508,13 @@ fn a_certified_landing_reserves_the_verifier_while_it_reaps() {
     .unwrap();
 
     assert_eq!(result, TickResult::Completed);
-    let probes = actuator.probes();
-    assert_eq!(probes.len(), 1);
-    assert_eq!(probes[0].0, "reap");
-    assert_reserved(&probes[0].1, &id, ReservationReason::Cleanup, "certified");
-    assert_eq!(probes[0].1.reservation.as_ref().unwrap().generation, landed);
+    assert!(actuator.probes().is_empty());
     assert!(activity.active_for(fixture.project()).is_none());
+    assert_cleanup_pending(&fixture, &id);
 }
 
 #[test]
-fn a_recovered_landing_reserves_the_verifier_while_it_reaps() {
+fn a_recovered_landing_releases_verifier_ownership_to_durable_cleanup() {
     use storyhook::service::landing::{LandingAdmission, VerifiedSubmission};
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
@@ -558,14 +550,13 @@ fn a_recovered_landing_reserves_the_verifier_while_it_reaps() {
     .unwrap();
 
     assert_eq!(result, TickResult::Completed);
-    let probes = actuator.probes();
-    assert_eq!(probes.len(), 1);
-    assert_eq!(probes[0].0, "reap");
-    assert_reserved(&probes[0].1, &id, ReservationReason::Cleanup, "recovered");
+    assert!(actuator.probes().is_empty());
+    assert!(activity.active_for(fixture.project()).is_none());
+    assert_cleanup_pending(&fixture, &id);
 }
 
 #[test]
-fn a_cleanup_retry_is_admitted_already_reserved() {
+fn a_cleanup_retry_never_reacquires_verifier_ownership() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "landed before a crash", Priority::High, PR_ONE);
@@ -599,15 +590,18 @@ fn a_cleanup_retry_is_admitted_already_reserved() {
     )
     .unwrap();
 
-    assert_eq!(result, TickResult::Completed);
-    let probes = actuator.probes();
-    assert_eq!(probes.len(), 1);
-    assert_eq!(probes[0].0, "reap");
-    assert_reserved(
-        &probes[0].1,
-        &id,
-        ReservationReason::Cleanup,
-        "cleanup retry",
-    );
-    assert!(probes[0].1.verifying.is_empty());
+    assert_eq!(result, TickResult::Idle);
+    assert!(actuator.probes().is_empty());
+    assert!(activity.active_for(fixture.project()).is_none());
+    assert_cleanup_pending(&fixture, &id);
+}
+
+fn assert_cleanup_pending(fixture: &ServiceFixture, id: &str) {
+    let no = StoryNo::parse_id("SH", id).unwrap();
+    let request = fixture
+        .store()
+        .read(|tx| tx.closure_cleanup(fixture.project(), no))
+        .unwrap()
+        .unwrap();
+    assert!(!request.completed);
 }

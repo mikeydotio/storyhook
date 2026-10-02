@@ -443,9 +443,10 @@ where
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();
+            let bus = bus.clone();
             scope.spawn(move || {
                 super::qos::WorkClass::Housekeeping.enter();
-                crate::daemon::cleanup::poll_cleanup(store, &env, &stop)
+                crate::daemon::cleanup::poll_cleanup(store, &env, &bus, &stop)
             });
         }
         if !has_tailnet && let Some(loopback_addr) = loopback_addr {
@@ -1379,6 +1380,22 @@ fn worker(
             cookie_name,
         )
     {
+        finish(request, reply);
+        return;
+    }
+
+    // The agents census (SH-850) probes tmux and Git once per claimed story,
+    // so it too is answered here rather than on a fixed store dispatcher.
+    if let Some(reply) = crate::api::agents::intercept(
+        &segments,
+        &method,
+        &headers,
+        token,
+        engine,
+        tokens,
+        cookie_name,
+        chrono::Utc::now(),
+    ) {
         finish(request, reply);
         return;
     }

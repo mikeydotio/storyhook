@@ -481,6 +481,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0052_verification_batch_landing.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 53,
+        name: "closure_cleanup",
+        sql: include_str!("schema/0053_closure_cleanup.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 mod lineage;

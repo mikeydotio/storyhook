@@ -377,8 +377,9 @@ pub(super) fn owner(
     story: StoryNo,
 ) -> Result<Option<RecoveryView>, StoreError> {
     let mut owner = None;
-    for record in tx
-        .project_recoveries(project)?
+    // Only an active record that names the story can own it; an invalid
+    // record that does not name it must not stop this story (SH-848).
+    for record in super::references::naming(tx, project, story)?
         .into_iter()
         .filter(|r| r.active)
     {

@@ -122,7 +122,7 @@ impl VerificationActuator for ReservingActuator<'_> {
 
 #[test]
 fn every_owned_phase_releases_a_new_human_reservation() {
-    for phase in ["submit", "verify", "notify", "land", "recover", "reap"] {
+    for phase in ["submit", "verify", "notify", "land", "recover"] {
         for transient in [false, true] {
             let f = ServiceFixture::new();
             f.github_checkout("https://github.com/acme/widgets");
@@ -177,7 +177,6 @@ fn every_owned_phase_releases_a_new_human_reservation() {
                 .unwrap();
             let expected = match phase {
                 "notify" => "in-progress",
-                "reap" => "done",
                 _ => "verifying",
             };
             assert_eq!(row.state, expected, "{phase}");

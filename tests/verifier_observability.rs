@@ -182,6 +182,41 @@ fn status_names_halt_and_held_stories_without_inventing_an_owner() {
     assert!(status.warning.unwrap().contains("story verifier ack"));
 }
 
+/// SH-775 sibling: the acknowledgement record is history, but its remedy is
+/// an instruction, and an instruction must stop once nothing owes it.
+#[test]
+fn a_leave_stopped_acknowledgement_stops_saying_start_once_admission_runs() {
+    use storyhook::service::verification_control::VerificationAcknowledgement;
+    let f = ServiceFixture::new();
+    let activity = VerificationActivity::new();
+    let id = incident(&f);
+    activity
+        .control(f.store(), f.project(), VerificationAction::Stop)
+        .unwrap();
+    activity
+        .acknowledge(
+            &f.ctx(),
+            &id,
+            Some(VerificationAcknowledgement::LeaveStopped),
+        )
+        .unwrap();
+    let stopped = activity.status(&f.ctx()).unwrap().render_human();
+    assert!(
+        stopped.contains("admission left stopped; story verifier start"),
+        "{stopped}"
+    );
+    activity
+        .control(f.store(), f.project(), VerificationAction::Start)
+        .unwrap();
+    let started = activity.status(&f.ctx()).unwrap().render_human();
+    assert!(started.contains(&format!("Acknowledged {id}")), "{started}");
+    assert!(started.contains("admission left stopped"), "{started}");
+    assert!(
+        !started.contains("story verifier start"),
+        "admission already runs: {started}"
+    );
+}
+
 #[test]
 fn new_recovery_is_scheduled_not_claimed_as_a_started_gate() {
     let f = ServiceFixture::new();

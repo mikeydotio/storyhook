@@ -69,6 +69,9 @@ pub use project_recovery::{ProjectRecovery, ProjectRecoveryObservation};
 pub mod conformance;
 mod dropped_cleanup;
 pub use dropped_cleanup::{DroppedCleanup, DroppedCleanupPhase};
+mod closure_cleanup;
+pub use closure_cleanup::ClosureCleanup;
+pub(crate) use closure_cleanup::effective_states;
 mod story_reset;
 pub use story_reset::{ResetLane, ResetPathIdentity, StoryReset};
 mod engine_reset;
@@ -362,6 +365,16 @@ pub trait ReadOps {
         project: ProjectId,
         story: StoryNo,
     ) -> Result<Option<DroppedCleanup>, StoreError>;
+
+    /// One closure's cleanup intent or completed receipt.
+    fn closure_cleanup(
+        &self,
+        project: ProjectId,
+        story: StoryNo,
+    ) -> Result<Option<ClosureCleanup>, StoreError>;
+
+    /// All retained closure requests for one project, in story order.
+    fn closure_cleanups(&self, project: ProjectId) -> Result<Vec<ClosureCleanup>, StoreError>;
 
     /// Latest card reset operation for this story, including completed receipts.
     fn story_reset(
@@ -685,6 +698,9 @@ pub trait WriteOps: ReadOps {
     /// Reserves dropped cleanup or records its exact progress and release.
     fn put_dropped_cleanup(&mut self, cleanup: &DroppedCleanup) -> Result<(), StoreError>;
 
+    /// Updates progress only when the request still names this closure.
+    fn update_closure_cleanup(&mut self, cleanup: &ClosureCleanup) -> Result<bool, StoreError>;
+
     /// Creates or updates the current card reset operation.
     fn put_story_reset(&mut self, reset: &StoryReset) -> Result<(), StoreError>;
 
@@ -904,7 +920,16 @@ pub trait WriteOps: ReadOps {
     /// story whose own events claim an edge into this one still claims it, and
     /// the rebuild oracle will report the divergence. Retracting those claims
     /// with real `StoryRelationshipRemoved` events, before this is called, is
-    /// the caller's job — `StoryService::purge` is the only caller and does it.
+    /// the caller's job — `StoryService::delete` is the only caller and does it.
+    ///
+    /// **It does not refuse a story that a project recovery names.** A
+    /// recovery keeps exact event references into every story it names, in
+    /// state this layer holds as opaque JSON, and a purge would strand them so
+    /// that every later read of the recovery fails as corruption. Refusing
+    /// such a story is the caller's job too; `StoryService::delete` does it
+    /// through `story_deletion::refuse_deletion` (SH-848). Owners the store
+    /// itself tracks — landings, resets, cleanups, in-flight block deliveries
+    /// — are still refused here, by foreign key or the ownership fence.
     fn purge_story(
         &mut self,
         project: ProjectId,

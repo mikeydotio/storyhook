@@ -14,12 +14,13 @@ use crate::domain::CLEANUP_LEASE_MARKER;
 use crate::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, SuperState};
 use crate::error::AppError;
 use crate::process::{Captured, run_captured};
-use crate::store::{ReadOps, Store, StoryQuery};
+use crate::store::{ClosureCleanup, ReadOps, Store, StoryQuery};
 
 mod dropped;
+pub(crate) mod requests;
 
 use super::Ctx;
-use super::verification::{ReapMarker, VerificationGeneration, latest_generation};
+use super::verification::{VerificationGeneration, latest_generation};
 
 /// One successfully cleaned story workspace.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -102,21 +103,34 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
 
     /// Cleans every eligible workspace owned by a valid cleanup lease.
     pub fn run(&self, dry_run: bool) -> Result<CleanupReport, AppError> {
+        self.run_inner(dry_run, false)
+    }
+
+    /// Drains due closure requests without depending on periodic cleanup settings.
+    pub fn run_pending(&self) -> Result<CleanupReport, AppError> {
+        self.run_inner(false, true)
+    }
+
+    fn run_inner(&self, dry_run: bool, automatic: bool) -> Result<CleanupReport, AppError> {
         let (project, checkout, rows) = self.ctx.store().read(|tx| {
             let project = tx.project(self.ctx.project())?.ok_or_else(|| {
                 crate::store::StoreError::NotFound("selected project disappeared".into())
             })?;
             let checkout = tx.checkout_path(project.id)?;
-            let rows = tx.stories(project.id, &StoryQuery::all())?;
+            let mut rows = tx.stories(project.id, &StoryQuery::all())?;
+            let effective = crate::store::effective_states(&rows, &tx.states(project.id)?);
+            for row in &mut rows {
+                let (state, superstate) = &effective[&row.story_no];
+                row.state.clone_from(state);
+                row.superstate = superstate.clone();
+            }
             Ok((project, checkout, rows))
         })?;
-        let Some(checkout) = checkout else {
-            return Err(AppError::Validation(format!(
-                "project `{}` has no linked checkout; run `story project link checkout <path>` first",
-                project.slug
-            )));
-        };
-        let repository = canonical(&checkout).map_err(AppError::Validation)?;
+        let repository = checkout
+            .as_deref()
+            .map(canonical)
+            .transpose()
+            .map_err(AppError::Validation)?;
 
         let mut leases: BTreeMap<String, StoryCleanupLease> = BTreeMap::new();
         let mut conflicts = BTreeSet::new();
@@ -129,7 +143,20 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                 .read(|tx| tx.events_for(project.id, row.story_no))?;
             let generation = latest_generation(&events);
             let expected = row.story_no.to_id(&project.prefix);
-            if row.state == "dropped" {
+            let request = self
+                .ctx
+                .store()
+                .read(|tx| tx.closure_cleanup(project.id, row.story_no))?;
+            if let Some(lease) = request.as_ref().and_then(|r| r.lease.clone()) {
+                insert_lease(
+                    &project.slug,
+                    lease,
+                    &mut leases,
+                    &mut conflicts,
+                    &mut skipped,
+                );
+            }
+            if row.superstate == SuperState::Closed {
                 if let Some(lease) = events.iter().rev().find_map(|e| match e.known() {
                     Some(crate::domain::StoryEvent::StoryCleanupLeaseRecorded {
                         lease, ..
@@ -161,7 +188,10 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                     .ctx
                     .store()
                     .read(|tx| tx.dropped_cleanup(project.id, row.story_no))?
-                    && (!record.released || Some(record.generation) == dropped::generation(&events))
+                    && (!record.released
+                        || request.as_ref().is_some_and(|r| r.token == record.token)
+                        || (row.state == "dropped"
+                            && Some(record.generation) == dropped::generation(&events)))
                 {
                     insert_lease(
                         &project.slug,
@@ -172,7 +202,7 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                     );
                 }
             }
-            if row.state != "dropped"
+            if row.superstate != SuperState::Closed
                 && let Some(lease) = generation.as_ref().and_then(|found| found.lease.clone())
             {
                 if lease.story_id != expected {
@@ -200,6 +230,7 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                     state: row.state,
                     superstate: row.superstate,
                     generation,
+                    request,
                 },
             );
         }
@@ -208,7 +239,7 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                 if let Some(lease) = lane.cleanup_lease
                     && stories
                         .get(&lease.story_id)
-                        .is_some_and(|facts| facts.state == "dropped")
+                        .is_some_and(|facts| facts.superstate == SuperState::Closed)
                 {
                     if lane.story_id.as_deref() != Some(lease.story_id.as_str()) {
                         conflicts.insert(lease.story_id.clone());
@@ -230,107 +261,107 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                 }
             }
         }
-        discover_worktree_markers(
-            &repository,
-            &project.slug,
-            &mut leases,
-            &mut conflicts,
-            &mut skipped,
-        );
+        if let Some(repository) = &repository {
+            discover_worktree_markers(
+                repository,
+                &project.slug,
+                &mut leases,
+                &mut conflicts,
+                &mut skipped,
+            );
+        }
 
         let candidates = leases.len();
         let mut removed = Vec::new();
         let mut failed = Vec::new();
-        for lease in leases.into_values() {
-            if stories
-                .get(&lease.story_id)
-                .is_some_and(|facts| facts.state == "dropped")
+        for (id, facts) in &stories {
+            if let Some(request) = &facts.request
+                && !leases.contains_key(id)
+                && !conflicts.contains(id)
+                && (!automatic || requests::due(request, &self.ctx.now()))
             {
-                match dropped::run(self.ctx, &repository, &lease, dry_run) {
-                    Ok(Some(removal)) => removed.push(removal),
-                    Ok(None) => {}
-                    Err(issue) if is_operational_failure(&issue.reason) => {
-                        failed.push(CleanupFailure {
-                            story_id: issue.story_id,
-                            reason: issue.reason,
-                            detail: issue.detail,
-                        })
+                // Absence is established through the production resource inventory,
+                // never inferred from a missing lease alone.
+                let result = requests::without_lease(self.ctx, id);
+                if !dry_run {
+                    requests::finish(self.ctx, request, result.as_ref().err())?;
+                }
+                if let Err(issue) = result {
+                    skipped.push(issue);
+                }
+            }
+        }
+        for lease in leases.into_values() {
+            let facts = stories.get(&lease.story_id);
+            let request = facts.and_then(|f| f.request.as_ref());
+            if automatic && request.is_none_or(|r| !requests::due(r, &self.ctx.now())) {
+                continue;
+            }
+            let result = match (facts, request) {
+                (Some(facts), Some(request)) if facts.superstate == SuperState::Closed => {
+                    let mut authority = request.clone();
+                    // Backfilled requests acquire their agreed lease at admission.
+                    // Eligibility may inspect it; only the reservation grants effects.
+                    authority.lease.get_or_insert_with(|| lease.clone());
+                    let delete_branch =
+                        requests::completed_work(self.ctx, &authority, facts.generation.as_ref())?;
+                    match &repository {
+                        Some(repository) => dropped::run(
+                            self.ctx,
+                            repository,
+                            &lease,
+                            request,
+                            delete_branch,
+                            dry_run,
+                        ),
+                        None => Err(CleanupSkip {
+                            story_id: lease.story_id.clone(),
+                            reason: "repository-unavailable".into(),
+                            detail: "cleanup lease exists but the project has no linked checkout"
+                                .into(),
+                        }),
                     }
-                    Err(issue) => skipped.push(issue),
                 }
-                continue;
-            }
-            // The verifier's release is read from the store before any git
-            // or network work on the candidate: a refused story costs no
-            // fetch, and a story the verifier has not finished with is never
-            // inspected on disk at all.
-            let marker = match verifier_release(&lease.story_id, stories.get(&lease.story_id)) {
-                Ok(marker) => marker,
-                Err(skip) => {
-                    skipped.push(skip);
-                    continue;
-                }
-            };
-            // A lease whose resources are already gone is not a removal —
-            // decided from local facts alone, before the fetch. After a
-            // COMPLETE it is what the verifier already verified and is not
-            // worth a line on every pass; after a REQUIRED it is a retry
-            // with nothing left to retry, which is worth saying.
-            if nothing_left(&repository, &lease) {
-                if marker == ReapMarker::Required {
-                    skipped.push(CleanupSkip {
-                        story_id: lease.story_id.clone(),
-                        reason: "already-clean".into(),
-                        detail: "exact worktree and local branch are absent; nothing to retry"
-                            .into(),
-                    });
-                }
-                continue;
-            }
-            let options = super::resources::ResourceOptions {
-                lease_json: Some(serde_json::to_string(&lease)?),
-                ..Default::default()
-            };
-            let observed =
-                super::resources::ResourceService::new(self.ctx).resolve(&lease.story_id, &options);
-            let result = match observed {
-                Ok(report) if report.status == "resolved" && report.pane.is_none() => {
-                    // Not `&lease.repository_path`: `resolve` above only
-                    // established that this repository is *associated* with
-                    // the project (by origin URL or UUID pointer), which a
-                    // second, unregistered clone of the same origin also
-                    // satisfies. `clean_candidate`'s own repository-mismatch
-                    // guard exists to refuse exactly that clone; passing the
-                    // lease's own path here would make the guard compare a
-                    // value against itself (SH-653).
-                    clean_candidate(self.ctx.env(), &repository, &lease, dry_run)
-                }
-                Ok(report) => Err(CleanupSkip {
+                (Some(facts), _) => Err(CleanupSkip {
                     story_id: lease.story_id.clone(),
-                    reason: "resource-identity-unsafe".into(),
+                    reason: "story-open".into(),
                     detail: format!(
-                        "resource status {}; panes {:?}; {}",
-                        report.status,
-                        report.pane,
-                        report.diagnostics.join("; ")
+                        "{} is {}; cleanup requires a committed closed lifecycle",
+                        lease.story_id, facts.state
                     ),
                 }),
-                Err(error) => Err(CleanupSkip {
+                (None, _) => Err(CleanupSkip {
                     story_id: lease.story_id.clone(),
-                    reason: "resource-unverifiable".into(),
-                    detail: error.to_string(),
+                    reason: "unknown-story".into(),
+                    detail: "cleanup lease names no story in this project".into(),
                 }),
             };
+            if !dry_run && let Some(request) = request {
+                requests::finish(self.ctx, request, result.as_ref().err())?;
+            }
             match result {
-                Ok(removal) => removed.push(removal),
+                Ok(Some(removal)) => removed.push(removal),
+                Ok(None) => {}
                 Err(issue) if is_operational_failure(&issue.reason) => {
                     failed.push(CleanupFailure {
                         story_id: issue.story_id,
                         reason: issue.reason,
                         detail: issue.detail,
-                    });
+                    })
                 }
-                Err(skip) => skipped.push(skip),
+                Err(issue) => skipped.push(issue),
+            }
+        }
+        // Conflicting authority never reaches the actuator, but still has a
+        // durable diagnostic and retry schedule instead of disappearing.
+        if !dry_run {
+            for id in conflicts {
+                if let Some(request) = stories.get(&id).and_then(|f| f.request.as_ref())
+                    && (!automatic || requests::due(request, &self.ctx.now()))
+                    && let Some(issue) = skipped.iter().find(|issue| issue.story_id == id)
+                {
+                    requests::finish(self.ctx, request, Some(issue))?;
+                }
             }
         }
         let reclaimed_bytes = removed.iter().map(|item| item.reclaimed_bytes).sum();
@@ -351,67 +382,7 @@ struct StoryFacts {
     state: String,
     superstate: SuperState,
     generation: Option<VerificationGeneration>,
-}
-
-/// The verifier's release of a leased workspace to cleanup (SH-653, D-H).
-///
-/// Cleanup is the reap's retry path, never an independent reaper: a workspace
-/// is touchable only when its story is CLOSED and the verifier wrote a
-/// CLEANUP COMPLETE or CLEANUP REQUIRED marker for the story's **latest**
-/// verification generation. Anything else is refused with a reason a person
-/// can read back from `--dry-run`. The marker is read through the same
-/// [`latest_generation`] the verifier's own retry uses, so the two cannot
-/// disagree about which workspace the verifier owns.
-fn verifier_release(story_id: &str, facts: Option<&StoryFacts>) -> Result<ReapMarker, CleanupSkip> {
-    let refuse = |reason: &str, detail: String| CleanupSkip {
-        story_id: story_id.to_string(),
-        reason: reason.into(),
-        detail,
-    };
-    let Some(facts) = facts else {
-        return Err(refuse(
-            "unknown-story",
-            format!("no story `{story_id}` in this project; a lease is not a story"),
-        ));
-    };
-    if facts.superstate != SuperState::Closed {
-        return Err(refuse(
-            "story-open",
-            format!(
-                "`{story_id}` is `{}`; cleanup touches only a CLOSED story's workspace",
-                facts.state
-            ),
-        ));
-    }
-    match facts
-        .generation
-        .as_ref()
-        .and_then(|generation| generation.reap_marker)
-    {
-        Some(marker) => Ok(marker),
-        None => Err(refuse(
-            "not-verifier-released",
-            "no CENTRAL VERIFICATION CLEANUP COMPLETE/REQUIRED comment on its latest \
-             verification; the verifier owns the first reap"
-                .into(),
-        )),
-    }
-}
-
-/// Whether every resource cleanup would remove is already absent: the
-/// worktree path, its registration, and the local branch. Local facts only,
-/// so a pass over an already-reaped backlog costs no network.
-fn nothing_left(repository: &Path, lease: &StoryCleanupLease) -> bool {
-    if lease.worktree_path.exists()
-        || ref_exists(repository, &format!("refs/heads/{}", lease.branch))
-    {
-        return false;
-    }
-    super::resources::git::inventory(repository).is_ok_and(|records| {
-        records
-            .iter()
-            .all(|record| record.path != lease.worktree_path)
-    })
+    request: Option<ClosureCleanup>,
 }
 
 fn is_operational_failure(reason: &str) -> bool {
@@ -508,11 +479,22 @@ fn discover_worktree_markers(
     }
 }
 
+#[cfg(test)]
 fn clean_candidate(
     env: &crate::env::Environment,
     repository: &Path,
     lease: &StoryCleanupLease,
     dry_run: bool,
+) -> Result<CleanupRemoval, CleanupSkip> {
+    clean_candidate_owned(env, repository, lease, dry_run, None)
+}
+
+fn clean_candidate_owned(
+    env: &crate::env::Environment,
+    repository: &Path,
+    lease: &StoryCleanupLease,
+    dry_run: bool,
+    lock: Option<&super::workspace_lock::WorkspaceLock>,
 ) -> Result<CleanupRemoval, CleanupSkip> {
     let refuse = |reason: &str, detail: String| CleanupSkip {
         story_id: lease.story_id.clone(),
@@ -579,7 +561,11 @@ fn clean_candidate(
         ));
     }
 
-    ensure_window_absent(env, lease).map_err(|detail| refuse("tmux-window-open", detail))?;
+    // A preview follows the controller's planned termination; a real deletion
+    // still proves the window absent immediately before Git operations.
+    if !dry_run {
+        ensure_window_absent(env, lease).map_err(|detail| refuse("tmux-window-open", detail))?;
+    }
     let observation = crate::github_access::OriginObservation::resolve(repository)
         .map_err(|error| refuse("default-branch-unverifiable", error.to_string()))?;
     let default_branch = observed_default_branch(&observation)
@@ -613,11 +599,16 @@ fn clean_candidate(
                 .map_err(|detail| refuse("worktree-unverifiable", detail))?,
         );
     }
-    if ref_exists(repository, &local_ref) {
-        tips.insert(
+    let branch_tip = if ref_exists(repository, &local_ref) {
+        Some(
             git_text(repository, &["rev-parse", &local_ref])
                 .map_err(|detail| refuse("branch-unverifiable", detail))?,
-        );
+        )
+    } else {
+        None
+    };
+    if let Some(tip) = &branch_tip {
+        tips.insert(tip.clone());
     }
     for tip in tips {
         let answer = git(
@@ -634,7 +625,7 @@ fn clean_candidate(
     }
 
     let removed_worktree = worktree_exists;
-    let removed_local_branch = ref_exists(repository, &local_ref);
+    let removed_local_branch = branch_tip.is_some();
     let reclaimed_bytes = if worktree_exists {
         directory_size(&lease.worktree_path)
     } else {
@@ -653,19 +644,26 @@ fn clean_candidate(
         });
     }
     if removed_worktree {
-        run_git(
+        super::workspace_lock::git(
             repository,
             &[
                 "worktree",
                 "remove",
+                "--",
                 lease.worktree_path.to_string_lossy().as_ref(),
             ],
+            lock,
         )
-        .map_err(|detail| refuse("remove-worktree-failed", detail))?;
+        .map_err(|error| refuse("remove-worktree-failed", error.to_string()))?;
     }
-    if removed_local_branch {
-        run_git(repository, &["branch", "-D", &lease.branch])
-            .map_err(|detail| refuse("delete-local-branch-failed", detail))?;
+    if let Some(tip) = &branch_tip {
+        // The probe authorizes exactly this OID, never a later writer's ref.
+        super::workspace_lock::git(
+            repository,
+            &["update-ref", "--no-deref", "-d", &local_ref, tip.trim()],
+            lock,
+        )
+        .map_err(|error| refuse("delete-local-branch-failed", error.to_string()))?;
     }
     let registration_remains = super::resources::git::inventory(repository)
         .map_err(|error| refuse("postcondition-unverifiable", error.to_string()))?
@@ -758,6 +756,7 @@ fn observed_default_branch(
                 .to_string()
         })
 }
+#[cfg(test)]
 fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {
     let output = git(cwd, args)?;
     if output.status.success() {
@@ -834,69 +833,6 @@ mod tests {
         fn env(&self) -> crate::env::Environment {
             crate::env::Environment::at(self.root())
         }
-    }
-
-    fn facts(superstate: SuperState, marker: Option<ReapMarker>) -> StoryFacts {
-        StoryFacts {
-            state: if superstate == SuperState::Closed {
-                "done".into()
-            } else {
-                "in-progress".into()
-            },
-            superstate,
-            generation: Some(VerificationGeneration {
-                lease: None,
-                landed: true,
-                overridden: false,
-                reap_marker: marker,
-            }),
-        }
-    }
-
-    #[test]
-    fn only_a_closed_story_with_a_verifier_marker_on_its_latest_generation_is_released() {
-        assert_eq!(
-            verifier_release("SH-7", None).unwrap_err().reason,
-            "unknown-story"
-        );
-        let open = verifier_release(
-            "SH-7",
-            Some(&facts(SuperState::Open, Some(ReapMarker::Required))),
-        )
-        .unwrap_err();
-        assert_eq!(open.reason, "story-open");
-        assert!(open.detail.contains("in-progress"), "{}", open.detail);
-        assert_eq!(
-            verifier_release("SH-7", Some(&facts(SuperState::Closed, None)))
-                .unwrap_err()
-                .reason,
-            "not-verifier-released"
-        );
-        let never_verified = StoryFacts {
-            state: "done".into(),
-            superstate: SuperState::Closed,
-            generation: None,
-        };
-        assert_eq!(
-            verifier_release("SH-7", Some(&never_verified))
-                .unwrap_err()
-                .reason,
-            "not-verifier-released"
-        );
-        assert_eq!(
-            verifier_release(
-                "SH-7",
-                Some(&facts(SuperState::Closed, Some(ReapMarker::Complete)))
-            ),
-            Ok(ReapMarker::Complete)
-        );
-        assert_eq!(
-            verifier_release(
-                "SH-7",
-                Some(&facts(SuperState::Closed, Some(ReapMarker::Required)))
-            ),
-            Ok(ReapMarker::Required)
-        );
     }
 
     #[test]

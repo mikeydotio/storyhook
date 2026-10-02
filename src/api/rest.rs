@@ -308,6 +308,7 @@ fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
         ProjectRoute::DispatchPoll => "dispatch-poll",
         ProjectRoute::Reset => "reset",
         ProjectRoute::ResetPoll => "reset-poll",
+        ProjectRoute::Agents => "agents",
         ProjectRoute::Engine => "engine",
         ProjectRoute::EngineAction { .. } => "engine-action",
         ProjectRoute::EngineActionUnknown => "unknown-engine-action",
@@ -592,8 +593,10 @@ fn route_project<S: Store>(
         }),
         // Answered by [`crate::api::engine::intercept`] in the per-connection
         // worker so a stop-now helper can call back into the daemon without
-        // occupying this fixed store pool.
-        ProjectRoute::Engine
+        // occupying this fixed store pool. The agents census (SH-850) is
+        // answered there too: it runs a tmux probe per claimed story.
+        ProjectRoute::Agents
+        | ProjectRoute::Engine
         | ProjectRoute::EngineAction { .. }
         | ProjectRoute::EngineActionUnknown => text_reply(404, "Not found"),
         ProjectRoute::StoryCreate => {

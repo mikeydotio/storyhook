@@ -199,6 +199,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::Show { id }
         | Invocation::Resources { id, .. }
         | Invocation::SupersedeBlockDeliveries { id }
+        | Invocation::SupersedeContinuations { id }
         | Invocation::Log { id }
         | Invocation::Comment { id, .. }
         | Invocation::SetState { id, .. }

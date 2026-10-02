@@ -75,9 +75,8 @@ use crate::service::gate_progress::GATE_PROGRESS_PREFIX;
 use crate::service::project_fault::ProjectFault;
 use crate::service::verification::GenerationWrite;
 use crate::service::{
-    Ctx, StoryService, VERIFICATION_CLEANUP_COMPLETE_PREFIX, VERIFICATION_CLEANUP_REQUIRED_PREFIX,
-    VERIFICATION_GREEN_PREFIX, VERIFICATION_WITHDRAWN_PREFIX, VerificationCandidate,
-    VerificationProblem, VerificationQueue,
+    Ctx, StoryService, VERIFICATION_GREEN_PREFIX, VERIFICATION_WITHDRAWN_PREFIX,
+    VerificationCandidate, VerificationProblem, VerificationQueue,
 };
 use crate::store::{
     EngineAgent, EngineLaneState, EngineSpeed, GlobalSeq, PrLink, ProjectId, ReadOps, Store,
@@ -572,8 +571,9 @@ pub enum NotifyDelivery {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentPresence {
     /// No live dispatched agent occupies the window; a resume re-dispatch
-    /// (`dispatch --resume`, which respawns a dead pane in place or recreates
-    /// a missing window under the same name) cannot kill work in progress.
+    /// (`dispatch --resume --if-absent`, which respawns a dead pane in place
+    /// without `-k` or recreates a missing window under the same name, and
+    /// refuses a live agent itself, SH-850) cannot kill work in progress.
     Absent,
     /// Either the agent may be live, or tmux could not say — neither is
     /// evidence of absence, and a respawn over a live agent would kill it.
@@ -2229,10 +2229,7 @@ where
                         return Ok(TickResult::Returned);
                     }
                     pending.retire();
-                    match actuator.reap(candidate) {
-                        Ok(()) => record_cleanup_complete(&ctx, candidate)?,
-                        Err(error) => record_cleanup_required(&ctx, candidate, &error)?,
-                    }
+                    // The committed closure owns cleanup; this attempt only releases its locks.
                     return Ok(TickResult::Completed);
                 }
                 Ok(TickResult::RetryLater)
@@ -2282,55 +2279,7 @@ where
             .into_iter()
             .find(|c| c.blocked_by.is_empty() && !c.landing_pending)
     }) else {
-        let Some(candidate) = queue.next_cleanup_for(project)? else {
-            return Ok(TickResult::Idle);
-        };
-        let ctx = Ctx::new(
-            store,
-            candidate.project,
-            candidate.checkout.clone(),
-            env.clone(),
-        )
-        .no_hooks(true);
-        // A completed story is never queued, so its slot is admitted already
-        // reserved for the cleanup it exists to do (SH-768).
-        let Some(_active) = activity.admit(
-            store,
-            env,
-            &candidate,
-            env.now(),
-            Some(ReservationReason::Cleanup),
-        )?
-        else {
-            return Ok(if queue.human_permits(&candidate)? {
-                TickResult::Stopped
-            } else {
-                TickResult::Returned
-            });
-        };
-        if let Some(request) = admitted_request.as_mut() {
-            **request = _active.recovery_request_id.clone();
-        }
-        let _log = super::activity::context::enter(
-            super::activity::context::LogContext::candidate(&candidate, &_active.active.attempt_id),
-        );
-        return observation::human_owned(
-            store,
-            env,
-            bus,
-            &candidate,
-            &_active.cancellation,
-            || match actuator.reap(&candidate) {
-                Ok(()) => {
-                    record_cleanup_complete(&ctx, &candidate)?;
-                    Ok(TickResult::Completed)
-                }
-                Err(error) => {
-                    record_cleanup_required(&ctx, &candidate, &error)?;
-                    Ok(TickResult::RetryLater)
-                }
-            },
-        );
+        return Ok(TickResult::Idle);
     };
     let started_at = env.now();
     let lifecycle_entry = inflight.enter();
@@ -2793,10 +2742,7 @@ where
                     if !observation::human_permits(store, &candidate)? {
                         return Ok(TickResult::Returned);
                     }
-                    match actuator.reap(&candidate) {
-                        Ok(()) => record_cleanup_complete(&ctx, &candidate)?,
-                        Err(error) => record_cleanup_required(&ctx, &candidate, &error)?,
-                    }
+                    // Cleanup observes the durable closure after this owner exits.
                     return Ok(TickResult::Completed);
                 }
                 VerificationOutcome::Conflict { detail } => {
@@ -3286,41 +3232,6 @@ fn fire_verification_halted(
         }),
     );
     Ok(())
-}
-
-fn record_cleanup_complete(
-    ctx: &Ctx<'_, impl Store>,
-    candidate: &VerificationCandidate,
-) -> Result<(), AppError> {
-    comment_once(
-        ctx,
-        candidate,
-        &format!(
-            "{VERIFICATION_CLEANUP_COMPLETE_PREFIX} exact leased worktree, branch, and agent window were verified absent."
-        ),
-    )
-}
-
-/// A generation without a lease is not retried: `next_cleanup` never queues
-/// it (SH-761), so the comment must say that the operator owns the reap.
-fn record_cleanup_required(
-    ctx: &Ctx<'_, impl Store>,
-    candidate: &VerificationCandidate,
-    error: &AppError,
-) -> Result<(), AppError> {
-    let retry = if candidate.cleanup_lease.is_some() {
-        "Automatic reap failed and will be retried."
-    } else {
-        "Automatic reap failed. This generation has no cleanup lease, so no automatic retry is possible: remove the worktree, branch, and agent window by hand."
-    };
-    comment_once(
-        ctx,
-        candidate,
-        &format!(
-            "{VERIFICATION_CLEANUP_REQUIRED_PREFIX} the PR landed and the story is done. {retry}\n\n{}",
-            crate::text_lint::quote_evidence(&error.to_string())
-        ),
-    )
 }
 
 /// The conventional name of a termination signal, for a diagnosis a reader

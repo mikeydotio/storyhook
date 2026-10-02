@@ -1138,9 +1138,18 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // own) hides the menu item, alongside the no-checkout gate both share.
     assert!(body.contains("\"Dispatch\""));
     assert!(!body.contains("\"Dispatch Auto\""));
+    // SH-850: that gate is now one shared decision, `launchAction`, for the
+    // menu and the drawer footer alike: Dispatch; Resume for a claimed story
+    // whose agent the census (`GET .../agents`) reports lost; nothing while
+    // its agent works. The closed/epic/no-checkout gate is unchanged.
+    assert!(body.contains("function launchAction(v)"));
     assert!(body.contains(
-        r#"var dispatchHidden = isClosed || st.story_type === "epic" || !currentRepoHasCheckout();"#
+        r#"if (stateSuperstate(st.state) === "CLOSED" || st.story_type === "epic" || !currentRepoHasCheckout()) return null;"#
     ));
+    assert!(body.contains(r#"label: launch.kind === "resume" ? "Resume" : "Dispatch","#));
+    assert!(body.contains(r#"var launch = launchAction(findStory(st.id) || { story: st });"#));
+    assert!(body.contains(r#"api("GET", apiBase() + "/agents", null)"#));
+    assert!(body.contains(r#"if (intent === "resume") query += "&intent=resume";"#));
 
     // SH-197: the context menu's Set Status submenu.
     assert!(body.contains("\"Set Status\""));

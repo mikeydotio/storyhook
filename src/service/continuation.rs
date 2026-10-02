@@ -11,7 +11,9 @@ mod runtime;
 pub use json::parse_document;
 pub use runtime::PythonRuntime;
 mod administrative;
+mod replacement;
 mod request;
+pub use replacement::{ReplacementOutcome, supersede_for_replacement};
 
 /// Provider observations and delivery effects, replaceable only at the process boundary.
 pub trait ContinuationRuntime {

@@ -31,6 +31,7 @@
 //! eventually disagree about it.
 
 pub mod admission;
+pub(crate) mod agents;
 pub mod dispatch;
 mod dispatch_policy;
 pub(crate) mod engine;

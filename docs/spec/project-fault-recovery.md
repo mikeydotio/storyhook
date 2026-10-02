@@ -54,6 +54,14 @@ Create or reuse repairs, attach relationships, record decisions, and enqueue del
 
 Use the existing change bus and periodic recovery wake to resume unfinished coordination after restart. Recovery work must run independently of verifier workspace ownership.
 
+### Story deletion, prefix changes and record isolation (SH-848)
+
+A recovery record keeps story numbers and exact event sequences for as long as it lives, active or retired, and `read_view` fails closed (`StoreError::Corrupt`) when one no longer resolves. Three rules keep a supported command from producing that state, and keep one invalid record from stopping unrelated work.
+
+- **Delete refuses a named story.** `story delete` and its preview refuse any story a recovery names (`project_recovery::references::stories`, plus the record's observation rows) and point at `story close`. Tolerating the missing story was rejected: no command retires a recovery, so one whose repair or assessor vanished would stay held forever.
+- **A prefix change keeps retained leases valid.** A retained managed lease records the story id its worktree, branch and pane were created under. Validation compares the number that id was minted with, not the id under the current prefix.
+- **Readers validate only the records that name their story.** `attempts::owner` (admission, completion, observation, landing), `owns_resume` (block-edge derivation in every story write), `owns_coordination` (Full Auto lanes) and `reconcile_incident` read only the records that name their story, or whose own observations corroborate the incident. The queue reads judged generations from the immutable observation rows. For a valid store every answer is unchanged. An invalid record still fails closed for the stories it names, for a new fault with its code and locus, and in `repair show` and the status snapshot; status-snapshot isolation is SH-851.
+
 ### Bounded agent scope judgment
 
 Use the stopped story’s managed agent to assess scope. Reuse notification and proven-absent resume dispatch; do not add an autonomous fixer inside the verifier.
@@ -135,11 +143,41 @@ Repeated checks of an unchanged hold append no events and revise no record.
 Previously observed generations stay excluded from the verifier queue; recovery
 requires a scope decision and later fresh submission, never replay of the old gate.
 
+### Resolution: when a recovery leaves current status (SH-775)
+
+A certified landing retires the record (`active = false`), but it does not end the work. Affected stories still owe a fresh verification generation. The status projection (`story verifier status`, the dashboard banner, and `verifier.project_recoveries` in load-context, next, and summary JSON) shows a recovery until it owes nothing, and then never again. The durable record stays: coordination, resume ownership, and `story verifier repair show <id> --json` read it permanently. The recovery ID is also in the story comments of each affected story and in the repair story description.
+
+After landing, the recovery computes two story sets:
+
+- **Held:** open stories whose current awaiting is still one that this recovery wrote. The awaiting must match the exact recorded event, not only the text. The owned awaitings are the dependency holds, the assessment holds, and the disposition hold of each delivery effect. An awaiting on a closed story blocks nothing and is ignored.
+- **Owed:** affected submissions (`state.subjects`) whose story is not held and not discharged. A subject is **discharged** when its story no longer exists, or when the story event log, after the retained generation, has one of these: a state change into verifying (a fresh generation), a state change into a closed-superstate state, `StoryClosedAndArchived`, or `StoryDeleted`.
+
+The recovery is **resolved** when all of these are true:
+
+1. A landing receipt is recorded.
+2. No resume effect is in flight. An outstanding external call always shows.
+3. The held set is empty.
+4. The owed set is empty.
+
+A pending or held resume effect keeps the row only while its story is held or owed. After that, the effect is moot. The phases after landing are:
+
+| Phase | Condition | Next action |
+|---|---|---|
+| `held` | A held resume effect on a held or owed story, or a live effect whose delivery current authority does not permit | The diagnosis |
+| `resume-pending` | A permitted pending effect on a held or owed story, or a permitted in-flight effect | Wait for the retained delivery receipt |
+| `resume-held` | The held set is not empty | Reconcile the named holds; owed stories are also named |
+| `landed` | Only the owed set is not empty | The named stories refresh and resubmit |
+| (no row) | Resolved | — |
+
+A fresh submission discharges a subject, not the landing of that submission. A retired record accepts no new subjects, so a repeat fault on the fresh generation opens a new recovery. A failed fresh generation goes to ordinary remediation. If the row stayed until the fresh generation landed, it would tell the agent to resubmit work that it had already resubmitted. The event log is append-only, so a discharge is permanent. A reopened story cannot bring a resolved recovery back.
+
+The next action names only the stories that still owe work. It never tells an agent to do work that no story owes.
+
 For existing incidents, automatically convert only those whose retained structured execution, receipt, generation, and cleanup evidence proves a supported project fault. Preserve the old incident as historical evidence. Never clear an ambiguous legacy incident by matching its diagnostic text.
 
 ## Interfaces, diagnostics, and tests
 
-Expose additive recovery status in the shared CLI/dashboard snapshot: fault, affected stories, assessment/repair owner, repair link, phase, attempt budget, and next action. Distinguish repair dependency from infrastructure halt. Existing payloads deserialize with no recovery records.
+Expose additive recovery status in the shared CLI/dashboard snapshot: fault, affected stories, assessment/repair owner, repair link, phase, attempt budget, and next action. Distinguish repair dependency from infrastructure halt. Existing payloads deserialize with no recovery records. The snapshot lists only unresolved recoveries (see Resolution).
 
 Test through production service, dispatch, subprocess, and queue paths, mocking external endpoints or provider responses rather than recovery behavior:
 

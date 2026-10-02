@@ -37,7 +37,7 @@ target:
 4. a. Red: send the story and its test log back to the implementor agent in
    the **same tmux window**; on completion the story re-enters the queue and
    repeats when its turn comes.
-   b. Green: storyhook merges the PR, moves the story to Done, reaps the
+   b. Green: storyhook merges the PR, moves the story to Done, and schedules cleanup of the
    story's tmux window, worktree, and per-story caches and build products.
 
 What each step does today, and which child closes the gap:
@@ -50,8 +50,8 @@ What each step does today, and which child closes the gap:
 | 2 | not mergeable → instruct the agent and hold the queue | as stated; a dead pane is re-dispatched in place and the hold continues (SH-650) — see "The conflict queue-hold" | done (SH-650, D-E) |
 | 3 | gate configurable per project | `.storyhook.toml` `[verify] gate`, default `make test`; the daemon reads it, `verify-pr.sh` requires it as argv, the GREEN/RED text names it | done, SH-649 (D-D) |
 | 4a | red returns to the same window | pasted into the dispatched pane by `story.sh notify`; pane gone → `awaiting` is set, and under Full Auto that is `AgentBlocked` → quarantine → a breaker strike. Since SH-837, a pane gone on a `no-auto` story parks it instead of re-dispatching (D-E exception) | SH-650 (D-E), SH-837 |
-| 4b | merge, done, reap | `land-pr.sh` merges; the verifier writes the required `done` and `reap-leased` accepts exactly that — one constant, `domain::COMPLETION_STATE_SLUG`, pinned equal to the helper's by `tests/plugin_contract.rs` (SH-652, **deviating from D-G**: see As built) | SH-652 (D-G) |
-| 4c | the verifier reaps | `story cleanup` retries only CLOSED stories released by the latest verification generation; it never deletes remote branches | done, SH-653 (D-H) |
+| 4b | merge and done | `land-pr.sh` merges; the verifier commits the required `done`. The store schedules cleanup atomically with that closed projection. | SH-652, SH-847 |
+| 4c | shared closure cleanup | The daemon cleans every committed CLOSED lifecycle through one controller. Unverified closures retain local branches; cleanup never deletes remote branches. | SH-847 |
 | — | (unstated) the verifier serves any project | the verifier script family ships inside the binary and runs from the daemon's own state directory; the checkout contributes its `[verify] gate` and its receipt store | done, SH-654 (filed beside the epic, not in it); landing a foreign project still needs SH-665 |
 
 ## Decisions of record
@@ -69,7 +69,7 @@ repeated here so a reader does not have to open eight stories to see why.
 | D-E | **A dead pane triggers a resume re-dispatch, never parking.** On a notify refusal the verifier dispatches the same story with the resume clause into the same window name and worktree, then delivers the diagnosis as the first turn; `awaiting` is set only if the re-dispatch itself is refused. The conflict hold applies unconditionally. | Step 4a says the same window. Parking classifies as `AgentBlocked` under Full Auto and strikes the breaker for what is ordinary remediation. | SH-650 | done — see "As built — SH-650" for what "a notify refusal" and "unconditionally" turned out to mean; "unconditionally" governs delivery only, and D-J bounds the hold that follows. **Exception (SH-837, decision D2):** a story that carries `no-auto` is parked, never re-dispatched, because a resume re-dispatch launches an unattended session and no automation launches one for a story left for a person. A live pane still receives the paste. The parking cannot strike a Full Auto breaker, because a reserved story's lane is released, never quarantined. |
 | D-F | **Queue age is `verifying_since`**: priority → `verifying_since` → project slug → story id. | At equal priority an old story resubmitted repeatedly permanently outranks a newer one that has waited longer; `verifying_since` is already the documented honest queue-wait fact (SH-524) and is the only one that resets on resubmission. | SH-651 | done — see "SH-651" under As built |
 | D-G | **One completion-state resolver** in `src/service` (first CLOSED state, `STORY_DONE_STATE` override) used by the verifier, the template renderer and the helper. | Three spellings of one fact disagree by construction today; a project whose first CLOSED state is not `done` lands every green story, writes `done`, and then fails reap on every attempt, forever, loudly. | SH-652 | done — **built with different semantics**: the resolver is `domain::completion_state`, answering the required `done`, never the first CLOSED state, and `STORY_DONE_STATE` is refused rather than honoured; a council decision recorded on the story (`story show SH-652`) and under As built |
-| D-H | **`story cleanup` is subordinated to the verifier.** It may touch only a worktree whose story is CLOSED and carries the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED marker (the retry path, never an independent one); it never deletes a remote branch `land-pr.sh` has not already removed; `--dry-run` says what it declined and why. | Step 4b names one reaper. A second, state-blind one with wider authority and no lease is exactly the kind of "two answers from one fact" this project has paid for (SH-136, SH-263). | SH-653 | done — see "SH-653" under As built for the generation the marker is read from, and for the remote branch leaving cleanup's scope entirely |
+| D-H (superseded by SH-847) | **Historical: `story cleanup` was subordinated to the verifier.** It may touch only a worktree whose story is CLOSED and carries the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED marker (the retry path, never an independent one); it never deletes a remote branch `land-pr.sh` has not already removed; `--dry-run` says what it declined and why. | Step 4b names one reaper. A second, state-blind one with wider authority and no lease is exactly the kind of "two answers from one fact" this project has paid for (SH-136, SH-263). | SH-653 | done — see "SH-653" under As built for the generation the marker is read from, and for the remote branch leaving cleanup's scope entirely |
 | D-I | **The base is asked of origin, and landing checks it.** The branch a story PR is opened against, dispatched from, reaped against and landed on is origin's own advertised default (`git ls-remote --symref origin HEAD`), never the local `origin/HEAD` cache alone and never a literal; an origin that cannot say is a refusal by name, not a guess. `verify-pr.sh` and `land-pr.sh` each check the PR's base against that answer, independently; `land-pr.sh --base <branch>` is the only way to land elsewhere and `release.sh` states it. | Five story PRs opened against `main` by a stale cache and a `main` literal were certified, merged and closed as green, and the divergence was found by hand (SH-306's shape one layer over: the check that never ran). SH-136: the cache is a copy of a fact with an authority. SH-372/SH-394: absence and a literal are not answers. Rejected: refreshing the cache with `set-head -a` (a second copy, and a race on a shared ref); a project setting (a copy that drifts); `gh repo view` (GitHub-only). | SH-691 | done — see "SH-691" under As built |
 | D-J | **A conflict hold lasts only while the reconcile can still end in a resubmission.** Each pass releases the queue when the returned story is blocked (`awaiting`, an open `blocked-by`, or the `blocked` state) or has left `in-progress` for a state other than `verifying`. Once per `RECOVERY_WAKE` it probes the story's agent pane on the tmux server its lease records, and releases after two `Gone` probes in a row, or when the story's change feed and the pane's output have both been silent past `STALL_CEILING_SECS` (the engine's own two-channel predicate). With no pane evidence — no lease, or no answer — store silence alone decides at the same ceiling. A release comments the cause and journals it; it never sets `awaiting` and never re-dispatches. | A false release costs one story its reservation: it rejoins the queue in priority order when it resubmits and may conflict again. A false hold blocks the project's whole queue until a person stops the verifier; the Full Auto watchdog's `awaiting` was ignored, and a manual dispatch had no watcher at all. Rejected: a fixed age T (no T can be derived: a live reconcile runs tests of any length, SH-394); liveness alone (a live pane idle at a prompt or a dialog is static for hours, SH-657); status only (a human-gated release of a whole queue). Setting `awaiting` would reclassify a cheap false release as `AgentBlocked` and strike the breaker; a second re-dispatch after D-E's one is a retry loop. Stated limits: a manual or Codex dispatch does not export the tool ceiling, and an agent whose turn ended while a background test runs is silent on both channels, so either can be released while it works — the cost is a requeue. Council decision D1 on SH-770 (unanimous). | SH-770 | done — see "SH-770" under As built |
 
@@ -449,43 +449,23 @@ failed builds skip their dependents with explicit reasons; the RED summary
 lists failed legs and dependency skips even when their output is outside its
 bounded tail (`test-tiers.md`, "independent gate legs finish after RED").
 
-### Green: merge, done, reap
+### Green: merge, done, cleanup handoff
 
-`Merged` means `land-pr.sh` ran under `machine-lock.sh merge`, re-read the
-branch tip under that lock (SH-637), merged with `gh pr merge --merge`,
-verified the merge landed, and deleted the remote branch. The worker then
-`record_generation_merged`s the story into the completion state —
-`domain::completion_state`, the required `done` while it is CLOSED, refusing
-with `run story doctor --fix` on a catalog below the floor — comments GREEN,
-and asks the actuator to `reap`: `story.sh reap-leased`, which re-checks every
-postcondition from the lease — including that the story is CLOSED **and** in
-that same completion state, which the helper spells as the constant
-`COMPLETION_STATE` (`tests/plugin_contract.rs` pins it equal to the daemon's)
-— before removing the tmux window, the worktree, the local branch and the
-per-story caches. A failed reap comments CLEANUP REQUIRED and is retried by
-`next_cleanup`, queried separately from active verification so a cleanup
-fault cannot starve the gate. The reap still holds the attempt guard, so
-every step before `record_cleanup_*` must end on its own. The helper is found
-without a provider CLI while any file names it (`resolve_control_script`,
-SH-815), and a provider CLI that has to run is bounded by
-`PROVIDER_CLI_TIMEOUT`. A resolution that fails is a failed reap, with
-CLEANUP REQUIRED; it does not hold the guard. Until SH-652 the helper accepted only the
-project's *first* CLOSED state or `$STORY_DONE_STATE`, so in a project that
-ordered another CLOSED state ahead of `done` every retry failed the same way.
+`Merged` means `land-pr.sh` ran under the merge lock, re-read the branch tip,
+merged the PR, verified landing, and deleted the remote branch. The worker
+records GREEN and the required `done` state. That same transaction creates a
+durable closure-cleanup request (SH-847).
 
-`story cleanup` (`workspace-cleanup.md`) is the same reap's retry path by
-hand, and on the daemon's daily cadence when `cleanup.auto` allows (a missing
-stamp counts as due) — never an independent reaper (SH-653). Before any git
-work on a candidate it reads the store: the lease must name a story of this
-project, the story must be CLOSED, and the story's **latest verification
-generation** must carry the verifier's CLEANUP COMPLETE or CLEANUP REQUIRED
-comment, read through the same `latest_generation` the verifier's own retry
-uses. Only then do the git gates run (clean, unlocked, window closed, worktree
-and local-branch tips reachable from the freshly fetched default branch), and
-what it removes is what `reap-leased` removes: the worktree and the local
-branch. It neither reads nor writes the remote branch, which `land-pr.sh`
-deleted at merge time. Every refusal is a skip with a reason, which is what
-`--dry-run` prints.
+The verifier releases its workspace ownership; the cleanup daemon handles story
+resources through the same controller as `story cleanup`. This applies to single
+landing, landing recovery, and every completed batch member. Verification scratch
+cleanup and batch retirement remain verifier responsibilities.
+
+The complete safety, retry, branch-retention, migration and configuration
+contract is in [workspace-cleanup.md](workspace-cleanup.md). Cleanup failure
+never reverses completion or requires rerunning a completed gate. The old
+leased-reap helper remains compatible for explicit callers; the verifier no
+longer invokes it or drains its former cleanup retry queue.
 
 ### The locks, and the one invariant every verification depends on
 
@@ -571,7 +551,7 @@ the SH-136 rule); the invariant here is only that it **survives**.
 | `test-tiers.md` | the tiers, receipts, `merge-preflight.sh`, the verifier worktree and its private objects, the gate lock's idle ceiling |
 | `selective-testing.md` | the `changed` tier and why a merge never accepts it |
 | `development-branch.md` | `dev` integrates, `main` releases; what a PR targets |
-| `workspace-cleanup.md` | `story cleanup`'s own preflight and recovery — the reap's retry path since SH-653 |
+| `workspace-cleanup.md` | the shared closure-cleanup controller and its recovery (SH-847) |
 | `release-observer.md` | the third lock name and the observer that takes it |
 | `activity-log.md` | the verifier's tmux mirror and the daemon journal a stalled verification is diagnosed from |
 
@@ -583,7 +563,11 @@ changed>` entry and a status update in the decisions table above.
 
 ### SH-653 — `story cleanup` is the reap's retry path, and the marker it reads is generation-scoped
 
-Built as D-H states, with two decisions the row left open, two siblings
+Historical behavior, superseded by SH-847. The closure controller now owns all
+closed lifecycles; the current contract is in workspace-cleanup.md. The original
+implementation and its migration constraints are retained below.
+
+Built as D-H stated, with two decisions the row left open, two siblings
 adopted on the way, and three limits stated rather than glossed.
 
 **The marker is read from the story's latest verification generation, never
@@ -1764,6 +1748,9 @@ this exception does not erase a missing-pane observation, reset, or quarantine.
 locus, affected stories, assessor, repair story and PR, phase, completed-attempt
 budget, and next action. Old payloads decode with an empty array. Project repair
 is displayed independently of infrastructure halt and manual admission control.
+Only unresolved recoveries are listed: a landed recovery leaves the list when no
+affected story is held or still owes a fresh generation (SH-775; the rule is in
+`docs/spec/project-fault-recovery.md`, "Resolution").
 `story verifier repair show <id> --json` retains the full evidence and history.
 
 Legacy incident text cannot prove execution, receipt inspection, or cleanup.

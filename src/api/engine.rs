@@ -57,7 +57,9 @@ impl EngineController {
         })
     }
 
-    fn context(&self, slug: &str) -> Result<Ctx<'_, SqliteStore>, AppError> {
+    /// A service context over `slug`'s project on this controller's own store
+    /// handle, shared with the agents census (SH-850, `api::agents`).
+    pub(crate) fn context(&self, slug: &str) -> Result<Ctx<'_, SqliteStore>, AppError> {
         let (project, checkout) = self.store.read(|tx| {
             let project = tx.project_by_slug(slug)?.ok_or_else(|| {
                 crate::store::StoreError::NotFound(format!("project `{slug}` not found"))
@@ -324,7 +326,9 @@ fn parse_status_query(query: Option<&str>) -> Result<Option<String>, Reply> {
     Ok(Some(value.to_string()))
 }
 
-fn valid_segment(raw: &str) -> bool {
+/// A project slug or run id segment: alphanumeric first, then alphanumeric,
+/// `-` or `_`. Shared with `api::agents`.
+pub(crate) fn valid_segment(raw: &str) -> bool {
     let mut chars = raw.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric())
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')

@@ -119,6 +119,11 @@ assert_eq "$(jqf "$out" .ok)" true "guarded resume succeeds over retained work: 
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
   'Unknown capacity alone must not defer already assigned work' \
   'a missing token counter cannot defer every fresh assignment'
+# SH-850: continuation preserves approved scope and dirty work, so the
+# manual resume's start-over permission must never reach it.
+case "$(cat "$FAKE_TMUX_STATE/submitted")" in
+  *'you may start the story over'*) fail_test 'guarded continuation never offers a start-over' ;;
+esac
 assert_eq "$(cat "$worktree/retained.txt")" 'preserve this' 'dirty bytes survive guarded resume'
 args=$(cat "$FAKE_TMUX_STATE/respawn_pane_args.log")
 case "$args" in *'-k'*) fail_test 'guarded respawn must omit -k' ;; esac
