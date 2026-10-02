@@ -11,7 +11,9 @@ fn command(env: &TestEnv, cwd: &Path, args: &[&str]) -> serde_json::Value {
     let output = env.story(cwd).args(args).arg("--json").output().unwrap();
     assert!(
         output.status.success(),
-        "{args:?}: {}",
+        "{args:?}: status={}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
@@ -44,10 +46,17 @@ fn cli_start_and_resume_wake_runs_created_after_the_daemon_began_waiting() {
     )
     .unwrap();
     let _guard = DaemonGuard::new(&env, scratch.path());
+    // Neither periodic source may finish the directly seeded run before
+    // configure, or stand in for the CLI notification this test must prove.
+    // Sixteen maximum allowances exceed all CLI and milestone waits here.
+    let periodic_interval_ms = (storyhook_test_support::load_grace::PATIENCE_CEILING * 16)
+        .as_millis()
+        .to_string();
     env.story(scratch.path())
         .args(["daemon", "start"])
         .env("STORYHOOK_DISPATCH_SCRIPT", &script)
-        .env("STORYHOOK_RECONCILE_TICK_MS", "60000")
+        .env("STORYHOOK_RECONCILE_TICK_MS", &periodic_interval_ms)
+        .env("STORYHOOK_CHANGE_POLL_MS", &periodic_interval_ms)
         .assert()
         .success();
     let project = env.project().prefix("CTL").build();
@@ -94,10 +103,11 @@ fn cli_start_and_resume_wake_runs_created_after_the_daemon_began_waiting() {
             tx.put_engine_lane(&lane)
         })
         .unwrap();
-    command(
+    let configured = command(
         &env,
         project.path(),
         &["engine", "configure", "--run", &paused.id, "--lanes", "3"],
     );
+    assert_eq!(configured["run"]["lanes"].as_array().unwrap().len(), 3);
     finished(&store, &paused.id);
 }

@@ -97,6 +97,7 @@ pub const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct Environment {
     store: StoreLocation,
     state_home: PathBuf,
+    config_home: PathBuf,
     home: PathBuf,
     clock: Clock,
     preferred_port: u16,
@@ -181,6 +182,9 @@ impl Environment {
         Ok(Environment {
             store,
             state_home,
+            config_home: env_path("XDG_CONFIG_HOME")
+                .filter(|path| path.is_absolute())
+                .unwrap_or_else(|| home.join(".config")),
             home,
             clock: Clock::System,
             preferred_port,
@@ -212,6 +216,7 @@ impl Environment {
         Environment {
             store: StoreLocation::for_home(&home),
             state_home: home.join(".local/state/storyhook"),
+            config_home: home.join(".config"),
             home,
             clock: Clock::System,
             preferred_port: 0,
@@ -266,6 +271,11 @@ impl Environment {
     /// portfile, pidfile and log, and the backup snapshots.
     pub fn state_home(&self) -> &Path {
         &self.state_home
+    }
+
+    /// The resolved XDG configuration root; relative overrides are ignored.
+    pub fn config_home(&self) -> &Path {
+        &self.config_home
     }
 
     /// The user's home directory.

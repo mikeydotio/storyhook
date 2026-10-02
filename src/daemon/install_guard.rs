@@ -153,21 +153,16 @@ impl std::fmt::Display for Refusal {
         match self {
             Self::Root => write!(
                 f,
-                "refusing to register a login agent as root: `story daemon install` writes a \
-                 launchd *user* agent, which has no meaning for root — it would be bootstrapped \
-                 into `gui/0`, and its plist, its store and its log path would all be resolved \
-                 against root's home rather than yours.\n\n\
-                 Nothing was written; no agent was loaded or replaced.\n\n\
-                 Run it again without `sudo`, as the user whose login it should start at."
+                "refusing to register a login service as root. Run without `sudo`, as the user whose login should start it. Nothing was written; no service was loaded or replaced."
             ),
             Self::InBuildDirectory { running, build_dir } => write!(
                 f,
                 "refusing to register `{running}` as your login agent: it is still where cargo \
                  built it (`{build_dir}`) — it has not been installed, whatever $PATH says.\n\n\
-                 launchd runs the path in this plist verbatim, at every login, until this \
+                 the service manager runs this registered path verbatim, at every login, until this \
                  command is run again. A build directory is rewritten by the next `cargo build` \
                  and deleted by the next `cargo clean` or worktree teardown, and the process \
-                 launchd starts from it has no $PATH of its own to check against, which makes \
+                 the service manager starts from it has no $PATH of its own to check against, which makes \
                  it the one process the migration guard structurally cannot see.\n\n\
                  Nothing was written; no agent was loaded or replaced.\n\n\
                  Install this build first (`make install`, or however this tree normally \
@@ -182,7 +177,7 @@ impl std::fmt::Display for Refusal {
                 f,
                 "refusing to register `{running}` as your login agent: your $PATH runs \
                  `{installed}`.\n\n\
-                 launchd runs the path in this plist verbatim, at every login, until this \
+                 the service manager runs this registered path verbatim, at every login, until this \
                  command is run again — and the process it starts has no $PATH of its own to \
                  check against, which makes it the one process the migration guard structurally \
                  cannot see. Registering a binary you do not otherwise run makes that build the \

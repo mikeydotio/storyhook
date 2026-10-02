@@ -114,3 +114,22 @@ fn a_bare_serve_invocation_with_no_owner_flag_reports_manual() {
         info.owner
     );
 }
+
+/// New owner flags retain the same strict internal parser contract.
+#[test]
+fn systemd_owner_values_parse_and_round_trip() {
+    use storyhook::cli::{DaemonAction, Invocation, parse_invocation};
+    for owner in ["systemd", "fork-no-manager"] {
+        let args = ["daemon", "--serve", "--owner", owner].map(str::to_string);
+        assert!(
+            matches!(parse_invocation(&args).unwrap(), Invocation::Daemon { action: DaemonAction::Serve { owner: Some(value), .. } } if value == owner)
+        );
+    }
+    let owner = DaemonOwner::Systemd {
+        unit: "io.mikey.storyhook.daemon.service".into(),
+    };
+    assert_eq!(
+        serde_json::from_str::<DaemonOwner>(&serde_json::to_string(&owner).unwrap()).unwrap(),
+        owner
+    );
+}

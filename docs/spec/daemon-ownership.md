@@ -1,6 +1,6 @@
 # Daemon ownership: who starts the daemon, and at what class
 
-Design of record for **SH-784**. Approved by Mikey 2026-09-25; this document
+Design of record for **SH-784** and **SH-787**. SH-784 was approved by Mikey 2026-09-25; this document
 records the approved design plus the operational decisions implementation
 added, including one amended by council vote (verdict on `story show SH-784`).
 
@@ -48,25 +48,25 @@ fails loudly and never falls back to a fork.
 Fork remains the path for:
 - test builds (`is_test_build()`), unconditionally, regardless of OS or of
   whatever happens to be installed on the development machine;
-- any OS other than macOS (Linux has no service-manager integration yet —
-  SH-787 tracks giving it one; `story daemon install` already refuses there,
-  so "no agent installed" is simply always true);
+- Linux without a usable user manager or installed service (SH-787, below),
+  and other unsupported service-manager platforms;
 - a store with no launchd agent installed, or whose label's plist serves a
   *different* store (`agent::Health::NotInstalled` /
   `Health::ServesAnotherStore`) — kickstarting either would be wrong.
 
-The fork path prints a warning (TTY-only) naming `story daemon install` when
-the reason is "no agent installed"; it stays silent for a test build.
+The fork path prints a warning naming `story daemon install` when the reason
+is "no agent installed" (TTY-only on macOS, always on Linux); it stays silent
+for a test build.
 
 ### Ownership is self-reported, not inferred
 
-`choose_launcher(env)` is a pure function of this build and this store's
-login-agent health — **never** of the calling process's own scheduling class
+`choose_launcher(env)` uses this build, this store's registration and manager
+availability — **never** the calling process's own scheduling class
 or coalition, so the daemon's ownership cannot itself become an accident of
 whichever client happened to trigger a start.
 
 The resulting daemon self-reports which mechanism started it via a hidden
-`--owner <launchd|fork-test-build|fork-no-agent>` flag on `daemon --serve`
+`--owner <launchd|systemd|fork-test-build|fork-no-agent|fork-no-manager>` flag on `daemon --serve`
 (absent from `--help`, the same convention `--serve` itself follows).
 `spawn_child` always passes it; the installed plist's fixed
 `ProgramArguments` always carries `--owner launchd`. When the flag is
@@ -206,15 +206,18 @@ not whether an executable, interpreter, or arbitrary project gate will work.
 ```
 trait DaemonLauncher { fn launch(&self, env) -> Result<DaemonOwner, AppError> }
   ├─ ForkLauncher { reason: ForkReason }         (lifecycle.rs)
+  ├─ SystemdUserLauncher                         (systemd.rs)
   └─ LaunchdLauncher                             (launchd.rs)
 
 enum DaemonOwner (pub, lifecycle.rs)
   ├─ Launchd { label: String }
+  ├─ Systemd { unit: String }
   └─ Forked  { parent_pid: u32, reason: ForkReason }
 
 enum ForkReason (pub)
   ├─ TestBuild
   ├─ NoAgentInstalled
+  ├─ NoUserManager
   └─ Manual
 
 enum WorkClass (pub(crate), qos.rs)
@@ -266,8 +269,52 @@ workaround until that build is installed.
 
 ## Out of scope
 
-- Linux ownership (SH-787): no service-manager integration; fork remains the
-  only path, tagged `ForkReason::NoAgentInstalled`.
 - Verifier gate QoS (SH-785): lowering gate spawns to utility, so they never
   inherit a raised serving class.
 - Daemon `RLIMIT_*` under fork vs. launchd (follow-up story, unmeasured).
+
+## Linux user services (SH-787)
+
+`daemon install` registers `io.mikey.storyhook.daemon[.<store-key>].service`
+under the resolved XDG configuration root. Its absolute executable and store,
+validated PATH, and resolved state/configuration roots travel in the definition.
+The user manager creates the process and its service cgroup. The service sets
+nice 0, SCHED_OTHER, best-effort I/O priority 4, and CPU/IO weights 100. Weights
+remain subject to the host's available/delegated controllers. Linux thread work
+classes are deliberate no-ops; verifier gate lowering remains SH-785's policy.
+
+Normal starts use `systemctl --user start --no-block`, then the existing
+store/build health handshake plus the Systemd owner identity. They do not
+restart a healthy daemon. Existing per-store serialization and port hints also
+cover registered launches and installation transactions. Restart is disabled
+in the unit so deliberate CLI stops remain stopped. ExecStop uses the
+store-specific graceful stop; explicit CLI force-stop retains its existing
+meaning. Lingering and administrator resource policy are not changed.
+
+With no unit, startup forks and warns on stderr, including redirected stderr.
+With no usable user manager, it forks with a distinct reason and the manager
+probe diagnostic. An installed malformed, masked, overridden or refusing unit
+fails rather than silently creating an unmanaged competitor. Fault-injection
+builds always fork before probing a manager.
+
+A versioned registration comment round-trips the complete generated unit.
+Status and saved-PATH readers reject metadata that disagrees with executable
+configuration. Drop-ins are refused for automatic starts because they can
+replace ExecStart; reinstall generated definitions instead. Unit commands and
+environment assignments use systemd quoting and literal expansion escaping.
+StandardError uses its own raw append-path syntax. Out-of-search-path units
+are enabled by absolute path. Installation preserves prior bytes and enablement
+for rollback, reporting rollback failures alongside the original error.
+
+Linux status reports owner and kernel scheduling/cgroup observations, guarded
+by the process's native identity before and after reading. Unavailable evidence
+is named rather than replaced by configured defaults. A registered service
+also prevents runtime garbage collection even when its executable is missing.
+
+`python3 scripts/tests/test_systemd_user.py --binary /installed/story` runs the
+production acceptance path only in an explicitly disposable Linux account
+(`STORYHOOK_SYSTEMD_TEST_HOME` must equal HOME). Its control proves inheritance
+from nice 10 / I/O priority 7; managed starts must measure nice 0 / best-effort 4
+and a distinct service cgroup. It also covers custom XDG roots, literal path
+expansion characters, concurrent starts, restart port hints and uninstall.
+Ordinary Rust tests inject manager responses and never register host units.

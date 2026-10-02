@@ -159,6 +159,12 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // was terminated before this contract ran (SH-692); classified in SH-693.
     ("src/daemon/block_delivery.rs", "\"bash\"", Kind::Waited),
     ("src/daemon/launchd.rs", "\"launchctl\"", Kind::Reads),
+    // Bounded file-backed capture; manager jobs use --no-block.
+    (
+        "src/daemon/systemd/command.rs",
+        "\"systemctl\"",
+        Kind::Waited,
+    ),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
     // Centralized verification waits for bounded bash orchestration commands.

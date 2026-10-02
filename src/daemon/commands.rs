@@ -109,7 +109,7 @@ pub fn status(env: &Environment) -> Result<Response, AppError> {
                 "{error}\n{}\n{}\n{}",
                 crate::daemon::backup::describe(env),
                 crate::daemon::backup::describe_maintenance(env),
-                agent::report(env)
+                service_report(env)
             ),
         ))
     })?;
@@ -121,7 +121,7 @@ pub fn status(env: &Environment) -> Result<Response, AppError> {
                 lifecycle::describe_paths(env),
                 crate::daemon::backup::describe(env),
                 crate::daemon::backup::describe_maintenance(env),
-                agent::report(env)
+                service_report(env)
             ),
         )));
     };
@@ -152,16 +152,17 @@ pub fn status(env: &Environment) -> Result<Response, AppError> {
         with_reclaimable(
             env,
             format!(
-                "storyhook daemon {} running at {} (PID {}){}{}\n\n{}\n{}\n{}\n{}",
+                "storyhook daemon {} running at {} (PID {}){}{}{}\n\n{}\n{}\n{}\n{}",
                 info.display_version(),
                 info.local_url(),
                 info.pid,
                 staleness,
                 describe_owner(&info),
+                scheduling_report(env, info.pid),
                 lifecycle::describe_paths(env),
                 crate::daemon::backup::describe(env),
                 crate::daemon::backup::describe_maintenance(env),
-                agent::report(env)
+                service_report(env)
             ),
         ),
         crate::daemon::activity::hygiene::warnings(env),
@@ -178,14 +179,20 @@ pub fn status(env: &Environment) -> Result<Response, AppError> {
 fn describe_owner(info: &DaemonInfo) -> String {
     match &info.owner {
         None => String::new(),
+        Some(lifecycle::DaemonOwner::Systemd { unit }) => {
+            format!("\nowner        systemd user service ({unit})")
+        }
         Some(lifecycle::DaemonOwner::Launchd { label }) => format!(
             "\nowner        launchd agent ({label}) — serving threads run at USER_INITIATED"
         ),
         Some(lifecycle::DaemonOwner::Forked { parent_pid, reason }) => {
             let why = match reason {
+                lifecycle::ForkReason::NoUserManager => {
+                    "systemd user manager unavailable".to_string()
+                }
                 lifecycle::ForkReason::TestBuild => "a test build".to_string(),
                 lifecycle::ForkReason::NoAgentInstalled => {
-                    "no launchd agent installed — run `story daemon install`".to_string()
+                    "no service installed — run `story daemon install`".to_string()
                 }
                 lifecycle::ForkReason::Manual => "started manually".to_string(),
             };
@@ -194,6 +201,31 @@ fn describe_owner(info: &DaemonInfo) -> String {
                  their inherited default class"
             )
         }
+    }
+}
+
+fn service_report(env: &Environment) -> String {
+    if cfg!(target_os = "linux") {
+        super::systemd::report(env)
+    } else {
+        agent::report(env)
+    }
+}
+
+fn scheduling_report(_env: &Environment, _pid: u32) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        super::linux_scheduling::describe(
+            _pid,
+            lifecycle::read_daemon_identity(_env)
+                .filter(|identity| identity.pid == _pid)
+                .and_then(|identity| identity.start_time)
+                .as_deref(),
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        String::new()
     }
 }
 
@@ -352,7 +384,7 @@ impl LoginAgentReport {
     }
 }
 
-/// Writes the launchd agent and loads it.
+/// Writes and starts a launchd agent or systemd user service.
 ///
 /// Idempotent: an existing agent is replaced, because the common reason to run
 /// this twice is that the binary moved.
@@ -363,13 +395,15 @@ impl LoginAgentReport {
 /// # Errors
 ///
 /// [`AppError::Usage`] when [`install_guard::decide`] refuses, when a
-/// temporary store would leave a durable agent behind, or off macOS.
-/// [`AppError::Storage`] when the plist cannot be written or `launchctl`
-/// refuses it.
+/// temporary store would leave a durable service behind, or the platform
+/// is unsupported. [`AppError::Storage`] when registration or startup fails.
 pub fn install(env: &Environment, this_binary: bool) -> Result<LoginAgentReport, AppError> {
+    if cfg!(target_os = "linux") {
+        return super::systemd::install(env, this_binary);
+    }
     if !cfg!(target_os = "macos") {
         return Err(AppError::Usage(
-            "`story daemon install` registers a launchd agent, which is macOS only. \
+            "`story daemon install` supports launchd on macOS and systemd on Linux. \
              On other systems, run `story daemon start` from your login shell or write \
              a unit for your own service manager."
                 .to_string(),
@@ -430,7 +464,7 @@ fn install_plan(
 /// may receive a permanent seat on the machine, while this function decides
 /// whether the seat itself can outlive the store. The executable decision runs
 /// first, preserving its root and path-identity refusal precedence.
-fn refuse_temporary_store_for_durable_agent(
+pub(crate) fn refuse_temporary_store_for_durable_agent(
     store_path: &Path,
     agent_path: &Path,
 ) -> Result<(), AppError> {
@@ -569,8 +603,11 @@ fn undo(path: &std::path::Path, previous: Option<&[u8]>, failure: AppError) -> A
     }
 }
 
-/// Unloads the launchd agent and removes its plist.
+/// Stops and removes this store's managed service registration.
 pub fn uninstall(env: &Environment) -> Result<LoginAgentReport, AppError> {
+    if cfg!(target_os = "linux") {
+        return super::systemd::uninstall(env);
+    }
     uninstall_with(env, &bootout_via_launchctl)
 }
 
