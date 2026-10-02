@@ -86,3 +86,7 @@ spelled differently. If lanes still over-run tests, measure it at the gate.
 
 - Shipped in the SH-864 branch. The plugin's charter tests pin the rendered
   text: `test-dispatch-auto.sh` and `test-charter-inert.sh`.
+- Adopted alongside, in its own commit: the legacy `.storyhook/CLAUDE.md`
+  (`storage::init_project`) still told agents to push a PR and run
+  `story link-pr`, contrary to verifier-owned submission (SH-647). It now
+  says the verifier pushes; `tests/scaffold.rs` guards it.
