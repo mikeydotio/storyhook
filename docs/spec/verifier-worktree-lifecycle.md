@@ -146,8 +146,12 @@ Rust supplies its cleanup grace as `STORYHOOK_VERIFIER_CLEANUP_GRACE_MS`
 (normally 30 seconds). The gate session receives one quarter for TERM cleanup,
 the lifecycle session one half, the outer machine-lock wrapper three quarters,
 and Rust the full budget. Session owners reserve another eighth for bounded
-reaping after KILL, measured from the delivered KILL and judged only by a census
-begun after it closes (SH-767). Deadlines are checked between censuses, so each
+reaping after KILL, measured from the first delivered KILL and judged only by a census
+begun after it closes (SH-767). Each subsequent cleanup pass signals the confirmed
+members again, including the lifecycle owner's recorded gate session: a member
+can fork between a kill census and signal delivery (SH-789). Repeated kills never
+renew the reaping eighth; unkillable writers still cause a refusal with retained
+evidence. Deadlines are checked between censuses, so each
 layer's worst case also grows by its census latency. The wrapper's explicit `--termination-grace` leaves other
 callers' existing policy unchanged. The bundled shell entry requires at least
 four seconds so each layer has a positive whole-second wrapper budget.
@@ -160,6 +164,18 @@ uses nonblocking waitpid without repeatedly scanning the process table. Unknown
 or unkillable execution retains its records and inherited ownership lock;
 recovery never guesses that it finished. Tracked gate edits retain the existing
 archive behavior, including their private Git administration and object lease.
+
+SIGKILL can interrupt restoration after the gate is quiet. Session quiescence
+proves writer exclusion, not successful restoration. Each supervisor logs its
+session identity when its cleanup grace expires. The cancellation fixtures
+require immediate restoration unless the **lifecycle** owner escalated. After
+that escalation they prove quiescence and cleared gate ownership first, then
+drive ordinary admission to recover the journal under a new owner. The pinned
+base, clean checkout and tracked-evidence assertions still apply. A gate-only
+escalation or an unexplained missing restoration cannot use this path.
+Two real-process regressions stall recovery until the owner kills it, retain
+the private lease, and check both clean recovery and damaged-state retention.
+See [the SH-793 diagnosis](../rca/sh-793-cancelled-restoration.md).
 
 The complete council decision and nested-budget reasoning are recorded on
 SH-686. Authority monitoring stops before verifier-owned story transitions;

@@ -400,14 +400,15 @@ _submit_box() {
     if [ "${FAKE_TMUX_CODEX_SENTINEL_MODE:-}" = identity ] \
        && [ -f "${FAKE_TMUX_CODEX_PLUGIN_ROOT:-}/hooks/session-start.sh" ] \
        && [ -s "$STATE/bootstrap_file" ]; then
-      local transcript payload hook_output bootstrap_file
+      local transcript payload hook_output bootstrap_file session_id
       transcript="$STATE/bootstrap-transcript.jsonl"
       bootstrap_file=$(cat "$STATE/bootstrap_file")
+      session_id="${FAKE_TMUX_SESSION_ID:-fake-codex-session}"
       printf '%s\n' \
-        '{"type":"session_meta","payload":{"id":"fake-codex-session"}}' \
+        "$(jq -cn --arg id "$session_id" '{type:"session_meta",payload:{id:$id}}')" \
         '{"type":"event_msg","payload":{"type":"task_started","turn_id":"bootstrap-turn","collaboration_mode_kind":"plan"}}' > "$transcript"
-      payload=$(jq -cn --arg cwd "${pending_path%/.claude/*}" --arg transcript "$transcript" \
-        '{hook_event_name:"SessionStart",source:"startup",session_id:"fake-codex-session",cwd:$cwd,transcript_path:$transcript}')
+      payload=$(jq -cn --arg cwd "${pending_path%/.claude/*}" --arg transcript "$transcript" --arg id "$session_id" \
+        '{hook_event_name:"SessionStart",source:"startup",session_id:$id,cwd:$cwd,transcript_path:$transcript}')
       hook_output=$(printf '%s' "$payload" | STORYHOOK_DISPATCH=1 \
         STORYHOOK_CODEX_BOOTSTRAP="$bootstrap_file" \
         bash "$FAKE_TMUX_CODEX_PLUGIN_ROOT/hooks/session-start.sh")

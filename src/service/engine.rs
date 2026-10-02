@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 
 use crate::domain::{
-    CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, DISPLAY_PROMOTION_STATE, LABEL_NO_AUTO,
-    StoryCleanupLease, SuperState, VERIFYING_STATE_SLUG, is_epic, validate_dispatch_option_token,
+    CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, LABEL_NO_AUTO, StoryCleanupLease, SuperState,
+    VERIFYING_STATE_SLUG, is_epic, validate_dispatch_option_token,
 };
 use crate::env::Environment;
 use crate::env::spawn_env::{apply_dispatch_allowlist, apply_orchestration_allowlist};
@@ -1639,6 +1639,9 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             let prefix = project_prefix(tx, project)?;
             let mut facts = Vec::new();
             let resets = tx.story_resets(project)?;
+            // Claims do not freeze readiness. Read the lane and its effective
+            // dependencies together, including computed epic completion.
+            let stories = super::query::story_map(tx, project)?;
             for lane in tx.engine_lanes(run_id)? {
                 if lane
                     .story_id
@@ -1664,13 +1667,16 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     continue;
                 }
                 let row = optional_lane_story(tx, project, &prefix, &story)?;
-                facts.push((lane, row));
+                let blocked = stories
+                    .get(&story)
+                    .is_some_and(|story| crate::domain::is_blocked(story, &stories));
+                facts.push((lane, row, blocked));
             }
             Ok(facts)
         })?;
 
         let mut observed = Vec::with_capacity(facts.len());
-        for (lane, row) in facts {
+        for (lane, row, blocked) in facts {
             // The window probe is a subprocess, so it runs outside the read.
             let window = lane
                 .pane_id
@@ -1712,25 +1718,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 } => seconds_between_unix(*at, &now),
                 _ => None,
             };
-            let adoption_blocked = if lane.adopted_identity.is_some() {
-                self.ctx.store().read(|tx| {
-                    let all = adoption::snapshots(tx, project)?;
-                    Ok(row
-                        .as_ref()
-                        .is_some_and(|row| crate::domain::is_blocked(&row.snapshot, &all)))
-                })?
-            } else {
-                false
-            };
             let observation = LaneObservation {
                 story_closed: row
                     .as_ref()
                     .is_some_and(|row| row.superstate == SuperState::Closed),
                 story_verifying: row.as_ref().is_some_and(hands_off_lane),
-                agent_blocked: adoption_blocked
-                    || row.as_ref().is_some_and(|row| {
-                        row.awaiting.is_some() || row.state == DISPLAY_PROMOTION_STATE
-                    }),
+                agent_blocked: blocked,
                 window,
                 head_global_seq,
                 last_progress_seq: lane.last_progress_seq.map(GlobalSeq::get),

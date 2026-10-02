@@ -74,7 +74,7 @@ use crate::service::engine::{
 };
 use crate::service::gate_progress::GATE_PROGRESS_PREFIX;
 use crate::service::project_fault::ProjectFault;
-use crate::service::verification::GenerationWrite;
+use crate::service::verification::{GenerationWrite, IMPLEMENTER_TEST_SCOPE};
 use crate::service::{
     Ctx, StoryService, VERIFICATION_GREEN_PREFIX, VERIFICATION_WITHDRAWN_PREFIX,
     VerificationCandidate, VerificationProblem, VerificationQueue,
@@ -2803,7 +2803,7 @@ where
                         actuator,
                         &candidate,
                         &format!(
-                            "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history. Run new and impacted tests. Commit the work. Move {} back to verifying. {}.\n\n{}",
+                            "CENTRAL VERIFICATION CONFLICT — the submitted PR no longer merges into its current base branch. Reconcile the branch in its worktree without rewriting published history. {IMPLEMENTER_TEST_SCOPE} Commit the work. Move {} back to verifying. {}.\n\n{}",
                             candidate.story_id,
                             push_promise(candidate.cleanup_lease.is_some(), false),
                             crate::text_lint::quote_evidence(&detail)

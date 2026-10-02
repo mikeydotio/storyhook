@@ -15,11 +15,16 @@ out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity \
+  FAKE_TMUX_SESSION_ID=bootstrap-test-session \
   FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$SCRIPT" dispatch "$id" --auto)
 assert_eq "$(jqf "$out" .ok)" true "first-turn hook initializes and dispatch succeeds"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 2 "one initialization and one charter"
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" "$id" "last submission is the story charter"
+assert_eq "$(jq -r .session_id "$(jqf "$out" .worktree_path)/.claude/dispatch-sentinel.json")" \
+  bootstrap-test-session "the hook witness retains the provider session identity"
+assert_eq "$(head -1 "$FAKE_TMUX_STATE/bootstrap-transcript.jsonl" | jq -r .payload.id)" \
+  bootstrap-test-session "the provider transcript and hook name the same session"
 
 # Machine completion must belong to the intercepted turn and exact hook package.
 source "$PLUGIN_ROOT/lib/codex-bootstrap.sh"

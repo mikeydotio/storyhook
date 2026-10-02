@@ -7,6 +7,7 @@ backup_restore	:(glob)**/*
 battery_completion	:(glob)scripts/*
 binary_lease	scripts/binary-lease.sh
 block_delivery_paths	:(glob)src/service/*.rs
+block_delivery_paths	plugins/story/bin/story.sh
 block_interrupt	:(glob)plugins/story/lib/*
 block_interrupt	plugins/story/bin/story.sh
 block_interrupt	scripts/gate-progress.sh
@@ -126,6 +127,9 @@ harness_path_entries	:(glob)**/*
 help_topic_references	:(glob)**/*
 hook_budgets	:(glob)**/*
 hooks	:(glob)**/*
+implementer_test_scope	:(glob)plugins/story/**
+implementer_test_scope	:(glob)src/**
+implementer_test_scope	AGENTS.md
 install_source	install.sh
 install_source	src/update_source.rs
 invoker_seam	:(glob)**/*
@@ -231,6 +235,7 @@ verification_queue	:(glob)**/*
 verification_retry_shell	scripts/test-git-endpoint.py
 verifier_bundle	:(glob)scripts/*
 verifier_bundle	build.rs
+verifier_case_runner	:(glob)scripts/tests/*.py
 verifier_fixture_hygiene	:(glob)**/*
 verifier_foreign_checkout	:(glob)scripts/*
 verifier_lifecycle	:(glob)scripts/**

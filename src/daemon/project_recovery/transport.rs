@@ -1,6 +1,7 @@
 //! Provider calls retain workspace exclusion and continuously checked authority.
 use super::*;
 use crate::daemon::verification::{ControlOwner, NotifyDelivery, resume_plan};
+use crate::service::verification::IMPLEMENTER_TEST_SCOPE;
 use crate::{
     process::Cancellation,
     service::{
@@ -179,7 +180,7 @@ fn message(view: &RecoveryView, operation: &Operation) -> String {
         "Continue the accepted repair scope in the same recovery lineage. Preserve the worktree and all required coverage and certification."
     };
     format!(
-        "PROJECT RECOVERY {} — effect {}. Read `story verifier repair show {} --json` and current story comments. {} Run new and impacted tests, commit, then move the story to verifying as the last action. The central verifier owns submission, the full suite, merge, and cleanup. Do not repeat completed work if this identity was already handled.",
+        "PROJECT RECOVERY {} — effect {}. Read `story verifier repair show {} --json` and current story comments. {} {IMPLEMENTER_TEST_SCOPE} Commit, then move the story to verifying as the last action. The central verifier owns submission, the full suite, merge, and cleanup. Do not repeat completed work if this identity was already handled.",
         view.record.id,
         operation.effect.as_deref().unwrap_or_default(),
         view.record.id,

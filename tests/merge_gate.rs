@@ -653,9 +653,28 @@ fn a_red_gate_whose_test_left_an_orphan_is_red_not_infrastructure() {
     let log =
         fs::read_to_string(payload["log"].as_str().expect("a log path")).expect("read the log");
     assert!(
-        log.contains("leaving survivors"),
+        log.contains("verifier-owner: gate_session")
+            && log.contains(&format!("leaving survivors [{}]", orphan.trim())),
         "the reap must be visible in the attempt log:\n{log}"
     );
+    let owners: Vec<_> = fs::read_dir(repo.common_dir().join("storyhook/verifier-lifecycle"))
+        .expect("read completed ownership evidence")
+        .map(|entry| entry.expect("read ownership entry").path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "owner")
+        })
+        .collect();
+    assert_eq!(owners.len(), 1, "one attempt owns the gate: {owners:?}");
+    let owner: serde_json::Value =
+        serde_json::from_slice(&fs::read(&owners[0]).expect("read owner record"))
+            .expect("valid owner record");
+    // Readmission alone must not hide stale gate evidence (the Python duplicate
+    // carried these assertions before SH-793 consolidated the two fixtures).
+    assert_eq!(owner.get("gate_started"), Some(&serde_json::json!(false)));
+    for field in ["gate_session", "gate_leader_exit"] {
+        assert_eq!(owner.get(field), Some(&serde_json::Value::Null), "{owner}");
+    }
 
     // The same poller, same boot: the record did not poison later admission.
     let again = repo.verification_gate(&tree, &base, &head, &poller, &["bash", "-c", "exit 7"]);

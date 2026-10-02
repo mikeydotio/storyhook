@@ -1256,6 +1256,92 @@ fn an_agent_blocked_story_quarantines_the_lane_and_preserves_its_evidence() {
     );
 }
 
+#[test]
+fn engine_owned_lanes_observe_dependency_blocks_on_steady_and_restart_passes() {
+    for restart in [false, true] {
+        for dependency in ["open", "closed", "removed", "epic-open", "epic-closed"] {
+            let fixture = ServiceFixture::new();
+            let fake = FakeDispatcher::new([DispatcherStep::WindowAlive {
+                window: "=fixture:=story-SH-1".into(),
+                alive: true,
+            }]);
+            let story = new_story(&fixture, "engine-owned claim", &[]);
+            let ctx = fixture.ctx();
+            let service = StoryService::new(&ctx);
+            let relations = storyhook::service::RelationService::new(&ctx);
+            let blocker = if dependency.starts_with("epic-") {
+                storyhook::service::ConfigService::new(&ctx)
+                    .add_type("epic", None, None)
+                    .unwrap();
+                let epic = service
+                    .create(&NewStoryInput {
+                        title: "computed dependency".into(),
+                        story_type: Some("epic".into()),
+                        ..Default::default()
+                    })
+                    .unwrap()
+                    .id;
+                let child = new_story(&fixture, "epic child", &[LABEL_NO_AUTO]);
+                relations.relate(&epic, "parent-of", &child, false).unwrap();
+                if dependency == "epic-closed" {
+                    service.set_state(&child, "done", None, None, None).unwrap();
+                }
+                epic
+            } else {
+                new_story(&fixture, "dependency", &[LABEL_NO_AUTO])
+            };
+            service
+                .set_state(&story, "in-progress", None, None, None)
+                .unwrap();
+            let run_id = started_run(&fixture, &fake, 1);
+            occupy(&fixture, &run_id, 0, &story);
+            relations
+                .relate(&story, "blocked-by", &blocker, false)
+                .unwrap();
+            match dependency {
+                "closed" => {
+                    service
+                        .set_state(&blocker, "done", None, None, None)
+                        .unwrap();
+                }
+                "removed" => {
+                    relations
+                        .relate(&story, "blocked-by", &blocker, true)
+                        .unwrap();
+                }
+                _ => {}
+            }
+            let engine = EngineService::new(&ctx, &fake);
+            let report = if restart {
+                engine.reconcile_after_restart(&run_id)
+            } else {
+                engine.reconcile(&run_id)
+            }
+            .unwrap();
+            if matches!(dependency, "open" | "epic-open") {
+                assert_eq!(
+                    report.quarantined,
+                    [(0, HardStopKind::AgentBlocked)],
+                    "restart={restart}"
+                );
+                assert_eq!(
+                    lane_at(&fixture, &run_id, 0).outcome.as_deref(),
+                    Some("agent-blocked")
+                );
+            } else {
+                assert!(
+                    report.quarantined.is_empty(),
+                    "{dependency}, restart={restart}"
+                );
+                assert_eq!(
+                    lane_at(&fixture, &run_id, 0).state,
+                    EngineLaneState::Working
+                );
+            }
+        }
+    }
+}
+
 /// Row 3, wired: the window is gone while the story is still OPEN.
 #[test]
 fn a_dead_window_on_an_open_story_quarantines_and_names_itself() {
