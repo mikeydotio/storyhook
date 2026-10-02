@@ -320,7 +320,7 @@ whole attempt; later activity never turns that attempt into a pass.
 
 Plugin tests build with `cargo build --features test-seam`. An owning `lib.sh`
 fixture clears any inherited `STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS`, computes a
-three-second base allowance through `scripts/tests/load_grace.py`, reports its
+30-second base allowance through `scripts/tests/load_grace.py`, reports its
 contention reading, and exports the allowance in milliseconds before starting
 the fixture daemon. Nested fixtures sharing that daemon retain its declaration.
 
@@ -342,3 +342,23 @@ before daemon startup, or stop its own daemon before changing it.
 The ceiling applies to each subprocess. Sampling once cannot account for a
 later load burst or guarantee scheduling; diagnostics remain necessary. This
 floor reaches only bounds routed through `Environment::subprocess_bound`.
+
+### Returned-gate corrections
+
+The native fixture probe allowance is 30 seconds before load grace. A measured
+load below one does not guarantee a three-second shell/Python startup, especially
+under utility QoS. The delayed-resource regression uses the harness declaration
+itself; removing that declaration still proves the production timeout and safe
+refusal.
+
+A complete retry or six-scenario submission fixture may use the existing
+15-minute harness ceiling. Retry gate startup and actuator idle each have a
+120-second base; control helpers have 30 seconds. These phase limits still
+fail independently. Readiness failures include activity, incident and journal
+state. The generated gate-release wait also receives grace.
+
+The process-group capture regression starts its driven 100 ms only after a
+resistant descendant publishes readiness. A 200 ms startup delay is an explicit
+control. Both the normal wrapper and the readiness-driven test use the same
+quiescent capture routing. The production wrapper retains its original absolute
+timeout. No production deadline or cancellation behavior changes.
