@@ -10,8 +10,8 @@
 //! global database where every repository defaults to the prefix `SH`, an
 //! unscoped story read does not fail, it silently returns another project's
 //! story. Full Auto operational reads instead use globally unique run ids or
-//! the project slug stored on a run; the one machine-wide live-run query is the
-//! input to restart reconciliation and lane-budget accounting.
+//! the project slug stored on a run; machine-wide operational queries keep
+//! reconciliation (including pending cleanup) separate from live-run accounting.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -399,6 +399,22 @@ pub(super) fn live_engine_runs(conn: &Connection) -> Result<Vec<EngineRunRecord>
         ),
         &[],
         "reading live engine runs",
+    )
+}
+
+pub(super) fn reconcilable_engine_runs(
+    conn: &Connection,
+) -> Result<Vec<EngineRunRecord>, StoreError> {
+    engine_run_list(
+        conn,
+        &format!(
+            "SELECT {ENGINE_RUN_COLUMNS} FROM engine_runs \
+             WHERE state IN ('running','paused','draining') \
+                OR (state = 'halted' AND stop_reason = ?1) \
+             ORDER BY project_slug, created_at, id"
+        ),
+        &[&crate::store::OPERATOR_STOPPED_NOW],
+        "reading engine runs requiring reconciliation",
     )
 }
 

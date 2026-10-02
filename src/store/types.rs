@@ -153,7 +153,7 @@ pub enum EngineRunState {
     Paused,
     /// Existing lanes may finish, but no new work is claimed.
     Draining,
-    /// The hard-stop breaker requires acknowledgement.
+    /// Admission ended; diagnostics or explicit cleanup may remain.
     Halted,
     /// The run has ended.
     Finished,
@@ -264,6 +264,23 @@ pub struct EngineRunRecord {
     pub created_at: String,
     /// RFC3339 last-update timestamp supplied by the caller.
     pub updated_at: String,
+}
+
+/// Durable intent to discard a run's unfinished work through leased cleanup.
+pub const OPERATOR_STOPPED_NOW: &str = "operator-stopped-now";
+
+impl EngineRunRecord {
+    /// Whether explicit immediate-stop cleanup still owns this run.
+    ///
+    /// A halted run must not become live again to finish cleanup: another
+    /// run may already hold the project's single live-run admission slot.
+    #[must_use]
+    pub fn is_stopping(&self) -> bool {
+        matches!(
+            self.state,
+            EngineRunState::Draining | EngineRunState::Halted
+        ) && self.stop_reason.as_deref() == Some(OPERATOR_STOPPED_NOW)
+    }
 }
 
 /// Whether a verifier infrastructure failure can recover without local repair.

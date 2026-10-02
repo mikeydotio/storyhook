@@ -533,6 +533,75 @@ fn the_partial_index_allows_history_but_only_one_live_run() {
 }
 
 #[test]
+fn reconcilable_runs_include_only_live_runs_and_explicit_halted_cleanup() {
+    use storyhook::service::engine::OPERATOR_STOPPED_NOW;
+    let (_dir, store) = new_store();
+    let mut expected = Vec::new();
+    let mut expected_live = Vec::new();
+    for state in [
+        EngineRunState::Running,
+        EngineRunState::Paused,
+        EngineRunState::Draining,
+        EngineRunState::Halted,
+        EngineRunState::Finished,
+    ] {
+        for (n, reason) in [None, Some("breaker-tripped"), Some(OPERATOR_STOPPED_NOW)]
+            .into_iter()
+            .enumerate()
+        {
+            let slug = format!("{}-{n}", state.as_str());
+            seed_project(&store, &slug, "SH");
+            let mut record = run(&slug, &slug, state);
+            record.stop_reason = reason.map(str::to_owned);
+            let stopping = matches!(state, EngineRunState::Draining | EngineRunState::Halted)
+                && reason == Some(OPERATOR_STOPPED_NOW);
+            assert_eq!(record.is_stopping(), stopping);
+            store.write(|tx| tx.create_engine_run(&record)).unwrap();
+            if state.is_live() {
+                expected_live.push(record.clone());
+            }
+            if state.is_live() || stopping {
+                expected.push(record);
+            }
+        }
+    }
+    // Multiple cleanup intents may coexist beside one live run, including
+    // before any per-lane reservation exists. Age precedes the ID tiebreaker.
+    for (id, created) in [
+        ("z-older", "2020-01-01T00:00:00Z"),
+        ("a-newer", "2026-08-29T20:00:00Z"),
+    ] {
+        let mut record = run(id, "running-0", EngineRunState::Halted);
+        record.stop_reason = Some(OPERATOR_STOPPED_NOW.into());
+        record.created_at = created.into();
+        store.write(|tx| tx.create_engine_run(&record)).unwrap();
+        expected.push(record);
+    }
+    let order = |a: &EngineRunRecord, b: &EngineRunRecord| {
+        (&a.project_slug, &a.created_at, &a.id).cmp(&(&b.project_slug, &b.created_at, &b.id))
+    };
+    expected.sort_by(order);
+    expected_live.sort_by(order);
+    store
+        .read(|tx| {
+            assert_eq!(tx.reconcilable_engine_runs()?, expected);
+            assert_eq!(tx.live_engine_runs()?, expected_live);
+            Ok(())
+        })
+        .unwrap();
+    store
+        .write(|tx| {
+            assert_eq!(
+                tx.reconcilable_engine_runs()?,
+                expected,
+                "write transactions expose the same query"
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn concurrent_live_run_creation_is_settled_by_sqlite() {
     let dir = scratch_dir();
     let path = dir.path().join("store.db");

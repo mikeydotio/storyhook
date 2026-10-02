@@ -44,10 +44,7 @@ pub(crate) fn refuse_reserved(
 
 /// Whether this run has accepted an explicit immediate-stop request.
 pub(crate) fn stopping(tx: &impl ReadOps, run: &str) -> Result<bool, StoreError> {
-    Ok(tx.engine_run(run)?.is_some_and(|run| {
-        run.state == EngineRunState::Draining
-            && run.stop_reason.as_deref() == Some(OPERATOR_STOPPED_NOW)
-    }))
+    Ok(tx.engine_run(run)?.is_some_and(|run| run.is_stopping()))
 }
 
 impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
@@ -145,7 +142,11 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                 }
             }
             let before = run.clone();
-            run.state = EngineRunState::Draining;
+            // Cleanup does not reacquire admission: a newer live run may
+            // already own this project's slot (SH-790).
+            if run.state != EngineRunState::Halted {
+                run.state = EngineRunState::Draining;
+            }
             if run.stop_reason.as_deref() != Some(OPERATOR_STOPPED_NOW) {
                 run.acknowledged_at = None;
             }

@@ -26,7 +26,7 @@ use crate::service::Ctx;
 use crate::service::engine::{EngineService, RECONCILE_TICK_SECS, ShellDispatcher};
 use crate::store::{EngineRunRecord, ReadOps, Store, StoreError};
 
-/// How often a live run is reconciled in the absence of any other wake.
+/// How often live runs and pending cleanup are reconciled without another wake.
 ///
 /// Overridable so a test can shrink it — the same shape `heartbeat_interval`,
 /// `change_poll_interval` and `github_poll_interval` (`daemon::serve`,
@@ -40,16 +40,16 @@ fn reconcile_tick_interval() -> Duration {
         .unwrap_or(Duration::from_secs(RECONCILE_TICK_SECS))
 }
 
-/// Every currently-live engine run, machine-wide.
+/// Every live run or explicit halted cleanup intent, machine-wide.
 ///
 /// A read failure is reported and treated as "nothing to reconcile this
 /// tick" rather than propagated: a poller has no caller to hand an error
 /// back to, and the next wake tries again.
-fn live_runs<S: Store>(store: &S) -> Vec<EngineRunRecord> {
-    match store.read(|tx| tx.live_engine_runs()) {
+fn reconcilable_runs<S: Store>(store: &S) -> Vec<EngineRunRecord> {
+    match store.read(|tx| tx.reconcilable_engine_runs()) {
         Ok(runs) => runs,
         Err(error) => {
-            eprintln!("storyhook: could not list live engine runs: {error}");
+            eprintln!("storyhook: could not list engine runs requiring reconciliation: {error}");
             Vec::new()
         }
     }
@@ -197,7 +197,7 @@ fn census_journal_edge(
 /// Public for store-backed integration tests, the same reason
 /// [`crate::daemon::verification::tick_with`] is.
 pub fn reconcile_tick<S: Store>(store: &S, env: &Environment) {
-    for run in live_runs(store) {
+    for run in reconcilable_runs(store) {
         reconcile_one(store, env, &run, None);
     }
 }
@@ -215,7 +215,7 @@ pub fn reconcile_restart_tick<S: Store>(store: &S, env: &Environment) {
     // One allowance for the machine, not one per run or lane. Even after it
     // expires, every lane receives store reconciliation and clock reseeding.
     let deadline = Instant::now() + env.subprocess_bound(crate::service::engine::TMUX_TIMEOUT);
-    for run in live_runs(store) {
+    for run in reconcilable_runs(store) {
         reconcile_one(store, env, &run, Some(deadline));
     }
 }
@@ -232,7 +232,7 @@ pub fn reconcile_restart_tick<S: Store>(store: &S, env: &Environment) {
 /// waiting and re-derives the remaining wait from it on every wake instead —
 /// the shape `daemon::serve`'s own chopped-sleep helpers already use — so a
 /// run of ignored notices cannot push the tick back. Project and catalog
-/// changes wake every live run, including one started since the last pass.
+/// changes wake every live run and pending cleanup, including new intents.
 /// The watcher attributes CLI controls from run records, separately from
 /// lane observations: an ordinary [`Change::Resync`] must not turn the
 /// engine's own observation writes into another pass (SH-642). Overflow is

@@ -27,6 +27,47 @@ fn start(fixture: &ServiceFixture) -> EngineRunRecord {
         .unwrap()
 }
 
+#[test]
+fn halted_cleanup_intent_and_completion_are_project_changes_without_self_wake() {
+    use storyhook::service::engine::OPERATOR_STOPPED_NOW;
+    use storyhook::store::EngineRunState;
+    let fixture = ServiceFixture::new();
+    let mut old = start(&fixture);
+    old.state = EngineRunState::Halted;
+    old.stop_reason = Some("breaker-tripped".into());
+    fixture
+        .store()
+        .write(|tx| tx.update_engine_run(&old))
+        .unwrap();
+    let live = start(&fixture);
+    let watcher = ChangeWatcher::new(fixture.store());
+    let bus = ChangeBus::new();
+    let subscription = bus.subscribe();
+    // Model the committed intent before any reservation or helper has run.
+    old.stop_reason = Some(OPERATOR_STOPPED_NOW.into());
+    fixture
+        .store()
+        .write(|tx| tx.update_engine_run(&old))
+        .unwrap();
+    project_notice(&watcher, &fixture, &bus, &subscription);
+    watcher.notice(fixture.store(), &bus);
+    assert!(notices(&subscription).is_empty());
+
+    EngineService::new(&fixture.ctx(), &FakeDispatcher::default())
+        .stop(&old.id, true)
+        .unwrap();
+    project_notice(&watcher, &fixture, &bus, &subscription);
+    EngineService::new(&fixture.ctx(), &FakeDispatcher::default())
+        .stop(&old.id, true)
+        .unwrap();
+    watcher.notice(fixture.store(), &bus);
+    assert!(notices(&subscription).is_empty());
+    assert_eq!(
+        fixture.store().read(|tx| tx.engine_run(&live.id)).unwrap(),
+        Some(live)
+    );
+}
+
 fn notices(subscription: &Subscription) -> Vec<Change> {
     std::iter::from_fn(|| subscription.recv(Duration::ZERO)).collect()
 }

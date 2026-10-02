@@ -1,4 +1,7 @@
 //! Stop Now ownership, recovery and receipt contracts use the real store.
+#[path = "engine_reset/halted.rs"]
+mod halted;
+
 use storyhook::domain::{CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget};
 use storyhook::service::engine::{DispatchOutcome, EngineService, StartRequest};
 use storyhook::service::{NewStoryInput, StoryService};
