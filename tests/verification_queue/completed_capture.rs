@@ -25,7 +25,7 @@ fn interrupted_capture_preserves_completed_cleanup_results() {
                 "#!/bin/bash\ntrap 'cat payload; exit 143' TERM\nprintf ready > ready\nwhile :; do sleep 30 & wait; done\n").unwrap();
             let root = scratch_dir();
             let env = Environment::at(root.path());
-            let idle = Duration::from_secs(1);
+            let idle = storyhook_test_support::load_grace::graced_now(Duration::from_secs(1));
             let actuator = ShellVerificationActuator::with_paths_and_timing(
                 env.clone(),
                 checkout.path().join("unused-helper"),

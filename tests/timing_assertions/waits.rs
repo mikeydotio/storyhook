@@ -118,7 +118,8 @@ fn raw_waits(source: &str) -> BTreeMap<String, usize> {
         r"(?:std::time::)?Instant::now\(\)(?:\+|<=|>=|<|>)|",
         r"[A-Za-z_][A-Za-z_0-9.]*\.elapsed\(\)(?:<=|>=|<|>)|",
         r"\.(?:recv|recv_timeout|wait_within|wait_with_output_within|set_read_timeout|set_write_timeout|busy_timeout|timeout|timeout_global)\(|",
-        r"(?:run_bounded|watchdog|http_status_line)\("
+        r"(?:run_bounded|watchdog|http_status_line)\(|",
+        r"ShellVerificationActuator::with_paths_and_timing\("
     ))
     .unwrap();
     let mut found = BTreeMap::new();
@@ -129,6 +130,23 @@ fn raw_waits(source: &str) -> BTreeMap<String, usize> {
         // A method match includes its opening parenthesis; only its arguments
         // are scanned so closures and their diagnostic text are not inventory keys.
         let mut argument = matched.end();
+        if matched.as_str() == "ShellVerificationActuator::with_paths_and_timing(" {
+            for _ in 0..3 {
+                argument = expression_end(&code, argument) + 1;
+            }
+            // Grace on one subprocess must not exempt the other two bounds.
+            for name in ["idle", "control", "termination"] {
+                let end = expression_end(&code, argument);
+                let value = &code[argument..end];
+                if !value.contains("load_grace::graced_now(") {
+                    *found
+                        .entry(format!("with_paths_and_timing[{name}]({value}"))
+                        .or_default() += 1;
+                }
+                argument = end + 1;
+            }
+            continue;
+        }
         let skip = match matched.as_str() {
             "run_bounded(" => 2,
             "watchdog(" | "http_status_line(" => 1,
@@ -145,6 +163,29 @@ fn raw_waits(source: &str) -> BTreeMap<String, usize> {
         *found.entry(expression).or_default() += 1;
     }
     found
+}
+
+#[test]
+fn actuator_bounds_are_classified_independently() {
+    let call = "ShellVerificationActuator::with_paths_and_timing(env.clone(), path(a, b), path(c, d), IDLE, CONTROL, GRACE)";
+    assert_eq!(
+        raw_waits(call).keys().cloned().collect::<Vec<_>>(),
+        [
+            "with_paths_and_timing[control](CONTROL",
+            "with_paths_and_timing[idle](IDLE",
+            "with_paths_and_timing[termination](GRACE",
+        ]
+    );
+    for name in ["IDLE", "CONTROL", "GRACE"] {
+        let graced = call.replace(name, &format!("load_grace::graced_now({name})"));
+        assert_eq!(raw_waits(&graced).len(), 2, "{graced}");
+    }
+    let graced = call
+        .replace("IDLE", "load_grace::graced_now(IDLE)")
+        .replace("CONTROL", "load_grace::graced_now(CONTROL)")
+        .replace("GRACE", "load_grace::graced_now(GRACE)");
+    assert!(raw_waits(&graced).is_empty());
+    assert!(raw_waits(&format!("// {call}\nlet s = {call:?};")).is_empty());
 }
 
 #[test]
