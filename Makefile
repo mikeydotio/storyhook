@@ -218,7 +218,7 @@ _test-body:
 	gate_run clippy bash scripts/leg.sh --reuse clippy -- python3 scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
 	gate_run rust-suite bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core; \
 	gate_run rust-contracts bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts; \
-	gate_run build bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build; \
+	gate_run build bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build --features test-seam; \
 	gate_run plugin bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh; \
 	$(if $(E2E),gate_run e2e bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true); \
 	gate_finish
@@ -254,7 +254,7 @@ _test-changed-body:
 	gate_run clippy bash scripts/leg.sh --reuse clippy -- python3 scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
 	gate_run rust-suite bash scripts/leg.sh rust-suite -- bash scripts/run-changed.sh; \
 	gate_run rust-contracts bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts; \
-	gate_run build bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build; \
+	gate_run build bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build --features test-seam; \
 	gate_run plugin bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh; \
 	bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true; \
 	gate_finish

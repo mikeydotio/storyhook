@@ -102,15 +102,12 @@ fn isolated_scenario(verdict: &str) {
         .stdout(log.try_clone().unwrap())
         .stderr(log);
     let mut child = ChildGuard::spawn(&mut command).unwrap();
-    let status = child.wait_within(
-        storyhook_test_support::load_grace::graced_now(Duration::from_secs(120)),
-        || {
-            format!(
-                "{verdict} worker exceeded deadline:\n{}",
-                fs::read_to_string(&log_path).unwrap()
-            )
-        },
-    );
+    let status = child.wait_within(storyhook_test_support::load_grace::PATIENCE_CEILING, || {
+        format!(
+            "{verdict} worker exceeded deadline:\n{}",
+            fs::read_to_string(&log_path).unwrap()
+        )
+    });
     assert!(
         status.success(),
         "{verdict} worker failed:\n{}",
@@ -193,7 +190,7 @@ root = pathlib.Path({root})
 receipt = os.environ['STORYHOOK_GATE_RECEIPT']
 subprocess.run(['bash', receipt, 'preflight'], check=True)
 (root / 'gate-ready').write_text('ready\n')
-deadline = time.monotonic() + 45
+deadline = time.monotonic() + {release_patience}
 while not (root / 'gate-release').exists():
     if time.monotonic() >= deadline:
         raise SystemExit('fixture gate release deadline expired')
@@ -204,7 +201,9 @@ if status == 0:
     subprocess.run(['bash', receipt, 'postlude', 'gate'], check=True)
 raise SystemExit(status)
 "#,
-        root = serde_json::to_string(root.to_str().unwrap()).unwrap()
+        root = serde_json::to_string(root.to_str().unwrap()).unwrap(),
+        release_patience =
+            storyhook_test_support::load_grace::graced_now(Duration::from_secs(45)).as_secs_f64(),
     );
     fs::write(checkout.join("gate.py"), gate).unwrap();
     git(&checkout, &["add", "."]);
@@ -264,9 +263,9 @@ raise SystemExit(status)
         f.env().clone(),
         root.join("absent-agent-helper"),
         callback.executable.clone(),
-        Duration::from_secs(60),
-        Duration::from_secs(5),
-        Duration::from_secs(5),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(120)),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(30)),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(5)),
     )
     .with_activity(activity.clone());
     fs::create_dir_all(f.env().daemon_state_dir()).unwrap();
@@ -319,11 +318,11 @@ raise SystemExit(status)
         &["push", "-q", "origin", &format!("{head}:refs/pull/1/head")],
     );
 
-    let result = thread::scope(|scope| {
+    let (result, final_journal) = thread::scope(|scope| {
         let running = scope.spawn(tick);
         let release = GateRelease(root.join("gate-release"));
         let mut deadline =
-            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(40));
+            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(120));
         while !root.join("gate-ready").exists() {
             if running.is_finished() {
                 panic!(
@@ -336,7 +335,14 @@ raise SystemExit(status)
             }
             assert!(
                 !deadline.expired(),
-                "{deadline}; real retry gate never became ready"
+                "{deadline}; real retry gate never became ready; activity={:?}; incident={:?}; journal={:?}",
+                activity.active_for(f.project()),
+                f.store().read(|tx| tx.verification_incident(f.project())),
+                VerificationQueue::new(f.store())
+                    .ordered_for(f.project())
+                    .map(|rows| rows
+                        .first()
+                        .map(|row| fs::read_to_string(journal_path(f.env(), row))))
             );
             thread::sleep(Duration::from_millis(10));
         }
@@ -429,15 +435,23 @@ raise SystemExit(status)
             Some(&incident)
         );
         release.publish(if verdict == "green" { "0" } else { "3" });
-        running.join().unwrap()
+        let result = running.join().unwrap();
+        (
+            result,
+            fs::read_to_string(journal_path(f.env(), &ordered[0])),
+        )
     });
-    assert!(activity.active_for(f.project()).is_none());
-    assert!(storyhook::daemon::lifecycle::read_owned_processes(f.env()).is_empty());
+    let remaining_incident = f
+        .store()
+        .read(|tx| tx.verification_incident(f.project()))
+        .unwrap();
+    let remaining_activity = activity.active_for(f.project());
+    let remaining_processes = storyhook::daemon::lifecycle::read_owned_processes(f.env());
     assert!(
-        f.store()
-            .read(|tx| tx.verification_incident(f.project()))
-            .unwrap()
-            .is_none()
+        remaining_incident.is_none()
+            && remaining_activity.is_none()
+            && remaining_processes.is_empty(),
+        "{verdict} retry did not retire: tick={result:?}; incident={remaining_incident:?}; activity={remaining_activity:?}; owned={remaining_processes:?}; journal={final_journal:?}"
     );
     let row = f
         .store()

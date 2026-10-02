@@ -44,7 +44,7 @@ args = sys.argv[1:]
 if len(args) < 4 or args[2:4] != ['verifier', 'repair-admit']:
     os.execv({real}, [{real}] + args)
 with socket.socket(socket.AF_UNIX) as client:
-    client.settimeout(20)
+    client.settimeout({patience})
     client.connect({socket})
     client.sendall(json.dumps(args).encode())
     client.shutdown(socket.SHUT_WR)
@@ -54,7 +54,9 @@ print(reply['text'], end='')
 raise SystemExit(0 if reply['ok'] else 1)
 "#,
                 real = serde_json::to_string(real.to_str().unwrap()).unwrap(),
-                socket = serde_json::to_string(socket.to_str().unwrap()).unwrap()
+                socket = serde_json::to_string(socket.to_str().unwrap()).unwrap(),
+                patience = storyhook_test_support::load_grace::graced_now(Duration::from_secs(20))
+                    .as_secs_f64(),
             ),
         )
         .unwrap();

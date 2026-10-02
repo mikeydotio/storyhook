@@ -74,6 +74,7 @@ impl GateVerdict {
             // The same test the tick applies before recording an interruption.
             Ok(Some(_)) if cancelled => Self::Interrupted,
             Ok(Some(outcome)) => match outcome {
+                VerificationOutcome::AlreadyLanded { .. } => Self::AlreadyLanded,
                 VerificationOutcome::Certified { .. } => Self::Certified,
                 VerificationOutcome::TestsFailed { .. } => Self::TestsFailed,
                 VerificationOutcome::Conflict { .. } => Self::Conflict,

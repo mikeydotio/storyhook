@@ -196,7 +196,8 @@ struct StatusProbe<'a> {
     activity: &'a VerificationActivity,
     outcomes: Mutex<VecDeque<VerificationOutcome>>,
     /// Successive submission answers; exhausted means adopt the linked PR.
-    submissions: Mutex<VecDeque<Result<SubmittedPullRequest, SubmissionFailure>>>,
+    submissions:
+        Mutex<VecDeque<Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure>>>,
     /// When set, the first `notify` resubmits this story and then fails.
     resubmit_on_first_notify: Option<String>,
     notifications: Mutex<usize>,
@@ -236,7 +237,7 @@ impl VerificationActuator for StatusProbe<'_> {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         self.submissions
             .lock()
             .unwrap()

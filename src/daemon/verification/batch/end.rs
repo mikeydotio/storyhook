@@ -524,6 +524,9 @@ fn judged_tree(outcome: &VerificationOutcome) -> Option<String> {
 
 pub(super) fn outcome_detail(outcome: &VerificationOutcome) -> String {
     match outcome {
+        VerificationOutcome::AlreadyLanded { evidence } => {
+            format!("already contained by {}", evidence.base_oid)
+        }
         VerificationOutcome::Certified { detail, gate, .. } => format!("`{gate}` passed. {detail}"),
         VerificationOutcome::TestsFailed {
             detail, log, gate, ..

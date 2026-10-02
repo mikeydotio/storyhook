@@ -114,13 +114,17 @@ fn run_with_gate(
     let first = submitted(&f, "Operator-owned decision", 1);
     let second = submitted(&f, "Next queued change", 2);
     let script = f.cwd().join("gate-probe.sh");
+    let cleanup_grace = storyhook_test_support::load_grace::graced_now(Duration::from_secs(5));
     std::fs::write(
         &script,
-        r#"[ "$STORYHOOK_VERIFIER_CLEANUP_GRACE_MS" = 5000 ] || exit 99
+        format!(
+            r#"[ "$STORYHOOK_VERIFIER_CLEANUP_GRACE_MS" = {} ] || exit 99
 trap 'printf terminated > "$STORYHOOK_GATE_PROGRESS.terminated"; exit 0' TERM
 printf ready > "$STORYHOOK_GATE_PROGRESS.started"
 while :; do sleep 30 & wait; done
 "#,
+            cleanup_grace.as_millis()
+        ),
     )
     .unwrap();
     let activity = VerificationActivity::new();
@@ -147,9 +151,9 @@ while :; do sleep 30 & wait; done
                         f.env().clone(),
                         Path::new("/unused-helper").into(),
                         Path::new("/unused-story").into(),
-                        Duration::from_secs(20),
-                        Duration::from_secs(2),
-                        Duration::from_secs(5),
+                        storyhook_test_support::load_grace::graced_now(Duration::from_secs(20)),
+                        storyhook_test_support::load_grace::graced_now(Duration::from_secs(2)),
+                        cleanup_grace,
                     )
                     .with_verifier_script(script.clone())
                     .with_activity(activity.clone())
@@ -419,9 +423,9 @@ fn a_verifier_killed_by_signal_before_answering_is_retryable_and_named_by_signal
         f.env().clone(),
         Path::new("/unused-helper").into(),
         Path::new("/unused-story").into(),
-        Duration::from_secs(20),
-        Duration::from_secs(2),
-        Duration::from_secs(5),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(20)),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(2)),
+        storyhook_test_support::load_grace::graced_now(Duration::from_secs(5)),
     )
     .with_verifier_script(script);
     let pull_request = match &candidate.pull_request {

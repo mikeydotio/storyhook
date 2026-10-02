@@ -871,25 +871,43 @@ head_ref="refs/remotes/origin/pr/$pr"
 fallback="$(git rev-parse 'HEAD^{commit}' 2>/dev/null)" \
     || die_json "could not resolve a local commit for verifier worktree recovery"
 ensure_verifier_worktree "$fallback"
+# The base must be the repository's integration branch — origin's own default,
+# asked of origin (SH-691). Until SH-691 the base was only checked for
+# stability, and five PRs opened against `main` by a stale local cache were
+# certified, merged and closed as green. Checked before any gate runs, and
+# again independently by land-pr.sh under the merge lock. Merged PR observations
+# must prove containment in this same integration branch.
+expected_base="$(bash "$script_dir/origin-default-branch.sh" 2>&1)" \
+    || retry_json "could not establish the repository's integration branch from origin for PR #$pr: $expected_base"
+[ "$base" = "$expected_base" ] \
+    || invalid_json "PR #$pr targets \`$base\`, but the repository's integration branch (origin's default) is \`$expected_base\`; a story pull request lands only there"
 if [ "$state" = MERGED ]; then
     merge_oid="$(printf '%s' "$metadata" | jq -er '.mergeCommit.oid // empty')" \
         || die_json "merged PR #$pr returned no merge commit"
     github_git fetch -q origin "+refs/heads/$base:$base_ref" \
         || retry_json "could not refresh origin/$base for merged PR #$pr"
+    if [ "${STORYHOOK_CERTIFY_ONLY:-}" = 1 ]; then
+        landed_base="$(git rev-parse --verify "$base_ref^{commit}" 2>/dev/null)" \
+            || retry_json "cannot resolve fetched base $base_ref"
+        ancestry_status=0
+        ancestry_detail=$(git merge-base --is-ancestor "$reported_head" "$landed_base" 2>&1) || ancestry_status=$?
+        case "$ancestry_status" in
+            0) ;;
+            1) invalid_json "merged PR #$pr head $reported_head is not contained by origin/$base at $landed_base" ;;
+            *) retry_json "cannot establish ancestry of $reported_head and $landed_base (exit $ancestry_status): $ancestry_detail" ;;
+        esac
+        landed_tree="$(git rev-parse --verify "$landed_base^{tree}" 2>/dev/null)" \
+            || retry_json "cannot resolve containing base tree $landed_base"
+        disarm_verification_signal_trap
+        jq -n --arg repository "$STORYHOOK_GITHUB_EXPECTED" --arg head "$reported_head" \
+            --arg base "$base" --arg commit "$landed_base" --arg tree "$landed_tree" --arg pr "$submitted_pr" \
+            '{result:"already-landed",evidence:{repository:$repository,head_oid:$head,base:$base,base_oid:$commit,base_tree:$tree,merged_pr:$pr}}'
+        exit 0
+    fi
     recover_merged "$base_ref" "$merge_oid" "$pr" "after verifier restart"
 fi
 
 [ "$state" = OPEN ] || invalid_json "PR #$pr is $state, not OPEN or MERGED"
-# The base must be the repository's integration branch — origin's own default,
-# asked of origin (SH-691). Until SH-691 the base was only checked for
-# stability, and five PRs opened against `main` by a stale local cache were
-# certified, merged and closed as green. Checked before any gate runs, and
-# again independently by land-pr.sh under the merge lock. A PR already MERGED
-# into the wrong base was recovered above as merged: nothing left to prevent.
-expected_base="$(bash "$script_dir/origin-default-branch.sh" 2>&1)" \
-    || retry_json "could not establish the repository's integration branch from origin for PR #$pr: $expected_base"
-[ "$base" = "$expected_base" ] \
-    || invalid_json "PR #$pr targets \`$base\`, but the repository's integration branch (origin's default) is \`$expected_base\`; a story pull request lands only there"
 verification_phase="pull request refs"
 gate_progress_emit_item "pull request refs" running
 _refs_start=$(date +%s)

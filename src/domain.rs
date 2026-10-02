@@ -640,7 +640,7 @@ pub struct SubmittedPullRequest {
 /// defaults.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmissionReceipt {
-    /// Whether the branch is on origin and exactly one pull request is open.
+    /// Whether submission published a PR or proved the branch already landed.
     pub ok: bool,
     /// Receipt wire-format version; currently [`CLEANUP_LEASE_VERSION`].
     #[serde(default)]
@@ -655,9 +655,12 @@ pub struct SubmissionReceipt {
     /// push of an unchanged tip — not failure).
     #[serde(default)]
     pub pushed: bool,
-    /// The open pull request, present exactly when `ok`.
+    /// The open PR success payload, mutually exclusive with `already_landed`.
     #[serde(default)]
     pub pull_request: Option<SubmittedPullRequest>,
+    /// Proven ancestry instead of an open pull request; mutually exclusive with it.
+    #[serde(default)]
+    pub already_landed: Option<landing::AlreadyLanded>,
     /// Refusal token, present exactly when `!ok` and the helper refused by
     /// name rather than failing outright.
     #[serde(default)]

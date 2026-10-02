@@ -93,7 +93,7 @@ impl VerificationActuator for JournalingGate<'_> {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         adopt_linked(candidate)
     }
 

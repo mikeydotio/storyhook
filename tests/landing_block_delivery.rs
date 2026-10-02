@@ -256,7 +256,7 @@ fn a_verifier_tick_that_lands_a_blocker_delivers_the_resume_prompt() {
             &self,
             _: &VerificationCandidate,
         ) -> Result<
-            storyhook::domain::SubmittedPullRequest,
+            storyhook::domain::landing::SubmissionOutcome,
             storyhook::daemon::verification::SubmissionFailure,
         > {
             panic!("a linked fixture does not submit")

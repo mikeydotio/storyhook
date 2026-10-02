@@ -139,6 +139,15 @@ mod tests {
     }
 
     #[test]
+    fn a_cli_floor_does_not_weaken_a_lib_tests_explicit_proof() {
+        let root = storyhook_test_support::scratch_dir();
+        let mut proven = Environment::at(root.path()).with_subprocess_proof();
+        proven.test_subprocess_patience = Some(Duration::from_secs(90));
+        assert_eq!(proven.subprocess_bound(PRODUCTION), PRODUCTION);
+        assert_eq!(proven.clone().subprocess_bound(PRODUCTION), PRODUCTION);
+    }
+
+    #[test]
     fn proof_is_the_production_value() {
         assert_eq!(SubprocessPolicy::Proof.bound(PRODUCTION), PRODUCTION);
     }

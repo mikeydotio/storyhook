@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GateVerdict {
+    /// Ancestry proved the work already landed; this attempt ran no gate.
+    AlreadyLanded,
     /// The exact merge tree passed the gate.
     Certified,
     /// The exact merge tree failed the gate.
@@ -42,6 +44,7 @@ impl GateVerdict {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::AlreadyLanded => "already-landed",
             Self::Certified => "certified",
             Self::TestsFailed => "tests-failed",
             Self::Conflict => "conflict",
@@ -66,6 +69,7 @@ mod tests {
     fn as_str_is_the_wire_slug() {
         use GateVerdict::*;
         for verdict in [
+            AlreadyLanded,
             Certified,
             TestsFailed,
             Conflict,

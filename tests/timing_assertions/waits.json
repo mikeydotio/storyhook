@@ -336,6 +336,28 @@
       "reason": "ANSWER_AFTER_ACCEPT is shorter than TAILNET_PROBE_TIMEOUT: a listener that accepts must answer before a wedged tailscale probe could complete. Binding readiness is separately graced."
     }
   },
+  "tests/verification_progress_timeout.rs": {
+    "started.elapsed()>idle": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The successful bundled-writer run must exceed its own graced silence deadline; this is a lower bound proving renewal, not a harness timeout."
+    },
+    "with_paths_and_timing[control](idle": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "verify_script drives the supplied idle deadline: timeout proofs retain IDLE; the bundled-writer progress proof supplies graced WRITER_IDLE and derives its cadence from the same value. Control and termination budgets are derived from that declaration."
+    },
+    "with_paths_and_timing[idle](idle": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "verify_script drives the supplied idle deadline: timeout proofs retain IDLE; the bundled-writer progress proof supplies graced WRITER_IDLE and derives its cadence from the same value. Control and termination budgets are derived from that declaration."
+    },
+    "with_paths_and_timing[termination](idle/4": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "verify_script drives the supplied idle deadline: timeout proofs retain IDLE; the bundled-writer progress proof supplies graced WRITER_IDLE and derives its cadence from the same value. Control and termination budgets are derived from that declaration."
+    }
+  },
   "tests/verification_queue.rs": {
     "Instant::now()+Duration::from_secs(2)": {
       "count": 1,
@@ -346,6 +368,48 @@
       "count": 1,
       "kind": "fixture",
       "reason": "recorded_pid is an optional post-kill observation. A helper killed before publication legitimately leaves no PID; the timeout ladder repeats that attempt. This window must not turn absence into a mandatory readiness wait."
+    },
+    "with_paths_and_timing[control](Duration::from_secs(1)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "The verifier timeout proof never runs the control helper; this unused control bound cannot limit fixture readiness."
+    },
+    "with_paths_and_timing[control](timeout": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The control-helper timeout ladder kills and reaps the helper group. A PID witnessed surviving is an immediate failure; only pre-readiness kills advance the explicit ladder."
+    },
+    "with_paths_and_timing[idle](Duration::from_millis(500)": {
+      "count": 1,
+      "kind": "proof",
+      "reason": "The timeout/process-group test asserts the exact 500ms idle diagnosis, then checks TERM and KILL of a resistant descendant after its readiness witness."
+    },
+    "with_paths_and_timing[idle](Duration::from_secs(1)": {
+      "count": 1,
+      "kind": "fixture",
+      "reason": "The hanging control-helper proof never starts verification; this unused idle bound does not wait for an answer."
+    },
+    "with_paths_and_timing[termination](Duration::from_millis(100)": {
+      "count": 2,
+      "kind": "proof",
+      "reason": "Timeout/process-group proofs deliberately escalate from TERM to KILL after 100ms. Their separate readiness and exit observations have graced patience."
+    }
+  },
+  "tests/verification_queue/completed_capture.rs": {
+    "with_paths_and_timing[control](idle": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "idle is graced once before the actuator is built. It triggers TERM and allows the fixture to publish its completed capture; this test proves retained results, not a particular wall-clock interval."
+    },
+    "with_paths_and_timing[idle](idle": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "idle is graced once before the actuator is built. It triggers TERM and allows the fixture to publish its completed capture; this test proves retained results, not a particular wall-clock interval."
+    },
+    "with_paths_and_timing[termination](idle": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "idle is graced once before the actuator is built. It triggers TERM and allows the fixture to publish its completed capture; this test proves retained results, not a particular wall-clock interval."
     }
   },
   "tests/verification_queue/reconcile_hold.rs": {
@@ -355,11 +419,25 @@
       "reason": "RECEIVE_POLL is the receive polling quantum. recv_patiently checks its outer load_grace Patience after each empty receive and returns disconnection immediately."
     }
   },
+  "tests/verification_retry_shell.rs": {
+    ".wait_within(storyhook_test_support::load_grace::PATIENCE_CEILING": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The complete retry experiment uses the shared finite 15-minute harness ceiling so its phase deadlines and cleanup can finish; this is patience, not a production timing proof."
+    }
+  },
   "tests/verification_shutdown_drain.rs": {
     ".recv_timeout(lifecycle::CONTROL_DEADLINE/10": {
       "count": 1,
       "kind": "proof",
       "reason": "An unrelated project wake must not release the reservation; CONTROL_DEADLINE/10 is a negative receive window."
+    }
+  },
+  "tests/verification_withdrawal.rs": {
+    "with_paths_and_timing[termination](cleanup_grace": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "cleanup_grace is graced once and shared with the probe script, which verifies exact propagation of that declared cleanup allowance."
     }
   },
   "tests/web_test.rs": {

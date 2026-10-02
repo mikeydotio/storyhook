@@ -361,6 +361,7 @@ See `bin/story.sh`'s config block for the full list.
 ## Tests
 
 ```bash
+cargo build --features test-seam               # test-only subprocess patience
 bash plugins/story/tests/run-tests.sh          # all
 bash plugins/story/tests/run-tests.sh complete # substring filter
 ```

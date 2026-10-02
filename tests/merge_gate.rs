@@ -3408,6 +3408,41 @@ fn verifier_restart_recovers_only_a_certified_merge_on_the_current_base() {
 }
 
 #[test]
+fn merged_pr_observation_completes_without_certifying_or_running_a_gate() {
+    let repo = MergeRepo::new();
+    let head = repo.branch("feature", "main", "landed.txt", "landed\n");
+    assert_ok(&repo.git(&["checkout", "-q", "main"]), "checking out base");
+    assert_ok(
+        &repo.git(&["merge", "--no-ff", "-qm", "external merge", &head]),
+        "merging externally",
+    );
+    let base = repo.rev_parse("HEAD");
+    let tree = repo.tree_of("HEAD");
+    repo.publish_origin(42, &head);
+    repo.fake_gh();
+    repo.fake_gh_answers(
+        &serde_json::json!({
+            "number": 42, "state": "MERGED", "isDraft": false,
+            "isCrossRepository": false, "baseRefName": "main",
+            "headRefName": "feature", "headRefOid": head,
+            "mergeCommit": {"oid": base}
+        })
+        .to_string(),
+    );
+    let out = repo.verify_phase(&["false"], true);
+    assert_ok(&out, "observing a landed PR");
+    let payload: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(payload["result"], "already-landed", "{payload}");
+    assert_eq!(payload["evidence"]["head_oid"], head);
+    assert_eq!(payload["evidence"]["base_oid"], base);
+    assert_eq!(payload["evidence"]["base_tree"], tree);
+    assert_eq!(
+        payload["evidence"]["merged_pr"],
+        "https://github.com/acme/widgets/pull/42"
+    );
+}
+
+#[test]
 fn landing_refusal_recovers_only_the_certified_actual_merged_tree() {
     for tier in ["gate", "changed"] {
         let repo = MergeRepo::new();
