@@ -109,6 +109,29 @@ Every Unreached or Uncertain Resume records the operator's remedy.
 `every_session_registration_first_revokes_pending_deliveries_under_the_lock` in
 `tests/block_delivery_paths.rs` pins the revocation property the rule rests on.
 
+### A block between claim and charter (SH-786)
+
+A claim is not continuing permission to launch. Reused claims, including the
+engine's `--force` dispatch, check `story session-eligibility` before preparation.
+Every dispatch checks it again after registering and validating the exact session,
+immediately before submitting the work charter. The response must identify the
+story and schema version and contain a Boolean verdict; unavailable or malformed
+evidence refuses handoff. Dry-run reports preflight only.
+
+The workspace lock spans revocation, registration, the final query and handoff
+or rollback. A hold committed before that query prevents the charter, even if its
+interrupt was already unreached or superseded. A hold committed after the query
+keeps its pending delivery: nothing revokes deliveries after the query, and the
+worker reaches the registered session once it acquires the lock. This is not an
+atomic database-and-terminal operation; interruption just after handoff is valid.
+
+Final refusal stops the exact startup process before removing resources created
+by the attempt. Retained work and pre-existing claims survive. Uncertain cleanup
+preserves the claim and resources with an explicit diagnostic. Codex may have
+completed its task-free initialization; it receives no story charter on refusal.
+The deterministic dispatch-race regression exercises real tracker mutations and
+the worker, and the registration-order contract protects the final gate's position.
+
 ### Probe bounds under contention (SH-766)
 
 The interrupt helper (`plugins/story/lib/interrupt-agent.py`) and the two
