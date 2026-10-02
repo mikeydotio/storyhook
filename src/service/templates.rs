@@ -40,15 +40,14 @@ follow the workflow below.
   and `story load-context --story {prefix}-<n>`. Follow the review procedure for
   every candidate; likely-obviated work stays open and blocked for human review.
 - Make the change. Add tests for new behavior and defects.
-- If the repository provides an impacted-test selector, run it against the actual changed tree before choosing direct test commands. Run the new and selected tests directly.
-- Leave the full suite and its lock to the central verifier.
+- {test_scope}
 - Commit the work. Do not push or open a PR: the verifier pushes your branch and opens a PR against the repository's default branch.
 - Record test results and final context: `story comment {prefix}-<n> "<context>"`.
 - Move the story to Verifying: `story move {prefix}-<n> verifying`, from inside the story's worktree so the verifier can find your branch. Make this your last action.
 - Stop work. Do not push, open a PR, run `story link-pr`, merge, close the story, or remove the work lane yourself.
 - The verifier pushes the branch, opens or adopts the PR, then runs `make test` on the proposed merge.
 - If tests pass, it merges the PR and moves the story to `{done_state}`. It then removes the work lane.
-- If the story returns to In Progress, read its comments. Fix it in the worktree, test, commit, and submit again.
+- If the story returns to In Progress, read its comments. After a failed gate they name the only other tests you may rerun. Fix it in the worktree, commit, and submit again.
 
 ## Planning
 
@@ -231,6 +230,7 @@ project it is looking at.
 "#,
         done_state = done_state,
         prefix = prefix,
+        test_scope = super::verification::IMPLEMENTER_TEST_SCOPE,
     )
 }
 
@@ -265,9 +265,11 @@ to manage tasks.
 - Before beginning or resuming implementation, run `story help obviation-review`
   and `story load-context --story <id>`. Follow the review procedure for every
   candidate; likely-obviated work stays open and blocked for human review.
-- After targeted tests, commit, then make `story move <id> verifying` your last
-  action, from inside the story's worktree. The verifier pushes your branch,
-  opens the PR, and owns the full suite, merge, completion, and cleanup.
+- Run only the tests this story adds or changes. Leave every other test to the
+  central verifier and the release gates.
+- Commit, then make `story move <id> verifying` your last action, from inside
+  the story's worktree. The verifier pushes your branch, opens the PR, and owns
+  the full suite, merge, completion, and cleanup.
 - Use `story handoff --since 2h` to summarize work at session end.
 - Found a second problem while working? Prefer adopting it into the story you
   are on over filing a new one — run `story help scope-rubric` before you file.

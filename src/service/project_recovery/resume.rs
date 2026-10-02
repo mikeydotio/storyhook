@@ -7,7 +7,7 @@ use super::{
 use crate::{
     domain::StoryEvent,
     error::AppError,
-    service::{append_and_fold, project_prefix},
+    service::{append_and_fold, project_prefix, verification::IMPLEMENTER_TEST_SCOPE},
     store::{ExpectedSeq, GlobalSeq, ProjectId, ReadOps, Store, StoreError, StoryNo},
 };
 
@@ -28,7 +28,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 append_and_fold(tx, project, hold.story, &project_prefix(tx, project)?, &tx.state_map(project)?,
                     ExpectedSeq::Exact(row.head_seq), &[
                         StoryEvent::StoryAwaitingCleared { at: now.clone() },
-                        StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("PROJECT RECOVERY {} — certified repair landed. Managed resume {} is pending. Refresh source and gate configuration from the current base, reconcile the existing worktree, run new and impacted tests, commit, and resubmit for a fresh central verification generation. The original submission remains unjudged.", view.record.id, effect) },
+                        StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("PROJECT RECOVERY {} — certified repair landed. Managed resume {} is pending. Refresh source and gate configuration from the current base, and reconcile the existing worktree. {IMPLEMENTER_TEST_SCOPE} Commit, and resubmit for a fresh central verification generation. The original submission remains unjudged.", view.record.id, effect) },
                     ], self.ctx.provenance())?;
                 let release_event = awaiting_revision(tx, project, hold.story)?.ok_or_else(|| StoreError::Corrupt("recovery release event missing".into()))?;
                 view.state.work.push(WorkDelivery {

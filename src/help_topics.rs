@@ -2889,9 +2889,9 @@ Inspect and control this project's centralized verifier.
   measured trigger).
 
   A project fault releases verifier ownership after cleanup. The managed agent
-  decides scope before edits, preserves required gate coverage, tests new and
-  impacted behavior, commits, and moves its repair to verifying as the last
-  action. A separate repair must pass central verification and land before
+  decides scope before edits, preserves required gate coverage, runs only the
+  tests its repair adds or changes, commits, and moves its repair to verifying
+  as the last action. A separate repair must pass central verification and land before
   affected agents refresh their existing worktrees and submit fresh generations.
   Recovery never reruns the exact old unjudged generation or clears a label.
   Manual stop, no-auto, human-only, resource holds, and unrelated blockers stay
