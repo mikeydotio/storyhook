@@ -749,7 +749,7 @@ WRAPPER
   # exact path and Playwright's following `:`: a suffix-only dispatch match
   # also selects story-context-menu-dispatch.spec.ts, whose requests are all
   # stubbed, then falsely fails the fake-tmux post-check below.
-  real_dispatch_selected="$(printf '%s\n' "$list_output" | grep -c "specs/\(dispatch\|engine\)\.spec\.ts:" || true)"
+  real_dispatch_selected="$(printf '%s\n' "$list_output" | e2e_pool_file_counts | e2e_selection_real_dispatch)"
 
   # `|| status=$?` rather than `if ! npx ...; then status=$?`: under `!`,
   # bash inverts the command's exit status, so `$?` inside that then-branch
