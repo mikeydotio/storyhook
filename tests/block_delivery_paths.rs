@@ -57,6 +57,7 @@ fn every_event_writer_accounts_for_effective_block_changes() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/service");
     let writers = event_writers(&root);
     let wrapped = [
+        "cleanup/requests",
         "config",
         "continuation/request",
         "engine",

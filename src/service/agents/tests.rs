@@ -2,7 +2,7 @@
 use super::*;
 use crate::service::resources::{ResourceCandidate, ResourcePane};
 use crate::service::{NewStoryInput, StoryService};
-use crate::store::{ProjectId, SqliteStore, WriteOps};
+use crate::store::{ProjectId, SqliteStore};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -49,17 +49,9 @@ fn story(ctx: &Ctx<'_, SqliteStore>, title: &str, state: &str, story_type: Optio
 
 /// The fixture project defines only `bug` and `feature`; an epic needs its
 /// type declared first.
-fn allow_epics(store: &SqliteStore, project: ProjectId) {
-    store
-        .write(|tx| {
-            let mut types = tx.types(project)?;
-            types.push(crate::domain::TypeDef {
-                slug: crate::domain::EPIC_TYPE_SLUG.into(),
-                description: None,
-                emoji: None,
-            });
-            tx.put_types(project, &types)
-        })
+fn allow_epics(ctx: &Ctx<'_, SqliteStore>) {
+    crate::service::ConfigService::new(ctx)
+        .add_type(crate::domain::EPIC_TYPE_SLUG, None, None)
         .unwrap();
 }
 
@@ -133,7 +125,7 @@ fn worktree_with(root: &Path, name: &str, record: Option<&str>) -> PathBuf {
 fn every_report_shape_maps_to_what_it_proves() {
     let (f, store) = fixture();
     let ctx = ctx(&f, &store);
-    allow_epics(&store, ctx.project());
+    allow_epics(&ctx);
     let scratch = storyhook_test_support::scratch_dir();
     let live = story(&ctx, "Its agent works", "in-progress", None);
     let dead = story(&ctx, "Its agent exited", "in-progress", None);
@@ -304,7 +296,7 @@ fn a_project_with_no_active_role_has_nothing_to_resume() {
             for state in &mut states {
                 state.role = None;
             }
-            tx.put_states(ctx.project(), &states)?;
+            crate::service::state_set::write_states(tx, ctx.project(), &states)?;
             Ok(())
         })
         .unwrap();
