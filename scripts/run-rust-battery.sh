@@ -3,6 +3,9 @@
 
 set -euo pipefail
 
+. "$(dirname "${BASH_SOURCE[0]}")/python-runtime.sh"
+storyhook_python_init || { printf '%s\n' "$STORYHOOK_PYTHON_ERROR" >&2; exit 2; }
+
 mode="${1:-}"
 case "$mode" in
 (core) only_flag="--only"; export STORYHOOK_GATE_PROGRESS_PATH="release gate/rust-suite" ;;

@@ -82,7 +82,9 @@ gate_progress_emit_output() {
     local journal
     journal="$(gate_progress_journal)"
     [ -n "$journal" ] && [ -n "${STORYHOOK_VERIFICATION_ATTEMPT:-}" ] || return 0
-    python3 - "$1" "$STORYHOOK_VERIFICATION_ATTEMPT" <<'PY' >>"$journal"
+    . "$(dirname "${BASH_SOURCE[0]}")/python-runtime.sh" || return 1
+    storyhook_python_init || { printf '%s\n' "$STORYHOOK_PYTHON_ERROR" >&2; return 1; }
+    "$STORYHOOK_PYTHON" - "$1" "$STORYHOOK_VERIFICATION_ATTEMPT" <<'PY' >>"$journal"
 import datetime
 import json
 import os

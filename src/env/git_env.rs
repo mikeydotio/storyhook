@@ -139,8 +139,10 @@ const REDIRECTS_GIT: [&str; 16] = [
 ///
 /// The three `GIT_CONFIG_*` names are the deliberate, measured carve-out this
 /// module's header explains.
-const GIT_MAY_SEE: [&str; 10] = [
+// A PATH containing the Python launcher needs its selected executable too.
+const GIT_MAY_SEE: [&str; 11] = [
     "PATH",
+    "STORYHOOK_PYTHON",
     "HOME",
     "XDG_CONFIG_HOME",
     "GIT_CONFIG_GLOBAL",

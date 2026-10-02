@@ -88,8 +88,10 @@ use std::process::Command;
 /// there. None of the three is a credential — they say where a program's
 /// files live, which is exactly what `HOME` already says — so admitting them
 /// narrows nothing this allowlist exists to protect.
-const COMMON_MAY_SEE: [&str; 12] = [
+// Keep the runtime choice coupled to PATH across each child environment scrub.
+const COMMON_MAY_SEE: [&str; 13] = [
     "PATH",
+    "STORYHOOK_PYTHON",
     "HOME",
     "XDG_DATA_HOME",
     "XDG_CONFIG_HOME",
@@ -289,6 +291,7 @@ mod tests {
         assert!(verification_permits("GH_TOKEN"));
         assert!(verification_permits("STORYHOOK_LOCK_DIR"));
         assert!(verification_permits("STORYHOOK_VERIFIER_MIRROR"));
+        assert!(verification_permits("STORYHOOK_PYTHON"));
         assert!(!verification_permits("STORYHOOK_STORE_PATH"));
         assert!(!verification_permits("OPENAI_API_KEY"));
     }

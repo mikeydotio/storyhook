@@ -159,6 +159,11 @@ priority_rubric	:(glob)**/*
 project_recovery_store	src/store/schema/0047_project_recovery.sql
 protect_install_hook	:(glob)**/*
 push_gate	:(glob)**/*
+python_runtime	:(glob)scripts/**
+python_runtime	Makefile
+python_runtime	build.rs
+python_runtime	plugins/story/tests/run-tests.sh
+python_runtime	tests/support/foreign_repo.rs
 read_model_column_coverage	:(glob)**/*
 readme_command_reference	:(glob)**/*
 release_body	:(glob)**/*

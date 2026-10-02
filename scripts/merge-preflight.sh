@@ -83,6 +83,11 @@ note() {
     printf 'merge-preflight: %s\n' "$1" >&2
 }
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || die "cannot resolve script directory"
+# shellcheck source=python-runtime.sh
+. "$script_dir/python-runtime.sh" || die "missing Python runtime policy in $script_dir"
+storyhook_python_init || die "$STORYHOOK_PYTHON_ERROR"
+
 object_arg=""
 if [ "${1:-}" = "--object-dir" ]; then
     [ "$#" -eq 4 ] || die "$USAGE"
@@ -210,7 +215,7 @@ merge_admin="$(mktemp -d -t storyhook-merge-admin.XXXXXX)" \
 format="$(git rev-parse --show-object-format)" \
     || isolation_error "cannot read the repository object format"
 case "$format" in sha1 | sha256) ;; *) isolation_error "unsupported object format $format" ;; esac
-alternate="$(python3 - "$source_objects" <<'PY'
+alternate="$("$STORYHOOK_PYTHON" - "$source_objects" <<'PY'
 import os
 import sys
 print('"' + ''.join('\\%03o' % b if b < 32 or b > 126 or b in (34, 92) else chr(b)
@@ -289,7 +294,7 @@ tree="$output"
 
 # Opening is authoritative: a directory, unreadable file, or dangling link
 # is a reader failure, never proof that the project omitted certification.
-tier="$(python3 - "$receipts/$tree" <<'PY'
+tier="$("$STORYHOOK_PYTHON" - "$receipts/$tree" <<'PY'
 import os
 import sys
 try:

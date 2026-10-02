@@ -162,6 +162,7 @@ esac
             .current_dir(&self.repo)
             .env_clear()
             .envs(daemon_containment())
+            .envs(std::env::var_os("STORYHOOK_PYTHON").map(|value| ("STORYHOOK_PYTHON", value)))
             .env(
                 "PATH",
                 format!(

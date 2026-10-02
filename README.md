@@ -74,6 +74,14 @@ Or from a local checkout:
 cargo install --path .
 ```
 
+Central verification and this repository's test runners require Python 3.11+
+(major version 3). They select a supported interpreter from
+`/opt/homebrew/bin/python3`, `/usr/local/bin/python3`, `/usr/bin/python3`, then
+`/bin/python3`, independently of shell PATH order. For another installation,
+set `STORYHOOK_PYTHON` to its absolute executable path in the verifier service's
+environment or the local test command. An invalid override is refused.
+See the [verification runtime policy](docs/spec/verification-workflow.md#python-runtime-sh-858).
+
 ### Prebuilt binaries
 
 Use the explicit-source installer above to download the matching archive through `gh` and record its source for future updates. A manually extracted binary requires `story update --source HOST/OWNER/REPO --force` before implicit updates can work.

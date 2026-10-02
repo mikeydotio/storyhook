@@ -51,6 +51,9 @@
 # (SH-627); what changed is how many invocations run at once.
 set -euo pipefail
 
+. "$(dirname "${BASH_SOURCE[0]}")/python-runtime.sh"
+storyhook_python_init || { printf '%s\n' "$STORYHOOK_PYTHON_ERROR" >&2; exit 2; }
+
 # Playwright forces FORCE_COLOR=1 in workers. Translate NO_COLOR before Node
 # starts: DEBUG_COLORS=0 makes Playwright strip ANSI from worker output, while
 # dropping the conflicting flag prevents Node's warning in every new worker.

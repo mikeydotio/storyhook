@@ -32,6 +32,9 @@ note() {
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
     || die "cannot resolve the production script directory"
+# shellcheck source=python-runtime.sh
+. "$script_dir/python-runtime.sh" || die "missing Python runtime policy in $script_dir"
+storyhook_python_init || die "$STORYHOOK_PYTHON_ERROR"
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git worktree"
 cd "$root" || die "cannot enter $root"
 
@@ -48,7 +51,7 @@ source_objects="$(cd "$common_dir/objects" && pwd -P)" \
 if [ "${1:-}" = "--speculative-run" ]; then
     [ "$#" -ge 7 ] && [ "${6:-}" = "--" ] \
         || die "private usage: merge-watch.sh --speculative-run <expected-tree> <base-ref> <head-ref> <poller-worktree> -- <command...>"
-    if ! python3 "$script_dir/verifier-owner.py" held "$common_dir" "$5"; then
+    if ! "$STORYHOOK_PYTHON" "$script_dir/verifier-owner.py" held "$common_dir" "$5"; then
         # Like verify-pr's entry, enclose both session owners in the declared
         # cleanup budget. The generic two-second lock grace can kill restoration.
         cleanup_budget="${STORYHOOK_VERIFIER_CLEANUP_GRACE_MS:-30000}"
@@ -60,7 +63,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
         cleanup_budget="$((10#$cleanup_budget))"
         export STORYHOOK_VERIFIER_CLEANUP_GRACE_MS="$cleanup_budget"
         exec bash "$script_dir/machine-lock.sh" --termination-grace "$((cleanup_budget * 3 / 4000))" gate -- \
-            python3 "$script_dir/verifier-owner.py" run "$common_dir" "$5" -- \
+            "$STORYHOOK_PYTHON" "$script_dir/verifier-owner.py" run "$common_dir" "$5" -- \
             bash "$script_dir/merge-watch.sh" "$@"
     fi
     expected_tree="$2"
@@ -78,7 +81,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
     base="$base_commit"
     head="$head_commit"
 
-    python3 "$script_dir/verifier-worktree.py" ensure "$common_dir" "$poller_wt" "$base" \
+    "$STORYHOOK_PYTHON" "$script_dir/verifier-worktree.py" ensure "$common_dir" "$poller_wt" "$base" \
         || die "could not restore the shared poller worktree lifecycle at $poller_wt"
     [ -e "$poller_wt/.git" ] \
         || die "the speculative poller worktree at $poller_wt has no .git entry"
@@ -140,7 +143,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
 
     cleanup() {
         if [ "$lease_registered" -eq 1 ]; then
-            python3 "$script_dir/verifier-worktree.py" recover "$common_dir" "$poller_wt" \
+            "$STORYHOOK_PYTHON" "$script_dir/verifier-worktree.py" recover "$common_dir" "$poller_wt" \
                 || { note "could not restore owned state; preserving $lease"; return 1; }
             lease_registered=0
             lease=""
@@ -171,7 +174,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
     trap 'on_signal INT' INT
     trap 'on_signal TERM' TERM
 
-    created_lease="$(python3 "$script_dir/verifier-worktree.py" allocate "$common_dir" "$poller_wt" "$base")" \
+    created_lease="$("$STORYHOOK_PYTHON" "$script_dir/verifier-worktree.py" allocate "$common_dir" "$poller_wt" "$base")" \
         || die "could not create private merge object storage"
     lease="$created_lease"
     lease_registered=1
@@ -219,7 +222,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
         || die "could not stage the private poller Git link"
     cp "$private_gitlink" "$gitlink_tmp" \
         || die "could not stage the private poller Git link"
-    python3 "$script_dir/verifier-worktree.py" register "$common_dir" "$poller_wt" "$lease" "$base" \
+    "$STORYHOOK_PYTHON" "$script_dir/verifier-worktree.py" register "$common_dir" "$poller_wt" "$lease" "$base" \
         || die "could not record speculative recovery intent"
     lease_registered=1
     mv -f "$gitlink_tmp" "$poller_gitlink" \
@@ -283,7 +286,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
             GIT_ALTERNATE_OBJECT_DIRECTORIES="$candidate_alternates" \
             STORYHOOK_GATE_RECEIPT="$script_dir/tree-receipt.sh" \
             STORYHOOK_GATE_PROGRESS_WRITER="$script_dir/gate-progress-writer.py" \
-            python3 "$script_dir/verifier-owner.py" gate "$common_dir" "$poller_wt" -- "$@"
+            "$STORYHOOK_PYTHON" "$script_dir/verifier-owner.py" gate "$common_dir" "$poller_wt" -- "$@"
     ) <&3 &
     child=$!
     exec 3<&-

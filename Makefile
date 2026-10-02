@@ -212,13 +212,13 @@ _test-full-body: _test-body
 _test-body _test-changed-body: SHELL := /bin/bash
 
 _test-body:
-	@bash scripts/release-status.sh || true
+	@bash scripts/python-runtime.sh -- bash scripts/release-status.sh || true
 	@. scripts/gate-legs.sh; gate_init; \
 	gate_run fmt bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check; \
-	gate_run clippy bash scripts/leg.sh --reuse clippy -- python3 scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
+	gate_run clippy bash scripts/leg.sh --reuse clippy -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
 	gate_run rust-suite bash scripts/leg.sh --reuse rust-suite -- bash scripts/run-rust-battery.sh core; \
 	gate_run rust-contracts bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts; \
-	gate_run build bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build; \
+	gate_run build bash scripts/leg.sh --reuse build -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- cargo build; \
 	gate_run plugin bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh; \
 	$(if $(E2E),gate_run e2e bash scripts/leg.sh --reuse e2e -- bash scripts/run-e2e.sh,bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true); \
 	gate_finish
@@ -248,13 +248,13 @@ test-changed: check-no-orphan-servers
 	 bash scripts/gate-receipt.sh postlude $$tier_args
 
 _test-changed-body:
-	@bash scripts/release-status.sh || true
+	@bash scripts/python-runtime.sh -- bash scripts/release-status.sh || true
 	@. scripts/gate-legs.sh; gate_init; \
 	gate_run fmt bash scripts/leg.sh --reuse fmt -- cargo fmt --all -- --check; \
-	gate_run clippy bash scripts/leg.sh --reuse clippy -- python3 scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
+	gate_run clippy bash scripts/leg.sh --reuse clippy -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- cargo clippy --workspace --all-targets -- -D warnings; \
 	gate_run rust-suite bash scripts/leg.sh rust-suite -- bash scripts/run-changed.sh; \
 	gate_run rust-contracts bash scripts/leg.sh --reuse rust-contracts -- bash scripts/run-rust-battery.sh contracts; \
-	gate_run build bash scripts/leg.sh --reuse build -- python3 scripts/cargo_diagnostics.py -- cargo build; \
+	gate_run build bash scripts/leg.sh --reuse build -- "$${STORYHOOK_PYTHON}" scripts/cargo_diagnostics.py -- cargo build; \
 	gate_run plugin bash scripts/leg.sh --reuse plugin -- bash plugins/story/tests/run-tests.sh; \
 	bash scripts/leg.sh --skipped e2e; bash scripts/browser-status.sh >/dev/null || true; \
 	gate_finish
@@ -369,6 +369,7 @@ coverage-status:
 # Fails if a test-spawned server from this worktree is still running. Never
 # looks at the installed dashboard daemon on :3456 — that one is production.
 check-no-orphan-servers:
+	@bash scripts/python-runtime.sh -- true
 	@bash scripts/check-no-orphan-servers.sh preflight
 
 # Debug build of the `story` binary.

@@ -1243,6 +1243,7 @@ fn selective_receipt_scenario(scenario: &str) {
         .env_clear()
         .envs(storyhook_test_support::daemon_containment())
         .env("PATH", std::env::var_os("PATH").expect("PATH exists"))
+        .envs(std::env::var_os("STORYHOOK_PYTHON").map(|value| ("STORYHOOK_PYTHON", value)))
         .arg("-B")
         .arg(checkout().join("tests/support/selective_receipt.py"))
         .arg(checkout())

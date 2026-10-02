@@ -53,6 +53,9 @@ case "$self" in
 esac
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=python-runtime.sh
+. "$script_dir/python-runtime.sh"
+storyhook_python_init || { printf '%s\n' "$STORYHOOK_PYTHON_ERROR" >&2; exit 2; }
 # shellcheck source=gate-progress.sh
 . "$script_dir/gate-progress.sh"
 
@@ -235,18 +238,18 @@ log="$data_root/test-output.log"
 # output cannot renew the holder watchdog. `leg.sh` still owns the item's
 # running/passed/failed lifecycle because it wraps this whole invocation.
 run_leg() {
-    observer=(python3 "$script_dir/activity-run.py" --capture "$log")
+    observer=("$STORYHOOK_PYTHON" "$script_dir/activity-run.py" --capture "$log")
     if [ -n "$(gate_progress_journal)" ]; then
         observer+=(--test-progress "$gate_progress_case_path")
     fi
-    observer+=(run-tests.sh/cargo -- python3 "$script_dir/cargo_diagnostics.py" -- "$@")
+    observer+=(run-tests.sh/cargo -- "$STORYHOOK_PYTHON" "$script_dir/cargo_diagnostics.py" -- "$@")
     "${observer[@]}"
 }
 
 # Cargo target names and package names differ, including hyphens and underscores.
 # Resolve both integration and library targets from the same metadata as the classifier.
 resolve_workspace_target() {
-    cargo metadata --no-deps --format-version=1 | python3 -c '
+    cargo metadata --no-deps --format-version=1 | "$STORYHOOK_PYTHON" -c '
 import json, sys
 d = json.load(sys.stdin)
 name = sys.argv[1]
@@ -334,11 +337,11 @@ listed_test_count() {
     fi
 
     output="$(mktemp "$data_root/test-list.XXXXXX")"
-    observer=(python3 "$script_dir/activity-run.py" --capture "$output")
+    observer=("$STORYHOOK_PYTHON" "$script_dir/activity-run.py" --capture "$output")
     if [ -n "$(gate_progress_journal)" ]; then
         observer+=(--test-progress "$gate_progress_case_path")
     fi
-    observer+=(run-tests.sh/discovery -- python3 "$script_dir/cargo_diagnostics.py" -- "${command[@]}")
+    observer+=(run-tests.sh/discovery -- "$STORYHOOK_PYTHON" "$script_dir/cargo_diagnostics.py" -- "${command[@]}")
     if ! "${observer[@]}" >/dev/null; then
         cat "$output" >&2
         echo "run-tests.sh: test discovery failed before execution; refusing an estimated progress total" >&2
@@ -450,7 +453,7 @@ cargo_test_flags=(--no-fail-fast)
 # see the same shape as the serial run. Doctests stay serial, after it.
 run_pool() {
     local build_status=0 i common
-    local pool=(python3 "$script_dir/test-pool.py" --budget "$thread_budget" --log "$log" --work "$data_root/pool")
+    local pool=("$STORYHOOK_PYTHON" "$script_dir/test-pool.py" --budget "$thread_budget" --log "$log" --work "$data_root/pool")
     if [ "${#storyhook_test_args[@]}" -gt 0 ]; then
         run_leg cargo test "${cargo_test_flags[@]}" --no-run -p storyhook "${storyhook_test_args[@]}" "$@" || build_status=$?
     fi
