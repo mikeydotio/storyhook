@@ -506,50 +506,38 @@ reset, unclaim, completion, cleanup and capture do not need STORY_AGENT.
             "cleanup",
             r#"story cleanup [--dry-run]
 
-Clean dropped-story workspaces and retry the verifier's completed-work reap.
+Clean resources for stories in any CLOSED state and retry incomplete cleanup.
 
-Dropped stories do not need a verification generation or merged commits.
-Cleanup closes the exact owned tmux window, stops its captured process tree,
-and removes a clean, unlocked leased worktree without force. Local and remote
-branches remain for recovery. This path does not fetch. Dirty work, missing
-process identity, duplicate panes, ambiguous leases, and protected resources
-are preserved. Interrupted cleanup retains durable ownership until a retry
-can prove safety; reopen and reset wait for that ownership to be released.
-Use this command again to reconcile an interrupted attempt.
+Every committed closure schedules cleanup, including done, dropped, and custom
+closed states. The daemon processes that durable request after the state change,
+independently of verifier enablement. Reopening cancels pending cleanup; effects
+already in progress retain ownership until they settle.
 
-For completed work, the verifier reaps a story's tmux window, worktree and local branch itself once
-its PR lands; cleanup is that reap's retry path. A completed-work candidate
-is eligible only when its versioned cleanup lease
-matches the current project, its story is CLOSED and carries the verifier's
-CENTRAL VERIFICATION CLEANUP COMPLETE or CLEANUP REQUIRED comment on its
-latest verification, its exact tmux window is absent, the worktree is clean
-and unlocked, and every worktree and local-branch tip is contained by a
-freshly fetched origin default branch.
+Cleanup stops the exact leased agent process tree and tmux window, then removes
+a clean, unlocked registered worktree without force. Unverified and abandoned
+work retains its local branch. A local branch is removed only with matching
+completion evidence and confirmed ancestry in the freshly fetched origin default.
+Remote branches are never removed by cleanup.
 
-For completed work, cleanup removes the leased worktree, its build artifacts,
-and the exact local branch. It never removes the main checkout, shared build
-artifacts outside an eligible worktree, or a remote branch: the verifier's
-merge step deletes the remote branch, and cleanup neither reads nor writes
-it, so nothing on the remote can be lost by this command. Open stories,
-stories the verifier has not marked, missing or malformed leases,
-unverifiable tmux/Git state, dirty work, and unmerged commits are reported
-and preserved.
+Dirty work, missing process identity, duplicate panes, ambiguous leases, protected
+resources, and changed resource identities are preserved with diagnostics.
+Interrupted cleanup resumes its journal and cannot target replacement resources.
+Use this command to retry immediately after repairing a refusal.
 
---dry-run applies every read-only preflight and reports reclaimed bytes, but
-does not remove resources, and lists every candidate it declined with the
-reason (story-open, not-verifier-released, unknown-story, dirty-worktree,
-unmerged-work, ...). JSON output includes removed, skipped, and failed arrays.
-Removal entries include removed_tmux_window and retained_local_branch.
-Dropping a story does not synchronously remove its resources.
+--dry-run previews cleanup without reservations, signals, removal, or request
+updates. JSON includes removed, skipped, and failed arrays; removal entries retain
+removed_tmux_window and retained_local_branch.
 
-The daemon runs the same service daily by default. Configure it per project:
+A periodic discovery sweep also runs daily by default. Configure that sweep with:
 
   story project settings set cleanup.auto false
   story project settings set cleanup.interval 12h
 
-The default-branch fetch uses Git's configured origin credentials. An
-authentication or network failure fails closed: the report names the failed
-step and a later explicit or scheduled pass can retry idempotently.
+These settings do not disable cleanup triggered by closure. Failed closure
+requests use a persisted retry delay; changed diagnostics are recorded on the
+story. Authentication or network failures preserve resources and name the failed
+step. Cleanup never changes the story's state.
+
 "#,
         );
 

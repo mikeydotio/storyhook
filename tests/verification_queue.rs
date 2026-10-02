@@ -2282,7 +2282,10 @@ fn reconciliation_keeps_the_verifier_until_the_same_story_is_reverified() {
     assert_eq!(generations.len(), 2);
     assert_eq!(generations[0], first_generation);
     assert_ne!(generations[0], generations[1]);
-    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [held.as_str()]);
+    assert!(
+        actuator.reaped.lock().unwrap().is_empty(),
+        "the closure worker owns cleanup"
+    );
     assert_eq!(activity.active_for(fixture.project()), None);
     assert!(lifecycle::read_inflight(fixture.env()).is_empty());
 }
@@ -3138,16 +3141,21 @@ fn a_landed_generation_without_a_lease_is_never_a_cleanup_candidate() {
     );
     assert_eq!(
         tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
-        TickResult::Completed
+        TickResult::Idle
     );
-    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [leased]);
+    assert!(actuator.reaped.lock().unwrap().is_empty());
+    let pending = fixture
+        .store()
+        .read(|tx| tx.closure_cleanups(fixture.project()))
+        .unwrap();
+    assert_eq!(pending.len(), 2);
+    assert!(pending.iter().all(|r| !r.completed));
 }
 
-/// SH-761: the green path still asks for one reap, and its CLEANUP REQUIRED
-/// comment must tell the operator that no retry will follow, because the
-/// queue will never select this generation again.
+/// SH-847: absence of a verification lease does not suppress closure intent.
+/// The cleanup worker owns resource discovery and its diagnostics.
 #[test]
-fn a_lease_less_green_landing_records_that_no_retry_is_possible() {
+fn a_lease_less_green_landing_still_records_durable_closure_intent() {
     struct RefusingReap(FakeActuator);
     impl VerificationActuator for RefusingReap {
         fn submit(
@@ -3202,20 +3210,19 @@ fn a_lease_less_green_landing_records_that_no_retry_is_possible() {
         tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Completed
     );
-    let comment = last_comment(&fixture, &id);
-    assert!(
-        comment.starts_with(VERIFICATION_CLEANUP_REQUIRED_PREFIX),
-        "{comment}"
-    );
-    assert!(
-        comment.contains("no automatic retry is possible"),
-        "{comment}"
-    );
-    assert!(comment.contains("no cleanup lease"), "{comment}");
+    let no = StoryNo::parse_id("SH", &id).unwrap();
+    let request = fixture
+        .store()
+        .read(|tx| tx.closure_cleanup(fixture.project(), no))
+        .unwrap()
+        .unwrap();
+    assert!(request.lease.is_none());
+    assert!(!request.completed);
+    assert!(request.detail.is_none());
     assert_eq!(
         tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Idle,
-        "the lease-less generation is never queued for the retry it cannot get"
+        "the verifier no longer owns closure retries"
     );
 }
 
@@ -5424,7 +5431,7 @@ fn a_submission_recorded_after_the_generation_moved_is_superseded() {
 }
 
 #[test]
-fn a_green_attempt_closes_then_reaps_the_story() {
+fn a_green_attempt_closes_and_enqueues_cleanup_without_reaping() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "green", Priority::High, PR_ONE);
@@ -5448,12 +5455,24 @@ fn a_green_attempt_closes_then_reaps_the_story() {
         .unwrap()
         .unwrap();
     assert_eq!(row.state, "done");
-    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id]);
-    assert!(row.snapshot.comments.iter().any(|comment| {
+    assert!(
+        actuator.reaped.lock().unwrap().is_empty(),
+        "the closure worker owns cleanup"
+    );
+    assert!(!row.snapshot.comments.iter().any(|comment| {
         comment
             .text
             .starts_with(VERIFICATION_CLEANUP_COMPLETE_PREFIX)
     }));
+    let cleanup = fixture
+        .store()
+        .read(|tx| tx.closure_cleanup(fixture.project(), story_no))
+        .unwrap()
+        .unwrap();
+    assert!(
+        !cleanup.completed,
+        "completion must durably hand cleanup to its owner"
+    );
 }
 
 /// The SH-652 straddle: `shipped` is the positionally first CLOSED state and
@@ -5511,7 +5530,10 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
         .unwrap();
     assert_eq!(row.state, COMPLETION_STATE_SLUG);
     assert!(row.archived);
-    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id]);
+    assert!(
+        actuator.reaped.lock().unwrap().is_empty(),
+        "the closure worker owns cleanup"
+    );
 
     // The cleanup pass reads the same answer: strip the completion marker the
     // reap wrote and the story is a cleanup candidate again, found by the
@@ -5538,7 +5560,7 @@ fn a_green_attempt_lands_in_done_whatever_closed_state_sorts_first() {
 }
 
 #[test]
-fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
+fn verifier_restart_leaves_durable_closure_cleanup_to_its_worker() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "landed before crash", Priority::High, PR_ONE);
@@ -5564,17 +5586,25 @@ fn a_restart_reaps_a_landed_story_without_repeating_completed_cleanup() {
 
     assert_eq!(
         tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
-        TickResult::Completed
+        TickResult::Idle
     );
-    assert_eq!(
-        actuator.reaped.lock().unwrap().as_slice(),
-        std::slice::from_ref(&id)
+    assert!(actuator.reaped.lock().unwrap().is_empty());
+    let no = StoryNo::parse_id("SH", &id).unwrap();
+    assert!(
+        fixture
+            .store()
+            .read(|tx| tx.closure_cleanup(fixture.project(), no))
+            .unwrap()
+            .is_some()
     );
     assert_eq!(
         tick_with(fixture.store(), &env, &actuator, fixture.project()).unwrap(),
         TickResult::Idle
     );
-    assert_eq!(actuator.reaped.lock().unwrap().as_slice(), [id]);
+    assert!(
+        actuator.reaped.lock().unwrap().is_empty(),
+        "the closure worker owns cleanup"
+    );
 }
 
 // ---------------------------------------------------------------------------

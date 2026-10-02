@@ -1,5 +1,4 @@
-//! `story cleanup` is the verifier's retry path and nothing more (SH-653,
-//! decision D-H of SH-645).
+//! Closed lifecycles share one safe cleanup controller (SH-847).
 //!
 //! `CleanupService::run` had no end-to-end test before this file: its unit
 //! tests drive `clean_candidate` on a lease they built by hand, which is
@@ -186,17 +185,16 @@ fn an_open_story_is_refused_before_any_git_work() {
 }
 
 #[test]
-fn a_closed_story_the_verifier_never_marked_is_refused() {
+fn a_closed_story_without_verifier_evidence_releases_workspace_and_retains_branch() {
     let leased = Leased::new();
     leased.move_to("done");
 
     let report = leased.run(false);
 
-    assert_eq!(
-        skip_reasons(&report),
-        vec![(leased.id.clone(), "not-verifier-released".to_string())]
-    );
-    assert!(leased.workspace.worktree.exists());
+    assert!(report.skipped.is_empty(), "{report:?}");
+    assert_eq!(report.removed.len(), 1, "{report:?}");
+    assert!(!leased.workspace.worktree.exists());
+    assert!(leased.workspace.local_branch_exists());
     assert!(leased.workspace.local_branch_exists());
 }
 
@@ -240,10 +238,7 @@ fn a_retry_that_finds_nothing_left_is_reported_as_already_clean_never_as_a_remov
 
     assert_eq!(second.candidates, 1);
     assert!(second.removed.is_empty(), "{second:?}");
-    assert_eq!(
-        skip_reasons(&second),
-        vec![(leased.id.clone(), "already-clean".to_string())]
-    );
+    assert!(second.skipped.is_empty(), "{second:?}");
 }
 
 #[test]
@@ -285,7 +280,12 @@ fn a_verified_absent_workspace_is_not_a_candidate_unless_something_came_back() {
         String::from_utf8_lossy(&output.stderr)
     );
     let back = leased.run(true);
-    assert_eq!(back.removed.len(), 1, "{back:?}");
+    assert!(back.removed.is_empty(), "{back:?}");
+    assert!(
+        !back.skipped.is_empty(),
+        "replacement resources must be preserved: {back:?}"
+    );
+    assert!(leased.workspace.worktree.exists());
 }
 
 #[test]
@@ -308,11 +308,10 @@ fn a_stale_complete_marker_from_an_earlier_generation_does_not_release_the_next(
 
     let report = leased.run(false);
 
-    assert_eq!(
-        skip_reasons(&report),
-        vec![(leased.id.clone(), "not-verifier-released".to_string())]
-    );
-    assert!(leased.workspace.worktree.exists());
+    assert!(report.skipped.is_empty(), "{report:?}");
+    assert_eq!(report.removed.len(), 1, "{report:?}");
+    assert!(!leased.workspace.worktree.exists());
+    assert!(leased.workspace.local_branch_exists());
 }
 
 #[test]
@@ -347,7 +346,7 @@ fn the_daemon_runs_the_same_gate() {
 
     tick(leased.fixture.store(), &env);
 
-    assert!(leased.workspace.worktree.exists());
+    assert!(!leased.workspace.worktree.exists());
     assert!(leased.workspace.local_branch_exists());
 }
 
@@ -449,4 +448,65 @@ fn a_lease_naming_a_different_registered_clone_of_the_origin_is_refused() {
         "a mismatched lease must not touch a repository that is not the project's own checkout"
     );
     assert!(report.removed.is_empty(), "{report:?}");
+}
+
+#[test]
+fn reopening_without_reverification_does_not_reuse_branch_deletion_authority() {
+    for state in ["done", "dropped"] {
+        let leased = Leased::new();
+        leased.move_to("done");
+        leased.comment(&format!(
+            "{VERIFICATION_CLEANUP_COMPLETE_PREFIX} previous lifecycle complete"
+        ));
+        StoryService::new(&leased.fixture.ctx())
+            .reopen(&leased.id)
+            .unwrap();
+        leased.move_to(state);
+        let report = leased.run(false);
+        assert_eq!(report.removed.len(), 1, "{state}: {report:?}");
+        assert!(!leased.workspace.worktree.exists());
+        assert!(leased.workspace.local_branch_exists());
+    }
+}
+
+#[test]
+fn a_recreated_branch_after_completed_cleanup_is_preserved_and_diagnosed() {
+    let leased = Leased::new();
+    leased.move_to("done");
+    leased.comment(&format!("{VERIFICATION_CLEANUP_COMPLETE_PREFIX} landed"));
+    assert_eq!(leased.run(false).removed.len(), 1);
+    let recreated = storyhook::env::git_env::command(&leased.workspace.checkout)
+        .args(["branch", &leased.workspace.branch, "dev"])
+        .output()
+        .unwrap();
+    assert!(recreated.status.success());
+    let report = leased.run(false);
+    assert!(report.removed.is_empty());
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|s| s.reason == "resource-identity-unsafe"),
+        "{report:?}"
+    );
+    assert!(leased.workspace.local_branch_exists());
+}
+
+#[test]
+fn a_backfilled_request_uses_agreed_history_to_remove_a_verified_merged_branch() {
+    let leased = Leased::new();
+    leased.move_to("done");
+    leased.comment(&format!("{VERIFICATION_CLEANUP_COMPLETE_PREFIX} landed"));
+    // Migration 53 has no pinned lease until the common controller admits it.
+    let conn = rusqlite::Connection::open(leased.fixture.env().store_path()).unwrap();
+    conn.execute(
+        "UPDATE closure_cleanups SET record_json=json_set(record_json, '$.lease', NULL)",
+        [],
+    )
+    .unwrap();
+    let report = leased.run(false);
+    assert_eq!(report.removed.len(), 1, "{report:?}");
+    assert!(report.removed[0].removed_local_branch);
+    assert!(!leased.workspace.worktree.exists());
+    assert!(!leased.workspace.local_branch_exists());
 }

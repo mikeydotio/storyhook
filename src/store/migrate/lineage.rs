@@ -107,6 +107,7 @@ fn classify(conn: &Connection) -> Result<bool, StoreError> {
         }
     }
     expect_table(conn, "dropped_cleanups", CARD, version >= 45)?;
+    expect_table(conn, "closure_cleanups", CARD, version >= 53)?;
     expect_table(conn, "landing_intents", LANDING, main || version >= 44)?;
     expect_table(conn, "story_reset_reservations", NATIVE, version >= 44)?;
     if main && version == 39 {
@@ -310,6 +311,7 @@ fn validate_definition(conn: &Connection, table: &str) -> Result<(), StoreError>
             include_str!("../schema/0047_project_recovery.sql")
         }
         "dropped_cleanups" => include_str!("../schema/0045_dropped_cleanup.sql"),
+        "closure_cleanups" => include_str!("../schema/0053_closure_cleanup.sql"),
         "landing_intents" => include_str!("../schema/0038_landing_intents.sql"),
         "story_reset_reservations" => include_str!("../schema/0044_launch_compatibility.sql"),
         "story_resets" => {

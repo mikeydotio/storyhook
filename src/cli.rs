@@ -303,7 +303,7 @@ Usage:
   story verifier repair decide <recovery-id> --input <json-file>
   story verifier gate-config <checkout> <base> <head> <tree> --json
   story resources <id> [--json]                    (inspect existing resource identity)
-  story cleanup [--dry-run]                         (retry the verifier's reap of finished story workspaces)
+  story cleanup [--dry-run]                         (clean closed-story resources and retry incomplete cleanup)
   story dispatch-policy show|set|reset|resolve      (automatic model and effort settings)
   story summary
   story report [--html]

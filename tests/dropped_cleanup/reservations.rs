@@ -19,6 +19,24 @@ fn reserve(f: &Dropped, phase: Phase) -> DroppedCleanup {
         .unwrap();
     let generation = f.fixture.store().read(|tx| tx.events_for(f.fixture.project(), StoryNo::new(1))).unwrap()
         .into_iter().rev().find(|e| matches!(e.known(), Some(StoryEvent::StoryStateChanged { state, .. }) if state == "dropped")).unwrap().global_seq;
+    let current = f
+        .fixture
+        .store()
+        .read(|tx| tx.story(f.fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    // Existing dropped tests also exercise the pre-migration reservation shape.
+    let (token, generation) = if current.state == "dropped" {
+        ("fixture-drop".into(), generation)
+    } else {
+        let request = f
+            .fixture
+            .store()
+            .read(|tx| tx.closure_cleanup(f.fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap();
+        (request.token, request.generation)
+    };
     let paths = [
         (f.workspace.checkout.join(".git"), false),
         (f.workspace.worktree.clone(), true),
@@ -38,7 +56,7 @@ fn reserve(f: &Dropped, phase: Phase) -> DroppedCleanup {
     let record = DroppedCleanup {
         project: f.fixture.project(),
         story: StoryNo::new(1),
-        token: "fixture-drop".into(),
+        token,
         generation,
         lease: f.lease.clone(),
         resources: report,
@@ -324,5 +342,78 @@ fn raw_state_writes_and_unsettled_release_cannot_bypass_ownership() {
             .unwrap()
             .state,
         "dropped"
+    );
+}
+
+#[test]
+fn cleanup_ownership_fences_superstate_refolds_with_an_unchanged_slug() {
+    let f = Dropped::new();
+    reserve(&f, Phase::Stopping);
+    let result = f.fixture.store().write(|tx| {
+        let mut row = tx.story(f.fixture.project(), StoryNo::new(1))?.unwrap();
+        row.snapshot.superstate = storyhook::domain::SuperState::Open;
+        row.snapshot.closed_at = None;
+        tx.put_story(f.fixture.project(), &row.snapshot, row.head_seq)
+    });
+    assert!(result.unwrap_err().to_string().contains("cleanup"));
+    assert!(
+        f.fixture
+            .store()
+            .read(|tx| tx.closure_cleanup(f.fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .is_some()
+    );
+    assert!(f.workspace.worktree.exists());
+}
+
+#[test]
+fn a_computed_closed_parent_cleans_its_lease_and_fences_child_reopening() {
+    let f = Dropped::new();
+    let ctx = f.fixture.ctx();
+    let stories = StoryService::new(&ctx);
+    stories.reopen(&f.lease.story_id).unwrap();
+    storyhook::service::ConfigService::new(&ctx)
+        .add_type("epic", None, None)
+        .unwrap();
+    stories
+        .set_fields(
+            &f.lease.story_id,
+            &storyhook::service::FieldEdits {
+                story_type: Some("epic".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let child = stories
+        .create(&NewStoryInput {
+            title: "The last child".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    storyhook::service::RelationService::new(&ctx)
+        .relate(&f.lease.story_id, "parent-of", &child.id, false)
+        .unwrap();
+    stories
+        .set_state(&child.id, "done", None, None, None)
+        .unwrap();
+    reserve(&f, Phase::Prepared);
+    assert!(
+        stories
+            .reopen(&child.id)
+            .unwrap_err()
+            .to_string()
+            .contains("cleanup")
+    );
+    let report = CleanupService::new(&ctx).run(false).unwrap();
+    assert_eq!(report.removed.len(), 1, "{report:?}");
+    assert!(!f.workspace.worktree.exists());
+    assert!(f.workspace.local_branch_exists());
+    stories.reopen(&child.id).unwrap();
+    assert!(
+        f.fixture
+            .store()
+            .read(|tx| tx.closure_cleanup(f.fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .is_none()
     );
 }

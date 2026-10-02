@@ -31,6 +31,7 @@
 //! three things every guarantee in this module is about.
 
 mod block_delivery;
+mod closure_cleanup;
 mod continuation;
 mod dispatch_policy;
 mod dropped_cleanup;
@@ -64,7 +65,8 @@ use crate::store::types::{
     PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow, VerificationIncident,
 };
 use crate::store::{
-    DroppedCleanup, EngineReset, ReadOps, Store, StoryReset, WriteOps, WriteWithSnapshot,
+    ClosureCleanup, DroppedCleanup, EngineReset, ReadOps, Store, StoryReset, WriteOps,
+    WriteWithSnapshot,
 };
 
 /// Puts a database into write-ahead logging mode, and reports the mode it ended
@@ -606,6 +608,7 @@ pub struct SqliteWriteTx<'a> {
     open: bool,
     activity: Vec<(String, String)>,
     ownership: ownership::Ownership,
+    closures: closure_cleanup::Changes,
     /// See [`WriteOps::set_block_edge_derivation`]. Per transaction, never
     /// persisted: a fresh transaction always starts outside derivation.
     derives_block_edges: bool,
@@ -629,6 +632,7 @@ impl<'a> SqliteWriteTx<'a> {
             open: true,
             activity: Vec::new(),
             ownership: ownership::Ownership::default(),
+            closures: closure_cleanup::Changes::default(),
             derives_block_edges: false,
         };
         transaction.ownership = ownership::Ownership::begin(&transaction.conn)?;
@@ -636,6 +640,7 @@ impl<'a> SqliteWriteTx<'a> {
     }
 
     fn commit(mut self) -> Result<(), StoreError> {
+        self.closures.finish(&self.conn)?;
         self.ownership.validate(&self.conn)?;
         crate::store::landing::validate_pending(&self)?;
         fire(FaultPoint::BeforeCommit)?;
@@ -932,6 +937,21 @@ macro_rules! impl_read_ops {
                 story: StoryNo,
             ) -> Result<Option<DroppedCleanup>, StoreError> {
                 dropped_cleanup::read(&self.conn, project, story)
+            }
+
+            fn closure_cleanup(
+                &self,
+                project: ProjectId,
+                story: StoryNo,
+            ) -> Result<Option<ClosureCleanup>, StoreError> {
+                closure_cleanup::read(&self.conn, project, story)
+            }
+
+            fn closure_cleanups(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<ClosureCleanup>, StoreError> {
+                closure_cleanup::list(&self.conn, project)
             }
 
             fn story_reset(
@@ -1248,6 +1268,10 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::update_engine_run(&self.conn, run)
     }
 
+    fn update_closure_cleanup(&mut self, cleanup: &ClosureCleanup) -> Result<bool, StoreError> {
+        closure_cleanup::update(&self.conn, cleanup)
+    }
+
     fn put_dropped_cleanup(&mut self, cleanup: &DroppedCleanup) -> Result<(), StoreError> {
         dropped_cleanup::put(&self.conn, cleanup)?;
         if cleanup.released {
@@ -1452,6 +1476,9 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn delete_project(&mut self, project: ProjectId) -> Result<DeletedProject, StoreError> {
         story_reset::refuse_project(&self.conn, project)?;
+        for row in read::stories(&self.conn, project, &StoryQuery::all())? {
+            self.closures.capture(&self.conn, project, row.story_no)?;
+        }
         write::delete_project(&self.conn, project)
     }
 
@@ -1461,7 +1488,7 @@ impl WriteOps for SqliteWriteTx<'_> {
         story: StoryNo,
     ) -> Result<PurgedStory, StoreError> {
         crate::service::story_reset::refuse_reserved(self, project, story)?;
-
+        self.closures.capture(&self.conn, project, story)?;
         write::purge_story(&self.conn, project, story)
     }
 
@@ -1513,10 +1540,14 @@ impl WriteOps for SqliteWriteTx<'_> {
         snapshot: &StorySnapshot,
         head: EventSeq,
     ) -> Result<(), StoreError> {
+        let prefix = read::prefix(&self.conn, project)?;
+        let story = StoryNo::parse_id(&prefix, &snapshot.id)?;
+        self.closures.capture(&self.conn, project, story)?;
         write::put_story(&self.conn, project, snapshot, head)
     }
 
     fn put_states(&mut self, project: ProjectId, states: &[StateDef]) -> Result<(), StoreError> {
+        self.closures.capture_project(&self.conn, project)?;
         write::put_states(&self.conn, project, states)
     }
 

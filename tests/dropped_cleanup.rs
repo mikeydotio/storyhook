@@ -13,8 +13,105 @@ struct Dropped {
     lease: StoryCleanupLease,
 }
 
+#[test]
+fn direct_completion_before_submission_releases_workspace_but_retains_work() {
+    let f = Dropped::new();
+    let ctx = f.fixture.ctx();
+    StoryService::new(&ctx).reopen(&f.lease.story_id).unwrap();
+    StoryService::new(&ctx)
+        .set_state(&f.lease.story_id, "done", None, None, None)
+        .unwrap();
+    let report = CleanupService::new(&ctx).run(false).unwrap();
+    assert_eq!(report.removed.len(), 1, "{report:?}");
+    assert!(!f.workspace.worktree.exists());
+    assert!(f.workspace.local_branch_exists());
+    assert!(f.workspace.origin_has_branch());
+}
+
+#[test]
+fn closure_worker_runs_with_verification_and_periodic_cleanup_disabled() {
+    let f = Dropped::new();
+    let ctx = f.fixture.ctx();
+    let stories = StoryService::new(&ctx);
+    stories.reopen(&f.lease.story_id).unwrap();
+    stories
+        .set_labels(
+            &f.lease.story_id,
+            &["human-only".into(), "no-auto".into()],
+            &[],
+        )
+        .unwrap();
+    stories
+        .set_state(&f.lease.story_id, "dropped", None, None, None)
+        .unwrap();
+    f.fixture
+        .store()
+        .write(|tx| {
+            let mut settings = tx.settings(f.fixture.project())?;
+            settings.cleanup_auto = Some(false);
+            tx.put_verification_enabled(f.fixture.project(), false)?;
+            tx.put_settings(f.fixture.project(), &settings)
+        })
+        .unwrap();
+    storyhook::daemon::cleanup::tick_closures(f.fixture.store(), f.fixture.env()).unwrap();
+    assert!(!f.workspace.worktree.exists());
+    assert!(f.workspace.local_branch_exists());
+    let request = f
+        .fixture
+        .store()
+        .read(|tx| tx.closure_cleanup(f.fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert!(request.completed);
+    storyhook::daemon::cleanup::tick_closures(f.fixture.store(), f.fixture.env()).unwrap();
+    assert_eq!(
+        request,
+        f.fixture
+            .store()
+            .read(|tx| tx.closure_cleanup(f.fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap()
+    );
+}
+
+#[test]
+fn failed_closure_cleanup_is_durable_and_comments_do_not_repeat() {
+    let f = Dropped::new();
+    fs::write(f.workspace.worktree.join("uncommitted"), "preserve this").unwrap();
+    let first = CleanupService::new(&f.fixture.ctx()).run(false).unwrap();
+    assert!(first.skipped.iter().any(|i| i.reason == "dirty-worktree"));
+    let request = f
+        .fixture
+        .store()
+        .read(|tx| tx.closure_cleanup(f.fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert!(!request.completed);
+    assert!(request.retry_at.is_some());
+    assert!(request.detail.as_ref().unwrap().contains("dirty-worktree"));
+    let before = f
+        .fixture
+        .store()
+        .read(|tx| tx.events_for(f.fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .len();
+    CleanupService::new(&f.fixture.ctx()).run(false).unwrap();
+    let after = f
+        .fixture
+        .store()
+        .read(|tx| tx.events_for(f.fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .len();
+    assert_eq!(before, after);
+    assert!(f.workspace.worktree.join("uncommitted").exists());
+}
+
 impl Dropped {
     fn new() -> Self {
+        Self::with_merge(false)
+    }
+
+    fn with_merge(merged: bool) -> Self {
         let fixture = ServiceFixture::new();
         let id = StoryService::new(&fixture.ctx())
             .create(&NewStoryInput {
@@ -23,7 +120,7 @@ impl Dropped {
             })
             .unwrap()
             .id;
-        let workspace = StoryWorkspace::new(&id, false);
+        let workspace = StoryWorkspace::new(&id, merged);
         fixture
             .store()
             .write(|tx| tx.set_checkout_path(fixture.project(), Some(&workspace.checkout)))
@@ -376,4 +473,47 @@ fn calling_worktree_cannot_be_removed() {
         "{report:?}"
     );
     assert!(f.workspace.worktree.exists());
+}
+
+#[test]
+fn verified_completion_reclaims_a_live_window_and_previews_branch_removal() {
+    let f = Dropped::with_merge(true);
+    let ctx = f.fixture.ctx();
+    let stories = StoryService::new(&ctx);
+    stories.reopen(&f.lease.story_id).unwrap();
+    stories
+        .set_state(&f.lease.story_id, "verifying", None, None, None)
+        .unwrap();
+    f.fixture
+        .append_cleanup_lease(&f.lease.story_id, f.lease.clone());
+    stories
+        .set_state(
+            &f.lease.story_id,
+            "done",
+            Some("merged fixture"),
+            None,
+            None,
+        )
+        .unwrap();
+    stories
+        .comment(
+            &f.lease.story_id,
+            &format!("{} landed", storyhook::service::VERIFICATION_GREEN_PREFIX),
+        )
+        .unwrap();
+    let terminal = Terminal::start(&f);
+    let preview = CleanupService::new(&ctx).run(true).unwrap();
+    assert_eq!(preview.removed.len(), 1, "{preview:?}");
+    assert!(preview.removed[0].removed_tmux_window);
+    assert!(preview.removed[0].removed_local_branch);
+    assert!(f.workspace.worktree.exists());
+    let report = CleanupService::new(&ctx).run(false).unwrap();
+    assert_eq!(report.removed.len(), 1, "{report:?}");
+    assert!(report.removed[0].removed_local_branch);
+    assert!(!f.workspace.local_branch_exists());
+    assert!(!f.workspace.worktree.exists());
+    assert_eq!(
+        terminal.call(&["list-windows", "-a", "-F", "#{window_name}"]),
+        "OTHER"
+    );
 }

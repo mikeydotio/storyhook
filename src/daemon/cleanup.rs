@@ -4,9 +4,11 @@
 //! candidate discovery and every destructive invariant, so the CLI and daemon
 //! cannot disagree about what is safe to remove.
 
+use super::bus::{Change, ChangeBus};
+use crate::error::AppError;
+use crate::service::cleanup::requests;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::domain::parse_duration;
 use crate::env::Environment;
@@ -102,16 +104,103 @@ pub fn tick<S: Store>(store: &S, env: &Environment) {
     }
 }
 
-/// Polls until daemon shutdown, running overdue projects immediately.
-pub(crate) fn poll_cleanup<S: Store>(store: &S, env: &Environment, stop: &AtomicBool) {
+/// Attempts each due closed lifecycle, even when periodic cleanup is disabled.
+pub fn tick_closures<S: Store>(store: &S, env: &Environment) -> Result<(), AppError> {
+    let projects = store.read(|tx| tx.projects())?;
+    let mut failures = Vec::new();
+    for project in projects {
+        let pending = store.read(|tx| tx.closure_cleanups(project.id))?;
+        let pending: Vec<_> = pending
+            .into_iter()
+            .filter(|r| requests::due(r, &env.now()))
+            .collect();
+        if pending.is_empty() {
+            continue;
+        }
+        let checkout = store.read(|tx| tx.checkout_path(project.id))?;
+        let ctx = Ctx::new(
+            store,
+            project.id,
+            checkout.unwrap_or_else(|| env.home().to_path_buf()),
+            env.clone(),
+        )
+        .no_hooks(true);
+        match CleanupService::new(&ctx).run_pending() {
+            Ok(report) => {
+                for issue in &report.skipped {
+                    super::activity::emit(
+                        "WARN",
+                        "cleanup",
+                        "event",
+                        &format!("project={} story={}", project.slug, issue.story_id),
+                        &format!("{}: {}", issue.reason, issue.detail),
+                    );
+                }
+                for failure in &report.failed {
+                    super::activity::emit(
+                        "ERROR",
+                        "cleanup",
+                        "event",
+                        &format!("project={} story={}", project.slug, failure.story_id),
+                        &format!("{}: {}", failure.reason, failure.detail),
+                    );
+                }
+            }
+            Err(error) => {
+                for request in pending {
+                    let issue = crate::service::CleanupSkip {
+                        story_id: request.story.to_id(&project.prefix),
+                        reason: "cleanup-unavailable".into(),
+                        detail: error.to_string(),
+                    };
+                    if let Err(persist) = requests::finish(&ctx, &request, Some(&issue)) {
+                        failures.push(format!(
+                            "{}: {error}; recording cleanup failure: {persist}",
+                            issue.story_id
+                        ));
+                    }
+                }
+                failures.push(format!("{}: {error}", project.slug));
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::Storage(failures.join("; ")))
+    }
+}
+
+/// Wakes on committed project changes; durable requests recover lost notifications.
+pub(crate) fn poll_cleanup<S: Store>(
+    store: &S,
+    env: &Environment,
+    bus: &ChangeBus,
+    stop: &AtomicBool,
+) {
+    let subscription = bus.subscribe();
     while !stop.load(Ordering::Relaxed) {
+        if let Err(error) = tick_closures(store, env) {
+            super::activity::emit(
+                "ERROR",
+                "cleanup",
+                "event",
+                "closure requests",
+                &error.to_string(),
+            );
+        }
         tick(store, env);
-        let interval = poll_interval();
-        let mut waited = Duration::ZERO;
-        while waited < interval && !stop.load(Ordering::Relaxed) {
-            let slice = super::serve::SHUTDOWN_CHECK.min(interval - waited);
-            thread::sleep(slice);
-            waited += slice;
+        let deadline = Instant::now()
+            + poll_interval().min(Duration::from_secs(requests::RETRY_SECONDS as u64));
+        while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
+            let wait = super::serve::SHUTDOWN_CHECK
+                .min(deadline.saturating_duration_since(Instant::now()));
+            if matches!(
+                subscription.recv(wait),
+                Some(Change::Project(_) | Change::Catalog | Change::Resync | Change::Reload)
+            ) {
+                break;
+            }
         }
     }
 }
@@ -120,6 +209,78 @@ pub(crate) fn poll_cleanup<S: Store>(store: &S, env: &Environment, stop: &Atomic
 mod tests {
     use super::*;
     use crate::store::{NewProject, ProjectSettings, SqliteStore, WriteOps};
+
+    #[test]
+    fn startup_and_change_feed_drain_committed_closures() {
+        use crate::service::{NewStoryInput, StoryService};
+        use crate::store::StoryNo;
+        use storyhook_test_support::load_grace::{Patience, wait_for};
+        let fixture = storyhook_test_support::ServiceFixture::new();
+        let store = SqliteStore::open(fixture.env().store_path()).unwrap();
+        let env = Environment::at(fixture.env().home());
+        let project = store
+            .read(|tx| Ok(tx.project_by_slug("fixture")?.unwrap().id))
+            .unwrap();
+        store
+            .write(|tx| {
+                tx.set_checkout_path(project, None)?;
+                tx.put_settings(
+                    project,
+                    &ProjectSettings {
+                        cleanup_auto: Some(false),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        let ctx = Ctx::new(&store, project, fixture.cwd(), env.clone()).no_hooks(true);
+        let stories = StoryService::new(&ctx);
+        let close = || {
+            let story = stories
+                .create(&NewStoryInput {
+                    title: "Lifecycle wake".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+            stories
+                .set_state(&story.id, "done", None, None, None)
+                .unwrap();
+            StoryNo::parse_id("SH", &story.id).unwrap()
+        };
+        let first = close();
+        let bus = ChangeBus::new();
+        let stop = AtomicBool::new(false);
+        struct StopOnDrop<'a>(&'a AtomicBool, &'a ChangeBus);
+        impl Drop for StopOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+                self.1.publish(Change::Reload);
+            }
+        }
+        std::thread::scope(|scope| {
+            scope.spawn(|| poll_cleanup(&store, &env, &bus, &stop));
+            let _stop = StopOnDrop(&stop, &bus);
+            let completed = |story| {
+                wait_for(
+                    Patience::new(Duration::from_secs(requests::RETRY_SECONDS as u64)),
+                    super::super::serve::SHUTDOWN_CHECK,
+                    || format!("closure worker did not finish {story:?}"),
+                    || {
+                        store
+                            .read(|tx| tx.closure_cleanup(project, story))
+                            .unwrap()
+                            .filter(|r| r.completed)
+                    },
+                )
+            };
+            completed(first);
+            for change in [Change::Project("fixture".into()), Change::Resync] {
+                let next = close();
+                bus.publish(change);
+                completed(next);
+            }
+        });
+    }
 
     #[test]
     fn default_and_configured_intervals_are_exact() {

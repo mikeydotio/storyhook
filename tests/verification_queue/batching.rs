@@ -38,7 +38,6 @@ fn a_batch_certified_at_another_head_is_released_and_the_head_is_gated_alone() {
             format!("retire {} {BATCH_PR}", batch.id),
             format!("verify {} https://github.com/acme/widgets/pull/1", ids[0]),
             format!("land {} https://github.com/acme/widgets/pull/1", ids[0]),
-            format!("reap {}", ids[0]),
         ],
         "the batch gate runs first, then the head's own gate on its own PR"
     );
@@ -207,7 +206,6 @@ fn no_batch_forms_without_a_partner_or_when_batching_is_off() {
                 "land {} https://github.com/acme/widgets/pull/1",
                 off.stories[0]
             ),
-            format!("reap {}", off.stories[0]),
         ]
     );
 }
@@ -561,7 +559,7 @@ fn landing_intents(board: &Board) -> Vec<storyhook::store::LandingIntent> {
 /// done in one transaction and reaped under its own lock, and the head is
 /// never gated alone (SH-832 B5, B6).
 #[test]
-fn a_certified_batch_lands_and_every_member_is_done_and_reaped() {
+fn a_certified_batch_lands_and_every_member_has_durable_cleanup() {
     let board = board(&CLEAN, Some(3));
     let ids = board.stories.clone();
     let batcher = landing_batcher(&board);
@@ -586,9 +584,6 @@ fn a_certified_batch_lands_and_every_member_is_done_and_reaped() {
             format!("publish {}", batch.branch),
             format!("gate {BATCH_PR}"),
             format!("land {} {BATCH_PR}", ids[0]),
-            format!("reap {}", ids[0]),
-            format!("reap-member {}", ids[1]),
-            format!("reap-member {}", ids[2]),
             format!("prune-members {}", branches.join(" ")),
         ],
         "one merge of the batch pull request; no single gate for the head"
@@ -603,9 +598,17 @@ fn a_certified_batch_lands_and_every_member_is_done_and_reaped() {
         assert!(green[0].contains(BATCH_PR), "{}", green[0]);
         assert_eq!(
             comments_with(&board, id, "CENTRAL VERIFICATION CLEANUP COMPLETE").len(),
-            1,
-            "{id} is reaped"
+            0,
+            "{id} is not reaped by the verifier"
         );
+        let no = StoryNo::parse_id("SH", id).unwrap();
+        let request = board
+            .fixture
+            .store()
+            .read(|tx| tx.closure_cleanup(board.fixture.project(), no))
+            .unwrap()
+            .unwrap();
+        assert!(!request.completed);
     }
     let record = &board.records()[0];
     assert_eq!(record["batch"]["phase"], "landed", "{record}");
@@ -717,9 +720,6 @@ fn an_uncertain_batch_landing_is_recovered_from_its_intents_after_a_restart() {
         restarted.calls(),
         [
             format!("recover {} {BATCH_PR}", ids[0]),
-            format!("reap {}", ids[0]),
-            format!("reap-member {}", ids[1]),
-            format!("reap-member {}", ids[2]),
             format!(
                 "prune-members {}",
                 ids.iter()
@@ -833,7 +833,6 @@ fn a_base_that_requires_signed_commits_forms_no_batch() {
             "base-policy dev".to_owned(),
             format!("verify {} https://github.com/acme/widgets/pull/1", ids[0]),
             format!("land {} https://github.com/acme/widgets/pull/1", ids[0]),
-            format!("reap {}", ids[0]),
         ]
     );
     let record = &board.records()[0];
