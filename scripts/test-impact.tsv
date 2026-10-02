@@ -49,6 +49,7 @@ create_modal_project_scope	:(glob)**/*
 daemon_lifecycle	src/daemon/engine.rs
 daemon_lifecycle	src/daemon/lifecycle.rs
 daemon_lifecycle	src/daemon/serve.rs
+daemon_timeouts	tests/daemon_timeouts/churn.rs
 dashboard_deadline_knobs	:(glob)**/*
 dashboard_dom_removal	:(glob)**/*
 dashboard_enter_submit_guard	:(glob)**/*

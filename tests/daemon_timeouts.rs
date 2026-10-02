@@ -33,6 +33,9 @@
 //! regression fails this file in a few seconds with a name instead of stalling
 //! the suite — which is precisely the failure mode being retired.
 
+#[path = "daemon_timeouts/churn.rs"]
+mod churn;
+
 use std::io::Read;
 use std::net::TcpListener;
 use std::sync::mpsc;
@@ -423,23 +426,7 @@ mod exchange {
     /// Only ever spent under load: an undisturbed run settles in one stretch.
     const CHURN_PATIENCE: Duration = Duration::from_secs(20);
 
-    /// What one run of [`keep_the_record_moving`] came to.
-    #[derive(Debug)]
-    enum Churned<T> {
-        /// The record moved on cadence for a whole stretch and the client
-        /// never gave up: the property these tests exist for.
-        HeldOut,
-        /// The client gave up while the record was demonstrably still moving.
-        /// The product, and the only outcome that may fail a test.
-        GaveUp(T),
-        /// The churn loop itself went quiet for `stale` — past the very
-        /// deadline it exists to keep resetting — so the client was entitled
-        /// to give up and this run says nothing either way. A disturbed
-        /// measurement rather than a verdict (SH-289).
-        Starved { stale: Duration },
-        /// The shared retry budget ended before a full clean stretch.
-        Deadline,
-    }
+    use super::churn::{Churned, Measurement};
 
     /// Republishes the in-flight record under a fresh id every [`CHURN`],
     /// which is what a daemon finishing one command after another looks like
@@ -468,11 +455,15 @@ mod exchange {
         mut stall: impl FnMut(u32) -> Duration,
     ) -> Churned<T> {
         let mut n = 0_u32;
-        let mut published = Instant::now();
-        let clean_since = published;
+        let started = Instant::now();
+        let mut measurement = Measurement::new(
+            STALE_ENOUGH,
+            stretch,
+            deadline.saturating_duration_since(started),
+        );
 
         loop {
-            if Instant::now() >= deadline {
+            if measurement.expired(started.elapsed()) {
                 return Churned::Deadline;
             }
             n += 1;
@@ -497,45 +488,18 @@ mod exchange {
                 "the fixture must publish the record it claims is moving"
             );
 
-            let gap = published.elapsed();
-            published = Instant::now();
-            // This client may already have timed out. Later publications
-            // cannot restore its validity, even if its result is still delayed.
-            if gap >= STALE_ENOUGH {
-                return Churned::Starved { stale: gap };
+            if let Some(outcome) = measurement.publish(started.elapsed()) {
+                return outcome;
             }
-
-            match rx.recv_timeout(CHURN) {
-                Ok(outcome) => {
-                    // Whose fault? Both intervals count: the gap just measured
-                    // covers a loop absent *before* publishing, and
-                    // `published.elapsed()` covers one absent after — which is
-                    // the same silence to a client, and the reason a single
-                    // measurement misses half the cases.
-                    let stale = gap.max(published.elapsed());
-                    return if stale >= STALE_ENOUGH {
-                        Churned::Starved { stale }
-                    } else {
-                        Churned::GaveUp(outcome)
-                    };
-                }
+            let result = match rx.recv_timeout(CHURN) {
+                Ok(outcome) => Some(outcome),
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     panic!("the thread carrying the exchange died without an outcome")
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            }
-
-            // A descheduled receive can cross both the stale threshold and
-            // the stretch deadline without delivering anything. It is not a pass.
-            let stale = published.elapsed();
-            if stale >= STALE_ENOUGH {
-                return Churned::Starved { stale };
-            }
-            if Instant::now() >= deadline {
-                return Churned::Deadline;
-            }
-            if clean_since.elapsed() >= stretch {
-                return Churned::HeldOut;
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            };
+            if let Some(outcome) = measurement.receive(started.elapsed(), result) {
+                return outcome;
             }
         }
     }
@@ -895,28 +859,6 @@ mod exchange {
             panic!("an expired attempt must not publish")
         });
         assert!(matches!(outcome, Churned::Deadline), "{outcome:?}");
-    }
-
-    /// A client ending without any observed pause still fails, with its actual
-    /// result available to distinguish timeout policy from transport errors.
-    #[test]
-    fn a_clean_early_client_result_is_preserved_as_a_failure() {
-        let dir = storyhook_test_support::scratch_dir();
-        let env = Environment::at(dir.path());
-        std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        tx.send("unexpected transport error").unwrap();
-        let outcome = keep_the_record_moving(
-            &env,
-            &rx,
-            DRIVEN * 8,
-            Instant::now() + storyhook_test_support::load_grace::graced_now(CHURN_PATIENCE),
-            |_| Duration::ZERO,
-        );
-        assert!(
-            matches!(outcome, Churned::GaveUp("unexpected transport error")),
-            "a clean early result must not be retried or discarded: {outcome:?}"
-        );
     }
 
     /// The deadline belongs to the command in the record, so a frozen
