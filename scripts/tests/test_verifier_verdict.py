@@ -2,7 +2,9 @@
 """SH-702: completed execution remains visible when cleanup cannot finish."""
 
 import json
+import importlib.util
 import os
+import signal
 import tempfile
 from unittest import mock
 from pathlib import Path
@@ -95,6 +97,150 @@ def session_members(sid):
         script = self.bundle / name
         source = script.read_text()
         script.write_text(source.replace('if __name__ == "__main__":', code + '\nif __name__ == "__main__":'))
+
+    def late_fork(self, detached=False):
+        """Fork a real child after the kill census, before its parent's SIGKILL."""
+        worker_pid = self.fx.root / "worker-pid"
+        late_pid = self.fx.root / "late-pid"
+        address = str(self.fx.root / "fork.sock")
+        for path in (worker_pid, late_pid):
+            self.addCleanup(lambda path=path: path.exists() and self.fx.stop_pid(int(path.read_text())))
+        # The syscall wrapper changes only scheduling. The census has already
+        # returned, and both the kill and every later census remain real.
+        self.inject("verifier-owner.py", f'''
+from pathlib import Path
+import socket
+_kill = os.kill
+def kill(pid, sig):
+    worker = Path({str(worker_pid)!r})
+    if sig == signal.SIGKILL and worker.exists() and pid == int(worker.read_text()):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            channel.settimeout({self.fx.milestone_deadline!r})
+            channel.connect({address!r})
+            channel.sendall(b'F')
+            if channel.recv(1) != b'1':
+                raise OSError('SH-789 late fork was not acknowledged')
+    return _kill(pid, sig)
+os.kill = kill
+''')
+        script = self.fx.root / "late-fork.py"
+        script.write_text(f'''
+import os, signal, socket, subprocess, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+sys.path.insert(0, {str(self.bundle)!r})
+from verifier_state import read, save
+
+# The leader waits for the worker's listener before exiting and triggering
+# cleanup. This is a publication barrier, not a guessed scheduling delay.
+ready, publish = socket.socketpair()
+ready.settimeout({self.fx.milestone_deadline!r})
+worker = os.fork()
+if worker:
+    publish.close()
+    if ready.recv(1) != b'1':
+        raise RuntimeError('SH-789 worker did not become ready')
+    ready.close()
+    if {detached!r}:
+        gone = subprocess.Popen(['true'])
+        gone.wait()
+        record = next(Path({str(self.fx.common)!r}).glob('storyhook/verifier-lifecycle/*.owner'))
+        owner = read(record)
+        owner.update(gate_started=True, gate_session=worker, gate_supervisor=gone.pid)
+        save(record, owner)
+    sys.exit(7)
+
+ready.close()
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if {detached!r}:
+    os.setsid()
+with open(os.devnull, 'r+b') as null:
+    for fd in (0, 1, 2):
+        os.dup2(null.fileno(), fd)
+Path({str(worker_pid)!r}).write_text(str(os.getpid()))
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+    listener.settimeout({self.fx.milestone_deadline!r})
+    listener.bind({address!r})
+    listener.listen(1)
+    publish.sendall(b'1')
+    publish.close()
+    channel, _ = listener.accept()
+    with channel:
+        channel.settimeout({self.fx.milestone_deadline!r})
+        if channel.recv(1) != b'F':
+            raise RuntimeError('SH-789 missing fork request')
+        child_ready, child_publish = socket.socketpair()
+        child_ready.settimeout({self.fx.milestone_deadline!r})
+        late = os.fork()
+        if late == 0:
+            child_ready.close()
+            channel.close()
+            listener.close()
+            # A process-group broadcast would miss this child. It remains
+            # in the owned session and is discoverable by the real census.
+            os.setpgid(0, 0)
+            child_publish.sendall(b'1')
+            child_publish.close()
+            while True:
+                signal.pause()
+        child_publish.close()
+        Path({str(late_pid)!r}).write_text(str(late))
+        if child_ready.recv(1) != b'1':
+            raise RuntimeError('SH-789 late child did not become ready')
+        child_ready.close()
+        channel.sendall(b'1')
+while True:
+    signal.pause()
+''')
+        return ["python3", str(script)], (worker_pid, late_pid)
+
+    def assert_late_fork_reaped(self, paths):
+        """Require the forced fork to have occurred and both writers to be gone."""
+        for path in paths:
+            self.assertTrue(path.exists(), f"missing fork evidence: {path}")
+            self.fx.assertGone(int(path.read_text()))
+
+    def test_gate_reaps_child_forked_after_kill_census(self):
+        """A late child cannot turn a completed red gate into a cleanup refusal."""
+        command, pids = self.late_fork()
+        result = self.gate(7, command=command)
+        self.assertEqual(result["result"], "tests-failed", result)
+        self.assertEqual(result["exit_status"], 7, result)
+        self.assertNotIn("cleanup_failure", result)
+        self.assert_late_fork_reaped(pids)
+        _, owner = self.fx.owner_record()
+        self.assertFalse(owner["gate_started"], owner)
+        for field in ("gate_session", "gate_supervisor", "gate_leader_exit"):
+            self.assertIsNone(owner[field], owner)
+        self.assertEqual(self.fx.ensure()["result"], "verifier-worktree-ready")
+
+    def lifecycle_late_fork(self, detached):
+        """Run late-fork cleanup through the lifecycle supervisor's real entry."""
+        command, pids = self.late_fork(detached)
+        result = self.fx.command("python3", str(self.bundle / "verifier-owner.py"),
+                                 "run", str(self.fx.common), str(self.fx.wt), "--",
+                                 *command, check=False)
+        self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
+        self.assertNotIn("could not reap", result.stderr)
+        self.assert_late_fork_reaped(pids)
+        _, owner = self.fx.owner_record()
+        self.assertTrue(owner["completed"], owner)
+        self.assertIsNone(owner["session"], owner)
+        return owner
+
+    def test_lifecycle_reaps_child_forked_after_kill_census(self):
+        """The lifecycle session also needs more than its first kill census."""
+        self.lifecycle_late_fork(detached=False)
+        self.assertEqual(self.fx.ensure()["result"], "verifier-worktree-ready")
+
+    def test_outer_reaps_late_child_in_recorded_gate_session(self):
+        """A lost supervisor's gate is reaped without inventing its exit status."""
+        owner = self.lifecycle_late_fork(detached=True)
+        self.assertTrue(owner["gate_started"], owner)
+        self.assertIsNone(owner.get("gate_leader_exit"), owner)
+        result = self.fx.ensure()
+        self.assertEqual(result["result"], "infrastructure-failure", result)
+        self.assertIn("ambiguous ownership", result["detail"])
 
     def test_final_owner_save_preserves_red(self):
         """A failed atomic replacement of the final owner is also cleanup."""
@@ -385,5 +531,57 @@ class ExecutionEvidence(unittest.TestCase):
             with self.assertRaises(Refusal): result.execution(path)
 
 
+class ReapingDeadline(unittest.TestCase):
+    """Prove the retry ladder stays bounded without waiting on a real clock."""
+
+    def test_repeated_kills_keep_the_first_kill_deadline(self):
+        """Both owners retry all owned sessions without renewing the allowance."""
+        scripts = Path(__file__).resolve().parents[1]
+        with mock.patch.object(sys, "path", [str(scripts), *sys.path]):
+            spec = importlib.util.spec_from_file_location("reaping_owner", scripts / "verifier-owner.py")
+            owner = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(owner)
+        for field in ("gate_session", "session"):
+            with self.subTest(field=field):
+                now = 0.0
+                kills = []
+                budget = 4.0
+
+                def sleep(seconds):
+                    """Advance virtual time; make a renewed deadline fail promptly."""
+                    nonlocal now
+                    now += seconds
+                    self.assertLess(now, budget * 2, "SIGKILL retries renewed the reaping deadline")
+
+                def kill(pid, signum):
+                    """Record delivery time to each synthetic, always-live member."""
+                    if signum == signal.SIGKILL:
+                        kills.append((pid, now))
+
+                system = mock.Mock()
+                system.environ = {}
+                system.pipe.side_effect = [(10, 11), (12, 13)]
+                system.fork.return_value = 123
+                system.kill.side_effect = kill
+                clock = mock.Mock(monotonic=lambda: now, sleep=sleep)
+                with mock.patch.object(owner, "os", system), \
+                     mock.patch.object(owner, "time", clock), \
+                     mock.patch.object(owner, "save"), \
+                     mock.patch.object(owner, "note"), \
+                     mock.patch.object(owner, "read", return_value={"gate_session": 456}), \
+                     mock.patch.object(owner, "observe_exit", return_value=7), \
+                     mock.patch.object(owner, "session_members", side_effect=lambda sid: [sid + 1]):
+                    with self.assertRaisesRegex(owner.CleanupRefusal, "exited 7; could not reap.*live writers"):
+                        owner.execute(["unused"], "owner-record", {}, field,
+                                      mock.Mock(signum=None), budget)
+                expected = {124} if field == "gate_session" else {124, 457}
+                self.assertEqual({pid for pid, _ in kills}, expected)
+                for pid in expected:
+                    deliveries = [when for member, when in kills if member == pid]
+                    self.assertGreater(len(deliveries), 1, f"member {pid} never received another SIGKILL")
+                self.assertGreaterEqual(now - kills[0][1], budget / 8)
+                self.assertLessEqual(now - kills[0][1], budget / 8 + .051)
+
+
 if __name__ == "__main__":
-    unittest.main(defaultTest=["VerdictPreservation", "ExecutionEvidence"])
+    unittest.main(defaultTest=["VerdictPreservation", "ExecutionEvidence", "ReapingDeadline"])
