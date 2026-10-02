@@ -101,7 +101,7 @@ export default defineConfig({
   // $STORYHOOK_GATE_PROGRESS is unset, so an ordinary run is unaffected.
   // The initial probe cannot detect a browser lost later in the run. Stop
   // that project after a launch failure while preserving its failed result.
-  reporter: [["list"], ["./gate-progress-reporter.ts"], ["./browser-launch-reporter.ts"]],
+  reporter: [["list"], ["./gate-progress-reporter.ts"], ["./browser-launch-reporter.ts"], ["./slice-reporter.ts"]],
   // Half Playwright's own 30s default, and measured rather than inherited
   // (SH-222). Three full runs of the suite, the machine loaded by spinners
   // to the range the reported failures were seen in:

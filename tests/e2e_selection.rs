@@ -432,11 +432,11 @@ fn the_runner_lists_through_the_library_and_never_bare() {
         runner.contains(". \"$repo_root/scripts/e2e-selection.sh\""),
         "scripts/run-e2e.sh must source scripts/e2e-selection.sh"
     );
-    // The plan listing that sizes the slices (SH-792), and each slice's own.
+    // The outer plan and the caller-partition fallback are the only listings.
     assert_eq!(
         runner.matches("e2e_list_selection ").count(),
         2,
-        "exactly two listing probes, the plan's and each slice's, both through the library"
+        "exactly two listing sites, the plan and caller partitions, both through the library"
     );
     // `|| …_status=$?`, never `if ! …` (SH-224, tests/shell_negated_status.rs),
     // and never `|| true`, which is the exact discard SH-625 was filed on.
@@ -465,6 +465,31 @@ fn the_runner_lists_through_the_library_and_never_bare() {
         runner.contains("known_total=\"$(e2e_selection_total \"$list_output\")\""),
         "the checklist total is read through the same parser the verdict used"
     );
+}
+
+#[test]
+fn planned_slices_reuse_discovery_and_require_execution_receipts() {
+    let runner = without_shell_comments(&read_checkout_file("scripts/run-e2e.sh"));
+    let branch = runner
+        .split_once("if [ \"$test_list\" != - ]; then\n    expected_manifest=")
+        .expect("planned slices reuse the outer manifest")
+        .1;
+    let (planned, fallback) = branch.split_once("  else\n").unwrap();
+    assert!(!planned.contains("e2e_list_selection"));
+    assert!(fallback.contains("e2e_list_selection"));
+    let run = offset_of(
+        &runner,
+        "npx playwright test --project=\"$project\" --output=",
+    );
+    let validate = offset_of(
+        &runner,
+        "python3 \"$repo_root/scripts/e2e-durations.py\" validate",
+    );
+    assert!(run < validate);
+    assert!(runner[validate..].starts_with(
+        "python3 \"$repo_root/scripts/e2e-durations.py\" validate \"$E2E_SLICE_REPORT\" \"$expected_manifest\" || status=1"
+    ));
+    assert!(runner.contains("[ \"$overall_status\" = 0 ] && [ \"$caller_partition\" = 0 ] && [ \"${#extra_args[@]}\" = 0 ]"));
 }
 
 #[test]

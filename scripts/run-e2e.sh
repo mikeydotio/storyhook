@@ -86,7 +86,12 @@ results_root="$repo_root/e2e/test-results/current"
 # screenshots, traces and error contexts from earlier failures while this
 # script deliberately continues through the remaining matrix.
 rm -rf "$results_root"
-mkdir -p "$results_root"
+mkdir -p "$results_root/slice-reports" "$results_root/timings"
+# History is advisory and shared across linked worktrees, like the Rust pool.
+e2e_history="${STORYHOOK_E2E_DURATIONS:-$(git rev-parse --path-format=absolute --git-common-dir)/storyhook/e2e-durations.tsv}"
+e2e_timing() {
+  printf '%s\t%s\n' "$1" "$((SECONDS - $2))" >>"$results_root/timings/${slice:-plan}.tsv"
+}
 
 # --- The engine set, derived from the config (SH-335). ------------------
 #
@@ -242,11 +247,12 @@ run_one_project() {
     slice_args=(--test-list="$test_list")
   fi
 
+  slice_started=$SECONDS
   data_root="$(mktemp -d /private/tmp/story-e2e.XXXXXX)"
   isolated=0
 
   cleanup() {
-    local status=$?
+    local status=$? cleanup_started=$SECONDS
     # A second signal here would abandon a half-stopped daemon and a
     # half-removed seed; the pool KILLs a cleanup that overruns its grace.
     trap '' TERM INT HUP
@@ -270,6 +276,8 @@ run_one_project() {
       *) kill -9 "$placeholder" >/dev/null 2>&1 || true ;;
     esac
     rm -rf "$data_root"
+    e2e_timing cleanup "$cleanup_started"
+    e2e_timing total "$slice_started"
     exit "$status"
   }
   trap cleanup EXIT
@@ -520,6 +528,8 @@ WRAPPER
   seed_dir="$data_root/seed"
   mkdir -p "$seed_dir/alpha" "$seed_dir/beta" "$seed_dir/delta" "$seed_dir/engine"
 
+  seed_started=$SECONDS
+  e2e_timing prepare "$slice_started"
   echo "run-e2e.sh: seeding projects…" >&2
 
   # A real git repo, not just a directory: neither project-selector.spec.ts
@@ -596,6 +606,9 @@ WRAPPER
     "$story_bin" new "Exercise Full Auto end to end" --json | jq -r '.story.story.id' >"$data_root/engine-story-id"
   )
   engine_story_id="$(cat "$data_root/engine-story-id")"
+
+  e2e_timing seed "$seed_started"
+  daemon_started=$SECONDS
 
   # --- Start the daemon and discover the port it actually bound. `daemon
   # start` blocks until the daemon reports ready (or times out), but its
@@ -683,58 +696,38 @@ WRAPPER
   # forbids.
   export DASHBOARD_URL="$base_url"
 
-  # --- Ask Playwright whether this project even selects a test under the
-  # caller's filters, before spending the real run on it. A per-project loop
-  # means a filter that only matches, say, `.mobile.spec.ts$` files gives
-  # `chromium`/`webkit` nothing to run, which used to be harmless when every
-  # project shared one Playwright invocation (a filter matching nothing under
-  # one project just meant that project contributed zero tests to a run that
-  # still had others) but would now abort the whole loop over a project the
-  # caller likely never meant to filter into. Skip it instead, loudly.
-  #
-  # ONLY a listing that HAPPENED and selected nothing is a skip (SH-625).
-  # Playwright prints the identical `Total: 0 tests in 0 files` when a
-  # selected spec fails to load, so this used to read a load error, an
-  # unknown flag or an unevaluable config as "nothing selected" and exit 0
-  # for a run in which nothing executed. `scripts/e2e-selection.sh` tells the
-  # two apart by Playwright's own exit status under `--pass-with-no-tests`
-  # (its header carries the measurement) and replays Playwright's stderr on
-  # a refusal, so the spec that would not load is named rather than dropped.
-  #
-  # This has to run AFTER seeding and the daemon are up, not before:
-  # `dispatch.spec.ts` and `engine.spec.ts` read their `DASHBOARD_*` fixture
-  # ids at MODULE load time (`requiredEnv(...)`), so even `--list` -- which
-  # loads every matching file to enumerate its tests -- throws before those
-  # are exported. Under the old text-only read that throw was one of the
-  # very load errors that reported as a skip. The outer plan listing (SH-792)
-  # is the one listing that runs before any fixture exists, which is why it
-  # alone runs in `e2e/plan-listing.ts`'s placeholder mode.
-  list_status=0
-  list_output="$(e2e_list_selection "$data_root/playwright-list.stderr" \
-    npx playwright test --project="$project" "${slice_args[@]+"${slice_args[@]}"}" "${playwright_args[@]+"${playwright_args[@]}"}")" || list_status=$?
-  case "$list_status" in
-    0) ;;
-    "$E2E_SELECTION_EMPTY")
-      echo "run-e2e.sh: slice=$slice selects no tests under this filter — skipping" >&2
-      gate_progress_emit_item "release gate/e2e/$slice" skipped
-      exit 0
-      ;;
-    *)
-      echo "run-e2e.sh: slice=$slice could not be listed (exit $list_status) — refusing, not skipping (SH-625)" >&2
-      gate_progress_emit_item "release gate/e2e/$slice" failed
-      exit "$list_status"
-      ;;
-  esac
-
-  # SH-524: this project's own checklist row. `known_total` is read straight
-  # back out of Playwright's own `--list` count above rather than guessed --
-  # and it is always readable here, because e2e-selection.sh refused a
-  # listing whose summary line it could not parse rather than proceeding on
-  # an unknown count. e2e/gate-progress-reporter.ts owns only the per-test
-  # "case" lines below; the running/passed/failed "item" lifecycle for this
-  # project is this script's alone, so the two writers never race over one
-  # event shape.
-  known_total="$(e2e_selection_total "$list_output")"
+  e2e_timing daemon "$daemon_started"
+  listing_started=$SECONDS
+  # Planner-owned slices reuse the already validated selection. The real run's
+  # reporter checks discovery against it, so no second Node listing is needed.
+  # A caller partition retains Playwright's per-project shard semantics.
+  if [ "$test_list" != - ]; then
+    expected_manifest="$test_list.tsv"
+    known_total="$(awk -F '\t' '{ sum += $3 } END { print sum + 0 }' "$expected_manifest")" || exit 1
+  else
+    list_status=0
+    list_output="$(e2e_list_selection "$data_root/playwright-list.stderr" \
+      npx playwright test --project="$project" "${slice_args[@]+"${slice_args[@]}"}" "${playwright_args[@]+"${playwright_args[@]}"}")" || list_status=$?
+    case "$list_status" in
+      0) ;;
+      "$E2E_SELECTION_EMPTY")
+        echo "run-e2e.sh: slice=$slice selects no tests under this filter — skipping" >&2
+        gate_progress_emit_item "release gate/e2e/$slice" skipped
+        exit 0
+        ;;
+      *)
+        echo "run-e2e.sh: slice=$slice could not be listed (exit $list_status) — refusing, not skipping (SH-625)" >&2
+        gate_progress_emit_item "release gate/e2e/$slice" failed
+        exit "$list_status"
+        ;;
+    esac
+    known_total="$(e2e_selection_total "$list_output")" || exit 1
+    expected_manifest="$results_root/slice-reports/$slice.expected.tsv"
+    printf '%s\n' "$list_output" | e2e_pool_file_counts >"$expected_manifest" || exit 1
+  fi
+  e2e_timing listing "$listing_started"
+  export E2E_SLICE_EXPECTED="$expected_manifest"
+  export E2E_SLICE_REPORT="$results_root/slice-reports/$slice.json"
   export STORYHOOK_GATE_PROGRESS_PATH="release gate/e2e/$slice"
   gate_progress_emit_item "$STORYHOOK_GATE_PROGRESS_PATH" running "total=$known_total"
   # This slice is about to run $known_total tests: say so where the outer
@@ -743,13 +736,8 @@ WRAPPER
   mkdir -p "$results_root/selected"
   printf '%s\n' "$known_total" >"$results_root/selected/$slice"
   e2e_start=$(date +%s)
-  # The two specs that dispatch for real -- ordinary dispatch and Full Auto --
-  # consulted after the real run below. Asking Playwright's own list is
-  # correct under any combination of project and extra filters. Include the
-  # exact path and Playwright's following `:`: a suffix-only dispatch match
-  # also selects story-context-menu-dispatch.spec.ts, whose requests are all
-  # stubbed, then falsely fails the fake-tmux post-check below.
-  real_dispatch_selected="$(printf '%s\n' "$list_output" | e2e_pool_file_counts | e2e_selection_real_dispatch)"
+  # Exact filenames exclude the separately stubbed context-menu specs.
+  real_dispatch_selected="$(e2e_selection_real_dispatch <"$expected_manifest")" || exit 1
 
   # `|| status=$?` rather than `if ! npx ...; then status=$?`: under `!`,
   # bash inverts the command's exit status, so `$?` inside that then-branch
@@ -766,6 +754,12 @@ WRAPPER
   status=0
   "${keep_display_awake[@]+"${keep_display_awake[@]}"}" npx playwright test --project="$project" --output="$results_root/$slice" "${slice_args[@]+"${slice_args[@]}"}" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
   e2e_elapsed=$(( $(date +%s) - e2e_start ))
+  printf 'playwright\t%s\n' "$e2e_elapsed" >>"$results_root/timings/$slice.tsv"
+  # Playwright can swallow reporter exceptions or the caller can override its
+  # reporter list. Neither is allowed to manufacture successful coverage.
+  if [ "$status" = 0 ]; then
+    python3 "$repo_root/scripts/e2e-durations.py" validate "$E2E_SLICE_REPORT" "$expected_manifest" || status=1
+  fi
 
   # --- Was the run's binary rebuilt under it? Informational either way
   # (SH-635): the lease is exactly what makes this harmless, and saying so
@@ -891,7 +885,7 @@ partition_by_project() {
 # listing failing used to refuse only that project. A spec that will not load
 # under the plan would not load in any slice either.
 plan_slices() {
-  local plan_status=0 plan_output file_counts counted_total plan_rows
+  local plan_status=0 plan_output file_counts counted_total plan_rows plan_started=$SECONDS
   local slice project list count has_slice
   plan_output="$(cd "$repo_root/e2e" && e2e_list_selection "$results_root/plan-listing.stderr" \
     env E2E_PLAN_LISTING=1 DASHBOARD_URL=http://plan-listing.invalid npx playwright test "${project_flags[@]}" "${extra_args[@]+"${extra_args[@]}"}")" || plan_status=$?
@@ -925,7 +919,8 @@ plan_slices() {
   # Kept with the run's artifacts: which files each slice ran is the first
   # question a red slice raises.
   mkdir -p "$results_root/slices"
-  plan_rows="$(printf '%s\n' "$file_counts" | e2e_pool_plan "$((e2e_jobs * E2E_SLICES_PER_JOB))" "$results_root/slices" "${projects_to_run[@]}")"
+  plan_rows="$(printf '%s\n' "$file_counts" | python3 "$repo_root/scripts/e2e-durations.py" weights "$e2e_history" | e2e_pool_plan "$((e2e_jobs * E2E_SLICES_PER_JOB))" "$results_root/slices" "${projects_to_run[@]}")"
+  e2e_timing planning "$plan_started"
   while IFS=$'\t' read -r slice project list count; do
     [ -n "$slice" ] || continue
     slice_names+=("$slice")
@@ -1001,6 +996,12 @@ if [ "$overall_status" = 0 ] && [ -n "$plan_total" ] && [ "$tests_run" != "$plan
   echo "  test-list lost or gained a file; refusing rather than reporting part of the" >&2
   echo "  selection green. Each slice's list is in $results_root/slices." >&2
   exit 1
+fi
+
+# Only unfiltered, planner-owned selections train whole-file history. Local
+# reports remain available for every run, including failures and triage filters.
+if [ "$overall_status" = 0 ] && [ "$caller_partition" = 0 ] && [ "${#extra_args[@]}" = 0 ]; then
+  python3 "$repo_root/scripts/e2e-durations.py" merge "$e2e_history" "$results_root/slice-reports/"*.json
 fi
 
 exit "$overall_status"

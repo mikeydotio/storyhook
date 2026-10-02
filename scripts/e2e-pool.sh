@@ -56,7 +56,7 @@ e2e_pool_file_counts() {
 
 # e2e_pool_plan BUDGET LIST_DIR PROJECT...
 #
-# Splits the `project<TAB>file<TAB>count` lines on stdin (from
+# Splits the `project<TAB>file<TAB>count[<TAB>seconds]` lines on stdin (from
 # `e2e_pool_file_counts`) into slices, writes each slice's Playwright
 # test-list to `LIST_DIR/<slice>.list`, and prints one
 # `slice<TAB>project<TAB>test-list<TAB>count` row per slice, largest first --
@@ -107,7 +107,8 @@ e2e_pool_plan() {
       for (i = 1; i <= np; i++) rank[plist[i]] = i
     }
     bad { next }
-    NF != 3 || $3 !~ /^[0-9]+$/ {
+    (NF != 3 && NF != 4) || $3 !~ /^[0-9]+$/ || $3 + 0 <= 0 ||
+    (NF == 4 && ($4 !~ /^[0-9]+([.][0-9]+)?$/ || $4 + 0 <= 0 || $4 + 0 > 1e12)) {
       printf "e2e_pool_plan: malformed count line: %s\n", $0 > "/dev/stderr"
       bad = 1
       next
@@ -122,7 +123,8 @@ e2e_pool_plan() {
       nf[p]++
       file[p, nf[p]] = $2
       cnt[p, nf[p]] = $3 + 0
-      total[p] += $3
+      weight[p, nf[p]] = (NF == 4 ? $4 + 0 : $3 + 0)
+      total[p] += weight[p, nf[p]]
     }
     END {
       if (bad) exit 2
@@ -157,36 +159,42 @@ e2e_pool_plan() {
       rows = 0
       for (i = 1; i <= na; i++) {
         p = act[i]
-        # Files by count, largest first; listing order on ties (stable).
+        # Files by measured seconds (count without history), stable on ties.
         for (j = 1; j <= nf[p]; j++) ord[j] = j
         for (j = 2; j <= nf[p]; j++) {
           k = ord[j]
           m = j - 1
-          while (m >= 1 && cnt[p, ord[m]] < cnt[p, k]) {
+          while (m >= 1 && weight[p, ord[m]] < weight[p, k]) {
             ord[m + 1] = ord[m]
             m--
           }
           ord[m + 1] = k
         }
-        for (b = 1; b <= n[p]; b++) load[b] = 0
+        for (b = 1; b <= n[p]; b++) { load[b] = 0; counts[b] = 0 }
         for (j = 1; j <= nf[p]; j++) {
           f = ord[j]
           best = 1
           for (b = 2; b <= n[p]; b++) if (load[b] < load[best]) best = b
           bin[p, f] = best
-          load[best] += cnt[p, f]
+          load[best] += weight[p, f]
+          counts[best] += cnt[p, f]
         }
         for (b = 1; b <= n[p]; b++) {
           name = (n[p] == 1 ? p : p "." b "of" n[p])
           path = lists "/" name ".list"
           printf "" > path
+          manifest = path ".tsv"
+          printf "" > manifest
           for (f = 1; f <= nf[p]; f++) if (bin[p, f] == b) print "[" p "]" arrow file[p, f] > path
+          for (f = 1; f <= nf[p]; f++) if (bin[p, f] == b) print p "\t" file[p, f] "\t" cnt[p, f] > manifest
           close(path)
+          close(manifest)
           rows++
           rname[rows] = name
           rproj[rows] = p
           rpath[rows] = path
-          rcount[rows] = load[b]
+          rcount[rows] = counts[b]
+          rweight[rows] = load[b]
         }
       }
 
@@ -196,7 +204,7 @@ e2e_pool_plan() {
       for (r = 2; r <= rows; r++) {
         k = idx[r]
         m = r - 1
-        while (m >= 1 && rcount[idx[m]] < rcount[k]) {
+        while (m >= 1 && rweight[idx[m]] < rweight[k]) {
           idx[m + 1] = idx[m]
           m--
         }

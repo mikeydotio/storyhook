@@ -460,6 +460,22 @@ fn a_browser_edit_reruns_only_browser_and_checkout_contracts() {
     }
 }
 
+#[test]
+fn an_e2e_duration_helper_edit_invalidates_browser_evidence() {
+    let repo = Repo::new();
+    let helper = "scripts/e2e-durations.py";
+    repo.write(helper, "# initial duration reader\n");
+    repo.git(&["add", helper]);
+    for label in ["e2e", "rust-contracts", "rust-suite"] {
+        assert!(repo.run_leg(label, true).status.success());
+    }
+    repo.write(helper, "# changed duration reader\n");
+    for (label, expected) in [("e2e", 2), ("rust-contracts", 2), ("rust-suite", 1)] {
+        assert!(repo.run_leg(label, true).status.success());
+        assert_eq!(repo.executions(label), expected, "{label}");
+    }
+}
+
 /// The Rust batteries' pool driver (SH-783) decides how every binary runs,
 /// so an edit to it must not let a cached Rust verdict stand -- and must not
 /// throw away the verdicts it cannot affect.
