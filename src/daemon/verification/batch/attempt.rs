@@ -275,6 +275,29 @@ impl<S: Store> Attempt<'_, S> {
                     (BatchExclusionReason::SubmissionFailed, detail)
                 }
             })?;
+        let receipt = match receipt {
+            SubmissionOutcome::PullRequest(receipt) => receipt,
+            SubmissionOutcome::AlreadyLanded(evidence) => {
+                let completed = !self.cancellation.is_cancelled()
+                    && matches!(
+                        self.queue
+                            .complete_already_landed(self.ctx, &member.candidate, &evidence)
+                            .map_err(|error| {
+                                (BatchExclusionReason::SubmissionFailed, error.to_string())
+                            })?,
+                        GenerationWrite::Applied(())
+                    );
+                return Err((
+                    BatchExclusionReason::Superseded,
+                    if completed {
+                        "member completed: its head is already on the default branch"
+                    } else {
+                        "member authority changed before already-landed completion"
+                    }
+                    .into(),
+                ));
+            }
+        };
         if receipt.head_oid != member.commit {
             return Err((
                 BatchExclusionReason::HeadMoved,

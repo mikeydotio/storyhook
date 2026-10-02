@@ -38,6 +38,9 @@ mod stale_journal;
 
 #[path = "verification_queue/own_submission.rs"]
 mod own_submission;
+
+#[path = "verification_queue/already_landed.rs"]
+mod already_landed;
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};
@@ -584,7 +587,7 @@ fn an_active_resubmission_does_not_reuse_an_older_journal_generation() {
 /// and says so loudly rather than inventing a pull request.
 fn adopt_linked(
     candidate: &VerificationCandidate,
-) -> Result<SubmittedPullRequest, SubmissionFailure> {
+) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
     match &candidate.pull_request {
         Ok(link) => Ok(SubmittedPullRequest {
             url: link.url.clone(),
@@ -592,7 +595,8 @@ fn adopt_linked(
             base: "dev".into(),
             head_oid: "fixture-head".into(),
             adopted: true,
-        }),
+        }
+        .into()),
         Err(problem) => panic!(
             "fixture asked to submit {} with no scripted answer and no linked pull request: {problem:?}",
             candidate.story_id
@@ -647,7 +651,7 @@ impl VerificationActuator for ActivityObservingActuator {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         adopt_linked(candidate)
     }
 
@@ -1106,7 +1110,7 @@ struct FakeActuator {
     redispatched: Mutex<Vec<(String, ResumePlan)>>,
     reaped: Mutex<Vec<String>>,
     /// Scripted submission answer; `None` adopts the linked pull request.
-    submission: Option<Result<SubmittedPullRequest, SubmissionFailure>>,
+    submission: Option<Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure>>,
     /// Every story this fake was asked to submit, in order.
     submitted: Mutex<Vec<String>>,
 }
@@ -1129,7 +1133,7 @@ impl FakeActuator {
     /// default) adopts whatever pull request the candidate already links.
     fn with_submission(
         mut self,
-        submission: Result<SubmittedPullRequest, SubmissionFailure>,
+        submission: Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure>,
     ) -> Self {
         self.submission = Some(submission);
         self
@@ -1166,7 +1170,7 @@ impl VerificationActuator for FakeActuator {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         self.submitted
             .lock()
             .unwrap()
@@ -1535,7 +1539,7 @@ impl VerificationActuator for DepartingActuator<'_> {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         adopt_linked(candidate)
     }
 
@@ -1614,7 +1618,7 @@ impl VerificationActuator for StoppingActuator<'_> {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         adopt_linked(candidate)
     }
 
@@ -1682,7 +1686,7 @@ impl VerificationActuator for ResubmittingActuator<'_> {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         adopt_linked(candidate)
     }
 
@@ -1903,7 +1907,7 @@ impl VerificationActuator for WebMutationActuator<'_> {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         adopt_linked(candidate)
     }
 
@@ -2136,7 +2140,7 @@ impl VerificationActuator for SequencedActuator {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         adopt_linked(candidate)
     }
 
@@ -3161,7 +3165,7 @@ fn a_lease_less_green_landing_still_records_durable_closure_intent() {
         fn submit(
             &self,
             c: &VerificationCandidate,
-        ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
             self.0.submit(c)
         }
         fn verify(&self, c: &VerificationCandidate, p: &PrLink) -> VerificationOutcome {
@@ -3857,6 +3861,7 @@ fn shell_submission_accepts_an_exact_typed_receipt() {
             head_oid: "0123abcd".into(),
             adopted: false,
         }
+        .into()
     );
 }
 
@@ -4841,7 +4846,11 @@ fn leased_submission(
     (id, lease)
 }
 
-fn submitted_pr(url: &str, number: u64, adopted: bool) -> SubmittedPullRequest {
+fn submitted_pr(
+    url: &str,
+    number: u64,
+    adopted: bool,
+) -> storyhook::domain::landing::SubmissionOutcome {
     SubmittedPullRequest {
         url: url.into(),
         number,
@@ -4849,6 +4858,7 @@ fn submitted_pr(url: &str, number: u64, adopted: bool) -> SubmittedPullRequest {
         head_oid: "0123abcd".into(),
         adopted,
     }
+    .into()
 }
 
 #[test]
@@ -4861,7 +4871,7 @@ fn a_blocker_added_during_submission_holds_the_generation_before_testing() {
         fn submit(
             &self,
             candidate: &VerificationCandidate,
-        ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+        ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
             storyhook::service::RelationService::new(&self.fixture.ctx())
                 .relate(&candidate.story_id, "blocked-by", &self.blocker, false)
                 .unwrap();
@@ -4931,7 +4941,7 @@ fn a_blocker_added_during_submission_holds_the_generation_before_testing() {
 
 fn submitting_actuator(
     outcome: VerificationOutcome,
-    submission: Option<Result<SubmittedPullRequest, SubmissionFailure>>,
+    submission: Option<Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure>>,
 ) -> FakeActuator {
     let actuator = FakeActuator::new(outcome);
     match submission {
@@ -5352,7 +5362,7 @@ impl VerificationActuator for MovingActuator<'_> {
     fn submit(
         &self,
         _candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         StoryService::new(&self.fixture.ctx())
             .set_state(&self.story_id, "in-progress", None, None, None)
             .unwrap();
@@ -6395,7 +6405,7 @@ impl VerificationActuator for ProjectGateActuator {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         adopt_linked(candidate)
     }
 

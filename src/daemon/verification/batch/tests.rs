@@ -543,6 +543,9 @@ fn a_member_submission_inherits_that_members_own_lock() {
         )
         .unwrap();
 
+    let SubmissionOutcome::PullRequest(receipt) = receipt else {
+        panic!("expected an open PR")
+    };
     assert_eq!(receipt.number, 7);
     let inherited: u64 = boundary.read("lock").trim().parse().unwrap();
     let member_lock = std::fs::metadata(lock_path(&boundary.root, "SH-41")).unwrap();

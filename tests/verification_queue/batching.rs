@@ -12,6 +12,30 @@ use storyhook::store::{
     BatchExclusionReason, BatchId, BatchMember, BatchPhase, BatchPullRequest, VerificationBatch,
 };
 
+#[test]
+fn a_partner_already_landed_completes_without_a_repair_return() {
+    let board = board(&CLEAN, Some(3));
+    let partner = board.stories[1].clone();
+    let mut batcher = Batcher::new(&board, answer(certified_batch()));
+    batcher.landed.insert(partner.clone());
+    let _ = tick(&board, &batcher);
+    let row = story_row(&board.fixture, &partner);
+    assert_eq!(row.state, "done");
+    assert!(
+        row.snapshot
+            .comments
+            .iter()
+            .any(|c| c.text.starts_with("CENTRAL VERIFICATION ALREADY LANDED —"))
+    );
+    assert!(
+        !batcher
+            .calls()
+            .iter()
+            .any(|call| call.contains(&format!("notify {partner}"))
+                || call.contains(&format!("redispatch {partner}")))
+    );
+}
+
 /// A batch whose gate certified some other head than the batch tip never
 /// lands: its admission is refused, it is released with the reason, and the
 /// head is gated alone (SH-832 D4).

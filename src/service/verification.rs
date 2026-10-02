@@ -23,6 +23,7 @@ use super::story::{append_state_transition, state_transition_events};
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 
 pub(crate) mod human;
+mod landed;
 
 /// The required OPEN state that hands a published PR to the verifier.
 pub const VERIFYING_STATE: &str = VERIFYING_STATE_SLUG;
@@ -61,6 +62,9 @@ pub fn returned_for_repair(
 
 /// Durable comment prefix proving the centralized release gate landed a PR.
 pub const VERIFICATION_GREEN_PREFIX: &str = "CENTRAL VERIFICATION GREEN —";
+
+/// Completion proved by ancestry, without claiming a central gate passed.
+pub const VERIFICATION_ALREADY_LANDED_PREFIX: &str = "CENTRAL VERIFICATION ALREADY LANDED —";
 
 /// Durable comment prefix proving post-merge resources were reclaimed.
 pub const VERIFICATION_CLEANUP_COMPLETE_PREFIX: &str = "CENTRAL VERIFICATION CLEANUP COMPLETE —";
@@ -136,6 +140,7 @@ pub(crate) fn refuse_uncertified_completion(
     }
     let carries_verdict = |text: &str| {
         text.starts_with(VERIFICATION_GREEN_PREFIX)
+            || text.starts_with(VERIFICATION_ALREADY_LANDED_PREFIX)
             || text.starts_with(VERIFICATION_OVERRIDDEN_PREFIX)
     };
     if events.iter().any(|event| {
@@ -1156,11 +1161,12 @@ fn submission_is_current(
     {
         return Ok(false);
     }
-    let links = tx
-        .open_pr_links_for_story(candidate.project, row.story_no)?
-        .into_iter()
-        .filter(|link| link.close_on_merge)
-        .collect::<Vec<_>>();
+    let links = landed::candidate_links(
+        tx,
+        candidate.project,
+        row.story_no,
+        candidate.cleanup_lease.is_some(),
+    )?;
     Ok(match &candidate.pull_request {
         Ok(previous) => links.len() == 1 && links[0].url == previous.url,
         Err(VerificationProblem::MissingPullRequest) => links.is_empty(),
@@ -1417,11 +1423,8 @@ fn ordered_candidates_in(
         if queue_hold(tx, project.id, &row, &resets, &observed, generation)?.is_some() {
             continue;
         }
-        let links = tx
-            .open_pr_links_for_story(project.id, row.story_no)?
-            .into_iter()
-            .filter(|link| link.close_on_merge)
-            .collect::<Vec<_>>();
+        let lease = latest_cleanup_lease(tx, project.id, row.story_no)?;
+        let links = landed::candidate_links(tx, project.id, row.story_no, lease.is_some())?;
         let pull_request = match (&checkout, links.as_slice()) {
             (None, _) => Err(VerificationProblem::MissingCheckout),
             (Some(_), [link]) => Ok(link.clone()),
@@ -1525,9 +1528,9 @@ pub struct VerificationGeneration {
     /// legacy/manual unleased submission shadows every older lease by
     /// construction rather than accidentally reusing stale resource ownership.
     pub lease: Option<StoryCleanupLease>,
-    /// Whether the verifier landed **this** generation's PR (a GREEN comment
-    /// after the transition), as opposed to an earlier verification of a
-    /// story since reopened.
+    /// Whether this generation has a GREEN or ALREADY LANDED completion,
+    /// as opposed to evidence from a story since reopened. This is landed
+    /// work, not necessarily a gate certification.
     pub landed: bool,
     /// Whether this generation carries an unretracted operator override.
     /// Cleanup additionally requires its pull request to be recorded merged.
@@ -1580,7 +1583,9 @@ pub fn latest_generation(events: &[StoredEvent]) -> Option<VerificationGeneratio
         if retracted(at, text) {
             continue;
         }
-        if text.starts_with(VERIFICATION_GREEN_PREFIX) {
+        if text.starts_with(VERIFICATION_GREEN_PREFIX)
+            || text.starts_with(VERIFICATION_ALREADY_LANDED_PREFIX)
+        {
             landed = true;
             continue;
         }
@@ -1776,22 +1781,37 @@ mod tests {
 
     #[test]
     fn landed_is_a_fact_about_the_latest_generation_only() {
-        let green = format!("{VERIFICATION_GREEN_PREFIX} merge tree `abc` passed `make test`.");
-        let earlier = [
-            state(1, VERIFYING_STATE),
-            comment(2, &green),
-            state(3, "done"),
-            state(4, "in-progress"),
-            state(5, VERIFYING_STATE),
-        ];
-        assert!(!latest_generation(&earlier).unwrap().landed);
+        for prefix in [
+            VERIFICATION_GREEN_PREFIX,
+            VERIFICATION_ALREADY_LANDED_PREFIX,
+        ] {
+            let marker = format!("{prefix} observed evidence.");
+            let earlier = [
+                state(1, VERIFYING_STATE),
+                comment(2, &marker),
+                state(3, "done"),
+                state(4, "in-progress"),
+                state(5, VERIFYING_STATE),
+            ];
+            assert!(!latest_generation(&earlier).unwrap().landed);
 
-        let current = [
-            state(1, VERIFYING_STATE),
-            comment(2, &green),
-            state(3, "done"),
-        ];
-        assert!(latest_generation(&current).unwrap().landed);
+            let current = [
+                state(1, VERIFYING_STATE),
+                comment(2, &marker),
+                state(3, "done"),
+            ];
+            assert!(latest_generation(&current).unwrap().landed);
+            let mut retracted = current.to_vec();
+            retracted.push(stored(
+                4,
+                StoryEvent::StoryCommentRetracted {
+                    at: "2026-09-10T00:00:01Z".into(),
+                    comment_at: "2026-09-10T00:00:00Z".into(),
+                    text: marker,
+                },
+            ));
+            assert!(!latest_generation(&retracted).unwrap().landed);
+        }
     }
 
     #[test]

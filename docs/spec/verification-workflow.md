@@ -1442,7 +1442,7 @@ since, each with its own regression test:
   prompt; the TUI shows the refusal. A backstop in `append_and_fold`, the one
   write path every service uses, refuses any other producer of that
   transition (`story set --state`, REST PATCH, epic materialisation, catalog
-  migration) unless the batch carries GREEN or OVERRIDDEN, or a GREEN was
+  migration) unless the batch carries GREEN, ALREADY LANDED (SH-857), or OVERRIDDEN, or a GREEN was
   posted for the current stay in `verifying`.
   (`tests/verification_override.rs`, `tests/web_test.rs`,
   `e2e/specs/verify-override-drop.spec.ts`)
@@ -1466,8 +1466,8 @@ since, each with its own regression test:
 - **The poller never completes a `verifying` story.** A close-on-merge pull
   request merged outside central verification is recorded as
   `StoryPrMerged` plus `CENTRAL VERIFICATION UNCERTIFIED MERGE —`; the story
-  stays `verifying` for the verifier's own entry path (`recover_merged`:
-  receipt, or a named halt) or an operator's override.
+  stays `verifying` for the verifier's ancestry check (SH-857) or an
+  operator's override. The poller does not assert whether certification exists.
   (`tests/service_pr_check.rs`)
 - **An overridden story is reaped once its pull request is recorded merged**,
   and not before: a reap deletes the branch and worktree, and an unmerged
@@ -1475,8 +1475,9 @@ since, each with its own regression test:
 
 Direction (b) of the story — the merge must require a receipt for the exact
 tree — was already true: `land-pr.sh --certified-run` execs the merge only
-after `merge-preflight.sh` certifies it, and `recover_merged` refuses a merged
-pull request whose tree carries no receipt. GitHub-side prevention of a hand
+after `merge-preflight.sh` certifies it. SH-857 separates that authority to
+request a merge from observing work that already landed; observation does not
+require a receipt or claim a new GREEN. GitHub-side prevention of a hand
 merge (a ruleset requiring a status check) is an operator decision outside
 this repository.
 
@@ -1758,3 +1759,44 @@ Automatic conversion requires a matching validated typed recovery observation
 for the exact project, story, and generation. The transaction archives the full
 old incident before clearing its queue-wide halt. Text-only incidents, including
 JSON embedded in diagnostic text, remain subject to ordinary incident recovery.
+
+
+### SH-857 — complete work already contained by the base
+
+A clean leased submission fetches origin's advertised default branch and pins
+its commit. If the branch head is an ancestor of that commit (including equality),
+submission succeeds with `already_landed`, without pushing or opening a PR.
+Git ancestry exit 1 follows normal submission; other failures remain infrastructure.
+Tree equality, cherry-picks and squash merges alone do not prove containment.
+
+The helper receipt carries exactly one success payload: `pull_request` or
+`already_landed`. Landed evidence identifies the repository, head, default branch,
+containing base commit and its tree. A merged PR is optional and requires a
+positive observation; branch ancestry never invents a PR or its merge status.
+The Rust submission outcome is a sum type. Malformed evidence, a mismatched
+repository or lease, and ambiguous receipts cannot authorize completion.
+
+The verifier writes `CENTRAL VERIFICATION ALREADY LANDED —` with those Git IDs
+and moves the current story to `done` atomically. It checks the exact generation,
+resource identity, human reservation and blockers again in the write transaction.
+A central GREEN on the exact base tree, including a batch GREEN, is named by
+source story. Otherwise the comment says that no central GREEN was found for
+that tree. Neither case runs a gate or waits for certification. The audit verdict
+is `already-landed`, never `certified`.
+
+The normal state transition releases dependency holds and schedules the durable
+closure cleanup. The latest generation recognizes landed ancestry independently
+of GREEN and operator override. Cleanup retains its lease, branch ancestry,
+dirty-worktree and replacement-resource protections.
+
+Merged-PR observation uses the same result. For an unleased generation with no
+open PR, the queue can recover an unambiguous merged close-on-merge link from its
+current open lifecycle. A prior closed lifecycle cannot supply that link.
+Pending single and batch landing intents keep their existing certified-tree
+reconciliation. A batch partner found already landed completes through the same
+writer and is excluded from the now-stale batch preview, without a repair return.
+
+Regression coverage: submission helper real-Git cases, verifier queue and receipt
+contracts, concurrent human reservations, exact-tree GREEN lookup, merged-PR shell
+observation, and existing landing/cleanup guards. The central verifier owns the
+full release gate.

@@ -80,7 +80,7 @@ pub trait BatchActuator {
         member: &VerificationCandidate,
         owner: MemberOwner<'_>,
         cancellation: &Cancellation,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure>;
+    ) -> Result<SubmissionOutcome, SubmissionFailure>;
     /// Pushes the batch tip to its branch and leaves exactly one open batch
     /// pull request against the base.
     fn publish(

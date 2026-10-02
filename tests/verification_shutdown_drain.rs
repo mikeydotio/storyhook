@@ -82,7 +82,7 @@ impl VerificationActuator for BlockingActuator {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<storyhook::domain::SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         // Every fixture here is submitted without a lease, so the daemon never
         // asks; a call is a fixture change this file has not caught up with.
         panic!(

@@ -262,7 +262,7 @@ impl VerificationActuator for Probe<'_> {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         let link = candidate.pull_request.clone().expect("a linked PR");
         let branch = &candidate.cleanup_lease.as_ref().expect("a lease").branch;
         Ok(SubmittedPullRequest {
@@ -271,7 +271,8 @@ impl VerificationActuator for Probe<'_> {
             base: "dev".into(),
             head_oid: git(&self.board.root, &["rev-parse", branch]),
             adopted: true,
-        })
+        }
+        .into())
     }
 
     fn verify(

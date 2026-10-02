@@ -72,7 +72,7 @@ fn external_landing_evidence_cannot_prevent_recording_the_outcome() {
             &self,
             _: &VerificationCandidate,
         ) -> Result<
-            storyhook::domain::SubmittedPullRequest,
+            storyhook::domain::landing::SubmissionOutcome,
             storyhook::daemon::verification::SubmissionFailure,
         > {
             panic!("linked fixture does not submit")
@@ -593,7 +593,7 @@ impl VerificationActuator for RacingActuator<'_> {
         &self,
         _: &VerificationCandidate,
     ) -> Result<
-        storyhook::domain::SubmittedPullRequest,
+        storyhook::domain::landing::SubmissionOutcome,
         storyhook::daemon::verification::SubmissionFailure,
     > {
         panic!("unleased fixture must not submit")

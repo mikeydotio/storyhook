@@ -5168,9 +5168,34 @@ cmd_submit_leased() {
     || submit_refuse infrastructure "base-fetch-failed" "story.sh submit: fetching origin/$default for $canonical_id failed: $fetch_out"
   head_oid=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
     || submit_refuse infrastructure "worktree-unverifiable" "story.sh submit: cannot resolve HEAD in \`$worktree\`."
-  if git -C "$worktree" merge-base --is-ancestor "$head_oid" "refs/remotes/origin/$default" 2>/dev/null; then
-    submit_refuse repair "nothing-to-submit" "story.sh submit: $canonical_id's branch \`$branch\` has no commits beyond origin/$default; commit the work, then run \`story move $canonical_id verifying\` again."
-  fi
+  local base_oid base_tree ancestry_out ancestry_rc=0
+  base_oid=$(git -C "$worktree" rev-parse --verify "refs/remotes/origin/$default^{commit}" 2>/dev/null) \
+    || submit_refuse infrastructure "base-unverifiable" "story.sh submit: cannot resolve fetched origin/$default."
+  ancestry_out=$(git -C "$worktree" merge-base --is-ancestor "$head_oid" "$base_oid" 2>&1) || ancestry_rc=$?
+  case "$ancestry_rc" in
+    0)
+      base_tree=$(git -C "$worktree" rev-parse --verify "$base_oid^{tree}" 2>/dev/null) \
+        || submit_refuse infrastructure "base-unverifiable" "story.sh submit: cannot resolve tree of $base_oid."
+      local linked_pr merged_pr=null observed_pr
+      linked_pr=$(printf '%s' "$LEASE_SHOW_JSON" | jq -r \
+        '[.story.referenced_by.prs[]? | select(.close_on_merge == true and .status == "open")] | if length == 1 then .[0].url else empty end')
+      if [ -n "$linked_pr" ]; then
+        observed_pr=$(github_exec pr view "$linked_pr" --json state,headRefOid,baseRefName,isCrossRepository 2>&1) \
+          || submit_refuse infrastructure "pull-request-unreadable" "story.sh submit: cannot inspect linked PR $linked_pr: $observed_pr"
+        merged_pr=$(printf '%s' "$observed_pr" | jq -c --arg url "$linked_pr" --arg head "$head_oid" --arg base "$default" \
+          'if .state == "MERGED" and .headRefOid == $head and .baseRefName == $base and .isCrossRepository == false then $url else null end') \
+          || submit_refuse infrastructure "pull-request-unreadable" "story.sh submit: invalid linked PR metadata for $linked_pr."
+      fi
+      jq -n --argjson lease "$lease" --arg story "$canonical_id" \
+        --arg repository "$STORYHOOK_GITHUB_EXPECTED" --arg head "$head_oid" \
+        --arg base "$default" --arg commit "$base_oid" --arg tree "$base_tree" --argjson merged_pr "$merged_pr" \
+        '{ok:true,receipt_version:1,story_id:$story,lease:$lease,pushed:false,
+          already_landed:{repository:$repository,head_oid:$head,base:$base,base_oid:$commit,base_tree:$tree,merged_pr:$merged_pr},
+          display:("Branch head " + $head + " is already contained by origin/" + $base + " at " + $commit + ".")}'
+      return 0 ;;
+    1) ;;
+    *) submit_refuse infrastructure "ancestry-unverifiable" "story.sh submit: ancestry check failed for $head_oid and $base_oid (exit $ancestry_rc): $ancestry_out" ;;
+  esac
 
   local remote_before remote_after push_out push_rc=0 pushed=false
   remote_before=$(submission_remote_head "$worktree" "$branch" 2>&1) \

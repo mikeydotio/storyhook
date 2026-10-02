@@ -13,7 +13,7 @@ use storyhook::daemon::verification::{ActiveVerification, LandingOutcome};
 /// Records the owning attempt at each blocking call the tick makes.
 struct AttemptWitness<'a> {
     activity: &'a VerificationActivity,
-    submission: SubmittedPullRequest,
+    submission: storyhook::domain::landing::SubmissionOutcome,
     outcomes: Mutex<VecDeque<VerificationOutcome>>,
     seen: Mutex<Vec<(&'static str, ActiveVerification)>>,
 }
@@ -21,7 +21,7 @@ struct AttemptWitness<'a> {
 impl<'a> AttemptWitness<'a> {
     fn new(
         activity: &'a VerificationActivity,
-        submission: SubmittedPullRequest,
+        submission: storyhook::domain::landing::SubmissionOutcome,
         outcomes: impl IntoIterator<Item = VerificationOutcome>,
     ) -> Self {
         Self {
@@ -49,7 +49,7 @@ impl VerificationActuator for AttemptWitness<'_> {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<storyhook::domain::landing::SubmissionOutcome, SubmissionFailure> {
         self.witness("submit", candidate);
         Ok(self.submission.clone())
     }

@@ -52,10 +52,11 @@ pub use reconcile_hold::{
 use super::bus::{Change, ChangeBus};
 use super::lifecycle::{CurrentRequest, InFlight};
 use crate::api::dispatch::resolve_control_script;
+use crate::domain::landing::{AlreadyLanded, SubmissionOutcome};
 use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{
     CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt, SubmissionReceipt,
-    SubmissionRefusalClass, SubmittedPullRequest,
+    SubmissionRefusalClass,
 };
 use crate::env::Environment;
 use crate::env::spawn_env::{
@@ -461,6 +462,11 @@ pub const VERIFICATION_IDLE_TIMEOUT: Duration =
 /// One repository-side verification result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerificationOutcome {
+    /// The branch or PR head is already contained by the fetched default branch.
+    AlreadyLanded {
+        /// Observed ancestry, without a certification claim.
+        evidence: AlreadyLanded,
+    },
     /// The exact repair input was refused before any gate operation; cleanup settled.
     RepairDeferred {
         /// Durable coordinator retaining the refused admission.
@@ -530,7 +536,7 @@ pub enum LandingOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubmissionFailure {
     /// The helper refused by name with something the agent has to fix — a
-    /// dirty worktree, a branch with nothing to submit, a rejected push. The
+    /// dirty worktree or a rejected push. The
     /// story is returned to the agent carrying `display`.
     Refused {
         /// The helper's refusal token, such as `dirty-worktree`.
@@ -657,13 +663,13 @@ pub const VERIFICATION_RESUME_PREFIX: &str = "CENTRAL VERIFICATION RESUME —";
 pub const VERIFICATION_HOLD_RELEASED_PREFIX: &str = "CENTRAL VERIFICATION HOLD RELEASED —";
 /// Process boundary for repository verification and agent-session control.
 pub trait VerificationActuator: Send + Sync {
-    /// Pushes the candidate's leased branch and leaves exactly one open pull
-    /// request for it, opened or adopted (SH-647). Idempotent: the daemon
+    /// Proves the branch already landed, or pushes it and leaves one open pull
+    /// request, opened or adopted. Idempotent: the daemon
     /// calls it on every leased generation, linked pull request or not.
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure>;
+    ) -> Result<SubmissionOutcome, SubmissionFailure>;
     /// Certifies one submitted PR without requesting a merge.
     fn verify(
         &self,
@@ -1280,7 +1286,7 @@ impl ShellVerificationActuator {
         &self,
         candidate: &VerificationCandidate,
         owner: ControlOwner<'_>,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<SubmissionOutcome, SubmissionFailure> {
         let _log = self.log_scope(candidate);
         let infrastructure = |detail: String| SubmissionFailure::Infrastructure { detail };
         let lease = candidate.cleanup_lease.as_ref().ok_or_else(|| {
@@ -1363,6 +1369,31 @@ impl ShellVerificationActuator {
                 "leased submit receipt does not echo the requested story and lease".to_string(),
             ));
         }
+        if let Some(evidence) = receipt.already_landed {
+            if receipt.pull_request.is_some()
+                || receipt.pushed
+                || receipt.reason.is_some()
+                || receipt.class.is_some()
+            {
+                return Err(infrastructure(
+                    "ambiguous already-landed submission receipt".into(),
+                ));
+            }
+            evidence
+                .validate()
+                .map_err(|error| infrastructure(error.to_string()))?;
+            let repository = crate::github_access::Repository::resolve(&candidate.checkout)
+                .map_err(|error| infrastructure(error.to_string()))?;
+            if !repository
+                .qualified()
+                .eq_ignore_ascii_case(&evidence.repository)
+            {
+                return Err(infrastructure(
+                    "landed receipt belongs to another repository".into(),
+                ));
+            }
+            return Ok(SubmissionOutcome::AlreadyLanded(evidence));
+        }
         let pull_request = receipt.pull_request.ok_or_else(|| {
             infrastructure(format!(
                 "leased submit receipt claims success without a pull request: {}",
@@ -1380,7 +1411,7 @@ impl ShellVerificationActuator {
                 pull_request.url, pull_request.number
             )));
         }
-        Ok(pull_request)
+        Ok(SubmissionOutcome::PullRequest(pull_request))
     }
 
     /// Runs `verify-pr.sh` on `pull_request` under `candidate`'s owned attempt:
@@ -1787,7 +1818,7 @@ impl VerificationActuator for ShellVerificationActuator {
     fn submit(
         &self,
         candidate: &VerificationCandidate,
-    ) -> Result<SubmittedPullRequest, SubmissionFailure> {
+    ) -> Result<SubmissionOutcome, SubmissionFailure> {
         let workspace = self.activity.workspace_for(candidate.project);
         self.submit_owned(
             candidate,
@@ -1866,6 +1897,9 @@ fn checkout_repository_problem(
 #[derive(Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
 enum WireOutcome {
+    AlreadyLanded {
+        evidence: AlreadyLanded,
+    },
     RepairDeferred {
         recovery_id: String,
         reason: crate::service::project_recovery::RepairRefusal,
@@ -1926,6 +1960,13 @@ impl WireOutcome {
             };
         }
         match self {
+            WireOutcome::AlreadyLanded { evidence } => match evidence.validate() {
+                Ok(()) => VerificationOutcome::AlreadyLanded { evidence },
+                Err(error) => VerificationOutcome::InfrastructureFailure {
+                    detail: format!("invalid landed evidence: {error}"),
+                    disposition: VerificationFailureDisposition::Permanent,
+                },
+            },
             WireOutcome::RepairDeferred {
                 recovery_id,
                 reason,
@@ -2589,7 +2630,11 @@ where
                 });
             }
             super::activity::emit(
-                if matches!(outcome, VerificationOutcome::Certified { .. }) {
+                if matches!(
+                    outcome,
+                    VerificationOutcome::Certified { .. }
+                        | VerificationOutcome::AlreadyLanded { .. }
+                ) {
                     "INFO"
                 } else {
                     "ERROR"
@@ -2643,6 +2688,12 @@ where
                 };
             }
             match outcome {
+                VerificationOutcome::AlreadyLanded { evidence } => {
+                    match queue.complete_already_landed(&ctx, &candidate, &evidence)? {
+                        GenerationWrite::Applied(()) => return Ok(TickResult::Completed),
+                        GenerationWrite::Superseded => continue,
+                    }
+                }
                 VerificationOutcome::RepairDeferred {
                     recovery_id,
                     reason,
@@ -2988,7 +3039,17 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
         &format!("submission outcome: {submitted:?}"),
     );
     match submitted {
-        Ok(pull_request) => {
+        Ok(SubmissionOutcome::AlreadyLanded(evidence)) => {
+            if owner.is_cancelled() {
+                return Ok(GenerationWrite::Applied(Submission::Ended(
+                    TickResult::Stopped,
+                )));
+            }
+            Ok(queue
+                .complete_already_landed(ctx, candidate, &evidence)?
+                .map(|()| Submission::Ended(TickResult::Completed)))
+        }
+        Ok(SubmissionOutcome::PullRequest(pull_request)) => {
             *published = Some(batch_preview::Published::new(
                 candidate,
                 &pull_request.base,
