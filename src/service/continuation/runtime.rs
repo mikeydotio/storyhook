@@ -9,6 +9,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+/// The helper's 30 s operation budget leaves one third for interpreter startup and exit.
+const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(45);
+/// Resume pools dispatch and observations into 150 s, with the same one-third margin.
+const RESUME_TIMEOUT: Duration = Duration::from_secs(225);
+
+fn operation_timeout(operation: &str) -> Duration {
+    match operation {
+        "resume" => RESUME_TIMEOUT,
+        _ => OBSERVATION_TIMEOUT,
+    }
+}
+
 /// Production provider adapter. An explicit script path supports isolated process fixtures.
 pub struct PythonRuntime {
     script: Option<PathBuf>,
@@ -73,12 +85,11 @@ impl ContinuationRuntime for PythonRuntime {
             )
             .arg(script)
             .arg(operation);
-        let result = crate::process::run_captured_with_input(
-            command,
-            file,
-            Duration::from_secs(if operation == "resume" { 125 } else { 45 }),
-        )
-        .map_err(|e| AppError::Storage(format!("continuation {operation}: {}", e.detail())))?;
+        let result =
+            crate::process::run_captured_with_input(command, file, operation_timeout(operation))
+                .map_err(|e| {
+                    AppError::Storage(format!("continuation {operation}: {}", e.detail()))
+                })?;
         if !result.status.success() {
             return Err(AppError::Storage(format!(
                 "continuation {operation} failed: {}",
@@ -95,5 +106,54 @@ impl ContinuationRuntime for PythonRuntime {
             )));
         }
         Ok(answer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn helper_probe_budgets_fit_continuation_outer_limits() {
+        let ordinary = crate::process::plugin_probe_budget();
+        let source = include_str!("../../../plugins/story/lib/continuation_runtime.py");
+        let seconds = source
+            .lines()
+            .find_map(|line| line.strip_prefix("RESUME_BUDGET_SECONDS = "))
+            .expect("continuation runtime must declare its resume operation budget");
+        let resume = Duration::from_secs(seconds.trim().parse().expect("whole seconds"));
+        assert!(resume > ordinary, "resume must also allow guarded dispatch");
+        for operation in [
+            "capture",
+            "observe",
+            "register",
+            "resume-preflight",
+            "resume",
+        ] {
+            let budget = if operation == "resume" {
+                resume
+            } else {
+                ordinary
+            };
+            let bound = operation_timeout(operation);
+            assert!(
+                budget * 3 <= bound * 2,
+                "{operation}: helper budget {budget:?} exceeds two thirds of {bound:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_resume_receives_the_dispatch_outer_limit() {
+        assert_eq!(operation_timeout("resume"), Duration::from_secs(225));
+        for operation in [
+            "capture",
+            "observe",
+            "register",
+            "resume-preflight",
+            "unknown",
+        ] {
+            assert_eq!(operation_timeout(operation), Duration::from_secs(45));
+        }
     }
 }

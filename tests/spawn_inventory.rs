@@ -243,7 +243,7 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ),
     // Continuation stages JSON stdin and captures stdout/stderr in regular
     // files, so descendants cannot hold an output-pipe EOF. The shared runner
-    // waits at most 45 s (125 s for resume) and kills its group on timeout.
+    // waits at most 45 s (225 s for resume) and kills its group on timeout.
     (
         "src/service/continuation/runtime.rs",
         "\"python3\"",

@@ -1,9 +1,18 @@
-//! Run the provider boundary regressions through real private Git/tmux fixtures.
+//! Exercise continuation deadlines and real private Git/tmux ownership fixtures.
 #[test]
 fn continuation_runtime_preserves_owned_process_and_git_evidence() {
+    run_python("test_continuation_runtime.py");
+}
+
+#[test]
+fn continuation_runtime_shares_operation_deadlines() {
+    run_python("test_continuation_budget.py");
+}
+
+fn run_python(filename: &str) {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let result = std::process::Command::new("python3")
-        .arg(root.join("plugins/story/tests/test_continuation_runtime.py"))
+        .arg(root.join("plugins/story/tests").join(filename))
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .current_dir(root)
         .output()

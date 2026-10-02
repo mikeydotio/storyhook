@@ -169,9 +169,18 @@ See `docs/rca/sh-766-plugin-probe-bounds-under-load.md`.
   bound. It is how long the gate owner's own TERM trap gets before this helper
   freezes and kills the captured tree. Escalation is safe, only less gentle.
 - **Fenced.** `tests/timing_assertions.rs` refuses a bare `timeout=` or
-  `monotonic() +` literal in any `plugins/story/lib/*.py`. The one exemption is
-  `continuation_runtime.py` (SH-798: its resume runs a 120 s dispatch inside a
-  125 s bound), and it fails when that file no longer needs the exemption.
+  `monotonic() +` literal in any `plugins/story/lib/*.py`, with no exemptions.
+- **Continuation shares the deadline too (SH-798).** Capture, observe, register
+  and resume-preflight each use the same 30 s operation budget inside a 45 s
+  Rust bound. Resume pools the former 120 s dispatch allowance with 30 s of
+  observation time into one 150 s operation, inside a 225 s Rust bound. Its
+  nested preflight, dispatch and final ownership checks all receive the time
+  remaining; nested operations never reset the deadline. A probe can exceed
+  the old 2 s limit, but no subprocess starts after the operation expires.
+  Timeout diagnostics retain command, allowance, elapsed time and load; a
+  timeout after dispatch remains uncertain and never authorizes a replay.
+  Rust tests pin both budget-to-caller relationships. Controlled-clock tests
+  exercise expiry before, during and after dispatch without long sleeps.
 - **Fixtures are not stricter than production.** `tests/support/block_interrupt.py`
   and `test-agent-identity.py` give a command the notify bound (`NOTIFY_TIMEOUT` +
   `NOTIFY_TERM_GRACE`). `test-dispatch-pane-readiness.sh` gives the fake pane
