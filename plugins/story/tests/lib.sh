@@ -58,6 +58,8 @@ _register_tmp() {
 # sessions cannot be caught by a broad prefix sweep.
 _register_tmp_tmux_session() {
   local session
+  # A real server is about to take this test's default path (SH-840).
+  _withdraw_fake_tmux_default || return 1
   for session in "$@"; do
     case "$session" in
       story-test-*) _TMP_TMUX_SESSIONS+=("$session") ;;
@@ -418,11 +420,13 @@ export PATH="$TESTS_DIR/fakes:$PATH"
 # Only the fake is published: the server must answer with this fixture's own
 # socket, so a real tmux on PATH is left untouched. A caller outside tmux is
 # pointed at the default server, so that path is linked to the fake's socket --
-# but only inside the test home, never over anything but an earlier link, and
-# only for the duration of that run: a test may start a REAL tmux server on its
-# own default path afterwards (test-dispatch-failure-cleanup.sh does), and a
-# link left behind would stand where that server's socket has to go.
-_FAKE_TMUX_DEFAULT_LINK=""
+# but only inside the test home and never over anything but an earlier link.
+# The link stays for the rest of the test, because helper runs that bypass this
+# wrapper (`env ... bash "$SCRIPT"`) and daemon work that outlives a run still
+# reach the default server. A test that starts a REAL server on its own default
+# path declares it through _register_tmp_tmux_session, which withdraws the link
+# first (test-dispatch-failure-cleanup.sh otherwise met "Socket operation on
+# non-socket").
 _publish_fake_tmux() {
   local answer state default_dir
   [ -n "${FAKE_TMUX_STATE:-}" ] && [ -d "$FAKE_TMUX_STATE" ] || return 0
@@ -435,15 +439,19 @@ _publish_fake_tmux() {
   [ -d "$default_dir" ] || mkdir -m 700 "$default_dir" || return 1
   if [ -L "$default_dir/default" ] || [ ! -e "$default_dir/default" ]; then
     ln -sfn "$answer" "$default_dir/default" || return 1
-    _FAKE_TMUX_DEFAULT_LINK="$default_dir/default"
   fi
 }
 
-# Withdraw the default link the last publication made, if it is still a link.
+# Withdraw a fake default-server link before a real server needs the path. Only
+# a link to a regular file is the fake's: a real server's socket is a socket,
+# and a link to one (tmux-revivify makes them) is never removed.
 _withdraw_fake_tmux_default() {
-  local link="$_FAKE_TMUX_DEFAULT_LINK"
-  _FAKE_TMUX_DEFAULT_LINK=""
-  [ -n "$link" ] && [ -L "$link" ] || return 0
+  local link target
+  case "${TMUX_TMPDIR:-}" in "$STORYHOOK_TEST_HOME"/*) ;; *) return 0 ;; esac
+  link="$TMUX_TMPDIR/tmux-$(id -u)/default"
+  [ -L "$link" ] || return 0
+  target=$(readlink "$link") || return 1
+  [ -f "$target" ] && [ ! -S "$target" ] || return 0
   rm -f -- "$link"
 }
 
@@ -455,14 +463,10 @@ _withdraw_fake_tmux_default() {
 bash() {
   case "${1:-}" in
     "$SCRIPT" | */story.sh)
-      local status=0
       _publish_fake_tmux || {
         printf 'lib.sh: cannot publish the fake tmux server in %s (SH-840)\n' "${FAKE_TMUX_STATE:-}" >&2
         return 1
-      }
-      command bash "$@" || status=$?
-      _withdraw_fake_tmux_default
-      return "$status" ;;
+      } ;;
   esac
   command bash "$@"
 }
