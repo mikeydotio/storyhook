@@ -455,6 +455,42 @@ file and require both hashes to match the manifest before every arm. This
 attempt supplies diagnostic evidence only, retained in `/tmp/sh812-v2-bench/`
 and `.storyhook/logs/sh812-performance-v2/` with the driver and manifest.
 
+**Third warm-up, 2026-10-03 UTC: diagnostic only.** Both snapshots used one
+pinned binary with SHA-256
+`408f7486a30d37b325772b7e2681c58eb0ac185eedcb7096aefc6dc5f49f63ab`.
+The driver checked binary and spec hashes before execution. The complete
+optimized leg exited 1; it produced no history and started no comparison arm.
+
+| Measurement | Result |
+|---|---|
+| Selection and completion | 1,507 results, 16 slices, 8 jobs |
+| Playwright outcomes | 1,491 accepted, including one declared failure; 15 skipped; one unexpected failure |
+| Wall time, including planning and cleanup | 1,487.20 s |
+| Sampled one-minute load | Mean 117.47; maximum 167.74 |
+| Longest slice | 1,123 s |
+| Slice seeding | Median 5 s; range 3–7 s |
+| Slice daemon readiness | Median 0 s; range 0–1 s |
+| Slice selection bookkeeping | Median 0 s; range 0–1 s; no redundant Playwright listing |
+
+The Node slice accepted all 51 tests, but the original receipt incorrectly
+rejected SH-813's intentional `test.fail()` proof. The reporter now counts
+outcomes against `expectedStatus` and returns its final status override through
+the documented asynchronous API. Both new expected-failure/unexpected-pass
+regressions were RED; all nine real-runner receipt scenarios, two focused Node
+harness cases and strict TypeScript checking then passed.
+
+The remaining failure is `verification-layout.spec.ts:116` on mobile WebKit,
+at the 375px short-status sample. After `page.clock.runFor(1000)`, the chip
+remained at `2m 24s total` / `18s`, rather than `2m 25s total` / `19s`, for
+49,445 ms. Initial text and containment assertions passed. Diagnosis and a
+separate regression repair are adopted into SH-812; this trace alone does not
+establish a product defect. Preserve elapsed-label and geometry coverage.
+
+The full logs, sixteen receipts, phase timings, load samples, manifest, scripts
+and failing trace are retained in `/tmp/sh812-v3-bench/` and
+`.storyhook/logs/sh812-performance-v3/`. A fresh successful warm-up and two
+matched pairs remain required. No performance improvement is established.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The
