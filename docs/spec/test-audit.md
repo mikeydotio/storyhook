@@ -646,8 +646,9 @@ SHA-256 `2e0f0209a99da04980c9477f36a6c5a5014e50cb86a9cf52bb77e17f6f320d3e`.
 Warm-up and baseline each reported 1,502 passes, one declared expected failure
 and 15 configured skips, without retries. All 1,518 individual identities and
 outcomes match after excluding Playwright's trailing display duration.
-The scratch analyzer needs to strip `m`, `h` and `d` as well as `ms` and `s`;
-the installed formatter uses all five units. Raw logs remain unchanged.
+The scratch analyzer now strips only a final numeric duration in `ms`, `s`,
+`m`, `h` or `d`, matching the installed formatter. Parser checks cover every
+unit and retain meaningful title parentheses. Raw logs remain unchanged.
 Baseline discovery cost 41 aggregate seconds (median one, maximum seven per
 slice); its longest slice was 816 seconds. These observations do not establish
 a speedup: no successful optimized comparison arm completed.
@@ -669,6 +670,27 @@ in `/tmp/sh812-v7-bench/` and `.storyhook/logs/sh812-performance-v7/`. The trace
 is under `optimized1-live-diagnostics/dispatch-Auto-mode-sends-a-80371-ous-dispatch-SH-208-SH-517--webkit/`.
 After the regression repair, refresh both snapshots and finish the approved
 successful warm-up and two comparable pairs. Performance acceptance remains open.
+
+**Dispatch-notice observation repair, 2026-10-03 UTC.** The trace shows the
+success notice arrived and passed its exact wording check. The later negative
+check began after another 2.64 seconds of assertion and transport work, racing
+its normal three-second expiry. The autonomous dispatch test now forwards real
+poll responses while timers run, then pauses the installed browser clock before
+publishing the actual terminal response. All wording and side-effect assertions
+run inside that reading window. An explicit 3,000 ms advance still proves
+automatic dismissal. Cleanup resumes the clock even when an assertion fails.
+The attended/resume wording case uses the existing Keep notices control.
+
+Two controlled protocol regressions failed against the stub and pass with the
+helper. They cover running replies, unchanged terminal response forwarding,
+continued ownership during reading, and cleanup after success or failure.
+The native failure trace remains the evidence of the original expiry race.
+All 24 selected dispatch browser cases and both new protocol cases passed
+in a 295-second pool. Strict TypeScript, the exact tracked-timeout inventory
+and diff checks passed. The real-time
+notification canary continues to cover native timer behavior; production
+notices, dispatch polling and provider execution are unchanged. Focused logs
+are retained under `.storyhook/logs/sh812-resumed/sh812-dispatch-clock-*`.
 
 ### What slicing exposed
 
