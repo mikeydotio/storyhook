@@ -347,7 +347,46 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
     let status = storyhook::daemon::verification::VerificationActivity::new()
         .status(&fixture.ctx())
         .unwrap();
+    let mut admission = storyhook::store::GateAttempt::new(
+        "cost-admission".into(),
+        storyhook::store::GateSubmission {
+            project: fixture.project(),
+            story_id: "SH-1".into(),
+            generation: Some(storyhook::store::GlobalSeq::new(7)),
+            submitted_at: Some("2026-10-03T00:00:00Z".into()),
+        },
+        "2026-10-03T00:00:01Z",
+    );
+    admission.elapsed.observe(900_000, "2026-10-03T00:15:01Z");
+    admission.verdict = Some("certified".into());
+    admission
+        .executions
+        .push(storyhook::store::GateExecution::new(
+            "physical".into(),
+            "2026-10-03T00:00:02Z",
+            "/tmp/retained.ndjson".into(),
+        ));
+    let mut with_cost = status.clone();
+    with_cost.cost = Some(storyhook::service::gate_cost::current::CurrentCost::new(
+        &admission,
+    ));
     vec![
+        (
+            "gate_evidence_empty",
+            Response::GateEvidence(Box::new(
+                storyhook::service::gate_cost::view::EvidenceView::new("SH-1", Vec::new()),
+            )),
+        ),
+        (
+            "gate_evidence",
+            Response::GateEvidence(Box::new(
+                storyhook::service::gate_cost::view::EvidenceView::new("SH-1", vec![admission]),
+            )),
+        ),
+        (
+            "verifier_status_cost",
+            Response::VerifierStatus(Box::new(with_cost)),
+        ),
         ("project_recovery", recovery_response(&fixture)),
         (
             "verifier_status",
@@ -1127,6 +1166,7 @@ fn a_story_delete_confirmation_is_flat_and_requires_the_story_id() {
 fn the_response_corpus_covers_every_variant() {
     fn variant_of(response: &Response) -> &'static str {
         match response {
+            Response::GateEvidence(_) => "gate_evidence",
             Response::ProjectRecovery(_) => "project_recovery",
             Response::VerifierStatus(_) => "verifier_status",
             Response::WithVerifier { .. } => "with_verifier",
@@ -1157,7 +1197,8 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 27] = [
+    const EVERY_VARIANT: [&str; 28] = [
+        "gate_evidence",
         "dispatch_policy",
         "project_recovery",
         "verifier_status",
@@ -2182,6 +2223,11 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::Verifier {
             action: VerifierAction::Status,
+        },
+        Invocation::Verifier {
+            action: VerifierAction::Evidence {
+                story_id: "SH-1".into(),
+            },
         },
         Invocation::Verifier {
             action: VerifierAction::RepairShow {
