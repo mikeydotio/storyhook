@@ -362,3 +362,42 @@ resistant descendant publishes readiness. A 200 ms startup delay is an explicit
 control. Both the normal wrapper and the readiness-driven test use the same
 quiescent capture routing. The production wrapper retains its original absolute
 timeout. No production deadline or cancellation behavior changes.
+
+## The window proof after a release, and answer evidence (SH-840)
+
+`test-unclaim.sh` failed once at contention 0.89 (PR 885, tree 4257f68c) with
+only `ok: false`. The other assertions in that case passed. In `cmd_unclaim`,
+that answer comes only from `RELEASE_WINDOW_ERROR`: the claim release
+succeeded, and then `_close_story_window` could not prove that the window was
+absent. That fixture has no pane, so only the post-release resource inventory
+could fail. At that tree, the inventory ran tmux with the fixed 3-second
+`TMUX_TIMEOUT`. The CLI floor above now covers that inventory. One local run
+confirmed the attribution: a real 4-second delay, armed after the release and
+with no declared floor, gives the same answer. The cause is deduced, not
+observed, because the gate log lost the answer.
+
+### As built
+
+- `plugins/story/tests/fakes/tmux`: the resource inventory fails with the text
+  of `$STATE/resource_fail` when that file exists.
+- `fakes/story-post-release-fault`: a `STORY_BIN` proxy runs the real
+  `unclaim` and arms that fault only after a successful release.
+  `test-unclaim.sh` uses it to pin the SH-840 answer without timing: the
+  release stands, the failed step and its cause are named, and nothing on disk
+  changes. A delay cannot do this: the two inventories before the release would
+  then race the same production deadline. `test-subprocess-patience.sh` also
+  names the post-release proof in its patient case.
+- `assert_ok <answer> <expected> <label>` (`lib.sh`) prints the whole answer
+  when the top-level `.ok` is wrong. A pass is the same as before. All ok
+  assertions in the plugin suite and in the `tests/support/protect_*.rs` shell
+  fixtures use it (council D1 on SH-840).
+- `test-answer-assertions.sh` proves the helper. It also fails the leg on any
+  tracked `assert_eq` over the `.ok` field read by `jqf`, and its message gives
+  the one-line `sed` fix.
+
+### Limits, named
+
+The guard covers the top-level `.ok` verdict only. About 1000 other field-only
+`jqf` assertions remain; when `ok` is correct, they still print only their
+field. The sweep shortens diagnosis. It does not prevent a load-dependent
+failure.
