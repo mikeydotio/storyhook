@@ -26,6 +26,66 @@ fn protected_unknown_ownership_is_unanswered_before_tmux_is_queried() {
     assert!(!marker.exists());
 }
 
+/// Real private and foreign servers observed by a client forced into the C locale.
+pub(super) fn c_locale_dispatch() -> (Fixture, ShellDispatcher) {
+    let mut fixture = Fixture::new();
+    fixture.start(&fixture.endpoint.clone(), "SH-1");
+    fixture.start(&fixture.socket.clone(), "foreign");
+    let program = resolve_executable("tmux").expect("real tmux is required");
+    let mut command = Command::new(&program);
+    command.args(["-N", "-S"]).arg(&fixture.endpoint).args([
+        "set-option",
+        "-w",
+        "-t",
+        "SH-1",
+        "@storyhook-agent",
+        "codex",
+    ]);
+    let output = run_captured(command, fixture.env.subprocess_bound(TMUX_TIMEOUT))
+        .unwrap_or_else(|error| panic!("{}", error.detail()));
+    assert!(output.status.success());
+    let dispatcher = observer(
+        fixture.root.path(),
+        &format!("export LC_ALL=C\nexec '{}' \"$@\"", program.display()),
+        fixture.env.clone(),
+    );
+    (fixture, dispatcher)
+}
+
+#[test]
+fn c_locale_liveness_preserves_fields_on_the_protected_server() {
+    let (fixture, dispatcher) = c_locale_dispatch();
+    let answer = dispatcher.probe_window_at("%0", Some(&fixture.endpoint));
+    assert!(
+        matches!(answer, WindowProbe::Gone { ref detail } if detail.contains("runs `sleep`")),
+        "{answer:?}"
+    );
+    assert!(matches!(
+        dispatcher.probe_window_at("%999", Some(&fixture.endpoint)),
+        WindowProbe::Gone { .. }
+    ));
+}
+
+#[test]
+fn c_locale_census_counts_the_protected_server() {
+    let (fixture, dispatcher) = c_locale_dispatch();
+    let target = crate::service::tmux_target::inspect(
+        &fixture.env,
+        Some(&fixture.socket),
+        fixture.deadline(),
+        &Default::default(),
+    )
+    .unwrap();
+    let mut command = dispatcher.tmux();
+    target.apply(&mut command, Some(&fixture.socket));
+    assert_eq!(
+        crate::lane_budget::census_through(command, fixture.env.subprocess_bound(TMUX_TIMEOUT)),
+        WindowCensus::Counted {
+            windows: vec!["SH-1:SH-1".into()]
+        }
+    );
+}
+
 #[test]
 fn protected_logical_socket_cannot_rebind_a_numeric_lane_implicitly() {
     let fixture = Fixture::new();
@@ -70,7 +130,7 @@ fn bound_numeric_probe_is_pinned_to_the_private_endpoint() {
         std::fs::read_to_string(marker)
             .unwrap()
             .starts_with(&format!(
-                "-N -S {} display-message",
+                "-N -S {} -u display-message",
                 fixture.endpoint.display()
             ))
     );

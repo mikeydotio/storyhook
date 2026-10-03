@@ -153,7 +153,7 @@ fn adopted_activity_query_uses_the_identity_queries_remaining_budget() {
     let identity = (bound / 4).as_secs_f64();
     let activity = (bound * 7 / 8).as_secs_f64();
     let body = format!(
-        "echo \"$3\" >> '{}'\nif [ \"$3\" = list-panes ]; then\n\
+        "echo \"$4\" >> '{}'\nif [ \"$4\" = list-panes ]; then\n\
          sleep {identity}\nprintf '{}'\n\
          else sleep {activity}\nprintf '1789066115\\n'; fi",
         marker.display(),

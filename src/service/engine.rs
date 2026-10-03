@@ -859,7 +859,15 @@ impl ShellDispatcher {
             target.require_binding()?;
             let mut command = self.tmux();
             target.apply(&mut command, socket);
-            command.args(["display-message", "-p", "-t", window, WINDOW_PROBE_FORMAT]);
+            // C-locale clients otherwise replace protocol tabs with underscores.
+            command.args([
+                "-u",
+                "display-message",
+                "-p",
+                "-t",
+                window,
+                WINDOW_PROBE_FORMAT,
+            ]);
             Ok::<_, AppError>((command, target, super::tmux_target::remaining(deadline)?))
         })();
         let (command, target, timeout) = match prepared {

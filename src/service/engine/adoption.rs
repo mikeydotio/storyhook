@@ -40,6 +40,28 @@ use std::process::Command;
 use super::{Dispatcher, EngineService, RunId, RunView, TMUX_TIMEOUT, TmuxBudget, WindowProbe};
 use crate::service::tmux_target::{self, Target};
 
+#[cfg(test)]
+mod locale_tests {
+    use super::*;
+
+    #[test]
+    fn c_locale_adoption_reads_provider_identity_on_the_protected_server() {
+        let (fixture, dispatcher) = super::super::revivify_tests::c_locale_dispatch();
+        let mut lane = super::super::restart_probe_tests::adopted_lane(fixture.root.path());
+        let mut lease = lane.cleanup_lease.take().unwrap();
+        lease.tmux.socket_path = fixture.endpoint.clone();
+        let budget = dispatcher.probe_budget();
+        let (target, deadline) = inspect_target(&fixture.env, &lease, budget).unwrap();
+        let listing =
+            list_panes(&lease, budget, &dispatcher.tmux_program, &target, deadline).unwrap();
+        let error = inspect_lease(lease, &listing).unwrap_err().to_string();
+        assert!(
+            error.contains("pane no longer runs dispatched codex process: sleep"),
+            "{error}; listing={listing:?}"
+        );
+    }
+}
+
 /// The production inspector, with no mutating subprocess operations.
 pub struct LiveDispatchInspector {
     env: Environment,
@@ -148,6 +170,8 @@ fn tmux(lease: &StoryCleanupLease, program: &OsStr, target: &Target) -> Command 
     let mut command = Command::new(program);
     crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
     target.apply(&mut command, Some(&lease.tmux.socket_path));
+    // Keep tab-delimited identity fields intact under the C locale.
+    command.arg("-u");
     command
 }
 

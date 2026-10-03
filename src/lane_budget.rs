@@ -69,7 +69,8 @@ pub fn count_live_agent_windows() -> WindowCensus {
 /// on. One parser, one error vocabulary, two doors (SH-136). `bound` is the
 /// caller's per-call tmux bound.
 pub fn census_through(mut command: Command, bound: Duration) -> WindowCensus {
-    command.args(["list-windows", "-a", "-F", CENSUS_FORMAT]);
+    // Keep the protocol delimiters independent of the caller's locale.
+    command.args(["-u", "list-windows", "-a", "-F", CENSUS_FORMAT]);
     let captured = match run_captured(command, bound) {
         Ok(captured) => captured,
         Err(CaptureError::Timeout(_)) => {
