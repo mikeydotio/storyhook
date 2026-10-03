@@ -1173,6 +1173,12 @@ case "${1:-}" in
           IFS= read -r resource_delay < "$STATE/resource_delay"
           sleep "$resource_delay" || exit 1
         fi
+        # An inventory the server does not answer (SH-840). The native reader
+        # gets tmux's failure, as for a server that died mid-query.
+        if [ -f "$STATE/resource_fail" ]; then
+          cat "$STATE/resource_fail" >&2
+          exit 1
+        fi
         python3 - "$STATE" <<'PY_ENDPOINT'
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1])

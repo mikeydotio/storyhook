@@ -17,6 +17,12 @@ assert_eq "$(jqf "$out" .ok)" true "delayed probe: unclaim succeeds: $out"
 assert_eq "$(jqf "$out" .worktree_status)" dirty "delayed probe: dirty worktree remains visible"
 [ -f "$repo/.claude/worktrees/$wname/scratch.txt" ] || fail_test "delayed probe: work was removed"
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$wname") || fail_test "delayed probe: branch was removed"
+# Every probe was delayed, including the window-absence proof AFTER the
+# release: the step SH-840 lost under gate load while this inventory still had
+# a fixed 3 s bound. Named on its own so a regression there says which step.
+case "$(jqf "$out" .display)" in
+  *"could not prove"*) fail_test "delayed probe: the post-release window proof was not answered: $out" ;;
+esac
 
 # A floor below the production timeout must not shorten it or suppress a
 # timeout. With no floor, the same unanswered identity also refuses safely.

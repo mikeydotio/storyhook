@@ -141,6 +141,40 @@ assert_contains "$(jqf "$out" .display)" "could not prove tmux window absence" \
   "kill-failure: the failed postcondition is explicit"
 assert_eq "$(state_of "$kf")" "todo" "kill-failure: the completed release remains observable"
 
+# --- an unanswered window proof AFTER the release is a failed cleanup -------
+# SH-840's gate failure, made deterministic: the release went through, then the
+# inventory that proves the story's window absent went unanswered (a timeout
+# under load, then). The answer must say both halves -- the claim WAS released,
+# and which step failed and why -- and nothing on disk may be touched. The fault
+# can only be armed by the release itself (fakes/story-post-release-fault):
+# unclaim takes the same inventory twice before releasing.
+pf=$(new_story "$repo" "Window proof unanswered after release")
+pfw=$(mk_dispatched "$repo" "$pf")
+echo scratch >"$repo/.claude/worktrees/$pfw/scratch.txt"
+claim_it "$pf"
+status=0
+out=$(cd "$repo" \
+  && STORY_BIN="$TESTS_DIR/fakes/story-post-release-fault" STORY_REAL_BIN="$(command -v story)" \
+     STORY_POST_RELEASE_FAULT="fixture tmux: inventory not answered" \
+     bash "$SCRIPT" --project "$slug" unclaim "$pf" 2>&1) || status=$?
+[ -f "$FAKE_TMUX_STATE/resource_fail" ] \
+  || fail_test "post-release proof: the release never armed the fault: $out"
+rm -f "$FAKE_TMUX_STATE/resource_fail"
+[ "$status" -ne 0 ] || fail_test "post-release proof: helper exited successfully"
+assert_ok "$out" "false" "post-release proof: ok:false"
+assert_eq "$(state_of "$pf")" "todo" "post-release proof: the completed release stands"
+assert_eq "$(jqf "$out" .unclaimed_from)" "in-progress" "post-release proof: the release is reported"
+assert_eq "$(jqf "$out" .worktree_status)" "dirty" "post-release proof: the worktree is still reported"
+assert_contains "$(jqf "$out" .display)" "reset" \
+  "post-release proof: display still names the verb that would remove the worktree"
+assert_contains "$(jqf "$out" .display)" "could not prove tmux window absence" \
+  "post-release proof: the failed step is named"
+assert_contains "$(jqf "$out" .display)" "fixture tmux: inventory not answered" \
+  "post-release proof: and so is its cause"
+[ -f "$repo/.claude/worktrees/$pfw/scratch.txt" ] || fail_test "post-release proof: uncommitted work was destroyed"
+(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$pfw") \
+  || fail_test "post-release proof: unclaim deleted a branch"
+
 # --- leased cleanup ignores mutable checkout/provider paths ----------------
 # Stop-now owns only claim release plus tmux cleanup. Its creation-time lease
 # is therefore sufficient from outside every checkout, even when the paths in
