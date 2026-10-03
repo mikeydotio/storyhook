@@ -1,6 +1,13 @@
+import { gracedOperationBudget } from "../load-grace";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect, cleanUpCreatedStories, openProject, seedToken, requiredEnv, projectSlug } from "./support";
+
+/** Existing idle patience for reset completion; SH-804 adds contention grace. */
+const RESET_COMPLETION_BASE_MS = 20_000;
+
+/** Existing idle patience for dispatch completion; SH-804 adds contention grace. */
+const DISPATCH_COMPLETION_BASE_MS = 45_000;
 
 cleanUpCreatedStories("Alpha Project");
 
@@ -72,7 +79,7 @@ test("confirmed Reset uses the real endpoint and returns an active story to todo
   await page.getByRole("menuitem", { name: "Reset…", exact: true }).click();
   await page.locator("#reset-confirmation").fill(id);
   await page.locator("#reset-modal-submit").click();
-  await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toBeVisible({ timeout: gracedOperationBudget(RESET_COMPLETION_BASE_MS) });
   await expect(page.locator("#reset-modal")).not.toHaveClass(/open/);
   await expect(page.locator('.column[data-state="todo"] .card', { hasText: title })).toBeVisible();
 });
@@ -105,7 +112,7 @@ test("Reset removes a real dispatched worktree with uncommitted content", async 
   await page.locator("#dispatch-agent").selectOption("claude");
   await page.locator("#dispatch-auto").uncheck();
   await page.locator("#dispatch-modal-submit").click();
-  await expect(page.locator("#toast-stack .toast.success")).toContainText(`${id} dispatched`, { timeout: 45_000 });
+  await expect(page.locator("#toast-stack .toast.success")).toContainText(`${id} dispatched`, { timeout: gracedOperationBudget(DISPATCH_COMPLETION_BASE_MS) });
   const worktree = join(requiredEnv("DASHBOARD_ALPHA_CHECKOUT"), ".claude/worktrees", id);
   expect(existsSync(worktree)).toBe(true);
   writeFileSync(join(worktree, "uncommitted.txt"), "discarded by the confirmed reset");
@@ -114,7 +121,7 @@ test("Reset removes a real dispatched worktree with uncommitted content", async 
   await page.getByRole("menuitem", { name: "Reset…", exact: true }).click();
   await page.locator("#reset-confirmation").fill(id);
   await page.locator("#reset-modal-submit").click();
-  await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toBeVisible({ timeout: gracedOperationBudget(RESET_COMPLETION_BASE_MS) });
   expect(existsSync(worktree)).toBe(false);
   await expect(page.locator('.column[data-state="todo"] .card', { hasText: title })).toBeVisible();
 });
@@ -148,7 +155,7 @@ test("an outstanding reset cannot be submitted twice or dismissed before its res
   } finally {
     release();
   }
-  await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toBeVisible({ timeout: gracedOperationBudget(RESET_COMPLETION_BASE_MS) });
 });
 
 test("a story closed by another client remains an actionable reset error", async ({ page }) => {

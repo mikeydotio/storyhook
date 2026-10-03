@@ -1355,18 +1355,19 @@ fn the_runner_hands_the_lease_to_the_specs_before_the_daemon_starts() {
     );
 }
 
-/// Two reviewed SQLite commands and one reporter test, never a general
+/// Three reviewed SQLite commands and one reporter test, never a general
 /// interpreter exception. The reporter script is additionally pinned by digest.
 /// Full invocation text pins executable, literal Python payload, argument shape,
 /// and process bound. A body/argv edit needs a new audit; moving a command into
-/// a helper does not remove it from this inventory. Neither payload can invoke
-/// Story CLI: setup writes only its private test database, and the reader opens
+/// a helper does not remove it from this inventory. No SQLite payload can invoke
+/// Story CLI: setup writes only its private test database, the lock holder
+/// holds only that private database until stdin closes, and the reader opens
 /// the mandatory isolated store with mode=ro and parameterized identity queries.
 /// The reader is asynchronous (`execFile`, SH-765) and its bound is a name,
 /// `boundMs`: the time left of the cleanup wait's graced patience. The reader
 /// refuses an unusable bound before it spawns
 /// (`the_barrier_read_refuses_an_unusable_bound_before_it_spawns`).
-const AUDITED_COMMANDS: [(&str, &str); 3] = [
+const AUDITED_COMMANDS: [(&str, &str); 4] = [
     (
         "e2e/specs/cleanup-delivery-barrier.node.spec.ts",
         r#"execFileSync("python3", ["-c", `
@@ -1386,8 +1387,8 @@ with sqlite3.connect(sys.argv[1]) as db:
         "e2e/block-delivery-barrier.cjs",
         r#"execFile("python3", ["-c", `
 import json, pathlib, sqlite3, sys
-path, project, story = sys.argv[1:]
-with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
+path, project, story, bound_ms = sys.argv[1:]
+with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True, timeout=int(bound_ms) / 1000) as db:
     db.execute("BEGIN")
     identities = db.execute("""
         SELECT p.id,p.uuid,p.slug,p.prefix,p.checkout_path,s.story_no,s.created_at
@@ -1402,7 +1403,18 @@ with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
         WHERE project_id=? AND story_no=? ORDER BY id
     """, (identity[0], identity[5])).fetchall()
     print(json.dumps({"identity": identity, "deliveries": deliveries}))
-`, storePath, project, story], { encoding: "utf8", timeout: boundMs }, "#,
+`, storePath, project, story, String(boundMs)], { encoding: "utf8", timeout: boundMs }, "#,
+    ),
+    (
+        "e2e/specs/cleanup-delivery-barrier.node.spec.ts",
+        r#"execFile("python3", ["-c", `
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute("BEGIN EXCLUSIVE")
+    print("locked", flush=True)
+    sys.stdin.read()
+    db.rollback()
+`, path], { timeout: gracedOperationBudget(LOCK_HOLDER_BASE_MS) }, "#,
     ),
     (
         "e2e/reporter-command.ts",
@@ -1466,7 +1478,7 @@ fn e2e_subprocess_owner(relative: &str, code: &str, offset: usize) -> Option<E2e
 
 #[test]
 fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
-    for (index, (path, approved)) in AUDITED_COMMANDS[..2].iter().enumerate() {
+    for (index, (path, approved)) in AUDITED_COMMANDS[..3].iter().enumerate() {
         assert_eq!(
             e2e_subprocess_owner(path, approved, 0),
             Some(E2eSubprocessOwner::AuditedCommand(index))
@@ -1480,7 +1492,7 @@ fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
         let unbounded = if approved.contains(&format!(", {bound}")) {
             approved.replace(&format!(", {bound}"), "")
         } else {
-            approved.replace(&format!("{bound}, "), "")
+            approved.replace(&bound, "")
         };
         for changed in [
             approved.replace("\"python3\"", "\"story\""),
@@ -1492,7 +1504,7 @@ fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
                 "\n__import__('subprocess').run(['story', 'daemon', 'stop'])\nwith sqlite3.connect",
             ),
             approved.replace("`\nimport", "`\n${unleasedStory()}\nimport"),
-            if index == 0 {
+            if index != 1 {
                 approved.replace("`, path]", "`, storyBinary()]")
             } else {
                 approved.replace("?mode=ro", "?mode=rw")
@@ -1510,10 +1522,10 @@ fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
 
 #[test]
 fn reporter_command_requires_its_exact_site_arguments_and_bound() {
-    let (path, approved) = AUDITED_COMMANDS[2];
+    let (path, approved) = AUDITED_COMMANDS[3];
     assert_eq!(
         e2e_subprocess_owner(path, approved, 0),
-        Some(E2eSubprocessOwner::AuditedCommand(2))
+        Some(E2eSubprocessOwner::AuditedCommand(3))
     );
     assert_eq!(
         e2e_subprocess_owner("e2e/other-helper.ts", approved, 0),
@@ -1748,7 +1760,7 @@ fn no_tracked_e2e_file_names_cargos_artifact_and_every_cli_call_goes_through_sto
     );
     assert_eq!(
         audited,
-        [1, 1, 1],
+        [1; AUDITED_COMMANDS.len()],
         "every audited command must be present exactly once; re-audit changed sites"
     );
 }

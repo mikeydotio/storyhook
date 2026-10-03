@@ -35,12 +35,14 @@ exactly once; moving a call into a helper does not remove the requirement.
 |---|---|
 | Cleanup fixture setup | Exact bounded SQLite database creation |
 | Cleanup barrier reader | Exact bounded read of the isolated store |
+| Cleanup lock holder | Exact bounded exclusive lock on the private fixture database |
 | Reporter test runner | Exact bounded Python script with parent-pipe monitoring |
 
 The reporter exception also pins the Python script's SHA-256. Editing the script
 requires reviewing its subprocesses and updating the pin intentionally. It is
-not a general Python exception. SH-804 owns the separate SQLite busy-timeout and
-broader per-operation grace changes.
+not a general Python exception. The merged SH-804 reader passes its remaining
+process bound to SQLite as lock-wait patience. Its lock holder is the third
+reviewed SQLite command; both retain their exact payload and bound checks.
 
 ## Reporter lifecycle
 

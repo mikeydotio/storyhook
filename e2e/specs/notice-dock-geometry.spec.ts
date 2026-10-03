@@ -1,3 +1,4 @@
+import { gracedPatience } from "../load-grace";
 import { test, expect } from "./support";
 import type { Page } from "@playwright/test";
 import {
@@ -14,6 +15,9 @@ import {
   seedToken,
   settledBoundingBox,
 } from "./support";
+
+/** Existing whole-sweep allowance; the test watchdog owns its load grace. */
+const GEOMETRY_SWEEP_BASE_MS = 120_000;
 
 /**
  * SH-323 — the notice dock's *geometry*, as measured properties.
@@ -404,23 +408,23 @@ test("the band is measured, not a constant: the dock follows the chrome", async 
   // row already was. Asserting "moved by 120" would be asserting the fixture's
   // arithmetic; asserting "moved by however much the topbar moved" is the
   // property — the dock tracks the chrome, whatever the chrome does.
-  await expect.poll(topbarBottom, { timeout: 5000 }).toBeGreaterThan(chromeBefore + 1);
+  await expect.poll(topbarBottom, { timeout: gracedPatience() }).toBeGreaterThan(chromeBefore + 1);
   const chromeDelta = (await topbarBottom()) - chromeBefore;
   expect(chromeDelta).toBeGreaterThan(50);
-  await expect.poll(dockTop, { timeout: 5000 }).toBeGreaterThan(before + chromeDelta - 2);
+  await expect.poll(dockTop, { timeout: gracedPatience() }).toBeGreaterThan(before + chromeDelta - 2);
   expect(await dockTop()).toBeLessThan(before + chromeDelta + 2);
   for (const control of TOPBAR_CONTROLS) {
     expect(await overlapArea(page, control), `${control} with a taller topbar`).toBe(0);
   }
 
   await page.evaluate(() => document.getElementById("sh323-spacer")!.remove());
-  await expect.poll(dockTop, { timeout: 5000 }).toBeLessThan(before + 1);
+  await expect.poll(dockTop, { timeout: gracedPatience() }).toBeLessThan(before + 1);
 });
 
 test("the pile is bounded, loses nothing, and every notice can be reached", async ({
   page,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(GEOMETRY_SWEEP_BASE_MS);
   await page.goto("/");
   await openProject(page, "Alpha Project");
   await keepNotices(page);
@@ -502,7 +506,7 @@ test("the scroller is a tab stop exactly while it can scroll", async ({ page }) 
   await expect
     .poll(
       () => page.evaluate(() => document.getElementById("toast-scroll")!.scrollTop),
-      { timeout: 5000 },
+      { timeout: gracedPatience() },
     )
     .toBeGreaterThan(before);
 

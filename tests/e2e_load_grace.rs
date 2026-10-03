@@ -18,6 +18,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[path = "e2e_load_grace/timeouts.rs"]
+mod timeouts;
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
