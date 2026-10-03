@@ -81,12 +81,13 @@ fn finish(
         &[StoryEvent::StoryCommentAdded {
             at: ctx.now(),
             text: format!(
-                "AGENT BLOCK DELIVERY #{} — {} {}
+                "AGENT BLOCK DELIVERY #{} — {} {} — {}
 
 {}",
                 delivery.id,
                 delivery.action.as_str(),
                 delivery.status.as_str(),
+                delivery.story.to_id(&prefix),
                 crate::text_lint::quote_evidence(&delivery.detail)
             ),
         }],

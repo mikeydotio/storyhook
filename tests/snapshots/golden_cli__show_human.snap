@@ -65,7 +65,7 @@ relationships:
 - blocked-by SH-2
 - child-of SH-1
 comments:
-- [timestamp] AGENT BLOCK DELIVERY #2 — interrupt unreached
+- [timestamp] AGENT BLOCK DELIVERY #2 — interrupt unreached — SH-3
 
 > no agent reached: the golden corpus dispatches nothing
 

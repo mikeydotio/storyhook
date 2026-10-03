@@ -4,6 +4,9 @@ use storyhook::service::{NewStoryInput, RelationService, StoryService};
 use storyhook::store::{BlockAction, BlockDelivery, ReadOps, Store};
 use storyhook_test_support::ServiceFixture;
 
+#[path = "block_delivery/receipt_ownership.rs"]
+mod receipt_ownership;
+
 fn story(f: &ServiceFixture, title: &str) -> String {
     StoryService::new(&f.ctx())
         .create(&NewStoryInput {
