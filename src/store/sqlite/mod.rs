@@ -36,6 +36,7 @@ mod continuation;
 mod dispatch_policy;
 mod dropped_cleanup;
 mod engine_reset;
+mod gate_evidence;
 mod landing;
 mod ownership;
 mod project_recovery;
@@ -856,6 +857,12 @@ macro_rules! impl_read_ops {
             ) -> Result<Vec<crate::store::VerificationBatch>, StoreError> {
                 verification_batch::list(&self.conn, project)
             }
+            fn gate_attempts(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::GateAttempt>, StoreError> {
+                gate_evidence::list(&self.conn, project)
+            }
             fn continuations(
                 &self,
                 project: ProjectId,
@@ -1191,6 +1198,19 @@ impl WriteOps for SqliteWriteTx<'_> {
         expected: i64,
     ) -> Result<bool, StoreError> {
         verification_batch::update(&self.conn, batch, expected)
+    }
+    fn insert_gate_attempt(
+        &mut self,
+        attempt: &crate::store::GateAttempt,
+    ) -> Result<(), StoreError> {
+        gate_evidence::insert(&self.conn, attempt)
+    }
+    fn update_gate_attempt(
+        &mut self,
+        attempt: &crate::store::GateAttempt,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        gate_evidence::update(&self.conn, attempt, expected)
     }
     fn prune_verification_batches(
         &mut self,

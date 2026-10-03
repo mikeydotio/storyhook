@@ -110,6 +110,14 @@ fault_injection_guard	:(glob)**/*
 fix_cycle_5	:(glob)**/*
 fixture_isolation	:(glob)**/*
 gate_completion	:(glob)**/*
+gate_evidence	:(glob)src/service/gate_cost/**
+gate_evidence	:(glob)src/store/**
+gate_evidence	src/service/gate_cost.rs
+gate_evidence_cli	:(glob)src/service/gate_cost/**
+gate_evidence_cli	src/cli.rs
+gate_evidence_cli	src/invoke.rs
+gate_evidence_cli	src/output.rs
+gate_evidence_cli	src/service/gate_cost.rs
 gate_leg_reuse	:(glob)**/*
 gate_lock	:(glob)**/*
 gate_output_reporting	scripts/gate-progress.sh
