@@ -1859,6 +1859,9 @@ export async function awaitNoOverlay(page: Page): Promise<void> {
  * measurement hostage to a toast animating somewhere else, and a live poll can
  * restart a card animation at any moment (the residual race SH-420 names; it
  * is in the failure message so the next reader does not re-derive it).
+ * Sample on a render frame: WebKit can report a transition as finished
+ * between frames while computed layout still contains its penultimate
+ * values (SH-812). Animation state alone at that point is not settled layout.
  *
  * `paused` is deliberately not `running`. A paused animation is not moving,
  * so a box read under it IS settled — just not at its final position. Nothing
@@ -1881,8 +1884,8 @@ export async function awaitSettled(root: Locator, surface: string = String(root)
   await expect
     .poll(
       async () =>
-        root.evaluate((node) =>
-          node
+        root.evaluate((node) => new Promise<string[]>((resolve) => {
+          requestAnimationFrame(() => resolve(node
             .getAnimations({ subtree: true })
             .filter((a) => a.playState === "running")
             .map((a) => {
@@ -1893,8 +1896,8 @@ export async function awaitSettled(root: Locator, surface: string = String(root)
                 (a as unknown as { transitionProperty?: string }).transitionProperty ||
                 "animation"
               } on ${target}`;
-            }),
-        ),
+            })));
+        })),
       {
         message:
           `${surface}: animations under this surface never settled, so a ` +

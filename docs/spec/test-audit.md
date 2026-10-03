@@ -614,6 +614,25 @@ manifest and scripts are in `/tmp/sh812-v6-bench/` and
 `warmup-live-diagnostics/toolbar-containment-deskto-c65da-its-at-1280px-with-200-text-webkit/`.
 No completed comparison pair or performance improvement is established.
 
+**Toolbar settling repair, 2026-10-03 UTC.** A production-CSS probe reproduced
+WebKit reporting transitions as `finished` at 150 ms while computed font sizes
+still held 13.08444 px or 25.904247 px, instead of the final 13 px or 26 px.
+Two of 25 text-size changes exposed that discrepancy; this is mechanism
+evidence, not a failure-rate estimate. Sampling on a render frame removed the
+discrepancy in the corresponding probe. `awaitSettled` now makes its existing
+subtree animation check from `requestAnimationFrame`, so a between-frame
+animation state cannot release a stale geometry read.
+
+Three controlled scheduler regressions failed before the repair and pass
+afterward. They cover finished state before layout, a paused intermediate
+frame, continuing motion, and exclusion of unrelated document animations.
+All 34 directly impacted browser cases passed, including the unchanged toolbar
+matrix, exact scroll invariance and coordinate-press checks. The complete
+focused pool was 37 cases in 72 seconds. Strict TypeScript, the Rust subtree
+contract and diff checks passed. No product motion or geometry assertion changed.
+Logs: `.storyhook/logs/sh812-resumed/sh812-settle-*`; diagnostic probes are
+retained there too. Fresh matched measurements are still required.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The
