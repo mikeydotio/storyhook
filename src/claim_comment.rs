@@ -131,7 +131,19 @@ const TMUX_PROBE_TIMEOUT: Duration = crate::daemon::tailnet::TAILNET_PROBE_TIMEO
 /// window at all.
 fn tmux_window() -> Option<String> {
     std::env::var_os("TMUX")?;
+    let deadline = std::time::Instant::now() + TMUX_PROBE_TIMEOUT;
+    let target = match crate::service::tmux_target::inspect_ambient(deadline).and_then(|target| {
+        target.require_binding()?;
+        Ok(target)
+    }) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("warning: {error}; the claim's comment will name this host only");
+            return None;
+        }
+    };
     let mut command = Command::new("tmux");
+    target.apply(&mut command, None);
     command.arg("display-message").arg("-p");
     if let Some(pane) = std::env::var_os("TMUX_PANE") {
         command.arg("-t").arg(pane);
@@ -156,30 +168,31 @@ fn tmux_window() -> Option<String> {
         let _ = tx.send(child.wait_with_output());
     });
 
-    let output = match rx.recv_timeout(TMUX_PROBE_TIMEOUT) {
-        Ok(Ok(output)) if output.status.success() => output,
-        Ok(_) => return None,
-        Err(_) => {
-            // Reported, never silent: a probe that wedged is why the comment
-            // is about to name no window, and a reader who is inside tmux
-            // deserves to know which of the two happened.
-            eprintln!(
-                "warning: `tmux display-message` did not answer within {}s; the claim's \
+    let output =
+        match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok(Ok(output)) if output.status.success() => output,
+            Ok(_) => return None,
+            Err(_) => {
+                // Reported, never silent: a probe that wedged is why the comment
+                // is about to name no window, and a reader who is inside tmux
+                // deserves to know which of the two happened.
+                eprintln!(
+                    "warning: `tmux display-message` did not answer within {}s; the claim's \
                  comment will name this host only",
-                TMUX_PROBE_TIMEOUT.as_secs()
-            );
-            #[cfg(unix)]
-            // SAFETY: the group id of a process this process just spawned and
-            // has not yet reaped, so it cannot have been recycled onto an
-            // unrelated group. The reaper thread above is still in
-            // `wait_with_output`, so the killed process is collected rather
-            // than left a zombie.
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
+                    TMUX_PROBE_TIMEOUT.as_secs()
+                );
+                #[cfg(unix)]
+                // SAFETY: the group id of a process this process just spawned and
+                // has not yet reaped, so it cannot have been recycled onto an
+                // unrelated group. The reaper thread above is still in
+                // `wait_with_output`, so the killed process is collected rather
+                // than left a zombie.
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
+                }
+                return None;
             }
-            return None;
-        }
-    };
+        };
     let window = String::from_utf8_lossy(&output.stdout).trim().to_string();
     // A tmux that answered with nothing, or with only the separator, has told
     // us no window — the same as not being asked.

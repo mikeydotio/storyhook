@@ -76,15 +76,34 @@ pub(crate) fn inspect(
     deadline: Instant,
     cancellation: &Cancellation,
 ) -> Result<Target, AppError> {
-    let timeout = remaining(deadline)?;
     let mut command = Command::new("python3");
     crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
+    command.env("HOME", env.home()).envs(env.child_vars());
+    inspect_command(command, socket, deadline, cancellation)
+}
+
+/// Store-free clients retain their own discovery context and tmux selection.
+/// The embedded resolver filters the provider's environment before inspection.
+pub(crate) fn inspect_ambient(deadline: Instant) -> Result<Target, AppError> {
+    inspect_command(
+        Command::new("python3"),
+        None,
+        deadline,
+        &Cancellation::default(),
+    )
+}
+
+fn inspect_command(
+    mut command: Command,
+    socket: Option<&Path>,
+    deadline: Instant,
+    cancellation: &Cancellation,
+) -> Result<Target, AppError> {
+    let timeout = remaining(deadline)?;
     command
         .args(["-c", INSPECT_PROGRAM])
         .arg(socket.unwrap_or_else(|| Path::new("")))
-        .arg(timeout.as_secs_f64().to_string())
-        .env("HOME", env.home())
-        .envs(env.child_vars());
+        .arg(timeout.as_secs_f64().to_string());
     let captured = crate::process::run_captured_cancellable(
         command,
         remaining(deadline)?,
