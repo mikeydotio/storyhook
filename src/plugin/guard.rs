@@ -104,7 +104,8 @@ impl Verb {
 /// Also what the install receipt records about the actor
 /// (`plugin::receipt`), so the doctor can later tell a refusal that was
 /// bypassed from an uninstall the operator ran.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Build {
     /// Neither clause below applies: the binary was copied out of its build
     /// directory and carries no test feature.
@@ -113,6 +114,7 @@ pub enum Build {
     Checkout,
     /// Carries the `fault-injection` feature: a `cargo test` artifact,
     /// wherever it sits.
+    #[serde(rename = "test")]
     TestBuild,
 }
 
