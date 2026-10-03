@@ -80,6 +80,7 @@ mod story_deletion;
 pub mod story_reset;
 pub mod system;
 pub mod templates;
+pub(crate) mod tmux_target;
 pub mod transfer;
 pub mod trial_merge;
 pub mod verification;

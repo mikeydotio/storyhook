@@ -29,6 +29,14 @@ existing deadline and never extend the daemon's startup publication deadline.
 Exact-name session creation tolerates only a duplicate-session race, followed
 by successful inspection of that exact session. All other errors propagate.
 
+Native resource inventory and conflict-hold probes embed the same resolver.
+They inspect ownership before testing socket existence and share one absolute
+deadline across the bridge and tmux. Cancellation reaches both subprocesses.
+A protected missing endpoint is unavailable, not evidence that an agent died.
+Resource reports carry the observed private endpoint; their candidate leases
+retain the original authority. Card-reset cleanup uses that captured endpoint
+and refuses a generation change between reservation and cleanup.
+
 ## Restoration contract
 
 The approved scope also requires restore-specific re-adoption of agent,
