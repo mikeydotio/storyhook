@@ -80,18 +80,29 @@ test("an unrelated render preserves a card's transient classes (SH-424)", async 
     );
 
     await target.evaluate(async (node) => {
-      const animations = node.getAnimations();
-      if (!animations.length || animations.some(animation => animation.playState !== "paused")) {
-        throw new Error("the witnessed card's animation lifecycle is not held");
-      }
-      const duration = Math.max(...animations.map(animation => Number(animation.effect!.getComputedTiming().endTime)));
-      if (!(duration > 0 && Number.isFinite(duration))) throw new Error("card animation must have a finite duration");
-      const witness = document.createElement("span");
-      document.body.appendChild(witness);
+      // A separate Web Animation must not be mistaken for a CSS class owner.
+      const independent = node.animate([{ outlineOffset: "0px" }, { outlineOffset: "1px" }], {
+        duration: 1000,
+        iterations: Infinity,
+      });
       try {
-        await witness.animate([{ opacity: 0 }, { opacity: 1 }], { duration: duration * 2 }).finished;
+        const animations = node.getAnimations().filter(animation => animation instanceof CSSAnimation);
+        if (!animations.length || animations.some(animation => animation.playState !== "paused")) {
+          throw new Error(`the witnessed card's animation lifecycle is not held: ${JSON.stringify(
+            animations.map(animation => ({ type: animation.constructor.name, state: animation.playState })),
+          )}`);
+        }
+        const duration = Math.max(...animations.map(animation => Number(animation.effect!.getComputedTiming().endTime)));
+        if (!(duration > 0 && Number.isFinite(duration))) throw new Error("card animation must have a finite duration");
+        const witness = document.createElement("span");
+        document.body.appendChild(witness);
+        try {
+          await witness.animate([{ opacity: 0 }, { opacity: 1 }], { duration: duration * 2 }).finished;
+        } finally {
+          witness.remove();
+        }
       } finally {
-        witness.remove();
+        independent.cancel();
       }
     });
 
