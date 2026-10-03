@@ -549,13 +549,15 @@ fn the_two_projects_in_each_engine_pair_select_their_specs_the_same_way() {
         pair_selectors.push((label, first_selector));
     }
 
+    let (_, (_, desktop_selector)) = &pair_selectors[0];
+    let (_, (_, mobile_selector)) = &pair_selectors[1];
     assert_eq!(
-        pair_selectors[0].1.1.as_str(),
+        desktop_selector.as_str(),
         "DESKTOP_EXCLUDED_SPECS",
         "the desktop pair must exclude phone-subject specs and both dedicated-project partitions"
     );
     assert_eq!(
-        pair_selectors[1].1.1.as_str(),
+        mobile_selector.as_str(),
         "MOBILE_OR_ENGINE_SPECS",
         "the mobile pair must share the named cross-device specs and phone set"
     );
