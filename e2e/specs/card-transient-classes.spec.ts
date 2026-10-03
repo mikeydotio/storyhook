@@ -1,8 +1,10 @@
 import { test, expect } from "./support";
+import type { Locator, Page } from "@playwright/test";
 import {
   cleanUpCreatedStories,
   deleteStory,
   openProject,
+  onAFrozenClock,
   seedToken,
 } from "./support";
 
@@ -16,16 +18,34 @@ import {
 cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
+  await page.clock.install();
   await seedToken(page);
   await page.goto("/");
   await openProject(page, "Alpha Project");
 });
 
+/** Hold the independent CSS and JavaScript lifecycle owners across driver delays. */
+async function withTransientTimeHeld(page: Page, target: Locator, body: () => Promise<void>): Promise<void> {
+  const node = await target.elementHandle();
+  if (!node) throw new Error("the transient-class target is missing");
+  const style = await page.addStyleTag({ content: ".card[data-sh812-hold] { animation-play-state: paused !important; }" });
+  try {
+    await node.evaluate(element => element.setAttribute("data-sh812-hold", ""));
+    await onAFrozenClock(page, body);
+  } finally {
+    await node.evaluate(element => element.removeAttribute("data-sh812-hold"));
+    await style.evaluate(element => (element as HTMLStyleElement).remove());
+  }
+}
+
 async function createStory(
   page: import("@playwright/test").Page,
   title: string,
+  frozen = false,
 ) {
   await page.locator("#new-story-btn").click();
+  // The modal opens on its next frame; lifecycle cleanup remains 320 ms away.
+  if (frozen) await page.clock.runFor(16);
   await expect(page.locator("#create-modal")).toHaveClass(/open/);
   await page.locator("#create-title").fill(title);
   await page.locator("#create-priority").selectOption("medium");
@@ -53,27 +73,45 @@ test("an unrelated render preserves a card's transient classes (SH-424)", async 
   const target = page.locator('.column[data-state="todo"] .card', {
     hasText: targetTitle,
   });
-  await target.evaluate(
-    (node, classes) => node.classList.add(...classes),
-    transientClasses,
-  );
+  await withTransientTimeHeld(page, target, async () => {
+    await target.evaluate(
+      (node, classes) => node.classList.add(...classes),
+      transientClasses,
+    );
 
-  await createStory(page, triggerTitle);
+    await target.evaluate(async (node) => {
+      const animations = node.getAnimations();
+      if (!animations.length || animations.some(animation => animation.playState !== "paused")) {
+        throw new Error("the witnessed card's animation lifecycle is not held");
+      }
+      const duration = Math.max(...animations.map(animation => Number(animation.effect!.getComputedTiming().endTime)));
+      if (!(duration > 0 && Number.isFinite(duration))) throw new Error("card animation must have a finite duration");
+      const witness = document.createElement("span");
+      document.body.appendChild(witness);
+      try {
+        await witness.animate([{ opacity: 0 }, { opacity: 1 }], { duration: duration * 2 }).finished;
+      } finally {
+        witness.remove();
+      }
+    });
 
-  await expect(target).toHaveClass(/\bcard\b/);
-  await expect
-    .poll(() =>
-      target.evaluate((node, classes) =>
-        classes.filter((name) => !node.classList.contains(name)),
-        transientClasses,
-      ),
-    )
-    .toEqual([]);
+    await createStory(page, triggerTitle, true);
 
-  await target.evaluate(
-    (node, classes) => node.classList.remove(...classes),
-    transientClasses,
-  );
+    await expect(target).toHaveClass(/\bcard\b/);
+    await expect
+      .poll(() =>
+        target.evaluate((node, classes) =>
+          classes.filter((name) => !node.classList.contains(name)),
+          transientClasses,
+        ),
+      )
+      .toEqual([]);
+
+    await target.evaluate(
+      (node, classes) => node.classList.remove(...classes),
+      transientClasses,
+    );
+  });
   await deleteStory(page, triggerTitle);
   await deleteStory(page, targetTitle);
 });
