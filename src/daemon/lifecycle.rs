@@ -4231,8 +4231,8 @@ mod tests {
         let (release, hold) = mpsc::channel();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0; 4096];
-            stream.read(&mut request).unwrap();
+            let mut request = [0; 1];
+            stream.read_exact(&mut request).unwrap();
             // The peer supplies no response until the bounded client returns.
             let _ = hold.recv();
         });
