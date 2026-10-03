@@ -318,7 +318,7 @@ assert_eq "$state" "todo" "auto: story state untouched by any dry run or refused
 out=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker \
@@ -344,7 +344,7 @@ id_fail=$(new_story "$repo_fail" "Claude auto watcher failure")
 export FAKE_TMUX_STATE
 FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-auto-tmux.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
-out=$(cd "$repo_fail" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
+out=$(cd "$repo_fail" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
   STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker FAKE_TMUX_FAIL_RUN_SHELL=1 \
   bash "$SCRIPT" dispatch "$id_fail" --auto 2>&1)

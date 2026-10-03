@@ -198,4 +198,19 @@ for t in "$TESTS_DIR"/test-*.sh; do
     || fail_test "$(basename "$t") does not source lib.sh, so it inherits no isolation"
 done
 
+# Client flags have no order requirement. Native and protected callers place
+# -u after -S, while ordinary Python callers place it before -S.
+selector_state=$(mktemp -d /tmp/story-test-selectors.XXXXXX)
+_TMP_REPOS+=("$selector_state")
+selector_state=$(cd "$selector_state" && pwd -P)
+for order in before after protected; do
+  case "$order" in
+    before) flags=(-u -S "$selector_state/tmux.sock") ;;
+    after) flags=(-S "$selector_state/tmux.sock" -u) ;;
+    protected) flags=(-N -S "$selector_state/tmux.sock" -u) ;;
+  esac
+  observed=$(FAKE_TMUX_STATE="$selector_state" "$FAKE_TMUX" "${flags[@]}" display-message -p '#{socket_path}')
+  assert_eq "$observed" "$selector_state/tmux.sock" "$order: client flags preserve selected socket"
+done
+
 finish

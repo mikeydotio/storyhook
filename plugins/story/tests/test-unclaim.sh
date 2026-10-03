@@ -33,7 +33,7 @@ hp=$(new_story "$repo" "Hand me back")
 mk_dispatched "$repo" "$hp" >/dev/null
 claim_it "$hp"
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$hp")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$hp")" \
      bash "$SCRIPT" --project "$slug" unclaim "$hp" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "happy: ok"
 assert_eq "$(jqf "$out" .unclaimed_from)" "in-progress" "happy: names the state released"
@@ -67,7 +67,7 @@ assert_contains "$(jqf "$out" .display)" "reset" "worktree: display points at th
 nc=$(new_story "$repo" "Never claimed")
 mk_dispatched "$repo" "$nc" >/dev/null
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$nc")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$nc")" \
      bash "$SCRIPT" --project "$slug" unclaim "$nc" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "unclaimed: ok:false"
 assert_eq "$(jqf "$out" .reason)" "unclaim-conflict" "unclaimed: reason is unclaim-conflict"
@@ -75,7 +75,7 @@ assert_contains "$(jqf "$out" .display)" "todo" "unclaimed: names the state actu
 assert_eq "$(state_of "$nc")" "todo" "unclaimed: nothing moved"
 kills_before=$(kill_count)
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$nc")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$nc")" \
      bash "$SCRIPT" --project "$slug" unclaim "$nc" 2>&1)
 assert_eq "$(kill_count)" "$kills_before" \
   "unclaimed: a lost CAS never closes somebody's window"
@@ -86,7 +86,7 @@ mk_dispatched "$repo" "$sf" >/dev/null
 claim_it "$sf"
 kills_before=$(kill_count)
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%0' "$sf")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%0' "$sf")" \
      bash "$SCRIPT" --project "$slug" unclaim "$sf" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "self: still ok — the release is the verb"
 assert_eq "$(jqf "$out" .window)" "self" "self: the window is classified as the caller's own"
@@ -131,7 +131,7 @@ mk_dispatched "$repo" "$kf" >/dev/null
 claim_it "$kf"
 status=0
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$kf")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$kf")" \
      FAKE_TMUX_FAIL_KILL_WINDOW=1 \
      bash "$SCRIPT" --project "$slug" unclaim "$kf" 2>&1) || status=$?
 [ "$status" -ne 0 ] || fail_test "kill-failure: helper exited successfully"
@@ -195,14 +195,14 @@ mk_dispatched "$repo" "$dr" >/dev/null
 claim_it "$dr"
 kills_before=$(kill_count)
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$dr")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$dr")" \
      STORY_DRY_RUN=1 bash "$SCRIPT" --project "$slug" unclaim "$dr" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "dry: ok"
 assert_eq "$(jqf "$out" .dry_run)" "true" "dry: flagged"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "story unclaim" "dry: previews the release"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "kill-window" "dry: previews the window close"
 assert_eq "$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%0' "$dr")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%0' "$dr")" \
      STORY_DRY_RUN=1 bash "$SCRIPT" --project "$slug" unclaim "$dr" 2>&1 \
   | jq -r '.commands|join(" ")' | grep -c 'kill-window' || true)" "0" \
   "dry: a preview from the story's own window does NOT promise to close it"

@@ -30,14 +30,14 @@ assert_eq "$(jqf "$out" .window_name)" "$w" "capture dry: window name matches di
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "capture-pane" "capture dry: previews the read"
 
 # --- capture: no such window ---
-out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="" bash "$SCRIPT" capture "$id" 2>&1)
+out=$(cd "$repo" && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="" bash "$SCRIPT" capture "$id" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "capture: no live window is ok:false"
 assert_contains "$(jqf "$out" .display)" "/story do $id" "capture: points at the dispatch verb"
 
 # --- capture: a live window is read back ---
 # FAKE_TMUX_PANES lines are "name<TAB>active<TAB>pane", matching the real
 # `list-panes -a -F '#{window_name}\t#{pane_active}\t#{pane_id}'`.
-out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 \
+out=$(cd "$repo" && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
        FAKE_TMUX_PANES="$(printf 'other\t1\t%%3\n%s\t1\t%%7' "$w")" \
        FAKE_TMUX_TRANSCRIPT="hello from the session" \
        bash "$SCRIPT" capture "$id" 2>&1)
@@ -49,9 +49,9 @@ assert_contains "$(jqf "$out" .display)" "hello from the session" "capture: disp
 # --- capture: plain-terminal access and argument validation ---
 out=$(cd "$repo" && env -u TMUX -u TMUX_PANE FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$w")" bash "$SCRIPT" capture "$id" 2>&1)
 assert_eq "$(jqf "$out" .ok)" true "capture: works from a plain terminal"
-out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 bash "$SCRIPT" capture 2>&1)
+out=$(cd "$repo" && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 bash "$SCRIPT" capture 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "capture: missing id is ok:false"
-out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 bash "$SCRIPT" capture "bad id!" 2>&1)
+out=$(cd "$repo" && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 bash "$SCRIPT" capture "bad id!" 2>&1)
 assert_contains "$(jqf "$out" .display)" "alphanumeric" "capture: invalid id rejected"
 
 # --- doctor: dry run previews BOTH halves ---
@@ -63,7 +63,7 @@ assert_contains "$(jqf "$out" '.commands|join(" ")')" "paste-buffer -p" \
   "doctor dry: probes via bracketed paste, the delivery path dispatch actually uses"
 
 # --- doctor: a healthy project reports integrity OK ---
-out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" doctor 2>&1)
+out=$(cd "$repo" && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" doctor 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "doctor: ok"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "doctor: readiness confirmed via the fake TUI"
 assert_eq "$(jqf "$out" .matched_tier)" "sentinel" "doctor: reports the production readiness tier"
@@ -80,7 +80,7 @@ assert_eq "$(jqf "$out" .occupant.matches_name_pattern)" "true" "doctor: ...and 
 # longer covers their build -- and told NOT to pin the pattern to a version that
 # changes on every update.
 d_root=$(mk_versioned_claude 2.1.228)
-out=$(cd "$repo" && PATH="$d_root/bin:$PATH" TMUX=fake TMUX_PANE=%0 \
+out=$(cd "$repo" && PATH="$d_root/bin:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
        FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_COMMAND=2.1.228 \
        STORY_DOCTOR_LAUNCH_CMD="claude --permission-mode plan" \
        bash "$SCRIPT" doctor 2>&1)
@@ -119,7 +119,7 @@ rc=0
 assert_eq "$rc" "5" "fixture sanity: a finding makes \`story doctor\` exit 5"
 
 out=$(cd "$repo" && PATH="$TESTS_DIR/fakes/story-integrity:$PATH" \
-       TMUX=fake TMUX_PANE=%0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" doctor 2>&1)
+       TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" doctor 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "doctor: an integrity finding prevents all-green"
 assert_eq "$(jqf "$out" .project_integrity.ok)" "false" "doctor: integrity reported as not-ok"
 assert_contains "$(jqf "$out" .project_integrity.summary)" "TST-9999" "doctor: summary names the finding"

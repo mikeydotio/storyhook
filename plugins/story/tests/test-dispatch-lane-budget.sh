@@ -62,7 +62,7 @@ for mode in named next; do
   seed_live 6
   if [ "$mode" = named ]; then target="$id"; else target=--next; fi
   out=$(
-    cd "$repo" && TMUX="fake,0,0" TMUX_PANE="%0" \
+    cd "$repo" && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" dispatch "$target" 2>"$FAKE_TMUX_STATE/stderr"

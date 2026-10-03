@@ -97,7 +97,7 @@ out=$(
   cd "$repo_happy" \
     && PATH="$fake_dir:$TESTS_DIR/fakes:$PATH" STORY_REAL_BIN="$real_story" \
       STORY_STATE_LIST_MODE=fail STORY_STATE_LIST_LOG="$state_log" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker \

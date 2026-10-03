@@ -76,7 +76,7 @@ wn=$(new_story "$repo" "Window closes first")
 wwn=$(mk_dispatched "$repo" "$wn")
 out=$(cd "$repo" \
   && FAKE_TMUX_KILL_WINDOW_PROBE="$repo/.claude/worktrees/$wwn" \
-     TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wwn")" \
+     TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wwn")" \
      bash "$SCRIPT" complete execute "$wn" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "window: ok"
 assert_eq "$(jqf "$out" '.removed.window')" "true" "window: reports the window as closed"
@@ -92,7 +92,7 @@ kf=$(new_story "$repo" "Window refuses during complete")
 wkf=$(mk_dispatched "$repo" "$kf")
 status=0
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wkf")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wkf")" \
      FAKE_TMUX_FAIL_KILL_WINDOW=1 \
      bash "$SCRIPT" complete execute "$kf" 2>&1) || status=$?
 [ "$status" -ne 0 ] || fail_test "kill-failure: helper exited successfully"
@@ -112,7 +112,7 @@ sf=$(new_story "$repo" "Self window survives")
 wsf=$(mk_dispatched "$repo" "$sf")
 rm -f "$FAKE_TMUX_STATE/kill_window_args.log"
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%7 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wsf")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%7 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wsf")" \
      bash "$SCRIPT" complete execute "$sf" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "self: ok"
 assert_eq "$(jqf "$out" '.removed.window')" "false" "self: window is not reported closed"
@@ -128,7 +128,7 @@ wfdy=$(mk_dispatched "$repo" "$fdy")
 echo scratch >"$repo/.claude/worktrees/$wfdy/scratch.txt"
 out=$(cd "$repo" \
   && FAKE_TMUX_KILL_WINDOW_PROBE="$repo/.claude/worktrees/$wfdy" \
-     TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%8' "$wfdy")" \
+     TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%8' "$wfdy")" \
      bash "$SCRIPT" complete execute "$fdy" --force 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "force-dirty: ok"
 assert_eq "$(jqf "$out" .forced)" "true" "force-dirty: reports forced"

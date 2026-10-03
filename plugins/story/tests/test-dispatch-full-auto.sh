@@ -211,7 +211,7 @@ real_marker_row() {
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
   real_out=$(
     cd "$real_repo" &&
-      PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE=%0 \
+      PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
       STORY_COUNCIL=off STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
       bash "$SCRIPT" dispatch "$real_id" "$@" 2>&1

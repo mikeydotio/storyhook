@@ -113,7 +113,7 @@ hp=$(new_story "$repo" "Happy path")
 whp=$(mk_dispatched "$repo" "$hp")
 close_story "$hp"
 out=$(cd "$repo/.claude/worktrees/$whp" \
-  && TMUX=fake TMUX_PANE=%0 \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
      FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$whp")" \
      bash "$SCRIPT" --project "$(slug_for "$repo")" reap "$hp" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "happy: ok"
