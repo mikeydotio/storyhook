@@ -278,3 +278,29 @@ fn protected_missing_endpoint_does_not_fall_back_to_public_resources() {
         WindowProbe::Unanswered { .. }
     ));
 }
+
+#[test]
+fn native_readiness_uses_the_recorded_owner_and_state_directory() {
+    let fixture = Fixture::new();
+    let target = ensure(
+        &fixture.env,
+        Some(&fixture.socket),
+        fixture.deadline(),
+        &Cancellation::default(),
+    )
+    .unwrap();
+    assert!(target.protected);
+    assert_eq!(target.endpoint, fixture.endpoint);
+    assert_eq!(
+        fixture.call()["argv"],
+        json!([
+            "server",
+            "ensure",
+            "--socket",
+            fixture.socket,
+            "--json",
+            "--state-dir",
+            fixture.record["state_dir"]
+        ])
+    );
+}

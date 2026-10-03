@@ -337,7 +337,7 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/new_window_args.log")" \
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
   "STORYHOOK_AUTO=$id" "real Claude auto: watcher carries the story marker"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
-  "--approve-claude-plan %1" "real Claude auto: watcher targets the confirmed pane"
+  "approval_tmux.py watch" "real auto: watcher uses the process-bound wrapper"
 
 repo_fail=$(mk_story_repo AF)
 id_fail=$(new_story "$repo_fail" "Claude auto watcher failure")

@@ -60,6 +60,18 @@
 # silent, which is the bar.
 set -uo pipefail
 
+# Only dispatch or restoration can supply this process-bound watcher authority.
+# The hook's ordinary tool-event path remains interpreter-free when attended.
+tmux() {
+  [ -n "${STORY_APPROVAL_BINDING:-}" ] || return 1
+  python3 "$(dirname "$0")/../lib/approval_tmux.py" tmux "$@"
+}
+
+# Only an observed transition after Return can complete this physical watch.
+approval_watch_complete() {
+  python3 "$(dirname "$0")/../lib/approval_tmux.py" complete
+}
+
 # Dispatch-owned continuation for Claude's plan review. The original pane pid
 # and tmux's dead flag prevent a retained or respawned pane from inheriting this
 # watch; three exact visible strings scope what it may type into. The pane
@@ -75,6 +87,7 @@ approve_claude_plan() {
   [[ "$expected_pid" =~ ^[1-9][0-9]*$ ]] || return 0
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=0
   command -v tmux >/dev/null 2>&1 || return 0
+  [ -n "${STORY_APPROVAL_BINDING:-}" ] || return 0
 
   while :; do
     if ! identity=$(tmux display-message -p -t "$pane" \
@@ -95,7 +108,7 @@ approve_claude_plan() {
     if ! [[ "$screen" == *"Ready to code?"* \
         && "$screen" == *"❯ 1. Yes, and use auto mode"* \
         && "$screen" == *"2. Yes, manually approve edits"* ]]; then
-      [ "$awaiting_transition" -eq 0 ] || return 0
+      [ "$awaiting_transition" -eq 0 ] || { approval_watch_complete; return $?; }
       observation_failures=0
       poll_attempt=$((poll_attempt + 1))
       [ "$limit" -eq 0 ] || [ "$poll_attempt" -lt "$limit" ] || return 0
@@ -141,6 +154,7 @@ approve_codex_plan() {
   [[ "$expected_pid" =~ ^[1-9][0-9]*$ ]] || return 0
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=0
   command -v tmux >/dev/null 2>&1 || return 0
+  [ -n "${STORY_APPROVAL_BINDING:-}" ] || return 0
 
   while :; do
     if ! identity=$(tmux display-message -p -t "$pane" \
@@ -162,7 +176,7 @@ approve_codex_plan() {
         && "$screen" == *"› 1. Yes, implement this plan"* \
         && "$screen" == *"2. Yes, clear context and implement"* \
         && "$screen" == *"3. No, stay in Plan mode"* ]]; then
-      [ "$awaiting_transition" -eq 0 ] || return 0
+      [ "$awaiting_transition" -eq 0 ] || { approval_watch_complete; return $?; }
       observation_failures=0
       poll_attempt=$((poll_attempt + 1))
       [ "$limit" -eq 0 ] || [ "$poll_attempt" -lt "$limit" ] || return 0
@@ -192,11 +206,11 @@ approve_codex_plan() {
 
 if [ "${1:-}" = "--approve-claude-plan" ]; then
   approve_claude_plan "${2:-}" "${3:-}" "${4:-0}"
-  exit 0
+  exit $?
 fi
 if [ "${1:-}" = "--approve-codex-plan" ]; then
   approve_codex_plan "${2:-}" "${3:-}" "${4:-0}"
-  exit 0
+  exit $?
 fi
 
 # Drained before anything else, as the sibling hooks do, so the provider is

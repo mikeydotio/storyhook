@@ -92,13 +92,15 @@ preserve argv boundaries and bracket cwd/ancestry reads with kernel incarnation
 checks. They decode no environment values. Exactly one provider must run below
 the captured pane, in the retained worktree, with the exact resume session;
 fork arguments and changed ancestors refuse. These evidence helpers alone do
-not publish a new binding or authorize input.
+not publish a new binding or authorize input. The pinned RV-10 Darwin snapshot
+records process start in UTC whole seconds; it must match the registered kernel
+start time at that resolution. An unsupported clock cannot establish lineage.
 
 Restoration clients explicitly request readiness. Ordinary clients remain
 read-only. An operation which already captured one target cannot switch to a
 successor when it later requests readiness.
 
-The approved scope also requires restore-specific re-adoption of agent,
+Restoration uses explicit re-adoption of agent,
 engine, reader and continuation identities. The provider maps pane UUIDs to
 new pane IDs; old numerical IDs and PIDs cannot authorize re-adoption.
 Generation lineage, restored options, repository/worktree/provider identity,
@@ -119,3 +121,47 @@ on the user's tmux servers.
 The composed-helper tests preserve the original server identity, generation,
 socket inode and session through listener saturation and endpoint errors.
 Production time bounds remain unchanged; fixture patience uses load grace.
+
+## Publication and continuation
+
+The background engine pass ensures readiness before restoration. The synchronous
+restart sweep remains read-only and retains its shared publication deadline.
+Each restoration attempt shares one absolute deadline across readiness, proposal,
+publication and watcher scheduling. Workspace exclusion uses the common Git
+directory already proven by the proposal; the child revalidates that directory.
+
+`restoration.py` joins the immutable snapshot and current receipt to one source
+dispatch, the live UUID, RV-10's exact replay ticket, the native provider argv and
+ancestry, the registered Git worktree, and the SessionStart/transcript witness.
+It rechecks that proof before publication. Each local field must contain either
+the proven source value or its exact derived replacement. Pane identity, window
+continuation metadata, and the atomic cleanup marker therefore recover from an
+interrupted prefix without granting a second conversation authority.
+
+Native lane publication compares the entire observed lane, story event sequence,
+and matching continuation records. Only physical binding fields change. Claims,
+charters, provider conversations, message/turn identity, progress and reviewed
+work remain intact. Retained manual and Auto dispatches receive the same proof
+and continuation guards in the background; an engine-owned dispatch stays with
+its engine. A conflicting or busy story does not prevent other dispatches from
+being examined. No restoration operation sends a charter or starts a provider.
+
+RV-10 live adoption intentionally has no replay receipt. Its explicit adopted
+activation and matching `ownership-restore.json` authorize only a same-process
+public-to-private alias rebind. The kernel incarnation must remain unchanged.
+A predecessor private generation still requires snapshot/replay proof.
+
+Approval watchers use one private endpoint and exact kernel process identity,
+including a restored provider child when its pane process is a shell. A file lock
+deduplicates live watchers; a process-bound completion option prevents replay.
+Only the observed dialog transition after Return records completion. Probe
+failure or a polling limit does not prevent a later watcher from trying again.
+Only preserved Auto/Full Auto metadata and eligible current story policy can
+rearm a watcher. The input boundary checks current state and reserved labels
+again. A dead replay shell is not provider absence while its captured child lives.
+
+Verification readers carry a pane-local native process witness. The view joins
+that witness to the restored UUID and retains a healthy exact reader even when
+the pane/PID marker changed. Replay shells that did not restart a reader remain
+stale and can be replaced once. Restored verifier agents must prove the exact
+provider conversation and process ancestry before they count as an existing agent.

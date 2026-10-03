@@ -35,6 +35,18 @@ impl WorkspaceLock {
         )
     }
 
+    /// Lock a common directory already proven by this operation's Git inventory.
+    /// Restoration revalidates that same directory in the inherited child before
+    /// publishing; a second unbudgeted Git subprocess is neither proof nor needed.
+    pub(crate) fn try_acquire_proven(common: &Path, id: &str) -> Result<Option<Self>, AppError> {
+        if !common.is_absolute() || !common.is_dir() {
+            return Err(AppError::Validation(
+                "restoration common directory is invalid".into(),
+            ));
+        }
+        Self::try_at(&common.join("storyhook/workspace-locks"), id)
+    }
+
     #[cfg(test)]
     fn at(directory: &Path, id: &str) -> Result<Self, AppError> {
         Self::try_at(directory, id)?.ok_or_else(|| busy(id))

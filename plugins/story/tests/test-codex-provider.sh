@@ -182,8 +182,7 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
   "STORYHOOK_FULL_AUTO=" "real auto: watcher contains the engine marker"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
-  "--approve-codex-plan %1 $(cat "$FAKE_TMUX_STATE/pane_pid")" \
-  "real auto: watcher targets the confirmed pane and original PID"
+  "approval_tmux.py watch" "real auto: watcher uses the process-bound wrapper"
 
 fresh_tmux
 repo_auto_fail=$(mk_story_repo CDF)

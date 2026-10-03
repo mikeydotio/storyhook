@@ -12,6 +12,12 @@ and probe_budget.py followed by this file (src/daemon/activity/window.rs), which
 
 import fcntl
 import hashlib
+import json
+import shlex
+import shutil
+from process_observation import observe_process
+from process_identity import process_identity
+from restored_dispatch import restored_launch, live_provider
 import os
 from pathlib import Path
 import subprocess
@@ -22,6 +28,9 @@ import uuid
 FORMAT = ("#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-journal}"
           "\t#{@storyhook-reader}\t#{pane_start_command}\t#{@storyhook-command}\t#{@storyhook-agent-started}")
 FIELDS = 10
+RESTORED_READERS = {}
+RESTORED_AGENTS = set()
+READER_PROOF = "@storyhook-reader-proof-v1"
 # Seconds before a missing agent pane is created again. A person who closes it
 # gets it back; a launch that fails at once cannot become a restart loop.
 AGENT_RESPAWN_COOLDOWN = 60
@@ -80,23 +89,27 @@ def is_reader(row):
 
 def reader_like(row):
     """A pane still running the recorded reader command, whatever the record says."""
-    return len(row) == FIELDS and row[8] != "" and row[7] == row[8]
+    return len(row) == FIELDS and (row[2] in RESTORED_READERS or row[8] != "" and row[7] == row[8])
 
 
 def is_agent(row, owner):
     """A pane this window launched as its Verifier Agent, known by its marker."""
-    return len(row) == FIELDS and AGENT_MARKER + owner in row[7]
+    return len(row) == FIELDS and (row[2] in RESTORED_AGENTS or AGENT_MARKER + owner in row[7])
 
 
 def healthy(row):
     """Reject a dead pane or a respawned command."""
-    return row[4] == "0" and reader_like(row)
+    return row[4] == "0" and reader_like(row) and RESTORED_READERS.get(row[2], True)
 
 
 def mark(window, pane, owner):
     """Record ownership and the reader's identity by exact IDs, after creation."""
     reader = tmux("display-message", "-p", "-t", pane, "#{pane_id}:#{pane_pid}")
     command = tmux("display-message", "-p", "-t", pane, "#{pane_start_command}")
+    native = observe_process(int(reader.split(':')[1]))
+    # A pane-local witness survives snapshotting; a window's numeric marker
+    # alone cannot identify which restored UUID was its reader.
+    tmux('set-option', '-p', '-t', pane, READER_PROOF, json.dumps(dict(owner=owner, process=native)))
     tmux("set-option", "-w", "-t", window, "@storyhook-journal", owner, ";",
          "set-option", "-w", "-t", window, "@storyhook-reader", reader, ";",
          "set-option", "-w", "-t", window, "@storyhook-command", command, ";",
@@ -113,6 +126,82 @@ def allocate(session, name, owner, reader, new_session=False):
                    "=" + session + ":=" + name, "@storyhook-journal", owner)
     window, pane = created.splitlines()[0].split("\t")
     return window, pane
+
+
+def readopt_view(rows, owner):
+    """Join preserved viewer ownership to mapped UUIDs and exact native processes."""
+    RESTORED_READERS.clear()
+    RESTORED_AGENTS.clear()
+    evidence = restore_evidence(VIEW_TARGET, os.environ)
+    if evidence is None:
+        return False
+    parents_result = probe_run(['ps', '-axo', 'pid=,ppid='], capture_output=True, text=True)
+    if parents_result.returncode:
+        raise RuntimeError('verification restoration process census: ' + parents_result.stderr)
+    parents = {}
+    for line in parents_result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2 or not all(p.isdecimal() for p in parts):
+            raise RuntimeError('verification restoration has invalid ancestry')
+        pid, parent = map(int, parts)
+        if pid in parents:
+            raise RuntimeError('verification restoration has duplicate processes')
+        parents[pid] = parent
+    live = {row[2]: row for row in rows}
+    uuid_owners = {}
+    for line in tmux('list-panes', '-a', '-F', '#{pane_id}\t#{@revivify-uuid}').splitlines():
+        parts = line.split('\t')
+        if len(parts) != 2:
+            raise RuntimeError('invalid verification UUID inventory')
+        if parts[1]:
+            uuid_owners.setdefault(parts[1], set()).add(parts[0])
+    readers = []
+    for uuid_key, saved in evidence['panes'].items():
+        if saved['window']['options'].get('@storyhook-journal') != owner:
+            continue
+        row = live.get(saved['pane_id'])
+        if row is None and not uuid_owners.get(uuid_key):
+            continue  # A later owned replacement already retired this UUID.
+        if row is None or row[5] != owner or uuid_owners.get(uuid_key) != {row[2]}:
+            raise RuntimeError('restored verification pane is moved, duplicated or foreign')
+        if tmux('show-options', '-p', '-v', '-t', row[2], '@revivify-uuid') != uuid_key:
+            raise RuntimeError('restored verification pane UUID changed')
+        restored_launch(VIEW_TARGET, uuid_key, row[7])
+        proof = saved['pane']['options'].get(READER_PROOF)
+        if proof:
+            proof = json.loads(proof)
+            if proof.get('owner') != owner:
+                raise RuntimeError('restored reader owner changed')
+            # RV-10 does not relaunch generic reader commands. Only a currently
+            # running exact reader can be retained; a replay shell is stale.
+            root = observe_process(int(row[3])) if row[4] == '0' else None
+            old = proof['process']
+            healthy_reader = root is not None and (root['argv'], root['cwd'], root['process']['executable']) == (old['argv'], old['cwd'], old['process']['executable'])
+            RESTORED_READERS[row[2]] = healthy_reader
+            if healthy_reader:
+                readers.append((row, root))
+        agent = saved['pane'].get('agent')
+        if agent:
+            provider = agent.get('kind')
+            launch = shutil.which(provider) if provider in ('claude', 'codex') else None
+            if not launch or not agent.get('session_id'):
+                raise RuntimeError('restored verifier has no exact provider conversation')
+            root = process_identity(int(row[3]))
+            source = dict(provider=provider, session_id=agent['session_id'],
+                          provider_process=dict(executable=os.path.realpath(launch)),
+                          lease=dict(worktree_path=agent['resume_cwd']))
+            live_provider(source, root, parents, launch)
+            RESTORED_AGENTS.add(row[2])
+    if len(readers) > 1:
+        raise RuntimeError('multiple healthy restored verification readers')
+    if readers:
+        row, native = readers[0]
+        if observe_process(int(row[3])) != native:
+            raise RuntimeError('restored reader changed before publication')
+        if not is_reader(row) or row[7] != row[8]:
+            mark(row[0], row[2], owner)
+            return True
+    return False
 
 
 @probe_operation()
@@ -166,6 +255,9 @@ def reconcile(session, directory, binary, checkout=None, *agent):
         if len(windows) > 1 or any(row[1] == "verification" and row[5] != owner for row in rows):
             raise RuntimeError(f"verification ownership conflict in session {session}")
         own = [row for row in rows if row[1] == "verification"]
+        if readopt_view(own, owner):
+            rows = inventory(session)
+            own = [row for row in rows if row[1] == "verification"]
         reader_row = next((row for row in own if is_reader(row)), None)
         if reader_row and healthy(reader_row):
             reap_temporary(session, rows, owner)

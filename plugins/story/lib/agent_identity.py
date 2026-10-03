@@ -209,10 +209,13 @@ def validate(record):
     if not current or current["dead"]:
         raise IdentityError("pane-changed", f"registered pane {record['pane']} exited or disappeared")
     ctx = context(record["project"], record["story"], current["window"], record["worktree"])
-    if observe(ctx, current, record["provider"]) != record:
+    if observe(ctx, current, record["provider"]) != {k: v for k, v in record.items() if k != "restored"}:
         raise IdentityError("pane-changed", f"pane {record['pane']} process, provider, or worktree identity changed")
     if read_record(current) != record:
         raise IdentityError("pane-changed", f"pane {record['pane']} registration changed")
+    if "restored" in record:
+        from restoration import validate_provider
+        validate_provider(record)
     direct = direct_provider(current)
     if direct is not None and direct != record["provider"]:
         raise IdentityError("pane-changed", f"pane {record['pane']} provider conflicts with its live executable")

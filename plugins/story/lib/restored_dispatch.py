@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 
@@ -80,16 +81,26 @@ def source_dispatch(target, evidence, lease, common, window):
     require(isinstance(session, str) and bool(session), 'snapshot lacks an exact conversation')
     require(agent.get('resume_cwd') == lease['worktree_path'] and saved['pane']['cwd'] == lease['worktree_path'],
             'snapshot provider worktree differs')
+    require(isinstance(identity.get('restored', {}), dict), 'invalid prior restoration identity')
     process = identity.get('restored', {}).get('provider_process', identity.get('process'))
     require(isinstance(process, dict) and type(process.get('pid')) is int
             and process['pid'] > 1 and agent.get('old_pid') == process['pid']
             and isinstance(process.get('start'), str) and bool(process['start'])
             and isinstance(process.get('executable'), str) and Path(process['executable']).is_absolute(),
             'snapshot provider differs from the registered process')
+    # RV-10's Darwin snapshot uses UTC ps lstart (whole seconds). Join it to
+    # the registered kernel timestamp, rather than accepting a reused old PID.
+    started = re.fullmatch(r'macos:([0-9]+):([0-9]+)', process['start'])
+    require(started is not None and type(agent.get('old_proc_start')) in (int, float)
+            and int(started.group(1)) == agent['old_proc_start'],
+            'snapshot process incarnation differs or has an unsupported clock')
     rebound = copy.deepcopy(lease)
     rebound['tmux']['socket_path'] = target['endpoint']
-    if provenance is None and generation is not None:
-        rebound['tmux']['revivify'] = dict(logical_socket=target['socket'], origin_generation=generation)
+    if provenance is None and identity['socket'] != target['socket']:
+        # The source socket proves this origin. The snapshot's generation alone
+        # does not prove when an older public dispatch was first protected.
+        origin = Path(identity['socket']).parent.name.removeprefix('.rv-')
+        rebound['tmux']['revivify'] = dict(logical_socket=target['socket'], origin_generation=origin)
     return dict(uuid=uuid, saved=saved, identity=identity, provider=provider,
                 provider_process=process, session_id=session, lease=rebound)
 

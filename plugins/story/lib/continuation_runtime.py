@@ -16,6 +16,7 @@ from workspace_ownership import inherited_fds
 from continuation_identity import handoff_message_id
 import probe_budget
 import tmux_client
+from process_identity import process_identity
 
 MAX_BYTES = 64 * 1024 * 1024
 OPTION = '@storyhook-continuation'
@@ -201,6 +202,17 @@ def process_start(pid):
     return started
 
 
+def restored_provider_absent(capture):
+    """A dead replay shell is not absence while its exact provider child lives."""
+    prior = capture.get('restored', {}).get('provider_process')
+    if prior is None:
+        return True
+    try:
+        return process_identity(prior['pid']) != prior
+    except ProcessLookupError:
+        return True
+
+
 def owner(capture):
     """Require the original dispatcher-owned pane and process incarnation."""
     rows = panes(capture['socket'])
@@ -208,7 +220,7 @@ def owner(capture):
     named = [row for row in rows if row[2] == capture['lease']['story_id']]
     started = process_start(capture['pid'])
     if not matches:
-        require(not named and started is None, 'missing pane has a surviving or replaced owner')
+        require(not named and started is None and restored_provider_absent(capture), 'missing pane has a surviving or replaced owner')
         return 'absent'
     require(len(matches) == 1 and len(named) == 1 and matches == named,
             'story pane identity is ambiguous or renamed')
@@ -216,10 +228,17 @@ def owner(capture):
     require(row[1] == capture['window'] and row[3] == str(capture['pid']),
             'pane process or window ownership changed')
     if row[4] == '1':
-        require(started is None, 'dead pane still has a live captured process')
+        require(started is None and restored_provider_absent(capture), 'dead pane still has a live captured process')
         return 'absent'
     require(row[4] == '0' and started == capture['started'], 'provider process incarnation changed')
-    require(capture['provider'] in row[5].lower(), 'provider command differs from dispatcher identity')
+    if 'restored' in capture:
+        import agent_identity
+        record = agent_identity.read_record(agent_identity.pane_at(capture['pane'], capture['socket']))
+        require(record is not None and record.get('restored') == capture['restored'],
+                'restored continuation differs from registered provider')
+        agent_identity.validate(record)
+    else:
+        require(capture['provider'] in row[5].lower(), 'provider command differs from dispatcher identity')
     metadata = json.loads(tmux(capture['socket'], 'show-options', '-w', '-v', '-t', row[0], OPTION))
     for key in ('provider', 'session_id', 'pid', 'started'):
         require(metadata.get(key) == capture[key], 'dispatcher identity differs: ' + key)

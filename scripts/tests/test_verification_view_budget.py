@@ -1,23 +1,23 @@
 """The view's operation clock covers every probe and preserves failure evidence."""
 
 from pathlib import Path
+import os
 import subprocess
+import sys
 import tempfile
 import types
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'plugins/story/lib'))
+from view_program import program as view_program
 
 
 def program():
     """Load the shipping sources without invoking their command-line entry point."""
     module = types.ModuleType("verification_view")
-    source = ((ROOT / "plugins/story/lib/probe_budget.py").read_text()
-              + "\nprobe_run = run\nprobe_operation = operation\n"
-              + (ROOT / "plugins/story/lib/tmux_server_env.py").read_text()
-              + "\n" + (ROOT / "plugins/story/lib/tmux_target.py").read_text()
-              + "\n" + (ROOT / "scripts/verification-view.py").read_text())
+    source = view_program(ROOT)
     exec(compile(source, "verification_view", "exec"), module.__dict__)
     return module
 
@@ -33,7 +33,10 @@ class BudgetTests(unittest.TestCase):
         def answer(argv, **kwargs):
             allowances.append(kwargs["timeout"])
             clock[0] += 1
-            return subprocess.CompletedProcess(argv, 0, "@1\t%1" if argv[1] == "new-session" else "", "")
+            output = "@1\t%1" if argv[1] == "new-session" else ""
+            if argv[1] == "display-message":
+                output = "%1:" + str(os.getpid()) if argv[-1] == "#{pane_id}:#{pane_pid}" else "reader"
+            return subprocess.CompletedProcess(argv, 0, output, "")
 
         with tempfile.TemporaryDirectory(dir="/tmp") as directory, \
                 patch.dict(view.os.environ, STORYHOOK_VERIFIER_MIRROR="1", HOME=directory, XDG_STATE_HOME=directory), \

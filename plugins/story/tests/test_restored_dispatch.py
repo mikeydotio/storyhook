@@ -23,8 +23,8 @@ class SourceTests(unittest.TestCase):
                           tmux=dict(socket_path=self.old, revivify=dict(logical_socket='/tmp/public', origin_generation='a'*32)))
         self.identity = dict(version=1, project='project', story='SH-1', common='/repo/.git',
                              worktree=self.lease['worktree_path'], pane='%1', socket=self.old, provider='codex',
-                             process=dict(pid=99, start='old', executable='/bin/codex'))
-        self.agent = dict(kind='codex', session_id='conversation', resume_cwd=self.lease['worktree_path'], old_pid=99)
+                             process=dict(pid=99, start='macos:100:2500', executable='/bin/codex'))
+        self.agent = dict(kind='codex', session_id='conversation', resume_cwd=self.lease['worktree_path'], old_pid=99, old_proc_start=100.0)
         self.saved = dict(pane_id='%8', pane=dict(uuid='uuid', cwd=self.lease['worktree_path'],
                           options={'@storyhook-identity-v1':json.dumps(self.identity)}, agent=self.agent),
                           window=dict(name='SH-1', options={'@storyhook-agent':'codex'}), sessions={'project':'$2'})
@@ -91,10 +91,15 @@ class SourceTests(unittest.TestCase):
         del self.saved['pane']['options']['@storyhook-identity-v1']
         with self.assertRaises(RuntimeError): self.match()
 
+    def test_reused_snapshot_pid_has_to_match_the_registered_start_time(self):
+        self.agent['old_proc_start'] = 101.0
+        with self.assertRaisesRegex(RuntimeError, 'incarnation'): self.match()
+
     def test_previous_readoption_uses_its_provider_child_identity(self):
-        self.identity['restored'] = dict(provider_process=dict(pid=101, start='old-child', executable='/bin/codex'))
+        self.identity['restored'] = dict(provider_process=dict(pid=101, start='macos:101:2500', executable='/bin/codex'))
         self.saved['pane']['options']['@storyhook-identity-v1'] = json.dumps(self.identity)
         self.agent['old_pid'] = 101
+        self.agent['old_proc_start'] = 101.0
         self.assertEqual(self.match()['provider_process']['pid'], 101)
 
 

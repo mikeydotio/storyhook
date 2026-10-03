@@ -20,7 +20,7 @@ import sys
 try:
     with operation(float(sys.argv[2])):
         target = resolve_target(sys.argv[1] or None, os.environ, run,
-                                client_environment(os.environ))
+                                client_environment(os.environ), ensure=sys.argv[3] == "ensure")
         target['requested_socket'] = logical_socket(sys.argv[1] or None, os.environ)
         print(json.dumps(target))
 except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
@@ -79,7 +79,7 @@ pub(crate) fn inspect(
     let mut command = Command::new("python3");
     crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
     command.env("HOME", env.home()).envs(env.child_vars());
-    inspect_command(command, socket, deadline, cancellation)
+    inspect_command(command, socket, deadline, cancellation, false)
 }
 
 /// Store-free clients retain their own discovery context and tmux selection.
@@ -90,7 +90,21 @@ pub(crate) fn inspect_ambient(deadline: Instant) -> Result<Target, AppError> {
         None,
         deadline,
         &Cancellation::default(),
+        false,
     )
+}
+
+/// Establish protected readiness on a background lifecycle path, within its deadline.
+pub(crate) fn ensure(
+    env: &Environment,
+    socket: Option<&Path>,
+    deadline: Instant,
+    cancellation: &Cancellation,
+) -> Result<Target, AppError> {
+    let mut command = Command::new("python3");
+    crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
+    command.env("HOME", env.home()).envs(env.child_vars());
+    inspect_command(command, socket, deadline, cancellation, true)
 }
 
 fn inspect_command(
@@ -98,12 +112,14 @@ fn inspect_command(
     socket: Option<&Path>,
     deadline: Instant,
     cancellation: &Cancellation,
+    ensure: bool,
 ) -> Result<Target, AppError> {
     let timeout = remaining(deadline)?;
     command
         .args(["-c", INSPECT_PROGRAM])
         .arg(socket.unwrap_or_else(|| Path::new("")))
-        .arg(timeout.as_secs_f64().to_string());
+        .arg(timeout.as_secs_f64().to_string())
+        .arg(if ensure { "ensure" } else { "inspect" });
     let captured = crate::process::run_captured_cancellable(
         command,
         remaining(deadline)?,

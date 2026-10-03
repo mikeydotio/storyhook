@@ -1067,21 +1067,20 @@ ensure_provider_plan_mode() {
 # continuation; all shell-bound values are quoted before it invokes the hook.
 schedule_plan_approval() {
   local pane="$1" pane_pid="$2" auto_marker="$3" full_auto_marker="$4"
-  local hook_q pane_q pid_q auto_q full_auto_q approval_args
+  local binding identity
   [[ "$pane" =~ ^%[0-9]+$ ]] || return 1
   [[ "$pane_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  identity=$(tmux show-options -p -v -t "$pane" @storyhook-identity-v1) || return 1
+  binding=$(printf '%s' "$identity" | jq -c '{socket,pane,process,common,story}') || return 1
+  local helper_q hook_q binding_q auto_q full_auto_q provider_q
+  printf -v helper_q '%q' "$STORY_PLUGIN_ROOT/lib/approval_tmux.py"
   printf -v hook_q '%q' "$AUTO_APPROVAL_HOOK"
-  printf -v pane_q '%q' "$pane"
-  printf -v pid_q '%q' "$pane_pid"
+  printf -v binding_q '%q' "$binding"
   printf -v auto_q '%q' "$auto_marker"
   printf -v full_auto_q '%q' "$full_auto_marker"
-  case "$AGENT" in
-    claude) approval_args="--approve-claude-plan $pane_q $pid_q" ;;
-    codex) approval_args="--approve-codex-plan $pane_q $pid_q" ;;
-    *) return 1 ;;
-  esac
+  printf -v provider_q '%q' "$AGENT"
   tmux run-shell -b -t "$pane" \
-    "env STORYHOOK_AUTO=$auto_q STORYHOOK_FULL_AUTO=$full_auto_q bash $hook_q $approval_args" \
+    "env STORYHOOK_AUTO=$auto_q STORYHOOK_FULL_AUTO=$full_auto_q python3 $helper_q watch $binding_q $hook_q $provider_q 0" \
     >/dev/null 2>&1
 }
 

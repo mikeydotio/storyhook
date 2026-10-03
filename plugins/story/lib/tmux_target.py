@@ -242,7 +242,14 @@ def restore_evidence(target, environ):
                 or any(current.get(k) != target.get(k) for k in ('generation', 'endpoint', 'identity', 'history'))
                 or str(Path(current['state_dir']) / 'generations' / current['generation']) != target['state_dir']):
             raise ValueError('activation changed behind the captured restore target')
-        receipt = read_private_record(Path(target['state_dir']) / 'run/last-restore.json')
+        receipt = read_private_record(Path(target['state_dir']) / 'run/last-restore.json', missing=True)
+        if receipt is None:
+            # RV-10 live adoption deliberately performs no replay and writes
+            # only ownership-restore.json. This is not an absent restore result.
+            witness = read_private_record(Path(target['state_dir']) / 'run/ownership-restore.json')
+            if current.get('adopted') is True and witness.get('ready') is True and witness.get('generation') == target['generation']:
+                return None
+            raise ValueError('missing restore receipt without explicit live-adoption evidence')
         mapping = receipt.get('pane_map')
         if (receipt.get('state') not in ('done', 'skipped') or receipt.get('failed') != []
                 or not isinstance(mapping, dict)

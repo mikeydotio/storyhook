@@ -9,6 +9,8 @@
 pub mod adoption;
 mod dispatch_quiescence;
 pub mod reset;
+mod restoration;
+pub(crate) use restoration::reconcile_manual as reconcile_restored_dispatches;
 
 pub(crate) use dispatch_quiescence::card_reset_dispatching;
 
@@ -725,6 +727,32 @@ pub trait Dispatcher: Send + Sync {
     fn probe_lane(&self, _lane: &EngineLaneRecord, target: &str) -> WindowProbe {
         self.probe_window(target)
     }
+    /// Prove or publish a restored physical binding without dispatching a session.
+    fn restore_lane(
+        &self,
+        _lane: &EngineLaneRecord,
+        _expected: Option<&serde_json::Value>,
+        _workspace: Option<std::os::fd::BorrowedFd<'_>>,
+        _deadline: Instant,
+    ) -> Result<Option<serde_json::Value>, AppError> {
+        Ok(None)
+    }
+    /// Read activity after the restore-specific proof established live ownership.
+    fn probe_restored_lane(&self, _lane: &EngineLaneRecord) -> WindowProbe {
+        WindowProbe::Alive {
+            last_output_at: None,
+        }
+    }
+    /// Rearm only an existing autonomous dispatch after current policy is checked.
+    fn rearm_restored_lane(
+        &self,
+        _lane: &EngineLaneRecord,
+        _proposal: &serde_json::Value,
+        _workspace: std::os::fd::BorrowedFd<'_>,
+        _deadline: Instant,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
     /// The live agent windows on the tmux server this dispatcher fills
     /// lanes on — every dispatched session, engine-filled or manual.
@@ -1060,6 +1088,35 @@ impl Dispatcher for ShellDispatcher {
 
     fn probe_window(&self, window: &str) -> WindowProbe {
         self.probe_window_at(window, None)
+    }
+
+    fn restore_lane(
+        &self,
+        lane: &EngineLaneRecord,
+        expected: Option<&serde_json::Value>,
+        workspace: Option<std::os::fd::BorrowedFd<'_>>,
+        deadline: Instant,
+    ) -> Result<Option<serde_json::Value>, AppError> {
+        restoration::call(self, lane, expected, workspace, false, deadline)
+    }
+
+    fn rearm_restored_lane(
+        &self,
+        lane: &EngineLaneRecord,
+        proposal: &serde_json::Value,
+        workspace: std::os::fd::BorrowedFd<'_>,
+        deadline: Instant,
+    ) -> Result<(), AppError> {
+        restoration::call(self, lane, Some(proposal), Some(workspace), true, deadline).map(|_| ())
+    }
+
+    fn probe_restored_lane(&self, lane: &EngineLaneRecord) -> WindowProbe {
+        self.probe_window_at(
+            lane.pane_id.as_deref().expect("restored pane"),
+            lane.cleanup_lease
+                .as_ref()
+                .map(|lease| lease.tmux.socket_path.as_path()),
+        )
     }
 
     fn probe_lane(&self, lane: &EngineLaneRecord, window: &str) -> WindowProbe {
@@ -1720,25 +1777,43 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         })?;
 
         let mut observed = Vec::with_capacity(facts.len());
-        for (lane, row, blocked) in facts {
+        for (mut lane, row, blocked) in facts {
+            // Startup publication remains read-only and bounded. The first
+            // background pass owns readiness and restoration side effects.
+            let restoration = if pass == ReconcilePass::Steady {
+                self.restore_lane(&lane, row.as_ref().map(|r| r.head_global_seq.get()))
+            } else {
+                Ok((lane.clone(), false))
+            };
+            let restored_probe = match restoration {
+                Ok((fresh, true)) => {
+                    lane = fresh;
+                    Some(self.dispatcher.probe_restored_lane(&lane))
+                }
+                Ok(_) => None,
+                Err(error) => Some(WindowProbe::Unanswered {
+                    detail: error.to_string(),
+                }),
+            };
             // The window probe is a subprocess, so it runs outside the read.
-            let window = lane
-                .pane_id
-                .as_deref()
-                .filter(|pane| valid_pane_id(pane))
-                .map(str::to_string)
-                .or_else(|| {
-                    lane.window_name
-                        .as_deref()
-                        .map(|window| exact_window_target(slug, window))
-                })
-                .map_or_else(
-                    || WindowProbe::Gone {
-                        detail: "the lane records neither a pane id nor a window name to probe"
-                            .to_string(),
-                    },
-                    |target| self.dispatcher.probe_lane(&lane, &target),
-                );
+            let window = restored_probe.unwrap_or_else(|| {
+                lane.pane_id
+                    .as_deref()
+                    .filter(|pane| valid_pane_id(pane))
+                    .map(str::to_string)
+                    .or_else(|| {
+                        lane.window_name
+                            .as_deref()
+                            .map(|window| exact_window_target(slug, window))
+                    })
+                    .map_or_else(
+                        || WindowProbe::Gone {
+                            detail: "the lane records neither a pane id nor a window name to probe"
+                                .to_string(),
+                        },
+                        |target| self.dispatcher.probe_lane(&lane, &target),
+                    )
+            });
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
             // Read only when it can change the verdict: a Gone window on an
             // open, non-verifying, non-awaiting story (SH-650). Every other

@@ -57,6 +57,17 @@ class RestoreTests(unittest.TestCase):
         self.write(self.receipt_path, dict(self.receipt, state='skipped', pane_map={}, snapshot_id=None))
         self.assertIsNone(self.evidence())
 
+    def test_explicit_live_adoption_has_no_replay_receipt(self):
+        self.receipt_path.unlink()
+        self.f.record['adopted'] = True
+        self.f.publish()
+        self.write(Path(self.target['state_dir']) / 'run/ownership-restore.json',
+                   dict(generation=self.target['generation'], ready=True, summary='explicit adoption; no replay'))
+        self.assertIsNone(self.evidence())
+        self.f.record['adopted'] = False
+        self.f.publish()
+        with self.assertRaises(RuntimeError): self.evidence()
+
     def test_failed_malformed_and_unsafe_receipts_refuse(self):
         for change in [dict(state='failed'), dict(snapshot_id='../escape'), dict(pane_map={'u':'%x'}),
                        dict(pane_map={'one':'%7', 'two':'%7'}), dict(failed=[['session','failed']])]:

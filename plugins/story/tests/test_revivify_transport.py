@@ -7,7 +7,11 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import shlex
+import time
+import fcntl
 import socket
+import sqlite3
 import subprocess
 import sys
 import tarfile
@@ -27,11 +31,9 @@ REVISION = "7f77ee8997a9e984479a910c14735852b63b5c83"
 
 def view_program():
     """Compose the same shipping sources as the daemon's VIEW_PROGRAM."""
-    return ((PLUGIN / "lib/probe_budget.py").read_text()
-            + "\nprobe_run = run\nprobe_operation = operation\n"
-            + (PLUGIN / "lib/tmux_server_env.py").read_text() + "\n"
-            + (PLUGIN / "lib/tmux_target.py").read_text() + "\n"
-            + (ROOT / "scripts/verification-view.py").read_text())
+    sys.path.insert(0, str(PLUGIN / 'lib'))
+    from view_program import program
+    return program(ROOT)
 
 
 class TransportTests(unittest.TestCase):
@@ -103,8 +105,29 @@ class TransportTests(unittest.TestCase):
                 os.kill(self.pid, signal.SIGCONT)
             except ProcessLookupError:
                 pass
+        sys.path.insert(0, str(PLUGIN / 'lib'))
+        from process_identity import process_identity
+        observed = []
         for endpoint in set((self.socket, getattr(self, "endpoint", self.socket))):
+            rows = self.command([self.tmux, '-N', '-S', endpoint, 'list-panes', '-a', '-F', '#{pane_pid}'], check=False)
+            for pid in rows.stdout.splitlines():
+                try:
+                    observed.append(process_identity(int(pid)))
+                except ProcessLookupError:
+                    pass
             self.command([self.tmux, "-N", "-S", endpoint, "kill-server"], check=False)
+        # Login shells write history at exit. Socket disappearance alone is not
+        # quiescence and can race TemporaryDirectory's recursive removal.
+        deadline = time.monotonic() + self.patience
+        for old in observed:
+            while True:
+                try:
+                    if process_identity(old['pid']) != old:
+                        break
+                except ProcessLookupError:
+                    break
+                self.assertLess(time.monotonic(), deadline, 'owned fixture pane did not exit')
+                time.sleep(.01)
 
     def invoke(self, path):
         """Execute the actual composed reader or provider-launch boundary."""
@@ -233,7 +256,8 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(os.stat(self.endpoint).st_ino, self.inode)
         self.assertEqual(self.command([self.tmux, '-N', '-S', self.socket, 'list-sessions', '-F', '#{session_name}']).stdout.strip(), 'foreign')
 
-    def test_restore_evidence_matches_real_provider_snapshot_and_receipt(self):
+    def restore_current(self, config="/dev/null"):
+        """Save and restore the owned server through the real RV-10 protocol."""
         program = '''
 import json, os, sys, time
 sys.path.insert(0, sys.argv[1])
@@ -242,26 +266,32 @@ from revivify.saving import save
 from revivify.capture.snapshotter import Snapshotter
 from revivify.store.blobs import BlobStore
 from revivify.config import Settings
+from revivify.agents.registry import build_detector
+from pathlib import Path
 from revivify.managed import ensure_server
 from revivify.process_identity import process_state
 owner = Ownership(sys.argv[2], os.environ)
 old = owner.read()
 client = owner.client(old, sys.argv[3])
 paths = owner.paths(old)
-saved = save(paths, Snapshotter(client, BlobStore(paths.blobs), Settings()), 'storyhook-test')
+saved = save(paths, Snapshotter(client, BlobStore(paths.blobs), Settings(), agents=build_detector(paths, os.environ, Path(os.environ['HOME']))), 'storyhook-test')
 client.run('kill-server')
 deadline = time.monotonic() + float(sys.argv[5])
 while process_state(old['identity']) != 'exited':
     if time.monotonic() > deadline:
         raise RuntimeError('fixture server did not exit')
     time.sleep(0.01)
-new = ensure_server(owner, sys.argv[3], sys.argv[4], old['state_dir'], config_file='/dev/null')
+new = ensure_server(owner, sys.argv[3], sys.argv[4], old['state_dir'], config_file=sys.argv[6])
 print(json.dumps(dict(target=new, snapshot=saved.snapshot_id)))
 '''
         result = json.loads(self.command([sys.executable, '-B', '-c', program, str(self.provider),
-                                         self.socket, self.tmux, self.cli, str(self.patience)]).stdout)
+                                         self.socket, self.tmux, self.cli, str(self.patience), config]).stdout)
         self.endpoint = result['target']['endpoint']
         self.pid = result['target']['identity']['pid']
+        return result
+
+    def test_restore_evidence_matches_real_provider_snapshot_and_receipt(self):
+        result = self.restore_current()
         sys.path.insert(0, str(PLUGIN / 'lib'))
         import tmux_client
         from tmux_target import restore_evidence
@@ -280,6 +310,194 @@ print(json.dumps(dict(target=new, snapshot=saved.snapshot_id)))
         command = self.command([self.tmux, '-N', '-S', self.endpoint, 'display-message', '-p',
                                 '-t', saved['pane_id'], '#{pane_start_command}']).stdout.strip()
         restored_launch(target, uuid, command)
+
+    def restored_provider(self, provider, live=False):
+        """Actual restore, shell replay, provider argv, Git marker and publication."""
+        repo = self.root / 'repo'
+        repo.mkdir()
+        self.command(['git', 'init', '-b', 'main', str(repo)])
+        self.command(['git', '-C', str(repo), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                      'commit', '--allow-empty', '-m', 'fixture'])
+        worktree = self.root / 'SH-1'
+        self.command(['git', '-C', str(repo), 'worktree', 'add', '-b', 'worktree-SH-1', str(worktree)])
+        common = str(repo / '.git')
+        private = self.command(['git', '-C', str(worktree), 'rev-parse', '--absolute-git-dir']).stdout.strip()
+        binary = self.root / 'bin'
+        binary.mkdir()
+        source = self.root / 'claude.c'
+        source.write_text(r'''#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <limits.h>
+#include <string.h>
+#include <sys/file.h>
+int main(int argc, char **argv) {
+  char path[PATH_MAX]; snprintf(path, sizeof(path), "%s/provider-calls", getenv("HOME"));
+  if(strstr(argv[0],"codex") && argc>2) {
+    char lockpath[PATH_MAX]; snprintf(lockpath,sizeof(lockpath),"%s/.codex/thread-writer-locks/%s.lock",getenv("HOME"),argv[2]);
+    FILE *lock=fopen(lockpath,"a"); if(!lock || flock(fileno(lock),LOCK_EX)) return 3;
+  }
+  FILE *f=fopen(path,"a"); if(!f) return 2;
+  fprintf(f,"%d",getpid()); for(int i=1;i<argc;i++) fprintf(f," %s",argv[i]); fprintf(f,"\n"); fclose(f);
+  while(1) pause();
+}
+''')
+        self.command(['cc', '-Wall', '-Werror', str(source), '-o', str(binary / provider)])
+        self.env['PATH'] = str(binary) + os.pathsep + self.env['PATH']
+        session = '2dd387a4-715d-4010-8fb0-937c1246405a'
+        transcripts = self.root / ('.claude/projects/fixture' if provider == 'claude' else '.codex/sessions')
+        transcripts.mkdir(parents=True)
+        transcript = transcripts / (session + '.jsonl')
+        if provider == 'claude':
+            transcript.write_text(json.dumps(dict(type='assistant', sessionId=session, isSidechain=False,
+                                  cwd=str(worktree), message=dict(stop_reason='end_turn'))) + '\n')
+        else:
+            transcript.write_text(json.dumps(dict(type='session_meta', payload=dict(id=session,cwd=str(worktree),source='cli'))) + '\n'
+                                  + json.dumps(dict(type='event_msg',payload=dict(type='task_complete',turn_id='turn'))) + '\n')
+            (self.root / '.codex/thread-writer-locks').mkdir()
+            database = sqlite3.connect(str(self.root / '.codex/state_5.sqlite'))
+            try:
+                database.execute('CREATE TABLE threads (id TEXT, cwd TEXT, name TEXT, thread_source TEXT, created_at_ms INTEGER, updated_at_ms INTEGER)')
+                database.execute('INSERT INTO threads VALUES (?,?,?, ?,0,0)', (session,str(worktree),'fixture','user'))
+                database.commit()
+            finally:
+                database.close()
+        resume_args = ['--resume', session] if provider == 'claude' else ['resume', session]
+        (worktree / '.claude').mkdir()
+        (worktree / '.claude/dispatch-sentinel.json').write_text(json.dumps(dict(
+            story_id='SH-1', session_id=session, transcript_path=str(transcript))))
+        lease = dict(version=1, project_slug='fixture', story_id='SH-1', repository_path=str(repo),
+                     worktree_path=str(worktree), branch='worktree-SH-1',
+                     tmux=dict(socket_path=self.endpoint, revivify=dict(logical_socket=self.socket,
+                               origin_generation=self.record['generation'])))
+        marker = Path(private) / 'storyhook-cleanup-lease-v1.json'
+        marker.write_text(json.dumps(lease))
+        def tmux(*args):
+            return self.command([self.tmux, '-N', '-S', self.endpoint, *args]).stdout.strip()
+        tmux('set-environment', '-g', 'PATH', self.env['PATH'])
+        discarded = tmux('new-window', '-d', '-P', '-F', '#{pane_id}', '/bin/sleep', '600')
+        tmux('kill-pane', '-t', discarded)
+        pane = tmux('new-window', '-d', '-P', '-F', '#{pane_id}', '-n', 'SH-1', '-c', str(worktree),
+                    str(binary / provider), *resume_args)
+        sys.path.insert(0, str(PLUGIN / 'lib'))
+        import agent_identity, continuation_runtime, restoration, tmux_client
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(worktree)
+            with patch.dict(os.environ, dict(self.env, TMUX=self.endpoint + ',0,0'), clear=True), tmux_client.operation():
+                observed = agent_identity.pane_at(pane, self.endpoint)
+                identity = agent_identity.observe(dict(project='fixture', story='SH-1', common=common), observed, provider)
+                tmux('set-option', '-p', '-t', pane, agent_identity.OPTION, json.dumps(identity))
+                tmux('set-option', '-w', '-t', pane, '@storyhook-agent', provider)
+                metadata = continuation_runtime.register(dict(socket=self.endpoint, pane=pane, provider=provider,
+                           story_id='SH-1', cwd=str(worktree), model='default', effort='', speed='', autonomy_mode='auto'))['capture']
+            if live:
+                # These are the pre-adoption public bindings of the same native
+                # process. The fixture already completed RV-10's live adoption.
+                lease['tmux'] = dict(socket_path=self.socket)
+                identity['socket'] = self.socket
+                metadata['socket'] = self.socket
+                marker.write_text(json.dumps(lease))
+                tmux('set-option', '-p', '-t', pane, agent_identity.OPTION, json.dumps(identity))
+                tmux('set-option', '-w', '-t', pane, continuation_runtime.OPTION, json.dumps(metadata))
+            (self.root / '.zshrc').write_text('export PATH=' + shlex.quote(self.env['PATH']) + '\nsource '
+                                          + shlex.quote(str(self.provider / 'shell/revivify.zsh')) + '\n')
+            config = self.root / 'tmux.conf'
+            config.write_text('set -g default-shell /bin/zsh\n')
+            if not live:
+                self.restore_current(str(config))
+            deadline = time.monotonic() + self.patience
+            while not (self.root / 'provider-calls').exists() or len((self.root / 'provider-calls').read_text().splitlines()) < (1 if live else 2):
+                if time.monotonic() >= deadline:
+                    snapshots = list((self.root / 'custom-snapshots').glob('generations/*/snapshots/*storyhook-test.json'))
+                    self.fail('actual RV-10 provider replay did not start: ' + tmux('capture-pane', '-p', '-t', 'SH-1') + repr([p.read_text() for p in snapshots]))
+                time.sleep(.05)
+            lockpath = Path(common) / 'storyhook/workspace-locks/SH-1.lock'
+            lockpath.parent.mkdir(parents=True)
+            with lockpath.open('w') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                env = dict(self.env, STORY_WORKSPACE_LOCK_FD=str(lock.fileno()))
+                with patch.dict(os.environ, env, clear=True), tmux_client.operation():
+                    value = dict(lease=lease, window='SH-1')
+                    proposal = restoration.propose(value)
+                    if live:
+                        self.assertEqual(proposal['identity']['process'], identity['process'])
+                    else:
+                        self.assertNotEqual(proposal['identity']['process'], identity['process'])
+                        self.assertNotEqual(proposal['pane'], pane)
+                    self.assertEqual(proposal['metadata']['session_id'], session)
+                    if not live:
+                        self.assertEqual(proposal['identity']['restored']['session_id'], session)
+                    restoration.publish(value, proposal)
+                    restoration.publish(value, proposal)
+                    agent_identity.validate(proposal['identity'])
+                    self.assertEqual(continuation_runtime.owner(proposal['metadata'] | {'lease':proposal['lease']}), 'present')
+                    self.assertEqual(json.loads(marker.read_text()), proposal['lease'])
+                    self.assertEqual(proposal['lease']['tmux'].get('revivify'), lease['tmux'].get('revivify'))
+                    self.assertEqual(proposal['metadata']['autonomy_mode'], metadata['autonomy_mode'])
+            calls = (self.root / 'provider-calls').read_text().splitlines()
+            self.assertEqual(len(calls), 1 if live else 2, calls)
+            self.assertTrue(all(' '.join(resume_args) in call for call in calls), calls)
+        finally:
+            os.chdir(old_cwd)
+
+    def test_restored_claude_rebinds_real_process_and_retains_conversation(self):
+        self.restored_provider('claude')
+
+    def test_restored_codex_rebinds_real_process_and_retains_conversation(self):
+        self.restored_provider('codex')
+
+    def test_live_adoption_preserves_process_and_rebinds_public_alias(self):
+        self.restored_provider('claude', live=True)
+
+    def test_view_readopts_a_healthy_reader_after_real_restore(self):
+        sys.path.insert(0, str(PLUGIN / 'lib'))
+        from process_observation import observe_process
+        source = self.root / 'reader.c'
+        source.write_text('#include <unistd.h>\nint main(void) { while(1) pause(); }\n')
+        self.command(['cc', '-Wall', '-Werror', str(source), '-o', str(self.reader)])
+        self.assertEqual(self.invoke('view').returncode, 0)
+        def tmux(*args):
+            return self.command([self.tmux, '-N', '-S', self.endpoint, *args]).stdout.strip()
+        before = tmux('display-message', '-p', '-t', 'fixture:verification', '#{pane_id}:#{pane_pid}')
+        proof = json.loads(tmux('show-options', '-p', '-v', '-t', 'fixture:verification', '@storyhook-reader-proof-v1'))
+        self.assertEqual(proof['process']['process']['executable'], str(self.reader))
+        config = self.root / 'reader-tmux.conf'
+        reader_command = shlex.join([str(self.reader), 'daemon', 'logs', '--directory', str(self.root / 'logs'), '--follow'])
+        config.write_text('set -g default-shell /bin/zsh\nset -g default-command ' + shlex.quote(reader_command) + '\n')
+        self.restore_current(str(config))
+        restored = tmux('display-message', '-p', '-t', 'fixture:verification', '#{pane_id}:#{pane_pid}')
+        self.assertNotEqual(before, restored)
+        # RV-10 readiness publishes the replay shell before its default command
+        # has necessarily exec'd. This case requires an actually healthy reader;
+        # the sibling case exercises a shell that never starts one.
+        deadline = time.monotonic() + self.patience
+        while True:
+            current = observe_process(int(restored.split(':')[1]))
+            if current['process']['executable'] == str(self.reader) and current['argv'] == shlex.split(reader_command):
+                break
+            self.assertLess(time.monotonic(), deadline, repr(current))
+            time.sleep(.05)
+        result = self.invoke('view')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(tmux('display-message', '-p', '-t', 'fixture:verification', '#{pane_id}:#{pane_pid}'), restored,
+                         repr(dict(source=proof['process'], restored=current)))
+        self.assertEqual(tmux('show-options', '-w', '-v', '-t', 'fixture:verification', '@storyhook-reader'), restored)
+        self.assertEqual(self.invoke('view').returncode, 0)
+        self.assertEqual(tmux('display-message', '-p', '-t', 'fixture:verification', '#{pane_id}:#{pane_pid}'), restored)
+
+    def test_view_replaces_stale_replay_shell_once(self):
+        self.assertEqual(self.invoke('view').returncode, 0)
+        self.restore_current()
+        first = self.invoke('view')
+        self.assertEqual(first.returncode, 0, first.stderr)
+        before = self.command([self.tmux, '-N', '-S', self.endpoint, 'display-message', '-p',
+                               '-t', 'fixture:verification', '#{pane_id}:#{pane_pid}']).stdout
+        second = self.invoke('view')
+        self.assertEqual(second.returncode, 0, second.stderr)
+        after = self.command([self.tmux, '-N', '-S', self.endpoint, 'display-message', '-p',
+                              '-t', 'fixture:verification', '#{pane_id}:#{pane_pid}']).stdout
+        self.assertEqual(before, after)
 
     def test_saturated_private_listener_preserves_work_and_generation(self):
         peers = []
