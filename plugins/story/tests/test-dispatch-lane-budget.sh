@@ -111,6 +111,15 @@ mkdir -p "$STORY_TEST_TERMINAL"
 export FAKE_TMUX_CAPTURE=marker
 export STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0
 export STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0
+# The engine's helper runs outside tmux, so since SH-825 (90a4a55a) it targets
+# its DEFAULT server rather than asking tmux which server it has. Each lane is
+# its own fake server: give this dispatch a default of its own, publish that
+# server (tmux below is the lane router), and link the default to it (SH-840).
+export TMUX_TMPDIR="$STORY_TEST_TERMINAL/tmux-tmpdir"
+mkdir -p "$TMUX_TMPDIR"
+[ -d "$TMUX_TMPDIR/tmux-$(id -u)" ] || mkdir -m 700 "$TMUX_TMPDIR/tmux-$(id -u)"
+tmux display-message -p '#{socket_path}' >/dev/null
+ln -sfn "$STORY_TEST_TERMINAL/tmux.sock" "$TMUX_TMPDIR/tmux-$(id -u)/default"
 exec bash "$STORY_TEST_HELPER" "$@"
 DISPATCH
 cat >"$engine_root/bin/tmux" <<'TERMINAL'
