@@ -486,6 +486,19 @@ remained at `2m 24s total` / `18s`, rather than `2m 25s total` / `19s`, for
 separate regression repair are adopted into SH-812; this trace alone does not
 establish a product defect. Preserve elapsed-label and geometry coverage.
 
+That trace also records a fresh `/data` response during the clock advance.
+The fixture returned the same 144/18-second snapshot on every response,
+resetting the product's elapsed baseline. A deterministic real-navigation
+refresh reproduced the lost second on all four projects. Each sample's fixture
+now advances its elapsed data with the browser clock. The exact one-second
+proof holds its wall-time target while real timer callbacks run, separating
+that target from the footer interval's phase. Real refreshes must retain the
+advanced label, accessible name and containment. Both layout cases passed on
+all four projects (eight cases, 71-second pool); strict TypeScript passed.
+Response handlers drain before teardown, and fixed wall time is restored in
+`finally`. No product code changed. Regression logs are retained under
+`.storyhook/logs/sh812-resumed/sh812-layout-*`.
+
 The full logs, sixteen receipts, phase timings, load samples, manifest, scripts
 and failing trace are retained in `/tmp/sh812-v3-bench/` and
 `.storyhook/logs/sh812-performance-v3/`. A fresh successful warm-up and two
