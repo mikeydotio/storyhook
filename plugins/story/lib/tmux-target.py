@@ -13,10 +13,14 @@ from tmux_server_env import client_environment
 
 def main(arguments):
     """Inspect without startup, or ensure before dispatch."""
-    if not arguments or arguments[0] not in ('inspect', 'ensure') or len(arguments) > 2:
-        raise RuntimeError('expected inspect|ensure [absolute-socket]')
+    if not arguments or arguments[0] not in ('select', 'inspect', 'ensure') or len(arguments) > 2:
+        raise RuntimeError('expected select|inspect|ensure [absolute-socket]')
     mode = arguments[0]
     socket = logical_socket(arguments[1] if len(arguments) == 2 else None, os.environ)
+    if mode == 'select':
+        # Selection is a hint for native resource precedence, not ownership.
+        print(json.dumps(dict(socket=socket)))
+        return
     target = resolve_target(socket, os.environ, probe_budget.run,
                             client_environment(os.environ), ensure=mode == 'ensure')
     require_current_selector(target, socket)

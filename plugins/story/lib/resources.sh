@@ -90,14 +90,13 @@ ensure_tmux_session() {
 
 load_story_resources() {
   local id="$1" lease="${2:-}" location_only="${3:-false}" result state legacy_socket
-  prepare_tmux_target inspect || refuse "resource-query-failed" "$RESOURCE_TARGET_ERROR"
-  if [ "$RESOURCE_PROTECTED" = true ]; then
-    legacy_socket="$RESOURCE_SOCKET"
-  elif legacy_socket=$(tmux display-message -p '#{socket_path}' 2>/dev/null); then
-    case "$legacy_socket" in /*) ;; *) legacy_socket="" ;; esac
-  else
-    legacy_socket=""
-  fi
+  # Native inventory chooses an explicit/marker lease before its caller hint.
+  # Selecting the hint is pure: an unrelated unavailable caller cannot veto
+  # inspection of the healthy server that owns this worktree.
+  legacy_socket=$(python3 "$STORY_PLUGIN_ROOT/lib/tmux-target.py" select "$RESOURCE_CALLER_SOCKET") \
+    || refuse "resource-query-failed" "cannot select caller tmux socket"
+  legacy_socket=$(printf '%s' "$legacy_socket" | jq -er .socket) \
+    || refuse "resource-query-failed" "caller tmux socket is invalid"
   if [ -n "$RESOURCE_CALLER_PANE" ]; then
     case "$RESOURCE_CALLER_SOCKET" in /*) ;; *) RESOURCE_CALLER_SOCKET="$legacy_socket" ;; esac
   fi
