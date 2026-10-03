@@ -418,7 +418,11 @@ export PATH="$TESTS_DIR/fakes:$PATH"
 # Only the fake is published: the server must answer with this fixture's own
 # socket, so a real tmux on PATH is left untouched. A caller outside tmux is
 # pointed at the default server, so that path is linked to the fake's socket --
-# but only inside the test home, and never over anything but an earlier link.
+# but only inside the test home, never over anything but an earlier link, and
+# only for the duration of that run: a test may start a REAL tmux server on its
+# own default path afterwards (test-dispatch-failure-cleanup.sh does), and a
+# link left behind would stand where that server's socket has to go.
+_FAKE_TMUX_DEFAULT_LINK=""
 _publish_fake_tmux() {
   local answer state default_dir
   [ -n "${FAKE_TMUX_STATE:-}" ] && [ -d "$FAKE_TMUX_STATE" ] || return 0
@@ -431,7 +435,16 @@ _publish_fake_tmux() {
   [ -d "$default_dir" ] || mkdir -m 700 "$default_dir" || return 1
   if [ -L "$default_dir/default" ] || [ ! -e "$default_dir/default" ]; then
     ln -sfn "$answer" "$default_dir/default" || return 1
+    _FAKE_TMUX_DEFAULT_LINK="$default_dir/default"
   fi
+}
+
+# Withdraw the default link the last publication made, if it is still a link.
+_withdraw_fake_tmux_default() {
+  local link="$_FAKE_TMUX_DEFAULT_LINK"
+  _FAKE_TMUX_DEFAULT_LINK=""
+  [ -n "$link" ] && [ -L "$link" ] || return 0
+  rm -f -- "$link"
 }
 
 # Every test runs the helper as `bash "$SCRIPT" ...` (or an installed copy,
@@ -442,10 +455,14 @@ _publish_fake_tmux() {
 bash() {
   case "${1:-}" in
     "$SCRIPT" | */story.sh)
+      local status=0
       _publish_fake_tmux || {
         printf 'lib.sh: cannot publish the fake tmux server in %s (SH-840)\n' "${FAKE_TMUX_STATE:-}" >&2
         return 1
-      } ;;
+      }
+      command bash "$@" || status=$?
+      _withdraw_fake_tmux_default
+      return "$status" ;;
   esac
   command bash "$@"
 }
