@@ -11,6 +11,16 @@
  */
 
 import { planListingPlaceholder } from "./plan-listing";
+import { gracedOperationBudget } from "./load-grace";
+
+/** Playwright APIRequestContext's default per-request patience, in milliseconds. */
+export const BASE_REQUEST_TIMEOUT_MS = 30_000;
+
+/** Sample the fixture API's patience at request entry; an explicit ratio
+ * supports deterministic policy tests without changing the machine's load. */
+export function gracedRequestBudget(ratio?: number): number {
+  return gracedOperationBudget(BASE_REQUEST_TIMEOUT_MS, ratio);
+}
 
 /**
  * An environment variable this suite cannot run without. Throws rather than

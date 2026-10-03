@@ -1,3 +1,4 @@
+import { gracedOperationBudget } from "../load-grace";
 import type { APIRequestContext, Page, Route } from "@playwright/test";
 import { test, expect } from "./support";
 import {
@@ -15,7 +16,10 @@ import {
 const ENGINE_PROJECT = "Engine Project";
 const ENGINE_STORY_ID = requiredEnv("DASHBOARD_ENGINE_STORY_ID");
 const DASHBOARD_TOKEN = requiredEnv("DASHBOARD_TOKEN");
+/** Existing idle allowance for a real dispatch and its steady observation. */
 const REAL_ENGINE_TIMEOUT = 45_000;
+/** Existing setup allowance; the whole-test watchdog grants its grace. */
+const ENGINE_SETUP_BASE_MS = 30_000;
 const MUTATION_HEADERS = {
   "Content-Type": "application/json",
   "X-Storyhook": "1",
@@ -485,12 +489,17 @@ async function observedWorkingRun(
   slug: string,
   story: string,
 ): Promise<EngineRun> {
-  const deadline = Date.now() + REAL_ENGINE_TIMEOUT;
+  const patienceMs = gracedOperationBudget(REAL_ENGINE_TIMEOUT);
+  const deadline = performance.now() + patienceMs;
   let last = "";
   for (;;) {
+    const remainingMs = Math.floor(deadline - performance.now());
+    const diagnostic = () => `no steady pass observed ${story} working within ${patienceMs}ms; last reading: ${last}`;
+    expect(remainingMs, diagnostic()).toBeGreaterThan(0);
     const response = await request.get(`/api/repos/${encodeURIComponent(slug)}/engine`, {
       headers: { "X-Storyhook-Token": DASHBOARD_TOKEN },
-    });
+      timeout: remainingMs,
+    }).catch(error => { throw new Error(diagnostic(), { cause: error }); });
     const text = await response.text();
     expect(response.status(), text).toBe(200);
     const body = JSON.parse(text) as { result: string; runs: EngineRun[] };
@@ -524,8 +533,8 @@ async function observedWorkingRun(
       last = `no run holds ${story}: ${JSON.stringify(body.runs)}`;
     }
     expect(
-      Date.now() < deadline,
-      `no steady pass observed ${story} working within ${REAL_ENGINE_TIMEOUT}ms; last reading: ${last}`,
+      performance.now() < deadline,
+      diagnostic(),
     ).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -538,7 +547,7 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
   // This test waits on two real story.sh subprocesses: the engine dispatch and
   // stop-now's leased reset. Everything outside tmux is production code; the
   // runner's isolated fake tmux is the sole process-boundary double.
-  test.setTimeout(2 * REAL_ENGINE_TIMEOUT + 30_000);
+  test.setTimeout(2 * REAL_ENGINE_TIMEOUT + ENGINE_SETUP_BASE_MS);
 
   await page.goto("/");
   await openProject(page, ENGINE_PROJECT);
@@ -554,7 +563,7 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
   await submitEngineModal(page);
 
   await expect(page.locator(".engine-run-btn")).toHaveText("Auto: Running", {
-    timeout: REAL_ENGINE_TIMEOUT,
+    timeout: gracedOperationBudget(REAL_ENGINE_TIMEOUT),
   });
 
   // SH-626: wait for the daemon's OWN steady pass to observe the lane and
@@ -586,7 +595,7 @@ test("Full Auto claims through the real daemon and leaves a durable acknowledged
   );
 
   const alert = page.locator("#engine-alert-modal");
-  await expect(alert).toHaveClass(/open/, { timeout: REAL_ENGINE_TIMEOUT });
+  await expect(alert).toHaveClass(/open/, { timeout: gracedOperationBudget(REAL_ENGINE_TIMEOUT) });
   await expect(alert).toContainText(liveRun!.id);
   await expect(alert).toContainText("operator-stopped-now");
   await expect(alert).toContainText("finished");

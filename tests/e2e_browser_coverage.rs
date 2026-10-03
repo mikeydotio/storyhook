@@ -547,12 +547,12 @@ fn the_two_projects_in_each_engine_pair_select_their_specs_the_same_way() {
     }
 
     assert_eq!(
-        pair_selectors[0].1.1.as_str(),
+        pair_selectors[0].1 .1.as_str(),
         "DESKTOP_EXCLUDED_SPECS",
         "the desktop pair must exclude phone-subject specs and both dedicated-project partitions"
     );
     assert_eq!(
-        pair_selectors[1].1.1.as_str(),
+        pair_selectors[1].1 .1.as_str(),
         "MOBILE_OR_ENGINE_SPECS",
         "the mobile pair must share the named cross-device specs and phone set"
     );
@@ -1352,17 +1352,18 @@ fn the_runner_hands_the_lease_to_the_specs_before_the_daemon_starts() {
     );
 }
 
-/// Two reviewed SQLite-only commands, not a general interpreter exception.
+/// Three reviewed SQLite-only commands, not a general interpreter exception.
 /// Full invocation text pins executable, literal Python payload, argument shape,
 /// and process bound. A body/argv edit needs a new audit; moving a command into
-/// a helper does not remove it from this inventory. Neither payload can invoke
-/// Story CLI: setup writes only its private test database, and the reader opens
+/// a helper does not remove it from this inventory. No payload can invoke
+/// Story CLI: setup writes only its private test database, the lock holder
+/// holds only that private database until stdin closes, and the reader opens
 /// the mandatory isolated store with mode=ro and parameterized identity queries.
 /// The reader is asynchronous (`execFile`, SH-765) and its bound is a name,
 /// `boundMs`: the time left of the cleanup wait's graced patience. The reader
 /// refuses an unusable bound before it spawns
 /// (`the_barrier_read_refuses_an_unusable_bound_before_it_spawns`).
-const AUDITED_SQLITE_COMMANDS: [(&str, &str); 2] = [
+const AUDITED_SQLITE_COMMANDS: [(&str, &str); 3] = [
     (
         "e2e/specs/cleanup-delivery-barrier.node.spec.ts",
         r#"execFileSync("python3", ["-c", `
@@ -1382,8 +1383,8 @@ with sqlite3.connect(sys.argv[1]) as db:
         "e2e/block-delivery-barrier.cjs",
         r#"execFile("python3", ["-c", `
 import json, pathlib, sqlite3, sys
-path, project, story = sys.argv[1:]
-with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
+path, project, story, bound_ms = sys.argv[1:]
+with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True, timeout=int(bound_ms) / 1000) as db:
     db.execute("BEGIN")
     identities = db.execute("""
         SELECT p.id,p.uuid,p.slug,p.prefix,p.checkout_path,s.story_no,s.created_at
@@ -1398,7 +1399,18 @@ with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
         WHERE project_id=? AND story_no=? ORDER BY id
     """, (identity[0], identity[5])).fetchall()
     print(json.dumps({"identity": identity, "deliveries": deliveries}))
-`, storePath, project, story], { encoding: "utf8", timeout: boundMs }, "#,
+`, storePath, project, story, String(boundMs)], { encoding: "utf8", timeout: boundMs }, "#,
+    ),
+    (
+        "e2e/specs/cleanup-delivery-barrier.node.spec.ts",
+        r#"execFile("python3", ["-c", `
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute("BEGIN EXCLUSIVE")
+    print("locked", flush=True)
+    sys.stdin.read()
+    db.rollback()
+`, path], { timeout: gracedOperationBudget(LOCK_HOLDER_BASE_MS) }, "#,
     ),
 ];
 
@@ -1470,7 +1482,7 @@ fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
         let unbounded = if approved.contains(&format!(", {bound}")) {
             approved.replace(&format!(", {bound}"), "")
         } else {
-            approved.replace(&format!("{bound}, "), "")
+            approved.replace(&bound, "")
         };
         for changed in [
             approved.replace("\"python3\"", "\"story\""),
@@ -1482,7 +1494,7 @@ fn sqlite_data_commands_require_their_exact_audited_site_and_payload() {
                 "\n__import__('subprocess').run(['story', 'daemon', 'stop'])\nwith sqlite3.connect",
             ),
             approved.replace("`\nimport", "`\n${unleasedStory()}\nimport"),
-            if index == 0 {
+            if index != 1 {
                 approved.replace("`, path]", "`, storyBinary()]")
             } else {
                 approved.replace("?mode=ro", "?mode=rw")
@@ -1648,8 +1660,8 @@ fn no_tracked_e2e_file_names_cargos_artifact_and_every_cli_call_goes_through_sto
     );
     assert_eq!(
         audited,
-        [1, 1],
-        "both audited data-fixture commands must be present exactly once; re-audit changed sites"
+        [1; AUDITED_SQLITE_COMMANDS.len()],
+        "every audited data-fixture command must be present exactly once; re-audit changed sites"
     );
 }
 

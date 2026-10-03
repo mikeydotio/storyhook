@@ -28,8 +28,8 @@ function readBlockDeliverySnapshot(storePath, project, story, boundMs) {
     if (!Number.isSafeInteger(boundMs) || boundMs < 1) throw new Error(`the snapshot read bound must be a positive whole number of milliseconds, got ${String(boundMs)}`);
     const child = execFile("python3", ["-c", `
 import json, pathlib, sqlite3, sys
-path, project, story = sys.argv[1:]
-with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
+path, project, story, bound_ms = sys.argv[1:]
+with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True, timeout=int(bound_ms) / 1000) as db:
     db.execute("BEGIN")
     identities = db.execute("""
         SELECT p.id,p.uuid,p.slug,p.prefix,p.checkout_path,s.story_no,s.created_at
@@ -44,7 +44,7 @@ with sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True) as db:
         WHERE project_id=? AND story_no=? ORDER BY id
     """, (identity[0], identity[5])).fetchall()
     print(json.dumps({"identity": identity, "deliveries": deliveries}))
-`, storePath, project, story], { encoding: "utf8", timeout: boundMs }, (error, stdout, stderr) => {
+`, storePath, project, story, String(boundMs)], { encoding: "utf8", timeout: boundMs }, (error, stdout, stderr) => {
       if (error?.killed) return reject(new SnapshotReadTimeout(project, story, boundMs, stderr));
       if (error) {
         return reject(new Error(`the block-delivery snapshot read for ${project}/${story} failed ` +
