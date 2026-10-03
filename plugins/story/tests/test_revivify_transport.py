@@ -276,6 +276,10 @@ print(json.dumps(dict(target=new, snapshot=saved.snapshot_id)))
         current_uuid = self.command([self.tmux, '-N', '-S', self.endpoint, 'show-options',
                                      '-p', '-v', '-t', saved['pane_id'], '@revivify-uuid']).stdout.strip()
         self.assertEqual(uuid, current_uuid)
+        from restored_dispatch import restored_launch
+        command = self.command([self.tmux, '-N', '-S', self.endpoint, 'display-message', '-p',
+                                '-t', saved['pane_id'], '#{pane_start_command}']).stdout.strip()
+        restored_launch(target, uuid, command)
 
     def test_saturated_private_listener_preserves_work_and_generation(self):
         peers = []

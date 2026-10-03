@@ -78,6 +78,26 @@ publishes this evidence from its captured target. `tmux.socket_path` remains
 the current private endpoint. Provenance is corroboration, never sufficient
 authority to rebind a pane or approve a plan.
 
+The shared evidence reader validates the current generation's restore receipt
+against exactly one retained source snapshot. Protected snapshots must carry
+matching owner history and provenance. Legacy snapshots require the activation's
+exact explicit selection. UUIDs and current pane IDs must be unique; restored
+sessions must agree with the snapshot links. A changed activation, failed receipt,
+missing source or conflicting map refuses adoption.
+
+The dispatch proof joins that source to the retained lease, pane registration,
+provider and conversation. A live candidate must retain RV-10's replay-wrapper
+command and its exact current-generation UUID ticket. Native process observations
+preserve argv boundaries and bracket cwd/ancestry reads with kernel incarnation
+checks. They decode no environment values. Exactly one provider must run below
+the captured pane, in the retained worktree, with the exact resume session;
+fork arguments and changed ancestors refuse. These evidence helpers alone do
+not publish a new binding or authorize input.
+
+Restoration clients explicitly request readiness. Ordinary clients remain
+read-only. An operation which already captured one target cannot switch to a
+successor when it later requests readiness.
+
 The approved scope also requires restore-specific re-adoption of agent,
 engine, reader and continuation identities. The provider maps pane UUIDs to
 new pane IDs; old numerical IDs and PIDs cannot authorize re-adoption.

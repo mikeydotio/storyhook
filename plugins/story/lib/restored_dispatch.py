@@ -4,6 +4,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import shlex
 
 from process_observation import descendants, observe_process
 
@@ -14,6 +15,20 @@ def require(condition, detail):
     """Missing or conflicting proof is a refusal, never startup authority."""
     if not condition:
         raise RuntimeError('restored dispatch: ' + detail)
+
+
+def restored_launch(target, uuid, command):
+    """Require RV-10's replay wrapper and this generation's exact UUID ticket."""
+    require(isinstance(uuid, str) and bool(uuid) and '/' not in uuid and not uuid.startswith('.'),
+            'invalid replay ticket UUID')
+    try:
+        args = shlex.split(command)
+    except ValueError as error:
+        raise RuntimeError('restored dispatch: malformed pane launch') from error
+    wrapper = str(Path(target['executable']).resolve().parent.parent / 'libexec/revivify-pane-init')
+    ticket = str(Path(target['state_dir']) / 'tickets' / uuid)
+    require(len(args) == 5 and args[:2] == [wrapper, ticket],
+            'pane launch is not the captured generation replay ticket')
 
 
 def source_dispatch(target, evidence, lease, common, window):

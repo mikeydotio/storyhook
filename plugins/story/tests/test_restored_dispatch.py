@@ -2,6 +2,7 @@
 
 import copy
 import json
+import shlex
 from pathlib import Path
 import sys
 import unittest
@@ -167,6 +168,22 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(self.match(), self.rows[11])
         self.rows[11]['argv'][1] = '/foreign/codex'
         with self.assertRaises(RuntimeError): self.match()
+
+
+class LaunchTests(unittest.TestCase):
+    """Old pane options cannot grant a manually replaced command restore authority."""
+
+    def test_ticket_and_wrapper_must_belong_to_the_captured_generation(self):
+        target = dict(executable='/provider/bin/revivify', state_dir='/state/generations/new')
+        argv = ['/provider/libexec/revivify-pane-init', '/state/generations/new/tickets/uuid', '/bin/tmux', '/bin/zsh', '']
+        self.assertIsNone(restore.restored_launch(target, 'uuid', shlex.join(argv)))
+        for index,value in [(0,'/foreign/revivify-pane-init'), (1,'/state/generations/old/tickets/uuid'),
+                            (1,'/state/generations/new/tickets/other')]:
+            changed = argv.copy()
+            changed[index] = value
+            with self.assertRaises(RuntimeError): restore.restored_launch(target, 'uuid', shlex.join(changed))
+        for command in ['claude --resume session', '"unterminated', shlex.join(argv) + ' ; echo extra']:
+            with self.assertRaises(RuntimeError): restore.restored_launch(target, 'uuid', command)
 
 
 if __name__ == '__main__':
