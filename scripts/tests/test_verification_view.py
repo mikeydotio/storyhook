@@ -19,7 +19,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "verification-view.py"
 POLICY = Path(__file__).resolve().parents[2] / "plugins/story/lib/tmux_server_env.py"
 BUDGET = POLICY.with_name("probe_budget.py")
 PROGRAM = (BUDGET.read_text() + "\nprobe_run = run\nprobe_operation = operation\n"
-           + POLICY.read_text() + "\n" + SCRIPT.read_text())
+           + POLICY.read_text() + "\n" + POLICY.with_name("tmux_target.py").read_text()
+           + "\n" + SCRIPT.read_text())
 # The shipping operation budget also bounds a single client if it is first.
 RECONCILER_TIMEOUT = int(re.search(r"^BUDGET_SECONDS = (\d+)$", BUDGET.read_text(), re.M).group(1))
 DEADLINE = RECONCILER_TIMEOUT * 3 / 2  # The daemon outer bound, including startup/exit margin.

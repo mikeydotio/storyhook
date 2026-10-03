@@ -16,6 +16,7 @@ def program():
     source = ((ROOT / "plugins/story/lib/probe_budget.py").read_text()
               + "\nprobe_run = run\nprobe_operation = operation\n"
               + (ROOT / "plugins/story/lib/tmux_server_env.py").read_text()
+              + "\n" + (ROOT / "plugins/story/lib/tmux_target.py").read_text()
               + "\n" + (ROOT / "scripts/verification-view.py").read_text())
     exec(compile(source, "verification_view", "exec"), module.__dict__)
     return module
@@ -35,7 +36,7 @@ class BudgetTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, "@1\t%1" if argv[1] == "new-session" else "", "")
 
         with tempfile.TemporaryDirectory(dir="/tmp") as directory, \
-                patch.dict(view.os.environ, STORYHOOK_VERIFIER_MIRROR="1"), \
+                patch.dict(view.os.environ, STORYHOOK_VERIFIER_MIRROR="1", HOME=directory, XDG_STATE_HOME=directory), \
                 patch.object(view.time, "monotonic", side_effect=lambda: clock[0]), \
                 patch.object(view.subprocess, "run", side_effect=answer):
             view.reconcile("project", directory, "/bin/true")
@@ -55,7 +56,7 @@ class BudgetTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, "@1\t%1" if argv[1] == "new-session" else "", "")
 
         with tempfile.TemporaryDirectory(dir="/tmp") as directory, \
-                patch.dict(view.os.environ, STORYHOOK_VERIFIER_MIRROR="1"), \
+                patch.dict(view.os.environ, STORYHOOK_VERIFIER_MIRROR="1", HOME=directory, XDG_STATE_HOME=directory), \
                 patch.object(view.time, "monotonic", side_effect=lambda: clock[0]), \
                 patch.object(view.subprocess, "run", side_effect=answer):
             with self.assertRaises(RuntimeError) as failed:
@@ -68,7 +69,7 @@ class BudgetTests(unittest.TestCase):
     def test_an_existing_operation_cannot_be_extended_by_reconcile(self):
         view = program()
         with tempfile.TemporaryDirectory(dir="/tmp") as directory, \
-                patch.dict(view.os.environ, STORYHOOK_VERIFIER_MIRROR="1"), \
+                patch.dict(view.os.environ, STORYHOOK_VERIFIER_MIRROR="1", HOME=directory, XDG_STATE_HOME=directory), \
                 patch.object(view.subprocess, "run") as run:
             with view.operation(0), self.assertRaises(view.ProbeTimeout):
                 view.reconcile("project", directory, "/bin/true")
@@ -76,6 +77,8 @@ class BudgetTests(unittest.TestCase):
 
     def test_inventory_preserves_empty_final_columns_and_command_whitespace(self):
         view = program()
+        # This test supplies only terminal rows; no real discovery belongs to it.
+        view.VIEW_TARGET = {"protected": False}
         row = ["@1", ".verification-partial", "%1", "123", "0", "owner", "", "echo trailing ", ""]
         other = ["@2", "verification", "%2", "456", "0", "owner", "%2:456", "reader", "reader"]
         for rows in ([row], [row, other], [other, row]):

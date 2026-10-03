@@ -24,6 +24,7 @@ ENV_CLI = PLUGIN / "lib/tmux-env.py"
 VIEW_PROGRAM = ((PLUGIN / "lib/probe_budget.py").read_text()
                 + "\nprobe_run = run\nprobe_operation = operation\n"
                 + (PLUGIN / "lib/tmux_server_env.py").read_text() + "\n"
+                + (PLUGIN / "lib/tmux_target.py").read_text() + "\n"
                 + (REPO / "scripts/verification-view.py").read_text())
 # Bounds one private tmux server operation, including its startup and a loaded
 # macOS PTY allocation. It is a liveness ceiling, never a performance claim.

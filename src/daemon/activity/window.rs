@@ -37,6 +37,8 @@ const VIEW_PROGRAM: &str = concat!(
     "\nprobe_run = run\nprobe_operation = operation\n",
     include_str!("../../../plugins/story/lib/tmux_server_env.py"),
     "\n",
+    include_str!("../../../plugins/story/lib/tmux_target.py"),
+    "\n",
     include_str!("../../../scripts/verification-view.py")
 );
 

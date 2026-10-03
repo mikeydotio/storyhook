@@ -35,6 +35,18 @@ AGENT_LOOP = ('while :; do "$@"; status=$?; '
               'Press Enter to start it again.\\n" "$status"; '
               'read -r _ || exit "$status"; done')
 
+# One process performs one pass. Resolve again if a test invokes another pass,
+# but never switch generations between a pass's probe and allocation.
+VIEW_TARGET = None
+
+
+def view_target(ensure=False):
+    """Select the daemon's default logical socket before any terminal access."""
+    environment = client_environment(os.environ)
+    environment.pop("TMUX", None)
+    environment.pop("TMUX_PANE", None)
+    return resolve_target(None, environment, probe_run, environment, ensure=ensure)
+
 
 def tmux(*args):
     """Use literal argv and bounded clients on the default server.
@@ -47,7 +59,8 @@ def tmux(*args):
     env = client_environment(os.environ)
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
-    result = probe_run(["tmux", *args], env=env, capture_output=True, text=True)
+    target = VIEW_TARGET if VIEW_TARGET is not None else view_target()
+    result = probe_run(["tmux", *target_arguments(target, args)], env=env, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(f"tmux {args[0]}: {result.stderr.strip()} (exit {result.returncode})")
     # Empty tab-delimited fields are identity evidence, even on the last row.
@@ -110,6 +123,7 @@ def reconcile(session, directory, binary, checkout=None, *agent):
     the reader, or create the agent), so every pass fits the one operation
     budget and a failure leaves at most one step to recover.
     """
+    global VIEW_TARGET
     if os.environ.get("STORYHOOK_VERIFIER_MIRROR") == "0":
         return
     directory = Path(directory).resolve()
@@ -125,18 +139,28 @@ def reconcile(session, directory, binary, checkout=None, *agent):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return  # The current owner is already reconciling this project.
+        VIEW_TARGET = view_target(ensure=True)
         reader = [str(Path(binary).resolve()), "daemon", "logs", "--directory", str(directory), "--follow"]
         launch = (checkout, list(agent)) if checkout and agent else None
         # new-session -A is not suitable here: it attaches when the session exists.
         sessions = tmux("list-sessions", "-F", "#{session_name}") if server_has_sessions() else ""
         if session not in sessions.splitlines():
-            window, pane = allocate(session, "verification", owner, reader, new_session=True)
             try:
-                mark(window, pane, owner)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
-                rollback(window, error)
-                raise
-            return
+                window, pane = allocate(session, "verification", owner, reader, new_session=True)
+            except RuntimeError as error:
+                if "duplicate session:" not in str(error):
+                    raise
+                # Another project/helper can create the session while this pass
+                # holds only its own view lock. Never infer success from an
+                # unrelated allocation error or a prefix-matched session.
+                tmux("has-session", "-t", "=" + session)
+            else:
+                try:
+                    mark(window, pane, owner)
+                except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+                    rollback(window, error)
+                    raise
+                return
         rows = inventory(session)
         windows = {row[0] for row in rows if row[1] == "verification"}
         if len(windows) > 1 or any(row[1] == "verification" and row[5] != owner for row in rows):
@@ -271,7 +295,8 @@ def server_has_sessions():
         tmux("list-sessions", "-F", "#{session_name}")
         return True
     except RuntimeError as error:
-        if any(text in str(error) for text in ("no server running", "no sessions", "No such file or directory")):
+        absent = ("no sessions",) if VIEW_TARGET and VIEW_TARGET["protected"] else ("no server running", "no sessions", "No such file or directory")
+        if any(text in str(error) for text in absent):
             return False
         raise
 
