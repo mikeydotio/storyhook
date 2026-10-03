@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "./support";
+import { withDrainedRoutes } from "../route-lifetime";
 import {
   onAFrozenClock,
   openProject,
@@ -20,6 +21,13 @@ const STARTING_TITLE = "SH-549 active starting";
 const RESUBMITTED_TITLE = "SH-603 resubmitted generation";
 const MOVED_TITLE = "SH-549 moved out of verifying";
 const BATCHED_TITLE = "SH-832 batch member";
+
+// The injector's last response can still be rewriting when a test ends.
+test.use({
+  page: async ({ page }, use) => {
+    await withDrainedRoutes(page, () => use(page));
+  },
+});
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);

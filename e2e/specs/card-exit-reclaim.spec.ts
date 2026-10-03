@@ -7,13 +7,26 @@ import { expect, onAFrozenClock, openProject, seedToken, test } from "./support"
  * node through `populateCard()`, but the old animation listener and 600 ms
  * fallback still own it and can remove the now-wanted card later.
  *
- * The clock makes the fallback boundary test-owned rather than a wall-clock
- * race. Search input remains the production entry point: no data response or
- * renderer is mocked, and Alpha's seeded card is never mutated in the store.
+ * The clock owns the fallback boundary; a scoped CSS pause owns the separate
+ * animation timeline. Search input remains the production entry point: no
+ * data response or renderer is mocked, and Alpha's seeded card is never
+ * mutated in the store.
  */
 
 const SEEDED_CARD_TITLE = "Wire up the auth flow";
 const CARD_EXIT_FALLBACK_MS = 600;
+
+/** Holds both exit completion paths until the test chooses one. */
+async function withExitCompletionHeld(page: Page, body: () => Promise<void>): Promise<void> {
+  // The JS clock does not pause CSS animations. Install the rule before an
+  // exit starts, so no driver round trip can spend its real 200 ms lifetime.
+  const style = await page.addStyleTag({ content: ".card.exiting { animation-play-state: paused !important; }" });
+  try {
+    await onAFrozenClock(page, body);
+  } finally {
+    await style.evaluate((node) => (node as HTMLStyleElement).remove());
+  }
+}
 
 test.beforeEach(async ({ page }) => {
   await page.clock.install();
@@ -35,7 +48,7 @@ async function expectReclaimedCardToSurvive(
   if (!originalNode) throw new Error("the seeded Alpha card has no element handle");
 
   const search = page.locator("#search-input");
-  await onAFrozenClock(page, async () => {
+  await withExitCompletionHeld(page, async () => {
     for (const query of hiddenQueries) {
       await search.fill(query);
       expect(
@@ -132,7 +145,7 @@ test("a descendant animation cannot complete the card's exit", async ({ page }) 
     node.appendChild(clearedBlocker);
   });
 
-  await onAFrozenClock(page, async () => {
+  await withExitCompletionHeld(page, async () => {
     await page.locator("#search-input").fill("no Alpha story matches this query");
     expect(
       await originalNode.evaluate((node) => ({
@@ -159,6 +172,45 @@ test("a descendant animation cannot complete the card's exit", async ({ page }) 
         }),
       );
     });
+    expect(await originalNode.evaluate((node) => node.isConnected)).toBe(false);
+  });
+});
+
+test("a held exit survives CSS time but its fallback removes it at the exact deadline", async ({ page }) => {
+  const card = page.locator('.column[data-state="todo"] .card', { hasText: SEEDED_CARD_TITLE });
+  await expect(card).toBeVisible();
+  const originalNode = await card.elementHandle();
+  if (!originalNode) throw new Error("the seeded Alpha card has no element handle");
+
+  await withExitCompletionHeld(page, async () => {
+    await page.locator("#search-input").fill("no Alpha story matches this query");
+    const held = await originalNode.evaluate((node) => {
+      const exit = node.getAnimations().find((animation) =>
+        animation instanceof CSSAnimation && animation.animationName === "card-exit");
+      return { connected: node.isConnected, state: exit?.playState };
+    });
+    expect(held).toEqual({ connected: true, state: "paused" });
+
+    // A separate native animation witnesses elapsed CSS time while JS time
+    // stays frozen. This forces the driver-delay shape without a guessed sleep.
+    await originalNode.evaluate(async (node) => {
+      const exit = node.getAnimations().find((animation) =>
+        animation instanceof CSSAnimation && animation.animationName === "card-exit");
+      if (!exit?.effect) throw new Error("the held card has no exit animation");
+      const duration = Number(exit.effect.getComputedTiming().endTime);
+      if (!(duration > 0 && Number.isFinite(duration))) throw new Error("exit duration must be finite and positive");
+      const witness = document.createElement("span");
+      document.body.appendChild(witness);
+      try {
+        await witness.animate([{ opacity: 0 }, { opacity: 1 }], { duration: duration * 2 }).finished;
+      } finally {
+        witness.remove();
+      }
+    });
+    expect(await originalNode.evaluate((node) => node.isConnected)).toBe(true);
+    await page.clock.runFor(CARD_EXIT_FALLBACK_MS - 1);
+    expect(await originalNode.evaluate((node) => node.isConnected)).toBe(true);
+    await page.clock.runFor(1);
     expect(await originalNode.evaluate((node) => node.isConnected)).toBe(false);
   });
 });
