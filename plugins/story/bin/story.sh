@@ -600,22 +600,18 @@ LAUNCH_RECORD_FILE="storyhook-launch-v1.json"
 # sentinel-file gate the Claude provider actually uses.
 READY_PATTERN="${STORY_READY_PATTERN:-for shortcuts|for agents|mode on|to cycle}"
 # READY_ATTEMPTS * READY_DELAY is the whole poll budget both gates share (SH-544):
-# 180 * 0.25s = 45s, derived from src/daemon/lifecycle.rs's own
-# SPAWN_LOCK_DEADLINE (30s — this project's own documented tolerance for
-# ordinary daemon contention) plus a 15s margin for tmux round trips and the
-# time Claude itself takes to reach its first render, rather than a bare
-# literal (this project's own CLAUDE.md doctrine: a wall-clock ceiling must
-# derive from the deadline it disproves). Was 15s (60*0.25) — undocumented,
-# and well under SPAWN_LOCK_DEADLINE even though wait_ready_sentinel polls for
-# a file a daemon request has to complete to produce; a request that gets
-# queued behind ordinary contention on this project's own bounded worker pool
-# (`DISPATCHERS`, src/daemon/serve.rs) could legitimately outlast 15s without
-# anything about the launched agent being wrong. Widening this only ever costs
-# latency on a poll that would otherwise have timed out — both gates return
-# the instant their own conditions hold, every earlier poll included.
-# tests/dispatch_ready_budget.rs pins `>= SPAWN_LOCK_DEADLINE` so the two
-# numbers cannot silently drift apart again (the SH-136 shape).
-READY_ATTEMPTS="${STORY_READY_ATTEMPTS:-180}"
+# src/daemon/lifecycle.rs's SPAWN_LOCK_DEADLINE plus a 15s margin for tmux
+# round trips and the agent's first render. macOS includes bounded launchd
+# recovery (115s); Linux includes systemd control (70s); other platforms use
+# the fork-only bound (30s). Both readiness gates return as soon as ready.
+# tests/dispatch_ready_budget.rs executes these declarations and compares the
+# native default to the Rust deadline, so they cannot silently drift apart.
+# Readiness budget defaults (SH-820).
+case "$OSTYPE" in
+  darwin*) READY_ATTEMPTS="${STORY_READY_ATTEMPTS:-520}" ;; # (115 + 15) / 0.25
+  linux*) READY_ATTEMPTS="${STORY_READY_ATTEMPTS:-340}" ;;  # (70 + 15) / 0.25
+  *) READY_ATTEMPTS="${STORY_READY_ATTEMPTS:-180}" ;;       # (30 + 15) / 0.25
+esac
 READY_DELAY="${STORY_READY_DELAY:-0.25}"
 READY_FALLBACK_DELAY="${STORY_READY_FALLBACK_DELAY:-3}"
 READY_STABLE_POLLS="${STORY_READY_STABLE_POLLS:-3}"

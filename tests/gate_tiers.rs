@@ -521,15 +521,8 @@ fn release_sh_installs_both_provider_plugins_owned_by_the_installed_binary() {
 }
 
 /// `make install` finishes by reinstalling the registered provider plugins,
-/// through the binary it just installed — the only one that embeds the
-/// payload being installed — and never gates the install on it (SH-667).
-///
-/// The `||` fallback is the point, not a courtesy: `make install` is the
-/// recovery `StoreError::SchemaTooNew` prescribes and "stays ungated"
-/// (`docs/spec/release-lockstep.md`), and `scripts/release.sh` runs it under
-/// `set -e` between `daemon stop` and `daemon start` — a propagated failure
-/// there would leave the machine with no daemon at all. The fallback names
-/// the retry rather than staying silent.
+/// through the binary it just installed. The binary replacement stays
+/// ungated, but an incomplete plugin refresh must fail visibly (SH-820).
 #[test]
 fn install_reinstalls_registered_plugins_through_the_installed_binary_ungated() {
     let outer = dry_run("install");
@@ -566,9 +559,79 @@ fn install_reinstalls_registered_plugins_through_the_installed_binary_ungated() 
         "the reinstall must run the binary just installed, not whatever is on PATH: {line}"
     );
     assert!(
-        line.contains("||") && line.contains("story plugin reinstall"),
-        "a failed reinstall must not fail the install, and must name the retry: {line}"
+        line.contains("||") && line.contains("story plugin reinstall") && line.contains("exit"),
+        "a failed reinstall must fail the install and name the retry: {line}"
     );
+}
+
+/// Execute the actual post-install recipe with an isolated provider boundary.
+#[test]
+fn plugin_refresh_exit_status_is_not_converted_to_install_success() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = storyhook_test_support::scratch_dir_named("install-refresh-status");
+    let story = dir.path().join("story");
+    std::fs::write(
+        &story,
+        "#!/bin/sh\n[ \"$*\" = 'plugin reinstall' ] || exit 99\nexit \"$REFRESH_EXIT\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&story, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = run(&[
+        "-n",
+        "--no-print-directory",
+        "install",
+        &format!("INSTALL_DIR={}", dir.path().display()),
+    ]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    let recipe = text
+        .lines()
+        .find(|line| line.contains("plugin reinstall"))
+        .unwrap();
+    for status in [0, 5, 73] {
+        let result = Command::new("sh")
+            .args(["-c", recipe])
+            .env("REFRESH_EXIT", status.to_string())
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(status), "{result:?}");
+        if status != 0 {
+            let diagnostic = String::from_utf8_lossy(&result.stderr);
+            assert!(diagnostic.contains("binary was installed"), "{diagnostic}");
+            assert!(
+                diagnostic.contains("story plugin reinstall"),
+                "{diagnostic}"
+            );
+        }
+    }
+}
+
+/// An open old executable must retain its bytes when install replaces its name.
+#[test]
+fn install_replaces_the_inode_without_rewriting_an_open_executable() {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let dir = storyhook_test_support::scratch_dir_named("install-inode");
+    let source = dir.path().join("new");
+    let destination = dir.path().join("story");
+    std::fs::write(&source, b"new executable").unwrap();
+    std::fs::write(&destination, b"old executable").unwrap();
+    let mut old = std::fs::File::open(&destination).unwrap();
+    let inode = old.metadata().unwrap().ino();
+    assert!(
+        Command::new("install")
+            .args(["-m", "755"])
+            .arg(&source)
+            .arg(&destination)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_ne!(inode, std::fs::metadata(&destination).unwrap().ino());
+    let mut bytes = Vec::new();
+    old.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"old executable");
+    assert_eq!(std::fs::read(destination).unwrap(), b"new executable");
 }
 
 /// The bootstrap installer is the third path that replaces the binary, and it

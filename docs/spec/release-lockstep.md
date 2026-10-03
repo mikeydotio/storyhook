@@ -478,11 +478,11 @@ outcome and the retry.
 Every binary-replacement path runs it:
 
 - **`make install`** runs `"$(INSTALL_DIR)/story" plugin reinstall` — the binary
-  just installed, never `story` on PATH — with `|| echo` on purpose. The target
-  is the `SchemaTooNew` recovery and stays ungated (rule above), and
-  `scripts/release.sh` runs it under `set -e` between `daemon stop` and `daemon
-  start`; a refresh that failed the install would leave the machine with no
-  daemon. The failure is named with its retry.
+  just installed, never `story` on PATH. Binary replacement stays ungated for
+  `SchemaTooNew` recovery, but a failed plugin refresh returns failure and
+  states that the binary was installed. `scripts/release.sh` keeps the incumbent
+  running through the build; the new client's lifecycle owns replacement.
+  See [daemon replacement](daemon-reseat.md) for SH-820's recovery contract.
 - **`story update`** runs `<new exe> plugin install <provider>` per registered
   provider after the swap. The running process is the old binary and its
   embedded payload is the one just replaced, so it may read the plan (provider
