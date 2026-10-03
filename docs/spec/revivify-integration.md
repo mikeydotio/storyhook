@@ -37,6 +37,13 @@ Resource reports carry the observed private endpoint; their candidate leases
 retain the original authority. Card-reset cleanup uses that captured endpoint
 and refuses a generation change between reservation and cleanup.
 
+The engine inspects ownership before census, liveness and adoption queries.
+Numeric lane probes require a binding to the current private endpoint; a
+logical name or predecessor endpoint returns `Unanswered` until explicit
+re-adoption supplies the new binding. Adopted identity and activity reads use
+one endpoint and deadline. Protected ownership or transport errors bypass
+the ordinary missing-target classifier.
+
 ## Restoration contract
 
 The approved scope also requires restore-specific re-adoption of agent,

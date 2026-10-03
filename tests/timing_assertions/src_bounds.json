@@ -182,7 +182,7 @@
     "production run_captured(bound": {
       "count": 2,
       "kind": "delegated",
-      "reason": "kill_window and run_shell_capabilities read bound through Environment::subprocess_bound on the line before."
+      "reason": "run_shell_capabilities reads bound through Environment::subprocess_bound. kill_window uses the remaining shared deadline derived from subprocess_bound(TMUX_TIMEOUT), after ownership inspection."
     },
     "production run_captured(timeout": {
       "count": 1,
@@ -243,6 +243,25 @@
       "count": 1,
       "kind": "unrouted",
       "reason": "60 s for one resource git call: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
+    }
+  },
+  "src/service/resources/tmux.rs": {
+    "production run_captured(tmux_target::remaining(deadline)?": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "Inventory shares one absolute deadline derived from subprocess_bound(TMUX_TIMEOUT) across ownership inspection and tmux; this call receives only its remaining allowance."
+    },
+    "production run_captured_cancellable(timeout": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The conflict-hold probe derives deadline from subprocess_bound(TMUX_TIMEOUT) once, then uses tmux_target::remaining(deadline) after ownership inspection. Both stages retain the caller's cancellation token."
+    }
+  },
+  "src/service/tmux_target.rs": {
+    "production run_captured_cancellable(remaining(deadline)?": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The resource or engine caller supplies one absolute deadline derived from subprocess_bound(TMUX_TIMEOUT), further capped by a restart sweep when applicable. The ownership bridge spends that allowance without renewing it."
     }
   },
   "src/service/workspace_lock.rs": {

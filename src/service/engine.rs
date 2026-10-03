@@ -15,6 +15,8 @@ pub(crate) use dispatch_quiescence::card_reset_dispatching;
 #[cfg(test)]
 mod restart_probe_tests;
 #[cfg(test)]
+mod revivify_tests;
+#[cfg(test)]
 mod tmux_grace_tests;
 
 use std::collections::BTreeSet;
@@ -821,23 +823,50 @@ impl ShellDispatcher {
 impl ShellDispatcher {
     /// The window census on the server this dispatcher's lanes live on.
     fn shell_census(&self) -> WindowCensus {
-        crate::lane_budget::census_through(self.tmux(), self.tmux_bound())
+        let deadline = Instant::now() + self.tmux_bound();
+        let prepared = (|| {
+            let target =
+                super::tmux_target::inspect(&self.env, None, deadline, &Default::default())?;
+            let mut command = self.tmux();
+            target.apply(&mut command, None);
+            Ok::<_, AppError>((command, super::tmux_target::remaining(deadline)?))
+        })();
+        match prepared {
+            Ok((command, timeout)) => crate::lane_budget::census_through(command, timeout),
+            Err(error) => WindowCensus::Unanswered {
+                detail: error.to_string(),
+            },
+        }
     }
 }
 
 impl ShellDispatcher {
     fn probe_window_at(&self, window: &str, socket: Option<&Path>) -> WindowProbe {
-        let mut command = self.tmux();
-        if let Some(socket) = socket {
-            command.arg("-S").arg(socket);
-        }
-        command.args(["display-message", "-p", "-t", window, WINDOW_PROBE_FORMAT]);
         let budget = self.probe_budget();
-        let timeout = match budget.timeout_at(Instant::now()) {
+        let started = Instant::now();
+        let timeout = match budget.timeout_at(started) {
             Ok(timeout) => timeout,
             Err(detail) => {
                 return WindowProbe::Unanswered {
                     detail: format!("{window}: {detail}"),
+                };
+            }
+        };
+        let deadline = started + timeout;
+        let prepared = (|| {
+            let target =
+                super::tmux_target::inspect(&self.env, socket, deadline, &Default::default())?;
+            target.require_binding()?;
+            let mut command = self.tmux();
+            target.apply(&mut command, socket);
+            command.args(["display-message", "-p", "-t", window, WINDOW_PROBE_FORMAT]);
+            Ok::<_, AppError>((command, target, super::tmux_target::remaining(deadline)?))
+        })();
+        let (command, target, timeout) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return WindowProbe::Unanswered {
+                    detail: format!("{window}: {error}"),
                 };
             }
         };
@@ -868,7 +897,7 @@ impl ShellDispatcher {
             let stderr = String::from_utf8_lossy(&captured.stderr).trim().to_string();
             // tmux exits 1 both for "no such target" and for anything else
             // that went wrong; only its own vocabulary separates the two.
-            return if tmux_reports_a_missing_target(&stderr) {
+            return if !target.protected && tmux_reports_a_missing_target(&stderr) {
                 WindowProbe::Gone {
                     detail: format!("tmux cannot find `{window}`: {stderr}"),
                 }
@@ -1027,7 +1056,7 @@ impl Dispatcher for ShellDispatcher {
 
     fn probe_lane(&self, lane: &EngineLaneRecord, window: &str) -> WindowProbe {
         if lane.adopted_identity.is_some() {
-            return adoption::probe(lane, self.probe_budget(), &self.tmux_program);
+            return adoption::probe(lane, self.probe_budget(), &self.tmux_program, &self.env);
         }
         self.probe_window_at(
             window,
@@ -1038,9 +1067,13 @@ impl Dispatcher for ShellDispatcher {
     }
 
     fn kill_window(&self, window: &str) -> Result<(), AppError> {
+        let deadline = Instant::now() + self.tmux_bound();
+        let target = super::tmux_target::inspect(&self.env, None, deadline, &Default::default())?;
+        target.require_binding()?;
         let mut command = self.tmux();
+        target.apply(&mut command, None);
         command.args(["kill-window", "-t", window]);
-        let bound = self.tmux_bound();
+        let bound = super::tmux_target::remaining(deadline)?;
         match run_captured(command, bound) {
             Ok(captured) if captured.status.success() => Ok(()),
             Ok(captured) => {

@@ -38,6 +38,7 @@ use crate::store::{EngineLaneRecord, Store};
 use std::process::Command;
 
 use super::{Dispatcher, EngineService, RunId, RunView, TMUX_TIMEOUT, TmuxBudget, WindowProbe};
+use crate::service::tmux_target::{self, Target};
 
 /// The production inspector, with no mutating subprocess operations.
 pub struct LiveDispatchInspector {
@@ -61,11 +62,15 @@ fn capture(
     args: &[&str],
     context: &str,
     budget: TmuxBudget,
+    deadline: Option<Instant>,
 ) -> Result<String, AppError> {
     command.args(args);
-    let timeout = budget
+    let mut timeout = budget
         .timeout_at(Instant::now())
         .map_err(|detail| refusal(format!("{context}: {detail}")))?;
+    if let Some(deadline) = deadline {
+        timeout = timeout.min(tmux_target::remaining(deadline)?);
+    }
     let captured = run_captured(command, timeout).map_err(|error| {
         let budget = if budget.is_shared() {
             format!(" (remaining startup probe budget: {timeout:?})")
@@ -97,6 +102,7 @@ impl DispatchInspector for LiveDispatchInspector {
             &["worktree", "list", "--porcelain", "-z"],
             "list registered worktrees",
             budget,
+            None,
         )?;
         let mut matching = Vec::new();
         for path in inventory
@@ -132,24 +138,45 @@ impl DispatchInspector for LiveDispatchInspector {
         {
             return Err(refusal(format!("{story}: repository mismatch")));
         }
-        inspect_lease(lease, budget, OsStr::new("tmux"))
+        let (target, deadline) = inspect_target(&self.env, &lease, budget)?;
+        let listing = list_panes(&lease, budget, OsStr::new("tmux"), &target, deadline)?;
+        inspect_lease(lease, &listing)
     }
 }
 
-fn tmux(lease: &StoryCleanupLease, program: &OsStr) -> Command {
+fn tmux(lease: &StoryCleanupLease, program: &OsStr, target: &Target) -> Command {
     let mut command = Command::new(program);
     crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
-    command.arg("-S").arg(&lease.tmux.socket_path);
+    target.apply(&mut command, Some(&lease.tmux.socket_path));
     command
 }
 
-fn inspect_lease(
-    lease: StoryCleanupLease,
+fn inspect_target(
+    env: &Environment,
+    lease: &StoryCleanupLease,
+    budget: TmuxBudget,
+) -> Result<(Target, Instant), AppError> {
+    let now = Instant::now();
+    let deadline = now + budget.timeout_at(now).map_err(refusal)?;
+    let target = tmux_target::inspect(
+        env,
+        Some(&lease.tmux.socket_path),
+        deadline,
+        &Default::default(),
+    )?;
+    target.require_binding()?;
+    Ok((target, deadline))
+}
+
+fn list_panes(
+    lease: &StoryCleanupLease,
     budget: TmuxBudget,
     program: &OsStr,
-) -> Result<InspectedDispatch, AppError> {
-    let listing = capture(
-        tmux(&lease, program),
+    target: &Target,
+    deadline: Instant,
+) -> Result<String, AppError> {
+    capture(
+        tmux(lease, program, target),
         &[
             "list-panes",
             "-a",
@@ -158,7 +185,11 @@ fn inspect_lease(
         ],
         "inspect leased tmux server",
         budget,
-    )?;
+        Some(deadline),
+    )
+}
+
+fn inspect_lease(lease: StoryCleanupLease, listing: &str) -> Result<InspectedDispatch, AppError> {
     let rows: Vec<Vec<&str>> = listing
         .lines()
         .map(|line| line.split('\t').collect::<Vec<_>>())
@@ -240,19 +271,43 @@ fn inspect_lease(
 }
 
 /// Observes an adopted process on its captured server, never an ambient server.
-pub(super) fn probe(lane: &EngineLaneRecord, budget: TmuxBudget, program: &OsStr) -> WindowProbe {
+pub(super) fn probe(
+    lane: &EngineLaneRecord,
+    budget: TmuxBudget,
+    program: &OsStr,
+    env: &Environment,
+) -> WindowProbe {
     let Some(lease) = lane.cleanup_lease.clone() else {
         return WindowProbe::Unanswered {
             detail: "adopted lane lost cleanup lease".into(),
         };
     };
-    match inspect_lease(lease, budget, program) {
+    let (target, deadline) = match inspect_target(env, &lease, budget) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return WindowProbe::Unanswered {
+                detail: error.to_string(),
+            };
+        }
+    };
+    let listing = match list_panes(&lease, budget, program, &target, deadline) {
+        Ok(listing) => listing,
+        Err(error) => {
+            let detail = error.to_string();
+            return if !target.protected && super::tmux_reports_a_missing_target(&detail) {
+                WindowProbe::Gone { detail }
+            } else {
+                WindowProbe::Unanswered { detail }
+            };
+        }
+    };
+    match inspect_lease(lease, &listing) {
         Ok(found)
             if lane.pane_id.as_deref() == Some(&found.pane_id)
                 && lane.adopted_identity.as_ref() == Some(&found.identity) =>
         {
             let activity = capture(
-                tmux(&found.lease, program),
+                tmux(&found.lease, program, &target),
                 &[
                     "display-message",
                     "-p",
@@ -262,6 +317,7 @@ pub(super) fn probe(lane: &EngineLaneRecord, budget: TmuxBudget, program: &OsStr
                 ],
                 "read pane activity",
                 budget,
+                Some(deadline),
             );
             match activity {
                 Ok(at) => WindowProbe::Alive {
@@ -280,7 +336,6 @@ pub(super) fn probe(lane: &EngineLaneRecord, budget: TmuxBudget, program: &OsStr
             if detail.contains("process is dead")
                 || detail.contains("no longer runs")
                 || detail.contains("found 0")
-                || super::tmux_reports_a_missing_target(&detail)
             {
                 WindowProbe::Gone { detail }
             } else {

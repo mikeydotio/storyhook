@@ -6,17 +6,25 @@ use std::fs;
 use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
 
 #[cfg(test)]
+/// Private activation records and explicitly owned disposable test servers.
 pub(crate) struct Fixture {
+    /// The fixture's disposable home and state root.
     pub(crate) root: tempfile::TempDir,
+    /// Isolated selectors and declared subprocess patience.
     pub(crate) env: Environment,
+    /// The logical public socket, which may name a foreign server.
     pub(crate) socket: PathBuf,
+    /// The generation's never-reused private endpoint.
     pub(crate) endpoint: PathBuf,
+    /// RV-10's canonical discovery record location.
     pub(crate) activation: PathBuf,
+    /// The active record and default inspection answer.
     pub(crate) record: Value,
     servers: Vec<PathBuf>,
 }
 
 impl Fixture {
+    /// Create a protected registration without starting a tmux server.
     pub(crate) fn new() -> Self {
         let root = storyhook_test_support::scratch_dir();
         let home = root.path().canonicalize().unwrap();
@@ -61,6 +69,7 @@ print((home / 'report.json').read_text())
         }
     }
 
+    /// One observation's graced test deadline.
     pub(crate) fn deadline(&self) -> Instant {
         Instant::now()
             + self
@@ -125,6 +134,7 @@ impl Drop for Fixture {
     }
 }
 
+/// Publish a fixture-owned JSON record with RV-10's required permissions.
 pub(crate) fn private_json(path: &Path, value: &Value) {
     fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();

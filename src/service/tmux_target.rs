@@ -21,6 +21,7 @@ try:
     with operation(float(sys.argv[2])):
         target = resolve_target(sys.argv[1] or None, os.environ, run,
                                 client_environment(os.environ))
+        target['requested_socket'] = logical_socket(sys.argv[1] or None, os.environ)
         print(json.dumps(target))
 except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
     print(str(error), file=sys.stderr)
@@ -38,9 +39,24 @@ pub(crate) struct Target {
     pub(crate) socket: PathBuf,
     /// The private generation endpoint, or the unmanaged logical socket.
     pub(crate) endpoint: PathBuf,
+    /// Canonical selection before discovery; a logical name is not a binding.
+    requested_socket: PathBuf,
 }
 
 impl Target {
+    /// A captured numeric identity cannot follow discovery to another endpoint.
+    /// Restore-specific adoption is the only authority to update that binding.
+    pub(crate) fn require_binding(&self) -> Result<(), AppError> {
+        if self.protected && self.requested_socket != self.endpoint {
+            return Err(AppError::Validation(format!(
+                "protected tmux identity on {} requires re-adoption before using {}",
+                self.requested_socket.display(),
+                self.endpoint.display()
+            )));
+        }
+        Ok(())
+    }
+
     /// Pin a protected client without permitting tmux to start a replacement.
     /// An unmanaged caller retains its original socket selection conventions.
     pub(crate) fn apply(&self, command: &mut Command, socket: Option<&Path>) {
