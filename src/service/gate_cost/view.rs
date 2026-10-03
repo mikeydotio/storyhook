@@ -41,6 +41,9 @@ pub struct EvidenceView {
     pub attempts: Vec<GateAttempt>,
     /// Distinct submission generations; replacements do not erase history.
     pub submissions: Vec<SubmissionCost>,
+    /// Causal observations for this story, including retired generations; absent legacy data is unknown.
+    #[serde(default)]
+    pub attributions: Vec<crate::service::attribution::AttributionRecord>,
 }
 
 impl EvidenceView {
@@ -76,7 +79,20 @@ impl EvidenceView {
             story_id: story_id.into(),
             attempts,
             submissions,
+            attributions: Vec::new(),
         }
+    }
+
+    /// Attach this story's causal history from the same project snapshot as its costs.
+    pub fn with_attributions(
+        mut self,
+        records: Vec<crate::service::attribution::AttributionRecord>,
+    ) -> Self {
+        self.attributions = records
+            .into_iter()
+            .filter(|r| r.submission.story_id == self.story_id)
+            .collect();
+        self
     }
 
     /// Renders separate test and budget outcomes, with unavailable values named.
@@ -115,6 +131,9 @@ impl EvidenceView {
         if self.attempts.is_empty() {
             output.push_str("\nNo retained admission evidence.\n");
         }
+        output.push_str(&crate::service::attribution::render_evidence(
+            &self.attributions,
+        ));
         output
     }
 }

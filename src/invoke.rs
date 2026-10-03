@@ -1064,15 +1064,19 @@ fn dispatch_verifier<S: Store>(
     let recovery = crate::service::project_recovery::ProjectRecoveryService::new(ctx);
     match &action {
         VerifierAction::Evidence { story_id } => {
-            let attempts = ctx.store().read(|tx| {
+            let (attempts, attributions) = ctx.store().read(|tx| {
                 let project = tx.project(ctx.project())?.ok_or_else(|| {
                     crate::store::StoreError::NotFound("selected project no longer exists".into())
                 })?;
                 crate::store::StoryNo::parse_id(&project.prefix, story_id)?;
-                tx.gate_attempts(ctx.project())
+                Ok((
+                    tx.gate_attempts(ctx.project())?,
+                    tx.attributions(ctx.project())?,
+                ))
             })?;
             return Ok(Response::GateEvidence(Box::new(
-                crate::service::gate_cost::view::EvidenceView::new(story_id, attempts),
+                crate::service::gate_cost::view::EvidenceView::new(story_id, attempts)
+                    .with_attributions(attributions),
             )));
         }
         VerifierAction::RepairShow { recovery_id } => {
