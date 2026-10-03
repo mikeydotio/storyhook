@@ -517,6 +517,21 @@ assert_contains() {
   esac
 }
 
+# assert_ok <answer> <expected> <label> — assert a helper answer's top-level
+# `.ok`. `.ok` says only THAT a verb refused; the answer's `reason` and
+# `display` say WHY, and a gate log is the only evidence a load-dependent
+# failure leaves behind. So a mismatch prints the WHOLE answer, raw, whatever it
+# is -- JSON, a crash, nothing (SH-840: test-unclaim.sh answered ok:false once
+# under gate load, and nothing else it said survived). Like assert_eq, it always
+# returns 0, and an answer jq cannot read never trips a caller's `set -e`.
+assert_ok() {
+  local actual
+  actual=$(jqf "$1" .ok) || :
+  if [ "$actual" != "$2" ]; then
+    fail_test "$3 — expected [$2], got [$actual] — answer: [$1]"
+  fi
+}
+
 # router_verbs <story.sh> — derive the helper's accepted verb vocabulary from
 # its top-level router. Keep every structural inventory on this one parser so
 # a new arm cannot require several hand-list edits to remain covered.
