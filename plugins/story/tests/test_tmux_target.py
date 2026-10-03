@@ -333,6 +333,25 @@ class TargetTests(unittest.TestCase):
         self.lifecycle(action)
         self.assertEqual(sum(call[0] == str(self.executable) for call in self.calls), 1)
 
+    def test_explicit_ensure_is_once_per_operation_and_preserves_read_only_default(self):
+        def action():
+            with tmux_client.operation():
+                inspected = tmux_client.client(self.socket)
+                ensured = tmux_client.client(self.socket, ensure=True)
+                self.assertEqual(inspected.target, ensured.target)
+                self.assertIs(tmux_client.client(self.endpoint, ensure=True), ensured)
+                self.assertIs(tmux_client.client(self.socket), ensured)
+        self.lifecycle(action)
+        self.assertEqual([call[1:3] for call in self.calls], [['server','inspect'],['server','ensure']])
+
+    def test_ensure_cannot_change_an_already_captured_generation(self):
+        target = dict(protected=True, socket=self.socket, endpoint=self.endpoint, generation='a'*32)
+        changed = dict(target, endpoint='/changed', generation='b'*32)
+        with patch.object(tmux_client, 'resolve_target', side_effect=[target, changed]), tmux_client.operation():
+            tmux_client.client(self.socket)
+            with self.assertRaisesRegex(RuntimeError, 'generation changed'):
+                tmux_client.client(self.socket, ensure=True)
+
     def test_identity_rejects_a_foreign_reported_socket(self):
         row = f"SH-1\t%7\t123\t0\t{self.root}\tcodex\tcodex\t/foreign/socket\n"
         with self.assertRaisesRegex(RuntimeError, 'foreign socket'):

@@ -28,11 +28,12 @@ def operation(budget=probe_budget.BUDGET_SECONDS):
 class Client:
     """A checked transport target; numeric identity still needs a current binding."""
 
-    def __init__(self, socket):
-        """Inspect persistent ownership without starting or restoring a server."""
+    def __init__(self, socket, ensure=False):
+        """Inspect ownership; only explicit reconciliation may ensure readiness."""
         self.environment = os.environ.copy()
+        self.ensured = ensure
         self.target = resolve_target(socket, self.environment, probe_budget.run,
-                                     client_environment(self.environment))
+                                     client_environment(self.environment), ensure=ensure)
 
     def require_binding(self, socket):
         """Reject saved numeric identities that would follow another generation."""
@@ -55,13 +56,13 @@ class Client:
         return self.target['endpoint']
 
 
-def client(socket=None):
+def client(socket=None, ensure=False):
     """Reuse this operation's target, never cache discovery across operations."""
     selected = logical_socket(socket, os.environ)
     cache = _clients.get()
-    if cache is not None and selected in cache:
+    if cache is not None and selected in cache and (not ensure or cache[selected].ensured):
         return cache[selected]
-    found = Client(socket)
+    found = Client(socket, ensure=ensure)
     if cache is not None:
         target = found.target
         existing = cache.get(target['socket'])
