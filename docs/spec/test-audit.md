@@ -633,6 +633,43 @@ contract and diff checks passed. No product motion or geometry assertion changed
 Logs: `.storyhook/logs/sh812-resumed/sh812-settle-*`; diagnostic probes are
 retained there too. Fresh matched measurements are still required.
 
+**Seventh measurement, 2026-10-03 UTC.** Source `2fa059c0` used the same
+1,518 selected tests and sixteen slices in both snapshots. Both binaries had
+SHA-256 `2e0f0209a99da04980c9477f36a6c5a5014e50cb86a9cf52bb77e17f6f320d3e`.
+
+| Observation | Wall seconds | Mean / maximum load | Result |
+|---|---:|---:|---|
+| Optimized warm-up | 1,750.140 | 100.560 / 141.907 | Passed; 253 duration records promoted |
+| Baseline 1 | 1,079.404 | 72.557 / 133.440 | Passed |
+| Optimized 1 | 467.205 before interruption | 72.826 / 105.889 | Dispatch-notice assertion failed; parent stopped with TERM |
+
+Warm-up and baseline each reported 1,502 passes, one declared expected failure
+and 15 configured skips, without retries. All 1,518 individual identities and
+outcomes match after excluding Playwright's trailing display duration.
+The scratch analyzer needs to strip `m`, `h` and `d` as well as `ms` and `s`;
+the installed formatter uses all five units. Raw logs remain unchanged.
+Baseline discovery cost 41 aggregate seconds (median one, maximum seven per
+slice); its longest slice was 816 seconds. These observations do not establish
+a speedup: no successful optimized comparison arm completed.
+
+The new WebKit failure is in `dispatch.spec.ts:341`, within the real autonomous
+dispatch case declared at line 298. Visibility and the exact success-text
+assertion passed, then `not.toContainText(/utonomous/)` found no success toast
+for its full 41,140 ms budget. The negative assertion started about 2.64 seconds
+after the exact-text assertion began. Diagnose the notice's lifetime and
+observation boundary before changing the test. Preserve real dispatch, exact
+wording, provider parameters and owned-resource checks; absence must not become
+proof of correct wording. This prerequisite is adopted and remains assigned.
+
+Live slice `3.log` and the failure trace were copied before normal TERM cleanup.
+Both baseline and interrupted optimized execution left successful history
+unchanged. The driver stopped before the second pair, and no benchmark process
+remains. Evidence, load samples, manifests, histories and scripts are retained
+in `/tmp/sh812-v7-bench/` and `.storyhook/logs/sh812-performance-v7/`. The trace
+is under `optimized1-live-diagnostics/dispatch-Auto-mode-sends-a-80371-ous-dispatch-SH-208-SH-517--webkit/`.
+After the regression repair, refresh both snapshots and finish the approved
+successful warm-up and two comparable pairs. Performance acceptance remains open.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The
