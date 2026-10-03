@@ -12,7 +12,7 @@ interface FileObservation {
   count: number;
   /** Results delivered, including deliberate skips. */
   completed: number;
-  /** Results that passed on their first attempt. */
+  /** Non-skipped results matching the declared expected status. */
   passed: number;
   /** Deliberately skipped tests, never timing observations. */
   skipped: number;
@@ -69,7 +69,7 @@ export default class SliceReporter implements Reporter {
       const row = this.files.get(this.identity(test)[2]);
       if (!row) throw new Error(`result absent from discovered selection: ${test.title}`);
       row.completed++;
-      row.passed += result.status === "passed" ? 1 : 0;
+      row.passed += result.status !== "skipped" && result.status === test.expectedStatus ? 1 : 0;
       row.skipped += result.status === "skipped" ? 1 : 0;
       row.retries += result.retry > 0 ? 1 : 0;
       row.seconds += result.duration / 1000;
@@ -80,7 +80,7 @@ export default class SliceReporter implements Reporter {
   }
 
   /** Atomically publish completion; a missing receipt is independently refused. */
-  onEnd(result: FullResult): { status?: FullResult["status"] } | void {
+  async onEnd(result: FullResult): Promise<{ status?: FullResult["status"] } | void> {
     if (!this.output) return;
     try {
       const status = this.errors.length ? "failed" : result.status;

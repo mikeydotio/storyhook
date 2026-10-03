@@ -250,6 +250,26 @@ class ReporterTests(Fixture):
         self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertNotEqual(self.helper("validate", report, expected).returncode, 0)
 
+    def test_expected_failure_is_successful_and_cacheable(self):
+        """A declared failure that occurs is a successful Playwright proof."""
+        out, report, expected = self.run_suite(
+            "test('expected failure', async () => {test.fail(); expect(1).toBe(2)});")
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.helper("validate", report, expected).returncode, 0)
+        self.assertEqual(json.loads(report.read_text())["files"][0]["passed"], 1)
+        self.helper("merge", self.cache, report)
+        self.assertTrue(self.cache.exists())
+
+    def test_unexpected_pass_is_not_successful_or_cacheable(self):
+        """Passing a declared failure cannot count as an accepted observation."""
+        out, report, expected = self.run_suite(
+            "test('unexpected pass', async () => {test.fail(); expect(1).toBe(1)});")
+        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertNotEqual(self.helper("validate", report, expected).returncode, 0)
+        self.assertEqual(json.loads(report.read_text())["files"][0]["passed"], 0)
+        self.helper("merge", self.cache, report)
+        self.assertFalse(self.cache.exists())
+
     def test_load_error_and_test_failure_remain_failures(self):
         """No empty/failed discovery may become a successful receipt."""
         for body in ["throw new Error('fixture load failure')", "test('fail', async () => {expect(1).toBe(2)});"]:

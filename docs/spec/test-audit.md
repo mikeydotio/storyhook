@@ -334,6 +334,9 @@ Playwright test durations in seconds. The shell independently requires a
 successful receipt matching its manifest: Playwright swallows exceptions thrown
 by reporters, so reporter presence alone is insufficient evidence. This also
 refuses a caller's reporter override if it suppresses the required receipt.
+The receipt's `passed` count includes non-skipped outcomes that match
+Playwright's declared `expectedStatus`, including intentional `test.fail()`
+proofs. Unexpected passes and failures are not successful observations.
 
 Planner-owned slices reuse the outer selection and omit the second Playwright
 listing. Caller-supplied shards/test-lists retain their per-project listing.
