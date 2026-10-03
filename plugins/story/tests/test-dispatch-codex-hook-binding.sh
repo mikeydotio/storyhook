@@ -33,37 +33,37 @@ state_of() {
 }
 
 dispatch_case missing "" --auto
-assert_eq "$(jqf "$out" .ok)" "false" "missing hook: autonomous dispatch refuses"
+assert_ok "$out" "false" "missing hook: autonomous dispatch refuses"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
   "missing hook: absence has a distinct readiness reason"
 assert_eq "$(state_of)" "todo" "missing hook: claim rolls back"
 
 dispatch_case malformed "" --auto
-assert_eq "$(jqf "$out" .ok)" false "malformed sentinel: autonomous dispatch refuses"
+assert_ok "$out" false "malformed sentinel: autonomous dispatch refuses"
 assert_eq "$(jqf "$out" .wait_ready_reason)" hook-identity-missing "malformed sentinel cannot establish identity"
 assert_eq "$(state_of)" todo "malformed sentinel: confirmed cleanup releases claim"
 
 dispatch_case legacy "" --auto
-assert_eq "$(jqf "$out" .ok)" "false" "legacy sentinel: autonomous dispatch refuses"
+assert_ok "$out" "false" "legacy sentinel: autonomous dispatch refuses"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "hook-identity-missing" \
   "legacy sentinel: missing package identity is explicit"
 assert_eq "$(state_of)" "todo" "legacy sentinel: claim rolls back"
 
 dispatch_case identity /wrong/storyhook/plugin --auto
-assert_eq "$(jqf "$out" .ok)" "false" "wrong hook: autonomous dispatch refuses"
+assert_ok "$out" "false" "wrong hook: autonomous dispatch refuses"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "hook-identity-mismatch" \
   "wrong hook: package mismatch is explicit"
 assert_eq "$(state_of)" "todo" "wrong hook: claim rolls back"
 
 dispatch_case identity "$PLUGIN_ROOT" --auto
-assert_eq "$(jqf "$out" .ok)" "true" "exact hook: Auto dispatch succeeds"
+assert_ok "$out" "true" "exact hook: Auto dispatch succeeds"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "exact hook: readiness confirms"
 
 dispatch_case identity "$PLUGIN_ROOT" "--auto --full-auto"
-assert_eq "$(jqf "$out" .ok)" "true" "exact hook: Full Auto dispatch succeeds"
+assert_ok "$out" "true" "exact hook: Full Auto dispatch succeeds"
 
 dispatch_case missing "" ""
-assert_eq "$(jqf "$out" .ok)" "true" "attended Codex remains screen-gated"
+assert_ok "$out" "true" "attended Codex remains screen-gated"
 [ ! -e "$RUN_REPO/.codex/worktrees/$RUN_ID/.claude/dispatch-sentinel.json" ] \
   || fail_test "attended Codex unexpectedly published a sentinel"
 

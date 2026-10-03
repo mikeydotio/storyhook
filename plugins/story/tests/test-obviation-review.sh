@@ -8,17 +8,17 @@ candidate=$(new_story "$repo" "Candidate")
 (cd "$repo" && story move "$candidate" in-progress >/dev/null)
 
 out=$(cd "$repo" && bash "$SCRIPT" context --story "$id")
-assert_eq "$(jqf "$out" .ok)" true "story context succeeds"
+assert_ok "$out" true "story context succeeds"
 assert_contains "$(jqf "$out" .display)" "Obviation review" "review is rendered"
 assert_contains "$(jqf "$out" .display)" "$candidate" "candidate survives helper"
 out=$(cd "$repo" && bash "$SCRIPT" context --full --story "$id")
-assert_eq "$(jqf "$out" .ok)" true "story and full compose"
+assert_ok "$out" true "story and full compose"
 assert_contains "$(jqf "$out" .display)" "Critical path" "full survives"
 out=$(cd "$repo" && bash "$SCRIPT" context --story SH-999999)
-assert_eq "$(jqf "$out" .ok)" false "missing target is a failure"
+assert_ok "$out" false "missing target is a failure"
 assert_contains "$(jqf "$out" .display)" "SH-999999" "failure retains context"
 out=$(cd "$repo" && bash "$SCRIPT" context --story)
-assert_eq "$(jqf "$out" .ok)" false "missing flag value is a failure"
+assert_ok "$out" false "missing flag value is a failure"
 
 for agent in claude codex; do
   for mode in attended council solo; do

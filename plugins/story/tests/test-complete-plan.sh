@@ -12,7 +12,7 @@ repo=$(mk_story_repo)
 id=$(new_story "$repo" "Cleanup me")
 w=$(mk_dispatched "$repo" "$id")
 out=$(cd "$repo" && bash "$SCRIPT" complete plan "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "plan: ok"
+assert_ok "$out" "true" "plan: ok"
 assert_eq "$(jqf "$out" .plan.worktree.status)" "removable" "plan: clean worktree is removable"
 assert_eq "$(jqf "$out" .plan.branch.status)" "deletable" "plan: merged branch is deletable"
 assert_eq "$(jqf "$out" .plan.close.to)" "done" "plan: resolves the CLOSED state from states.toml"
@@ -116,7 +116,7 @@ assert_eq "$(jqf "$out" '.display | test("origin/HEAD cache")')" "false" "plan: 
 # origin unreachable: the read-only preview keeps working on the cache, and says so
 git -C "$repo" remote set-url origin /nonexistent/storyhook-origin.git
 out=$(cd "$repo" && bash "$SCRIPT" complete plan "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "plan: still previews offline"
+assert_ok "$out" "true" "plan: still previews offline"
 assert_eq "$(jqf "$out" .default_branch)" "main" "plan: offline, the cached default is used"
 assert_eq "$(jqf "$out" .default_branch_source)" "cache" "plan: …and reported as the cache"
 assert_contains "$(jqf "$out" .display)" "git remote set-head origin -a" "plan: the display names the remedy"
@@ -124,7 +124,7 @@ assert_contains "$(jqf "$out" .display)" "did not answer" "plan: the display car
 # neither origin nor cache: refused, never a literal
 git -C "$repo" remote set-head origin --delete
 out=$(cd "$repo" && bash "$SCRIPT" complete plan "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "plan: with no origin answer and no cache there is no default to plan against"
+assert_ok "$out" "false" "plan: with no origin answer and no cache there is no default to plan against"
 assert_contains "$(jqf "$out" .display)" "cannot establish origin's default branch" "plan: …and says why"
 git -C "$repo" remote set-url origin "$origin"
 git -C "$repo" remote set-head origin main
@@ -132,9 +132,9 @@ git --git-dir="$origin" symbolic-ref HEAD refs/heads/main
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" complete plan "TST-9999" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "plan: unknown story is ok:false"
+assert_ok "$out" "false" "plan: unknown story is ok:false"
 out=$(cd "$repo" && bash "$SCRIPT" complete plan 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "plan: missing id is ok:false"
+assert_ok "$out" "false" "plan: missing id is ok:false"
 out=$(cd "$repo" && bash "$SCRIPT" complete plan "bad id!" 2>&1)
 assert_contains "$(jqf "$out" .display)" "alphanumeric" "plan: invalid id is rejected"
 out=$(cd "$repo" && bash "$SCRIPT" complete bogus "$id" 2>&1)

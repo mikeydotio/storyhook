@@ -129,11 +129,11 @@ repo=$(mk_story_repo)
 cd "$repo" || exit 1
 printf 'A report about installed files\n' > "$repo/report.md"
 out=$(bash "$1" create --title 'Guard fixture' --description-file "$repo/report.md" --type bug --priority medium)
-assert_eq "$(jqf "$out" .ok)" true 'real create'
+assert_ok "$out" true 'real create'
 id=$(jqf "$out" .id)
 story claim "$id" --no-comment >/dev/null || fail_test claim
 out=$(bash "$1" unclaim "$id" --no-comment)
-assert_eq "$(jqf "$out" .ok)" true "real unclaim: $out"
+assert_ok "$out" true "real unclaim: $out"
 assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" todo 'unclaim persisted'
 wname=$(wname_for "$repo" "$id")
 git worktree add -q --no-track -b "worktree-$wname" ".claude/worktrees/$wname" HEAD || exit 1
@@ -161,7 +161,7 @@ for container in redirect/storyhook "../$(basename "$repo")/redirect/storyhook";
   rm "$FAKE_TMUX_STATE/resource_delay"
 done
 out=$(bash "$1" reset "$id" --force --no-comment)
-assert_eq "$(jqf "$out" .ok)" true 'real reset'
+assert_ok "$out" true 'real reset'
 [ ! -d "$repo/.claude/worktrees/$wname" ] || fail_test 'worktree survived reset'
 git show-ref --verify --quiet "refs/heads/worktree-$wname" && fail_test 'branch survived reset'
 assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" todo 'reset persisted'

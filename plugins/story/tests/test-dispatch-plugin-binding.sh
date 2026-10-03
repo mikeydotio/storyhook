@@ -69,7 +69,7 @@ wrong_out=$(
       STORY_LAUNCH_CMD="claude --plugin-dir '/tmp/not-storyhook' --permission-mode plan" \
       bash "$SCRIPT" dispatch "$wrong_id" --auto 2>&1
 )
-assert_eq "$(jqf "$wrong_out" .ok)" "false" \
+assert_ok "$wrong_out" "false" \
   "wrong binding: a different plugin root cannot publish StoryHook readiness"
 assert_eq "$(jqf "$wrong_out" .wait_ready_reason)" "no-sentinel" \
   "wrong binding: failure remains the missing StoryHook SessionStart witness"

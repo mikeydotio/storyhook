@@ -32,7 +32,7 @@ repo=$(mk_story_repo)
 id=$(new_story "$repo" "Ready story for real dispatch")
 
 out=$(dispatch_real "$repo" "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "happy: ok:true"
+assert_ok "$out" "true" "happy: ok:true"
 assert_eq "$(jqf "$out" .claimed)" "true" "happy: claimed:true"
 assert_eq "$(jqf "$out" .state)" "in-progress" "happy: state is in-progress"
 assert_eq "$(jqf "$out" .window_name)" "$id" "happy: window name is the bare story id"

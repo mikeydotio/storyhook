@@ -31,11 +31,11 @@ gitdir=$(cd "$path" && git rev-parse --absolute-git-dir)
 jq -nc --arg project "$slug" --arg id "$id" --arg repo "$repo_real" --arg path "$path_real" --arg socket "$owner" \
   '{version:1,project_slug:$project,story_id:$id,repository_path:$repo,worktree_path:$path,branch:("worktree-"+$id),tmux:{socket_path:$socket}}' > "$gitdir/storyhook-cleanup-lease-v1.json"
 out=$(cd "$repo" && TMUX="$caller,0,0" TMUX_PANE="$caller_pane" STORY_AGENT=unsupported bash "$SCRIPT" capture "$id")
-assert_eq "$(jqf "$out" .ok)" true "recorded socket: capture succeeds"
+assert_ok "$out" true "recorded socket: capture succeeds"
 assert_contains "$(jqf "$out" .transcript)" "owned transcript" "recorded socket: captures owner"
 out=$(cd "$repo" && TMUX="$caller,0,0" TMUX_PANE="$caller_pane" STORY_AGENT=claude bash "$SCRIPT" reset "$id")
 if [ "$(jqf "$out" .ok)" != true ]; then printf '%s\n' "$out"; fi
-assert_eq "$(jqf "$out" .ok)" true "recorded socket: reset succeeds despite identical caller pane ID"
+assert_ok "$out" true "recorded socket: reset succeeds despite identical caller pane ID"
 [ ! -e "$path" ] || fail_test "recorded socket: worktree survived"
 tmux -S "$caller" has-session -t caller || fail_test "recorded socket: unrelated caller server was touched"
 finish

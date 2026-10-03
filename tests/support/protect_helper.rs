@@ -293,7 +293,7 @@ export STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0
 export FAKE_TMUX_CAPTURE=marker
 out=$(bash "$1" dispatch "$id" --agent=claude)
 tmux kill-window -t "$id"
-assert_eq "$(jqf "$out" .ok)" true "installed dispatch succeeds"
+assert_ok "$out" true "installed dispatch succeeds"
 assert_eq "$(jqf "$out" .claimed)" true "installed dispatch claims"
 assert_eq "$(jqf "$out" .prompt_confirmed)" true "prompt was delivered"
 [ -d "$repo/.claude/worktrees/$id" ] || fail_test "missing worktree"

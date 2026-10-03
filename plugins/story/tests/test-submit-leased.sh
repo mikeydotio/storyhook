@@ -195,7 +195,7 @@ out=$(submit PATH="$FAKE_GH_STATE/git-bin:$VERIFYING_PATH" SH725_EXPECT_AUTH=1);
 assert_eq "$(cat "$FAKE_GH_STATE/transports")" $'default\nfetch\nbefore\npush\nafter' \
   "every network operation uses the credential boundary"
 assert_eq "$status" "0" "submit succeeds: $out"
-assert_eq "$(jqf "$out" .ok)" "true" "the receipt is ok"
+assert_ok "$out" "true" "the receipt is ok"
 assert_eq "$(jqf "$out" .receipt_version)" "1" "the receipt carries the lease version"
 assert_eq "$(jqf "$out" .story_id)" "$id" "the receipt echoes the story"
 assert_eq "$(printf '%s' "$out" | jq -r --argjson l "$lease" '.lease == $l')" "true" "the receipt echoes the exact lease"

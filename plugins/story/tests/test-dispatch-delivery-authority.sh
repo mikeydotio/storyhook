@@ -53,7 +53,7 @@ for mode in fresh force resume next; do
     REVOCATION_CALLED="$endpoint_root/$mode" TMUX="fake,0,0" TMUX_PANE=%0 \
     STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 STORY_CONFIRM_DELAY=0 \
     STORY_PASTE_SETTLE_DELAY=0 STORY_COUNCIL=off bash "$SCRIPT" dispatch "${args[@]}" 2>&1)
-  assert_eq "$(jqf "$out" .ok)" false "$mode refuses malformed durable receipt"
+  assert_ok "$out" false "$mode refuses malformed durable receipt"
   assert_contains "$(jqf "$out" .display)" 'revocation receipt' "$mode reached the checked boundary"
   [ -f "$endpoint_root/$mode" ] || fail_test "$mode never called the revocation endpoint"
   for effect in new_window_args.log respawn_pane_args.log submitted; do

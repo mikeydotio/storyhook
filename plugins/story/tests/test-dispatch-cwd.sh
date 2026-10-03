@@ -43,7 +43,7 @@ ready_id=$(new_story "$repo" "Ready story")
 # --- a plain subdirectory ---
 mkdir -p "$repo/src/deep/nested"
 out=$(dry_dispatch "$repo/src/deep/nested" "$ready_id")
-assert_eq "$(jqf "$out" .ok)" "true" "subdir: dispatches from a nested subdirectory"
+assert_ok "$out" "true" "subdir: dispatches from a nested subdirectory"
 assert_eq "$(jqf "$out" .id)" "$ready_id" "subdir: resolved the right story"
 assert_contains "$(jqf "$out" .display)" "$ready_id" "subdir: display names the story"
 
@@ -67,7 +67,7 @@ only_in_main=$(new_story "$repo" "Only in the main checkout")
 (cd "$repo" && git worktree add -q --no-track -b probe-wt "$repo/.claude/worktrees/probe" HEAD) >/dev/null 2>&1
 
 out=$(dry_dispatch "$repo/.claude/worktrees/probe" "$only_in_main")
-assert_eq "$(jqf "$out" .ok)" "true" "worktree: reads the MAIN repo's tracker, not the worktree's copy"
+assert_ok "$out" "true" "worktree: reads the MAIN repo's tracker, not the worktree's copy"
 assert_eq "$(jqf "$out" .id)" "$only_in_main" "worktree: resolved the main-tracker-only story"
 
 # The inverse of what this used to assert. A story created in the main checkout

@@ -205,12 +205,12 @@ done
 
 new_case
 SH786_ACTION=lift dispatch_case after-revocation claude "$id"
-assert_eq "$(jqf "$out" .ok)" true "a hold lifted before handoff does not forbid work: $out"
+assert_ok "$out" true "a hold lifted before handoff does not forbid work: $out"
 assert_contains "$(cat "$FAKE_TMUX_STATE/eligibility-calls")" final 'successful handoff checked registered session'
 
 new_case
 dispatch_case after-query claude "$id"
-assert_eq "$(jqf "$out" .ok)" true "a later block uses delivery authority: $out"
+assert_ok "$out" true "a later block uses delivery authority: $out"
 [ -f "$FAKE_TMUX_STATE/mutation" ] || fail_test 'late block boundary was not exercised'
 assert_contains "$(cat "$FAKE_TMUX_STATE/eligibility-calls")" final 'late block follows registered-session check'
 await_interrupt
@@ -227,7 +227,7 @@ assert_no_charter
 new_case
 (cd "$repo" && story claim "$id" >/dev/null)
 STORY_DRY_RUN=1 dispatch_case none claude "$id" --force
-assert_eq "$(jqf "$out" .ok)" true 'eligible forced dry-run succeeds'
+assert_ok "$out" true 'eligible forced dry-run succeeds'
 assert_eq "$(jqf "$out" .eligibility_phase)" preflight 'dry-run reports only preflight'
 assert_eq "$(jqf "$out" .handoff_eligibility_checked)" false 'dry-run never claims future authorization'
 [ ! -e "$FAKE_TMUX_STATE/revoked" ] || fail_test 'dry-run revoked delivery authority'

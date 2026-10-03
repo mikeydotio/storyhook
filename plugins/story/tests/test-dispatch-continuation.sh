@@ -93,21 +93,21 @@ override=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
   TMUX="$socket,0,0" TMUX_PANE=%0 STORY_AUTO_PROMPT='Custom charter' STORY_DRY_RUN=1 \
   bash "$SCRIPT" dispatch "$id" --auto --resume --require-absent \
     --continuation-file="$record" 2>&1)
-assert_eq "$(jqf "$override" .ok)" false 'guarded recovery requires its registered builtin charter'
+assert_ok "$override" false 'guarded recovery requires its registered builtin charter'
 launch_override=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
   TMUX="$socket,0,0" TMUX_PANE=%0 STORY_LAUNCH_CMD='exec claude --model other' STORY_DRY_RUN=1 \
   bash "$SCRIPT" dispatch "$id" --auto --resume --require-absent \
     --continuation-file="$record" 2>&1)
-assert_eq "$(jqf "$launch_override" .ok)" false 'guarded recovery refuses launch settings overrides'
+assert_ok "$launch_override" false 'guarded recovery refuses launch settings overrides'
 no_socket=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
   TMUX='' STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$id" --auto --resume --require-absent \
     --continuation-file="$record" 2>&1)
-assert_eq "$(jqf "$no_socket" .ok)" false 'guarded recovery requires captured native socket'
+assert_ok "$no_socket" false 'guarded recovery requires captured native socket'
 race=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
   TMUX="$socket,0,0" TMUX_PANE=%0 CONTINUATION_REFUSE_RESPAWN=1 \
   bash "$SCRIPT" dispatch "$id" --auto --resume --require-absent \
     --continuation-file="$record" 2>&1)
-assert_eq "$(jqf "$race" .ok)" false 'tmux refuses a pane that became live after preflight'
+assert_ok "$race" false 'tmux refuses a pane that became live after preflight'
 [ -f "$FAKE_TMUX_STATE/respawn_refused" ] || fail_test 'race reaches the socket-bound no-k respawn'
 assert_eq "$(cat "$worktree/.claude/dispatch-sentinel.json" 2>/dev/null)" 'old sentinel' \
   'atomic refusal preserves the other owner sentinel'
@@ -121,7 +121,7 @@ out=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
     --continuation-file="$record" 2>&1)
 assert_eq "$(jqf "$out" .model)" opusplan "continuation retains captured model despite ambient defaults"
 assert_eq "$(jqf "$out" .model_source)" continuation "continuation reports captured source"
-assert_eq "$(jqf "$out" .ok)" true "guarded resume succeeds over retained work: $out"
+assert_ok "$out" true "guarded resume succeeds over retained work: $out"
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
   'Unknown capacity alone must not defer already assigned work' \
   'a missing token counter cannot defer every fresh assignment'
@@ -142,7 +142,7 @@ missing=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
   bash "$SCRIPT" dispatch "$id" --auto --resume --require-absent \
     --continuation-file="$record" 2>&1)
 # A missing pane is not an invitation to allocate another story window.
-assert_eq "$(jqf "$missing" .ok)" false 'missing retained pane refuses automatic recreation'
+assert_ok "$missing" false 'missing retained pane refuses automatic recreation'
 
 # SH-786: even a continuation whose earlier preflight was eligible must stop
 # before its charter when a hold arrives while preparing the replacement.

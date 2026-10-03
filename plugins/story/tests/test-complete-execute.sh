@@ -13,7 +13,7 @@ repo=$(mk_story_repo)
 id=$(new_story "$repo" "Dry run me")
 w=$(mk_dispatched "$repo" "$id")
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" complete execute "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "dry: ok"
+assert_ok "$out" "true" "dry: ok"
 assert_eq "$(jqf "$out" .dry_run)" "true" "dry: flagged"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "git worktree remove" "dry: previews the removal"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "story move $id done" "dry: previews the close"
@@ -23,7 +23,7 @@ assert_eq "$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 
 # --- the happy path really removes both, and really closes the story ---
 out=$(cd "$repo" && bash "$SCRIPT" complete execute "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "exec: ok"
+assert_ok "$out" "true" "exec: ok"
 assert_eq "$(jqf "$out" .closed)" "true" "exec: closed"
 assert_eq "$(jqf "$out" .closed_as)" "done" "exec: closed into the resolved CLOSED state"
 assert_eq "$(jqf "$out" '.removed.worktrees|length')" "1" "exec: one worktree removed"
@@ -40,7 +40,7 @@ wun=$(mk_dispatched "$repo" "$un")
 (cd "$repo/.claude/worktrees/$wun" && echo x >x && git add x && git commit -qm work) >/dev/null 2>&1
 unsha=$(cd "$repo" && git rev-parse "refs/heads/worktree-$wun")
 out=$(cd "$repo" && bash "$SCRIPT" complete execute "$un" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "unmerged: ok (cleanup still succeeds)"
+assert_ok "$out" "true" "unmerged: ok (cleanup still succeeds)"
 assert_eq "$(jqf "$out" '.removed.branches|length')" "0" "unmerged: no branch removed"
 assert_contains "$(jqf "$out" '.skipped|join(" ")')" "unmerged" "unmerged: reported as preserved"
 assert_eq "$(cd "$repo" && git rev-parse "refs/heads/worktree-$wun")" "$unsha" \
@@ -78,7 +78,7 @@ out=$(cd "$repo" \
   && FAKE_TMUX_KILL_WINDOW_PROBE="$repo/.claude/worktrees/$wwn" \
      TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wwn")" \
      bash "$SCRIPT" complete execute "$wn" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "window: ok"
+assert_ok "$out" "true" "window: ok"
 assert_eq "$(jqf "$out" '.removed.window')" "true" "window: reports the window as closed"
 assert_contains "$(jqf "$out" .display)" "closed its tmux window" "window: display names it"
 grep -q -- '-t @7' "$FAKE_TMUX_STATE/kill_window_args.log" \
@@ -96,7 +96,7 @@ out=$(cd "$repo" \
      FAKE_TMUX_FAIL_KILL_WINDOW=1 \
      bash "$SCRIPT" complete execute "$kf" 2>&1) || status=$?
 [ "$status" -ne 0 ] || fail_test "kill-failure: helper exited successfully"
-assert_eq "$(jqf "$out" .ok)" "false" "kill-failure: ok:false"
+assert_ok "$out" "false" "kill-failure: ok:false"
 assert_eq "$(jqf "$out" '.removed.window')" "false" \
   "kill-failure: window is not reported closed"
 assert_contains "$(jqf "$out" '.failed|join(" ")')" "window:$wkf(unverifiable)" \
@@ -114,7 +114,7 @@ rm -f "$FAKE_TMUX_STATE/kill_window_args.log"
 out=$(cd "$repo" \
   && TMUX=fake TMUX_PANE=%7 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wsf")" \
      bash "$SCRIPT" complete execute "$sf" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "self: ok"
+assert_ok "$out" "true" "self: ok"
 assert_eq "$(jqf "$out" '.removed.window')" "false" "self: window is not reported closed"
 assert_contains "$(jqf "$out" '.skipped|join(" ")')" "window:$wsf(self)" "self: preserved and named"
 [ -f "$FAKE_TMUX_STATE/kill_window_args.log" ] \
@@ -130,7 +130,7 @@ out=$(cd "$repo" \
   && FAKE_TMUX_KILL_WINDOW_PROBE="$repo/.claude/worktrees/$wfdy" \
      TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%8' "$wfdy")" \
      bash "$SCRIPT" complete execute "$fdy" --force 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "force-dirty: ok"
+assert_ok "$out" "true" "force-dirty: ok"
 assert_eq "$(jqf "$out" .forced)" "true" "force-dirty: reports forced"
 assert_eq "$(jqf "$out" '.removed.worktrees|length')" "1" "force-dirty: worktree removed"
 assert_eq "$(jqf "$out" '.removed.window')" "true" "force-dirty: window closed too"
@@ -179,7 +179,7 @@ assert_eq "$(jqf "$out" '.removed.worktrees|length')" "0" "--no-clean: nothing r
 (cd "$repo" && story state add archived --super CLOSED >/dev/null 2>&1)
 ov=$(new_story "$repo" "Override")
 out=$(cd "$repo" && STORY_DONE_STATE=archived bash "$SCRIPT" complete execute "$ov" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "retired knob: refused"
+assert_ok "$out" "false" "retired knob: refused"
 assert_eq "$(jqf "$out" .reason)" "story-done-state-retired" "retired knob: named reason"
 assert_contains "$(jqf "$out" .display)" "STORY_DONE_STATE" "retired knob: names the knob"
 assert_eq "$(cd "$repo" && story show "$ov" --json | jq -r '.story.story.state')" "todo" \
@@ -187,7 +187,7 @@ assert_eq "$(cd "$repo" && story show "$ov" --json | jq -r '.story.story.state')
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" complete execute "$id" --bogus 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "exec: unknown flag is rejected"
+assert_ok "$out" "false" "exec: unknown flag is rejected"
 assert_contains "$(jqf "$out" .display)" "--no-close" "exec: usage names the real flags"
 
 finish

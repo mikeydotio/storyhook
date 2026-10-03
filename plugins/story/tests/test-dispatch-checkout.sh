@@ -54,7 +54,7 @@ _TMP_REPOS+=("$nowhere")
 
 id=$(new_story "$repo_a" "Dispatched from the wrong repository")
 out=$(dispatch_dry "$repo_b" --project "$slug_a" dispatch "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "cross-repo: dispatch from B for a story in A succeeds"
+assert_ok "$out" "true" "cross-repo: dispatch from B for a story in A succeeds"
 assert_eq "$(jqf "$out" .dir)" "$a_phys" "cross-repo: dir is A's checkout, not B"
 assert_eq "$(jqf "$out" .worktree_path)" "$a_phys/.claude/worktrees/$id" \
   "cross-repo: the worktree lands in A"
@@ -62,7 +62,7 @@ assert_eq "$(jqf "$out" .worktree_path)" "$a_phys/.claude/worktrees/$id" \
 # --- AC1: outside any repository ------------------------------------------
 
 out=$(dispatch_dry "$nowhere" --project "$slug_a" dispatch "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "outside: dispatch works from outside any repository"
+assert_ok "$out" "true" "outside: dispatch works from outside any repository"
 assert_eq "$(jqf "$out" .dir)" "$a_phys" "outside: dir is A's checkout"
 
 # The criterion as written, not a plan of it. The dry run above stops before any
@@ -70,7 +70,7 @@ assert_eq "$(jqf "$out" .dir)" "$a_phys" "outside: dir is A's checkout"
 # repository; this one performs the worktree creation as well.
 real_id=$(new_story "$repo_a" "Really dispatched from nowhere")
 out=$(dispatch_real "$nowhere" --project "$slug_a" dispatch "$real_id")
-assert_eq "$(jqf "$out" .ok)" "true" "outside: a REAL dispatch from outside any repository succeeds"
+assert_ok "$out" "true" "outside: a REAL dispatch from outside any repository succeeds"
 [ -d "$repo_a/.claude/worktrees/$real_id" ] \
   || fail_test "outside: the real dispatch created its worktree in A"
 
@@ -83,7 +83,7 @@ assert_eq "$(jqf "$out" .ok)" "true" "outside: a REAL dispatch from outside any 
 probe_id=$(new_story "$repo_a" "Already has a worktree in A")
 (cd "$repo_a" && git branch "worktree-$probe_id" >/dev/null 2>&1)
 out=$(dispatch_real "$repo_b" --project "$slug_a" dispatch "$probe_id")
-assert_eq "$(jqf "$out" .ok)" "false" "probe: the collision guard sees A's branch from B"
+assert_ok "$out" "false" "probe: the collision guard sees A's branch from B"
 assert_eq "$(jqf "$out" .reason)" "resume-available" "probe: the refusal classifies recovery"
 assert_eq "$(jqf "$out" .resources.branch)" "present" "probe: the inventory sees A's branch"
 probe_state=$(cd "$repo_a" && story show "$probe_id" --json | jq -r '.story.story.state')
@@ -97,7 +97,7 @@ c_id=$(new_story "$repo_c" "Nowhere to run")
 (cd "$repo_c" && story project unlink checkout >/dev/null 2>&1)
 
 out=$(dispatch_dry "$repo_b" --project "$slug_c" dispatch "$c_id")
-assert_eq "$(jqf "$out" .ok)" "false" "no checkout: dispatch refuses"
+assert_ok "$out" "false" "no checkout: dispatch refuses"
 assert_contains "$(jqf "$out" .display)" "project link checkout" \
   "no checkout: the refusal names \`project link checkout\`"
 assert_contains "$(jqf "$out" .display)" "$slug_c" "no checkout: the refusal names the project"
@@ -113,7 +113,7 @@ gone=$(mktemp -d /tmp/story-test-gone.XXXXXX)
 (cd "$repo_c" && story project link checkout "$gone" >/dev/null 2>&1)
 rm -rf "$gone"
 out=$(dispatch_dry "$repo_b" --project "$slug_c" dispatch "$c_id")
-assert_eq "$(jqf "$out" .ok)" "false" "missing checkout: dispatch refuses"
+assert_ok "$out" "false" "missing checkout: dispatch refuses"
 assert_contains "$(jqf "$out" .display)" "project link checkout" \
   "missing checkout: the refusal names \`project link checkout\`"
 assert_contains "$(jqf "$out" .display)" "doctor --fix" \
@@ -129,7 +129,7 @@ plain=$(mktemp -d /tmp/story-test-plain.XXXXXX)
 _TMP_REPOS+=("$plain")
 (cd "$repo_c" && story project link checkout "$plain" >/dev/null 2>&1)
 out=$(dispatch_dry "$repo_b" --project "$slug_c" dispatch "$c_id")
-assert_eq "$(jqf "$out" .ok)" "false" "not a repo: dispatch refuses"
+assert_ok "$out" "false" "not a repo: dispatch refuses"
 assert_contains "$(jqf "$out" .display)" "not a git repository" \
   "not a repo: the refusal says why"
 
@@ -142,7 +142,7 @@ assert_contains "$(jqf "$out" .display)" "not a git repository" \
 (cd "$repo_a" && git worktree add -q --no-track -b linked-probe "$repo_a/.claude/worktrees/linked-probe" HEAD) >/dev/null 2>&1
 (cd "$repo_c" && story project link checkout "$repo_a/.claude/worktrees/linked-probe" >/dev/null 2>&1)
 out=$(dispatch_dry "$repo_b" --project "$slug_c" dispatch "$c_id")
-assert_eq "$(jqf "$out" .ok)" "false" "linked worktree: dispatch refuses"
+assert_ok "$out" "false" "linked worktree: dispatch refuses"
 assert_contains "$(jqf "$out" .display)" "linked git worktree" \
   "linked worktree: the refusal says what the directory is"
 
@@ -155,7 +155,7 @@ assert_contains "$(jqf "$out" .display)" "linked git worktree" \
 
 out=$(cd "$nowhere" && TMUX="fake,0,0" TMUX_PANE="%0" PATH="$FAKE_TMUX_DIR:$PATH" \
   bash "$SCRIPT" --project "$slug_a" capture "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "capture: no window is still a refusal"
+assert_ok "$out" "false" "capture: no window is still a refusal"
 assert_contains "$(jqf "$out" .display)" "no live tmux window" \
   "capture: outside a repository it reports the missing window, not a missing repo"
 
@@ -167,14 +167,14 @@ assert_contains "$(jqf "$out" .display)" "no live tmux window" \
 wt_id=$(new_story "$repo_a" "Completed from the wrong repository")
 mk_dispatched "$repo_a" "$wt_id" >/dev/null
 out=$(cd "$repo_b" && bash "$SCRIPT" --project "$slug_a" complete plan "$wt_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "complete plan: succeeds from B"
+assert_ok "$out" "true" "complete plan: succeeds from B"
 assert_eq "$(jqf "$out" .plan.worktree.path)" "$a_phys/.claude/worktrees/$wt_id" \
   "complete plan: the worktree it plans against is A's"
 assert_eq "$(jqf "$out" .plan.worktree.status)" "removable" \
   "complete plan: it can see A's worktree from B"
 
 out=$(cd "$repo_b" && bash "$SCRIPT" --project "$slug_a" complete execute "$wt_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "complete execute: succeeds from B"
+assert_ok "$out" "true" "complete execute: succeeds from B"
 assert_eq "$(jqf "$out" '.removed.worktrees[0]')" "$a_phys/.claude/worktrees/$wt_id" \
   "complete execute: it removed A's worktree"
 [ -e "$repo_a/.claude/worktrees/$wt_id" ] \

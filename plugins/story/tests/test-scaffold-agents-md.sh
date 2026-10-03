@@ -20,7 +20,7 @@ cp AGENTS.md /tmp/story-agents-before.$$
 _TMP_REPOS+=("/tmp/story-agents-before.$$")
 
 out=$(bash "$SCRIPT" scaffold-agents-md 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "exact scaffold: ok"
+assert_ok "$out" "true" "exact scaffold: ok"
 assert_eq "$(jqf "$out" .action)" "unchanged" "exact scaffold: no duplicate append"
 cmp -s AGENTS.md /tmp/story-agents-before.$$ \
   || fail_test "exact scaffold: helper changed project-new's canonical AGENTS.md"
@@ -56,7 +56,7 @@ printf 'keep me\n%s\nunterminated\n' "$BEGIN" >AGENTS.md
 cp AGENTS.md /tmp/story-agents-malformed.$$
 _TMP_REPOS+=("/tmp/story-agents-malformed.$$")
 out=$(bash "$SCRIPT" scaffold-agents-md 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "malformed: refused"
+assert_ok "$out" "false" "malformed: refused"
 assert_contains "$(jqf "$out" .display)" "malformed" "malformed: precise reason"
 cmp -s AGENTS.md /tmp/story-agents-malformed.$$ \
   || fail_test "malformed: helper rewrote the file despite refusing"
@@ -65,7 +65,7 @@ printf 'keep me\n%s\nstray end\n' "$END" >AGENTS.md
 cp AGENTS.md /tmp/story-agents-missing-begin.$$
 _TMP_REPOS+=("/tmp/story-agents-missing-begin.$$")
 out=$(bash "$SCRIPT" scaffold-agents-md 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "missing begin: refused"
+assert_ok "$out" "false" "missing begin: refused"
 cmp -s AGENTS.md /tmp/story-agents-missing-begin.$$ \
   || fail_test "missing begin: helper rewrote the file despite refusing"
 
@@ -73,7 +73,7 @@ printf '%s\none\n%s\n%s\ntwo\n%s\n' "$BEGIN" "$END" "$BEGIN" "$END" >AGENTS.md
 cp AGENTS.md /tmp/story-agents-duplicate.$$
 _TMP_REPOS+=("/tmp/story-agents-duplicate.$$")
 out=$(bash "$SCRIPT" scaffold-agents-md 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "duplicate sentinels: refused"
+assert_ok "$out" "false" "duplicate sentinels: refused"
 cmp -s AGENTS.md /tmp/story-agents-duplicate.$$ \
   || fail_test "duplicate sentinels: helper rewrote the file despite refusing"
 
@@ -81,7 +81,7 @@ printf 'keep me\n%s\nwrong order\n%s\n' "$END" "$BEGIN" >AGENTS.md
 cp AGENTS.md /tmp/story-agents-reversed.$$
 _TMP_REPOS+=("/tmp/story-agents-reversed.$$")
 out=$(bash "$SCRIPT" scaffold-agents-md 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "reversed sentinels: refused"
+assert_ok "$out" "false" "reversed sentinels: refused"
 cmp -s AGENTS.md /tmp/story-agents-reversed.$$ \
   || fail_test "reversed sentinels: helper rewrote the file despite refusing"
 

@@ -43,7 +43,7 @@ state_of() { (cd "$RUN_REPO" && story show "$RUN_ID" --json | jq -r '.story.stor
 #      (test-dispatch-occupant-gate.sh's Family A). ---------------------------
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SUPPRESS_SENTINEL=1 \
         STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=3
-assert_eq "$(jqf "$out" .ok)" "false" \
+assert_ok "$out" "false" \
   "no-sentinel: a live, correctly-named process with no published sentinel is still refused"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
   "no-sentinel: named as exactly that, not a process mismatch"
@@ -61,7 +61,7 @@ esac
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SUPPRESS_SENTINEL=1 \
         FAKE_TMUX_EXIT_ON_REPROBE=1 \
         STORY_READY_DELAY=0.3 STORY_READY_ATTEMPTS=5
-assert_eq "$(jqf "$out" .ok)" "false" "pid-exited: a process that dies mid-poll is refused"
+assert_ok "$out" "false" "pid-exited: a process that dies mid-poll is refused"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "pid-exited" \
   "pid-exited: named as the process having died, not a timeout"
 assert_eq "$(state_of)" "in-progress" "pid-exited: uncertain descendant ownership preserves the claim"
@@ -80,7 +80,7 @@ assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits" 2>/dev/null || echo 0)" "0" \
 #      Families A-E's regression framing: a real sentinel, a real live pid,
 #      the default occupant pattern — ready on the very first poll. -------
 dispatch_run FAKE_TMUX_CAPTURE=marker STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=3
-assert_eq "$(jqf "$out" .ok)" "true" "happy: sentinel + live pid + correct occupant confirms"
+assert_ok "$out" "true" "happy: sentinel + live pid + correct occupant confirms"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "happy: ...and says so"
 assert_eq "$(state_of)" "in-progress" "happy: the story is claimed"
 
@@ -90,7 +90,7 @@ assert_eq "$(state_of)" "in-progress" "happy: the story is claimed"
 readonly LATE_SENTINEL_PROBE=8
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SENTINEL_ON_PROBE=$LATE_SENTINEL_PROBE \
         STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=5
-assert_eq "$(jqf "$out" .ok)" "false" \
+assert_ok "$out" "false" \
   "late sentinel: a budget shorter than the publication point refuses"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
   "late sentinel: no witness exists before the provider event"
@@ -98,7 +98,7 @@ assert_eq "$(state_of)" "todo" "late sentinel, short budget: the claim is rolled
 
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SENTINEL_ON_PROBE=$LATE_SENTINEL_PROBE \
         STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=12
-assert_eq "$(jqf "$out" .ok)" "true" \
+assert_ok "$out" "true" \
   "late sentinel: a wider poll budget observes the eventual provider event"
 assert_eq "$(state_of)" "in-progress" "late sentinel, wide budget: the story is claimed"
 [ -f "$FAKE_TMUX_STATE/claude-hook-output.json" ] \
@@ -110,11 +110,11 @@ _TMP_REPOS+=("$alias_dir")
 ln -s "$PLUGIN_ROOT" "$alias_dir/cache alias"
 dispatch_run FAKE_TMUX_CAPTURE=marker STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=3 \
   FAKE_TMUX_CLAUDE_SENTINEL_ROOT="$alias_dir/cache alias"
-assert_eq "$(jqf "$out" .ok)" true "Claude accepts a canonical package alias"
+assert_ok "$out" true "Claude accepts a canonical package alias"
 mkdir "$alias_dir/foreign"
 dispatch_run FAKE_TMUX_CAPTURE=marker STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=3 \
   FAKE_TMUX_CLAUDE_SENTINEL_ROOT="$alias_dir/foreign"
-assert_eq "$(jqf "$out" .ok)" false "Claude refuses a different installed package"
+assert_ok "$out" false "Claude refuses a different installed package"
 assert_eq "$(jqf "$out" .wait_ready_reason)" hook-identity-mismatch "foreign package diagnosis"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits" 2>/dev/null || echo 0)" 0 "foreign package receives no charter"
 
@@ -135,7 +135,7 @@ WRAPPER
 chmod +x "$alias_dir/cli/story"
 export PATH="$alias_dir/cli:$PATH"
 dispatch_run FAKE_TMUX_CAPTURE=marker STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=3
-assert_eq "$(jqf "$out" .ok)" true "Claude dispatch accepts real degraded hook evidence"
+assert_ok "$out" true "Claude dispatch accepts real degraded hook evidence"
 assert_eq "$(jq -r .context_status "$RUN_REPO/.claude/worktrees/$RUN_ID/.claude/dispatch-sentinel.json")" unavailable "context failure remains explicit"
 assert_contains "$(cat "$FAKE_TMUX_STATE/claude-hook-stderr")" SessionStart "cause survives the actual hook"
 assert_eq "$(state_of)" in-progress "only ordinary dispatch authority claims the story"

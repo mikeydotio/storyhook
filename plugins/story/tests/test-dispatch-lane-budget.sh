@@ -22,25 +22,25 @@ dry() {
 for count in 0 4 6 12; do
   seed_live "$count"
   out=$(dry "$id")
-  assert_eq "$(jqf "$out" .ok)" true "$count sessions: named dispatch proceeds"
+  assert_ok "$out" true "$count sessions: named dispatch proceeds"
   out=$(dry --next)
-  assert_eq "$(jqf "$out" .ok)" true "$count sessions: next dispatch proceeds"
+  assert_ok "$out" true "$count sessions: next dispatch proceeds"
   out=$(dry "$id" --resume)
-  assert_eq "$(jqf "$out" .ok)" true "$count sessions: fresh resume proceeds: $out; stderr: $(cat "$FAKE_TMUX_STATE/stderr")"
+  assert_ok "$out" true "$count sessions: fresh resume proceeds: $out; stderr: $(cat "$FAKE_TMUX_STATE/stderr")"
   out=$(dry "$id" --auto --full-auto)
-  assert_eq "$(jqf "$out" .ok)" true "$count sessions: engine dispatch proceeds"
+  assert_ok "$out" true "$count sessions: engine dispatch proceeds"
 done
 
 seed_live 6
 out=$(dry "$id" --over-budget)
-assert_eq "$(jqf "$out" .ok)" true "legacy flag remains accepted"
+assert_ok "$out" true "legacy flag remains accepted"
 assert_contains "$(cat "$FAKE_TMUX_STATE/stderr")" "deprecated and has no effect" "legacy flag explains retirement"
 out=$(dry "$id" --over-budget --over-budget)
-assert_eq "$(jqf "$out" .ok)" false "duplicate legacy flag is still an argument error"
+assert_ok "$out" false "duplicate legacy flag is still an argument error"
 
 epic=$(cd "$repo" && story new "Epic" --type epic --json | jq -r '.story.story.id')
 out=$(dry "$epic" --auto --over-budget)
-assert_eq "$(jqf "$out" .ok)" true "legacy no-op also accepts epic starts"
+assert_ok "$out" true "legacy no-op also accepts epic starts"
 
 # A tripwire proves the census was not even consulted, including when an
 # older binary does not implement the verb. Real CLI behavior is delegated.
@@ -49,7 +49,7 @@ export STORY_REAL_BIN
 export STORY_CENSUS_CALL_LOG="$FAKE_TMUX_STATE/census-calls"
 export STORY_BIN="$TESTS_DIR/fakes/story-no-lane-budget/story"
 out=$(dry "$id")
-assert_eq "$(jqf "$out" .ok)" true "missing census command does not matter"
+assert_ok "$out" true "missing census command does not matter"
 [ ! -e "$STORY_CENSUS_CALL_LOG" ] || fail_test "manual dispatch consulted the census"
 [ ! -s "$FAKE_TMUX_STATE/stderr" ] || fail_test "ordinary dispatch emitted a census warning"
 
@@ -67,7 +67,7 @@ for mode in named next; do
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" dispatch "$target" 2>"$FAKE_TMUX_STATE/stderr"
   )
-  assert_eq "$(jqf "$out" .ok)" true "$mode: real dispatch succeeds at six"
+  assert_ok "$out" true "$mode: real dispatch succeeds at six"
   assert_eq "$(jqf "$out" .prompt_confirmed)" true "$mode: prompt delivered"
   worktree=$(jqf "$out" .worktree_path)
   [ -d "$worktree" ] || fail_test "$mode: worktree missing"

@@ -27,7 +27,7 @@ out=$(
 ) || status=$?
 
 [ "$status" -ne 0 ] || fail_test "comment failure: helper exited successfully"
-assert_eq "$(jqf "$out" .ok)" "false" "comment failure: ok:false"
+assert_ok "$out" "false" "comment failure: ok:false"
 assert_eq "$(jqf "$out" .reason)" "dispatch-comment-failed" \
   "comment failure: typed reason"
 assert_contains "$(jqf "$out" .display)" "claim, worktree, and tmux window were left in place" \

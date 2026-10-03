@@ -21,17 +21,17 @@ dry() {
 # caller-selected story, and duplicates are rejected before story state, tmux,
 # or git resources can change.
 out=$(cd "$repo" && bash "$SCRIPT" dispatch "$id" --full-auto 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "full-auto without auto: refused"
+assert_ok "$out" "false" "full-auto without auto: refused"
 assert_contains "$(jqf "$out" .display)" "requires --auto" \
   "full-auto without auto: names the missing contract"
 
 out=$(cd "$repo" && bash "$SCRIPT" dispatch --next --auto --full-auto 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "full-auto with next: refused"
+assert_ok "$out" "false" "full-auto with next: refused"
 assert_contains "$(jqf "$out" .display)" "requires a named story id" \
   "full-auto with next: names the engine's selected-story contract"
 
 out=$(cd "$repo" && bash "$SCRIPT" dispatch "$id" --auto --full-auto --full-auto 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "duplicate full-auto: refused"
+assert_ok "$out" "false" "duplicate full-auto: refused"
 assert_contains "$(jqf "$out" .display)" "only once" \
   "duplicate full-auto: names duplication"
 
@@ -50,7 +50,7 @@ for reserved in no-auto human-only; do
   for mode in "" --resume; do
     out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off \
       bash "$SCRIPT" dispatch "$rid" --auto --full-auto $mode 2>&1)
-    assert_eq "$(jqf "$out" .ok)" "false" "$reserved ${mode:-dispatch}: Full Auto refused"
+    assert_ok "$out" "false" "$reserved ${mode:-dispatch}: Full Auto refused"
     assert_eq "$(jqf "$out" .reason)" "reserved-label" \
       "$reserved ${mode:-dispatch}: refusal names its reason"
     assert_contains "$(jqf "$out" .display)" "\`$reserved\`" \
@@ -63,7 +63,7 @@ done
   || fail_test "a reserved-label refusal created a worktree container"
 by_hand=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off \
   bash "$SCRIPT" dispatch "$rid" --auto 2>&1)
-assert_eq "$(jqf "$by_hand" .ok)" "true" "reserved story: an ordinary --auto dispatch still works"
+assert_ok "$by_hand" "true" "reserved story: an ordinary --auto dispatch still works"
 
 # The per-window marker matrix is total and unambiguous. Empty values actively
 # contain a tmux session environment inherited from an earlier lane.
@@ -104,7 +104,7 @@ case "$(jqf "$ceiling_ordinary" '.commands|join(" ")')" in
   *BASH_MAX_TIMEOUT_MS*) fail_test "an ordinary --auto lane has no stall clock over it and pins no ceiling" ;;
 esac
 ceiling_bad=$(cd "$repo" && STORY_DRY_RUN=1 STORY_COUNCIL=off STORY_LANE_TOOL_CEILING_MS=ten-minutes   bash "$SCRIPT" dispatch "$id" --auto --full-auto 2>&1)
-assert_eq "$(jqf "$ceiling_bad" .ok)" "false" "a non-numeric lane ceiling is refused, not passed along"
+assert_ok "$ceiling_bad" "false" "a non-numeric lane ceiling is refused, not passed along"
 assert_contains "$ceiling_bad" "STORY_LANE_TOOL_CEILING_MS" "the refusal names the variable"
 
 # Non-Full-Auto JSON remains compatible. Full Auto alone identifies itself,
@@ -216,7 +216,7 @@ real_marker_row() {
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
       bash "$SCRIPT" dispatch "$real_id" "$@" 2>&1
   )
-  assert_eq "$(jqf "$real_out" .ok)" "true" "$label real dispatch: succeeds"
+  assert_ok "$real_out" "true" "$label real dispatch: succeeds"
   args=$(cat "$FAKE_TMUX_STATE/new_window_args.log")
   case "$label" in
     attended)

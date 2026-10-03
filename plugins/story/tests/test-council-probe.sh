@@ -50,14 +50,14 @@ mk_registry_entry() {
 # --- no ~/.claude at all: no council, dispatch still succeeds ---
 home=$(mk_home)
 out=$(probe "$home")
-assert_eq "$(jqf "$out" .ok)" "true" "no-claude-dir: ok:true"
+assert_ok "$out" "true" "no-claude-dir: ok:true"
 assert_eq "$(jqf "$out" .council)" "false" "no-claude-dir: council:false"
 
 # --- registry entry ships the skill, not explicitly disabled: available ---
 home=$(mk_home)
 mk_registry_entry "$home" "council@agentics" "yes"
 out=$(probe "$home")
-assert_eq "$(jqf "$out" .ok)" "true" "registry-with-skill: ok:true"
+assert_ok "$out" "true" "registry-with-skill: ok:true"
 assert_eq "$(jqf "$out" .council)" "true" "registry-with-skill: council:true"
 
 # --- registry entry exists but ships no council-vote skill: not available ---
@@ -109,7 +109,7 @@ home=$(mk_home)
 mkdir -p "$home/.claude/plugins"
 printf '{not valid json' >"$home/.claude/plugins/installed_plugins.json"
 out=$(probe "$home")
-assert_eq "$(jqf "$out" .ok)" "true" "malformed-registry: ok:true (dispatch survives)"
+assert_ok "$out" "true" "malformed-registry: ok:true (dispatch survives)"
 assert_eq "$(jqf "$out" .council)" "false" "malformed-registry: council:false"
 
 # --- COUNCIL_MODE escape hatch: STORY_COUNCIL=on/off force the answer

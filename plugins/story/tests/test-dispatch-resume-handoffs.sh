@@ -46,20 +46,20 @@ comments() {
 repo=$(mk_story_repo RHS)
 id=$(new_story "$repo" "Resumed after its session was lost")
 out=$(daemon_dispatch "$repo" dispatch "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "session: the original dispatch succeeds"
+assert_ok "$out" "true" "session: the original dispatch succeeds"
 worktree=$(jqf "$out" .worktree_path)
 lost=$(jq -r .session_id "$worktree/.claude/dispatch-sentinel.json")
 [ -n "$lost" ] && [ "$lost" != null ] || fail_test "session: the original session published its id"
 lose_window "$(jqf "$out" .pane)"
 
 out=$(FAKE_TMUX_SESSION_ID="$lost" daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
-assert_eq "$(jqf "$out" .ok)" "false" "session: a launch reporting the lost id is refused"
+assert_ok "$out" "false" "session: a launch reporting the lost id is refused"
 assert_eq "$(jqf "$out" .reason)" "resume-session-reused" "session: the refusal names the reuse"
 assert_eq "$(jqf "$out" .previous_session.session_id)" "$lost" "session: the refusal names the lost id"
 assert_contains "$(jqf "$out" .display)" "No story charter was delivered" "session: no charter reached it"
 
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
-assert_eq "$(jqf "$out" .ok)" "true" "session: a fresh session resumes the story"
+assert_ok "$out" "true" "session: a fresh session resumes the story"
 assert_eq "$(jqf "$out" .previous_session.session_id)" "$lost" "session: the result names the lost session"
 fresh=$(jq -r .session_id "$worktree/.claude/dispatch-sentinel.json")
 [ "$fresh" != "$lost" ] || fail_test "session: the replacement reports a new id"
@@ -70,7 +70,7 @@ assert_contains "$(comments "$repo" "$id")" "It replaces the lost session $lost 
 repo=$(mk_story_repo RHC)
 id=$(new_story "$repo" "Its handoff chain outlived its session")
 out=$(daemon_dispatch "$repo" dispatch "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "chain: the original dispatch succeeds"
+assert_ok "$out" "true" "chain: the original dispatch succeeds"
 lose_window "$(jqf "$out" .pane)"
 
 shim=$(mktemp -d /tmp/story-test-handoffs.XXXXXX)
@@ -96,13 +96,13 @@ HANDOFF_PROJECT=$(slug_for "$repo")
 HANDOFF_STORY="$id"
 
 out=$(HANDOFF_MODE=attempting PATH="$shim:$PATH" daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
-assert_eq "$(jqf "$out" .ok)" "false" "chain: a delivery in flight refuses the resume"
+assert_ok "$out" "false" "chain: a delivery in flight refuses the resume"
 assert_eq "$(jqf "$out" .reason)" "continuation-attempting" "chain: the refusal names the monitor's gap"
 assert_contains "$(jqf "$out" .display)" "req-9" "chain: the refusal names the handoff"
 [ ! -f "$FAKE_TMUX_STATE/new_window_args.log" ] || fail_test "chain: a window was opened"
 
 out=$(HANDOFF_MODE=superseded PATH="$shim:$PATH" daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
-assert_eq "$(jqf "$out" .ok)" "true" "chain: the resume proceeds once the chain is retired"
+assert_ok "$out" "true" "chain: the resume proceeds once the chain is retired"
 assert_eq "$(jqf "$out" '.superseded_continuations | join(",")')" "req-7" \
   "chain: the result names the superseded handoff"
 assert_contains "$(comments "$repo" "$id")" "Superseded context handoffs: req-7." \
@@ -113,7 +113,7 @@ assert_eq "$(grep -c . "$shim/calls")" "2" "chain: each resume asked exactly onc
 fresh_id=$(new_story "$repo" "A story nobody dispatched before")
 rm -f "$shim/calls"
 out=$(HANDOFF_MODE=superseded PATH="$shim:$PATH" daemon_dispatch "$repo" dispatch "$fresh_id")
-assert_eq "$(jqf "$out" .ok)" "true" "fresh: the dispatch succeeds"
+assert_ok "$out" "true" "fresh: the dispatch succeeds"
 [ ! -f "$shim/calls" ] || fail_test "fresh: a fresh dispatch retired a handoff chain"
 assert_eq "$(jqf "$out" '.superseded_continuations // "absent"')" "absent" "fresh: no chain is reported"
 
@@ -123,7 +123,7 @@ id=$(new_story "$repo" "Resumed with no handoff on record")
 out=$(daemon_dispatch "$repo" dispatch "$id")
 lose_window "$(jqf "$out" .pane)"
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
-assert_eq "$(jqf "$out" .ok)" "true" "real verb: the resume proceeds"
+assert_ok "$out" "true" "real verb: the resume proceeds"
 assert_eq "$(jqf "$out" '.superseded_continuations // "absent"')" "absent" "real verb: nothing was superseded"
 
 finish

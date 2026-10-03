@@ -82,7 +82,7 @@ printf '%s\n' "$state_list" | grep -q '^in-progress' \
 # --- the claim lands in the active state, and the story stops being ready ----
 id=$(new_story "$repo" "Claim into the active-role state")
 out=$(dispatch_real "$repo" "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "claim: ok:true; response: $out"
+assert_ok "$out" "true" "claim: ok:true; response: $out"
 assert_eq "$(jqf "$out" .state)" "doing" "claim: reported state is the active-role state"
 claimed_state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 assert_eq "$claimed_state" "doing" "claim: the store agrees the story is at doing"
@@ -106,7 +106,7 @@ esac
 # against the store, which is the stronger question anyway.
 dry_id=$(new_story "$repo" "Dry-run preview names the verb, not a target")
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$dry_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "dry-run: ok:true"
+assert_ok "$out" "true" "dry-run: ok:true"
 assert_eq "$(jqf "$out" '.commands[0]')" \
   "story claim $dry_id --comment \"Dispatching to tmux window <current-session>:$dry_id.\"" \
   "dry-run: previewed claim command is the verb"
@@ -125,14 +125,14 @@ require_repo "$guard_repo" "the guard project"
 guard_id=$(new_story "$guard_repo" "Already claimed at doing")
 (cd "$guard_repo" && story move "$guard_id" doing >/dev/null)
 out=$(cd "$guard_repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$guard_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "guard: ok:false for an already-claimed story"
+assert_ok "$out" "false" "guard: ok:false for an already-claimed story"
 assert_contains "$(jqf "$out" .display)" "already" "guard: names the story as already claimed"
 assert_contains "$(jqf "$out" .display)" "doing" "guard: names the active-role state it saw"
 assert_contains "$(jqf "$out" .display)" "--force" "guard: offers the force remedy"
 
 # --- --force reuses an active-role claim without a second transition --------
 out=$(cd "$guard_repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$guard_id" --force 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "force: ok:true reusing an active-role claim"
+assert_ok "$out" "true" "force: ok:true reusing an active-role claim"
 assert_eq "$(jqf "$out" .reused_claim)" "true" "force: reused_claim:true"
 assert_eq "$(jqf "$out" '.commands | map(select(startswith("story claim"))) | length')" "0" \
   "force: no redundant claim transition is planned"
@@ -143,7 +143,7 @@ assert_contains "$(jqf "$out" .display)" "doing" "force: the reuse note names th
 # still reuses the claim and adds recovery context without inventing a state
 # transition or assuming the active slug is literally `in-progress`.
 out=$(cd "$guard_repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$guard_id" --resume 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "resume: ok:true reusing an active-role claim"
+assert_ok "$out" "true" "resume: ok:true reusing an active-role claim"
 assert_eq "$(jqf "$out" .resume_requested)" "true" "resume: permission reported"
 assert_eq "$(jqf "$out" .resumed)" "true" "resume: active claim counts as recovered context"
 assert_eq "$(jqf "$out" .reused_claim)" "true" "resume: reused_claim:true"
@@ -164,7 +164,7 @@ rb_id=$(new_story "$rb_repo" "Rollback from the active-role state")
 export STORY_TARGET_SESSION=missing-room STORY_CREATE_SESSION=1 FAKE_TMUX_FAIL_NEW_SESSION=1
 out=$(dispatch_real "$rb_repo" "$rb_id")
 unset STORY_TARGET_SESSION STORY_CREATE_SESSION FAKE_TMUX_FAIL_NEW_SESSION
-assert_eq "$(jqf "$out" .ok)" "false" "rollback: ok:false when target-session creation fails"
+assert_ok "$out" "false" "rollback: ok:false when target-session creation fails"
 assert_contains "$(jqf "$out" .display)" "Rolled the claim back" "rollback: reports a successful rollback"
 rb_state=$(cd "$rb_repo" && story show "$rb_id" --json | jq -r '.story.story.state')
 assert_eq "$rb_state" "todo" "rollback: the story is released, not stranded at doing"
@@ -176,7 +176,7 @@ assert_eq "$rb_state" "todo" "rollback: the story is released, not stranded at d
 plain_repo=$(mk_story_repo PLN)
 plain_id=$(new_story "$plain_repo" "Default project still claims into in-progress")
 out=$(dispatch_real "$plain_repo" "$plain_id")
-assert_eq "$(jqf "$out" .ok)" "true" "default: ok:true"
+assert_ok "$out" "true" "default: ok:true"
 assert_eq "$(jqf "$out" .state)" "in-progress" "default: still claims into in-progress"
 
 finish

@@ -23,7 +23,7 @@ SKILL="$PLUGIN_ROOT/skills/story/SKILL.md"
 # --- the retired verb ---------------------------------------------------------
 
 out=$(bash "$SCRIPT" work 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "work: the retired verb is refused"
+assert_ok "$out" "false" "work: the retired verb is refused"
 assert_contains "$(jqf "$out" .display)" "usage: story.sh" "work: refusal is the usage line"
 
 case "$(jqf "$(bash "$SCRIPT" bogus-subcommand 2>&1)" .display)" in

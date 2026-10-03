@@ -33,7 +33,7 @@ dispatch_real() {
 repo_fresh=$(mk_story_repo RFR)
 id_fresh=$(new_story "$repo_fresh" "Fresh dispatch with resume permission")
 fresh=$(dispatch_real "$repo_fresh" "$id_fresh" --resume)
-assert_eq "$(jqf "$fresh" .ok)" "true" "fresh: dispatch succeeds"
+assert_ok "$fresh" "true" "fresh: dispatch succeeds"
 assert_eq "$(jqf "$fresh" .resume_requested)" "true" "fresh: permission reported"
 assert_eq "$(jqf "$fresh" .resumed)" "false" "fresh: no resume invented"
 
@@ -47,7 +47,7 @@ printf 'keep me\n' >"$repo_wt/.claude/worktrees/$id_wt/resume-proof.txt"
 (cd "$repo_wt" && story move "$id_wt" in-progress >/dev/null)
 
 offered=$(dispatch_real "$repo_wt" "$id_wt")
-assert_eq "$(jqf "$offered" .ok)" "false" "offer: ordinary dispatch stops"
+assert_ok "$offered" "false" "offer: ordinary dispatch stops"
 assert_eq "$(jqf "$offered" .reason)" "resume-available" "offer: typed reason"
 assert_eq "$(jqf "$offered" .resources.worktree)" "present" "offer: worktree inventory"
 assert_eq "$(jqf "$offered" .resources.window)" "missing" "offer: window inventory"
@@ -57,7 +57,7 @@ before_transitions=$(
     | jq --arg id "$id_wt" '[.stories[] | select(.id == $id).events[] | select(.kind == "StoryStateChanged")] | length'
 )
 resumed_wt=$(dispatch_real "$repo_wt" "$id_wt" --resume)
-assert_eq "$(jqf "$resumed_wt" .ok)" "true" "worktree: resume succeeds"
+assert_ok "$resumed_wt" "true" "worktree: resume succeeds"
 assert_eq "$(jqf "$resumed_wt" .resumed)" "true" "worktree: resume reported"
 assert_eq "$(jqf "$resumed_wt" .reused_claim)" "true" "worktree: claim reused"
 assert_eq "$(jqf "$resumed_wt" .worktree_reused)" "true" "worktree: tree reused"
@@ -95,7 +95,7 @@ printf 'still mine\n' >"$repo_preserve/.claude/worktrees/$id_preserve/failure-pr
 export FAKE_TMUX_LAUNCH_MANGLE=1
 failed_resume=$(dispatch_real "$repo_preserve" "$id_preserve" --resume)
 unset FAKE_TMUX_LAUNCH_MANGLE
-assert_eq "$(jqf "$failed_resume" .ok)" "false" "rollback ownership: readiness refusal"
+assert_ok "$failed_resume" "false" "rollback ownership: readiness refusal"
 assert_eq "$(jqf "$failed_resume" .reason)" "pane-not-ready" "rollback ownership: typed reason"
 assert_eq "$(cat "$repo_preserve/.claude/worktrees/$id_preserve/failure-proof.txt")" "still mine" \
   "rollback ownership: reused dirty bytes survive"
@@ -118,7 +118,7 @@ branch_oid=$(cd "$repo_branch" && git rev-parse "worktree-$id_branch")
 unknown_branch=$(dispatch_real "$repo_branch" "$id_branch" --resume)
 assert_eq "$(jqf "$unknown_branch" .reason)" resume-provider-unknown "branch: missing launch identity requires an explicit provider"
 resumed_branch=$(dispatch_real "$repo_branch" "$id_branch" --resume --agent=claude)
-assert_eq "$(jqf "$resumed_branch" .ok)" "true" "branch: resume succeeds"
+assert_ok "$resumed_branch" "true" "branch: resume succeeds"
 assert_eq "$(jqf "$resumed_branch" .worktree_reused)" "false" "branch: tree reconstructed"
 assert_eq "$(jqf "$resumed_branch" .branch_reused)" "true" "branch: existing branch reused"
 assert_eq "$(cd "$branch_wt" && git rev-parse HEAD)" "$branch_oid" "branch: commit retained"
@@ -132,7 +132,7 @@ mk_dispatched "$repo_window" "$id_window" >/dev/null
 (cd "$repo_window" && story move "$id_window" in-progress >/dev/null)
 export FAKE_TMUX_PANES="$id_window	1	%9"
 resumed_window=$(dispatch_real "$repo_window" "$id_window" --resume)
-assert_eq "$(jqf "$resumed_window" .ok)" "true" "window: resume succeeds"
+assert_ok "$resumed_window" "true" "window: resume succeeds"
 assert_eq "$(jqf "$resumed_window" .window_reused)" "true" "window: pane reused"
 repo_window_real=$(cd "$repo_window" && pwd -P)
 assert_contains "$(cat "$FAKE_TMUX_STATE/respawn_pane_args.log" 2>/dev/null || printf '')" \
@@ -162,7 +162,7 @@ provider_case() {
 }
 assert_codex_resumed() {
   local label="$1"
-  assert_eq "$(jqf "$out" .ok)" "true" "provider ($label): resume succeeds"
+  assert_ok "$out" "true" "provider ($label): resume succeeds"
   assert_eq "$(jqf "$out" .window_reused)" "true" "provider ($label): pane reused"
   assert_eq "$(jqf "$out" .agent)" "codex" "provider ($label): the recorded provider is relaunched"
   assert_contains "$(cat "$FAKE_TMUX_STATE/respawn_pane_args.log" 2>/dev/null || printf '')" \
@@ -176,7 +176,7 @@ STORY_AGENT=claude provider_case "STORY_AGENT=claude"
 assert_codex_resumed "STORY_AGENT=claude"
 # Explicit provider changes preserve the verified surviving worktree.
 provider_case "--agent=claude" --agent=claude
-assert_eq "$(jqf "$out" .ok)" true "provider override: resume succeeds"
+assert_ok "$out" true "provider override: resume succeeds"
 assert_eq "$(jqf "$out" .agent)" claude "provider override: launches Claude"
 assert_contains "$(jqf "$out" .worktree_path)" ".codex/worktrees/" \
   "provider override: preserves the Codex-created worktree"
@@ -195,7 +195,7 @@ id_container=$(new_story "$repo_container" "Provider from the worktree container
   && git worktree add -q --no-track -b "worktree-$id_container" ".codex/worktrees/$id_container" HEAD \
   && story move "$id_container" in-progress >/dev/null)
 container=$(STORY_AGENT=claude dispatch_real "$repo_container" "$id_container" --resume)
-assert_eq "$(jqf "$container" .ok)" "true" "container: resume succeeds"
+assert_ok "$container" "true" "container: resume succeeds"
 assert_eq "$(jqf "$container" .agent)" "codex" "container: provider read from the worktree container"
 assert_eq "$(jqf "$container" .worktree_reused)" "true" "container: the codex worktree is the one reused"
 assert_contains "$(jqf "$container" .worktree_path)" "/.codex/worktrees/$id_container" \
@@ -209,7 +209,7 @@ id_pane_only=$(new_story "$repo_pane_only" "Abandoned pane only")
 (cd "$repo_pane_only" && story move "$id_pane_only" in-progress >/dev/null)
 export FAKE_TMUX_PANES="$id_pane_only	1	%8"
 resumed_pane_only=$(dispatch_real "$repo_pane_only" "$id_pane_only" --resume)
-assert_eq "$(jqf "$resumed_pane_only" .ok)" false "pane only: unverified ownership refuses"
+assert_ok "$resumed_pane_only" false "pane only: unverified ownership refuses"
 assert_eq "$(jqf "$resumed_pane_only" .reason)" resource-identity-unsafe "pane only: identity diagnostic"
 [ ! -f "$FAKE_TMUX_STATE/respawn_pane_args.log" ] || fail_test "pane only: unowned session was replaced"
 
@@ -222,7 +222,7 @@ mkdir -p "$repo_unsafe/.claude/worktrees/$id_unsafe"
 printf 'not yours\n' >"$repo_unsafe/.claude/worktrees/$id_unsafe/evidence.txt"
 (cd "$repo_unsafe" && story move "$id_unsafe" in-progress >/dev/null)
 unsafe=$(dispatch_real "$repo_unsafe" "$id_unsafe" --resume)
-assert_eq "$(jqf "$unsafe" .ok)" "false" "unsafe: unregistered path refuses"
+assert_ok "$unsafe" "false" "unsafe: unregistered path refuses"
 assert_eq "$(jqf "$unsafe" .reason)" "resource-identity-unsafe" "unsafe: typed reason"
 assert_eq "$(cat "$repo_unsafe/.claude/worktrees/$id_unsafe/evidence.txt")" "not yours" \
   "unsafe: evidence preserved"
@@ -260,7 +260,7 @@ mk_dispatched "$repo_self" "$id_self" >/dev/null
 (cd "$repo_self" && story move "$id_self" in-progress >/dev/null)
 export FAKE_TMUX_PANES="$id_self	1	%0"
 self=$(dispatch_real "$repo_self" "$id_self" --resume)
-assert_eq "$(jqf "$self" .ok)" "false" "self: refuses"
+assert_ok "$self" "false" "self: refuses"
 assert_eq "$(jqf "$self" .reason)" "resume-unsafe" "self: typed reason"
 assert_contains "$(jqf "$self" .display)" "current pane" "self: diagnosis"
 

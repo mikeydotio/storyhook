@@ -41,7 +41,7 @@ assert_eq "$(cd "$repo" && story show "$damaged" --json | jq -r '.story.story.st
   in-progress "refused cleanup preserves the claim"
 
 started=$(dispatch_case "$independent")
-assert_eq "$(jqf "$started" .ok)" true "independent story dispatches"
+assert_ok "$started" true "independent story dispatches"
 assert_eq "$(cd "$repo" && story show "$independent" --json | jq -r '.story.story.state')" \
   in-progress "independent claim advances"
 [ -d "$path" ] || fail_test "damaged worktree directory was removed"

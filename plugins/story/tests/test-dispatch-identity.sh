@@ -6,7 +6,7 @@ id=$(new_story "$repo" "Registration failure")
 out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX=fake TMUX_PANE=%0 \
   STORY_READY_DELAY=0 STORY_CONFIRM_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_FAIL_IDENTITY_WRITE=1 bash "$SCRIPT" dispatch "$id")
-assert_eq "$(jqf "$out" .ok)" false "registration refuses"
+assert_ok "$out" false "registration refuses"
 assert_eq "$(jqf "$out" .reason)" pane-identity-unavailable "typed registration refusal"
 assert_eq "$(jqf "$out" .claimed)" false "registration failure releases claim"
 assert_contains "$(jqf "$out" .display)" "No story charter was delivered" "failure names delivery boundary"
@@ -49,7 +49,7 @@ for mode in stale missing; do
   out=$(cd "$repo" && PATH="$adapter:$TESTS_DIR/fakes:$PATH" TMUX=fake TMUX_PANE=%0 \
     STORY_READY_DELAY=0 STORY_CONFIRM_DELAY=0 FAKE_TMUX_CAPTURE=marker \
     FIXTURE_TOKEN_MODE="$mode" bash "$SCRIPT" dispatch "$id")
-  assert_eq "$(jqf "$out" .ok)" false "$mode: registration refuses"
+  assert_ok "$out" false "$mode: registration refuses"
   assert_eq "$(jqf "$out" .claimed)" true "$mode: unproved owner retains claim"
   assert_contains "$(jqf "$out" .display)" "launch start" "$mode: diagnostics name missing ownership evidence"
   [ -d "$repo/.claude/worktrees/$id" ] || fail_test "$mode: unproved owner lost its worktree"

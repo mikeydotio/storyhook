@@ -57,7 +57,7 @@ assert_eq "$(cd "$repo" && git rev-parse refs/heads/main)" "$local_main" \
 
 # --- execute really deletes it, via the -D escalation ---
 out=$(cd "$repo" && bash "$SCRIPT" complete execute "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "stale base: exec ok"
+assert_ok "$out" "true" "stale base: exec ok"
 assert_eq "$(jqf "$out" '.removed.branches|length')" "1" "stale base: branch removed"
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$w") \
   && fail_test "stale base: branch survived the escalation"
