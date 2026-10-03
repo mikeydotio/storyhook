@@ -274,3 +274,65 @@ failure is an infrastructure error through existing supervision, distinct
 from a budget breach. It cannot silently become a successful disposition.
 The bundle includes the cost helper, and changes invalidate affected leg
 receipts through the existing contract fingerprint.
+
+## SH-870 causal return contract
+
+Status: approved implementation contract; completion requires the runtime
+and regression evidence below. Attribution does not change certification.
+
+Retain one versioned attribution record for each failed admission outcome,
+with separate failure components. Reference the original submission generation,
+head, pinned base, merge tree, and SH-867 physical execution records. Keep probe
+plans and completed results immutable. Later assessments append evidence;
+they do not replace the original failure or an earlier uncertain diagnosis.
+Record updates use a transaction and compare-and-swap revision.
+
+| Cause | Submission effect |
+|---|---|
+| Candidate-caused | Return only the proved components and their reproductions |
+| Shared-project | Retain Verifying with a project diagnosis hold |
+| Host/external | Retain Verifying with the prerequisite evidence |
+| Integration | Retain Verifying; do not assign base movement to the implementer |
+| Unknown | Retain Verifying, including diagnosis exhaustion |
+
+For automatic causal comparison, execute two contrasting pairs in alternating
+order: candidate, control, control, candidate. Require the exact selected
+detector to execute in each probe. Require matching toolchain, fixture inputs,
+supported resource policy, and positive per-run resource evidence. A zero-test
+pass, changed assertion, different failure signature, incomplete cleanup,
+missing output, or inconsistent extra probe prevents a causal finding. Two
+pairs are the minimum protocol; they do not prove an arbitrary flaky test
+deterministic. Unsupported detectors remain uncertain.
+
+The control is the pinned base with the unchanged detector, a validated
+detector transplant, or a controlled ablation. Retain the patch and resulting
+tree when the control changes. Preserve the assertion and its meaning;
+removing a failing test is not ablation evidence. Fixture-defect attribution
+must isolate the fixture change while preserving the assertion and production
+behavior. Raw journals and assessor proposals cannot construct return authority.
+
+Reserve each physical probe durably before launch. Allow at most eight starts
+and 300000 milliseconds of active diagnosis per submission, across admissions
+and daemon restarts. Interrupted work is not refunded. This limit is independent
+of the 900-second gate observation and does not issue a receipt. Execute through
+the verifier's existing ownership, cancellation, scheduling and cleanup path.
+SH-868 and SH-869 retain resource authority and runner integration; missing
+supported resource evidence cannot be replaced by matching worker counts.
+
+The final state transaction validates the proof and current generation, head,
+attempt, operator controls, labels, blockers and landing authority. It commits
+the evidence references with the return. Apply that boundary to ordinary gates,
+repair stories, submission refusals and batch suspects. An assessment alone
+cannot move unjudged project-recovery work to In Progress. Cleanup uncertainty
+keeps its independent resource quarantine even when a check result is known.
+
+Persist holds before ownership release. Queue selection excludes held
+generations without rewriting other holds. Mixed failures keep separate
+records; only proved candidate components become implementer instructions.
+SH-871 owns shared healing and automatic readmission. The evidence command and
+status expose cause, evidence identity, diagnosis state and next action.
+
+Controlled regressions cover behavior and fixture defects, base defects,
+host faults, overload, conflicts, new detectors, mixed failures, budget
+exhaustion, restart and stale authority. Historical diagnoses are provenance,
+not causal proof; keep provisional findings provisional.

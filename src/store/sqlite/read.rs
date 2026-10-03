@@ -1420,6 +1420,24 @@ pub(super) fn verification_enabled(
     )
 }
 
+/// Read-only legacy stores have no causal epoch; new admissions always use the migrated store.
+pub(super) fn verification_control_revision(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<i64, StoreError> {
+    if crate::store::migrate::schema_version(conn)? < 56 {
+        return Ok(0);
+    }
+    sql(
+        conn.query_row(
+            "SELECT COALESCE((SELECT revision FROM verification_control WHERE project_id = ?1), 0)",
+            [project.get()],
+            |row| row.get(0),
+        ),
+        "reading verifier control revision",
+    )
+}
+
 /// Reads reset journals once per project rather than once per rendered card.
 pub(super) fn story_resets(
     conn: &Connection,

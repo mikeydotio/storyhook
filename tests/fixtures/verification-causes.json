@@ -1,0 +1,247 @@
+{
+  "version": 1,
+  "source": "Last 30 verifier returns: cause audit, snapshot 2026-10-03T15:56:40.062480+00:00",
+  "limits": "Historical comments and repair records; no independent replay. Categories are failure types, not proof of responsibility. Provisional attribution remains provisional.",
+  "returns": [
+    {
+      "index": "1",
+      "returned_at": "2026-10-03T15:03:40Z",
+      "story_id": "SH-820",
+      "historical_category": "Housekeeping",
+      "observation": "Watchdog Python observer kept fixed inner deadlines despite load-graced Rust patience; Codex fixtures expired or raced automatic cleanup. Historical reap interleaving is not proven.",
+      "confidence": "Probable for part of the return"
+    },
+    {
+      "index": "2",
+      "returned_at": "2026-10-03T13:37:07Z",
+      "story_id": "SH-814",
+      "historical_category": "Housekeeping",
+      "observation": "Supporting fake pane lived 30 seconds while dispatch could run 180 seconds. Controlled slow dispatch reproduced both failures; original logs omitted the refusal reason.",
+      "confidence": "Probable historical attribution"
+    },
+    {
+      "index": "3",
+      "returned_at": "2026-10-03T11:02:07Z",
+      "story_id": "SH-805",
+      "historical_category": "Housekeeping",
+      "observation": "Merge conflict with SH-804 in the browser subprocess audit.",
+      "confidence": "Recorded conflict"
+    },
+    {
+      "index": "4",
+      "returned_at": "2026-10-03T11:01:25Z",
+      "story_id": "SH-803",
+      "historical_category": "Housekeeping",
+      "observation": "Formatting-only failure on nested tuple access introduced by the updated base.",
+      "confidence": "Reproduced exact merged tree"
+    },
+    {
+      "index": "5",
+      "returned_at": "2026-10-03T10:10:10Z",
+      "story_id": "SH-823",
+      "historical_category": "Housekeeping",
+      "observation": "Shared discovery fixture/PID race, impact manifest, enum-size lint and tuple formatting; reused completed repairs.",
+      "confidence": "Repair record"
+    },
+    {
+      "index": "6",
+      "returned_at": "2026-10-03T09:22:30Z",
+      "story_id": "SH-820",
+      "historical_category": "Submitted behavior defect, mixed",
+      "observation": "SH-820 raised the macOS spawn-lock bound to 115 seconds but left dispatch readiness at 45 seconds; fixed the production wait to 130 seconds. Also shared fixture, audit, lint and formatting failures.",
+      "confidence": "Reproduced readiness mismatch"
+    },
+    {
+      "index": "7",
+      "returned_at": "2026-10-03T08:35:35Z",
+      "story_id": "SH-813",
+      "historical_category": "Housekeeping",
+      "observation": "Shared discovery/manifest/Clippy/formatting failures plus exact timeout-proof inventory integration with SH-804.",
+      "confidence": "Repair record"
+    },
+    {
+      "index": "8",
+      "returned_at": "2026-10-03T08:00:16Z",
+      "story_id": "SH-814",
+      "historical_category": "Housekeeping",
+      "observation": "Shared discovery/manifest/Clippy/formatting failures; scheduled isolation controller unchanged.",
+      "confidence": "Repair record"
+    },
+    {
+      "index": "9",
+      "returned_at": "2026-10-03T06:31:02Z",
+      "story_id": "SH-817",
+      "historical_category": "Housekeeping",
+      "observation": "Shared discovery/manifest/Clippy/formatting failures plus deliberately background-starved scheduling-test control.",
+      "confidence": "Repair record"
+    },
+    {
+      "index": "10",
+      "returned_at": "2026-10-03T04:26:48Z",
+      "story_id": "SH-805",
+      "historical_category": "Existing unrelated product defect, mixed",
+      "observation": "Pre-existing SH-865 non-Git cleanup bug, plus shared discovery/manifest/Clippy failures, provider-startup fixture race and the story own missing wait-inventory entry.",
+      "confidence": "Reproduced cleanup failure"
+    },
+    {
+      "index": "11",
+      "returned_at": "2026-10-03T03:36:33Z",
+      "story_id": "SH-803",
+      "historical_category": "Housekeeping",
+      "observation": "Shared discovery runtime dependency and PID-readiness errors, manifest ordering, cfg(test) enum-size lint and ungraced native-probe fixture.",
+      "confidence": "Repair record and controlled reproductions"
+    },
+    {
+      "index": "12",
+      "returned_at": "2026-10-02T19:06:38Z",
+      "story_id": "SH-787",
+      "historical_category": "Housekeeping",
+      "observation": "New SH-787 fixtures used prohibited tempdirs and omitted timing classifications; an unrelated engine-control fixture raced periodic reconciliation. Product systemd behavior unchanged.",
+      "confidence": "Reproduced fixture/audit failures"
+    },
+    {
+      "index": "13",
+      "returned_at": "2026-10-02T18:07:52Z",
+      "story_id": "SH-791",
+      "historical_category": "Housekeeping",
+      "observation": "Bundled-writer fixture allowed only three seconds for startup; reused completed test-only repair.",
+      "confidence": "Controlled delayed-start reproduction"
+    },
+    {
+      "index": "14",
+      "returned_at": "2026-10-02T14:34:08Z",
+      "story_id": "SH-864",
+      "historical_category": "Existing unrelated product defect",
+      "observation": "SH-865 closure cleanup appended an asynchronous warning to non-Git fixture stories, changing output between two reads. SH-864 changed implementer instructions, not cleanup.",
+      "confidence": "Decoded gate outputs and repeated reproduction"
+    },
+    {
+      "index": "15",
+      "returned_at": "2026-10-02T12:59:42Z",
+      "story_id": "SH-857",
+      "historical_category": "Housekeeping",
+      "observation": "Shared source audits, short retry/credential/writer fixture budgets, missing local Git endpoint and cancellation test expectation; incorporated shared test repairs.",
+      "confidence": "Repair record"
+    },
+    {
+      "index": "16",
+      "returned_at": "2026-10-02T11:09:11Z",
+      "story_id": "SH-864",
+      "historical_category": "Housekeeping",
+      "observation": "Deterministic audit failures already on base, load-dependent helper/startup failures and plugin flakes. SH-864 instructions did not cause them.",
+      "confidence": "Cross-gate comparison and repair record"
+    },
+    {
+      "index": "17",
+      "returned_at": "2026-10-02T09:37:12Z",
+      "story_id": "SH-858",
+      "historical_category": "Submitted behavior defect, mixed",
+      "observation": "New Python runtime-selection contract was not preserved through environment scrubs, breaking identity-policy Git and other calls. Also incomplete runtime fixtures, shared audits and cancellation-test failures.",
+      "confidence": "New runtime boundary regression failed before repair"
+    },
+    {
+      "index": "18",
+      "returned_at": "2026-10-02T08:08:18Z",
+      "story_id": "SH-863",
+      "historical_category": "Housekeeping",
+      "observation": "Retry/submission/capture fixture timing, missing test-seam feature, shared audit failures and incorrect forced-cancellation restoration expectation.",
+      "confidence": "Repair record"
+    },
+    {
+      "index": "19",
+      "returned_at": "2026-10-02T05:51:47Z",
+      "story_id": "SH-859",
+      "historical_category": "Housekeeping",
+      "observation": "New startup-trust test scripts omitted shared isolation/cleanup library; also existing resume/census fixture audits and cleanup-writer inventory. Consent state machine unchanged.",
+      "confidence": "Repair record"
+    },
+    {
+      "index": "20",
+      "returned_at": "2026-10-01T19:38:20Z",
+      "story_id": "SH-776",
+      "historical_category": "Housekeeping",
+      "observation": "Load-dependent retry, early-response and fake-tmux timeouts on unchanged unrelated paths; original story resubmitted unchanged.",
+      "confidence": "Gate evidence and independent-path comparison"
+    },
+    {
+      "index": "21",
+      "returned_at": "2026-10-01T17:46:49Z",
+      "story_id": "SH-850",
+      "historical_category": "Housekeeping",
+      "observation": "Repeated SH-850 merge conflict; recovered submission had no cleanup lease to publish its reconciliation.",
+      "confidence": "Recorded conflict"
+    },
+    {
+      "index": "22",
+      "returned_at": "2026-10-01T17:27:10Z",
+      "story_id": "SH-848",
+      "historical_category": "Housekeeping",
+      "observation": "Merge conflict in project recovery source; recovered submission lacked cleanup lease.",
+      "confidence": "Recorded conflict"
+    },
+    {
+      "index": "23",
+      "returned_at": "2026-10-01T17:24:09Z",
+      "story_id": "SH-775",
+      "historical_category": "Housekeeping",
+      "observation": "Merge conflict with SH-860 recovery status/spec changes; recovered submission lacked cleanup lease.",
+      "confidence": "Recorded conflict"
+    },
+    {
+      "index": "24",
+      "returned_at": "2026-10-01T16:30:01Z",
+      "story_id": "SH-850",
+      "historical_category": "Housekeeping",
+      "observation": "SH-850 merge conflicts in story helper and fake tmux after base moved.",
+      "confidence": "Recorded conflict"
+    },
+    {
+      "index": "25",
+      "returned_at": "2026-10-01T07:36:48Z",
+      "story_id": "SH-860",
+      "historical_category": "Housekeeping",
+      "observation": "Notification fixture panes expired before the multi-call scenario completed. Production correctly rejected dead panes.",
+      "confidence": "Controlled pause reproduced before/after"
+    },
+    {
+      "index": "26",
+      "returned_at": "2026-10-01T05:17:45Z",
+      "story_id": "SH-860",
+      "historical_category": "Housekeeping",
+      "observation": "New writer already used the correct wrapper but lacked audit entry; Python portability, helper patience, PID publication and sentinel/test scheduling races.",
+      "confidence": "Repair record"
+    },
+    {
+      "index": "27",
+      "returned_at": "2026-09-30T20:13:58Z",
+      "story_id": "SH-781",
+      "historical_category": "Housekeeping",
+      "observation": "Python 3.9 incompatibility, shared pane/sentinel/write races and load-sensitive cancellation/startup/compiler/transport fixtures. None exercised SH-781 changed behavior.",
+      "confidence": "Cross-gate comparison and repair record"
+    },
+    {
+      "index": "28",
+      "returned_at": "2026-09-30T16:49:32Z",
+      "story_id": "SH-777",
+      "historical_category": "Housekeeping",
+      "observation": "Python compatibility, shared pane expiry, tmux incident and cancellation fixture failures outside SH-777 changes.",
+      "confidence": "Cross-gate comparison and repair record"
+    },
+    {
+      "index": "29",
+      "returned_at": "2026-09-30T13:45:36Z",
+      "story_id": "SH-776",
+      "historical_category": "Housekeeping",
+      "observation": "Python compatibility, accepted-request fixture race and cancellation/tmux timeouts outside SH-776 changes; resubmitted unchanged.",
+      "confidence": "Cross-gate comparison and repair record"
+    },
+    {
+      "index": "30",
+      "returned_at": "2026-09-30T11:53:36Z",
+      "story_id": "SH-775",
+      "historical_category": "Housekeeping",
+      "observation": "Python compatibility, expired fake panes, reset fixture ownership and sentinel timing; reused fixes from base.",
+      "confidence": "Repair record"
+    }
+  ]
+}

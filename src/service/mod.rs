@@ -31,6 +31,7 @@
 
 pub mod agents;
 pub mod attachment;
+pub mod attribution;
 pub mod batch_assembly;
 pub mod batch_landing;
 pub mod batch_preview;

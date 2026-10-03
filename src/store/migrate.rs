@@ -493,6 +493,18 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0054_gate_evidence.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 55,
+        name: "verification_attribution",
+        sql: include_str!("schema/0055_verification_attribution.sql"),
+        foreign_keys_off: false,
+    },
+    Migration {
+        version: 56,
+        name: "verification_control_revision",
+        sql: include_str!("schema/0056_verification_control_revision.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 mod lineage;

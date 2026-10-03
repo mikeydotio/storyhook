@@ -59,6 +59,7 @@ pub(super) fn update(
     let immutable_changed = (old.finished_at.is_some() && old != same_revision)
         || old.submission != record.submission
         || old.admitted_at != record.admitted_at
+        || old.control_revision != record.control_revision
         || old.previous_attempt != record.previous_attempt
         || (old.finished_at.is_some() && old.finished_at != record.finished_at)
         || (old.elapsed.breached_at.is_some()

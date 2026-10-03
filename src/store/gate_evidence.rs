@@ -213,6 +213,9 @@ pub struct GateAttempt {
     pub revision: i64,
     /// UTC admission, before preparation or resource waits.
     pub admitted_at: String,
+    /// Control epoch captured atomically at admission; absent legacy evidence grants no causal authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_revision: Option<i64>,
     /// UTC completion; absent while live or unresolved after interruption.
     pub finished_at: Option<String>,
     /// Total admission-to-verdict elapsed observation.
@@ -240,6 +243,7 @@ impl GateAttempt {
             previous_attempt: None,
             revision: 0,
             admitted_at: at.into(),
+            control_revision: None,
             finished_at: None,
             elapsed: Elapsed::new(at),
             verdict: None,
@@ -256,6 +260,7 @@ impl GateAttempt {
             || self.id.is_empty()
             || self.submission.story_id.is_empty()
             || self.revision < 0
+            || self.control_revision.is_some_and(|revision| revision < 0)
             || chrono::DateTime::parse_from_rfc3339(&self.admitted_at).is_err()
             || chrono::DateTime::parse_from_rfc3339(&self.elapsed.checkpoint_at).is_err()
             || self

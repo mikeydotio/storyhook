@@ -248,6 +248,8 @@ tracked_tree_linked_worktree	:(glob)**/*
 trailing_arguments	:(glob)**/*
 type_slug_call_sites	:(glob)**/*
 unassessed_priority_paths	:(glob)**/*
+verification_attribution	:(glob)src/service/attribution/**
+verification_attribution	:(glob)src/store/**
 verification_progress_timeout	:(glob)**/*
 verification_queue	:(glob)**/*
 verification_retry_shell	scripts/test-git-endpoint.py

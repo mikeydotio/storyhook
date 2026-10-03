@@ -610,3 +610,44 @@ fn a_retry_queue_interval_does_not_include_prior_admitted_service() {
         "retry wait starts after prior service, not at the original submission"
     );
 }
+
+#[test]
+fn causal_control_epoch_is_captured_at_admission_and_never_renewed_by_sampling() {
+    let board = Board::new();
+    let project = board.candidate.project;
+    board
+        .store
+        .write(|tx| {
+            tx.put_verification_enabled(project, false)?;
+            tx.put_verification_enabled(project, true)
+        })
+        .unwrap();
+    let guard = board.admit();
+    assert_eq!(
+        serde_json::to_value(&board.rows()[0]).unwrap()["control_revision"],
+        2
+    );
+    board
+        .store
+        .write(|tx| tx.put_verification_enabled(project, true))
+        .unwrap();
+    sample(&board.store, &board.activity, project).unwrap();
+    let record = board.rows().remove(0);
+    let mut changed = serde_json::to_value(&record).unwrap();
+    assert_eq!(changed["control_revision"], 2);
+    changed["control_revision"] = serde_json::json!(3);
+    changed["revision"] = serde_json::json!(record.revision + 1);
+    let forged: GateAttempt = serde_json::from_value(changed).unwrap();
+    assert!(
+        board
+            .store
+            .write(|tx| tx.update_gate_attempt(&forged, record.revision))
+            .is_err()
+    );
+    drop(guard);
+    sample(&board.store, &board.activity, project).unwrap();
+    assert_eq!(
+        serde_json::to_value(&board.rows()[0]).unwrap()["control_revision"],
+        2
+    );
+}

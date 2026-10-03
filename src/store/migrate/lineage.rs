@@ -110,6 +110,26 @@ fn classify(conn: &Connection) -> Result<bool, StoreError> {
     expect_table(conn, "closure_cleanups", CARD, version >= 53)?;
     expect_table(
         conn,
+        "verification_control",
+        &["project_id", "enabled"],
+        version >= 37,
+    )?;
+    expect_table(
+        conn,
+        "verification_attributions",
+        &[
+            "id",
+            "project_id",
+            "story_id",
+            "generation",
+            "attempt_id",
+            "revision",
+            "payload",
+        ],
+        version >= 55,
+    )?;
+    expect_table(
+        conn,
         "gate_attempts",
         &["id", "project_id", "story_id", "revision", "payload"],
         version >= 54,
@@ -312,6 +332,27 @@ pub(super) fn upgrade(
 }
 
 fn validate_definition(conn: &Connection, table: &str) -> Result<(), StoreError> {
+    if table == "verification_control" {
+        let reference = Connection::open_in_memory()?;
+        reference.execute_batch(include_str!("../schema/0037_verification_control.sql"))?;
+        if schema_version(conn)? >= 56 {
+            reference.execute_batch(include_str!(
+                "../schema/0056_verification_control_revision.sql"
+            ))?;
+        }
+        let definition =
+            |db: &Connection| {
+                db.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='verification_control'",
+            [], |row| row.get::<_, String>(0))
+            };
+        if normalized_definition(&definition(conn)?)
+            != normalized_definition(&definition(&reference)?)
+        {
+            return Err(StoreError::Corrupt("schema table `verification_control` does not match its supported constraints and revision".into()));
+        }
+        return Ok(());
+    }
     let source = match table {
         "project_recoveries" | "project_recovery_observations" => {
             include_str!("../schema/0047_project_recovery.sql")
@@ -319,6 +360,7 @@ fn validate_definition(conn: &Connection, table: &str) -> Result<(), StoreError>
         "dropped_cleanups" => include_str!("../schema/0045_dropped_cleanup.sql"),
         "closure_cleanups" => include_str!("../schema/0053_closure_cleanup.sql"),
         "gate_attempts" => include_str!("../schema/0054_gate_evidence.sql"),
+        "verification_attributions" => include_str!("../schema/0055_verification_attribution.sql"),
         "landing_intents" => include_str!("../schema/0038_landing_intents.sql"),
         "story_reset_reservations" => include_str!("../schema/0044_launch_compatibility.sql"),
         "story_resets" => {

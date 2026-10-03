@@ -4065,8 +4065,11 @@ fn migration_37_preserves_existing_projects_and_constrains_manual_permission() {
             .is_err()
     );
     assert!(
-        conn.execute("INSERT INTO verification_control VALUES (999999, 0)", [])
-            .is_err()
+        conn.execute(
+            "INSERT INTO verification_control(project_id, enabled) VALUES (999999, 0)",
+            []
+        )
+        .is_err()
     );
 }
 

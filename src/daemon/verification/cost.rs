@@ -41,6 +41,7 @@ pub(super) fn admission(
     at: &str,
 ) -> Result<GateAttempt, StoreError> {
     let mut record = GateAttempt::new(id.into(), submission(candidate), at);
+    record.control_revision = Some(tx.verification_control_revision(candidate.project)?);
     record.journal_path = Some(journal_path(env, candidate).display().to_string());
     let previous = tx
         .gate_attempts(candidate.project)?

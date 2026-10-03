@@ -74,6 +74,7 @@ fn every_supported_lineage_converges_and_reopens_idempotently() {
             "dropped_cleanups",
             "verification_batches",
             "gate_attempts",
+            "verification_attributions",
         ] {
             assert!(
                 conn.prepare(&format!("SELECT * FROM {table}")).is_ok(),
