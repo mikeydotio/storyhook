@@ -25,6 +25,7 @@ use std::net::{IpAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use storyhook::event_hooks::HOOK_TIMEOUT_CEILING_SECS;
 use storyhook_test_support::{TestEnv, reserve_port, slug_at, wait_for_addr, wait_for_server};
 
 /// A real, bindable, non-loopback IP on this machine — found by asking the
@@ -171,4 +172,158 @@ fn a_daemon_that_missed_its_tailnet_bind_self_heals_without_a_restart() {
             panic!("expected the late-bound tailnet interface to be auto-trusted: {e}")
         });
     assert_eq!(resp.status(), 200);
+}
+
+/// How long the test gives a dashboard request to reach its event hook: one
+/// REST move through the daemon and one `sh` spawn. Like [`REBIND_DEADLINE`],
+/// a bound on the step *happening*, graced by load through `Patience`.
+const HOOK_ENTRY_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Writes the file a held hook waits for, when dropped.
+///
+/// Declared after the daemon guard so that it drops first: a failing
+/// assertion releases the hook before the daemon stops, rather than leaving a
+/// `sh` waiting on a file that can no longer appear once the project
+/// directory is gone. The hook also bounds its own wait, so a write that fails
+/// here costs at most that bound; it is not worth a panic during an unwind.
+struct Release(PathBuf);
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        let _ = std::fs::write(&self.0, "");
+    }
+}
+
+/// SH-838, the sibling of SH-186's lock-scoping defect on the dashboard's own
+/// request path.
+///
+/// `route_job_inner` used to hold `trusted_hosts`'s read lock for the whole of
+/// a REST request, and a project route runs the project's event hooks
+/// synchronously, for up to [`HOOK_TIMEOUT_CEILING_SECS`]. A late tailnet bind
+/// — `tailnet_reprobe`, the lock's only writer — then waited for the hook, and
+/// every new connection's admission read queued behind that waiting writer:
+/// the daemon stalled for the rest of the hook, and a hook that ran `story`
+/// waited on itself until its timeout.
+///
+/// The hook below holds the request open until the test releases it, and the
+/// bind must land in the meantime. With the defect it cannot: it lands only
+/// once the request returns, which needs the hook to end. Either the bind wait
+/// expires, or — under load heavy enough to grace it past the hook's own
+/// timeout — the request finishes first and the hook never sees its release.
+#[test]
+fn a_late_tailnet_bind_is_not_held_up_by_a_dashboard_request_in_progress() {
+    let env = TestEnv::isolated();
+    let project = env.project().build();
+    let slug = slug_at(&env, project.path());
+    let story_id = project.new_story("Moved while the tailnet binds late");
+
+    // The same fresh spawn as the self-heal test above, for the same reason:
+    // the fixture's daemon never saw the shimmed `PATH`.
+    env.stop_daemon();
+
+    let port = reserve_port();
+    let marker = project.path().join("tailscale-ready");
+    let ip = a_bindable_non_loopback_ip();
+    let shim = flaky_tailscale_shim(&marker, ip, "sh838-route-job.tail00000.ts.net");
+    let path = path_with_shim(&env, shim.path());
+    let _daemon_guard = storyhook_test_support::DaemonGuard::new(&env, project.path());
+
+    // A hook that holds the request open until `release` exists. `finished`
+    // is written only on a release, never on the hook's own fallback bound,
+    // so it proves the hook was still waiting when the test let it go.
+    let entered = project.path().join("hook-entered");
+    let release_path = project.path().join("hook-release");
+    let finished = project.path().join("hook-finished");
+    let pointer = project.path().join(".storyhook.toml");
+    let identity = std::fs::read_to_string(&pointer).expect("the project's pointer file");
+    std::fs::write(
+        &pointer,
+        format!(
+            "{identity}\n[hooks.on_state_change]\n\
+             command = \"touch '{entered}'; i=0; \
+             while [ ! -e '{release}' ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); done; \
+             if [ -e '{release}' ]; then touch '{finished}'; fi\"\n\
+             timeout_seconds = {HOOK_TIMEOUT_CEILING_SECS}\n",
+            entered = entered.display(),
+            release = release_path.display(),
+            finished = finished.display(),
+        ),
+    )
+    .expect("appending the project's event hook");
+    let release = Release(release_path);
+
+    env.story(project.path())
+        .env("PATH", &path)
+        .env("STORYHOOK_TAILNET_REPROBE_INITIAL_MS", "50")
+        .env("STORYHOOK_TAILNET_REPROBE_CAP_MS", "200")
+        .args(["web", "start", "--port", &port.to_string()])
+        .assert()
+        .success();
+    wait_for_server(port);
+    let before = env
+        .daemon()
+        .expect("the daemon we just started must have a portfile");
+    assert!(
+        before.tailnet.is_none(),
+        "the bind must still be pending for this to test a late bind; got {:?}",
+        before.tailnet
+    );
+
+    let url = format!("http://127.0.0.1:{port}/api/repos/{slug}/story/{story_id}/move");
+    let token = before.token.clone();
+    let request = std::thread::spawn(move || {
+        ureq::post(&url)
+            .header("X-Storyhook", "1")
+            .header("X-Storyhook-Token", &token)
+            .content_type("application/json")
+            .send(r#"{"state":"in-progress"}"#)
+            .map(|resp| resp.status().as_u16())
+            .map_err(|e| e.to_string())
+    });
+
+    let mut patience = storyhook_test_support::load_grace::Patience::new(HOOK_ENTRY_DEADLINE);
+    while !entered.exists() {
+        if request.is_finished() {
+            panic!(
+                "the dashboard request ended before its hook ran: {:?}",
+                request.join()
+            );
+        }
+        assert!(
+            !patience.expired(),
+            "{patience}; the dashboard request never reached its event hook"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // `tailscaled` comes up while the request is still inside its hook.
+    std::fs::write(&marker, "").expect("writing the ready marker");
+    let mut patience = storyhook_test_support::load_grace::Patience::new(REBIND_DEADLINE);
+    while env.daemon().and_then(|info| info.tailnet).is_none() {
+        if request.is_finished() {
+            panic!(
+                "the dashboard request finished before the late bind landed, so the bind waited \
+                 for it: {:?}",
+                request.join()
+            );
+        }
+        assert!(
+            !patience.expired(),
+            "{patience}; the late tailnet bind never landed while a dashboard request was in \
+             progress — the request is holding the trusted-hosts lock the bind needs (SH-838)"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    drop(release);
+    let status = request
+        .join()
+        .expect("the request thread does not panic")
+        .expect("the held move succeeds once its hook is released");
+    assert_eq!(status, 200);
+    assert!(
+        finished.exists(),
+        "the hook must have been released by this test, not ended by its timeout — only then \
+         did the bind land while the request was in progress"
+    );
 }
