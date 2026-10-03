@@ -12,6 +12,9 @@ import {
   tabOnto,
 } from "./support";
 
+/** Existing whole-sweep allowance; the test watchdog owns its load grace. */
+const FOCUS_SWEEP_BASE_MS = 60_000;
+
 /**
  * SH-360 -- the dashboard's other seven focus indicators, measured.
  *
@@ -186,7 +189,7 @@ test("the drawer's three focus indicators, in every theme", async ({ page }) => 
 const MAX_NOTICES_FOR_OVERFLOW = 30;
 
 test("the notice scroller's focus indicator, in every theme", async ({ page }) => {
-  test.setTimeout(60_000); // matches notice-dock-geometry.spec.ts:418's own
+  test.setTimeout(FOCUS_SWEEP_BASE_MS); // matches notice-dock-geometry.spec.ts:418's own
   // budget for the same ~24-notice cost.
 
   await page.goto("/");

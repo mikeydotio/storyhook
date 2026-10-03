@@ -1,3 +1,4 @@
+import { gracedOperationBudget } from "../load-grace";
 import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
@@ -6,6 +7,9 @@ import {
   resolvedTokenColor,
   seedToken,
 } from "./support";
+
+/** Existing idle patience for board update; SH-804 adds contention grace. */
+const BOARD_UPDATE_BASE_MS = 8_000;
 
 /**
  * Exercises SH-277: the list view's `.state-pill` reads
@@ -258,7 +262,7 @@ test("SH-487: a leaf blocked by a story that itself needs a person shows a promo
   await page.locator('#view-toggle button[data-view="list"]').click();
 
   await expect(row.locator(".state-pill")).toHaveText("blocked", {
-    timeout: 8000,
+    timeout: gracedOperationBudget(BOARD_UPDATE_BASE_MS),
   });
   await expect(row.locator(".state-pill")).toHaveAttribute(
     "title",

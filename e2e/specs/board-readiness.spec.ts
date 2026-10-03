@@ -1,3 +1,4 @@
+import { gracedOperationBudget } from "../load-grace";
 import { test, expect } from "./support";
 import type { APIRequestContext } from "@playwright/test";
 import {
@@ -11,6 +12,9 @@ import {
   requiredEnv,
   seedToken,
 } from "./support";
+
+/** Existing idle patience for draft recovery; SH-804 adds contention grace. */
+const DRAFT_RECOVERY_BASE_MS = 10_000;
 
 /**
  * Pins SH-222's readiness rule: reaching a board means its data has arrived,
@@ -594,7 +598,7 @@ test("a project that answers after a failure drops the error where it stands", a
   await seedDraft(request, "Alpha Project", DRAFT_TITLE);
 
   await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1, {
-    timeout: 10_000,
+    timeout: gracedOperationBudget(DRAFT_RECOVERY_BASE_MS),
   });
   await expect(page.locator("#drafts-list .drafts-row")).toContainText(
     DRAFT_TITLE,

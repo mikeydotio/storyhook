@@ -27,7 +27,7 @@ import {
   MAX_TEST_TIMEOUT_MS,
   resetTestBudget,
 } from "../load-grace";
-import { fixtureApiUrl, requiredEnv } from "../fixture-api";
+import { fixtureApiUrl, gracedRequestBudget, requiredEnv } from "../fixture-api";
 import { fixtureBaseline, projectStories } from "../fixture-baseline";
 import type { BoardStory } from "../fixture-baseline";
 
@@ -452,6 +452,7 @@ let activeTestToken: string | null = null;
 async function resetFixtureTokenPreferences(request: APIRequestContext): Promise<void> {
   // Some auth specs paste the original suite token into the token modal.
   const response = await request.patch(fixtureApiUrl("/api/preferences"), {
+    timeout: gracedRequestBudget(),
     headers: {
       "X-Storyhook": "1",
       "X-Storyhook-Token": requiredEnv("DASHBOARD_NAMED_TOKEN"),
@@ -590,6 +591,7 @@ export async function projectSlug(
   name: string,
 ): Promise<string> {
   const resp = await request.get(fixtureApiUrl("/api/repos"), {
+    timeout: gracedRequestBudget(),
     headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") },
   });
   const repos: Array<{ id: string; name: string }> = await resp.json();
@@ -1626,6 +1628,7 @@ export async function removeStrays(
     for (const story of remaining) {
       await waitForStoryBlockDeliveries(slug, story.id, patienceMs);
       const deleted = await request.delete(storyUrl(story.id), {
+        timeout: gracedRequestBudget(),
         headers,
         data: { force: true },
       });
@@ -1715,7 +1718,7 @@ export async function deleteStatus(
   const projectId = await projectSlug(request, project);
   const resp = await request.delete(
     `/api/repos/${encodeURIComponent(projectId)}/states/${encodeURIComponent(slug)}`,
-    { headers: apiHeaders(), data: {} },
+    { timeout: gracedRequestBudget(), headers: apiHeaders(), data: {} },
   );
   if (!resp.ok()) {
     throw new Error(
@@ -1814,7 +1817,7 @@ export async function awaitNoOverlay(page: Page): Promise<void> {
   await page.waitForFunction(
     () => document.querySelectorAll(".backdrop:not([hidden])").length === 0,
     undefined,
-    { timeout: 5000 },
+    { timeout: gracedPatience() },
   );
 }
 
