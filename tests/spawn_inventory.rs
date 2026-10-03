@@ -121,6 +121,9 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
         "\"sh\"",
         Kind::Waited,
     ),
+    // The provider lock test owns a stdin-gated child and bounds its exit
+    // with ChildGuard; stdout/stderr are not read from pipes.
+    ("src/plugin/operation/tests.rs", "\"/bin/sh\"", Kind::Waited),
     // Reset uses bounded, file-backed process capture.
     ("src/service/reset/resources.rs", "\"tmux\"", Kind::Waited),
     // Out-of-line process tests are visible to this file-based census.

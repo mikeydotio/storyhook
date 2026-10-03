@@ -279,7 +279,7 @@ fn unregistered(label: &'static str, target: PluginTarget) -> Row {
         label,
         "not registered",
         format!(
-            "DEREGISTERED: {} no longer lists the storyhook marketplace, but {} — run \
+            "DEREGISTERED: {} no longer lists the storyhook marketplace, but {}; registration lost; cause unknown — run \
              `story plugin install {}`",
             target.display_name(),
             evidence.join(", and "),
@@ -323,6 +323,21 @@ fn uninstalled_by_an_uninstalled_build(
 /// configuration rather than by invoking it — this must answer on a machine
 /// where the provider CLI is not installed, and must not pay a subprocess.
 fn provider_row(label: &'static str, config: &Path, target: PluginTarget) -> Row {
+    let mut row = provider_registration_row(label, config, target);
+    let operation = match crate::plugin::operation::finding(target) {
+        Ok(finding) => finding,
+        Err(error) => Some(error.to_string()),
+    };
+    if let Some(operation) = operation {
+        row.finding = Some(match row.finding {
+            Some(finding) => format!("{finding}\n{operation}"),
+            None => operation,
+        });
+    }
+    row
+}
+
+fn provider_registration_row(label: &'static str, config: &Path, target: PluginTarget) -> Row {
     if !config.exists() {
         return unregistered(label, target);
     }
