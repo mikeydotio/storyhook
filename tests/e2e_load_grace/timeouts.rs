@@ -102,6 +102,12 @@ fn timeout_sites(source: &str) -> Vec<TimeoutSite> {
 /// entries loud. These are proofs or budget ownership, never arbitrary names.
 const TIMEOUT_EXCEPTIONS: &[(&str, &str, usize, &str)] = &[
     (
+        "e2e/expect-grace.ts",
+        "budget",
+        1,
+        "call-time assertion budget sampled by gracedPatience",
+    ),
+    (
         "e2e/playwright.config.ts",
         "loadGraceEnabled()?gracedBudget(BASE_TEST_TIMEOUT_MS):BASE_TEST_TIMEOUT_MS",
         1,
@@ -166,6 +172,48 @@ const TIMEOUT_EXCEPTIONS: &[(&str, &str, usize, &str)] = &[
         "0",
         1,
         "barrier owns the poll deadline",
+    ),
+    (
+        "e2e/specs/support.ts",
+        "options?.timeout??this.timeout",
+        1,
+        "text matcher delegates the explicit or effective assertion budget",
+    ),
+    (
+        "e2e/specs/expect-grace.node.spec.ts",
+        "71",
+        1,
+        "fixed configure override precedence proof",
+    ),
+    (
+        "e2e/specs/expect-grace.node.spec.ts",
+        "0",
+        2,
+        "explicit zero configure and poll override proofs",
+    ),
+    (
+        "e2e/specs/expect-grace.node.spec.ts",
+        "undefined",
+        1,
+        "undefined configure override restores dynamic sampling proof",
+    ),
+    (
+        "e2e/specs/expect-grace.node.spec.ts",
+        "PROOF_TIMEOUT_MS",
+        1,
+        "poll explicit deadline precedence proof",
+    ),
+    (
+        "e2e/specs/expect-grace.spec.ts",
+        "0",
+        2,
+        "positive and negated matcher explicit zero override proofs",
+    ),
+    (
+        "e2e/specs/expect-grace.spec.ts",
+        "PROOF_TIMEOUT_MS",
+        3,
+        "browser matcher and configured deadline precedence proofs",
     ),
     (
         "e2e/specs/engine.spec.ts",
@@ -246,6 +294,33 @@ fn every_tracked_e2e_timeout_is_graced_or_a_reviewed_proof() {
             *count, found,
             "stale or broadened timeout exception {path}: {rhs} ({reason})"
         );
+    }
+}
+
+#[test]
+fn assertion_grace_proofs_are_allowed_only_at_reviewed_paths_and_values() {
+    for (path, expressions) in [
+        ("e2e/expect-grace.ts", &["budget"][..]),
+        (
+            "e2e/specs/expect-grace.node.spec.ts",
+            &["71", "0", "undefined", "PROOF_TIMEOUT_MS"][..],
+        ),
+        (
+            "e2e/specs/expect-grace.spec.ts",
+            &["0", "PROOF_TIMEOUT_MS"][..],
+        ),
+        (
+            "e2e/specs/support.ts",
+            &["options?.timeout??this.timeout"][..],
+        ),
+    ] {
+        for rhs in expressions {
+            assert!(timeout_allowed(path, rhs), "reviewed proof: {path}: {rhs}");
+            assert!(!timeout_allowed("e2e/specs/unreviewed.spec.ts", rhs));
+            assert!(!timeout_allowed(path, &format!("{rhs}+1")));
+        }
+        assert!(!timeout_allowed(path, "72"));
+        assert!(!timeout_allowed(path, "ARBITRARY_WAIT_MS"));
     }
 }
 
