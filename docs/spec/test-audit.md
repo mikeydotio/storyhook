@@ -687,10 +687,47 @@ continued ownership during reading, and cleanup after success or failure.
 The native failure trace remains the evidence of the original expiry race.
 All 24 selected dispatch browser cases and both new protocol cases passed
 in a 295-second pool. Strict TypeScript, the exact tracked-timeout inventory
-and diff checks passed. The real-time
-notification canary continues to cover native timer behavior; production
+and diff checks passed. The real-time notification canary continues to cover native timer behavior; production
 notices, dispatch polling and provider execution are unchanged. Focused logs
 are retained under `.storyhook/logs/sh812-resumed/sh812-dispatch-clock-*`.
+
+**Eighth measurement, 2026-10-03 UTC.** Source `ba8065c2` includes the
+completed dispatch-notice repair. Both fresh snapshots use binary SHA-256
+`9498da8bb7b212f4e6f06170b82063331d817b7971cb44e2d3bfa24d738294a2`.
+Discovery selected 1,520 cases, sixteen slices and eight concurrent jobs.
+The warm-up was stopped through normal parent TERM cleanup after failures.
+Interrupted wall time was 1,157.781 seconds; mean/max load was 360.265/503.567.
+No duration history was created and no comparison arm started.
+
+The retained observations are assigned prerequisites, not established causes:
+
+| Case | Engine | Observed error |
+|---|---|---|
+| Drawer field mutation timeout | Chromium | `drawer-field-mutation-timeout.spec.ts:128`: two error notices violate the strict locator; the extra notice names `preferences` |
+| Continuation attention | WebKit | Route handler reports `created fixture story is missing from project data`; only an error context, no completed ZIP trace, is available |
+| Browser context churn | WebKit | Whole-test budget of 448,004 ms expired at `browser.newContext`; no browser crash is proved |
+| Card exit reclaim | WebKit | `support.ts:1003`: `clock.pauseAt` rejects a target in the past |
+| Card blockers | Chromium | `.card-blockers .rel-id` is absent during the 13px CSS assertion (211,555 ms) |
+| Card blockers | WebKit | `.story-ref.blocker-cleared` stays absent during the expected count of one (205,356 ms) |
+
+The blocker assertions precede final cleanup in their trace chronology; retain
+that chronology when distinguishing them from cancellation-only artifacts.
+Other cases report channel/page closure from our TERM and are not independent
+repair assignments. High load alone does not establish any failure's cause.
+The scope rubric requires the newly adopted extra diagnoses to continue in a
+fresh context; SH-812 remains open and unblocked. Preserve other sessions'
+ownership of host admission and verifier causal evidence.
+
+Live pool logs were copied before cancellation. A concurrent copy of the live
+result tree could not retain every temporary recording because Playwright
+removed files during teardown. Stable final error contexts and completed ZIP
+traces are preserved separately under `.storyhook/logs/sh812-performance-v8/`.
+Complete final artifacts, including any loose recordings, remain in
+`/tmp/sh812-v8-bench/warmup-artifacts/`. Scripts, source manifest, samples and
+interrupted results are retained in both locations. All owned benchmark
+processes have exited. Performance acceptance remains open: diagnose and repair
+the adopted causes with regressions, then refresh both snapshots and complete
+the successful warm-up and two comparable pairs.
 
 ### What slicing exposed
 
