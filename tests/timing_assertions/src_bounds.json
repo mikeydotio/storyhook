@@ -13,6 +13,13 @@
       "reason": "NOTIFY_TIMEOUT (45 s) bounds the story.sh notify helper: at least ten times any answer a lib test waits for here, so a starved spawn does not reach it at the contention gates have shown (38 on 10 cores); not routed through Environment::subprocess_bound, and SH-846 owns the census of such bounds."
     }
   },
+  "src/daemon/launchd.rs": {
+    "production run_captured_quiet(timeout": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "run_bounded forwards its caller's launchd deadline: REGISTRATION_DEADLINE (10 s) for a standalone control, or the time remaining in registration::Control's shared removal/bootstrap budget. Lib tests inject the launchctl boundary and clock; they never execute the real launchctl runner. Resetting this bound at the leaf would renew the transaction budget."
+    }
+  },
   "src/daemon/systemd/command.rs": {
     "production run_captured_quiet(COMMAND_DEADLINE": {
       "count": 1,
