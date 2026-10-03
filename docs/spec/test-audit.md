@@ -580,6 +580,40 @@ Evidence is in `/tmp/sh812-v5-bench/` and
 Complete the adopted repair and refresh matched snapshots before resuming the
 approved warm-up and two comparisons.
 
+**Label write repair and sixth measurement, 2026-10-03 UTC.** The retained
+trace established a product race: the beta write was still pending when the
+editable input accepted gamma, but `addLabel` silently refused its Enter.
+Commit `d26c6f1c` makes the existing serialized-write contract explicit.
+The input becomes read-only while preserving focus, removal buttons become
+disabled, suggestions close, and a visible status plus `aria-busy` identify
+the pending write. Success and refusal restore editing; failure retains the
+existing rollback and explicit retry. The local create editor stays editable.
+
+The held-write regression failed on both browsers before the repair. All eight
+new add/remove success/failure cases passed afterward, including focus, native
+read-only behavior, rollback text and persistence of a subsequent label.
+The existing label-editor and wrapping cases passed too: sixteen cases in a
+26-second pool. Ten impacted keyboard repeat/composition cases passed in a
+12-second pool. Strict TypeScript, the production build and diff checks passed.
+
+Fresh snapshots from `d26c6f1c` selected 1,515 tests in sixteen slices. The
+warm-up exposed a new WebKit prerequisite: `toolbar-containment.spec.ts:45`
+failed exact header-geometry equality after board scrolling at 1280px and
+200% text. Initial containment passed, but the later header bottom was 632
+instead of 631.84375 pixels; other control positions changed slightly too.
+The cause is not established. Diagnosis and a regression repair are adopted;
+preserve exact scroll invariance and containment rather than widen tolerances.
+
+The warm-up was stopped through normal TERM cleanup at 921.78 seconds,
+mean/max load 86.39/209.63. Its pinned binary SHA-256 was
+`3e382763e6bc43e09df4b8cad8649af13cf9f4598bfdbbeaf8cf41f6c2456ada`.
+This interrupted result is diagnostic only: no history was promoted and no
+comparison arm ran. Logs, live per-slice diagnostics, trace, load samples,
+manifest and scripts are in `/tmp/sh812-v6-bench/` and
+`.storyhook/logs/sh812-performance-v6/`. The trace is under
+`warmup-live-diagnostics/toolbar-containment-deskto-c65da-its-at-1280px-with-200-text-webkit/`.
+No completed comparison pair or performance improvement is established.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The
