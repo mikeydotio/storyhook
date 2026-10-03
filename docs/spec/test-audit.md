@@ -504,6 +504,43 @@ and failing trace are retained in `/tmp/sh812-v3-bench/` and
 `.storyhook/logs/sh812-performance-v3/`. A fresh successful warm-up and two
 matched pairs remain required. No performance improvement is established.
 
+**Fourth measurement attempt, 2026-10-03 UTC.** The final reporter and layout
+repairs reached a successful unfiltered warm-up at source `2c95d90f`:
+
+| Measurement | Result |
+|---|---|
+| Completed selection | 1,507 tests, 261 project/file groups, 16 slices, 8 jobs |
+| Outcomes | 1,492 accepted, including one declared failure; 15 configured skips; no failures or retries |
+| Warm-up wall time | 1,593.42 s |
+| Sampled one-minute load | Mean 104.19; maximum 146.70 |
+| Eligible timing history | 252 complete-file records |
+| Pinned binary SHA-256 | `09320d1486160b253ab03d5334e964d42cc212a74898e25ec0e3d500c00cbf59` |
+
+The first count-based baseline then exposed a different prerequisite on
+Chromium: `stale-repo-list.spec.ts:324` called `settledBoundingBox`, and
+`support.ts:1933` failed in `scrollIntoViewIfNeeded` because the target
+detached while waiting for stability. This happened during preparation of
+`a Settings project press survives catalog failure`, before the mouse press.
+The same WebKit case passed. The failure is adopted into SH-812 for
+deterministic diagnosis and a separate regression repair; no product cause
+is inferred from the trace alone.
+
+The failed baseline was stopped through normal TERM cleanup. Its interrupted
+727.74 seconds at mean/max load 141.87/212.79 is diagnostic only. The driver
+started no optimized comparison arm and preserved the successful warm-up's
+history unchanged. No completed comparison pair or speedup is established.
+The accepted load-comparison rule is symmetric and conservative:
+`abs(baseline_mean - optimized_mean) / min(baseline_mean, optimized_mean)`
+must be at most 20%. Compare individual test identities and outcomes too.
+
+Evidence is retained in `/tmp/sh812-v4-bench/` and
+`.storyhook/logs/sh812-performance-v4/`: complete warm-up logs/receipts,
+phase timings, load samples, history snapshots, interrupted baseline artifacts,
+and `catalog-failure/trace.zip`. The baseline pool's temporary per-slice logs
+were removed by TERM cleanup; its failure trace and partial parent log remain.
+Refresh matched snapshots after the adopted repair, then complete the approved
+warm-up and interleaved comparisons before submission.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The
