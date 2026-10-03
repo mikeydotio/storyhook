@@ -305,6 +305,8 @@ else:
 
     def pool_command(self, marker):
         """Invoke the same driver as the shell for single-process signal tests."""
+        # The verifier owns journal creation before any production producer runs.
+        (self.root / 'progress.ndjson').touch()
         return [sys.executable, str(SCRIPTS / 'test-pool.py'),
                 '--budget', '1', '--log', str(self.root / 'output.log'),
                 '--work', str(self.root / 'pool'), '--progress', 'release gate/rust-suite',

@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from gate_cost import interval
 
 POLL_SECONDS = 0.1
 LIST_TIMEOUT = 120
@@ -90,6 +91,7 @@ class Discovery:
         except OSError as error:
             raise DiscoveryError(f"{description}: {error}") from error
 
+    @interval("discovery", "release gate/rust-list")
     def count_tests(self, executable, libtest_args):
         """Count runnable cases using libtest's own selection semantics."""
         def listed(args):

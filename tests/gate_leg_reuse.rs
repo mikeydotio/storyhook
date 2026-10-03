@@ -92,6 +92,8 @@ fn compiler_adapter_changes_invalidate_compilation_and_test_evidence() {
 fn orchestration_changes_invalidate_every_leg() {
     for input in [
         "scripts/gate-legs.sh",
+        "scripts/gate-progress-writer.py",
+        "scripts/gate_cost.py",
         "scripts/python-runtime.sh",
         "scripts/python-bin/python3",
     ] {

@@ -78,6 +78,7 @@ mod engine_reset;
 pub use engine_reset::EngineReset;
 pub mod error;
 pub mod fault;
+mod gate_evidence;
 pub mod ids;
 pub mod landing;
 pub mod migrate;
@@ -87,6 +88,9 @@ pub mod sqlite;
 pub mod test_support;
 pub mod types;
 pub mod verification_batch;
+pub use gate_evidence::{
+    GateAttempt, GateExecution, GateFailedCase, GateInputs, GateInterval, GateLeg, GateSubmission,
+};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -295,6 +299,8 @@ pub trait ReadOps {
         &self,
         project: ProjectId,
     ) -> Result<Vec<VerificationBatch>, StoreError>;
+    /// Durable cost observations in admission order, including completed attempts.
+    fn gate_attempts(&self, project: ProjectId) -> Result<Vec<GateAttempt>, StoreError>;
     /// Durable context handoffs in creation order.
     fn continuations(&self, project: ProjectId) -> Result<Vec<Continuation>, StoreError>;
     /// Ordered block transition deliveries for a project.
@@ -639,6 +645,14 @@ pub trait WriteOps: ReadOps {
     /// Records a new batch at revision zero; a second live batch of one
     /// project is refused.
     fn insert_verification_batch(&mut self, batch: &VerificationBatch) -> Result<(), StoreError>;
+    /// Persists a new attempt before any verification work starts.
+    fn insert_gate_attempt(&mut self, attempt: &GateAttempt) -> Result<(), StoreError>;
+    /// Updates exactly the expected evidence revision, preserving immutable inputs.
+    fn update_gate_attempt(
+        &mut self,
+        attempt: &GateAttempt,
+        expected: i64,
+    ) -> Result<bool, StoreError>;
     /// Writes the next revision of a batch only if `expected` still owns the
     /// row and an ended batch keeps its phase; answers whether it was written.
     fn update_verification_batch(

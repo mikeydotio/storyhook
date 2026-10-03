@@ -490,6 +490,15 @@ fn a_wait_is_reported_on_stderr_and_to_a_set_journal_and_nowhere_when_unset() {
             .any(|l| l["kind"] == "activity" && l["status"] == "passed"),
         "{lines:?}"
     );
+    let costs: Vec<_> = lines.iter().filter(|row| row["kind"] == "cost").collect();
+    assert_eq!(costs.len(), 2);
+    assert_eq!(costs[0]["phase"], "resource-wait");
+    assert_eq!(costs[0]["event"], "start");
+    assert_eq!(costs[1]["event"], "end");
+    assert_eq!(costs[0]["id"], costs[1]["id"]);
+    assert!(
+        costs[1]["monotonic_ns"].as_u64().unwrap() >= costs[0]["monotonic_ns"].as_u64().unwrap()
+    );
     holder.kill_and_reap();
 
     // The no-op contract: with the variable unset nothing is written, so an

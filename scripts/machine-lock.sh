@@ -118,6 +118,7 @@ if [ -f "$script_dir/gate-progress.sh" ]; then
     . "$script_dir/gate-progress.sh"
 else
     gate_progress_emit_activity() { :; }
+    gate_progress_emit_cost() { :; }
 fi
 
 readonly USAGE="usage: machine-lock.sh [--plan] [--max-wait <seconds>] [--max-idle <seconds>] [--termination-grace <seconds>] <name> -- <command...>
@@ -403,6 +404,8 @@ descendant_snapshot() {
 
 mkdir -p "$lock_root" || die "could not create the lock root at $lock_root"
 emit_lock_activity running
+lock_cost="lock-$$-$RANDOM"
+gate_progress_emit_cost start resource-wait "$lock_cost" "locks/$name" || die "cannot record lock wait"
 
 waited=0
 nameless=0
@@ -562,6 +565,7 @@ trap 'on_signal TERM' TERM
 trap 'on_signal HUP' HUP
 
 emit_lock_activity passed
+gate_progress_emit_cost end resource-wait "$lock_cost" "locks/$name" || die "cannot record lock acquisition"
 
 if [ "$waited" -gt 0 ]; then
     note "took the '$name' lock after waiting ${waited}s"

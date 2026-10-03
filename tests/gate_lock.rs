@@ -310,7 +310,12 @@ impl Fixture {
         // Cargo. Derive their names from the tracked callers instead of
         // extending the old hand-kept shell list with another exception.
         let mut observers = BTreeSet::new();
-        for token in read_checkout_file("scripts/run-tests.sh").split('"') {
+        let shell_observers = format!(
+            "{}\n{}",
+            read_checkout_file("scripts/run-tests.sh"),
+            read_checkout_file("scripts/gate-progress.sh")
+        );
+        for token in shell_observers.split('"') {
             if !token.ends_with(".py") && !token.ends_with(".awk") {
                 continue;
             }
@@ -321,7 +326,12 @@ impl Fixture {
                 .expect("a UTF-8 helper script name");
             observers.insert(name.to_string());
         }
-        for line in read_checkout_file("scripts/activity-run.py").lines() {
+        let python_observers = format!(
+            "{}\n{}",
+            read_checkout_file("scripts/activity-run.py"),
+            read_checkout_file("scripts/cargo_diagnostics.py")
+        );
+        for line in python_observers.lines() {
             let Some(imported) = line.strip_prefix("from ") else {
                 continue;
             };
