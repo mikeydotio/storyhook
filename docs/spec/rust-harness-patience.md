@@ -401,3 +401,36 @@ The guard covers the top-level `.ok` verdict only. About 1000 other field-only
 `jqf` assertions remain; when `ok` is correct, they still print only their
 field. The sweep shortens diagnosis. It does not prevent a load-dependent
 failure.
+
+### Fake server publication after SH-825 (SH-876, fixed in SH-840)
+
+SH-825 commit 90a4a55a takes a caller's tmux socket as a pure parse of `$TMUX`.
+Before it, the helper called `tmux display-message -p '#{socket_path}'` before
+every resource inventory. That call was the only place where `fakes/tmux`
+published its server model: the socket, the caller's `FAKE_TMUX_PANES` rows and
+the worktree directories. The daemon reads that model with an environment that
+has no `FAKE_*` knob. Dev b904c137 therefore failed 16 plugin scripts and one
+`plugin_install` case. It reached dev through a manual verifier override.
+
+As built:
+
+- `lib.sh` publishes the fake server before each helper run. A `bash` wrapper
+  (the `git` wrapper's pattern) catches `bash "$SCRIPT"` and installed
+  `.../story.sh` copies. It publishes only when the server answers with this
+  fixture's own socket. It links `$TMUX_TMPDIR/tmux-<uid>/default` to that
+  socket for callers outside tmux, only inside the test home, and only over an
+  earlier link.
+- Every `lib.sh` instance keeps `TMUX_TMPDIR` inside `STORYHOOK_TEST_HOME`. A
+  nested instance under a harness that clears its environment had asked the
+  machine's real default server.
+- `fakes/tmux` refuses an inventory of a server that nobody published or
+  seeded, and its message names the fix. A published or seeded empty server
+  is still an empty inventory.
+- `test-fake-tmux-state.sh` pins the publication without a production probe:
+  socket, panes, default link, no link to a real server, no replacement of a
+  non-link, nothing outside the home, and the loud refusal.
+
+Limit: entry points that run the helper without `bash` from a `lib.sh` shell
+(an `exec`, or a daemon-run dispatch script) do not publish. They reach the fake
+only after an earlier publication or a seeded `windows` file. If they do not,
+the fake now refuses loudly.
