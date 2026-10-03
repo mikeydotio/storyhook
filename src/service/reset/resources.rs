@@ -4,6 +4,7 @@ use super::{ResetCaller, ResetReservation};
 use crate::domain::{CLEANUP_LEASE_MARKER, CLEANUP_LEASE_VERSION, StoryCleanupLease, StoryEvent};
 use crate::error::AppError;
 use crate::service::Ctx;
+use crate::service::tmux_target::{self, Target};
 use crate::service::workspace_lock::{WorkspaceLock, capture, git};
 use crate::store::{ReadOps, Store, StoryNo};
 use std::fs;
@@ -218,17 +219,12 @@ struct Pane {
     path: PathBuf,
 }
 
-fn tmux(
-    lease: &StoryCleanupLease,
-    args: &[&str],
-    lock: &WorkspaceLock,
-) -> Result<String, AppError> {
+fn tmux(target: &Target, args: &[&str], lock: &WorkspaceLock) -> Result<String, AppError> {
     let mut command = Command::new("tmux");
+    target.apply(&mut command, Some(&target.endpoint));
     command
         // The C locale otherwise replaces literal inventory tabs with underscores.
         .arg("-u")
-        .arg("-S")
-        .arg(&lease.tmux.socket_path)
         .args(args)
         .env("LC_ALL", "C");
     let output = capture(command, Some(lock))?;
@@ -237,9 +233,9 @@ fn tmux(
         // Closing the last window leaves a stale socket on some tmux versions.
         // Only this exact absence result is success; other probe errors stay loud.
         if args.first() == Some(&"list-panes")
-            && (diagnostic.trim()
-                == format!("no server running on {}", lease.tmux.socket_path.display())
-                || !lease.tmux.socket_path.try_exists()?)
+            && !target.protected
+            && (diagnostic.trim() == format!("no server running on {}", target.endpoint.display())
+                || !target.endpoint.try_exists()?)
         {
             return Ok(String::new());
         }
@@ -253,20 +249,43 @@ fn tmux(
         .map_err(|error| AppError::Validation(format!("invalid tmux output: {error}")))
 }
 
+fn resolve_target(
+    env: &crate::env::Environment,
+    lease: &StoryCleanupLease,
+) -> Result<Target, AppError> {
+    let deadline =
+        std::time::Instant::now() + env.subprocess_bound(crate::service::engine::TMUX_TIMEOUT);
+    let target = tmux_target::inspect(
+        env,
+        Some(&lease.tmux.socket_path),
+        deadline,
+        &Default::default(),
+    )?;
+    target.require_binding()?;
+    Ok(target)
+}
+
 fn panes(
     lease: &StoryCleanupLease,
     caller: &ResetCaller,
     lock: &WorkspaceLock,
+    target: &Target,
 ) -> Result<Vec<Pane>, AppError> {
     if !lease.tmux.socket_path.is_absolute() {
         return Err(AppError::Validation(
             "tmux lease lacks an absolute socket".into(),
         ));
     }
-    if !lease.tmux.socket_path.try_exists()? {
+    if !target.endpoint.try_exists()? {
+        if target.protected {
+            return Err(AppError::Validation(format!(
+                "protected tmux endpoint {} is missing",
+                target.endpoint.display()
+            )));
+        }
         return Ok(Vec::new());
     }
-    if !fs::symlink_metadata(&lease.tmux.socket_path)?
+    if !fs::symlink_metadata(&target.endpoint)?
         .file_type()
         .is_socket()
     {
@@ -275,7 +294,7 @@ fn panes(
         ));
     }
     let output = tmux(
-        lease,
+        target,
         &[
             "list-panes",
             "-a",
@@ -311,8 +330,10 @@ fn panes(
             )));
         }
         if caller.pane.as_deref() == Some(fields[2])
-            && caller.socket.as_ref().map(fs::canonicalize).transpose()?
-                == Some(lease.tmux.socket_path.canonicalize()?)
+            && (caller.socket.as_ref() == Some(&target.endpoint)
+                || (target.protected && caller.socket.as_ref() == Some(&target.socket))
+                || caller.socket.as_ref().map(fs::canonicalize).transpose()?
+                    == Some(target.endpoint.canonicalize()?))
         {
             return Err(AppError::Validation(
                 "refusing to close the caller's own tmux window".into(),
@@ -333,14 +354,14 @@ pub(super) fn preflight(
     id: &str,
     project: &str,
     repository: &Path,
-    cwd: &Path,
+    ctx: &Ctx<'_, impl Store>,
     caller: &ResetCaller,
     lock: &WorkspaceLock,
-) -> Result<(), AppError> {
+) -> Result<Option<Target>, AppError> {
     let Some(lease) = &reservation.lease else {
-        return Ok(());
+        return Ok(None);
     };
-    let entry = validate(lease, id, project, repository, cwd, lock)?;
+    let entry = validate(lease, id, project, repository, ctx.cwd(), lock)?;
     if !reservation.force {
         if entry.as_ref().is_some_and(|entry| entry.locked) {
             return Err(AppError::Validation(
@@ -360,8 +381,9 @@ pub(super) fn preflight(
             ));
         }
     }
-    panes(lease, caller, lock)?;
-    Ok(())
+    let target = resolve_target(ctx.env(), lease)?;
+    panes(lease, caller, lock, &target)?;
+    Ok(Some(target))
 }
 
 pub(super) fn remove(
@@ -369,19 +391,21 @@ pub(super) fn remove(
     id: &str,
     project: &str,
     repository: &Path,
-    cwd: &Path,
+    ctx: &Ctx<'_, impl Store>,
     caller: &ResetCaller,
     lock: &WorkspaceLock,
 ) -> Result<(), AppError> {
     let Some(lease) = &reservation.lease else {
         return Ok(());
     };
-    preflight(reservation, id, project, repository, cwd, caller, lock)?;
-    let targets = panes(lease, caller, lock)?;
+    let Some(target) = preflight(reservation, id, project, repository, ctx, caller, lock)? else {
+        return Ok(());
+    };
+    let targets = panes(lease, caller, lock, &target)?;
     let windows: std::collections::BTreeSet<_> =
         targets.iter().map(|pane| pane.window.clone()).collect();
     for window in windows {
-        let current = panes(lease, caller, lock)?;
+        let current = panes(lease, caller, lock, &target)?;
         if current
             .iter()
             .filter(|pane| pane.window == window)
@@ -391,14 +415,14 @@ pub(super) fn remove(
                 "tmux window identity changed during reset".into(),
             ));
         }
-        tmux(lease, &["kill-window", "-t", &window], lock)?;
+        tmux(&target, &["kill-window", "-t", &window], lock)?;
     }
-    if !panes(lease, caller, lock)?.is_empty() {
+    if !panes(lease, caller, lock, &target)?.is_empty() {
         return Err(AppError::Validation(
             "owned tmux windows survived reset".into(),
         ));
     }
-    if let Some(entry) = validate(lease, id, project, repository, cwd, lock)? {
+    if let Some(entry) = validate(lease, id, project, repository, ctx.cwd(), lock)? {
         let mut args = vec!["worktree", "remove"];
         if reservation.force {
             args.push("--force");
@@ -422,10 +446,14 @@ pub(super) fn remove(
             "worktree removal postcondition failed".into(),
         ));
     }
-    if !panes(lease, caller, lock)?.is_empty() {
+    if !panes(lease, caller, lock, &target)?.is_empty() {
         return Err(AppError::Validation(
             "tmux windows reappeared during reset".into(),
         ));
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "resources_revivify_tests.rs"]
+mod revivify_tests;
