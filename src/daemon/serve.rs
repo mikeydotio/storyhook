@@ -1006,7 +1006,8 @@ enum Verdict {
     /// being re-read or re-derived.
     Shutdown {
         reply: Reply,
-        env: Environment,
+        // Shutdown is rare; ordinary replies must not carry its environment's size.
+        env: Box<Environment>,
         inflight: Arc<crate::daemon::lifecycle::InFlight>,
     },
 }
@@ -1636,7 +1637,7 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
                 serving.bus.publish(Change::Reload);
                 Verdict::Shutdown {
                     reply,
-                    env: serving.env.clone(),
+                    env: Box::new(serving.env.clone()),
                     inflight: Arc::clone(&serving.inflight),
                 }
             }
@@ -2030,6 +2031,19 @@ fn tailnet_reprobe<'scope, S: Store, L>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shutdown-only state must not inflate every ordinary channel reply.
+    #[test]
+    fn verdict_storage_stays_close_to_an_ordinary_reply() {
+        let verdict = std::mem::size_of::<Verdict>();
+        let reply = std::mem::size_of::<Reply>();
+        // Allow two pointer-sized fields and a discriminant/alignment word.
+        let overhead = 3 * std::mem::size_of::<usize>();
+        assert!(
+            verdict <= reply + overhead,
+            "verdict uses {verdict} bytes for a {reply}-byte reply; overhead limit is {overhead}"
+        );
+    }
 
     // --- The loopback label follows the bind (SH-253) ---
 
