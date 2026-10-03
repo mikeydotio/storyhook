@@ -111,9 +111,82 @@ class TransportTests(unittest.TestCase):
         if path == "view":
             return self.command([sys.executable, "-B", "-c", view_program(), "fixture",
                                  str(self.root / "logs"), str(self.reader)], check=False)
+        if path == 'dispatch':
+            cli = self.root / 'story-fixture'
+            cli.write_text('#!/bin/sh\ncase "$*" in\n'
+                           '*"project show"*) echo \'{"result":"ok","project":{"slug":"fixture","checkout":""}}\' ;;\n'
+                           '*"engine reset-check"*) echo \'{"result":"ok"}\' ;;\n'
+                           '*"show SH-1"*) echo \'{"result":"ok","story":{"story":{"id":"SH-1","state":"todo","story_type":"story"}}}\' ;;\n'
+                           '*) echo "unexpected fixture story query: $*" >&2; exit 1 ;;\nesac\n')
+            cli.chmod(0o700)
+            return self.command(['bash', str(PLUGIN / 'bin/story.sh'), 'dispatch', 'SH-1'], check=False,
+                                env=dict(self.env, STORY_BIN=str(cli), STORY_TARGET_SESSION='fixture',
+                                         STORY_CREATE_SESSION='1', TMUX=self.socket + ',0,0'))
         return self.command([sys.executable, "-B", str(PLUGIN / "lib/tmux-launch.py"),
                              "new-session", "-d", "-s", "fixture", "/bin/sleep", "600"], check=False,
                             env=dict(self.env, TMUX=self.socket + ",0,0"))
+
+    def shell_resources(self, body, **environment):
+        """Exercise the shipping Bash boundary with real tmux and RV-10."""
+        script = 'set -euo pipefail; source "$STORY_PLUGIN_ROOT/lib/resources.sh"; ' + body
+        return self.command(['bash', '-c', script], check=False,
+                            env=dict(self.env, STORY_PLUGIN_ROOT=str(PLUGIN), TMUX=self.socket + ',0,0', **environment))
+
+    def test_bash_target_uses_private_owner_and_recognizes_caller_alias(self):
+        pane = self.command([self.tmux, '-N', '-S', self.endpoint, 'display-message', '-p', '#{pane_id}']).stdout.strip()
+        os.unlink(self.socket)
+        self.command([self.tmux, '-S', self.socket, '-f', '/dev/null', 'new-session', '-d', '-s', 'foreign', '/bin/sleep', '600'])
+        result = self.shell_resources('prepare_tmux_target ensure; tmux list-sessions -F "#{session_name}"; '
+                                      'resource_is_self "$TMUX_PANE"; resource_socket_for_pane "$TMUX_PANE"', TMUX_PANE=pane)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ['original', self.endpoint])
+
+    def test_bash_exact_session_does_not_reuse_a_prefix(self):
+        result = self.shell_resources('prepare_tmux_target ensure; ensure_tmux_session orig "$HOME"; '
+                                      'echo "$SESSION_CREATED"; tmux list-sessions -F "#{session_name}"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(result.stdout.splitlines()), {'true', 'orig', 'original'})
+
+    def test_bash_cannot_override_a_captured_private_selector(self):
+        for selector in ('-S "$RESOURCE_LOGICAL_SOCKET"', '-u -S "$RESOURCE_LOGICAL_SOCKET"', '-L other'):
+            with self.subTest(selector=selector):
+                result = self.shell_resources('prepare_tmux_target ensure; tmux ' + selector + ' list-sessions')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('protected tmux', result.stderr)
+
+    def test_outer_dispatch_discovers_before_terminal_or_checkout_preflight(self):
+        os.unlink(self.endpoint)
+        result = self.invoke('dispatch')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('revivify', result.stdout + result.stderr)
+        self.assertNotIn('has no checkout', result.stdout)
+        self.assertFalse(os.path.exists(self.endpoint))
+
+    def test_bash_concurrent_session_creators_accept_only_the_exact_winner(self):
+        bin_dir = self.root / 'barrier-bin'
+        bin_dir.mkdir()
+        barrier = self.root / 'barrier'
+        barrier.mkdir()
+        wrapper = bin_dir / 'tmux'
+        wrapper.write_text('#!' + sys.executable + '\nimport os,sys,time\nfrom pathlib import Path\n'
+                           f'barrier=Path({str(barrier)!r})\n'
+                           'if "new-session" in sys.argv:\n'
+                           ' (barrier / str(os.getpid())).touch()\n'
+                           f' deadline=time.monotonic()+{self.patience!r}\n'
+                           ' while len(list(barrier.iterdir())) < 2:\n'
+                           '  if time.monotonic() >= deadline: raise RuntimeError("creation barrier timed out")\n'
+                           '  time.sleep(.01)\n'
+                           f'os.execv({self.tmux!r}, [{self.tmux!r}, *sys.argv[1:]])\n')
+        wrapper.chmod(0o700)
+        def create(_):
+            return self.shell_resources('prepare_tmux_target ensure; ensure_tmux_session concurrent "$HOME"; echo "$SESSION_CREATED"',
+                                        PATH=str(bin_dir) + os.pathsep + self.env['PATH'])
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(create, range(2)))
+        self.assertEqual([r.returncode for r in results], [0, 0], [(r.stdout, r.stderr) for r in results])
+        self.assertEqual({r.stdout.strip() for r in results}, {'true', 'false'})
+        panes = self.command([self.tmux, '-N', '-S', self.endpoint, 'list-panes', '-s', '-t', '=concurrent', '-F', '#{pane_id}'])
+        self.assertEqual(len(panes.stdout.splitlines()), 1)
 
     def test_displaced_public_socket_is_ignored_by_both_shipping_paths(self):
         os.unlink(self.socket)
@@ -166,11 +239,11 @@ class TransportTests(unittest.TestCase):
                     refused = True
                     break
             self.assertTrue(refused, "fixture did not saturate the real listener")
-            for path in ("view", "launch"):
+            for path in ("view", "launch", "dispatch"):
                 with self.subTest(path=path):
                     result = self.invoke(path)
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("revivify", result.stderr)
+                    self.assertIn("revivify", result.stderr + result.stdout)
                     self.assertEqual(os.stat(self.endpoint).st_ino, self.inode)
                     self.assertEqual(os.stat(self.socket).st_ino, self.inode)
         finally:

@@ -1,6 +1,9 @@
+# shellcheck shell=bash
 # Existing-resource observations come from the native reader. Provider launch
 # configuration must never choose what a lifecycle command inspects or removes.
 RESOURCE_SOCKET=""
+RESOURCE_LOGICAL_SOCKET=""
+RESOURCE_PROTECTED=false
 RESOURCE_LOCATION_ONLY=false
 RESOURCE_CALLER_TMUX="${TMUX:-}"
 RESOURCE_CALLER_SOCKET="$RESOURCE_CALLER_TMUX"
@@ -10,16 +13,79 @@ RESOURCE_CALLER_PANE="${TMUX_PANE:-}"
 # All terminal operations after discovery use the selected server, including
 # provider protocol helpers that otherwise inherit tmux's ambient target.
 tmux() {
-  if [ -n "$RESOURCE_SOCKET" ] && [ "${1:-}" != -S ]; then
+  if [ "$RESOURCE_PROTECTED" = true ]; then
+    local -a flags=(-u)
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -S)
+          [ "${2:-}" = "$RESOURCE_SOCKET" ] || { printf 'protected tmux selector changed\n' >&2; return 1; }
+          shift 2 ;;
+        -u|-N|-v) flags+=("$1"); shift ;;
+        -*) printf 'unsupported protected tmux client flag: %s\n' "$1" >&2; return 1 ;;
+        *) break ;;
+      esac
+    done
+    command tmux -N -S "$RESOURCE_SOCKET" "${flags[@]}" "$@"
+  elif [ -n "$RESOURCE_SOCKET" ] && [ "${1:-}" != -S ]; then
     command tmux -S "$RESOURCE_SOCKET" "$@"
   else
     command tmux "$@"
   fi
 }
 
+# Retain one generation through preflight and effects. Re-observation may
+# confirm it but cannot silently move the operation to a successor.
+prepare_tmux_target() {
+  local mode="$1" selected="${2:-${RESOURCE_SOCKET:-}}" result endpoint logical protected
+  RESOURCE_TARGET_ERROR=""
+  if ! result=$(python3 "$STORY_PLUGIN_ROOT/lib/tmux-target.py" "$mode" "$selected" 2>&1); then
+    RESOURCE_TARGET_ERROR="$result"
+    return 1
+  fi
+  endpoint=$(printf '%s' "$result" | jq -er .endpoint) || return 1
+  logical=$(printf '%s' "$result" | jq -er .socket) || return 1
+  protected=$(printf '%s' "$result" | jq -r .protected) || return 1
+  if [ "$RESOURCE_PROTECTED" = true ] && [ "$RESOURCE_LOGICAL_SOCKET" = "$logical" ] \
+     && [ "$RESOURCE_SOCKET" != "$endpoint" ]; then
+    RESOURCE_TARGET_ERROR='protected tmux generation changed during preflight'
+    return 1
+  fi
+  RESOURCE_PROTECTED="$protected"
+  RESOURCE_LOGICAL_SOCKET="$logical"
+  if [ "$protected" = true ] || [ -n "$selected" ]; then
+    RESOURCE_SOCKET="$endpoint"
+    export TMUX="$endpoint,0,0"
+  fi
+}
+
+# An exact recheck handles only a concurrent creator of this session. Keep the
+# creation diagnostic when no such session exists; never use new-session -A.
+ensure_tmux_session() {
+  local name="$1" directory="$2" diagnostic
+  SESSION_CREATED=false
+  SESSION_ERROR=""
+  tmux has-session -t "=$name" 2>/dev/null && return 0
+  if diagnostic=$(python3 "$STORY_PLUGIN_ROOT/lib/tmux-launch.py" new-session -d -s "$name" -c "$directory" 2>&1); then
+    # Published to the dispatch receipt in story.sh.
+    # shellcheck disable=SC2034
+    SESSION_CREATED=true
+    return 0
+  fi
+  case "$diagnostic" in
+    *"duplicate session:"*) tmux has-session -t "=$name" 2>/dev/null && return 0 ;;
+  esac
+  # Published to the dispatch failure in story.sh.
+  # shellcheck disable=SC2034
+  SESSION_ERROR="$diagnostic"
+  return 1
+}
+
 load_story_resources() {
   local id="$1" lease="${2:-}" location_only="${3:-false}" result state legacy_socket
-  if legacy_socket=$(command tmux display-message -p '#{socket_path}' 2>/dev/null); then
+  prepare_tmux_target inspect || refuse "resource-query-failed" "$RESOURCE_TARGET_ERROR"
+  if [ "$RESOURCE_PROTECTED" = true ]; then
+    legacy_socket="$RESOURCE_SOCKET"
+  elif legacy_socket=$(tmux display-message -p '#{socket_path}' 2>/dev/null); then
     case "$legacy_socket" in /*) ;; *) legacy_socket="" ;; esac
   else
     legacy_socket=""
@@ -53,7 +119,12 @@ load_story_resources() {
   # Published to story.sh callers of this sourced library.
   # shellcheck disable=SC2034
   RESOURCE_PROVIDER=$(printf '%s' "$result" | jq -r '.resources.provider // empty')
-  RESOURCE_SOCKET=$(printf '%s' "$result" | jq -r '.resources.socket_path // empty')
+  local observed_socket
+  observed_socket=$(printf '%s' "$result" | jq -r '.resources.socket_path // empty')
+  if [ -n "$observed_socket" ]; then
+    prepare_tmux_target inspect "$observed_socket" \
+      || refuse "resource-query-failed" "cannot bind resource socket: $RESOURCE_TARGET_ERROR"
+  fi
   RESOURCE_PANE=$(printf '%s' "$result" | jq -r '.resources.pane.pane_id // empty')
   RESOURCE_REPORT=$(printf '%s' "$result" | jq -c '.resources')
   RESOURCE_LEASE="$lease"
@@ -72,15 +143,32 @@ resource_find_pane() {
   printf '%s' "$RESOURCE_PANE"
 }
 
+# RV-10 adoption can preserve a logical #{socket_path} on a private client.
+# Publish the checked endpoint only when the observed alias agrees.
+resource_socket_for_pane() {
+  local observed
+  observed=$(tmux display-message -p -t "$1" '#{socket_path}') || return 1
+  if [ "$RESOURCE_PROTECTED" = true ]; then
+    observed=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$observed") || return 1
+    [ "$observed" = "$RESOURCE_SOCKET" ] || [ "$observed" = "$RESOURCE_LOGICAL_SOCKET" ] || return 1
+    printf '%s' "$RESOURCE_SOCKET"
+  else
+    printf '%s' "$observed"
+  fi
+}
+
 resource_is_self() {
   [ -n "$RESOURCE_CALLER_PANE" ] || return 1
   local caller_socket
   caller_socket=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$RESOURCE_CALLER_SOCKET") || return 1
-  [ -z "$RESOURCE_SOCKET" ] || [ "$RESOURCE_SOCKET" = "$caller_socket" ] || return 1
+  [ -z "$RESOURCE_SOCKET" ] || [ "$RESOURCE_SOCKET" = "$caller_socket" ] \
+    || { [ "$RESOURCE_PROTECTED" = true ] && [ "$RESOURCE_LOGICAL_SOCKET" = "$caller_socket" ]; } || return 1
   [ "$1" != "$RESOURCE_CALLER_PANE" ] || return 0
   local caller_window target_window
-  caller_window=$(tmux display-message -p -t "$RESOURCE_CALLER_PANE" '#{window_id}') || return 1
-  target_window=$(tmux display-message -p -t "$1" '#{window_id}') || return 1
+  caller_window=$(tmux display-message -p -t "$RESOURCE_CALLER_PANE" '#{window_id}') \
+    || { [ "$RESOURCE_PROTECTED" = true ]; return; }
+  target_window=$(tmux display-message -p -t "$1" '#{window_id}') \
+    || { [ "$RESOURCE_PROTECTED" = true ]; return; }
   [ -n "$caller_window" ] && [ "$caller_window" = "$target_window" ]
 }
 

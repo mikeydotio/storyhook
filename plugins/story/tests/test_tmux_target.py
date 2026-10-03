@@ -229,6 +229,14 @@ class TargetTests(unittest.TestCase):
                          ["-N", "-S", self.endpoint, "-u", "-f", "/config", "new-session", "-d", "-s", "project"])
         self.assertEqual(tmux_target.target_arguments(dict(protected=False), args), args)
 
+    def test_launch_selector_cannot_follow_a_successor(self):
+        self.publish()
+        target = self.resolve()
+        tmux_target.require_current_selector(target, self.socket)
+        tmux_target.require_current_selector(target, self.endpoint)
+        with self.assertRaisesRegex(RuntimeError, 're-adoption'):
+            tmux_target.require_current_selector(target, str(self.root / ('.rv-' + 'b' * 32) / 's'))
+
     def launch_fixture(self, fail=False):
         """Run the production launcher against observable executable boundaries."""
         self.publish()

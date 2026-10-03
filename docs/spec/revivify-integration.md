@@ -60,6 +60,14 @@ numeric effects still require that endpoint as their explicit binding.
 Protected endpoint failures never become an empty inventory. Process identity,
 workspace ownership and continuation authority checks remain separate.
 
+Bash dispatch ensures before terminal or checkout preflight. Resource-only
+commands inspect first; only unmanaged servers retain the legacy socket
+observation. The shell operation captures the private endpoint and rejects
+selector changes. Self-window protection recognizes the proven logical alias.
+An explicit private launch selector cannot follow a successor. Session startup
+uses `=name` and rechecks a duplicate creation result against that exact name;
+other creation failures retain their diagnostic and roll back as before.
+
 ## Restoration contract
 
 The approved scope also requires restore-specific re-adoption of agent,

@@ -177,6 +177,15 @@ def resolve_target(socket, environ, runner, server_environment, ensure=False):
         raise RuntimeError(f"{context}: {error}") from error
 
 
+def require_current_selector(target, selected):
+    """A previously captured private selector must never follow a successor."""
+    selected = Path(selected)
+    if (target['protected'] and selected.name == 's'
+            and re.fullmatch(r'\.rv-[0-9a-f]{32}', selected.parent.name)
+            and str(selected) != target['endpoint']):
+        raise RuntimeError(f'protected tmux binding on {selected} requires re-adoption before using {target["endpoint"]}')
+
+
 def target_arguments(target, arguments):
     """Pin protected commands, preserving all unmanaged arguments verbatim."""
     if not target["protected"]:

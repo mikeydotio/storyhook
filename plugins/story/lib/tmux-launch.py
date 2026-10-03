@@ -14,7 +14,7 @@ import sys
 # An installed plugin directory is not this process's to write into.
 sys.dont_write_bytecode = True
 import probe_budget
-from tmux_target import resolve_target, split_tmux_arguments, target_arguments
+from tmux_target import logical_socket, resolve_target, split_tmux_arguments, target_arguments, require_current_selector
 from tmux_server_env import (GITHUB_CREDENTIALS, GITHUB_ROUTING, client_environment,
                              pane_overrides, reports_no_server)
 
@@ -54,6 +54,7 @@ def main():
     _, _, socket = split_tmux_arguments(arguments, os.environ)
     target = resolve_target(socket, os.environ, probe_budget.run,
                             client_environment(os.environ), ensure=True)
+    require_current_selector(target, logical_socket(socket, os.environ))
     arguments = target_arguments(target, arguments)
     # Apply before the launch shell starts, without modifying existing shared
     # server/session state. Empty STORY_BIN retains the shell adapter's fallback.

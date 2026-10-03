@@ -23,7 +23,7 @@ use std::path::Path;
 const SITES: [(&str, &str); 3] = [
     // Its only server-starting call goes through the dispatch launcher.
     (
-        "plugins/story/bin/story.sh",
+        "plugins/story/lib/resources.sh",
         "lib/tmux-launch.py\" new-session",
     ),
     (

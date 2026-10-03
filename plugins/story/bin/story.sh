@@ -1283,7 +1283,7 @@ write_cleanup_lease_marker() {
   private_git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) || return 1
   repository_real=$(cd_resolve / "$repository") || return 1
   worktree_real=$(cd_resolve / "$worktree") || return 1
-  socket_path=$(tmux display-message -p -t "$pane" '#{socket_path}' 2>/dev/null) || return 1
+  socket_path=$(resource_socket_for_pane "$pane") || return 1
 
   [ -n "$socket_path" ] && [ "${socket_path#/}" != "$socket_path" ] || return 1
 
@@ -1902,6 +1902,7 @@ cmd_dispatch() {
     state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
 
     if [ -n "$require_absent" ]; then
+      prepare_tmux_target ensure || refuse "tmux-protection-failed" "$RESOURCE_TARGET_ERROR"
       [ -f "$continuation_file" ] && [ ! -L "$continuation_file" ] \
         || refuse "continuation-unsafe" "continuation record is not an ordinary retained file."
       continuation_record=$(cat "$continuation_file") \
@@ -1959,6 +1960,9 @@ cmd_dispatch() {
   # and under
   # STORY_TARGET_SESSION — a non-interactive caller outside tmux dispatches
   # into a NAMED session, so its own tmux context is irrelevant).
+  if [ -z "$DRY_RUN" ] && [ -z "$require_absent" ]; then
+    prepare_tmux_target ensure || refuse "tmux-protection-failed" "$RESOURCE_TARGET_ERROR"
+  fi
   if [ -z "$DRY_RUN" ] && [ -z "$TARGET_SESSION" ]; then
     [ -n "${TMUX:-}" ] || fail "story requires tmux — run $AGENT_LABEL inside a tmux session."
     [ -n "${TMUX_PANE:-}" ] || fail "story requires \$TMUX_PANE — run $AGENT_LABEL inside a tmux pane."
@@ -2033,9 +2037,13 @@ cmd_dispatch() {
       if [ -n "${RESOURCE_PANE:-}" ]; then
         dispatch_session=$(tmux display-message -p -t "$RESOURCE_PANE" '#{session_name}') || fail "cannot inspect surviving session"
       elif [[ "$RESOURCE_CALLER_SOCKET" = /* ]]; then
-        dispatch_session=$(command tmux -S "$RESOURCE_CALLER_SOCKET" display-message -p -t "$RESOURCE_CALLER_PANE" '#{session_name}') || fail "cannot inspect caller session"
+        # A caller pane is a numeric binding, not permission to follow a restore.
+        if [ "$RESOURCE_PROTECTED" = true ] && [ "$RESOURCE_CALLER_SOCKET" != "$RESOURCE_SOCKET" ]; then
+          refuse "tmux-binding-unsafe" "caller pane requires re-adoption before selecting a restored session"
+        fi
+        dispatch_session=$(tmux -S "$RESOURCE_CALLER_SOCKET" display-message -p -t "$RESOURCE_CALLER_PANE" '#{session_name}') || fail "cannot inspect caller session"
       else
-        dispatch_session=$(command tmux display-message -p -t "${TMUX_PANE:-}" '#{session_name}') || fail "cannot inspect caller session"
+        dispatch_session=$(tmux display-message -p -t "${TMUX_PANE:-}" '#{session_name}') || fail "cannot inspect caller session"
       fi
       [ -n "$dispatch_session" ] \
         || fail "cannot resolve the tmux session that would receive this dispatch — no claim was made."
@@ -2696,13 +2704,12 @@ cmd_dispatch() {
   # failed `new-window` does, so a session that couldn't be made never leaves
   # a worktree with nothing to show for it.
   local session_created=false
-  if [ -n "$TARGET_SESSION" ] && [ -n "$CREATE_SESSION" ] \
-     && ! tmux has-session -t "$TARGET_SESSION" 2>/dev/null; then
-    if ! python3 "$STORY_PLUGIN_ROOT/lib/tmux-launch.py" new-session -d -s "$TARGET_SESSION" -c "$dir" 2>/dev/null; then
+  if [ -n "$TARGET_SESSION" ] && [ -n "$CREATE_SESSION" ]; then
+    if ! ensure_tmux_session "$TARGET_SESSION" "$dir"; then
       cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
-      fail "failed to create tmux session \`$TARGET_SESSION\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+      fail "failed to create tmux session \`$TARGET_SESSION\`: $SESSION_ERROR. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
-    session_created=true
+    session_created="$SESSION_CREATED"
   fi
   # Step 9c (SH-758): a server this dispatch did not start may retain another
   # process's session state (a host's plugin roots, CODEX_*, per-call storyhook
