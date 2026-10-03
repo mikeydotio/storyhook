@@ -40,6 +40,23 @@ pub enum StoreError {
     #[error("{0}")]
     Busy(String),
 
+    /// A write was started inside another write on the same store and the
+    /// same thread, and was refused rather than left to wait (SH-838).
+    ///
+    /// Writes serialize on one lock, so the inner write could only wait for
+    /// the write around it, which in turn waits for the inner one: before
+    /// this variant that was a silent hang no timeout ever ended. It is a
+    /// defect in the caller, not in the data, which is why it maps to
+    /// [`AppError::Storage`] rather than to `Integrity`. Whether the outer
+    /// write then commits or rolls back is its own closure's decision, as for
+    /// any error.
+    #[error(
+        "a store write started inside another write on the same thread, so it could only wait \
+         for the write around it; finish the outer write first, or do this work on its \
+         transaction (SH-838)"
+    )]
+    NestedWrite,
+
     /// A write would have left the database in a state the schema forbids:
     /// an asymmetric relation, a self-relation, or a dangling edge.
     #[error("{0}")]
@@ -240,6 +257,7 @@ impl From<StoreError> for AppError {
             StoreError::Validation(detail) => Self::Validation(detail),
             error @ StoreError::SchemaReadOnly { .. } => Self::ReadOnlyStore(error.to_string()),
             other @ (StoreError::SchemaTooNew { .. }
+            | StoreError::NestedWrite
             | StoreError::Migration { .. }
             | StoreError::Backup(_)
             | StoreError::Serde(_)
@@ -280,6 +298,7 @@ mod tests {
         assert_eq!(exit_code_of(StoreError::Corrupt("x".into())), 5);
         assert_eq!(exit_code_of(StoreError::Validation("x".into())), 2);
         assert_eq!(exit_code_of(StoreError::Backup("x".into())), 5);
+        assert_eq!(exit_code_of(StoreError::NestedWrite), 5);
         assert_eq!(
             exit_code_of(StoreError::SchemaTooNew {
                 found: 9,
