@@ -318,7 +318,7 @@ assert_eq "$state" "todo" "auto: story state untouched by any dry run or refused
 out=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker \
@@ -337,14 +337,14 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/new_window_args.log")" \
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
   "STORYHOOK_AUTO=$id" "real Claude auto: watcher carries the story marker"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
-  "--approve-claude-plan %1" "real Claude auto: watcher targets the confirmed pane"
+  "approval_tmux.py watch" "real auto: watcher uses the process-bound wrapper"
 
 repo_fail=$(mk_story_repo AF)
 id_fail=$(new_story "$repo_fail" "Claude auto watcher failure")
 export FAKE_TMUX_STATE
 FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-auto-tmux.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
-out=$(cd "$repo_fail" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
+out=$(cd "$repo_fail" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
   STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker FAKE_TMUX_FAIL_RUN_SHELL=1 \
   bash "$SCRIPT" dispatch "$id_fail" --auto 2>&1)

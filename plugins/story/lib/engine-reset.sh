@@ -17,7 +17,7 @@ engine_reset_authorized() {
 }
 
 cmd_engine_reset() {
-  local id="$1" request="$2" lease caller_dir caller_socket caller_window auth_error
+  local id="$1" request="$2" lease caller_dir auth_error
   caller_dir=$(pwd -P) || fail "cannot determine reset caller directory"
   [ -z "$DRY_RUN" ] || refuse "engine-reset-dry-run" "engine reset requires a live reservation, not a dry run"
   lease=$(printf '%s' "$request" | jq -ce '.lease') || refuse "invalid-reset" "engine reset request has no lease"
@@ -48,16 +48,8 @@ cmd_engine_reset() {
   local windows="$LEASE_TMUX_WINDOWS" socket window
   case "$windows" in *$'\n'*) refuse "reset-window-ambiguous" "engine reset found multiple exact-name windows on its leased server" ;; esac
   socket=$(printf '%s' "$lease" | jq -r '.tmux.socket_path')
-  if [ -n "${TMUX_PANE:-}" ]; then
-    caller_socket=$(tmux display-message -p -t "$TMUX_PANE" '#{socket_path}' 2>/dev/null) \
-      || refuse "reset-self-unverifiable" "engine reset cannot identify its calling tmux server"
-    caller_window=$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null) \
-      || refuse "reset-self-unverifiable" "engine reset cannot identify its calling tmux window"
-    if python3 -c 'import os,sys; sys.exit(os.path.realpath(sys.argv[1]) != os.path.realpath(sys.argv[2]))' "$socket" "$caller_socket"; then
-      while IFS= read -r window; do
-        [ "$window" != "$caller_window" ] || refuse "self-window" "engine reset cannot close its calling tmux window"
-      done <<< "$windows"
-    fi
+  if [ -n "$windows" ] && resource_is_self "$RESOURCE_PANE"; then
+    refuse "self-window" "engine reset cannot close its calling tmux window"
   fi
   auth_error=$(engine_reset_authorized "$request" 2>&1) || refuse "reset-ownership" "engine reset lost ownership before closing its window: $auth_error"
   if ! supersede_block_deliveries "$id"; then

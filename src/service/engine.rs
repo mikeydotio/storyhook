@@ -9,11 +9,15 @@
 pub mod adoption;
 mod dispatch_quiescence;
 pub mod reset;
+mod restoration;
+pub(crate) use restoration::reconcile_manual as reconcile_restored_dispatches;
 
 pub(crate) use dispatch_quiescence::card_reset_dispatching;
 
 #[cfg(test)]
 mod restart_probe_tests;
+#[cfg(test)]
+mod revivify_tests;
 #[cfg(test)]
 mod tmux_grace_tests;
 
@@ -723,6 +727,32 @@ pub trait Dispatcher: Send + Sync {
     fn probe_lane(&self, _lane: &EngineLaneRecord, target: &str) -> WindowProbe {
         self.probe_window(target)
     }
+    /// Prove or publish a restored physical binding without dispatching a session.
+    fn restore_lane(
+        &self,
+        _lane: &EngineLaneRecord,
+        _expected: Option<&serde_json::Value>,
+        _workspace: Option<std::os::fd::BorrowedFd<'_>>,
+        _deadline: Instant,
+    ) -> Result<Option<serde_json::Value>, AppError> {
+        Ok(None)
+    }
+    /// Read activity after the restore-specific proof established live ownership.
+    fn probe_restored_lane(&self, _lane: &EngineLaneRecord) -> WindowProbe {
+        WindowProbe::Alive {
+            last_output_at: None,
+        }
+    }
+    /// Rearm only an existing autonomous dispatch after current policy is checked.
+    fn rearm_restored_lane(
+        &self,
+        _lane: &EngineLaneRecord,
+        _proposal: &serde_json::Value,
+        _workspace: std::os::fd::BorrowedFd<'_>,
+        _deadline: Instant,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
     fn kill_window(&self, window: &str) -> Result<(), AppError>;
     /// The live agent windows on the tmux server this dispatcher fills
     /// lanes on — every dispatched session, engine-filled or manual.
@@ -821,23 +851,58 @@ impl ShellDispatcher {
 impl ShellDispatcher {
     /// The window census on the server this dispatcher's lanes live on.
     fn shell_census(&self) -> WindowCensus {
-        crate::lane_budget::census_through(self.tmux(), self.tmux_bound())
+        let deadline = Instant::now() + self.tmux_bound();
+        let prepared = (|| {
+            let target =
+                super::tmux_target::inspect(&self.env, None, deadline, &Default::default())?;
+            let mut command = self.tmux();
+            target.apply(&mut command, None);
+            Ok::<_, AppError>((command, super::tmux_target::remaining(deadline)?))
+        })();
+        match prepared {
+            Ok((command, timeout)) => crate::lane_budget::census_through(command, timeout),
+            Err(error) => WindowCensus::Unanswered {
+                detail: error.to_string(),
+            },
+        }
     }
 }
 
 impl ShellDispatcher {
     fn probe_window_at(&self, window: &str, socket: Option<&Path>) -> WindowProbe {
-        let mut command = self.tmux();
-        if let Some(socket) = socket {
-            command.arg("-S").arg(socket);
-        }
-        command.args(["display-message", "-p", "-t", window, WINDOW_PROBE_FORMAT]);
         let budget = self.probe_budget();
-        let timeout = match budget.timeout_at(Instant::now()) {
+        let started = Instant::now();
+        let timeout = match budget.timeout_at(started) {
             Ok(timeout) => timeout,
             Err(detail) => {
                 return WindowProbe::Unanswered {
                     detail: format!("{window}: {detail}"),
+                };
+            }
+        };
+        let deadline = started + timeout;
+        let prepared = (|| {
+            let target =
+                super::tmux_target::inspect(&self.env, socket, deadline, &Default::default())?;
+            target.require_binding()?;
+            let mut command = self.tmux();
+            target.apply(&mut command, socket);
+            // C-locale clients otherwise replace protocol tabs with underscores.
+            command.args([
+                "-u",
+                "display-message",
+                "-p",
+                "-t",
+                window,
+                WINDOW_PROBE_FORMAT,
+            ]);
+            Ok::<_, AppError>((command, target, super::tmux_target::remaining(deadline)?))
+        })();
+        let (command, target, timeout) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return WindowProbe::Unanswered {
+                    detail: format!("{window}: {error}"),
                 };
             }
         };
@@ -868,7 +933,7 @@ impl ShellDispatcher {
             let stderr = String::from_utf8_lossy(&captured.stderr).trim().to_string();
             // tmux exits 1 both for "no such target" and for anything else
             // that went wrong; only its own vocabulary separates the two.
-            return if tmux_reports_a_missing_target(&stderr) {
+            return if !target.protected && tmux_reports_a_missing_target(&stderr) {
                 WindowProbe::Gone {
                     detail: format!("tmux cannot find `{window}`: {stderr}"),
                 }
@@ -1025,9 +1090,38 @@ impl Dispatcher for ShellDispatcher {
         self.probe_window_at(window, None)
     }
 
+    fn restore_lane(
+        &self,
+        lane: &EngineLaneRecord,
+        expected: Option<&serde_json::Value>,
+        workspace: Option<std::os::fd::BorrowedFd<'_>>,
+        deadline: Instant,
+    ) -> Result<Option<serde_json::Value>, AppError> {
+        restoration::call(self, lane, expected, workspace, false, deadline)
+    }
+
+    fn rearm_restored_lane(
+        &self,
+        lane: &EngineLaneRecord,
+        proposal: &serde_json::Value,
+        workspace: std::os::fd::BorrowedFd<'_>,
+        deadline: Instant,
+    ) -> Result<(), AppError> {
+        restoration::call(self, lane, Some(proposal), Some(workspace), true, deadline).map(|_| ())
+    }
+
+    fn probe_restored_lane(&self, lane: &EngineLaneRecord) -> WindowProbe {
+        self.probe_window_at(
+            lane.pane_id.as_deref().expect("restored pane"),
+            lane.cleanup_lease
+                .as_ref()
+                .map(|lease| lease.tmux.socket_path.as_path()),
+        )
+    }
+
     fn probe_lane(&self, lane: &EngineLaneRecord, window: &str) -> WindowProbe {
         if lane.adopted_identity.is_some() {
-            return adoption::probe(lane, self.probe_budget(), &self.tmux_program);
+            return adoption::probe(lane, self.probe_budget(), &self.tmux_program, &self.env);
         }
         self.probe_window_at(
             window,
@@ -1038,9 +1132,13 @@ impl Dispatcher for ShellDispatcher {
     }
 
     fn kill_window(&self, window: &str) -> Result<(), AppError> {
+        let deadline = Instant::now() + self.tmux_bound();
+        let target = super::tmux_target::inspect(&self.env, None, deadline, &Default::default())?;
+        target.require_binding()?;
         let mut command = self.tmux();
+        target.apply(&mut command, None);
         command.args(["kill-window", "-t", window]);
-        let bound = self.tmux_bound();
+        let bound = super::tmux_target::remaining(deadline)?;
         match run_captured(command, bound) {
             Ok(captured) if captured.status.success() => Ok(()),
             Ok(captured) => {
@@ -1679,25 +1777,43 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         })?;
 
         let mut observed = Vec::with_capacity(facts.len());
-        for (lane, row, blocked) in facts {
+        for (mut lane, row, blocked) in facts {
+            // Startup publication remains read-only and bounded. The first
+            // background pass owns readiness and restoration side effects.
+            let restoration = if pass == ReconcilePass::Steady {
+                self.restore_lane(&lane, row.as_ref().map(|r| r.head_global_seq.get()))
+            } else {
+                Ok((lane.clone(), false))
+            };
+            let restored_probe = match restoration {
+                Ok((fresh, true)) => {
+                    lane = fresh;
+                    Some(self.dispatcher.probe_restored_lane(&lane))
+                }
+                Ok(_) => None,
+                Err(error) => Some(WindowProbe::Unanswered {
+                    detail: error.to_string(),
+                }),
+            };
             // The window probe is a subprocess, so it runs outside the read.
-            let window = lane
-                .pane_id
-                .as_deref()
-                .filter(|pane| valid_pane_id(pane))
-                .map(str::to_string)
-                .or_else(|| {
-                    lane.window_name
-                        .as_deref()
-                        .map(|window| exact_window_target(slug, window))
-                })
-                .map_or_else(
-                    || WindowProbe::Gone {
-                        detail: "the lane records neither a pane id nor a window name to probe"
-                            .to_string(),
-                    },
-                    |target| self.dispatcher.probe_lane(&lane, &target),
-                );
+            let window = restored_probe.unwrap_or_else(|| {
+                lane.pane_id
+                    .as_deref()
+                    .filter(|pane| valid_pane_id(pane))
+                    .map(str::to_string)
+                    .or_else(|| {
+                        lane.window_name
+                            .as_deref()
+                            .map(|window| exact_window_target(slug, window))
+                    })
+                    .map_or_else(
+                        || WindowProbe::Gone {
+                            detail: "the lane records neither a pane id nor a window name to probe"
+                                .to_string(),
+                        },
+                        |target| self.dispatcher.probe_lane(&lane, &target),
+                    )
+            });
             let head_global_seq = row.as_ref().map(|row| row.head_global_seq.get());
             // Read only when it can change the verdict: a Gone window on an
             // open, non-verifying, non-awaiting story (SH-650). Every other
@@ -4118,6 +4234,7 @@ mod tests {
             worktree_path: "/repo/SH-1".into(),
             branch: "worktree-SH-1".into(),
             tmux: crate::domain::TmuxCleanupTarget {
+                revivify: None,
                 socket_path: "/tmp/creation-time.sock".into(),
             },
         });

@@ -15,7 +15,7 @@ repo=$(mk_story_repo WTR)
 # Pass mode through the public dispatch API; the provider boundary alone is fake.
 launch() {
   (cd "$repo" && PATH="$fixture_bin:$PATH" \
-    TMUX=fake TMUX_PANE=%0 STORY_AGENT="$provider" STORY_COUNCIL=off \
+    TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT="$provider" STORY_COUNCIL=off \
     STORY_READY_DELAY=0.1 STORY_READY_ATTEMPTS="$attempts" STORY_CONFIRM_DELAY=0 \
     STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
     FAKE_TMUX_SUPPRESS_SENTINEL="$suppress_hook" \

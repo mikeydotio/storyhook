@@ -16,7 +16,7 @@ doctor_case() {
   FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-doctor-state.XXXXXX)
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
   out=$(cd "$repo" && PATH="$bins:$TESTS_DIR/fakes:$PATH" \
-    TMUX=fake TMUX_PANE=%0 STORY_READY_ATTEMPTS=3 STORY_READY_DELAY=0 \
+    TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_READY_ATTEMPTS=3 STORY_READY_DELAY=0 \
     STORY_READY_FALLBACK_DELAY=0 STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
     FAKE_TMUX_CAPTURE=marker env "$@" bash "$SCRIPT" doctor)
   assert_eq "$(cat "$repo/.claude/dispatch-sentinel.json")" "$original" "doctor preserves caller evidence"

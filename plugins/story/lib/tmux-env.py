@@ -3,8 +3,8 @@
   tmux-env.py scrub-session <session>  Clean one storyhook-owned session.
   tmux-env.py retained                 Report session state the server holds.
 
-Both print one JSON object. Neither command can start a server, so each tmux
-call keeps the caller's routing and test-harness environment unchanged.
+Both print one JSON object. Neither command can start a server. Protected
+operations pin the checked private endpoint; unmanaged routing is unchanged.
 """
 
 import json
@@ -15,6 +15,7 @@ import sys
 # An installed plugin directory is not this process's to write into.
 sys.dont_write_bytecode = True
 import probe_budget
+import tmux_client
 import tmux_server_env
 
 
@@ -25,7 +26,7 @@ def run(*arguments):
     """
     environment = os.environ.copy()
     environment.pop("STORY_WORKSPACE_LOCK_FD", None)
-    result = probe_budget.run(["tmux", *arguments], env=environment, capture_output=True, text=True,
+    result = probe_budget.run(tmux_client.client().arguments(arguments), env=environment, capture_output=True, text=True,
                               close_fds=True)
     if result.returncode:
         raise RuntimeError(f"tmux {' '.join(arguments)}: {result.stderr.strip()} (exit {result.returncode})")
@@ -49,7 +50,7 @@ def main(argv):
 if __name__ == "__main__":
     try:
         # One invocation is one operation: its tmux calls share one budget.
-        with probe_budget.operation():
+        with tmux_client.operation():
             status = main(sys.argv[1:])
         sys.exit(status)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:

@@ -14,6 +14,7 @@ import sys
 # An installed plugin directory is not this process's to write into.
 sys.dont_write_bytecode = True
 import probe_budget
+from tmux_target import logical_socket, resolve_target, split_tmux_arguments, target_arguments, require_current_selector
 from tmux_server_env import (GITHUB_CREDENTIALS, GITHUB_ROUTING, client_environment,
                              pane_overrides, reports_no_server)
 
@@ -50,23 +51,30 @@ def main():
     for name in GITHUB_CREDENTIALS + GITHUB_ROUTING + ("STORY_BIN",):
         environment.pop(name, None)
     arguments = sys.argv[1:]
+    _, _, socket = split_tmux_arguments(arguments, os.environ)
+    target = resolve_target(socket, os.environ, probe_budget.run,
+                            client_environment(os.environ), ensure=True)
+    require_current_selector(target, logical_socket(socket, os.environ))
+    arguments = target_arguments(target, arguments)
     # Apply before the launch shell starts, without modifying existing shared
     # server/session state. Empty STORY_BIN retains the shell adapter's fallback.
     for index, argument in enumerate(arguments):
         if argument in PANE_COMMANDS:
             arguments[index + 1:index + 1] = overrides
-            if argument == "new-session" and not server_answers(arguments[:index], environment):
+            if argument == "new-session" and not target["protected"] and not server_answers(arguments[:index], environment):
                 environment = client_environment(os.environ)
             break
     # The guardian keeps inherited locks until the client exits. A new server
     # and its panes must not inherit them and outlive the dispatch handoff.
-    result = subprocess.run(["tmux", *arguments], env=environment, close_fds=True)
+    launch = probe_budget.run if target["protected"] else subprocess.run
+    result = launch(["tmux", *arguments], env=environment, close_fds=True)
     return result.returncode if result.returncode >= 0 else 128 - result.returncode
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        with probe_budget.operation():
+            sys.exit(main())
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"tmux-launch: {error}", file=sys.stderr)
         sys.exit(1)

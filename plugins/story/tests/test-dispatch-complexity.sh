@@ -2,7 +2,7 @@
 # Exercise production resolution through the real CLI and the dry-run launch.
 source "$(dirname "$0")/lib.sh"
 export PATH="$TESTS_DIR/fakes:$PATH"
-export TMUX="fake,0,0" TMUX_PANE="%0"
+export TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0"
 repo=$(mk_story_repo CPX)
 id=$(new_story "$repo" "Complexity policy")
 for agent in codex claude; do

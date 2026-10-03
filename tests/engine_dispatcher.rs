@@ -92,6 +92,7 @@ fn cleanup_lease() -> StoryCleanupLease {
         worktree_path: PathBuf::from("/repos/original/.codex/worktrees/ALPHA-7"),
         branch: "worktree-ALPHA-7".to_string(),
         tmux: TmuxCleanupTarget {
+            revivify: None,
             socket_path: PathBuf::from("/tmp/tmux-original/default"),
         },
     }

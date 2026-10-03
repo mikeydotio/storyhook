@@ -734,7 +734,7 @@ source "$2/plugins/story/tests/lib.sh"
 repo=$(mk_story_repo)
 id=$(new_story "$repo" "Installed launcher dispatch")
 cd "$repo" || exit 1
-export PATH="$TESTS_DIR/fakes:$PATH" TMUX=fake TMUX_PANE=%0
+export PATH="$TESTS_DIR/fakes:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0
 export STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0
 export STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0
 export FAKE_TMUX_CAPTURE=marker FAKE_TMUX_CODEX_SENTINEL_MODE=identity

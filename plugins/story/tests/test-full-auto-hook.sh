@@ -93,8 +93,20 @@ assert_eq "$out" "{}" "Codex ExitPlanMode: emits no unsupported allow decision"
 # original live pane and it presses Return only for the exact selected option.
 TMUX_FIXTURE=$(mktemp -d /tmp/story-test-fullauto-tmux.XXXXXX)
 _TMP_REPOS+=("$TMUX_FIXTURE")
+export WATCH_PID=$$
+export STORY_APPROVAL_BINDING
+STORY_APPROVAL_BINDING=$(python3 - "$TESTS_DIR/../lib" "$WATCH_PID" "$TMUX_FIXTURE/socket" <<'BINDING'
+import json,sys
+sys.path.insert(0, sys.argv[1])
+from process_identity import process_identity
+print(json.dumps(dict(socket=sys.argv[3], pane='%4242', process=process_identity(int(sys.argv[2])))))
+BINDING
+)
 cat >"$TMUX_FIXTURE/tmux" <<'MOCKTMUX'
 #!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  case "$1" in -u|-N) shift ;; -S) shift 2 ;; *) break ;; esac
+done
 case "${1:-}" in
   display-message)
     if [ "${FULL_AUTO_TMUX_DIE_BEFORE_SEND:-}" = 1 ]; then
@@ -103,7 +115,7 @@ case "${1:-}" in
       printf '%s' "$count" >"$FULL_AUTO_TMUX_IDENTITY_COUNT"
       [ "$count" -eq 1 ] || FULL_AUTO_TMUX_PANE_DEAD=1
     fi
-    printf '%s\n' "${FULL_AUTO_TMUX_PANE_PID:-777}:${FULL_AUTO_TMUX_PANE_DEAD:-0}"
+    printf '%s\n' "${FULL_AUTO_TMUX_PANE_PID:-$WATCH_PID}:${FULL_AUTO_TMUX_PANE_DEAD:-0}"
     ;;
   run-shell)
     bash -c "${*: -1}"
@@ -123,6 +135,7 @@ case "${1:-}" in
     printf '%s\n' "$*" >>"$FULL_AUTO_TMUX_LOG"
     : >"$FULL_AUTO_TMUX_APPROVED"
     ;;
+  set-option) ;;
   *) exit 1 ;;
 esac
 MOCKTMUX
@@ -131,7 +144,7 @@ export FULL_AUTO_TMUX_LOG="$TMUX_FIXTURE/send-keys.log"
 export FULL_AUTO_TMUX_APPROVED="$TMUX_FIXTURE/codex-approved"
 : >"$FULL_AUTO_TMUX_LOG"
 
-PATH="$TMUX_FIXTURE:$PATH" bash "$HOOK" --approve-claude-plan %4242 777 1
+PATH="$TMUX_FIXTURE:$PATH" bash "$HOOK" --approve-claude-plan %4242 "$WATCH_PID" 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "send-keys -t %4242 Enter" \
   "Claude watcher: accepts the exact Auto plan pane with Return"
 rm -f "$FULL_AUTO_TMUX_APPROVED"
@@ -140,24 +153,24 @@ rm -f "$FULL_AUTO_TMUX_APPROVED"
 # invalid pane id cannot become a tmux target.
 : >"$FULL_AUTO_TMUX_LOG"
 PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_SCREEN=changed \
-  bash "$HOOK" --approve-claude-plan %4242 777 1
+  bash "$HOOK" --approve-claude-plan %4242 "$WATCH_PID" 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
   "Claude watcher: changed UI text receives no input"
-PATH="$TMUX_FIXTURE:$PATH" bash "$HOOK" --approve-claude-plan 'not-a-pane' 777 1
+PATH="$TMUX_FIXTURE:$PATH" bash "$HOOK" --approve-claude-plan 'not-a-pane' "$WATCH_PID" 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
   "Claude watcher: an invalid pane id receives no input"
 PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_PANE_PID=778 \
-  bash "$HOOK" --approve-claude-plan %4242 777 1
+  bash "$HOOK" --approve-claude-plan %4242 "$WATCH_PID" 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
   "Claude watcher: a respawned pane receives no input"
 PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_PANE_DEAD=1 \
-  bash "$HOOK" --approve-claude-plan %4242 777 1
+  bash "$HOOK" --approve-claude-plan %4242 "$WATCH_PID" 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
   "Claude watcher: a retained dead pane receives no input"
 export FULL_AUTO_TMUX_IDENTITY_COUNT="$TMUX_FIXTURE/identity-count"
 : >"$FULL_AUTO_TMUX_IDENTITY_COUNT"
 PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_DIE_BEFORE_SEND=1 \
-  bash "$HOOK" --approve-claude-plan %4242 777 1
+  bash "$HOOK" --approve-claude-plan %4242 "$WATCH_PID" 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
   "Claude watcher: a pane that dies after capture receives no input"
 
@@ -166,13 +179,13 @@ assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
 # Return and a changed UI receives none.
 : >"$FULL_AUTO_TMUX_LOG"
 PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_PROVIDER=codex \
-  bash "$HOOK" --approve-codex-plan %4242 777 1
+  bash "$HOOK" --approve-codex-plan %4242 "$WATCH_PID" 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "send-keys -t %4242 Enter" \
   "Codex watcher: accepts the exact selected plan pane with Return"
 : >"$FULL_AUTO_TMUX_LOG"
 rm -f "$FULL_AUTO_TMUX_APPROVED"
 PATH="$TMUX_FIXTURE:$PATH" FULL_AUTO_TMUX_PROVIDER=codex FULL_AUTO_TMUX_SCREEN=changed \
-  bash "$HOOK" --approve-codex-plan %4242 777 1
+  bash "$HOOK" --approve-codex-plan %4242 "$WATCH_PID" 1
 assert_eq "$(cat "$FULL_AUTO_TMUX_LOG")" "" \
   "Codex watcher: changed UI text receives no input"
 

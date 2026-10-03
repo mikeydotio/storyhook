@@ -517,6 +517,42 @@ pub const CLEANUP_LEASE_MARKER: &str = "storyhook-cleanup-lease-v1.json";
 /// Private environment variable carrying one versioned lease to `story reap`.
 pub const CLEANUP_LEASE_ENV: &str = "STORYHOOK_REAP_LEASE_V1";
 
+/// Origin of a protected cleanup binding, corroborated during restore adoption.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RevivifyProvenanceWire")]
+pub struct RevivifyProvenance {
+    /// Canonical public socket whose persistent activation owns the generations.
+    pub logical_socket: PathBuf,
+    /// Generation that originally authorized the dispatch, not its current PID.
+    pub origin_generation: String,
+}
+
+#[derive(Deserialize)]
+struct RevivifyProvenanceWire {
+    logical_socket: PathBuf,
+    origin_generation: String,
+}
+
+impl TryFrom<RevivifyProvenanceWire> for RevivifyProvenance {
+    type Error = String;
+
+    fn try_from(value: RevivifyProvenanceWire) -> Result<Self, Self::Error> {
+        if !value.logical_socket.is_absolute()
+            || value.origin_generation.len() != 32
+            || !value
+                .origin_generation
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("invalid revivify cleanup provenance: expected absolute logical socket and lowercase generation ID".into());
+        }
+        Ok(Self {
+            logical_socket: value.logical_socket,
+            origin_generation: value.origin_generation,
+        })
+    }
+}
+
 /// Tmux server on which dispatch created or adopted a story window.
 ///
 /// Story ids are globally unique within StoryHook. Once a story is complete,
@@ -525,6 +561,9 @@ pub const CLEANUP_LEASE_ENV: &str = "STORYHOOK_REAP_LEASE_V1";
 pub struct TmuxCleanupTarget {
     /// Absolute tmux server socket path.
     pub socket_path: PathBuf,
+    /// Optional originating protection evidence; absence retains legacy behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revivify: Option<RevivifyProvenance>,
 }
 
 /// Durable identity of every disposable resource owned by one dispatch.

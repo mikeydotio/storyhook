@@ -40,6 +40,7 @@ impl DispatchInspector for Inspector {
                 worktree_path: format!("/worktrees/{story}").into(),
                 branch: format!("worktree-{story}"),
                 tmux: TmuxCleanupTarget {
+                    revivify: None,
                     socket_path: "/tmp/test-socket".into(),
                 },
             },

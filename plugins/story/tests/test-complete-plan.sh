@@ -21,7 +21,7 @@ assert_eq "$(jqf "$out" .actions_count)" "3" "plan: counts close + worktree + br
 
 # --- SH-308: an open dispatched window is a 4th actionable item ---
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$w")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$w")" \
      bash "$SCRIPT" complete plan "$id" 2>&1)
 assert_eq "$(jqf "$out" .plan.window.status)" "open" "plan: a dispatched window still alive reports open"
 assert_eq "$(jqf "$out" .actions_count)" "4" "plan: an open window on a removable worktree counts as an action"
@@ -30,7 +30,7 @@ assert_contains "$(jqf "$out" .display)" "would close before removing the worktr
 
 # --- SH-308: the window the caller is asking FROM is `self`, never an action ---
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%7 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$w")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%7 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$w")" \
      bash "$SCRIPT" complete plan "$id" 2>&1)
 assert_eq "$(jqf "$out" .plan.window.status)" "self" "plan: the caller's own pane resolves to self"
 assert_eq "$(jqf "$out" .actions_count)" "3" "plan: self is never counted as an action"
@@ -42,7 +42,7 @@ dwin=$(new_story "$repo" "Dirty with a window")
 wdwin=$(mk_dispatched "$repo" "$dwin")
 echo scratch >"$repo/.claude/worktrees/$wdwin/scratch.txt"
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%9' "$wdwin")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%9' "$wdwin")" \
      bash "$SCRIPT" complete plan "$dwin" 2>&1)
 assert_eq "$(jqf "$out" .plan.window.status)" "open" "plan: dirty-worktree window still reports open"
 assert_contains "$(jqf "$out" .display)" 'only if `--force`' \

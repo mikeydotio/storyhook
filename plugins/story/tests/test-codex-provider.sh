@@ -23,7 +23,7 @@ run_codex() {
   (
     cd "$repo" &&
       PATH="$FAKE_BIN:$FAKE_TMUX_DIR:$PATH" \
-      TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker \
@@ -35,6 +35,7 @@ run_codex() {
 
 # Happy dispatch: Codex has its own launch, worktree, Plan key and submit key.
 fresh_tmux
+codex_dispatch_tmux_state="$FAKE_TMUX_STATE"
 repo=$(mk_story_repo CDX)
 id=$(new_story "$repo" "Codex dispatch happy path")
 out=$(run_codex "$repo" dispatch "$id")
@@ -96,6 +97,7 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/plan_key_ignored.log")" "late TUI start
 
 # Safe reap uses the provider's path and removes only the closed, merged leaf.
 (cd "$repo" && story move "$id" "done" >/dev/null)
+export FAKE_TMUX_STATE="$codex_dispatch_tmux_state"
 export FAKE_TMUX_PANES
 FAKE_TMUX_PANES=$(printf '%s\t1\t%%1' "$id")
 out=$(run_codex "$repo" reap "$id")
@@ -180,8 +182,7 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
   "STORYHOOK_FULL_AUTO=" "real auto: watcher contains the engine marker"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
-  "--approve-codex-plan %1 $(cat "$FAKE_TMUX_STATE/pane_pid")" \
-  "real auto: watcher targets the confirmed pane and original PID"
+  "approval_tmux.py watch" "real auto: watcher uses the process-bound wrapper"
 
 fresh_tmux
 repo_auto_fail=$(mk_story_repo CDF)
