@@ -1,3 +1,4 @@
+import { gracedOperationBudget } from "../load-grace";
 import { test, expect } from "./support";
 import type { Page, Route } from "@playwright/test";
 import {
@@ -9,6 +10,9 @@ import {
   seedToken,
   waitForDisplayedStoryBlockDeliveries,
 } from "./support";
+
+/** Existing idle patience for menu update; SH-804 adds contention grace. */
+const MENU_UPDATE_BASE_MS = 1_000;
 
 /**
  * SH-850: an in-progress story whose agent was lost (a reboot, a crashed tmux
@@ -256,8 +260,8 @@ test("a held story's Resume is disabled until it is unblocked, in the menu and t
   await expect(async () => {
     const menu = await menuFor(page, card);
     const resume = menu.locator(".ctxmenu-item", { hasText: /^Resume/ });
-    await expect(resume).toHaveAttribute("aria-disabled", "true", { timeout: 1000 });
-    await expect(resume).toHaveAttribute("title", /Unblock the story first/, { timeout: 1000 });
+    await expect(resume).toHaveAttribute("aria-disabled", "true", { timeout: gracedOperationBudget(MENU_UPDATE_BASE_MS) });
+    await expect(resume).toHaveAttribute("title", /Unblock the story first/, { timeout: gracedOperationBudget(MENU_UPDATE_BASE_MS) });
     await page.keyboard.press("Escape");
   }).toPass();
   await card.click();
@@ -276,7 +280,7 @@ test("a failed census falls back to Dispatch, which the daemon guards itself", a
   const { card } = await claimedStory(page, "SH-850 resume — census failed", () => []);
   await expect(async () => {
     const menu = await menuFor(page, card);
-    await expect(menu.getByRole("menuitem", { name: "Dispatch", exact: true })).toBeVisible({ timeout: 1000 });
+    await expect(menu.getByRole("menuitem", { name: "Dispatch", exact: true })).toBeVisible({ timeout: gracedOperationBudget(MENU_UPDATE_BASE_MS) });
     await page.keyboard.press("Escape");
   }).toPass();
 });
