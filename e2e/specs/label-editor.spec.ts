@@ -1,4 +1,5 @@
 import { test, expect } from "./support";
+import { withDrainedRoutes } from "../route-lifetime";
 import {
   awaitNoOverlay,
   cleanUpCreatedStories,
@@ -113,3 +114,82 @@ test("a failed drawer label write restores the token for an explicit retry", asy
   await page.locator("#drawer-close").click();
   await deleteStory(page, title);
 });
+
+for (const operation of ["add", "remove"] as const) {
+  for (const outcome of ["success", "failure"] as const) {
+    test(`a pending label ${operation} exposes its busy state until ${outcome}`, async ({ page }) => {
+      const title = `SH-812 pending label ${operation} ${outcome}`;
+      await createStory(page, title);
+      const card = page.locator('.column[data-state="todo"] .card', { hasText: title });
+      await card.click();
+      const input = page.locator('#drawer input[data-field="label-add"]');
+      const combobox = page.locator("#drawer .label-combobox");
+      const chips = combobox.locator(".label-chip");
+      const endpoint = /\/api\/repos\/[^/]+\/story\/[^/]+\/labels$/;
+      const seeded = page.waitForResponse((response) => endpoint.test(response.url()));
+      await input.fill("alpha,beta");
+      await input.press("Enter");
+      await (await seeded).finished();
+      // Reopen the confirmed record so this proof starts with an idle editor.
+      await page.locator("#drawer-close").click();
+      await card.click();
+      await expect(chips).toHaveCount(2);
+
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      let markTaken!: () => void;
+      const taken = new Promise<void>((resolve) => { markTaken = resolve; });
+      let first = true;
+      await withDrainedRoutes(page, async () => {
+        await page.route(endpoint, async (route) => {
+          if (!first) {
+            await route.continue();
+            return;
+          }
+          first = false;
+          markTaken();
+          // Hold before the daemon writes, so no SSE response can confirm it.
+          await held;
+          if (outcome === "failure")
+            await route.fulfill({ status: 500, json: { error: "held label refusal" } });
+          else
+            await route.continue();
+        });
+        try {
+          await input.fill(operation === "add" ? "Gamma" : "draft");
+          if (operation === "add") await input.press("Enter");
+          else await chips.filter({ hasText: "alpha" }).getByRole("button").click();
+          await taken;
+          await expect(input).toHaveJSProperty("readOnly", true);
+          await expect(input).toBeFocused();
+          await expect(combobox).toHaveAttribute("aria-busy", "true");
+          await expect(combobox.getByRole("status")).toHaveText("Saving labels…");
+          for (const button of await chips.getByRole("button").all())
+            await expect(button).toBeDisabled();
+          await input.pressSequentially("lost");
+          await expect(input).toHaveValue(operation === "add" ? "" : "draft");
+        } finally {
+          release();
+        }
+        await expect(input).toBeEditable();
+        await expect(combobox).toHaveAttribute("aria-busy", "false");
+        await expect(combobox.getByRole("status")).toBeHidden();
+        const expected = outcome === "failure" ? 2 : operation === "add" ? 3 : 1;
+        await expect(chips).toHaveCount(expected);
+        for (const button of await chips.getByRole("button").all())
+          await expect(button).toBeEnabled();
+        if (outcome === "failure") {
+          await expect(page.locator("#toast-stack .toast.error")).toContainText("held label refusal");
+          await expect(input).toHaveValue(operation === "add" ? "Gamma" : "draft");
+        }
+        await input.fill("next");
+        await input.press("Enter");
+        await expect(chips.filter({ hasText: "next" })).toBeVisible();
+        await expect(input).toBeEditable();
+        await page.locator("#drawer-close").click();
+        await card.click();
+        await expect(chips.filter({ hasText: "next" })).toBeVisible();
+      });
+    });
+  }
+}
