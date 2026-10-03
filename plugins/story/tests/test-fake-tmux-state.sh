@@ -290,4 +290,30 @@ TMUX_TMPDIR="$outside" FAKE_TMUX_STATE="$publish_state" bash "$SCRIPT" unclaim >
 [ ! -e "$outside/tmux-$(id -u)/default" ] \
   || fail_test "publish: a default server outside the test home was linked"
 
+# An inventory of a server nobody published fails loud, naming the fix. Empty
+# is a published state; unpublished is a fixture mistake.
+unpublished=$(mktemp -d /tmp/story-test-unpublished.XXXXXX)
+_TMP_REPOS+=("$unpublished")
+unpublished=$(cd "$unpublished" && pwd -P)
+: >"$unpublished/tmux.sock"
+inventory() {
+  "$FAKE_TMUX" -u -S "$unpublished/tmux.sock" list-panes -a -F \
+    $'#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-agent}\t#{pane_active}\t#{pane_current_path}'
+}
+rc=0
+out=$(inventory 2>&1) || rc=$?
+[ "$rc" -ne 0 ] || fail_test "unpublished: an inventory of a server nobody published succeeded"
+assert_contains "$out" "queried before any caller published it" "unpublished: the refusal says what is missing"
+# shellcheck disable=SC2016 # the literal command the refusal must name
+assert_contains "$out" 'bash "$SCRIPT"' "unpublished: and how to publish"
+: >"$unpublished/windows"
+rc=0
+out=$(inventory 2>&1) || rc=$?
+assert_eq "$rc:$out" "0:" "unpublished: a seeded empty server is an empty inventory, not an error"
+rm -f "$unpublished/windows"
+(cd "$pane_cwd" && FAKE_TMUX_STATE="$unpublished" "$FAKE_TMUX" display-message -p '#{socket_path}' >/dev/null)
+rc=0
+out=$(inventory 2>&1) || rc=$?
+assert_eq "$rc:$out" "0:" "unpublished: a published empty server is an empty inventory"
+
 finish
