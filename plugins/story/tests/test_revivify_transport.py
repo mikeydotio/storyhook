@@ -147,6 +147,15 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(set(result.stdout.splitlines()), {'true', 'orig', 'original'})
 
+    def test_bash_cleanup_target_publishes_checked_origin_and_omits_legacy_evidence(self):
+        result = self.shell_resources('resource_cleanup_target /tmp/legacy.sock; prepare_tmux_target ensure; '
+                                      'resource_cleanup_target "$RESOURCE_SOCKET"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        old, protected = map(json.loads, result.stdout.splitlines())
+        self.assertEqual(old, {'socket_path': '/tmp/legacy.sock'})
+        self.assertEqual(protected, {'socket_path': self.endpoint, 'revivify': {
+            'logical_socket': self.socket, 'origin_generation': self.record['generation']}})
+
     def test_bash_cannot_override_a_captured_private_selector(self):
         for selector in ('-S "$RESOURCE_LOGICAL_SOCKET"', '-u -S "$RESOURCE_LOGICAL_SOCKET"', '-L other'):
             with self.subTest(selector=selector):

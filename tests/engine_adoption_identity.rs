@@ -69,6 +69,7 @@ impl Dispatch {
             worktree_path: worktree.canonicalize().unwrap(),
             branch: "worktree-SH-1".into(),
             tmux: TmuxCleanupTarget {
+                revivify: None,
                 socket_path: socket.clone(),
             },
         };

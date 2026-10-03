@@ -1289,15 +1289,16 @@ write_cleanup_lease_marker() {
 
   marker="$private_git_dir/$CLEANUP_LEASE_MARKER"
   temp=$(mktemp "$private_git_dir/.storyhook-cleanup-lease.XXXXXX") || return 1
-  local lease_json
+  local lease_json tmux_target
+  tmux_target=$(resource_cleanup_target "$socket_path") || { rm -f "$temp"; return 1; }
   if ! lease_json=$(jq -n \
       --argjson version "$CLEANUP_LEASE_VERSION" \
       --arg project "$project" --arg story "$story" \
       --arg repository "$repository_real" --arg worktree "$worktree_real" \
-      --arg branch "$branch" --arg socket "$socket_path" \
+      --arg branch "$branch" --argjson tmux "$tmux_target" \
       '{version:$version, project_slug:$project, story_id:$story,
         repository_path:$repository, worktree_path:$worktree, branch:$branch,
-        tmux:{socket_path:$socket}}'); then
+        tmux:$tmux}'); then
     rm -f "$temp"
     return 1
   fi

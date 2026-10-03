@@ -13,6 +13,7 @@ fn setup(fixture: &Fixture, socket: &Path) -> (StoryCleanupLease, WorkspaceLock)
         worktree_path: fixture.env.home().into(),
         branch: "worktree-SH-1".into(),
         tmux: crate::domain::TmuxCleanupTarget {
+            revivify: None,
             socket_path: socket.into(),
         },
     };

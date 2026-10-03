@@ -43,6 +43,7 @@ pub(super) fn adopted_lane(root: &Path) -> EngineLaneRecord {
         worktree_path: root.into(),
         branch: "worktree-SH-1".into(),
         tmux: crate::domain::TmuxCleanupTarget {
+            revivify: None,
             socket_path: root.join("socket"),
         },
     });

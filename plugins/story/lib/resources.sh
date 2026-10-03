@@ -4,6 +4,7 @@
 RESOURCE_SOCKET=""
 RESOURCE_LOGICAL_SOCKET=""
 RESOURCE_PROTECTED=false
+RESOURCE_REVIVIFY=null
 RESOURCE_LOCATION_ONLY=false
 RESOURCE_CALLER_TMUX="${TMUX:-}"
 RESOURCE_CALLER_SOCKET="$RESOURCE_CALLER_TMUX"
@@ -52,10 +53,17 @@ prepare_tmux_target() {
   fi
   RESOURCE_PROTECTED="$protected"
   RESOURCE_LOGICAL_SOCKET="$logical"
+  RESOURCE_REVIVIFY=$(printf '%s' "$result" | jq -c 'if .protected then {logical_socket:.socket,origin_generation:.generation} else null end') || return 1
   if [ "$protected" = true ] || [ -n "$selected" ]; then
     RESOURCE_SOCKET="$endpoint"
     export TMUX="$endpoint,0,0"
   fi
+}
+
+# The current transport and its originating protection evidence travel together.
+resource_cleanup_target() {
+  jq -cn --arg socket "$1" --argjson provenance "$RESOURCE_REVIVIFY" \
+    '{socket_path:$socket} + (if $provenance == null then {} else {revivify:$provenance} end)'
 }
 
 # An exact recheck handles only a concurrent creator of this session. Keep the

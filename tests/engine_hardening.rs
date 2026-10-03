@@ -651,6 +651,7 @@ fn halted_scope_can_release_its_occupied_lane_with_the_original_lease() {
         worktree_path: original.join(".codex/worktrees").join(&child),
         branch: format!("worktree-{child}"),
         tmux: TmuxCleanupTarget {
+            revivify: None,
             socket_path: resources.path().join("tmux-original.sock"),
         },
     };

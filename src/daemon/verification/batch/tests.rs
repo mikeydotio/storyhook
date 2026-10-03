@@ -451,6 +451,7 @@ impl Boundary {
             worktree_path: root.join(".claude/worktrees").join(&candidate.story_id),
             branch: format!("worktree-{}", candidate.story_id),
             tmux: crate::domain::TmuxCleanupTarget {
+                revivify: None,
                 socket_path: root.join("tmux.sock"),
             },
         });

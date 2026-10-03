@@ -4159,6 +4159,7 @@ mod tests {
             worktree_path: "/repo/SH-1".into(),
             branch: "worktree-SH-1".into(),
             tmux: crate::domain::TmuxCleanupTarget {
+                revivify: None,
                 socket_path: "/tmp/creation-time.sock".into(),
             },
         });

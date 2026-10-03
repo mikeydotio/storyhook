@@ -509,6 +509,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                     worktree_path: "/repo/lane".into(),
                     branch: "worktree-SH-10".into(),
                     tmux: storyhook::domain::TmuxCleanupTarget {
+                        revivify: None,
                         socket_path: "/socket".into(),
                     },
                 },

@@ -257,6 +257,7 @@ fn leased_candidate(fixture: &ServiceFixture, repository: &Path) -> Verification
         worktree_path: repository.join(".codex/worktrees/SH-1"),
         branch: "worktree-SH-1".into(),
         tmux: TmuxCleanupTarget {
+            revivify: None,
             socket_path: repository.join("tmux.sock"),
         },
     });

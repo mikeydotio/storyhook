@@ -81,6 +81,7 @@ impl Leased {
             worktree_path: self.workspace.worktree.clone(),
             branch: self.workspace.branch.clone(),
             tmux: TmuxCleanupTarget {
+                revivify: None,
                 socket_path: self.workspace.root.path().join("no-tmux.sock"),
             },
         }
@@ -163,6 +164,7 @@ fn an_open_story_is_refused_before_any_git_work() {
             worktree_path: missing.join(&id),
             branch: format!("worktree-{id}"),
             tmux: TmuxCleanupTarget {
+                revivify: None,
                 socket_path: missing.join("tmux.sock"),
             },
         },

@@ -70,6 +70,14 @@ other creation failures retain their diagnostic and roll back as before.
 
 ## Restoration contract
 
+Cleanup lease version 1 adds optional `tmux.revivify` with `logical_socket` and
+`origin_generation`. Both fields are required when the object is present;
+deserialization rejects a relative logical socket or malformed generation ID.
+Legacy and unmanaged leases omit it and retain their wire shape. Dispatch
+publishes this evidence from its captured target. `tmux.socket_path` remains
+the current private endpoint. Provenance is corroboration, never sufficient
+authority to rebind a pane or approve a plan.
+
 The approved scope also requires restore-specific re-adoption of agent,
 engine, reader and continuation identities. The provider maps pane UUIDs to
 new pane IDs; old numerical IDs and PIDs cannot authorize re-adoption.

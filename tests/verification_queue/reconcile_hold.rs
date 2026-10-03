@@ -821,6 +821,7 @@ fn the_shell_probe_reads_a_real_story_window() {
     let mut candidate = cleanup_candidate(&fixture, root.path());
     let lease = StoryCleanupLease {
         tmux: TmuxCleanupTarget {
+            revivify: None,
             socket_path: socket.clone(),
         },
         ..candidate.cleanup_lease.take().unwrap()

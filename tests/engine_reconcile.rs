@@ -46,6 +46,7 @@ fn cleanup_lease(story: &str, worktree: &str) -> StoryCleanupLease {
         worktree_path: worktree.into(),
         branch: format!("worktree-{story}"),
         tmux: TmuxCleanupTarget {
+            revivify: None,
             socket_path: "/tmp/tmux-original/default".into(),
         },
     }
