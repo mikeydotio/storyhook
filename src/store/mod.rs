@@ -79,6 +79,7 @@ pub use engine_reset::EngineReset;
 pub mod error;
 pub mod fault;
 mod gate_evidence;
+pub(crate) mod gate_resources;
 pub mod ids;
 pub mod landing;
 pub mod migrate;

@@ -144,8 +144,15 @@ host_admission	:(glob)scripts/host_admission/**
 host_admission	scripts/host-admission.py
 host_admission	scripts/tests/test_host_admission.py
 host_admission	scripts/tests/test_host_admission_activation.py
+host_admission	scripts/tests/test_host_admission_evidence.py
 host_admission	scripts/tests/test_host_admission_sensors.py
 host_admission	scripts/tests/test_host_admission_system.py
+host_admission_evidence	:(glob)scripts/host_admission/**
+host_admission_evidence	:(glob)src/service/gate_cost/**
+host_admission_evidence	scripts/tests/test_host_admission.py
+host_admission_evidence	scripts/tests/test_host_admission_system.py
+host_admission_evidence	src/store/gate_evidence.rs
+host_admission_evidence	src/store/gate_resources.rs
 implementer_test_scope	:(glob)plugins/story/**
 implementer_test_scope	:(glob)src/**
 implementer_test_scope	AGENTS.md

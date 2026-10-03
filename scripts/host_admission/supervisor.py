@@ -18,8 +18,9 @@ from .policy import Refusal
 class ManagedProcess:
     """A blocked-launch supervisor; SH-869 adapters own preserving its child contract."""
 
-    def __init__(self, client, lease, command):
+    def __init__(self, client, lease, command, *, publisher=None):
         self.client, self.lease, self.child, self.guard = client, lease, None, None
+        self.publisher = publisher
         self.finished = False
         self.execution_id = uuid.uuid4().hex
         self.boot = native.boot_identity()
@@ -97,6 +98,8 @@ class ManagedProcess:
                 if requested:
                     self.call("cancel"); requested = False
                 row = self.call("inspect")
+                if self.publisher:
+                    self.publisher.publish()
                 exited = self._exited()
                 members = self._members()
                 if exited and not members:
@@ -122,6 +125,8 @@ class ManagedProcess:
             if not self.call("finish"):
                 raise Refusal("managed work ended but descendant settlement remains unproved")
             self.finished = True
+            if self.publisher:
+                self.publisher.publish()
             return result
         finally:
             for signum, handler in prior.items():
@@ -130,6 +135,8 @@ class ManagedProcess:
     def close(self):
         """Cancel and settle an owned child when a caller exits its supervision scope."""
         if self.child and not self.finished:
+            # Journal failure must not prevent cleanup of the owned process group.
+            self.publisher = None
             self.call("cancel")
             self.wait()
         if self.guard is not None:

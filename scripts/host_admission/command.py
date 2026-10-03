@@ -9,6 +9,7 @@ import sys
 from .activation import load_policy
 from .broker import Broker
 from .client import Client
+from .evidence import Publisher
 from .native import host_identity
 from .namespace import ROOT
 from .policy import CLASSES, Refusal
@@ -30,6 +31,10 @@ def main(arguments=None, *, root=ROOT):
     run.add_argument("--class", dest="work", choices=CLASSES, required=True)
     run.add_argument("--cpu", type=int, required=True, help="CPU capacity in milli-CPUs")
     run.add_argument("--memory", type=int, required=True, help="memory capacity in bytes")
+    run.add_argument("--attempt-id")
+    run.add_argument("--execution-id")
+    run.add_argument("--generation", type=int)
+    run.add_argument("--journal")
     run.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(arguments)
     root = Path(root)
@@ -54,6 +59,13 @@ def main(arguments=None, *, root=ROOT):
         if not command:
             raise Refusal("run requires a command after --")
         amount = dict(cpu=args.cpu, memory=args.memory)
+        binding = None
+        publisher = None
+        if any(value is not None for value in (args.attempt_id, args.execution_id, args.generation, args.journal)):
+            if not all(value is not None for value in (args.attempt_id, args.execution_id, args.generation, args.journal)):
+                raise Refusal("gate evidence requires attempt, execution, generation and existing journal")
+            binding = dict(attempt_id=args.attempt_id, execution_id=args.execution_id, generation=args.generation)
+            publisher = Publisher(client, binding, args.journal)
         parent = os.environ.get("STORYHOOK_HOST_REQUEST")
         capability = os.environ.get("STORYHOOK_HOST_GRANT")
         if parent or capability:
@@ -61,13 +73,19 @@ def main(arguments=None, *, root=ROOT):
                 raise Refusal("incomplete inherited grant")
             lease = client.call("subgrant", id=parent, token=capability,
                                 child=args.request_id, resources=amount)
+            if binding is not None and lease["binding"] != binding:
+                client.call("cancel", id=lease["id"], token=lease["token"])
+                client.call("finish", id=lease["id"], token=lease["token"])
+                raise Refusal("nested work must preserve its parent evidence binding")
         else:
             lease = client.call("enqueue", request=dict(id=args.request_id, project=args.project,
-                                work=args.work, resources=amount))
+                                work=args.work, resources=amount, **({"binding": binding} if binding else {})))
         try:
+            if publisher:
+                publisher.publish()
             if lease["state"] == "queued":
                 lease = client.call("wait", id=lease["id"], token=lease["token"])
-            managed = ManagedProcess(client, lease, command)
+            managed = ManagedProcess(client, lease, command, publisher=publisher)
             try:
                 result = managed.wait()
                 return result if result >= 0 else 128 - result

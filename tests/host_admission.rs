@@ -20,6 +20,11 @@ fn host_admission_activation_contract() {
     run("test_host_admission_activation.py");
 }
 
+#[test]
+fn host_admission_publisher_contract() {
+    run("test_host_admission_evidence.py");
+}
+
 fn run(script: &str) {
     let output = std::process::Command::new("python3")
         .arg("-B")

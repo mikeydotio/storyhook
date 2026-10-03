@@ -1,6 +1,7 @@
 """Exercise real sockets, kernel identities and subprocess ownership."""
 
 import multiprocessing
+import json
 import os
 from pathlib import Path
 import sys
@@ -16,6 +17,7 @@ from host_admission.client import Client
 from host_admission import native
 from host_admission.policy import Policy, Refusal
 from host_admission.supervisor import ManagedProcess
+from host_admission.evidence import Publisher
 from test_host_admission import policy_value
 
 
@@ -102,6 +104,25 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(managed.wait(), 0)
         self.assertEqual(marker.read_text(), "started")
         self.assertEqual(self.client.call("status")["allocated"]["cpu"], 0)
+
+    def publication(self):
+        """Run an actual bound command and return its production NDJSON for Rust import."""
+        binding = dict(attempt_id="attempt", execution_id="gate", generation=7)
+        journal = Path(self.tmp.name) / "gate.ndjson"
+        journal.write_text(json.dumps(dict(kind="run", **binding)) + "\n")
+        row = self.enqueue("published", binding=binding)
+        publisher = Publisher(self.client, binding, journal)
+        publisher.publish()
+        managed = ManagedProcess(self.client, row, [sys.executable, "-c", "pass"], publisher=publisher)
+        self.addCleanup(managed.close)
+        self.assertEqual(managed.wait(), 0)
+        return journal.read_text()
+
+    def test_broker_events_reach_bound_journal_after_process_cleanup(self):
+        records = [json.loads(line) for line in self.publication().splitlines()]
+        kinds = [r["observation"]["event"] for r in records if r["kind"] == "resource"]
+        for required in ("request", "grant", "attach", "cleanup", "release"):
+            self.assertIn(required, kinds)
 
     def test_cancel_before_launch_never_executes_command(self):
         row = self.enqueue("run")
