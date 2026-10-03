@@ -415,6 +415,8 @@ run_verification_gate() {
         activity_run "merge-watch.sh" bash "$script_dir/merge-watch.sh" --speculative-run "$gate_tree" \
         "$gate_base" "$gate_head" "$gate_worktree" -- "$@" >"$log" 2>&1
     gate_status=$?
+    verdict_cost="verdict-$$-$RANDOM"
+    gate_progress_emit_cost start verdict "$verdict_cost" verdict || die_json "cannot record verdict start"
     record_gate_disk "$gate_worktree"
     completed_status="$(cat "$gate_result")" || completed_status=""
     result_removal_error=""
@@ -441,6 +443,7 @@ run_verification_gate() {
             || die_json "could not describe retained gate ownership: $cleanup_detail"
     fi
     gate_status="$execution_status"
+    gate_progress_emit_cost end verdict "$verdict_cost" verdict || die_json "cannot record verdict end"
     # A completed red is reported through the return status rather than
     # posted here, so the caller can confirm the head it judged is still the
     # PR's head before anything is written (SH-637): `$gate_status`,

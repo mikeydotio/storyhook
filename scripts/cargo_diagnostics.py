@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from gate_cost import interval
 
 ENV_KEY = "STORYHOOK_COMPILER_DIAGNOSTICS"
 OUTCOME_KEY = "STORYHOOK_GATE_BUILD_OUTCOME"
@@ -118,6 +119,7 @@ def wire(record):
     return (json.dumps(record, ensure_ascii=True) + "\n").encode()
 
 
+@interval("compile-link", "release gate/rust-build")
 def run_build(command, artifact, outcome=None):
     """Run a build-only command with stdout diagnostic collection."""
     try:

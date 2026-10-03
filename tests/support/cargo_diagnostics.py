@@ -14,6 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/cargo_diagnostics.py"
+sys.path.insert(0, str(SCRIPT.parent))
 ENV_KEY = "STORYHOOK_COMPILER_DIAGNOSTICS"
 sys.dont_write_bytecode = True
 

@@ -200,6 +200,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         shift
         gate_progress_emit_activity "$@"
         ;;
+    (cost)
+        shift
+        gate_progress_emit_cost "$@"
+        ;;
     (*)
         echo "gate-progress.sh: usage: gate-progress.sh item <path> <status> [key=value...] | gate-progress.sh case <path> <outcome> | gate-progress.sh activity <path> <label> <status>" >&2
         exit 1

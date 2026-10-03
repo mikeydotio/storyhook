@@ -184,3 +184,93 @@ measurements are unknown, not zero. Monotonic durations describe uninterrupted
 execution; UTC restart gaps are estimates, with clock anomalies explicit.
 Retries, holds and new attempts retain prior costs and breaches. Raw producer
 evidence cannot write the store, establish ownership or certify a tree.
+
+### Read retained evidence
+
+Use `story verifier evidence SH-<n>` for a compact table, or add `--json` for
+the versioned record. The command works without a live verifier. It includes
+admissions owned by another story when a shared physical execution contains
+the requested submission. The admission table names its owning generation;
+the submission summaries name the requested story's generations.
+
+`story verifier status --json` has an optional `cost` field for the current
+admission. Old payloads omit it. Current-generation progress comments show
+cumulative cost, including breaches on earlier retries. A missing record
+does not become zero elapsed time. Cost publication does not change
+`last_evidence_at`, output freshness, or the silence watchdog baseline.
+
+### Durable identity and clocks
+
+Schema migration 54 stores version-1 admission JSON in `gate_attempts`,
+scoped to a project. A submission is a story plus its verifying generation.
+Legacy missing generations stay unknown. Each admission has a unique ID,
+revision, predecessor, admission time, elapsed checkpoint, budget outcome,
+independent gate result, lifecycle intervals and nested physical executions.
+Each real gate or bisection probe has a separate execution ID. Reusing a
+retained probe result does not create another physical execution.
+
+Admission is written in the admission transaction, before preparation. A
+scoped daemon observer checkpoints at one-second intervals, even without
+status readers or progress output. It checks again at finalization. The
+first persisted elapsed value at or above 900000 ms makes the breach sticky
+and publishes a project-change notice. It does not cancel a child, create a
+hold, or classify the submitter's work as defective.
+
+Live elapsed time uses `Instant`. A restart closes an unfinished admission
+as interrupted, retaining a checked UTC gap as an estimate. Malformed,
+reversed or overflowing clock evidence retains the prior lower bound and a
+diagnostic. A lost physical end remains unknown. Restart cannot infer
+quiescence, test completion, or certification. Completed records are
+immutable; updates to active records use revision compare-and-swap.
+
+Cumulative wall time runs from submission through the last retained
+observation. It includes retry and hold gaps within those boundaries, but
+does not claim that a later unobserved hold has ended. Admission cost is the
+sum of distinct admissions. Physical service cost is the sum of distinct
+completed physical executions. An incomplete execution makes the full sum
+unknown; a separate known lower bound remains available. Shared batch costs
+are retained at full value for each member reference, never divided. Do not
+sum member summaries as project service cost. Do not sum overlapping phase
+intervals as wall time.
+
+### Producer protocol and coverage
+
+The daemon initializes each physical journal with a `run` record containing
+`attempt_id`, `execution_id`, and `generation`. The importer requires that
+binding and consumes complete newline-terminated records only. A partial
+tail stays unread until complete. Foreign bindings, malformed records,
+changed input identity, duplicate starts, unmatched ends and clock errors
+retain diagnostics. None grants gate authority.
+
+| Record | Evidence |
+|---|---|
+| `context` | Pinned head, base and merge tree; exact command argv; platform and available tool versions; inherited limits and scheduling argv |
+| `cost` | `start` or `end`, phase, unique interval ID, path, UTC time and monotonic nanoseconds |
+| `case` | Outcome and exact name; Rust target or Playwright ID and original title array when available |
+| `item` | Leg outcome, measured duration and reuse receipt fingerprint when present |
+| `output` | Attempt-bound raw log reference |
+
+The scheduled launcher reads process limits after the scheduling wrappers
+run. Tool probes have bounded waits; a failed probe retains an unknown value
+and diagnostic. Build-cache warmth is `unmeasured`; leg receipts establish
+validation reuse without claiming a warm build. This stage does not invent
+a resource grant or change existing scheduling limits.
+
+Workspace preparation and restoration are measured in the speculative
+checkout owner. Gate-lock and compiler-slot waits have separate intervals.
+The Cargo diagnostics adapter measures build-only commands; binary listing
+measures discovery. Rust pool, plugin runner and Playwright reporter measure
+runner execution, including their fixture and runner overhead. The Rust
+pool already rejects an unexpected rebuild. Arbitrary external commands
+and serial/doctest paths can mix compile and execution; their whole physical
+duration is retained, and missing finer phases stay unknown. A producer can
+use `STORYHOOK_GATE_PROGRESS_WRITER cost start|end <phase> <id> <leg>` to
+supply finer boundaries. Endpoints describe real work, not periodic liveness.
+
+Preparation and completed execution journals are copied to unique synced
+archive files before the live path is replaced. Raw output and receipt
+references remain attached to the execution. A durable-write or archive
+failure is an infrastructure error through existing supervision, distinct
+from a budget breach. It cannot silently become a successful disposition.
+The bundle includes the cost helper, and changes invalidate affected leg
+receipts through the existing contract fingerprint.

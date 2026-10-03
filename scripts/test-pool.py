@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 from test_discovery import Discovery, DiscoveryError, process_tree
+from gate_cost import interval
 
 POLL_SECONDS = 0.1
 DEFAULT_THREAD_CAP = 4
@@ -388,7 +389,8 @@ def main(argv):
 
     durations = read_durations(options["durations"])
     started = time.monotonic()
-    pool.run(schedule(jobs, durations))
+    with interval("execution", "release gate/rust-pool"):
+        pool.run(schedule(jobs, durations))
     if pool.cancelled is not None:
         return 128 + pool.cancelled
 

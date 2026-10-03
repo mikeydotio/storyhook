@@ -105,6 +105,8 @@ order=(${pooled[@]+"${pooled[@]}"} ${serial[@]+"${serial[@]}"})
 total=${#order[@]}
 npooled=${#pooled[@]}
 gate_progress_emit_item "release gate/plugin" running "total=$total"
+execution_cost="plugin-$$-$RANDOM"
+gate_progress_emit_cost start execution "$execution_cost" plugin || exit 2
 
 PASS=0
 FAIL=0
@@ -229,6 +231,7 @@ if [ "$total" -gt 0 ]; then
   done | sort -rn | head -5 | while read -r secs name; do printf ' %s %ss' "$name" "$secs"; done
   echo
 fi
+gate_progress_emit_cost end execution "$execution_cost" plugin || exit 2
 gate_progress_emit_item "release gate/plugin" "$([ "$FAIL" -eq 0 ] && echo passed || echo failed)"
 if [ "$FAIL" -gt 0 ]; then
   echo "failed tests:"

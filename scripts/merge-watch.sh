@@ -35,6 +35,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" \
 # shellcheck source=python-runtime.sh
 . "$script_dir/python-runtime.sh" || die "missing Python runtime policy in $script_dir"
 storyhook_python_init || die "$STORYHOOK_PYTHON_ERROR"
+. "$script_dir/gate-progress.sh" || die "missing gate evidence writer"
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git worktree"
 cd "$root" || die "cannot enter $root"
 
@@ -71,6 +72,8 @@ if [ "${1:-}" = "--speculative-run" ]; then
     head="$4"
     poller_wt="$5"
     shift 6
+    workspace_cost="workspace-$$-$RANDOM"
+    gate_progress_emit_cost start workspace "$workspace_cost" workspace || die "cannot record workspace start"
 
     base_commit="$(git rev-parse --verify "$base^{commit}" 2>/dev/null)" \
         || die "could not resolve speculative base $base to a commit"
@@ -142,6 +145,10 @@ if [ "${1:-}" = "--speculative-run" ]; then
     }
 
     cleanup() {
+        local cost_status=0
+        cleanup_cost="cleanup-$$-$RANDOM"
+        # Evidence failure must not prevent the owned workspace's restoration.
+        gate_progress_emit_cost start cleanup "$cleanup_cost" workspace || cost_status=1
         if [ "$lease_registered" -eq 1 ]; then
             "$STORYHOOK_PYTHON" "$script_dir/verifier-worktree.py" recover "$common_dir" "$poller_wt" \
                 || { note "could not restore owned state; preserving $lease"; return 1; }
@@ -155,6 +162,8 @@ if [ "${1:-}" = "--speculative-run" ]; then
             rm -f "$gitlink_tmp" || return 1
             gitlink_tmp=""
         fi
+        gate_progress_emit_cost end cleanup "$cleanup_cost" workspace || cost_status=1
+        return "$cost_status"
     }
 
     on_signal() {
@@ -230,6 +239,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
     gitlink_tmp=""
     git_private -C "$poller_wt" checkout -q --detach "$merge_commit" \
         || die "could not check out the speculative merge"
+    gate_progress_emit_cost end workspace "$workspace_cost" workspace || die "cannot record workspace end"
 
     candidate_alternates="$objects"
     if [ -n "$inherited_alternates" ]; then
@@ -286,6 +296,9 @@ if [ "${1:-}" = "--speculative-run" ]; then
             GIT_ALTERNATE_OBJECT_DIRECTORIES="$candidate_alternates" \
             STORYHOOK_GATE_RECEIPT="$script_dir/tree-receipt.sh" \
             STORYHOOK_GATE_PROGRESS_WRITER="$script_dir/gate-progress-writer.py" \
+            STORYHOOK_GATE_COST_HEAD="$head" \
+            STORYHOOK_GATE_COST_BASE="$base" \
+            STORYHOOK_GATE_COST_TREE="$candidate_tree" \
             "$STORYHOOK_PYTHON" "$script_dir/verifier-owner.py" gate "$common_dir" "$poller_wt" -- "$@"
     ) <&3 &
     child=$!

@@ -194,6 +194,124 @@ with open(journal, 'a') as output:
 }
 
 #[test]
+fn production_shell_supervision_preserves_cost_binding_context_and_red_verdict() {
+    let mut board = Board::new();
+    let checkout = board
+        ._fixture
+        .github_checkout("https://github.com/acme/widgets.git");
+    let git = |args: &[&str]| {
+        let result = Command::new("git")
+            .args(args)
+            .current_dir(&checkout)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        String::from_utf8(result.stdout).unwrap().trim().to_string()
+    };
+    std::fs::write(checkout.join("gate-fixture.sh"),
+        "\"$STORYHOOK_GATE_PROGRESS_WRITER\" case fixture fail 'supervised literal failure'\nexit 3\n").unwrap();
+    git(&["add", ".storyhook.toml", "gate-fixture.sh"]);
+    git(&[
+        "-c",
+        "user.name=Cost Fixture",
+        "-c",
+        "user.email=cost@example.test",
+        "commit",
+        "-qm",
+        "fixture",
+    ]);
+    let head = git(&["rev-parse", "HEAD"]);
+    let tree = git(&["rev-parse", "HEAD^{tree}"]);
+    board.candidate.checkout = checkout.clone();
+    let link = PrLink {
+        owner: "acme".into(),
+        repo: "widgets".into(),
+        number: 1,
+        url: "https://github.com/acme/widgets/pull/1".into(),
+        close_on_merge: true,
+        status: "open".into(),
+        linked_at: board.env.now(),
+        last_checked_at: None,
+    };
+    let script = board.env.home().join("cost-fixture-entry.sh");
+    let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
+    let real = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/verify-pr.sh");
+    let worktree = checkout.join(".git/storyhook/verification-worktree");
+    std::fs::write(&script, format!(
+        "#!/bin/bash\nexport STORYHOOK_VERIFIER_MIRROR=0\nexport STORYHOOK_LOCK_DIR={}\nexec bash {} --run-gate 1 {} {} {} {} -- bash gate-fixture.sh\n",
+        quote(&checkout.join(".git/fixture-locks").display().to_string()), quote(real),
+        quote(&tree), quote(&head), quote(&head), quote(&worktree.display().to_string())
+    )).unwrap();
+    let actuator = ShellVerificationActuator::with_paths(
+        board.env.clone(),
+        script.clone(),
+        "/usr/bin/true".into(),
+    )
+    .with_verifier_script(script)
+    .with_activity(board.activity.clone());
+    observe(
+        &board.store,
+        &board.env,
+        &board.activity,
+        board.candidate.project,
+        || {
+            let guard = board.admit();
+            board.age(&guard.active.attempt_id, 900);
+            let outcome = execute(
+                &board.store,
+                &board.env,
+                &guard,
+                &board.candidate,
+                GateInputs::default(),
+                vec![submission(&board.candidate)],
+                || actuator.verify(&board.candidate, &link),
+                |outcome| Ok(Some(outcome.clone())),
+            )?;
+            assert!(
+                matches!(outcome, VerificationOutcome::TestsFailed { .. }),
+                "{outcome:?}"
+            );
+            assert!(!guard.is_cancelled());
+            Ok(())
+        },
+    )
+    .unwrap();
+    let rows = board.rows();
+    assert_eq!(rows[0].budget_status(), "process-budget-breach");
+    let execution = &rows[0].executions[0];
+    assert!(execution.journal_bound, "{:?}", execution.diagnostics);
+    assert!(
+        execution.diagnostics.is_empty(),
+        "{:?}",
+        execution.diagnostics
+    );
+    assert_eq!(execution.inputs.head.as_deref(), Some(head.as_str()));
+    assert_eq!(execution.inputs.base.as_deref(), Some(head.as_str()));
+    assert_eq!(execution.inputs.tree.as_deref(), Some(tree.as_str()));
+    assert!(execution.inputs.toolchain.is_some());
+    assert!(execution.inputs.resources.is_some());
+    assert_eq!(
+        execution.failed_cases[0].name.as_deref(),
+        Some("supervised literal failure")
+    );
+    for phase in ["workspace", "resource-wait", "cleanup", "verdict"] {
+        assert!(
+            execution
+                .intervals
+                .iter()
+                .any(|span| span.phase == phase && span.milliseconds.is_some()),
+            "{phase}: {:?}",
+            execution.intervals
+        );
+    }
+    assert!(std::path::Path::new(&execution.journal_path).is_file());
+}
+
+#[test]
 fn retry_links_prior_admission_without_erasing_cost_or_reusing_execution_identity() {
     let board = Board::new();
     for generation in 0..2 {

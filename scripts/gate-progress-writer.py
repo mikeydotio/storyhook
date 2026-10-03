@@ -43,8 +43,7 @@ invalidates the attempt's recovery evidence (gate_progress::fold), so the
 only safe answer to a bad leg is to write nothing. Arguments are checked
 before the environment, so a wrong call fails the same way in a local run.
 
-Each line is one os.write() to a descriptor opened O_APPEND, far below
-PIPE_BUF, so legs that run in parallel cannot interleave their lines. The
+Each line is one os.write() to a local regular file opened O_APPEND. The
 journal is never created here: the verifier prepares it, and a missing one
 means this run is not the verifier's.
 """
@@ -55,9 +54,7 @@ import os
 import sys
 import time
 
-# Upper bound on one leg's UTF-8 length. It keeps a whole line an order of
-# magnitude below PIPE_BUF (4096), the size up to which one O_APPEND write is
-# never split, and keeps a checklist row readable.
+# Upper bound on a checklist path, independent of literal case-name length.
 LEG_LIMIT = 256
 
 ITEM_STATUS = {"start": "running", "pass": "passed", "fail": "failed", "skip": "skipped"}

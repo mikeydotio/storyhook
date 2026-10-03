@@ -110,13 +110,8 @@ fault_injection_guard	:(glob)**/*
 fix_cycle_5	:(glob)**/*
 fixture_isolation	:(glob)**/*
 gate_completion	:(glob)**/*
+gate_cost_producers	:(glob)scripts/**
 gate_cost_producers	e2e/gate-progress-reporter.ts
-gate_cost_producers	scripts/activity-run.py
-gate_cost_producers	scripts/gate-progress-writer.py
-gate_cost_producers	scripts/gate-progress.sh
-gate_cost_producers	scripts/python-runtime.sh
-gate_cost_producers	scripts/test_output.py
-gate_cost_producers	scripts/tests/test_gate_cost.py
 gate_evidence	:(glob)src/service/gate_cost/**
 gate_evidence	:(glob)src/store/**
 gate_evidence	src/service/gate_cost.rs
