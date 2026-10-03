@@ -541,6 +541,45 @@ were removed by TERM cleanup; its failure trace and partial parent log remain.
 Refresh matched snapshots after the adopted repair, then complete the approved
 warm-up and interleaved comparisons before submission.
 
+**Catalog preparation repair and fifth measurement, 2026-10-03 UTC.**
+The Settings trace proved that its navigation started a catalog read before
+the test installed interception. That response rebuilt the target table during
+coordinate preparation. Commit `40aa68d4` installs the holds before selecting
+the surface and keeps the no-refresh control pending through the press.
+A regression requires no catalog reply to complete before `mouse.down`.
+It failed on both desktop engines before the repair; all eighteen affected
+gesture cases passed afterward (13-second pool), with strict TypeScript clean.
+The shared geometry helper, real coordinate input and press-gate assertions
+are unchanged.
+
+Fresh matched snapshots from `40aa68d4` produced another successful warm-up:
+
+| Measurement | Result |
+|---|---|
+| Selection and outcomes | 1,507 results; 1,491 passes, one declared failure, 15 configured skips; no retries |
+| Warm-up wall time | 1,585.37 s |
+| Sampled one-minute load | Mean 84.18; maximum 178.98 |
+| Eligible timing history | 252 complete-file records |
+| Pinned binary SHA-256 | `fa7373332817b56e0784699d44fef020afbd4b7ad31c5b31df91a5a24cbfec7f` |
+
+Baseline 1 exposed a new WebKit prerequisite in `list-wrapping.spec.ts:70`.
+The label input was filled and Enter pressed, but the `layout-gamma` drawer
+chip stayed absent for the full 63,535 ms assertion budget. The test failed
+before its wrapping assertions. The cause is not established. Diagnosis,
+deterministic regression and a separate repair are adopted into SH-812;
+preserve the label and geometry checks rather than extending patience.
+
+The failed baseline was stopped through normal TERM cleanup at 430.57 seconds,
+mean/max load 123.03/168.88. Those interrupted numbers are diagnostic only.
+No optimized comparison arm ran, and the successful history stayed byte-for-byte
+unchanged. No completed pair or performance improvement is established.
+Unlike the previous attempt, the live per-slice logs were copied before cleanup.
+Evidence is in `/tmp/sh812-v5-bench/` and
+`.storyhook/logs/sh812-performance-v5/`, including
+`baseline1-live-diagnostics/list-wrapping-only-titles--dc857-bel-chips-wrap-in-list-rows-webkit/trace.zip`.
+Complete the adopted repair and refresh matched snapshots before resuming the
+approved warm-up and two comparisons.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The
