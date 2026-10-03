@@ -236,4 +236,58 @@ done
 assert_eq "$(tmpdir_after_lib)" "$TMUX_TMPDIR" \
   "a nested lib.sh keeps the home-local TMUX_TMPDIR its caller chose"
 
+# --- the fake server is published before every helper run (SH-840) ---------
+#
+# The daemon reads the fake's server model without the caller's FAKE_* knobs,
+# so the model must be published from the caller first. Production stopped
+# doing that as a side effect (SH-825, 90a4a55a); lib.sh does it before each
+# helper run. These cases pin the publication itself, with no production
+# probe involved: `unclaim` with no id is a usage error that never reaches one.
+publish_state=$(mktemp -d /tmp/story-test-publish.XXXXXX)
+_TMP_REPOS+=("$publish_state")
+publish_state=$(cd "$publish_state" && pwd -P)
+default_link="$TMUX_TMPDIR/tmux-$(id -u)/default"
+rows=$(printf 'TST-9\t1\t%%4')
+FAKE_TMUX_STATE="$publish_state" FAKE_TMUX_PANES="$rows" bash "$SCRIPT" unclaim >/dev/null 2>&1
+[ -e "$publish_state/tmux.sock" ] \
+  || fail_test "publish: the helper ran before the fake server had a socket"
+assert_eq "$(cat "$publish_state/resource_panes" 2>/dev/null)" "$rows" \
+  "publish: the caller's panes reach the model the daemon reads"
+assert_eq "$(readlink "$default_link")" "$publish_state/tmux.sock" \
+  "publish: a caller outside tmux finds the fake as its default server"
+
+# An unrelated bash run publishes nothing.
+quiet_state=$(mktemp -d /tmp/story-test-publish.XXXXXX)
+_TMP_REPOS+=("$quiet_state")
+FAKE_TMUX_STATE="$quiet_state" FAKE_TMUX_PANES="$rows" bash -c ':'
+[ ! -e "$quiet_state/tmux.sock" ] || fail_test "publish: a bash run that is not the helper published a server"
+
+# A server that is not this fixture's fake -- one that answers with another
+# socket, as a real tmux would -- is never linked as the default.
+real_bin=$(mktemp -d /tmp/story-test-realtmux.XXXXXX)
+_TMP_REPOS+=("$real_bin")
+printf '#!/bin/sh\nprintf "/private/tmp/tmux-0/default\\n"\n' >"$real_bin/tmux"
+chmod +x "$real_bin/tmux"
+PATH="$real_bin:$PATH" FAKE_TMUX_STATE="$quiet_state" bash "$SCRIPT" unclaim >/dev/null 2>&1
+assert_eq "$(readlink "$default_link")" "$publish_state/tmux.sock" \
+  "publish: a server that is not this fixture's fake is never linked"
+
+# The default path is never taken over from anything but an earlier link...
+blocked_dir="$STORYHOOK_TEST_HOME/tmux-blocked/tmux-$(id -u)"
+mkdir -p -m 700 "$blocked_dir"
+printf 'a real socket\n' >"$blocked_dir/default"
+TMUX_TMPDIR="$STORYHOOK_TEST_HOME/tmux-blocked" FAKE_TMUX_STATE="$publish_state" \
+  bash "$SCRIPT" unclaim >/dev/null 2>&1
+[ ! -L "$blocked_dir/default" ] \
+  || fail_test "publish: a default server that is not an earlier link was replaced by one"
+assert_eq "$(cat "$blocked_dir/default")" "a real socket" \
+  "publish: a default server that is not an earlier link keeps its content"
+
+# ...and never outside the test home, where the operator's real server lives.
+outside=$(mktemp -d /tmp/story-test-outside.XXXXXX)
+_TMP_REPOS+=("$outside")
+TMUX_TMPDIR="$outside" FAKE_TMUX_STATE="$publish_state" bash "$SCRIPT" unclaim >/dev/null 2>&1
+[ ! -e "$outside/tmux-$(id -u)/default" ] \
+  || fail_test "publish: a default server outside the test home was linked"
+
 finish
