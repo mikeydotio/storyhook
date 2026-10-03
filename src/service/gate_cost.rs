@@ -1,5 +1,6 @@
 //! Durable observations of verification cost. These records grant no authority.
 
+pub mod current;
 pub mod journal;
 #[cfg(test)]
 mod tests;

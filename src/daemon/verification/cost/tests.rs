@@ -86,6 +86,61 @@ fn admission_is_durable_before_preparation_and_breach_does_not_cancel() {
 }
 
 #[test]
+fn status_and_progress_report_cost_without_refreshing_silence_or_repeating_breach_notice() {
+    let board = Board::new();
+    let guard = board.admit();
+    let ctx = Ctx::new(
+        &board.store,
+        board.candidate.project,
+        board.candidate.checkout.clone(),
+        board.env.clone(),
+    )
+    .no_hooks(true);
+    let before = board.activity.status(&ctx).unwrap();
+    let subscriber = board.activity.bus.subscribe();
+    board.age(&guard.active.attempt_id, 900);
+    sample(&board.store, &board.activity, board.candidate.project).unwrap();
+    let status = board.activity.status(&ctx).unwrap();
+    let json = serde_json::to_value(&status).unwrap();
+    assert_eq!(json["cost"]["budget"], "process-budget-breach");
+    assert_eq!(json["cost"]["admission_id"], guard.active.attempt_id);
+    assert!(json["cost"]["elapsed"]["milliseconds"].as_u64().unwrap() >= 900_000);
+    assert_eq!(status.last_evidence_at, before.last_evidence_at);
+    assert!(status.render_human().contains("process-budget-breach"));
+    assert!(subscriber.recv(Duration::ZERO).is_some());
+    sample(&board.store, &board.activity, board.candidate.project).unwrap();
+    assert!(subscriber.recv(Duration::ZERO).is_none());
+    let mut legacy = json;
+    legacy.as_object_mut().unwrap().remove("cost");
+    let decoded: status::VerifierStatus = serde_json::from_value(legacy).unwrap();
+    assert!(serde_json::to_value(decoded).unwrap().get("cost").is_none());
+    crate::daemon::verification_progress::publish_once(
+        &board.store,
+        &board.env,
+        &board.env.now(),
+        &board.activity,
+    )
+    .unwrap();
+    let story = board
+        .store
+        .read(|tx| {
+            Ok(
+                crate::service::QueryService::new(tx, board.candidate.project, &board.env.now())
+                    .show(&board.candidate.story_id)?,
+            )
+        })
+        .unwrap();
+    assert!(
+        story
+            .story
+            .comments
+            .iter()
+            .any(|c| c.text.contains("process-budget-breach") && c.text.contains("Cumulative"))
+    );
+    assert!(!guard.is_cancelled());
+}
+
+#[test]
 fn a_real_child_observes_durable_breach_without_status_polling_or_heartbeat() {
     let board = Board::new();
     observe(&board.store, &board.env, &board.activity, board.candidate.project, || {

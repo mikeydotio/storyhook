@@ -496,13 +496,14 @@ fn publish_project(
     activity: &VerificationActivity,
     project: crate::store::ProjectId,
 ) -> Result<bool, AppError> {
-    let (ordered, active, incident, batch) =
+    let (ordered, active, incident, batch, costs) =
         activity.read_project(store, project, |tx, owner, _| {
             Ok((
                 crate::service::verification::ordered_candidates_for(tx, project)?,
                 owner.map(|owner| owner.active.clone()),
                 tx.verification_incident(project)?,
                 owner.and_then(|owner| owner.batch.cloned()),
+                tx.gate_attempts(project)?,
             ))
         })?;
     let evidence = AttemptEvidence::read(&ordered, active.as_ref(), env);
@@ -526,7 +527,7 @@ fn publish_project(
             env.clone(),
         )
         .no_hooks(true);
-        let body = if let VerificationStatus::Held { blockers } = &status {
+        let mut body = if let VerificationStatus::Held { blockers } = &status {
             format!(
                 "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — HELD\nOpen blockers: {}. Submission remains in verifying and resumes when they resolve.\n",
                 blockers.join(", ")
@@ -631,6 +632,13 @@ fn publish_project(
             }
             rendered
         };
+        let cost_view =
+            crate::service::gate_cost::view::EvidenceView::new(&candidate.story_id, costs.clone());
+        if let Some(summary) =
+            crate::service::gate_cost::current::progress(&cost_view, candidate.verifying_generation)
+        {
+            body.push_str(&summary);
+        }
         if let Some(GenerationWrite::Applied(wrote)) = activity
             .if_current(project, active.as_ref(), || {
                 VerificationQueue::new(store).upsert_generation_comment(

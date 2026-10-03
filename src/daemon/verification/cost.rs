@@ -26,6 +26,7 @@ pub(super) struct Trace {
     cancellation: Cancellation,
     error: Option<String>,
     phase: Option<(usize, Instant)>,
+    breach_published: bool,
 }
 
 /// Shared by the owning guard and its project's scoped cost observer.
@@ -99,6 +100,7 @@ pub(super) fn register(
                 cancellation,
                 error: None,
                 phase: None,
+                breach_published: false,
             },
         );
     phase(traces, &id, Some("workspace"));
@@ -292,6 +294,7 @@ pub(super) fn sample(
         .costs
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
+    let mut breached = false;
     for trace in traces
         .values_mut()
         .filter(|t| t.record.submission.project == project)
@@ -299,8 +302,16 @@ pub(super) fn sample(
         if let Err(error) = flush(store, trace) {
             return Err(fail(trace, error));
         }
+        if trace.record.elapsed.breached_at.is_some() && !trace.breach_published {
+            trace.breach_published = true;
+            breached = true;
+        }
     }
     traces.retain(|_, t| t.record.submission.project != project || t.ended.is_none());
+    drop(traces);
+    if breached {
+        activity.publish_project(store, project)?;
+    }
     Ok(())
 }
 
