@@ -53,7 +53,9 @@ assert_contains "$launch" "$PLUGIN_ROOT" \
 
 # A same-shaped but wrong plugin path must not satisfy the fixture. This also
 # protects the wholesale-override contract: StoryHook never rewrites an expert
-# command to rescue it from pointing at the wrong integration.
+# command to rescue it from pointing at the wrong integration. Its caller sits
+# in the case's own fake server: since SH-825 (90a4a55a) the helper takes that
+# server from $TMUX rather than asking tmux, so $TMUX must name it (SH-840).
 wrong_tmux_state="$(mktemp -d /tmp/story-test-tmux.XXXXXX)"
 _TMP_REPOS+=("$wrong_tmux_state")
 wrong_repo=$(mk_story_repo WRP)
@@ -61,7 +63,7 @@ wrong_id=$(new_story "$wrong_repo" "Wrong Claude plugin binding")
 wrong_out=$(
   cd "$wrong_repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" \
-      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
+      TMUX="$wrong_tmux_state/tmux.sock,0,0" TMUX_PANE="%0" \
       FAKE_TMUX_STATE="$wrong_tmux_state" FAKE_TMUX_CAPTURE=marker \
       STORY_READY_ATTEMPTS=3 STORY_READY_DELAY=0 \
       STORY_READY_FALLBACK_DELAY=0 STORY_CONFIRM_DELAY=0 \
