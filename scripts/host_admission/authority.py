@@ -11,14 +11,16 @@ from .scheduler import drain, ready, schedule
 class Authority(Ledger):
     """One transactional resource ledger for one host."""
 
-    def __init__(self, path, policy, boot, clock, observe):
+    def __init__(self, path, policy, boot, clock, observe, *, initialize=True):
         self.observe = observe
-        super().__init__(path, policy, label(boot, "boot identity"), clock)
+        super().__init__(path, policy, label(boot, "boot identity"), clock, initialize=initialize)
         with self.transaction() as state:
             if state["boot"] != boot:
                 for row in state["leases"].values():
                     if row["state"] not in TERMINAL:
                         row.update(state="released", reason="confirmed reboot")
+                        for execution in row["executions"]:
+                            execution["settled"] = True
                         self.event(state, "recovery", row, reason="confirmed reboot")
                 state.update(boot=boot, pressure="initial", recovery=None, sample=None, scheduler={})
             else:
@@ -26,6 +28,8 @@ class Authority(Ledger):
 
     def _reconcile(self, state):
         for row in state["leases"].values():
+            if row["state"] == "queued" and self.observe(row["owner"]) is not True:
+                drain(state, row, "queued supervisor is absent or unknown", self.event)
             if row["state"] in HELD and self.observe(row["owner"]) is not True:
                 if row["state"] != "quarantined":
                     row.update(state="quarantined", reason="supervisor identity is absent or unknown")

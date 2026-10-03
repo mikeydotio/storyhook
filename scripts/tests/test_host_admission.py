@@ -64,6 +64,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_invalid_policy_is_never_a_fallback(self):
         for field, value in [("host", "other"), ("capacity", dict(cpu=True, memory=100)),
+                             ("version", True),
                              ("sample_ms", 0), ("recover_ms", -1),
                              ("measurements", []), ("weights", dict(build=1)),
                              ("reserve", dict(cpu=20, memory=200))]:
@@ -226,7 +227,8 @@ class FairnessTests(Fixture):
         self.live.clear()
         self.sample()
         self.assertFalse(self.a.finish("first", row["token"]))
-        self.assertEqual(self.lease("next")["state"], "queued")
+        self.assertEqual(self.lease("next")["state"], "cancelled")
+        self.assertEqual(self.a.status()["allocated"]["cpu"], 6)
 
 
 class ExecutionTests(Fixture):
@@ -267,6 +269,38 @@ class ExecutionTests(Fixture):
 
 
 class IntegrityTests(Fixture):
+    def test_dead_queued_owner_cannot_be_granted_after_capacity_frees(self):
+        first = self.request("first", cpu=6)
+        other = dict(pid=11, start="native:11", boot="boot")
+        self.live[11] = other
+        self.a.enqueue(dict(id="orphan", project="b", work="test", resources=dict(cpu=2, memory=100)), other)
+        del self.live[11]
+        self.sample()
+        self.a.finish("first", first["token"])
+        self.assertEqual(self.lease("orphan")["state"], "cancelled")
+        self.assertEqual(self.a.status()["allocated"]["cpu"], 0)
+
+    def test_repair_backfill_cannot_consume_capacity_needed_by_aged_release(self):
+        first = self.request("first", cpu=2)
+        self.request("release", cpu=6, work="release")
+        # A full-capacity repair request must wait once an ordinary request ages.
+        self.now += self.policy.value["starvation_ms"]
+        self.sample(); self.now += self.policy.value["recover_ms"]; self.sample()
+        self.a.enqueue(dict(id="repair", project="b", work="repair", resources=dict(cpu=6, memory=200)), self.owner)
+        self.sample()
+        self.a.finish("first", first["token"])
+        self.now += self.policy.value["recover_ms"]; self.sample()
+        self.assertEqual(self.lease("release")["state"], "reserved")
+        self.assertEqual(self.lease("repair")["state"], "queued")
+
+    def test_terminal_execution_with_unproved_cleanup_is_corrupt(self):
+        row = self.request("first")
+        child = dict(pid=20, start="native:20", boot="boot"); self.live[20] = child
+        self.a.attach("first", row["token"], dict(id="e", leader=child, session=20, guard="e.lock"))
+        self.a.db.execute("UPDATE authority SET payload=json_set(payload, '$.leases.first.state', 'released')")
+        with self.assertRaises(Refusal):
+            self.open()
+
     def test_independent_cleanup_proof_can_recover_a_dead_supervisor_grant(self):
         row = self.request("a")
         child = dict(pid=20, start="native:20", boot="boot")

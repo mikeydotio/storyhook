@@ -36,6 +36,16 @@ def serve(root, ready):
 
 
 class BrokerTests(unittest.TestCase):
+    def test_initialized_database_loss_never_mints_a_new_authority(self):
+        self.enqueue("retained")
+        self.stop()
+        (self.root / "state.db").write_bytes(b"")
+        p = policy_value(); p["host"] = native.host_identity()
+        p.update(lease_ms=60000, stale_ms=1000, sample_ms=20)
+        with self.assertRaisesRegex(Refusal, "disappeared"):
+            broker = Broker(self.root, Policy(p, p["host"], fixture=True), lambda: None)
+            broker.close()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir="/tmp", prefix="ha-")
         self.addCleanup(self.tmp.cleanup)
@@ -143,6 +153,13 @@ class BrokerTests(unittest.TestCase):
 
 
 class NativeTests(unittest.TestCase):
+    def test_client_refuses_a_symlink_namespace_before_resolving_it(self):
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="ha-alias-") as root:
+            target = Path(root) / "authority"; target.mkdir(mode=0o700)
+            alias = Path(root) / "alias"; alias.symlink_to(target)
+            with self.assertRaisesRegex(Refusal, "symlink"):
+                Client(alias)
+
     def test_native_incarnation_and_socket_identity_are_stable(self):
         boot = native.boot_identity()
         owner = native.identity(os.getpid(), boot)

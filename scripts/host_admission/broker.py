@@ -37,7 +37,7 @@ class Broker:
                     check_file(path)
             fd = open_private(database, create=True); os.close(fd)
             self.authority = Authority(database, policy, self.boot, self.clock,
-                                       lambda owner: native.observe(owner, self.boot))
+                                       lambda owner: native.observe(owner, self.boot), initialize=not marker.exists())
             fd = open_private(marker, create=True)
             os.fsync(fd); os.close(fd)
             fd = os.open(self.root, os.O_RDONLY); os.fsync(fd); os.close(fd)

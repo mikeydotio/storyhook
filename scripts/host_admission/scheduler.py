@@ -84,7 +84,10 @@ def schedule(state, policy, event):
         eligible = [r for r in queued if fits(r, state, policy)]
         if aged:
             # Reserved repair capacity stays usable while ordinary capacity drains.
-            eligible = [r for r in eligible if r is aged or (r["work"] == "repair" and aged["work"] != "repair")]
+            repair = allocated(state, [r for r in state["leases"].values() if r["work"] == "repair"])
+            eligible = [r for r in eligible if r is aged or (
+                r["work"] == "repair" and aged["work"] != "repair"
+                and all(repair[k] + r["resources"][k] <= policy.value["reserve"][k] for k in repair))]
         row = _pick(eligible, state, policy)
         if row is None:
             return

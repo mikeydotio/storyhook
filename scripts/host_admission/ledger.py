@@ -22,11 +22,16 @@ def allocated(state, rows=None):
 class Ledger:
     """Serialize state transitions and their evidence in one local SQLite transaction."""
 
-    def __init__(self, path, policy, boot, clock):
+    def __init__(self, path, policy, boot, clock, *, initialize=True):
         self.policy, self.boot, self.clock = policy, boot, clock
         self.db = sqlite3.connect(path, isolation_level=None, timeout=0)
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA journal_mode=DELETE")
+        if not initialize:
+            tables = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {"authority", "events"} <= tables:
+                self.db.close()
+                raise Refusal("initialized authority schema disappeared")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS authority (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL);
@@ -35,6 +40,8 @@ class Ledger:
         try:
             found = self.db.execute("SELECT payload FROM authority WHERE id=1").fetchone()
             if found is None:
+                if not initialize:
+                    raise Refusal("initialized authority state disappeared")
                 state = dict(version=1, authority=uuid.uuid4().hex, host=policy.value["host"],
                              boot=boot, policy=policy.digest, leases={}, scheduler={},
                              pressure="initial", recovery=None, sample=None, now=clock())
@@ -96,6 +103,8 @@ class Ledger:
                     raise Refusal("retained subgrants exceed parent envelope")
                 if row["state"] in TERMINAL and children:
                     raise Refusal("released parent still owns descendants")
+                if row["state"] in TERMINAL and any(not e["settled"] for e in row["executions"]):
+                    raise Refusal("terminal lease has unproved execution cleanup")
             used = allocated(state)
             if any(used[k] > self.policy.cap[k] for k in used):
                 raise Refusal("host allocation invariant violated")

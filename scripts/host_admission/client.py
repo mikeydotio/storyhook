@@ -14,7 +14,10 @@ class Client:
     """An admission client with an explicitly injected fixture endpoint when testing."""
 
     def __init__(self, root=None):
-        self.root = Path(root if root is not None else ROOT).resolve()
+        path = Path(root if root is not None else ROOT)
+        if path.is_symlink():
+            raise Refusal(f"symlink authority root: {path}")
+        self.root = path.resolve()
 
     def call(self, operation, **arguments):
         """Send one request; a lost reply must be retried with its original request ID."""

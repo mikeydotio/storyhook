@@ -41,7 +41,7 @@ class Policy:
                   "headroom", "reserve", "weights", "project_weight", "sample_ms",
                   "stale_ms", "recover_ms", "starvation_ms", "lease_ms", "cleanup_ms",
                   "thresholds", "workloads"}
-        if not isinstance(value, dict) or set(value) != fields or value["version"] != 1:
+        if not isinstance(value, dict) or set(value) != fields or type(value["version"]) is not int or value["version"] != 1:
             raise Refusal("incomplete or unsupported host policy")
         if value["host"] != host:
             raise Refusal("policy belongs to another host")
