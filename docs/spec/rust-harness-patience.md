@@ -419,7 +419,11 @@ As built:
   `.../story.sh` copies. It publishes only when the server answers with this
   fixture's own socket. It links `$TMUX_TMPDIR/tmux-<uid>/default` to that
   socket for callers outside tmux, only inside the test home, and only over an
-  earlier link.
+  earlier link. The link stays for the rest of the test, because
+  `env ... bash "$SCRIPT"` runs and daemon work after a run still use it.
+  `_register_tmp_tmux_session` removes it before a test starts a real server
+  on that path. It removes only a link to a regular file, never a link to a
+  real socket.
 - Every `lib.sh` instance keeps `TMUX_TMPDIR` inside `STORYHOOK_TEST_HOME`. A
   nested instance under a harness that clears its environment had asked the
   machine's real default server.
@@ -430,7 +434,15 @@ As built:
   socket, panes, default link, no link to a real server, no replacement of a
   non-link, nothing outside the home, and the loud refusal.
 
+- Three tests that the removed probe had hidden were repaired. In
+  `test-dispatch-plugin-binding.sh`, `$TMUX` now names the case's own fake
+  server. In `test-dispatch-lane-budget.sh`, each engine lane gets its own
+  `TMUX_TMPDIR` and default server. `test_tmux_server_env.py` now composes the
+  verification view with `view_program`. Its hand-made copy had no
+  `process_observation`.
+
 Limit: entry points that run the helper without `bash` from a `lib.sh` shell
 (an `exec`, or a daemon-run dispatch script) do not publish. They reach the fake
-only after an earlier publication or a seeded `windows` file. If they do not,
-the fake now refuses loudly.
+only after an earlier publication, a seeded `windows` file, or their own
+publication (as `test-dispatch-lane-budget.sh` does). If they do not, the fake
+refuses loudly.
