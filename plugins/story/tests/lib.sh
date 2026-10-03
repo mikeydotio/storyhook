@@ -427,7 +427,8 @@ _publish_fake_tmux() {
   [ "$answer" = "$state/tmux.sock" ] || return 0
   case "${TMUX_TMPDIR:-}" in "$STORYHOOK_TEST_HOME"/*) ;; *) return 0 ;; esac
   default_dir="$TMUX_TMPDIR/tmux-$(id -u)"
-  mkdir -p -m 700 "$default_dir" || return 1
+  mkdir -p "$TMUX_TMPDIR" || return 1
+  [ -d "$default_dir" ] || mkdir -m 700 "$default_dir" || return 1
   if [ -L "$default_dir/default" ] || [ ! -e "$default_dir/default" ]; then
     ln -sfn "$answer" "$default_dir/default" || return 1
   fi

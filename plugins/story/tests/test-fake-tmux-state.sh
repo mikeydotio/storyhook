@@ -274,7 +274,7 @@ assert_eq "$(readlink "$default_link")" "$publish_state/tmux.sock" \
 
 # The default path is never taken over from anything but an earlier link...
 blocked_dir="$STORYHOOK_TEST_HOME/tmux-blocked/tmux-$(id -u)"
-mkdir -p -m 700 "$blocked_dir"
+mkdir -p "${blocked_dir%/*}" && mkdir -m 700 "$blocked_dir"
 printf 'a real socket\n' >"$blocked_dir/default"
 TMUX_TMPDIR="$STORYHOOK_TEST_HOME/tmux-blocked" FAKE_TMUX_STATE="$publish_state" \
   bash "$SCRIPT" unclaim >/dev/null 2>&1
