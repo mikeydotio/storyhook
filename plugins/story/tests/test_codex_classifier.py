@@ -42,6 +42,26 @@ def response(answer):
     ])
 
 
+def install_codex_fixture(root, version, output, *, status=0, error=''):
+    """Atomically replace a transport fixture and retain its actual invocations."""
+    executable = root / 'codex'
+    replacement = root / 'codex.new'
+    replacement.write_text(
+        f'#!{sys.executable}\n'
+        'import json, os, pathlib, sys\n'
+        f'with pathlib.Path({str(root / "calls.jsonl")!r}).open("a") as log:\n'
+        '    log.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), '
+        '"stdin": sys.stdin.read()}) + "\\n")\n'
+        'if sys.argv[1:] == ["--version"]:\n'
+        f'    print({version!r})\n'
+        'else:\n'
+        f'    sys.stdout.write({output!r})\n'
+        f'    sys.stderr.write({error!r})\n'
+        f'    sys.exit({status})\n')
+    replacement.chmod(0o700)
+    replacement.replace(executable)
+
+
 class ClassifierTests(unittest.TestCase):
     """Only transport data is substituted; process execution is real."""
 
@@ -65,12 +85,53 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(classifier.classifier_environment(env),
                          {k: env[k] for k in ('HOME', 'PATH', 'CODEX_HOME')})
 
-    def test_unverified_runtime_never_reaches_the_model(self):
-        with patch.object(classifier, 'run_process', return_value='codex-cli 0.999.0') as run:
-            with self.assertRaisesRegex(RuntimeError, 'unverified classifier runtime'):
-                classifier.classify('Approve the plan')
-        run.assert_called_once()
-        self.assertEqual(run.call_args.args[0], ['codex', '--version'])
+    def test_runtime_replacement_between_calls_needs_no_version_approval(self):
+        """An updated executable remains usable without a version subprocess."""
+        with tempfile.TemporaryDirectory(dir='/tmp') as tmp:
+            root = Path(tmp)
+            with patch.dict(os.environ, {'PATH': tmp}):
+                for version in ('codex-cli 0.154.0', 'codex-cli 0.159.3', 'codex-cli 0.999.0'):
+                    with self.subTest(version=version):
+                        answer = {'decision': 'approve_plan', 'evidence': version}
+                        install_codex_fixture(root, version, response(answer))
+                        self.assertEqual(classifier.classify(version), answer)
+            calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()]
+            self.assertEqual(len(calls), 3)
+            for call in calls:
+                self.assertEqual(call['argv'][0], 'exec')
+                workdir = call['argv'][call['argv'].index('-C') + 1]
+                self.assertEqual(Path(workdir).resolve(), Path(call['cwd']).resolve())
+                self.assertEqual(call['argv'], classifier.classifier_command(workdir)[1:])
+                self.assertNotEqual(call['cwd'], os.getcwd())
+                self.assertFalse(Path(call['cwd']).exists())
+                self.assertIn(json.loads(call['stdin'])['assistant_message'],
+                              ('codex-cli 0.154.0', 'codex-cli 0.159.3', 'codex-cli 0.999.0'))
+
+    def test_runtime_contract_failures_are_not_retried_or_accepted(self):
+        """Transport and protocol failures cannot trigger a weaker second call."""
+        valid = response({'decision': 'approve_plan', 'evidence': 'Approve'})
+        cases = [(valid, 42, 'unsupported configuration', RuntimeError),
+                 ('not JSON', 0, '', ValueError),
+                 (valid.rsplit('\n', 1)[0], 0, '', RuntimeError),
+                 (valid + '\n' + json.dumps({'type': 'item.completed',
+                  'item': {'type': 'command_execution'}}), 0, '', RuntimeError)]
+        for output, status, error, exception in cases:
+            with self.subTest(output=output, status=status), tempfile.TemporaryDirectory(dir='/tmp') as tmp:
+                root = Path(tmp)
+                install_codex_fixture(root, 'codex-cli 0.159.3', output, status=status, error=error)
+                with patch.dict(os.environ, {'PATH': tmp}), self.assertRaises(exception) as failure:
+                    classifier.classify('Approve')
+                if error:
+                    self.assertIn(error, str(failure.exception))
+                calls = (root / 'calls.jsonl').read_text().splitlines()
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(json.loads(calls[0])['argv'][0], 'exec')
+
+    def test_missing_runtime_fails_loud(self):
+        """A missing executable remains an explicit failure."""
+        with tempfile.TemporaryDirectory(dir='/tmp') as tmp:
+            with patch.dict(os.environ, {'PATH': tmp}), self.assertRaises(FileNotFoundError):
+                classifier.classify('Approve')
 
     def test_command_has_no_execution_or_project_policy_capabilities(self):
         command = classifier.classifier_command('/tmp/classifier')
