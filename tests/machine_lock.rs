@@ -2363,15 +2363,20 @@ fn reentrancy_is_per_project() {
 #[test]
 fn watchdog_timer_cannot_outlive_inherited_workspace_ownership() {
     let fixture = Fixture::new();
+    let patience = storyhook_test_support::load_grace::graced_now(poll_ceiling());
+    let stopped_hold = std::time::Duration::from_secs(2 * lock_poll_secs());
     let mut command = Command::new("python3");
     command
         .arg(checkout().join("tests/support/machine_lock_workspace.py"))
         .arg(fixture.script())
-        .arg(fixture.path());
+        .arg(fixture.path())
+        .arg(patience.as_secs_f64().to_string())
+        .arg(stopped_hold.as_secs_f64().to_string());
     let output = ChildGuard::spawn_with_output(&mut command)
         .expect("starting the real watchdog lifetime regression")
         .wait_with_output_within(
-            storyhook_test_support::load_grace::graced_now(2 * poll_ceiling()),
+            // Per mode: discovery, wrapper exit, census, and two failure-cleanup waits.
+            2 * (5 * patience + stopped_hold),
             || "watchdog or its timer retained workspace authority after completion".to_string(),
         );
     assert!(
@@ -2380,4 +2385,18 @@ fn watchdog_timer_cannot_outlive_inherited_workspace_ownership() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// Scheduling delay must not silently restore the Python observer's bare bounds.
+#[test]
+fn watchdog_observer_uses_the_callers_patience() {
+    let mut command = Command::new("python3");
+    command.arg(checkout().join("tests/support/test_machine_lock_workspace.py"));
+    let output = ChildGuard::spawn_with_output(&mut command)
+        .expect("starting watchdog observer regressions")
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(poll_ceiling()),
+            || "watchdog observer regression did not finish".to_string(),
+        );
+    assert!(output.status.success(), "{output:?}");
 }
