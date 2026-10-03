@@ -17,7 +17,7 @@ id=$(new_story "$repo" "Claude dispatch binds the StoryHook plugin")
 out=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_ATTEMPTS=3 STORY_READY_DELAY=0 \
       STORY_READY_FALLBACK_DELAY=0 STORY_CONFIRM_DELAY=0 \
       STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
@@ -61,7 +61,7 @@ wrong_id=$(new_story "$wrong_repo" "Wrong Claude plugin binding")
 wrong_out=$(
   cd "$wrong_repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       FAKE_TMUX_STATE="$wrong_tmux_state" FAKE_TMUX_CAPTURE=marker \
       STORY_READY_ATTEMPTS=3 STORY_READY_DELAY=0 \
       STORY_READY_FALLBACK_DELAY=0 STORY_CONFIRM_DELAY=0 \

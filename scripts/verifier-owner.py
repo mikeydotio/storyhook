@@ -21,6 +21,7 @@ import uuid
 sys.dont_write_bytecode = True
 from verifier_state import Refusal, boot, held, paths, read, save, session_members
 from verifier_result import EXECUTION_FILE, attach_cleanup, cleanup_failure, publish_execution
+from gate_cost import context as gate_context
 
 
 class CleanupRefusal(Refusal):
@@ -89,6 +90,7 @@ def launch(report, command):
     """
     try:
         os.set_inheritable(report, False)
+        gate_context(command)
         os.write(report, LAUNCHING)
         os.execvpe(command[0], command, os.environ)
     except BaseException as error:
@@ -221,6 +223,7 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
                 # Open across the class tools' execs; the launcher closes it at
                 # the gate's own exec, so the gate never holds the report.
                 os.set_inheritable(exec_report, True)
+                environment["STORYHOOK_GATE_COST_CLASS"] = json.dumps(gate_prefix)
                 command = [*gate_prefix, sys.executable, SELF, "launch", str(exec_report), "--", *command]
             os.execvpe(command[0], command, environment)
         except (OSError, ValueError) as error:

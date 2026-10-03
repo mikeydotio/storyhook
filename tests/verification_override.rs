@@ -78,6 +78,7 @@ fn lease_for(root: &std::path::Path, story_id: &str) -> StoryCleanupLease {
         worktree_path: root.join(".claude/worktrees").join(story_id),
         branch: format!("worktree-{story_id}"),
         tmux: TmuxCleanupTarget {
+            revivify: None,
             socket_path: root.join("tmux.sock"),
         },
     }

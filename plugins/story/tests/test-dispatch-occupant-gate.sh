@@ -37,7 +37,7 @@ dispatch_run() {
   out=$(
     cd "$RUN_REPO" \
       && PATH="$FAKE_TMUX_DIR:$PATH" \
-        TMUX="fake,0,0" TMUX_PANE="%0" \
+        TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
         STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
         STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
         STORY_READY_ATTEMPTS=4 STORY_CONFIRM_ATTEMPTS=2 \

@@ -42,7 +42,7 @@ hp=$(new_story "$repo" "Reset me")
 whp=$(mk_dispatched "$repo" "$hp")
 claim_it "$hp"
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$whp")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$whp")" \
      bash "$SCRIPT" --project "$slug" reset "$hp" 2>&1)
 assert_ok "$out" "true" "happy: ok"
 assert_eq "$(jqf "$out" .unclaimed)" "true" "happy: the claim was released"
@@ -62,7 +62,7 @@ wkf=$(mk_dispatched "$repo" "$kf")
 claim_it "$kf"
 status=0
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wkf")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wkf")" \
      FAKE_TMUX_FAIL_KILL_WINDOW=1 \
      bash "$SCRIPT" --project "$slug" reset "$kf" 2>&1) || status=$?
 [ "$status" -ne 0 ] || fail_test "kill-failure: helper exited successfully"
@@ -163,7 +163,7 @@ claim_it "$sw"
 for extra in "" "--force"; do
   # shellcheck disable=SC2086
   out=$(cd "$repo" \
-    && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%0' "$wsw")" \
+    && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%0' "$wsw")" \
        bash "$SCRIPT" --project "$slug" reset "$sw" $extra 2>&1)
   assert_ok "$out" "false" "self-window${extra:+ $extra}: ok:false"
   assert_eq "$(jqf "$out" .reason)" "self-window" "self-window${extra:+ $extra}: reason names it"

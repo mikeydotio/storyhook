@@ -37,7 +37,7 @@ id=$(new_story "$repo" "A story to claim")
 out=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       FAKE_TMUX_LAUNCH_MANGLE=1 \
       STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=3 \
       bash "$SCRIPT" dispatch "$id" 2>&1

@@ -260,14 +260,18 @@
 # every test in this suite, so no test file has to remember to.
 # A native reader crosses the daemon allowlist with a socket, not fake env.
 # Endpoint state therefore lives beside that exact test-owned socket.
-[ "${1:-}" != -u ] || shift
-if [ "${1:-}" = -S ]; then
-  case "${2:-}" in /tmp/story-*/*|/private/tmp/story-*/*)
-    export FAKE_TMUX_STATE="${2%/*}"
-    shift 2
-    ;; *) printf 'fake tmux: unowned socket\n' >&2; exit 64 ;;
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -u|-N) shift ;;
+    -S)
+      case "${2:-}" in /tmp/story-*/*|/private/tmp/story-*/*)
+        export FAKE_TMUX_STATE="${2%/*}"
+        shift 2
+        ;; *) printf 'fake tmux: unowned socket\n' >&2; exit 64 ;;
+      esac ;;
+    *) break ;;
   esac
-fi
+done
 if [ -z "${FAKE_TMUX_STATE:-}" ]; then
   printf 'fake tmux: $FAKE_TMUX_STATE is unset — refusing to invent a shared state directory (SH-263). Source tests/lib.sh, which mints one per test.\n' >&2
   exit 64
@@ -295,12 +299,6 @@ publish_claude_hook() {
     cp "$STATE/foreign-sentinel" "$hook_cwd/.claude/dispatch-sentinel.json"
   fi
 }
-# Explicit sockets used by pane-identity receipts must stay inside this fake.
-if [ "${1:-}" = -S ]; then
-  [ "${2:-}" = "$STATE/tmux.sock" ] || { printf 'unknown fixture socket\n' >&2; exit 1; }
-  shift 2
-fi
-
 identity_row() {
   local pid dead command
   pid=$(cat "$STATE/pane_pid" 2>/dev/null || printf '')

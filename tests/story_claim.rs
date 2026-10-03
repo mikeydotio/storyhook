@@ -869,3 +869,62 @@ fn concurrent_claimants_of_one_id_yield_exactly_one_winner() {
         "a lost claim must write no transition at all: {events:#?}"
     );
 }
+#[path = "support/revivify.rs"]
+mod revivify;
+
+#[test]
+fn protected_claim_comment_requires_a_current_pane_binding() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = project();
+    let home = scratch_dir_named("claim-protection");
+    let protection = revivify::Protection::new(home.path());
+    let argv = home.path().join("argv");
+    let fake = home.path().join("tmux");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\nprintf 'work:7\\n'\n",
+            argv.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for (socket, expected_window) in [(&protection.socket, false), (&protection.endpoint, true)] {
+        let id = project.new_story("Protected claim comment");
+        project
+            .story()
+            .args(["claim", &id])
+            .env("HOME", &protection.home)
+            .env_remove("XDG_STATE_HOME")
+            .env("TMUX", format!("{},1,0", socket.display()))
+            .env("TMUX_PANE", "%9")
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    home.path().display(),
+                    project.env().path_with_binary().to_string_lossy()
+                ),
+            )
+            .assert()
+            .success();
+        let posted = comments(&project, &id);
+        assert_eq!(posted.len(), 1);
+        assert_eq!(
+            posted[0].contains("tmux window work:7"),
+            expected_window,
+            "{posted:?}"
+        );
+        if expected_window {
+            let args = std::fs::read_to_string(&argv).unwrap();
+            assert!(
+                args.starts_with(&format!("-N -S {} ", protection.endpoint.display())),
+                "{args}"
+            );
+            assert!(args.contains("-t %9"));
+        } else {
+            assert!(!argv.exists());
+        }
+    }
+    assert!(protection.activation.exists());
+}

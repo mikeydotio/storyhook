@@ -18,7 +18,7 @@ FAKE_TMUX_DIR="$TESTS_DIR/fakes"
 repo=$(mk_story_repo RGS)
 id=$(new_story "$repo" "Resume after an unacknowledged interrupt")
 
-out=$(cd "$repo" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX=fake TMUX_PANE=%0 \
+out=$(cd "$repo" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
   STORY_AGENT=claude STORY_READY_DELAY=0 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_CHILD=1 \
   bash "$SCRIPT" dispatch "$id")

@@ -12,13 +12,13 @@ import fcntl
 fcntl.flock(8, fcntl.LOCK_EX | fcntl.LOCK_NB)
 PY
 for mode in --force --resume; do
-  out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" bash "$SCRIPT" dispatch "$id" "$mode" 2>&1)
+  out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" bash "$SCRIPT" dispatch "$id" "$mode" 2>&1)
   assert_ok "$out" "false" "$mode refuses an owned workspace"
   assert_contains "$(jqf "$out" .display)" "workspace is busy" "$mode diagnoses the exact exclusion"
 done
 [ ! -d "$repo/.claude/worktrees/$id" ] || fail_test "busy dispatch created a worktree"
 # The verifier can reuse the same open description while retaining exclusion.
-out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
+out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
   STORY_WORKSPACE_LOCK_FD=8 STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
   STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   bash "$SCRIPT" dispatch "$id" --force 2>&1)

@@ -88,7 +88,7 @@ _TMP_REPOS+=("$FAKE_TMUX_STATE")
 repo=$(mk_story_repo CSP)
 id=$(new_story "$repo" "Sparkled composer")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SPARKLE=1 \

@@ -64,7 +64,7 @@ before=$(transition_count)
 out=$(
   cd "$repo" \
     && PATH="$TESTS_DIR/fakes:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker \
@@ -91,7 +91,7 @@ id_failed=$(new_story "$repo_failed" "Failed forced redispatch")
 out=$(
   cd "$repo_failed" \
     && PATH="$TESTS_DIR/fakes:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_LAUNCH_MANGLE=1 \

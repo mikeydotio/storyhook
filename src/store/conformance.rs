@@ -1761,7 +1761,7 @@ macro_rules! store_conformance_suite {
                             repository_path: "/repos/alpha".into(),
                             worktree_path: "/repos/alpha/.codex/worktrees/SH-1".into(),
                             branch: "worktree-SH-1".into(),
-                            tmux: TmuxCleanupTarget {
+                            tmux: TmuxCleanupTarget { revivify: None,
                                 socket_path: "/tmp/tmux.sock".into(),
                             },
                         }),

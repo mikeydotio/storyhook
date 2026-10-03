@@ -87,7 +87,7 @@ pub struct ResourceReport {
     pub branch: Option<String>,
     /// Name used for the selected story window.
     pub window_name: String,
-    /// Selected creation-time tmux server, when recorded.
+    /// Selected tmux endpoint. Candidate leases retain creation-time authority.
     pub socket_path: Option<PathBuf>,
     /// Exact selected pane, when present and unambiguous.
     pub pane: Option<ResourcePane>,
@@ -724,15 +724,15 @@ fn resolve(
     }
     if let Some(socket) = &report.socket_path {
         names.insert(report.window_name.clone());
-        match tmux::panes(env, socket, &names) {
-            Ok(panes) if panes.len() > 1 => {
+        match tmux::resolved_panes(env, socket, &names) {
+            Ok((_, panes)) if panes.len() > 1 => {
                 report.status = "ambiguous".into();
                 report.diagnostics.push(format!(
                     "multiple tmux windows on {}: {panes:?}",
                     socket.display()
                 ));
             }
-            Ok(mut panes) => {
+            Ok((target, mut panes)) => {
                 report.pane = panes.pop();
                 if let Some(pane) = &report.pane {
                     if let Some(worktree) = report.worktree.as_ref() {
@@ -756,6 +756,11 @@ fn resolve(
                         ));
                     }
                     report.provider = pane.provider.clone().or(report.provider);
+                }
+                // The report locates observed resources. The candidate's lease
+                // retains its durable identity even when transport has moved.
+                if target.protected {
+                    report.socket_path = Some(target.endpoint);
                 }
             }
             Err(e) => {

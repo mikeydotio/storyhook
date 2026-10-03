@@ -18,8 +18,9 @@ SCRIPT = Path(__file__).resolve().parents[1] / "verification-view.py"
 # (src/daemon/activity/window.rs); exercise exactly that program.
 POLICY = Path(__file__).resolve().parents[2] / "plugins/story/lib/tmux_server_env.py"
 BUDGET = POLICY.with_name("probe_budget.py")
-PROGRAM = (BUDGET.read_text() + "\nprobe_run = run\nprobe_operation = operation\n"
-           + POLICY.read_text() + "\n" + SCRIPT.read_text())
+sys.path.insert(0, str(POLICY.parent))
+from view_program import program
+PROGRAM = program(SCRIPT.parent.parent)
 # The shipping operation budget also bounds a single client if it is first.
 RECONCILER_TIMEOUT = int(re.search(r"^BUDGET_SECONDS = (\d+)$", BUDGET.read_text(), re.M).group(1))
 DEADLINE = RECONCILER_TIMEOUT * 3 / 2  # The daemon outer bound, including startup/exit margin.
@@ -56,6 +57,27 @@ def diagnosis(what, result):
 
 class ViewTests(unittest.TestCase):
     """Every fixture owns its foreground server and destroys it in cleanup."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Use the production reader's native launch shape, without a second exec."""
+        cls.reader_build = tempfile.TemporaryDirectory(prefix='sh825-view-reader-', dir='/tmp')
+        cls.addClassCleanup(cls.reader_build.cleanup)
+        source = Path(cls.reader_build.name) / 'reader.c'
+        cls.reader_binary = source.with_suffix('')
+        source.write_text('''#include <stdio.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    printf("READER");
+    for (int i = 1; i < argc; ++i) printf(" %s", argv[i]);
+    printf("\\n");
+    fflush(stdout);
+    while (1) pause();
+}
+''')
+        subprocess.run(['cc', '-Wall', '-Werror', str(source), '-o', str(cls.reader_binary)],
+                       timeout=load_grace.patience(DEADLINE, load_grace.contention()),
+                       check=True, capture_output=True)
 
     # The contention reading behind the harness's re-run of a timed-out tick;
     # a regression states its own reading in place of the machine's.
@@ -109,8 +131,7 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
         wrapper.chmod(0o700)
         self.env["PATH"] = str(bin_dir) + ":" + self.env["PATH"]
         self.reader = self.root / "reader with spaces"
-        self.reader.write_text('#!/bin/sh\nprintf "READER %s\\n" "$*"\nexec sleep 2147483647\n')
-        self.reader.chmod(0o700)
+        shutil.copy2(self.reader_binary, self.reader)
         # SH-822: never a real provider. A `claude` first on PATH also covers a
         # production daemon that resolves the agent from its own PATH.
         self.agent = bin_dir / "claude"
@@ -593,8 +614,13 @@ interpose[] __attribute__((section("__DATA,__interpose"))) = {
             daemon.wait(timeout=self.deadline)
 
     def test_projects_reuse_healthy_readers_and_recover_closed_windows(self):
+        import json
         self.reconcile()
         first = self.identity()
+        proof = json.loads(self.tmux('show-options', '-p', '-v', '-t', first.split('|')[1],
+                                     '@storyhook-reader-proof-v1'))
+        self.assertEqual(proof['process']['process']['executable'], str(self.reader.resolve()))
+        self.assertEqual(proof['process']['argv'][0], str(self.reader.resolve()))
         self.reconcile("two")
         control = self.identity("two")
         self.reconcile()

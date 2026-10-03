@@ -2795,6 +2795,7 @@ Examples:
         m.insert(
             "verifier",
             r#"story verifier status
+story verifier evidence <story-id> [--json]
 story verifier start
 story verifier stop
 story verifier drain
@@ -2804,6 +2805,13 @@ story verifier repair show <recovery-id> --json
 story verifier repair decide <recovery-id> --input <json-file>
 
 Inspect and control this project's centralized verifier.
+
+  evidence reads retained admission, execution and submission costs. It works
+  without a live owner. Queue time is separate from the inclusive 900-second
+  admission budget. Breaches are sticky process observations, separate from
+  exact-tree test results; observation mode does not stop or return a gate.
+  Missing durations stay unknown. UTC wall intervals are estimates, and each
+  summary states its last observation. Shared execution cost is not divided.
 
   repair show reads durable project-fault evidence, revision, scope assessor,
   and accepted repair work. It does not grant implementation authority.

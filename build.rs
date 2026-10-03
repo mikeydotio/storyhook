@@ -210,6 +210,7 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "cargo_diagnostics.py",
     "gate-progress-writer.py",
     "gate-progress.sh",
+    "gate_cost.py",
     "github-access.sh",
     "land-pr.sh",
     "landing-intent.sh",

@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use storyhook_test_support::TestEnv;
 use tempfile::TempDir;
 
+#[path = "support/revivify.rs"]
+mod revivify;
+
 /// A fake `tmux` that answers `list-windows` from a seeded file and refuses
 /// everything else — the `tests/merge_gate.rs` fake-binary shape.
 struct FakeTmux {
@@ -235,4 +238,50 @@ fn a_trailing_word_is_refused_by_name() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("extra"), "{stderr}");
+}
+
+#[test]
+fn protected_census_uses_private_endpoint_without_opening_a_store() {
+    let env = TestEnv::isolated();
+    let protection = revivify::Protection::new(env.home());
+    let fake = FakeTmux::answering(CENSUS);
+    let out = env
+        .story(env.home())
+        .args(["lane-budget", "--json"])
+        .env("PATH", path_with(Some(&fake)))
+        .env("HOME", &protection.home)
+        .env_remove("XDG_STATE_HOME")
+        .env("TMUX", format!("{},1,0", protection.socket.display()))
+        .env("STORYHOOK_STORE_PATH", "/unreachable/store/SH-825.sqlite")
+        .output()
+        .unwrap();
+    assert_eq!(json_of(&out)["live"], 2);
+    assert!(
+        fake.argv().starts_with(&format!(
+            "-N -S {} -u list-windows",
+            protection.endpoint.display()
+        )),
+        "{}",
+        fake.argv()
+    );
+}
+
+#[test]
+fn invalid_protection_is_unanswered_before_census_queries_tmux() {
+    let env = TestEnv::isolated();
+    let protection = revivify::Protection::new(env.home());
+    std::fs::write(&protection.activation, "{}").unwrap();
+    let fake = FakeTmux::answering(CENSUS);
+    let out = env
+        .story(env.home())
+        .args(["lane-budget", "--json"])
+        .env("PATH", path_with(Some(&fake)))
+        .env("HOME", &protection.home)
+        .env_remove("XDG_STATE_HOME")
+        .env("TMUX", format!("{},1,0", protection.socket.display()))
+        .output()
+        .unwrap();
+    let value = json_of(&out);
+    assert_eq!(value["probe"], "unanswered", "{value}");
+    assert!(fake.argv().is_empty());
 }

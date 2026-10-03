@@ -8,7 +8,7 @@ run_case() {
   repo=$(mk_story_repo RBK)
   id=$(new_story "$repo" "Refused handoff")
   wt="$repo/.claude/worktrees/$id"
-  out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX=fake TMUX_PANE=%0 \
+  out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
     STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 FAKE_TMUX_SUPPRESS_SENTINEL=1 \
     FAKE_TMUX_KILL_WINDOW_PROBE="$wt" bash "$SCRIPT" dispatch "$id")
 }

@@ -11,7 +11,7 @@ _TMP_REPOS+=("$FAKE_TMUX_STATE")
 repo=$(mk_story_repo CBT)
 id=$(new_story "$repo" "First-turn initialization")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity \
@@ -80,7 +80,7 @@ FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-incomplete.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
 id=$(new_story "$repo" "Incomplete initialization")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_BOOTSTRAP_INCOMPLETE=1 \
@@ -105,7 +105,7 @@ FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-unconfirmed.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
 id=$(new_story "$repo" "Unconfirmed initialization")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_ENTER_ABSORB=1 \
@@ -132,7 +132,7 @@ FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-undelivered.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
 id=$(new_story "$repo" "Undelivered initialization")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_DIALOG=paste \
@@ -156,7 +156,7 @@ FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-plan.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
 id=$(new_story "$repo" "Plan-less initialization")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_IGNORE_PLAN_KEYS=9 \

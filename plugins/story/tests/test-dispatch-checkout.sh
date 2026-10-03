@@ -34,7 +34,7 @@ dispatch_real() {
   (
     cd "$cwd" \
       && PATH="$FAKE_TMUX_DIR:$PATH" \
-        TMUX="fake,0,0" TMUX_PANE="%0" \
+        TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
         STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
         STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
         FAKE_TMUX_CAPTURE=marker \
@@ -153,7 +153,7 @@ assert_contains "$(jqf "$out" .display)" "linked git worktree" \
 # tmux window" report from outside any repository rather than dying on a
 # git-repository check it never needed.
 
-out=$(cd "$nowhere" && TMUX="fake,0,0" TMUX_PANE="%0" PATH="$FAKE_TMUX_DIR:$PATH" \
+out=$(cd "$nowhere" && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" PATH="$FAKE_TMUX_DIR:$PATH" \
   bash "$SCRIPT" --project "$slug_a" capture "$id" 2>&1)
 assert_ok "$out" "false" "capture: no window is still a refusal"
 assert_contains "$(jqf "$out" .display)" "no live tmux window" \

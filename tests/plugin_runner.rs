@@ -48,6 +48,7 @@ impl Suite {
         .expect("fixture: linking the runner");
         for helper in [
             "gate-progress.sh",
+            "gate-progress-writer.py",
             "test-env.sh",
             "python-runtime.sh",
             "python-bin/python3",
@@ -269,17 +270,39 @@ fn the_gate_journal_gets_the_total_and_one_case_per_script_and_no_child_sees_it(
             && lines[0].contains(r#""total":2"#),
         "{journal}"
     );
-    let cases = |outcome: &str| {
-        lines
-            .iter()
-            .filter(|line| {
-                line.contains(&format!(
-                    r#"{{"kind":"case","path":"release gate/plugin","outcome":"{outcome}"}}"#
-                ))
-            })
-            .count()
-    };
-    assert_eq!((cases("pass"), cases("fail")), (1, 1), "{journal}");
+    let cases: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|line| serde_json::from_str(line).expect("valid journal JSON"))
+        .filter(|row: &serde_json::Value| row["kind"] == "case")
+        .collect();
+    assert_eq!(cases.len(), 2, "{journal}");
+    let spans: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|row: &serde_json::Value| row["kind"] == "cost")
+        .collect();
+    assert_eq!(spans.len(), 2);
+    assert_eq!(spans[0]["phase"], "execution");
+    assert_eq!(spans[0]["event"], "start");
+    assert_eq!(spans[1]["event"], "end");
+    assert_eq!(spans[0]["id"], spans[1]["id"]);
+    for (row, (name, outcome)) in cases
+        .iter()
+        .zip([("test-a.sh", "pass"), ("test-b.sh", "fail")])
+    {
+        assert_eq!(row["path"], "release gate/plugin");
+        assert_eq!(row["outcome"], outcome);
+        assert_eq!(
+            row["name"],
+            suite
+                .root
+                .path()
+                .join("plugins/story/tests")
+                .join(name)
+                .display()
+                .to_string()
+        );
+    }
     assert!(
         lines
             .last()

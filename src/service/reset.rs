@@ -142,7 +142,7 @@ pub fn reset_story<S: Store>(
         id,
         &project.slug,
         &repository,
-        ctx.cwd(),
+        ctx,
         caller,
         &lock,
     )?;
@@ -203,7 +203,7 @@ pub fn reset_story<S: Store>(
         id,
         &project.slug,
         &repository,
-        ctx.cwd(),
+        ctx,
         caller,
         &lock,
     );

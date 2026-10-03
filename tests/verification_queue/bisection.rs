@@ -104,6 +104,35 @@ fn a_single_culprit(members: usize, position: usize) {
 
     let result = tick(&board, &batcher);
 
+    let costs = board
+        .fixture
+        .store()
+        .read(|tx| tx.gate_attempts(board.fixture.project()))
+        .unwrap();
+    assert_eq!(
+        costs.len(),
+        1,
+        "bisection must not reset the admission clock"
+    );
+    assert!(costs[0].finished_at.is_some());
+    assert!(
+        costs[0].executions.len() >= 2,
+        "retain the parent gate and each physical probe"
+    );
+    let execution_ids: std::collections::BTreeSet<_> = costs[0]
+        .executions
+        .iter()
+        .map(|execution| &execution.id)
+        .collect();
+    assert_eq!(execution_ids.len(), costs[0].executions.len());
+    assert!(
+        costs[0]
+            .executions
+            .iter()
+            .all(|execution| execution.finished_at.is_some() && execution.milliseconds.is_some())
+    );
+    assert_eq!(costs[0].executions[0].submissions.len(), members);
+
     let context = format!("k={members} culprit at {position}");
     let parent = parent(&board);
     assert_eq!(parent.phase, BatchPhase::Released, "{context}");

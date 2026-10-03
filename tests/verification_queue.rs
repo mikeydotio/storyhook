@@ -2943,6 +2943,7 @@ fn cleanup_candidate(
             worktree_path: repository.join(".codex/worktrees/SH-1"),
             branch: "worktree-SH-1".into(),
             tmux: TmuxCleanupTarget {
+                revivify: None,
                 socket_path: repository.join("tmux.sock"),
             },
         }),
@@ -3292,6 +3293,7 @@ fn verifying_transition_validates_and_atomically_records_a_private_git_marker() 
         worktree_path,
         branch: format!("worktree-{id}"),
         tmux: TmuxCleanupTarget {
+            revivify: None,
             socket_path: repository.path().join("tmux.sock"),
         },
     };
@@ -4818,6 +4820,7 @@ fn lease_for(root: &std::path::Path, story_id: &str) -> StoryCleanupLease {
         worktree_path: root.join(".claude/worktrees").join(story_id),
         branch: format!("worktree-{story_id}"),
         tmux: TmuxCleanupTarget {
+            revivify: None,
             socket_path: root.join("tmux.sock"),
         },
     }

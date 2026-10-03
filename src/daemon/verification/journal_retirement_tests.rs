@@ -235,7 +235,9 @@ fn a_generation_transfer_retires_the_earlier_journal() {
     let resubmitted = board.resubmit();
     let resumed_at = board.env.now();
 
-    guard.replace(&board.env, &resubmitted, resumed_at.clone());
+    guard
+        .replace(&board.store, &board.env, &resubmitted, resumed_at.clone())
+        .unwrap();
 
     assert!(
         !path.exists(),

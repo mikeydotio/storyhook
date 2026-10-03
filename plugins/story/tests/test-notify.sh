@@ -15,7 +15,7 @@ id=$(new_story "$repo" "Verifier remediation")
 out=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" STORY_AGENT=codex \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" STORY_AGENT=codex \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       bash "$SCRIPT" dispatch "$id" 2>&1
@@ -61,7 +61,7 @@ assert_eq "$(jqf "$out" .reason)" "pane-changed" \
   "notify: refusal identifies the unrelated occupant"
 
 id=$(new_story "$repo" "Claude verifier remediation")
-out=$(cd "$repo" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX=fake TMUX_PANE=%0 \
+out=$(cd "$repo" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
   STORY_AGENT=claude STORY_READY_DELAY=0 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" dispatch "$id")
 assert_ok "$out" true "notify: Claude has its own managed registration"

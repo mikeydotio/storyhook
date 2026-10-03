@@ -43,7 +43,7 @@ repo=$(mk_story_repo RDP)
 id=$(new_story "$repo" "Returned to a dead pane")
 out=$(
   cd "$repo" \
-    && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
+    && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_COUNCIL=off STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
       bash "$SCRIPT" dispatch "$id" --auto 2>&1
@@ -96,7 +96,7 @@ repo=$(mk_story_repo RWG)
 id=$(new_story "$repo" "Returned to a missing window")
 out=$(
   cd "$repo" \
-    && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
+    && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_COUNCIL=off STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
       bash "$SCRIPT" dispatch "$id" --auto 2>&1

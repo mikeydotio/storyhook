@@ -87,11 +87,20 @@ constraints remain; project rules and skill catalogs do not reach classification
 The fixed classifier instruction and absence of capabilities prevent repository
 execution. The model catalog contains public metadata, not credentials.
 
-The capability contract is measured for **codex-cli 0.154.0**. Other versions emit
-a diagnostic and receive no prose approval until their capability contract is
-measured and the compatibility guard updated. This is deliberate: undocumented
-catalog switches must not silently gain authority across a runtime upgrade.
-The native menu watcher remains available independently.
+SH-875 removes the exact-version preflight. Another session can update Codex
+while a parent session remains active; each classification uses the installed
+executable with the same strict configuration and response validation. A version
+change alone cannot refuse approval. Unsupported configuration, failed execution,
+or an invalid response still produces a diagnostic without approval; there is no
+retry with weaker settings. The native menu watcher remains independent.
+
+The original wire measurement used **codex-cli 0.154.0**. SH-875's loopback
+provider probe passed all four prose/structured and Default/Plan scenarios on
+**0.159.3** on October 3, 2026. Prose classification exposed zero tools, including
+an empty additional_tools inventory; structured plans made no classifier call.
+These versions are evidence, not an allowlist. The provider probe validates the
+actual outgoing capabilities; future provider protocol changes can still
+require a compatibility repair.
 
 ## Bounds and failure behavior
 
@@ -100,12 +109,12 @@ The native menu watcher remains available independently.
 | Complete assistant message | 64 KiB; reject oversized messages without truncating |
 | Transcript tail / input payload | 4 MiB |
 | Tracker lookup | 2-second CLI deadline, 3-second process deadline; one transactional eligibility query before and after recognition |
-| Codex version / classifier | 2 / 20 seconds |
+| Classifier | 20 seconds |
 | Returned child output | 1 MiB per stream |
 | Stop hook | 50 seconds, against at most 40 seconds of subprocess waits |
 
 Each child owns a process group, killed on completion, timeout, or parent SIGTERM.
-Missing executables/authentication, changed schemas or runtime, malformed data,
+Missing executables/authentication, incompatible schemas or configuration, malformed data,
 unknown modes, excessive output, and uncertain classifications never manufacture
 approval. They emit a contextual systemMessage. A project without an unambiguous
 active state role cannot receive Stop-hook continuation. Tracker snapshots are not a
@@ -117,6 +126,9 @@ claiming atomic cross-process authorization.
 - test-codex-stop.sh exercises the production decision and runner, including
   observed prose patterns, mode boundaries, identity, story state, repeat events,
   malformed data, classifier refusal, and real child-process cleanup.
+  SH-875 adds executable replacement between calls, no version preflight,
+  incompatible-runtime refusal without weaker retries, and approval recovery
+  after a failed invocation. The new update cases failed before the fix.
 - probe-codex-stop.sh is an opt-in, loopback-only provider test. The installed
   Codex, production hooks, classifier runner, and isolated tracker are real; only
   model response data is supplied by an HTTP fixture. It asserts native

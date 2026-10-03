@@ -51,8 +51,6 @@ class ContextHandoffRegression(unittest.TestCase):
                 def external_process(argv, **kwargs):
                     """Substitute external process responses, never hook decisions."""
                     calls.append((argv, kwargs))
-                    if argv[:2] == ['codex', '--version']:
-                        return codex_classifier.SUPPORTED_VERSION
                     if argv[:2] == ['codex', 'exec']:
                         return '\n'.join(map(json.dumps, [
                             {'type': 'item.completed', 'item': {

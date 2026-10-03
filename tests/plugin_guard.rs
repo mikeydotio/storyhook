@@ -185,6 +185,14 @@ fn a_test_binary_is_refused_every_verb_before_any_provider_call() {
             !fixture.receipt().exists(),
             "{verb_line}: no receipt may be written or tombstoned:\n{text}"
         );
+        assert!(
+            !fixture
+                .env
+                .data_dir()
+                .join("provider-installs/claude-operations")
+                .exists(),
+            "a refused verb must not create operation evidence"
+        );
     }
 }
 

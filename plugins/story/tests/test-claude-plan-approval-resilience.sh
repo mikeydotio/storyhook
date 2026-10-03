@@ -6,9 +6,21 @@ source "$(dirname "$0")/lib.sh"
 HOOK="$TESTS_DIR/../hooks/full-auto.sh"
 TMUX_FIXTURE="$(mktemp -d /tmp/story-test-claude-plan-resilience.XXXXXX)"
 _TMP_REPOS+=("$TMUX_FIXTURE")
+export WATCH_PID=$$
+export STORY_APPROVAL_BINDING
+STORY_APPROVAL_BINDING=$(python3 - "$TESTS_DIR/../lib" "$WATCH_PID" "$TMUX_FIXTURE/socket" <<'BINDING'
+import json,sys
+sys.path.insert(0, sys.argv[1])
+from process_identity import process_identity
+print(json.dumps(dict(socket=sys.argv[3], pane='%4242', process=process_identity(int(sys.argv[2])))))
+BINDING
+)
 
 cat >"$TMUX_FIXTURE/tmux" <<'FAKE_TMUX'
 #!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  case "$1" in -u|-N) shift ;; -S) shift 2 ;; *) break ;; esac
+done
 set -uo pipefail
 
 target_after_t() {
@@ -57,12 +69,12 @@ case "${1:-}" in
       identity-exhaustion) exit 1 ;;
       unknown-identity) printf 'unknown\n'; exit 0 ;;
       initial-replaced) printf '778:0\n'; exit 0 ;;
-      initial-dead) printf '777:1\n'; exit 0 ;;
+      initial-dead) printf '%s:1\n' "$WATCH_PID"; exit 0 ;;
       replace-before-send) [ "$count" -lt 2 ] || { printf '778:0\n'; exit 0; } ;;
-      die-before-send) [ "$count" -lt 2 ] || { printf '777:1\n'; exit 0; } ;;
+      die-before-send) [ "$count" -lt 2 ] || { printf '%s:1\n' "$WATCH_PID"; exit 0; } ;;
       replace-after-send) [ "$send_count" -eq 0 ] || { printf '778:0\n'; exit 0; } ;;
     esac
-    printf '777:0\n'
+    printf '%s:0\n' "$WATCH_PID"
     ;;
   capture-pane)
     count=$(next_count "$pane" capture)
@@ -102,6 +114,7 @@ case "${1:-}" in
     esac
     : >"$FULL_AUTO_TMUX_STATE/${pane#%}-accepted"
     ;;
+  set-option) ;;
   *) exit 1 ;;
 esac
 FAKE_TMUX
@@ -142,7 +155,7 @@ reset_case() {
 }
 
 run_watcher() {
-  local scenario="$1" pane="${2:-%4242}" expected_pid="${3:-777}" limit="${4:-0}"
+  local scenario="$1" pane="${2:-%4242}" expected_pid="${3:-$WATCH_PID}" limit="${4:-0}"
   FULL_AUTO_TMUX_STATE="$TMUX_FIXTURE" \
   FULL_AUTO_TMUX_SCENARIO="$scenario" \
   STORYHOOK_AUTO=SH-570 \
@@ -159,10 +172,10 @@ assert_eq "$(value %4242 capture)" 2 "success is acknowledged by recapturing the
 
 # Unknown UI is fail-closed but remains eligible for a later exact dialog.
 reset_case
-run_watcher changed-then-exact %4242 777 2
+run_watcher changed-then-exact %4242 "$WATCH_PID" 2
 assert_eq "$(value %4242 send)" 1 "an initially unknown screen is polled until the exact dialog appears"
 reset_case
-run_watcher changed %4242 777 2
+run_watcher changed %4242 "$WATCH_PID" 2
 assert_eq "$(send_log %4242)" "" "a changed dialog receives no input"
 
 # A single failed observation is transport noise, not pane completion.
@@ -175,11 +188,11 @@ done
 # A post-Return observation failure retains the pending acknowledgement. Once
 # observation recovers, the transitioned UI completes without another Return.
 reset_case
-run_watcher transient-post-send-identity %4242 777 2
+run_watcher transient-post-send-identity %4242 "$WATCH_PID" 2
 assert_eq "$(value %4242 send)" 1 "post-send identity recovery does not resend after transition"
 assert_eq "$(value %4242 identity)" 4 "post-send identity is retried against the original PID"
 reset_case
-run_watcher transient-post-send-capture %4242 777 2
+run_watcher transient-post-send-capture %4242 "$WATCH_PID" 2
 assert_eq "$(value %4242 send)" 1 "post-send capture recovery does not resend after transition"
 assert_eq "$(value %4242 capture)" 3 "post-send capture is retried before acknowledgement"
 
@@ -227,7 +240,7 @@ assert_eq "$(value %4242 send)" 1 "a replacement observed after Return receives 
 
 # Malformed internal arguments are inert at the tmux boundary.
 reset_case
-run_watcher normal not-a-pane 777
+run_watcher normal not-a-pane "$WATCH_PID"
 run_watcher normal %4242 not-a-pid
 assert_eq "$(value %4242 identity)" "" "invalid pane/PID arguments never contact tmux"
 

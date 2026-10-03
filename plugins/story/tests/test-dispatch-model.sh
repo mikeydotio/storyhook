@@ -13,7 +13,7 @@ dispatch_real() {
   (
     cd "$dir" \
       && PATH="$FAKE_TMUX_DIR:$PATH" \
-        TMUX="fake,0,0" TMUX_PANE="%0" \
+        TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
         STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
         STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
         FAKE_TMUX_CAPTURE=marker \
@@ -81,7 +81,7 @@ assert_contains "$out" "--model may be specified only once" "duplicate --model: 
 repo7=$(mk_story_repo MDV)
 id7=$(new_story "$repo7" "STORY_MODEL env fallback")
 out=$(cd "$repo7" \
-  && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
+  && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
      STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
      STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
      STORY_MODEL=sonnet STORY_EFFORT=low STORY_SPEED=fast \
@@ -94,7 +94,7 @@ assert_eq "$(jqf "$out" .speed)" "fast" "env fallback: STORY_SPEED used"
 repo8=$(mk_story_repo MDF)
 id8=$(new_story "$repo8" "explicit flag outranks STORY_MODEL")
 out=$(cd "$repo8" \
-  && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
+  && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
      STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
      STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
      STORY_MODEL=sonnet \

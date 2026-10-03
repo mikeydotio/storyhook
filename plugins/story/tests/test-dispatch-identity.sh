@@ -3,7 +3,7 @@
 source "$(dirname "$0")/lib.sh"
 repo=$(mk_story_repo)
 id=$(new_story "$repo" "Registration failure")
-out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX=fake TMUX_PANE=%0 \
+out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
   STORY_READY_DELAY=0 STORY_CONFIRM_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_FAIL_IDENTITY_WRITE=1 bash "$SCRIPT" dispatch "$id")
 assert_ok "$out" false "registration refuses"
@@ -46,7 +46,7 @@ for mode in stale missing; do
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
   repo=$(mk_story_repo)
   id=$(new_story "$repo" "Unproved launch ownership: $mode")
-  out=$(cd "$repo" && PATH="$adapter:$TESTS_DIR/fakes:$PATH" TMUX=fake TMUX_PANE=%0 \
+  out=$(cd "$repo" && PATH="$adapter:$TESTS_DIR/fakes:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
     STORY_READY_DELAY=0 STORY_CONFIRM_DELAY=0 FAKE_TMUX_CAPTURE=marker \
     FIXTURE_TOKEN_MODE="$mode" bash "$SCRIPT" dispatch "$id")
   assert_ok "$out" false "$mode: registration refuses"

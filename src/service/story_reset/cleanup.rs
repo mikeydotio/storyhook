@@ -5,6 +5,10 @@ use crate::service::workspace_lock::{self, WorkspaceLock};
 use std::collections::BTreeSet;
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "cleanup_revivify_tests.rs"]
+mod revivify_tests;
+
 fn refuse(message: impl Into<String>) -> AppError {
     AppError::Validation(format!("reset refused: {}", message.into()))
 }
@@ -134,7 +138,10 @@ pub(super) fn remove(
     validate(report, caller, env)?;
     if let Some(socket) = &report.socket_path {
         let names = BTreeSet::from([report.window_name.clone()]);
-        let panes = tmux::panes(env, socket, &names)?;
+        let (target, panes) = tmux::resolved_panes(env, socket, &names)?;
+        if target.protected && target.endpoint != *socket {
+            return Err(refuse("tmux generation changed since reset was reserved"));
+        }
         if !panes.is_empty() {
             let expected = report
                 .pane
@@ -149,10 +156,8 @@ pub(super) fn remove(
             }
             let mut command = std::process::Command::new("tmux");
             crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
-            command
-                .arg("-S")
-                .arg(socket)
-                .args(["kill-window", "-t", &expected.window_id]);
+            target.apply(&mut command, Some(socket));
+            command.args(["kill-window", "-t", &expected.window_id]);
             if let Some(workspace) = workspace {
                 workspace.command(&mut command);
             }

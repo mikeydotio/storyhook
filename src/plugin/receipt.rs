@@ -48,7 +48,7 @@ use crate::path_identity;
 
 /// Who wrote a receipt line: the executable, what kind of build it was, and
 /// whether `plugin::guard`'s override was in its environment.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Actor {
     /// The canonical executable, as the process reported it; `None` when it
     /// could not name itself.

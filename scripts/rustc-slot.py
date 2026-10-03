@@ -188,8 +188,12 @@ def holders(root, k):
     return found
 
 
+cost_wait = None
+
+
 def journal(label, status):
     """One SH-524 activity line, when a gate-held run is watching; a no-op otherwise."""
+    global cost_wait
     path = os.environ.get("STORYHOOK_GATE_PROGRESS")
     if not path:
         return
@@ -204,6 +208,18 @@ def journal(label, status):
     try:
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+            event = None
+            if status == "running" and cost_wait is None:
+                cost_wait = f"build-slot-{os.getpid()}-{time.monotonic_ns()}"
+                event = "start"
+            elif status == "passed" and cost_wait is not None:
+                event = "end"
+            if event:
+                f.write(json.dumps(dict(kind="cost", event=event, phase="resource-wait",
+                                       id=cost_wait, path=item, monotonic_ns=time.monotonic_ns(),
+                                       at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))) + "\n")
+            if event == "end":
+                cost_wait = None
     except OSError as error:
         note(f"could not append to the gate progress journal {path}: {error}")
 
