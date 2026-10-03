@@ -205,12 +205,12 @@ done
 
 new_case
 SH786_ACTION=lift dispatch_case after-revocation claude "$id"
-assert_ok "$out" true "a hold lifted before handoff does not forbid work: $out"
+assert_ok "$out" true "a hold lifted before handoff does not forbid work"
 assert_contains "$(cat "$FAKE_TMUX_STATE/eligibility-calls")" final 'successful handoff checked registered session'
 
 new_case
 dispatch_case after-query claude "$id"
-assert_ok "$out" true "a later block uses delivery authority: $out"
+assert_ok "$out" true "a later block uses delivery authority"
 [ -f "$FAKE_TMUX_STATE/mutation" ] || fail_test 'late block boundary was not exercised'
 assert_contains "$(cat "$FAKE_TMUX_STATE/eligibility-calls")" final 'late block follows registered-session check'
 await_interrupt

@@ -11,7 +11,7 @@ for agent in codex claude; do
     level=${pair%:*} effort=${pair#*:}
     (cd "$repo" && story set "$id" --complexity "$level") >/dev/null
     out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$id" --agent="$agent")
-    assert_ok "$out" true "$agent/$level resolves: $out"
+    assert_ok "$out" true "$agent/$level resolves"
     assert_eq "$(jqf "$out" .model)" "$model" "$agent/$level model"
     assert_eq "$(jqf "$out" .effort)" "$effort" "$agent/$level effort"
     assert_eq "$(jqf "$out" .model_source)" builtin "$agent/$level origin"

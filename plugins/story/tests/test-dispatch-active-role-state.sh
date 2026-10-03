@@ -82,7 +82,7 @@ printf '%s\n' "$state_list" | grep -q '^in-progress' \
 # --- the claim lands in the active state, and the story stops being ready ----
 id=$(new_story "$repo" "Claim into the active-role state")
 out=$(dispatch_real "$repo" "$id")
-assert_ok "$out" "true" "claim: ok:true; response: $out"
+assert_ok "$out" "true" "claim: ok:true"
 assert_eq "$(jqf "$out" .state)" "doing" "claim: reported state is the active-role state"
 claimed_state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 assert_eq "$claimed_state" "doing" "claim: the store agrees the story is at doing"

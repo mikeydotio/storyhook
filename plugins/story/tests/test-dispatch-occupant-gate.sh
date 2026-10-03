@@ -92,7 +92,7 @@ assert_eq "$(state_of)" "in-progress" "B: the story is claimed normally"
 # A claude occupant with a drifted footer must STILL confirm via the structural
 # tier -- the fix must not have broken the tier it narrowed.
 dispatch_run FAKE_TMUX_CAPTURE=structural
-assert_ok "$out" "true" "C: claude + drifted footer still confirms structurally: $out"
+assert_ok "$out" "true" "C: claude + drifted footer still confirms structurally"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "C: ...and says so"
 assert_eq "$(submits)" "1" "C: ...and the prompt is delivered exactly once"
 

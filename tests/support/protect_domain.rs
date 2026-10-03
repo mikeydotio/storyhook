@@ -133,7 +133,7 @@ assert_ok "$out" true 'real create'
 id=$(jqf "$out" .id)
 story claim "$id" --no-comment >/dev/null || fail_test claim
 out=$(bash "$1" unclaim "$id" --no-comment)
-assert_ok "$out" true "real unclaim: $out"
+assert_ok "$out" true "real unclaim"
 assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" todo 'unclaim persisted'
 wname=$(wname_for "$repo" "$id")
 git worktree add -q --no-track -b "worktree-$wname" ".claude/worktrees/$wname" HEAD || exit 1

@@ -121,7 +121,7 @@ out=$(cd "$repo" && PATH="$fixture/bin:$TESTS_DIR/fakes:$PATH" \
     --continuation-file="$record" 2>&1)
 assert_eq "$(jqf "$out" .model)" opusplan "continuation retains captured model despite ambient defaults"
 assert_eq "$(jqf "$out" .model_source)" continuation "continuation reports captured source"
-assert_ok "$out" true "guarded resume succeeds over retained work: $out"
+assert_ok "$out" true "guarded resume succeeds over retained work"
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
   'Unknown capacity alone must not defer already assigned work' \
   'a missing token counter cannot defer every fresh assignment'

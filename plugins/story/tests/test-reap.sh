@@ -174,7 +174,7 @@ assert_eq "$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD)" "refs/remote
   "dev-only: fixture cache still says main"
 close_story "$dv"
 out=$(cd "$repo" && bash "$SCRIPT" reap "$dv" 2>&1)
-assert_ok "$out" "true" "dev-only: reaped — merged-ness was judged against origin's default: $out"
+assert_ok "$out" "true" "dev-only: reaped — merged-ness was judged against origin's default"
 assert_eq "$(jqf "$out" '.removed.branch')" "true" "dev-only: the branch merged only into dev was deleted"
 [ -d "$repo/.claude/worktrees/$wdv" ] && fail_test "dev-only: worktree survived a successful reap"
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$wdv") \
