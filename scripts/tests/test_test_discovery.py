@@ -161,6 +161,10 @@ class PoolFlowTests(unittest.TestCase):
         self.root = Path(self.scratch.name)
         for name in ['scripts', 'tests', 'bin']:
             (self.root / name).mkdir()
+        # Runtime selection requires the tracked PATH launcher beside its shell helper.
+        (self.root / 'scripts' / 'python-bin').mkdir()
+        (self.root / 'scripts' / 'python-bin' / 'python3').symlink_to(
+            SCRIPTS / 'python-bin' / 'python3')
         for script in SCRIPTS.iterdir():
             if script.suffix in ('.py', '.sh', '.awk'):
                 (self.root / 'scripts' / script.name).symlink_to(script)
