@@ -73,4 +73,50 @@ out=$(
 )
 assert_eq "$out" "survived" "errexit: neither a non-JSON nor a failing answer exits the caller"
 
+# --- nothing asserts `.ok` through the field alone -------------------------
+# SH-840 moved every ok assertion onto assert_ok (council c860955c, D1). This
+# keeps the lossy shape -- assert_eq over the jq-read `.ok` field, which prints
+# only that field -- from being copied back in from an older branch. Derived
+# over every tracked source that calls lib.sh's assertions, never a list: this
+# suite and the Rust harness's shell fixtures (tests/support/protect_*.rs).
+# The shape is spelled with escapes, so neither this file nor lib.sh can match.
+repo_root=$(cd "$TESTS_DIR/../../.." && pwd -P)
+quote="['\"]?"
+old_shape='assert_eq[[:space:]]+"\$\(jqf[[:space:]]+"[^"]*"[[:space:]]+'"$quote"'\.ok'"$quote"'\)"'
+
+# The pattern must recognise the shape it forbids, in each spelling, and must
+# not reach a nested field such as `.cleanup.ok`, which is not the verdict.
+for spelling in \
+  "assert_eq \"\$(jqf \"\$out\" .ok)\" true label" \
+  "  assert_eq \"\$(jqf \"\${out2}\" '.ok')\" \"false\" label"; do
+  printf '%s\n' "$spelling" | grep -Eq "$old_shape" \
+    || fail_test "guard: the pattern no longer matches [$spelling]"
+done
+for spelling in \
+  "assert_eq \"\$(jqf \"\$out\" .cleanup.ok)\" false label" \
+  "assert_eq \"\$(jqf \"\$out\" .ok_count)\" 1 label" \
+  "assert_ok \"\$out\" true label"; do
+  if printf '%s\n' "$spelling" | grep -Eq "$old_shape"; then
+    fail_test "guard: the pattern also matches [$spelling]"
+  fi
+done
+
+status=0
+offenders=$(git -C "$repo_root" grep -nE "$old_shape" -- 'plugins/story/tests/*.sh' 'tests/*.rs') || status=$?
+case "$status" in
+  0)
+    fail_test "these ok assertions print only the field, so a failure loses the answer's reason and display (SH-840). Use assert_ok \"\$answer\" <expected> <label> from plugins/story/tests/lib.sh; to convert, run: sed -E -i '' 's/assert_eq \"\\\$\\(jqf \"(\\\$[A-Za-z_0-9]+)\" \\.ok\\)\"/assert_ok \"\\1\"/g' <file>
+$offenders"
+    ;;
+  1) : ;;
+  *) fail_test "guard: git grep could not scan $repo_root (exit $status): $offenders" ;;
+esac
+
+# Never vacuous: the scan must reach the suite it guards and the Rust fixtures.
+converted=$(git -C "$repo_root" grep -l 'assert_ok "' -- 'plugins/story/tests/test-*.sh' | wc -l | tr -d ' ')
+[ "$converted" -ge 80 ] \
+  || fail_test "guard: only $converted plugin tests call assert_ok; the scan is not reaching the suite"
+git -C "$repo_root" grep -q 'assert_ok "' -- 'tests/support/*.rs' \
+  || fail_test "guard: no Rust fixture calls assert_ok; the scan is not reaching tests/support"
+
 finish
