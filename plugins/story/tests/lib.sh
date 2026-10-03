@@ -196,9 +196,6 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   fi
   export STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS="$((_STORY_PROBE_SECONDS * 1000))"
   unset _STORY_PROBE_SECONDS
-  # Read-only native resource queries must never inspect the operator server.
-  export TMUX_TMPDIR="$STORYHOOK_TEST_HOME/tmux"
-  mkdir -p "$TMUX_TMPDIR"
 
   # A standalone `bash test-foo.sh` (this branch) has no SH-524 progress
   # journal of its own to write to; an ambient one set by some other daemon-
@@ -207,6 +204,21 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   # stays here rather than joining the shared table.
   unset STORYHOOK_GATE_PROGRESS
 fi
+
+# Read-only native resource queries must never inspect the operator's tmux
+# server. A caller outside tmux is pointed at its DEFAULT server,
+# $TMUX_TMPDIR/tmux-<uid>/default, by tmux and, since SH-825 (90a4a55a), by the
+# helper's own socket selection -- so an unset TMUX_TMPDIR means the real one
+# under /tmp. This used to be set only by the instance that owns the home, and a
+# nested instance under a harness that clears its environment
+# (tests/support/protect_*.rs) inherited none: its unclaim asked the machine's
+# real default server and was refused as an unowned socket (SH-840). Every
+# instance therefore keeps the directory inside the test's own home.
+case "${TMUX_TMPDIR:-}" in
+  "$STORYHOOK_TEST_HOME"/*) ;;
+  *) export TMUX_TMPDIR="$STORYHOOK_TEST_HOME/tmux" ;;
+esac
+mkdir -p "$TMUX_TMPDIR"
 
 # --- the binary under test -------------------------------------------------
 #

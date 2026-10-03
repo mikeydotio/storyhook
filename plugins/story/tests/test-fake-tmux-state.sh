@@ -213,4 +213,27 @@ for order in before after protected; do
   assert_eq "$observed" "$selector_state/tmux.sock" "$order: client flags preserve selected socket"
 done
 
+# --- the default tmux server is always the test's own (SH-840) -------------
+#
+# A caller outside tmux is pointed at $TMUX_TMPDIR/tmux-<uid>/default, and an
+# unset TMUX_TMPDIR means the operator's real server under /tmp. Every lib.sh
+# instance keeps it inside the test home: the one that owns the home, and a
+# nested one under a harness that cleared its environment, which is how
+# tests/support/protect_domain.rs came to ask the machine's real server.
+tmpdir_after_lib() {
+  env "$@" bash -c 'source "$1/lib.sh"; printf "%s" "$TMUX_TMPDIR"' _ "$TESTS_DIR" 2>/dev/null
+}
+for inherited in unset outside; do
+  case "$inherited" in
+    unset) observed=$(tmpdir_after_lib -u TMUX_TMPDIR) ;;
+    outside) observed=$(tmpdir_after_lib TMUX_TMPDIR=/tmp) ;;
+  esac
+  case "$observed" in
+    "$STORYHOOK_TEST_HOME"/*) ;;
+    *) fail_test "a nested lib.sh with TMUX_TMPDIR $inherited left the default tmux server outside the test home [$observed]" ;;
+  esac
+done
+assert_eq "$(tmpdir_after_lib)" "$TMUX_TMPDIR" \
+  "a nested lib.sh keeps the home-local TMUX_TMPDIR its caller chose"
+
 finish
