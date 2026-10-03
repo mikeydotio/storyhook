@@ -196,10 +196,10 @@ while [ "$flushed" -lt "$total" ]; do
     running=$((running - 1))
     if [ "$(cat "$LOGS/$i.rc")" = 0 ]; then
       verdict[$i]=PASS
-      gate_progress_emit_case "release gate/plugin" pass
+      gate_progress_emit_case "release gate/plugin" pass "${order[$i]}"
     else
       verdict[$i]=FAIL
-      gate_progress_emit_case "release gate/plugin" fail
+      gate_progress_emit_case "release gate/plugin" fail "${order[$i]}"
     fi
   done
 

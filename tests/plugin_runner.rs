@@ -269,17 +269,29 @@ fn the_gate_journal_gets_the_total_and_one_case_per_script_and_no_child_sees_it(
             && lines[0].contains(r#""total":2"#),
         "{journal}"
     );
-    let cases = |outcome: &str| {
-        lines
-            .iter()
-            .filter(|line| {
-                line.contains(&format!(
-                    r#"{{"kind":"case","path":"release gate/plugin","outcome":"{outcome}"}}"#
-                ))
-            })
-            .count()
-    };
-    assert_eq!((cases("pass"), cases("fail")), (1, 1), "{journal}");
+    let cases: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|line| serde_json::from_str(line).expect("valid journal JSON"))
+        .filter(|row: &serde_json::Value| row["kind"] == "case")
+        .collect();
+    assert_eq!(cases.len(), 2, "{journal}");
+    for (row, (name, outcome)) in cases
+        .iter()
+        .zip([("test-a.sh", "pass"), ("test-b.sh", "fail")])
+    {
+        assert_eq!(row["path"], "release gate/plugin");
+        assert_eq!(row["outcome"], outcome);
+        assert_eq!(
+            row["name"],
+            suite
+                .root
+                .path()
+                .join("plugins/story/tests")
+                .join(name)
+                .display()
+                .to_string()
+        );
+    }
     assert!(
         lines
             .last()

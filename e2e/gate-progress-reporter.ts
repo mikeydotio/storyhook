@@ -25,7 +25,7 @@ export default class GateProgressReporter implements Reporter {
   private readonly journal = process.env.STORYHOOK_GATE_PROGRESS;
   private readonly path = process.env.STORYHOOK_GATE_PROGRESS_PATH;
 
-  onTestEnd(_test: TestCase, result: TestResult): void {
+  onTestEnd(test: TestCase, result: TestResult): void {
     if (!this.journal || !this.path) {
       return;
     }
@@ -33,7 +33,11 @@ export default class GateProgressReporter implements Reporter {
       return;
     }
     const outcome = result.status === "passed" ? "pass" : "fail";
-    const line = `${JSON.stringify({ kind: "case", path: this.path, outcome })}\n`;
+    const line = `${JSON.stringify({
+      kind: "case", path: this.path, outcome,
+      name: test.titlePath().join(" > "), target: test.location.file,
+      identity: test.id, title_path: test.titlePath(),
+    })}\n`;
     appendFileSync(this.journal, line);
   }
 }

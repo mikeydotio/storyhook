@@ -103,7 +103,7 @@ if [ "$reuse" = 1 ]; then
     if [ -f "$receipt" ] \
         && grep -q "^fingerprint $fingerprint$" "$receipt" 2>/dev/null; then
         echo "leg $label: REUSED — relevant tracked inputs and command are unchanged" >&2
-        gate_progress_emit_item "release gate/$label" reused
+        gate_progress_emit_item "release gate/$label" reused "receipt=\"$fingerprint\""
         exit 0
     fi
 fi
@@ -118,7 +118,7 @@ end=$(date +%s)
 elapsed=$((end - start))
 
 echo "leg $label: ${elapsed}s" >&2
-gate_progress_emit_item "release gate/$label" "$([ "$status" = 0 ] && echo passed || echo failed)" "seconds=$elapsed"
+gate_progress_emit_item "release gate/$label" "$([ "$status" = 0 ] && echo passed || echo failed)" "seconds=$elapsed" "receipt=\"$fingerprint\""
 
 if [ "$reuse" = 1 ] && [ "$status" = 0 ]; then
     after="$("$root/scripts/gate-leg-fingerprint.sh" "$label" "$@")" || {

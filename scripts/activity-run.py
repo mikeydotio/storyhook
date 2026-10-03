@@ -135,8 +135,9 @@ class GateProgress:
         line = raw.decode("utf-8", errors="replace")
         for event in self.parser.parse(line):
             if event[0] == "case":
-                _, _binary, _name, outcome = event
-                record = dict(kind="case", path=self.path, outcome=outcome)
+                _, binary, name, outcome = event
+                record = dict(kind="case", path=self.path, outcome=outcome,
+                              name=name, target=binary)
             else:
                 _, label = event
                 record = dict(kind="activity", path=self.path, label=label, status="running")
