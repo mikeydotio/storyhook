@@ -162,6 +162,18 @@ const TIMEOUT_EXCEPTIONS: &[(&str, &str, usize, &str)] = &[
         "validated remaining barrier patience",
     ),
     (
+        "e2e/reporter-command.ts",
+        "boundMs",
+        1,
+        "validated reporter process budget: graced suite allowance minus cleanup patience",
+    ),
+    (
+        "e2e/specs/browser-launch-reporter.node.spec.ts",
+        "boundMs",
+        1,
+        "readiness poll shares the fixture process bound sampled by gracedPatience",
+    ),
+    (
         "e2e/specs/support.ts",
         "0",
         1,
@@ -279,6 +291,21 @@ fn timeout_fence_handles_formatting_and_rejects_named_bypasses() {
     ));
     assert!(!timeout_allowed("another.ts", "GONE_TIMEOUT"));
     assert!(timeout_sites("interface Options { timeout?: number; } xhr.timeout = 50;").is_empty());
+}
+
+#[test]
+fn reporter_timeout_exceptions_are_exact_and_nontransferable() {
+    for path in [
+        "e2e/reporter-command.ts",
+        "e2e/specs/browser-launch-reporter.node.spec.ts",
+    ] {
+        assert!(timeout_allowed(path, "boundMs"), "{path}");
+        for changed in ["anotherBound", "boundMs+5000", "60000", "0"] {
+            assert!(!timeout_allowed(path, changed), "{path}: {changed}");
+        }
+    }
+    assert!(!timeout_allowed("e2e/another-helper.ts", "boundMs"));
+    assert!(!timeout_allowed("e2e/specs/another.spec.ts", "boundMs"));
 }
 
 #[test]

@@ -3,13 +3,83 @@
 import json
 import os
 from pathlib import Path
+import select
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 PLAYWRIGHT = ROOT / "e2e/node_modules/@playwright/test"
 REPORTER = ROOT / "e2e/browser-launch-reporter.ts"
+# The Node owner derives its budget from this bound and the four cases below.
+CASE_TIMEOUT_SECONDS = 60
+# Responsiveness cadence, not a deadline or an allowance for machine speed.
+CANCELLATION_POLL_SECONDS = 0.1
+WATCH_PARENT = False
+
+
+class ReporterCancelled(BaseException):
+    """Owner cancellation must unwind cleanup without unittest starting another case."""
+
+
+def run_owned(command, *, timeout, cwd=None, env=None, watch_parent=False):
+    """Run a nested reporter process and retain ownership until it is reaped."""
+    cancelled = None
+
+    def cancel(signum, _frame):
+        """Do not throw between the OS spawn and publication of its process handle."""
+        nonlocal cancelled
+        cancelled = f"signal {signum}"
+
+    previous = {sig: signal.signal(sig, cancel) for sig in (signal.SIGTERM, signal.SIGINT)}
+    child = None
+    failure = None
+    try:
+        child = subprocess.Popen(command, cwd=cwd, env=env, text=True,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 start_new_session=True)
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancelled is not None:
+                raise ReporterCancelled(f"reporter runner cancelled by {cancelled}: {command}")
+            if watch_parent and select.select([sys.stdin], [], [], 0)[0]:
+                # The owner writes no input. EOF therefore identifies its death.
+                if os.read(sys.stdin.fileno(), 1) == b"":
+                    raise ReporterCancelled(f"reporter owner pipe closed: {command}")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            if child.poll() is not None:
+                break
+            try:
+                child.communicate(timeout=min(remaining, CANCELLATION_POLL_SECONDS))
+            except subprocess.TimeoutExpired:
+                continue
+            break
+        if cancelled is not None:
+            raise ReporterCancelled(f"reporter runner cancelled by {cancelled}: {command}")
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        try:
+            if child is not None:
+                # A runner may exit while a worker still owns its pipes. Signal the
+                # private group even on success, before draining inherited handles.
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass  # Absence is the successful terminal state, not a lost error.
+                output, _ = child.communicate()
+                if failure is not None:
+                    failure.add_note(f"nested reporter output:\n{output}")
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+    return subprocess.CompletedProcess(command, child.returncode, output)
 
 
 class BrowserLaunchReporterTests(unittest.TestCase):
@@ -40,10 +110,9 @@ class BrowserLaunchReporterTests(unittest.TestCase):
             env.pop("NO_COLOR", None)
             for key in ("STORYHOOK_GATE_PROGRESS", "STORYHOOK_GATE_PROGRESS_PATH"):
                 env.pop(key, None)
-            result = subprocess.run(
+            result = run_owned(
                 ["node", str(PLAYWRIGHT / "cli.js"), "test", "--config", str(root / "playwright.config.cjs")],
-                cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=60,
+                cwd=root, env=env, timeout=CASE_TIMEOUT_SECONDS, watch_parent=WATCH_PARENT,
             )
             return result, sentinel.exists()
 
@@ -77,4 +146,13 @@ class BrowserLaunchReporterTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if "--watch-parent" in sys.argv:
+        sys.argv.remove("--watch-parent")
+        WATCH_PARENT = True
+    try:
+        unittest.main()
+    except ReporterCancelled as error:
+        print(error, file=sys.stderr)
+        for note in getattr(error, "__notes__", []):
+            print(note, file=sys.stderr)
+        sys.exit(1)

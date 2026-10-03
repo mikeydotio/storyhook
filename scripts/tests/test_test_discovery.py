@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -85,20 +86,26 @@ else:
             self.discovery.count_tests(executable, [])
 
     def test_listing_timeout_reaps_the_owned_process(self):
-        pid_file = self.root / 'pid'
-        executable = self.executable(f'''
-import os, signal
-from pathlib import Path
-Path({str(pid_file)!r}).write_text(str(os.getpid()))
-signal.pause()
-''')
+        executable = self.executable('import signal\nsignal.pause()\n')
+        real_popen = subprocess.Popen
+        listings = []
+
+        def record_child(command, **kwargs):
+            child = real_popen(command, **kwargs)
+            if command[0] == executable:
+                listings.append(child)
+            return child
+
         from load_grace import contention, patience
         discovery = Discovery(self.env, lambda: None, list_timeout=patience(1, contention()))
-        with self.assertRaisesRegex(DiscoveryError, 'timed out'):
-            discovery.count_tests(executable, [])
-        self.assertTrue(pid_file.exists(), "listing did not publish readiness before its deadline")
+        # Observe the real spawn: a timeout may precede any child readiness signal.
+        with patch('test_discovery.subprocess.Popen', new=record_child):
+            with self.assertRaisesRegex(DiscoveryError, 'timed out'):
+                discovery.count_tests(executable, [])
+        self.assertEqual(len(listings), 1)
+        self.assertEqual(listings[0].returncode, -signal.SIGKILL)
         with self.assertRaises(ProcessLookupError):
-            os.kill(int(pid_file.read_text()), 0)
+            os.kill(listings[0].pid, 0)
 
     def test_cancellation_prevents_launch(self):
         executable = self.executable("raise AssertionError('must not start')\n")
@@ -161,6 +168,10 @@ class PoolFlowTests(unittest.TestCase):
         self.root = Path(self.scratch.name)
         for name in ['scripts', 'tests', 'bin']:
             (self.root / name).mkdir()
+        # Runtime selection requires the tracked PATH launcher beside its shell helper.
+        (self.root / 'scripts' / 'python-bin').mkdir()
+        (self.root / 'scripts' / 'python-bin' / 'python3').symlink_to(
+            SCRIPTS / 'python-bin' / 'python3')
         for script in SCRIPTS.iterdir():
             if script.suffix in ('.py', '.sh', '.awk'):
                 (self.root / 'scripts' / script.name).symlink_to(script)
