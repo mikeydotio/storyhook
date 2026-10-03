@@ -36,6 +36,7 @@ pub(super) fn shell(harness: &Harness) -> Command {
         .env("XDG_STATE_HOME", harness.home.join("state"))
         .env("STORYHOOK_DATA_DIR", harness.home.join("data/storyhook"))
         .envs(daemon_containment());
+    Harness::declare_subprocess_patience(&mut command);
     command
 }
 

@@ -1,5 +1,5 @@
 //! No integration test compares a measured duration to a bare `Duration::
-//! from_*` literal (SH-394).
+//! from_*` literal (SH-394), or adds one directly to `Instant::now()` (SH-803).
 //!
 //! # Why this file exists
 //!
@@ -44,6 +44,15 @@
 //! (the former `tests/daemon_concurrency.rs` comparison) is not: its literal
 //! is an additive margin, not the ceiling itself. The scanner test retains
 //! that syntax example; it does not establish that a timing claim is sound.
+//!
+//! # Bare deadline construction (SH-803)
+//!
+//! `timing_assertions/deadlines.rs` also rejects a bare constructor added
+//! directly to `Instant::now()`. It masks comments and literal fixtures,
+//! recognizes multiline tokens and integer spellings, and includes nested
+//! tests and shared test support. A named observation window remains subject
+//! to SH-810's exact wait inventory; classification never exempts an unnamed
+//! deadline. Aliases and other arithmetic forms still need manual review.
 //!
 //! # The same rule, one process boundary over (SH-643)
 //!
@@ -111,6 +120,8 @@ use std::path::Path;
 
 use storyhook_test_support::without_rust_comments;
 
+#[path = "timing_assertions/deadlines.rs"]
+mod deadlines;
 #[path = "timing_assertions/src_bounds.rs"]
 mod src_bounds;
 #[path = "timing_assertions/waits.rs"]

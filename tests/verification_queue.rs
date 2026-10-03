@@ -3700,11 +3700,17 @@ fn time_out_hanging_helper<T>(
     );
 }
 
+/// Fixed post-kill observation for a PID publication already in flight.
+/// Two seconds preserves the existing fixture window. Absence is legitimate
+/// when the helper died before it forked; the timeout ladder then tries again.
+/// This optional observation must not become a mandatory readiness wait.
+const PID_PUBLICATION_OBSERVATION: Duration = Duration::from_secs(2);
+
 /// The pid a hanging helper's descendant published, or `None` when its
 /// group was killed before it did. Waits out a publish still in flight, so a
 /// descendant that outlived the kill is seen rather than read as absent.
 fn recorded_pid(pid_path: &std::path::Path) -> Option<i32> {
-    let ready_by = Instant::now() + Duration::from_secs(2);
+    let ready_by = Instant::now() + PID_PUBLICATION_OBSERVATION;
     while !pid_path.is_file() && Instant::now() < ready_by {
         thread::sleep(Duration::from_millis(10));
     }

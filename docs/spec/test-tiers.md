@@ -906,6 +906,36 @@ whether a margin is wide enough — that took reading each site's production
 deadline, which is what this story actually did — but it kills the shape
 that hides the question a reviewer would otherwise ask.
 
+SH-803 extends that rule to `Instant::now() + Duration::from_*(literal)`.
+The deadline scanner shares SH-810's comment/string masker, retains source
+offsets for diagnostics, and scans nested integration modules and shared test
+support as well as top-level tests. It accepts qualified paths, multiline
+tokens, trailing argument commas, integer bases, separators and suffixes. It
+requires a named or derived duration even for a wait classified in SH-810's
+exact inventory. Definitions, named constructor arguments and margins added
+to a named bound remain allowed. This is a lexical fence: aliases, stored
+instants, other arithmetic forms and generated programs still need review.
+
+The original report counted 33 sites. Commit `2994a63d` fixed the reported
+late-bind wait, leaving 32 sites in 24 files. At SH-803 implementation time,
+28 of those sites already used shared load-graced patience. The remaining
+four preserve their duration and classification:
+
+| Sites | Bound | Purpose |
+|---|---|---|
+| Lifecycle stop and restart (two sites) | `DRAIN_OBSERVATION`, 750 ms | Negative observation while accepted work is held; covers three nominal shutdown polls |
+| Lifecycle competing start | `START_OBSERVATION`, 500 ms | Negative observation across two nominal shutdown polls while the predecessor drains |
+| Verifier helper PID publication | `PID_PUBLICATION_OBSERVATION`, 2 s | Optional post-kill observation; absence permits the next timeout-ladder attempt |
+
+These observations remain ungraced. A longer readiness allowance must not
+change their meaning. The positive tailnet first-bind waits instead use two
+`TAILNET_PROBE_TIMEOUT` windows: one for the first probe and one for scheduling
+and publication, with shared `Patience` applying load grace. This is not a
+promise that retries finish; the production loop can retry indefinitely.
+The web fallback test keeps its separate five-second absence observation and
+uses `CONTROL_DEADLINE` for its startup ceiling. SH-788's late-bind retry
+configuration and derived allowance remain unchanged.
+
 ## Load grace in the browser suite (SH-347)
 
 A binding user determination, 2026-08-17, verbatim: *"relax the timeouts
