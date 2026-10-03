@@ -233,6 +233,50 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(os.stat(self.endpoint).st_ino, self.inode)
         self.assertEqual(self.command([self.tmux, '-N', '-S', self.socket, 'list-sessions', '-F', '#{session_name}']).stdout.strip(), 'foreign')
 
+    def test_restore_evidence_matches_real_provider_snapshot_and_receipt(self):
+        program = '''
+import json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+from revivify.ownership import Ownership
+from revivify.saving import save
+from revivify.capture.snapshotter import Snapshotter
+from revivify.store.blobs import BlobStore
+from revivify.config import Settings
+from revivify.managed import ensure_server
+from revivify.process_identity import process_state
+owner = Ownership(sys.argv[2], os.environ)
+old = owner.read()
+client = owner.client(old, sys.argv[3])
+paths = owner.paths(old)
+saved = save(paths, Snapshotter(client, BlobStore(paths.blobs), Settings()), 'storyhook-test')
+client.run('kill-server')
+deadline = time.monotonic() + float(sys.argv[5])
+while process_state(old['identity']) != 'exited':
+    if time.monotonic() > deadline:
+        raise RuntimeError('fixture server did not exit')
+    time.sleep(0.01)
+new = ensure_server(owner, sys.argv[3], sys.argv[4], old['state_dir'], config_file='/dev/null')
+print(json.dumps(dict(target=new, snapshot=saved.snapshot_id)))
+'''
+        result = json.loads(self.command([sys.executable, '-B', '-c', program, str(self.provider),
+                                         self.socket, self.tmux, self.cli, str(self.patience)]).stdout)
+        self.endpoint = result['target']['endpoint']
+        self.pid = result['target']['identity']['pid']
+        sys.path.insert(0, str(PLUGIN / 'lib'))
+        import tmux_client
+        from tmux_target import restore_evidence
+        with patch.dict(os.environ, self.env, clear=True), tmux_client.operation():
+            target = tmux_client.client(self.socket).target
+            evidence = restore_evidence(target, self.env)
+        self.assertEqual(evidence['snapshot_id'], result['snapshot'])
+        self.assertEqual(evidence['source_generation'], self.record['generation'])
+        self.assertEqual(evidence['source_endpoint'], self.record['endpoint'])
+        self.assertEqual(len(evidence['panes']), 1)
+        uuid, saved = next(iter(evidence['panes'].items()))
+        current_uuid = self.command([self.tmux, '-N', '-S', self.endpoint, 'show-options',
+                                     '-p', '-v', '-t', saved['pane_id'], '@revivify-uuid']).stdout.strip()
+        self.assertEqual(uuid, current_uuid)
+
     def test_saturated_private_listener_preserves_work_and_generation(self):
         peers = []
         os.kill(self.pid, signal.SIGSTOP)

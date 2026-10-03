@@ -224,3 +224,115 @@ def split_tmux_arguments(arguments, environ):
     if socket is None and name is not None:
         socket = os.path.join(environ.get("TMUX_TMPDIR") or "/tmp", "tmux-" + str(os.getuid()), name)
     return prefix, list(arguments[index:]), socket
+
+
+def restore_evidence(target, environ):
+    """Corroborate UUID mappings with an immutable, authorized source snapshot.
+
+    This is evidence only. Callers must match live options, process and worktree
+    identity and hold their own mutation authority before changing any binding.
+    """
+    if not target['protected']:
+        return None
+    try:
+        activation = activation_path(target['socket'], environ)
+        current = read_private_record(activation)
+        validate_activation(current, target['socket'])
+        if (not current['active'] or current['phase'] != 'ready'
+                or any(current.get(k) != target.get(k) for k in ('generation', 'endpoint', 'identity', 'history'))
+                or str(Path(current['state_dir']) / 'generations' / current['generation']) != target['state_dir']):
+            raise ValueError('activation changed behind the captured restore target')
+        receipt = read_private_record(Path(target['state_dir']) / 'run/last-restore.json')
+        mapping = receipt.get('pane_map')
+        if (receipt.get('state') not in ('done', 'skipped') or receipt.get('failed') != []
+                or not isinstance(mapping, dict)
+                or any(not isinstance(k, str) or not k or not isinstance(v, str)
+                       or not re.fullmatch(r'%[0-9]+', v) for k, v in mapping.items())
+                or len(set(mapping.values())) != len(mapping)):
+            raise ValueError('failed or ambiguous restore receipt')
+        if not mapping:
+            return None
+        snapshot_id = receipt.get('snapshot_id')
+        if not isinstance(snapshot_id, str) or not re.fullmatch(r'[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[a-z0-9-]+', snapshot_id):
+            raise ValueError('invalid restore snapshot ID')
+        base = Path(current['state_dir'])
+        sources = []
+        if current.get('legacy_snapshot') is not None:
+            if current['legacy_snapshot'] != snapshot_id:
+                raise ValueError('restore receipt differs from explicit legacy selection')
+            # Only the provider's explicit selection grants a legacy stream.
+            sources.append((None, None, read_private_record(base / 'snapshots' / (snapshot_id + '.json'))))
+        else:
+            for index, generation in enumerate(current['history']):
+                path = base / 'generations' / generation / 'snapshots' / (snapshot_id + '.json')
+                snapshot = read_private_record(path, missing=True)
+                if snapshot is None:
+                    continue
+                owner = read_private_record(base / 'owners' / (generation + '.json'))
+                validate_activation(owner, target['socket'], executable=False)
+                if (owner.get('generation') != generation or owner.get('state_dir') != current['state_dir']
+                        or owner.get('history') != current['history'][:index]
+                        or snapshot.get('provenance') != {'socket': target['socket'], 'generation': generation}):
+                    raise ValueError('snapshot provenance differs from retained owner history')
+                sources.append((generation, owner, snapshot))
+        if len(sources) != 1:
+            raise ValueError(f'restore snapshot has {len(sources)} authorized source streams')
+        generation, owner, snapshot = sources[0]
+        panes = _restore_snapshot_panes(snapshot, receipt)
+        if not set(mapping).issubset(panes):
+            raise ValueError('restore map names a UUID absent from its snapshot')
+        result = {}
+        for pane_uuid, pane_id in mapping.items():
+            saved = panes[pane_uuid]
+            if not saved['sessions']:
+                raise ValueError('mapped pane has no restored session')
+            result[pane_uuid] = dict(saved, pane_id=pane_id)
+        if read_private_record(activation) != current:
+            raise ValueError('activation changed while reading restore evidence')
+        return dict(snapshot_id=snapshot_id, source_generation=generation,
+                    source_endpoint=owner['endpoint'] if owner else None,
+                    source_history=owner['history'] if owner else [], panes=result)
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+        raise RuntimeError(f'revivify restore evidence for {target["socket"]}: {error}') from error
+
+
+def _restore_snapshot_panes(snapshot, receipt):
+    """Index unique UUIDs and the restored sessions linked to each saved window."""
+    if (type(snapshot.get('schema')) is not int or snapshot['schema'] != 1
+            or not isinstance(snapshot.get('windows'), dict) or not isinstance(snapshot.get('sessions'), list)
+            or not isinstance(receipt.get('session_ids'), dict) or not isinstance(receipt.get('restored'), list)):
+        raise ValueError('invalid restore snapshot or session map')
+    sessions = receipt['session_ids']
+    restored = receipt['restored']
+    if (any(not isinstance(name, str) or not name or not isinstance(value, str)
+            or not re.fullmatch(r'\$[0-9]+', value) for name, value in sessions.items())
+            or len(set(sessions.values())) != len(sessions)
+            or any(not isinstance(name, str) or not name for name in restored)
+            or len(set(restored)) != len(restored) or set(restored) != set(sessions)):
+        raise ValueError('invalid restored session ID')
+    links = {}
+    names = set()
+    for session in snapshot['sessions']:
+        if (not isinstance(session, dict) or not isinstance(session.get('name'), str)
+                or not session['name'] or session['name'] in names or not isinstance(session.get('links'), list)):
+            raise ValueError('invalid snapshot session')
+        names.add(session['name'])
+        for link in session['links']:
+            if not isinstance(link, dict) or link.get('window_key') not in snapshot['windows']:
+                raise ValueError('invalid snapshot window link')
+            if session['name'] in sessions and session['name'] in receipt['restored']:
+                links.setdefault(link['window_key'], {})[session['name']] = sessions[session['name']]
+    if not set(restored).issubset(names):
+        raise ValueError('restored session is absent from its snapshot')
+    panes = {}
+    for key, window in snapshot['windows'].items():
+        if (not isinstance(window, dict) or window.get('key') != key or not isinstance(window.get('name'), str)
+                or not isinstance(window.get('options'), dict) or not isinstance(window.get('panes'), list)):
+            raise ValueError('invalid snapshot window')
+        for pane in window['panes']:
+            if (not isinstance(pane, dict) or not isinstance(pane.get('uuid'), str) or not pane['uuid']
+                    or not isinstance(pane.get('options'), dict) or not isinstance(pane.get('cwd'), str)
+                    or not os.path.isabs(pane['cwd']) or pane['uuid'] in panes):
+                raise ValueError('invalid or duplicate snapshot pane UUID')
+            panes[pane['uuid']] = dict(pane=pane, window=window, sessions=links.get(key, {}))
+    return panes
