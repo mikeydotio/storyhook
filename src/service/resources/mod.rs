@@ -115,7 +115,7 @@ impl<'a, S: Store> ResourceService<'a, S> {
 
     /// Resolves a story using store evidence and checked external observations.
     pub fn resolve(&self, id: &str, options: &ResourceOptions) -> Result<ResourceReport, AppError> {
-        let (project, checkout, mut leases, providers) = self.ctx.store().read(|tx| {
+        let evidence = self.ctx.store().read(|tx| {
             let project = tx
                 .project(self.ctx.project())?
                 .ok_or_else(|| crate::store::StoreError::NotFound("project disappeared".into()))?;
@@ -157,10 +157,28 @@ impl<'a, S: Store> ResourceService<'a, S> {
                 tx.checkout_path(project.id)?,
                 leases,
                 providers,
+                !tx.project_remotes(project.id)?.is_empty(),
             ))
         })?;
+        let (project, checkout, mut leases, providers, has_git_identity) = evidence;
+        let needs_inventory = checkout
+            .as_deref()
+            .map(|path| {
+                // A missing .git cannot erase a repository identity kept by the catalog.
+                if has_git_identity {
+                    Ok(true)
+                } else {
+                    git::needs_inventory(path, options.worktree_root.as_deref())
+                }
+            })
+            .transpose()?
+            .unwrap_or(false);
         if let Some(checkout) = checkout.as_deref() {
-            let root = git::inventory(checkout)?[0].path.clone();
+            let root = if needs_inventory {
+                git::inventory(checkout)?[0].path.clone()
+            } else {
+                checkout.to_path_buf()
+            };
             if let Some(pointer) = super::project::read_pointer(&root)?
                 && pointer.uuid != project.uuid
             {
@@ -221,7 +239,7 @@ impl<'a, S: Store> ResourceService<'a, S> {
             self.ctx.env(),
             &project.slug,
             id,
-            checkout.as_deref(),
+            checkout.as_deref().filter(|_| needs_inventory),
             leases,
             explicit.as_ref(),
             options,
@@ -404,9 +422,7 @@ fn resolve(
         }
         repositories.insert(lease.repository_path.clone());
     }
-    if repositories.is_empty() {
-        return Ok(report);
-    }
+    // Terminal evidence still applies when no Git repository was discovered.
     let mut candidates = BTreeMap::<(PathBuf, Option<PathBuf>, String), ResourceCandidate>::new();
     for repository in repositories {
         let records = match git::inventory(&repository) {

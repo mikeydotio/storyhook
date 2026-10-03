@@ -202,6 +202,101 @@ fn migration_backfills_closed_stories_once_and_preserves_token_identity() {
 }
 
 #[test]
+fn a_closed_story_in_a_readable_non_git_root_completes_without_a_warning() {
+    let f = fixture();
+    f.store()
+        .write(|tx| tx.set_checkout_path(f.project(), Some(f.cwd())))
+        .unwrap();
+    StoryService::new(&f.ctx())
+        .set_state("SH-1", "done", None, None, None)
+        .unwrap();
+    storyhook::daemon::cleanup::tick_closures(f.store(), f.env()).unwrap();
+    let receipt = request(&f).unwrap();
+    assert_eq!(receipt["completed"], true, "{receipt}");
+    assert!(receipt["detail"].is_null(), "{receipt}");
+    let row = f
+        .store()
+        .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert!(
+        row.snapshot.comments.is_empty(),
+        "{:?}",
+        row.snapshot.comments
+    );
+}
+
+#[test]
+fn an_unobservable_or_damaged_root_retains_its_cleanup_request() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for damage in [
+        "missing",
+        "unreadable",
+        "git-dir",
+        "git-file",
+        "git-link",
+        "bare",
+        "orphan",
+        "orphan-link",
+        "registered-remote",
+    ] {
+        let f = fixture();
+        let root = f.cwd().join("root");
+        std::fs::create_dir(&root).unwrap();
+        match damage {
+            "missing" => std::fs::remove_dir(&root).unwrap(),
+            "unreadable" => {
+                std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap()
+            }
+            "git-dir" => std::fs::create_dir(root.join(".git")).unwrap(),
+            "git-file" => std::fs::write(root.join(".git"), "gitdir: /no-such-repository").unwrap(),
+            "git-link" => std::os::unix::fs::symlink("missing", root.join(".git")).unwrap(),
+            "bare" => std::fs::write(root.join("HEAD"), "ref: refs/heads/main\n").unwrap(),
+            "orphan" => std::fs::create_dir_all(root.join(".codex/worktrees/SH-1")).unwrap(),
+            "orphan-link" => std::os::unix::fs::symlink("missing", root.join(".codex")).unwrap(),
+            "registered-remote" => f.link_origin("https://example.com/owner/repository.git"),
+            _ => unreachable!(),
+        }
+        f.store()
+            .write(|tx| tx.set_checkout_path(f.project(), Some(&root)))
+            .unwrap();
+        StoryService::new(&f.ctx())
+            .set_state("SH-1", "done", None, None, None)
+            .unwrap();
+        let observation = storyhook::service::resources::ResourceService::new(&f.ctx())
+            .resolve("SH-1", &Default::default());
+        let result = storyhook::daemon::cleanup::tick_closures(f.store(), f.env());
+        if damage == "unreadable" {
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let refusal = observation.unwrap_err();
+        assert!(
+            refusal.to_string().contains(&root.display().to_string()),
+            "{damage}: {refusal}"
+        );
+        let receipt = request(&f).unwrap();
+        assert_eq!(receipt["completed"], false, "{damage}: {receipt}");
+        match result {
+            Ok(()) => {
+                assert!(
+                    receipt["detail"]
+                        .as_str()
+                        .unwrap()
+                        .contains("resource-unverifiable"),
+                    "{damage}: {receipt}"
+                );
+                assert!(receipt["retry_at"].is_string(), "{damage}: {receipt}");
+            }
+            Err(error) => assert!(
+                error.to_string().contains(&root.display().to_string()),
+                "{damage}: {error}"
+            ),
+        }
+    }
+}
+
+#[test]
 fn a_closed_story_without_local_resources_completes_without_a_checkout() {
     let f = fixture();
     f.store()

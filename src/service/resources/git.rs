@@ -66,6 +66,64 @@ pub fn inventory(repository: &Path) -> Result<Vec<WorktreeRecord>, AppError> {
     )?)
 }
 
+/// Requires strict Git discovery unless a readable tree proves no repository.
+/// Partial Git metadata and orphan workspace containers are evidence, not absence.
+pub(super) fn needs_inventory(
+    checkout: &Path,
+    additional_worktree_root: Option<&Path>,
+) -> Result<bool, AppError> {
+    let root = checkout
+        .canonicalize()
+        .map_err(|error| inspection_error(checkout, error))?;
+    for directory in root.ancestors() {
+        // The final dot also requires directory search permission, not just listing.
+        let entries = fs::read_dir(directory.join("."))
+            .map_err(|error| inspection_error(directory, error))?;
+        for entry in entries {
+            let name = entry
+                .map_err(|error| inspection_error(directory, error))?
+                .file_name();
+            if [
+                ".git",
+                "HEAD",
+                "objects",
+                "refs",
+                "commondir",
+                "packed-refs",
+                "reftable",
+            ]
+            .iter()
+            .any(|marker| name == *marker)
+            {
+                return Ok(true);
+            }
+        }
+    }
+    for container in [
+        Path::new(".claude/worktrees"),
+        Path::new(".codex/worktrees"),
+    ]
+    .into_iter()
+    .chain(additional_worktree_root)
+    {
+        // Resolve every ancestor so a dangling or inaccessible parent is not absence.
+        let path = canonical(&root.join(container))?;
+        match fs::symlink_metadata(&path) {
+            Ok(_) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(inspection_error(&path, error)),
+        }
+    }
+    Ok(false)
+}
+
+fn inspection_error(path: &Path, error: std::io::Error) -> AppError {
+    AppError::Validation(format!(
+        "cannot inspect Git resource root {}: {error}",
+        path.display()
+    ))
+}
+
 /// Reads private administration without asking a possibly broken worktree to run Git.
 pub(super) fn administrations(repository: &Path) -> Result<Vec<WorktreeAdministration>, AppError> {
     let common = text(
