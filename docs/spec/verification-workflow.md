@@ -978,16 +978,21 @@ would have read as a red gate. The launcher keeps Python's `execvpe` as the
 only launch authority, and reports on the SH-702 pipe (see
 `verifier-worktree-lifecycle.md`, "Completed execution and failed cleanup").
 
-The acceptance test starts its gate supervisor under `taskpolicy -c
-background`. After this change the installed verifier clamps storyhook's own
-gate to utility, and no descendant can shed an inherited clamp, so a test that
-only read "utility" would pass with the class deleted. A later `-c` clamp
-replaces an earlier one, though (measured: background then utility reads QoS
-0x11), so under a background supervisor only the verifier's own clamp lifts the
-gate to utility. The two measurements the story asked for (idle gate wall time,
-and interactive latency during a gate, each with and without the class) need
-full gate runs on an idle machine with this change installed. They are filed as
-their own story.
+The acceptance test originally started its supervisor under `taskpolicy -c
+background` to distinguish an applied clamp from inherited utility QoS. SH-817's
+verification return showed that the background control itself could exhaust
+the full 15-minute fixture patience before exercising the verifier. The test
+now observes the production-resolved class tools, then execs them unchanged.
+It asserts that the observer becomes the gate's PID, the supervisor retains
+its identity and policy, and the gate reports the required class. Missing-prefix
+and wrong-process counterexamples prove that inherited utility or a class tool
+run elsewhere cannot pass. The separate production `verify-pr.sh` case and
+exit/signal cases still exercise the uninstrumented chain. Production scheduling
+and fixture patience are unchanged.
+
+The two measurements SH-785 asked for (idle gate wall time and interactive
+latency during a gate, each with and without the class) need full gate runs on
+an idle machine with this change installed. They are filed as their own story.
 
 ### SH-651 — queue age follows the latest submission
 

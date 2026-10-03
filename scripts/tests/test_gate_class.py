@@ -7,25 +7,13 @@ best-effort I/O level 7 on Linux, so that interactive work wins contention.
 The class applies to the gate session only; the supervisor that reaps it keeps
 its own class.
 
-Why the mechanism case starts its supervisor under `taskpolicy -c background`:
-once this ships, the installed verifier runs storyhook's own gate at utility,
-and no descendant can shed that clamp. A case that only read "the gate is at
-utility" would then pass even with the verifier's clamp deleted. A later `-c`
-clamp replaces an earlier one, so under a background supervisor only the
-verifier's own clamp can lift the gate to utility -- in every ambient class,
-including inside an enclosing verifier gate.
-
-Mutation-checked before commit against scripts/verifier-owner.py, each
-mutant restored from a copy afterwards:
-- the class prefix dropped from the gate launch -> the mechanism and the
-  production cases red (the gate read its caller's class);
-- the supervisor re-executed under the class before the fork -> the
-  mechanism case red (the supervisor read utility, not background);
-- an empty launch report read as launched -> test_verifier_verdict.py's
-  class-tool case red (the existing launch-failure case stays green: a
-  missing command still reports a failure);
-- the launcher catching only OSError -> test_verifier_verdict.py's
-  launcher-fault case red (a ValueError after LAUNCHING read as a red gate).
+The mechanism case observes the real class-tool exec and proves that its PID
+becomes the gate, while the supervisor keeps its own policy. Merely reading
+utility is insufficient inside an enclosing utility gate. The former negative
+control instead started Python at background QoS; under contention that setup
+exhausted the full 15-minute patience before testing the verifier (SH-817).
+The observer forwards the production-resolved tools unchanged. A missing-prefix
+counterexample must fail even when the gate inherits the expected class.
 """
 
 import importlib.util
@@ -45,7 +33,6 @@ from verifier_state import Refusal
 
 # qos_class_t values from <sys/qos.h>; a public ABI, not scheduler detail.
 QOS_CLASS_UTILITY = 0x11
-QOS_CLASS_BACKGROUND = 0x09
 # PRIO_DARWIN_PROCESS from <sys/resource.h>: reads 1 under darwin-BG
 # (`taskpolicy -b`, launchd ProcessType=Background), which no QoS clamp lifts.
 PRIO_DARWIN_PROCESS = 4
@@ -56,28 +43,35 @@ PRIO_DARWIN_PROCESS = 4
 REPORTER = r'''
 import ctypes, json, os, subprocess, sys
 
-def pri(pid):
-    listed = subprocess.run(["ps", "-o", "pri=", "-p", str(pid)],
-                            capture_output=True, text=True, check=True)
-    return int(listed.stdout)
-
 def ionice(pid):
     listed = subprocess.run(["ionice", "-p", str(pid)],
                             capture_output=True, text=True, check=True)
     return listed.stdout.strip()
 
-me, parent = os.getpid(), os.getppid()
-report = {"pid": me, "parent": parent, "pri": pri(me), "parent_pri": pri(parent),
-          "nice": os.getpriority(os.PRIO_PROCESS, 0)}
-if sys.platform == "darwin":
-    libc = ctypes.CDLL(None)
-    libc.qos_class_self.restype = ctypes.c_uint
-    report["qos"] = libc.qos_class_self()
-else:
-    report["ionice"] = ionice(me)
-    report["parent_ionice"] = ionice(parent)
-with open(sys.argv[1], "w") as out:
-    json.dump(report, out)
+def snapshot():
+    """Read real policy and process identity without changing either."""
+    me, parent = os.getpid(), os.getppid()
+    report = {"pid": me, "parent": parent, "nice": os.getpriority(os.PRIO_PROCESS, 0)}
+    if sys.platform == "darwin":
+        libc = ctypes.CDLL(None)
+        libc.qos_class_self.restype = ctypes.c_uint
+        report["qos"] = libc.qos_class_self()
+    else:
+        report["ionice"] = ionice(me)
+        report["parent_ionice"] = ionice(parent)
+    return report
+
+if __name__ == "__main__":
+    with open(sys.argv[1], "w") as out:
+        json.dump(snapshot(), out)
+'''
+
+# Exec preserves the PID; recording it proves which process received the class.
+CLASS_OBSERVER = r'''
+import json, os, sys
+with open(sys.argv[1], "x") as out:
+    json.dump({"pid": os.getpid(), "parent": os.getppid(), "argv": sys.argv[2:]}, out)
+os.execv(sys.argv[2], sys.argv[2:])
 '''
 
 
@@ -183,12 +177,6 @@ class GateSchedulingClass(unittest.TestCase):
         """Read one reporter's JSON from the fixture root, never the worktree."""
         return json.loads((self.fx.root / name).read_text())
 
-    def lowered(self):
-        """The prefix that starts a process below the verifier's class."""
-        if sys.platform == "darwin":
-            return ["/usr/sbin/taskpolicy", "-c", "background"]
-        return ["ionice", "-c3"]
-
     def refuse_darwin_bg_ambient(self):
         """darwin-BG is not lifted by any QoS clamp, so no gate could reach utility."""
         if sys.platform == "darwin" and os.getpriority(PRIO_DARWIN_PROCESS, 0) == 1:
@@ -196,30 +184,81 @@ class GateSchedulingClass(unittest.TestCase):
                       "ProcessType=Background); a gate started from here cannot reach utility. "
                       "The daemon must not run at ProcessType=Background (SH-784).")
 
-    def test_gate_is_lifted_to_the_class_while_its_supervisor_keeps_its_own(self):
-        """Only the verifier's own clamp can lift the gate above a background supervisor."""
+    def observe_gate_class(self, owner_path):
+        """Observe, then exec the real class tools in the real supervisor chain."""
         self.refuse_darwin_bg_ambient()
-        control = self.fx.command(*self.lowered(), sys.executable, str(self.reporter),
-                                  str(self.fx.root / "control.json"))
-        self.assertEqual(control.returncode, 0, control.stdout + control.stderr)
-        control = self.report("control.json")
-        result = self.fx.owner(*self.lowered(), sys.executable, str(SCRIPTS / "verifier-owner.py"),
+        observer = self.fx.root / "observe-class.py"
+        observer.write_text(CLASS_OBSERVER)
+        driver = self.fx.root / "observed-owner.py"
+        driver.write_text(f'''
+import importlib.util, json, runpy, sys
+sys.path.insert(0, {str(SCRIPTS)!r})
+spec = importlib.util.spec_from_file_location("verifier_owner", {str(owner_path)!r})
+owner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(owner)
+snapshot = runpy.run_path({str(self.reporter)!r})["snapshot"]
+resolve_class = owner.gate_class
+def observed_class():
+    """Observe the exec without replacing the resolved scheduling policy."""
+    return [sys.executable, {str(observer)!r}, {str(self.fx.root / "class.json")!r},
+            *resolve_class()]
+owner.gate_class = observed_class
+before = snapshot()
+status = owner.main()
+with open({str(self.fx.root / "supervisor.json")!r}, "w") as out:
+    json.dump({{"before": before, "after": snapshot()}}, out)
+raise SystemExit(status)
+''')
+        result = self.fx.owner(sys.executable, str(driver),
                                "gate", str(self.fx.common), str(self.fx.wt), "--",
                                sys.executable, str(self.reporter), str(self.fx.root / "gate.json"))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         gate = self.report("gate.json")
+        self.assertTrue((self.fx.root / "class.json").exists(), "class prefix was not executed")
+        applied = self.report("class.json")
+        supervisor = self.report("supervisor.json")
+        before, after = supervisor["before"], supervisor["after"]
+        self.assertEqual(applied["pid"], gate["pid"], "class tools must exec the gate")
+        self.assertEqual(applied["parent"], before["pid"])
+        self.assertEqual(gate["parent"], before["pid"])
+        self.assertEqual(before, after, "the supervisor must retain its identity and policy")
+        prefix = load_owner().gate_class()
+        self.assertEqual(applied["argv"][:len(prefix)], prefix)
         if sys.platform == "darwin":
-            # The reader is not a constant: a process started lowered reads background.
-            self.assertEqual(control["qos"], QOS_CLASS_BACKGROUND, control)
             self.assertEqual(gate["qos"], QOS_CLASS_UTILITY, gate)
-            self.assertGreater(gate["pri"], gate["parent_pri"], gate)
-            # The supervisor kept the lowered class it was started with.
-            self.assertEqual(gate["parent_pri"], control["pri"], (gate, control))
         else:
-            self.assertEqual(control["ionice"], "idle", control)
             self.assertEqual(gate["ionice"], "best-effort: prio 7", gate)
-            self.assertEqual(gate["parent_ionice"], "idle", gate)
-            self.assertEqual(gate["nice"], min(control["nice"] + 10, 19), (gate, control))
+            self.assertEqual(gate["parent_ionice"], before["ionice"], gate)
+            self.assertEqual(gate["nice"], min(before["nice"] + 10, 19), (gate, before))
+
+    def test_class_tools_exec_the_gate_while_its_supervisor_keeps_its_class(self):
+        """An inherited utility class cannot substitute for the gate's own class launch."""
+        self.observe_gate_class(SCRIPTS / "verifier-owner.py")
+
+    def test_missing_class_prefix_is_detected_even_with_an_inherited_class(self):
+        """The observer must reject a real gate that bypasses the class tools."""
+        source = (SCRIPTS / "verifier-owner.py").read_text()
+        self.assertEqual(source.count("gate_prefix=prefix"), 1)
+        mutant = self.fx.root / "owner-without-class.py"
+        mutant.write_text(source.replace("gate_prefix=prefix", "gate_prefix=None"))
+        with self.assertRaisesRegex(AssertionError, "class prefix was not executed"):
+            self.observe_gate_class(mutant)
+
+    def test_class_tools_in_another_process_do_not_substitute_for_the_gate(self):
+        """A real class-tool invocation is insufficient unless it becomes this gate."""
+        source = (SCRIPTS / "verifier-owner.py").read_text()
+        launch = '        status = execute(command, owner_path, owner, "gate_session",'
+        self.assertEqual(source.count(launch), 1)
+        self.assertEqual(source.count("gate_prefix=prefix"), 1)
+        mutant = self.fx.root / "owner-with-misplaced-class.py"
+        source = source.replace(
+            launch,
+            '        subprocess.run([*prefix, sys.executable, "-c", "pass"], check=True)\n'
+            + launch,
+        ).replace("gate_prefix=prefix", "gate_prefix=None")
+        mutant.write_text(source)
+        with self.assertRaisesRegex(AssertionError, "class tools must exec the gate"):
+            self.observe_gate_class(mutant)
 
     def test_gate_status_and_signal_death_pass_through_the_class_chain(self):
         """The class tools replace themselves; the supervisor still sees the gate's own end."""
