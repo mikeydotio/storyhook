@@ -788,10 +788,6 @@ fn failed_marketplace_removal_restores_the_plugin_already_removed() {
             message.contains("marketplace removal interrupted"),
             "{message}"
         );
-        assert!(
-            message.contains("re-registered the previous marketplace"),
-            "{message}"
-        );
         assert_eq!(
             harness.registered_source(provider),
             Some(previous.display().to_string())
@@ -804,6 +800,10 @@ fn failed_marketplace_removal_restores_the_plugin_already_removed() {
         assert!(
             harness.home.join(installed).exists(),
             "{provider}: plugin not restored"
+        );
+        assert!(
+            message.contains("re-registered the previous marketplace"),
+            "{message}"
         );
     }
 }

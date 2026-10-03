@@ -115,6 +115,15 @@ fn killed_registration_leaves_evidence_without_an_uninstall_tombstone() {
         let output = h.run(&["plugin", verb, "claude"]);
         assert!(!output.status.success(), "{}", combined(&output));
         assert_eq!(fs::read(&receipt).unwrap(), before);
+        assert!(
+            !h.home.join("claude-installed").exists(),
+            "{verb}: interrupted operation did not remove the plugin"
+        );
+        assert_eq!(
+            h.registered_source("claude"),
+            None,
+            "{verb}: interrupted operation did not remove the marketplace"
+        );
         let evidence = record(&h, "claude");
         assert_eq!(evidence["outcome"], "incomplete");
         assert_eq!(evidence["verb"], verb);
@@ -132,6 +141,7 @@ fn killed_registration_leaves_evidence_without_an_uninstall_tombstone() {
         command.args(["doctor", "install"]);
         h.configure_command(&mut command);
         let doctor = combined(&command.output().unwrap());
+        assert!(doctor.contains("DEREGISTERED"), "{doctor}");
         assert!(doctor.contains("INCOMPLETE PLUGIN OPERATION"), "{doctor}");
         assert!(doctor.contains("marketplace remove storyhook"), "{doctor}");
         assert!(!doctor.contains("killed by"), "{doctor}");
