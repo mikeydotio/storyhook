@@ -283,8 +283,20 @@ impl Harness {
             // This harness owns its home, and the binary under test is a test
             // build: the plugin guard refuses it the verbs without this. Set
             // on every child, including the explicitly owned daemon.
-            .env(storyhook::plugin::guard::OVERRIDE_VAR, "1")
-            .envs(preset);
+            .env(storyhook::plugin::guard::OVERRIDE_VAR, "1");
+        Self::declare_subprocess_patience(command);
+        command.envs(preset);
+    }
+
+    /// Native probes wait on fixture processes, including in shells whose owned
+    /// HOME makes lib.sh retain the outer harness's patience declaration.
+    fn declare_subprocess_patience(command: &mut Command) {
+        // Match the plugin shell harness's idle floor, then apply load grace.
+        let patience = storyhook_test_support::load_grace::graced_now(Duration::from_secs(30));
+        command.env(
+            "STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS",
+            patience.as_millis().to_string(),
+        );
     }
 
     fn daemon_file(&self) -> PathBuf {
