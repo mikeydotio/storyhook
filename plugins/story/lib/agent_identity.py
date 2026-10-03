@@ -16,6 +16,7 @@ import sys
 
 sys.dont_write_bytecode = True
 import probe_budget
+import tmux_client
 from process_identity import process_identity
 from workspace_ownership import inherited_fds, require_workspace
 
@@ -56,30 +57,40 @@ def canonical(path):
 def tmux(socket, *args):
     """Use a captured socket when available; otherwise retain caller tmux context."""
     # Preserve identity field delimiters even when the caller has LC_ALL=C.
-    return run("tmux", "-u", *(["-S", socket] if socket else []), *args)
+    client = tmux_client.client(socket)
+    return run(*client.arguments(["-u", *(["-S", socket] if socket else []), *args], binding=True, socket=socket))
 
 
 def panes(socket=""):
     """Read all panes, distinguishing a proved absent server from probe failure."""
-    if socket:
+    client = tmux_client.client(socket)
+    if socket and not client.target['protected']:
         try:
             os.stat(socket)
         except FileNotFoundError:
             return {}
-    command = ["tmux", "-u", *(["-S", socket] if socket else []), "list-panes", "-a", "-F", FORMAT]
+    command = client.arguments(["-u", *(["-S", socket] if socket else []), "list-panes", "-a", "-F", FORMAT])
     result = probe_budget.run(command, capture_output=True, text=True, check=False, pass_fds=inherited_fds())
     if result.returncode:
         # A closed server can leave its socket behind. Only tmux's exact
         # ECONNREFUSED answer is absence; permissions and malformed data refuse.
-        if socket and not result.stdout and result.stderr.rstrip("\n") == f"no server running on {socket}":
+        if not client.target['protected'] and socket and not result.stdout and result.stderr.rstrip("\n") == f"no server running on {socket}":
             return {}
         raise IdentityError("pane-query-failed", f"tmux inventory on {socket or 'default'}: {result.stderr.strip() or result.returncode}")
-    return parse_panes(result.stdout)
+    return normalize_panes(parse_panes(result.stdout), client)
 
 
 def pane_at(pane, socket=""):
     """Probe an exact pane without relying on the active window or pane."""
-    return parse_panes(tmux(socket, "display-message", "-p", "-t", pane, FORMAT)).get(pane)
+    client = tmux_client.client(socket)
+    return normalize_panes(parse_panes(tmux(socket, "display-message", "-p", "-t", pane, FORMAT)), client).get(pane)
+
+
+def normalize_panes(panes, client):
+    """Retain the observed endpoint instead of a server's historical public alias."""
+    for pane in panes.values():
+        pane['socket'] = client.observed_socket(pane['socket'])
+    return panes
 
 
 def parse_panes(output):
@@ -353,12 +364,12 @@ def main():
         return 0
     except IdentityError as error:
         print(json.dumps({"ok": False, "reason": error.reason, "display": str(error)}))
-    except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.TimeoutExpired) as error:
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError, IndexError, subprocess.TimeoutExpired) as error:
         print(json.dumps({"ok": False, "reason": "pane-query-failed", "display": f"agent identity: {error}"}))
     return 1
 
 
 if __name__ == "__main__":
     # One invocation is one operation: its probes share one budget.
-    with probe_budget.operation():
+    with tmux_client.operation():
         sys.exit(main())

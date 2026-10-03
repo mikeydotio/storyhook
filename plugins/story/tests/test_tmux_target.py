@@ -1,6 +1,7 @@
 """Persistent activation selects transport before any tmux command (SH-825)."""
 
 import copy
+import importlib.util
 import hashlib
 import json
 import os
@@ -14,6 +15,18 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import tmux_target  # noqa: E402
+import probe_budget
+import agent_identity
+import continuation_runtime
+import tmux_client
+
+
+def helper(name):
+    """Load a production command module without invoking its CLI."""
+    spec = importlib.util.spec_from_file_location(name.replace('-', '_'), Path(__file__).resolve().parents[1] / 'lib' / (name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class TargetTests(unittest.TestCase):
@@ -252,6 +265,80 @@ class TargetTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("restore failed", result.stderr)
         self.assertFalse((self.root / "tmux-calls.jsonl").exists())
+
+    def lifecycle(self, action, body=""):
+        """Observe existing helper flows at their bounded subprocess boundary."""
+        self.publish()
+        def run(argv, **kwargs):
+            self.calls.append(list(argv))
+            output = json.dumps(self.response) if str(argv[0]) == str(self.executable) else body
+            if kwargs.get('stdout') is not None:
+                kwargs['stdout'].write(output.encode())
+            return subprocess.CompletedProcess(argv, 0, output, "")
+        with patch.dict(os.environ, dict(self.env, TMUX=self.endpoint + ',1,0'), clear=True), patch.object(probe_budget, 'run', side_effect=run):
+            return action()
+
+    def test_identity_discovers_before_missing_socket_and_normalizes_proven_alias(self):
+        row = f"SH-1\t%7\t123\t0\t{self.root}\tcodex\tcodex\t{self.socket}\n"
+        panes = self.lifecycle(lambda: agent_identity.panes(self.socket), row)
+        self.assertIn('%7', panes)
+        self.assertEqual(panes['%7']['socket'], self.endpoint)
+        self.assertTrue(any(call[:4] == ['tmux', '-N', '-S', self.endpoint] for call in self.calls), self.calls)
+
+    def test_identity_numeric_binding_cannot_follow_logical_socket(self):
+        with self.assertRaisesRegex((RuntimeError, agent_identity.IdentityError), 'binding|re-adoption'):
+            self.lifecycle(lambda: agent_identity.pane_at('%7', self.socket))
+        self.assertFalse(any(call[0] == 'tmux' for call in self.calls))
+
+    def test_continuation_queries_pin_the_bound_endpoint(self):
+        self.lifecycle(lambda: continuation_runtime.tmux(self.endpoint, 'list-panes'))
+        self.assertTrue(any(call[:4] == ['tmux', '-N', '-S', self.endpoint] for call in self.calls), self.calls)
+
+    def test_startup_cleanup_pins_before_reading_numeric_identity(self):
+        cleanup = helper('stop-dispatch-pane')
+        self.lifecycle(lambda: cleanup.run('tmux', '-S', self.endpoint, 'display-message', '-p', '-t', '%7', '#{pane_pid}'), '123')
+        self.assertTrue(any(call[:4] == ['tmux', '-N', '-S', self.endpoint] for call in self.calls), self.calls)
+
+    def test_dropped_cleanup_cannot_turn_unbound_protected_socket_into_absence(self):
+        cleanup = helper('dropped-cleanup-pane')
+        with self.assertRaisesRegex((RuntimeError, cleanup.proc.CleanupError), 'binding|re-adoption'):
+            self.lifecycle(lambda: cleanup.panes(dict(socket=self.socket, name='SH-1')))
+
+    def test_environment_inspection_uses_the_protected_endpoint(self):
+        environment = helper('tmux-env')
+        self.lifecycle(lambda: environment.run('show-environment', '-g'))
+        self.assertTrue(any(call[:4] == ['tmux', '-N', '-S', self.endpoint] for call in self.calls), self.calls)
+
+    def test_helper_operation_keeps_one_generation_and_refreshes_next_operation(self):
+        def action():
+            with tmux_client.operation():
+                original = tmux_client.client(self.socket)
+                # A later malformed publication must not redirect this operation.
+                self.path().write_text('{}')
+                with tmux_client.operation():
+                    self.assertIs(tmux_client.client(self.endpoint), original)
+                    self.assertEqual(original.arguments(['kill-pane', '-t', '%7']),
+                                     ['tmux', '-N', '-S', self.endpoint, 'kill-pane', '-t', '%7'])
+            with tmux_client.operation():
+                with self.assertRaisesRegex(RuntimeError, 'activation'):
+                    tmux_client.client(self.socket)
+        self.lifecycle(action)
+        self.assertEqual(sum(call[0] == str(self.executable) for call in self.calls), 1)
+
+    def test_identity_rejects_a_foreign_reported_socket(self):
+        row = f"SH-1\t%7\t123\t0\t{self.root}\tcodex\tcodex\t/foreign/socket\n"
+        with self.assertRaisesRegex(RuntimeError, 'foreign socket'):
+            self.lifecycle(lambda: agent_identity.panes(self.socket), row)
+
+    def test_protected_refusal_is_not_identity_absence(self):
+        self.publish()
+        def run(argv, **kwargs):
+            if str(argv[0]) == str(self.executable):
+                return subprocess.CompletedProcess(argv, 0, json.dumps(self.response), '')
+            return subprocess.CompletedProcess(argv, 1, '', f'no server running on {self.endpoint}\n')
+        with patch.dict(os.environ, self.env, clear=True), patch.object(probe_budget, 'run', side_effect=run):
+            with self.assertRaises(agent_identity.IdentityError):
+                agent_identity.panes(self.endpoint)
 
 
 if __name__ == "__main__":

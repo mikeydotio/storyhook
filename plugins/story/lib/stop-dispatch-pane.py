@@ -11,6 +11,8 @@ import time
 
 sys.dont_write_bytecode = True
 import probe_budget
+import tmux_client
+from tmux_target import split_tmux_arguments
 from process_identity import process_identity
 from workspace_ownership import inherited_fds
 
@@ -21,10 +23,16 @@ class CleanupError(Exception):
 
 def run(*args):
     """Run a probe within its operation budget and preserve its diagnostic on failure."""
+    client = None
+    if args[0] == 'tmux':
+        _, _, socket = split_tmux_arguments(args[1:], os.environ)
+        client = tmux_client.client(socket)
+        args = client.arguments(args[1:], binding=True, socket=socket)
     result = probe_budget.run(args, capture_output=True, text=True, check=False, pass_fds=inherited_fds())
     if result.returncode:
         raise CleanupError(f"{' '.join(args)}: {result.stderr.strip() or result.returncode}")
-    return result.stdout.strip()
+    output = result.stdout.strip()
+    return client.observed_socket(output) if client and args[-1] == '#{socket_path}' else output
 
 
 def processes():
@@ -152,9 +160,9 @@ if __name__ == "__main__":
     try:
         if len(sys.argv) != 4:
             raise CleanupError("expected pane, PID, and captured launch start token")
-        with probe_budget.operation():
+        with tmux_client.operation():
             stop(sys.argv[1], int(sys.argv[2]), sys.argv[3])
-    except (CleanupError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+    except (CleanupError, RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(json.dumps({"ok": False, "error": str(error)}))
         sys.exit(1)
     print(json.dumps({"ok": True}))

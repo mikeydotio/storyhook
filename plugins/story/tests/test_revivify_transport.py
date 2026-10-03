@@ -133,6 +133,24 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(public.strip(), "foreign")
         self.assertEqual(os.stat(self.endpoint).st_ino, self.inode)
 
+    def test_lifecycle_inventory_uses_real_rv10_and_retains_private_binding(self):
+        sys.path.insert(0, str(PLUGIN / 'lib'))
+        import agent_identity
+        import tmux_client
+        os.unlink(self.socket)
+        self.command([self.tmux, '-S', self.socket, '-f', '/dev/null', 'new-session', '-d', '-s', 'foreign', '/bin/sleep', '600'])
+        with patch.dict(os.environ, self.env, clear=True), tmux_client.operation():
+            panes = agent_identity.panes(self.socket)
+            self.assertEqual(len(panes), 1)
+            pane = next(iter(panes.values()))
+            self.assertEqual(pane['socket'], self.endpoint)
+            self.assertEqual(agent_identity.pane_at(pane['pane'], pane['socket']), pane)
+        inspected = self.command([sys.executable, '-B', str(PLUGIN / 'lib/tmux-env.py'), 'retained'],
+                                 env=dict(self.env, TMUX=self.endpoint + ',0,0'))
+        self.assertEqual(inspected.returncode, 0)
+        self.assertEqual(os.stat(self.endpoint).st_ino, self.inode)
+        self.assertEqual(self.command([self.tmux, '-N', '-S', self.socket, 'list-sessions', '-F', '#{session_name}']).stdout.strip(), 'foreign')
+
     def test_saturated_private_listener_preserves_work_and_generation(self):
         peers = []
         os.kill(self.pid, signal.SIGSTOP)

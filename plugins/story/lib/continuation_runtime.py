@@ -15,6 +15,7 @@ sys.dont_write_bytecode = True
 from workspace_ownership import inherited_fds
 from continuation_identity import handoff_message_id
 import probe_budget
+import tmux_client
 
 MAX_BYTES = 64 * 1024 * 1024
 OPTION = '@storyhook-continuation'
@@ -173,7 +174,8 @@ def fingerprint(cwd):
 def tmux(socket, *args):
     """Address exactly the captured server, never a default socket."""
     require(isinstance(socket, str) and os.path.isabs(socket), 'missing absolute tmux socket')
-    return command(['tmux', '-S', socket, *args]).decode().strip()
+    client = tmux_client.client(socket)
+    return command(client.arguments(['-u', '-S', socket, *args], binding=True, socket=socket)).decode().strip()
 
 
 def panes(socket):
@@ -224,7 +226,7 @@ def owner(capture):
     return 'present'
 
 
-@probe_budget.operation()
+@tmux_client.operation()
 def capture_request(value):
     """Bind a root native Stop to its dispatch lease, process, session, and dirty work."""
     origin = value['origin']
@@ -258,7 +260,7 @@ def capture_request(value):
     return {'ok': True, 'capture': result}
 
 
-@probe_budget.operation()
+@tmux_client.operation()
 def observe(value):
     """Observe retained resources; this operation never injects input or restarts."""
     capture = value['capture']
@@ -299,7 +301,7 @@ def observe(value):
             'detail': 'exact native session observed; native queue delivery is not inferred'}
 
 
-@probe_budget.operation()
+@tmux_client.operation()
 def register(value):
     """Publish the dispatcher's session binding before it sends the story charter."""
     lease = cleanup_lease(value['cwd'], value['story_id'])
@@ -332,7 +334,7 @@ def register(value):
     return {'ok': True, 'capture': metadata}
 
 
-@probe_budget.operation()
+@tmux_client.operation()
 def resume_preflight(value):
     """Require retained resources and the exact dead pane before any replacement effect."""
     capture = value['capture']
@@ -347,7 +349,7 @@ def resume_preflight(value):
     return {'ok': True, 'capture': capture, 'phase': 'absent'}
 
 
-@probe_budget.operation(budget=RESUME_BUDGET_SECONDS)
+@tmux_client.operation(budget=RESUME_BUDGET_SECONDS)
 def resume(value):
     """Recover only an absent provider through the helper's atomic no-k guarded path."""
     resume_preflight(value)

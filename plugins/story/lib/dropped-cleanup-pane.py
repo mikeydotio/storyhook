@@ -33,13 +33,15 @@ def save(path, record):
 
 def panes(target):
     """Read the exact server and all panes, including inactive and duplicate windows."""
-    if not Path(target["socket"]).exists():
+    client = proc.tmux_client.client(target['socket'])
+    client.require_binding(target['socket'])
+    if not client.target['protected'] and not Path(target["socket"]).exists():
         return []
-    command = ["tmux", "-S", target["socket"], "list-panes", "-a", "-F",
-               "#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}"]
+    command = client.arguments(["-u", "-S", target["socket"], "list-panes", "-a", "-F",
+               "#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}"])
     output = probe_budget.run(command, capture_output=True, text=True, pass_fds=proc.inherited_fds())
     if output.returncode:
-        if not output.stdout and output.stderr.strip() == f"no server running on {target['socket']}":
+        if not client.target['protected'] and not output.stdout and output.stderr.strip() == f"no server running on {target['socket']}":
             return []
         raise proc.CleanupError(f"cannot inspect cleanup server: {output.stderr}")
     return [line.split("\t") for line in output.stdout.splitlines()
@@ -125,9 +127,9 @@ def stop(target, path):
 if __name__ == "__main__":
     try:
         target = json.loads(sys.argv[1])
-        with probe_budget.operation():
+        with proc.tmux_client.operation():
             stop(target, Path(sys.argv[2]))
-    except (proc.CleanupError, OSError, ValueError, KeyError, IndexError, subprocess.TimeoutExpired) as error:
+    except (proc.CleanupError, RuntimeError, OSError, ValueError, KeyError, IndexError, subprocess.TimeoutExpired) as error:
         print(json.dumps({"ok": False, "error": str(error)}))
         sys.exit(1)
     print(json.dumps({"ok": True, "target": target}))

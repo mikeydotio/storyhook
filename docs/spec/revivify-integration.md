@@ -44,6 +44,22 @@ re-adoption supplies the new binding. Adopted identity and activity reads use
 one endpoint and deadline. Protected ownership or transport errors bypass
 the ordinary missing-target classifier.
 
+Native liveness, adoption and census clients force UTF-8 output with `-u`.
+Without it, tmux replaces the inventory's tab delimiters under `LC_ALL=C`.
+The older reset door captures one protected endpoint for its cleanup pass,
+retains workspace ownership through teardown, and refuses logical or stale
+numeric bindings. Its caller-window guard also recognizes the logical alias.
+Store-free census and claim-comment clients use ambient discovery without
+opening a store. Census is an inventory; a claim comment requires a current
+pane binding and reports uncertainty before falling back to host-only text.
+
+Python lifecycle helpers use `tmux_client.py` to cache the checked target only
+within one operation. Nested calls share the existing deadline. Inventory
+normalizes a server's proven logical/private alias to the actual endpoint;
+numeric effects still require that endpoint as their explicit binding.
+Protected endpoint failures never become an empty inventory. Process identity,
+workspace ownership and continuation authority checks remain separate.
+
 ## Restoration contract
 
 The approved scope also requires restore-specific re-adoption of agent,
