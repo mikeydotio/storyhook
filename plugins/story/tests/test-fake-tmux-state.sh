@@ -148,25 +148,41 @@ assert_contains "$first" "|dir" "a sourced lib.sh mints a state directory that e
 [ "${first%|*}" != "${second%|*}" ] \
   || fail_test "two independent test files were handed the same state directory [${first%|*}]"
 
-# --- the placeholder's lifetime is graced, not an idle-machine 30 s ----------
-#
-# Two gates lost pane-probing tests to the fake's bare 30 s self-expiry: SH-760
-# (test-dispatch-pane-readiness.sh) and SH-792 (test-notify.sh and
-# test-notify-registered-session.sh read `pane-dead`, the exact signature a
-# FAKE_TMUX_PANE_LIFETIME=1 run reproduces). lib.sh grants every test the
-# contention-graced lifetime scripts/tests/load_grace.py computes, and leaves a
-# lifetime a test chose for itself alone.
-lifetime_after_lib() {
-  env "$@" bash -c 'source "$1/lib.sh"; printf "%s" "${FAKE_TMUX_PANE_LIFETIME:-}"' _ "$TESTS_DIR" 2>/dev/null
-}
-graced="$(lifetime_after_lib -u FAKE_TMUX_PANE_LIFETIME)"
-case "$graced" in
-  '' | *[!0-9]*) fail_test "a sourced lib.sh exported no whole-second pane lifetime [$graced]" ;;
-  *)
-    [ "$graced" -ge 30 ] \
-      || fail_test "a sourced lib.sh graced the pane lifetime below the fake's idle 30 s [$graced]"
+# --- the placeholder outlives the operation it hosts (SH-814) --------------
+# Sampling idle and busy machines deterministically keeps ambient contention
+# from hiding a too-short base. Only the external load sample is replaced;
+# the real library and grace calculation still choose the lifetime.
+lifetime_bin=$(mktemp -d /tmp/story-test-lifetime-bin.XXXXXX)
+_TMP_REPOS+=("$lifetime_bin")
+export FAKE_PANE_TEST_PYTHON
+FAKE_PANE_TEST_PYTHON=$(command -v python3)
+cat > "$lifetime_bin/python3" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  */scripts/tests/load_grace.py)
+    exec "$FAKE_PANE_TEST_PYTHON" -c '
+import os, runpy, sys
+cores = (getattr(os, "process_cpu_count", os.cpu_count)() or 1)
+os.getloadavg = lambda: (float(os.environ["FAKE_PANE_TEST_LOAD"]) * cores, 0, 0)
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+' "$@"
     ;;
+  *) exec "$FAKE_PANE_TEST_PYTHON" "$@" ;;
 esac
+SH
+chmod +x "$lifetime_bin/python3"
+lifetime_after_lib() {
+  env "$@" PATH="$lifetime_bin:$PATH" bash -c \
+    'source "$1/lib.sh"; printf "%s" "${FAKE_TMUX_PANE_LIFETIME:-}"' _ "$TESTS_DIR"
+}
+dispatch_bound=$(rust_duration_secs src/service/engine.rs DISPATCH_TIMEOUT) || exit 1
+for ratio in 0 2; do
+  expected=$(FAKE_PANE_TEST_LOAD="$ratio" "$lifetime_bin/python3" \
+    "$TESTS_DIR/../../../scripts/tests/load_grace.py" patience "$dispatch_bound") || exit 1
+  graced=$(lifetime_after_lib -u FAKE_TMUX_PANE_LIFETIME FAKE_PANE_TEST_LOAD="$ratio") || exit 1
+  assert_eq "$graced" "$expected" "pane lifetime covers the dispatch bound at contention $ratio"
+done
 assert_eq "$(lifetime_after_lib FAKE_TMUX_PANE_LIFETIME=7)" "7" \
   "a lifetime the test set itself survives sourcing lib.sh"
 

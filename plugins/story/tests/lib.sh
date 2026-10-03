@@ -378,21 +378,31 @@ if [ -z "${FAKE_TMUX_STATE:-}" ]; then
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
 fi
 
-# The fake's placeholder pane process self-expires (`fakes/tmux`, 30 s by
-# default) so a test that forgets it still heals. That 30 s is an idle-machine
-# bound every pane-probing test silently depended on: under gate load the steps
-# between a `new-window` and a later probe of that pane outran it, and every
-# probe then read `pane-dead` -- SH-760's gate (test-dispatch-pane-readiness.sh,
-# fixed in that one file) and SH-792's (test-notify.sh,
-# test-notify-registered-session.sh). It is patience, not proof, so it is
-# graced by contention here, once, for every test (SH-347, SH-766). A test
-# that proves expiry itself still sets its own lifetime after sourcing this.
+# rust_duration_secs <path-from-repo-root> <CONST>: the whole seconds of a
+# `pub const CONST: Duration = Duration::from_secs(N);` declaration, so a
+# fixture derives its bound from the production value (SH-672, SH-766).
+# Prints nothing and returns 1 when the declaration moved.
+rust_duration_secs() {
+  local seconds
+  seconds=$(sed -n "s/^pub const $2: Duration = Duration::from_secs(\([0-9]*\));/\1/p" "$TESTS_DIR/../../../$1")
+  [ -n "$seconds" ] && printf '%s\n' "$seconds"
+}
+
+# A fake pane must survive the bounded dispatch it hosts. Gracing an unrelated
+# 30 s lifetime still killed valid Plan retries and trust handshakes before
+# DISPATCH_TIMEOUT (SH-814). Derive the base, then apply the shared load grace;
+# explicit expiry tests and longer-lived fixtures keep their chosen lifetime.
 if [ -z "${FAKE_TMUX_PANE_LIFETIME:-}" ]; then
-  if ! FAKE_TMUX_PANE_LIFETIME="$(python3 "$TESTS_DIR/../../../scripts/tests/load_grace.py" patience 30)"; then
+  if ! _STORY_DISPATCH_SECONDS="$(rust_duration_secs src/service/engine.rs DISPATCH_TIMEOUT)"; then
+    printf 'lib.sh: cannot derive DISPATCH_TIMEOUT from src/service/engine.rs\n' >&2
+    exit 1
+  fi
+  if ! FAKE_TMUX_PANE_LIFETIME="$(python3 "$TESTS_DIR/../../../scripts/tests/load_grace.py" patience "$_STORY_DISPATCH_SECONDS")"; then
     printf 'lib.sh: cannot grace the fake pane lifetime (scripts/tests/load_grace.py)\n' >&2
     exit 1
   fi
   export FAKE_TMUX_PANE_LIFETIME
+  unset _STORY_DISPATCH_SECONDS
 fi
 
 # Keep every terminal operation on the fixture's server. SH-655 found
@@ -626,16 +636,6 @@ router_verbs() {
 
 # jqf <json> <filter> — run a jq filter, echo the raw result.
 jqf() { printf '%s' "$1" | jq -r "$2"; }
-
-# rust_duration_secs <path-from-repo-root> <CONST>: the whole seconds of a
-# `pub const CONST: Duration = Duration::from_secs(N);` declaration, so a
-# fixture derives its bound from the production value (SH-672, SH-766).
-# Prints nothing and returns 1 when the declaration moved.
-rust_duration_secs() {
-  local seconds
-  seconds=$(sed -n "s/^pub const $2: Duration = Duration::from_secs(\([0-9]*\));/\1/p" "$TESTS_DIR/../../../$1")
-  [ -n "$seconds" ] && printf '%s\n' "$seconds"
-}
 
 finish() {
   if [ "$_FAILED" -eq 0 ]; then
