@@ -195,7 +195,18 @@ impl VerificationGuard {
             .get_mut(&self.active.project)
             .filter(|slot| slot.active == self.active)
         {
+            let before = slot.reservation.as_ref().map(|r| (r.reason, r.retired));
             update(&mut slot.reservation);
+            let after = slot.reservation.as_ref().map(|r| (r.reason, r.retired));
+            if before != after {
+                let phase = match after {
+                    Some((ReservationReason::Reconcile, true)) => "repair-hold",
+                    Some((ReservationReason::Remediation, true)) => "diagnosis-delivery",
+                    Some((ReservationReason::Cleanup, true)) => "cleanup",
+                    _ => "verdict",
+                };
+                super::cost::phase(&self.registry.costs, &self.active.attempt_id, Some(phase));
+            }
         }
     }
 }
@@ -505,7 +516,9 @@ mod tests {
         candidate.verifying_generation = Some(GlobalSeq::new(
             candidate.verifying_generation.unwrap().get() + 1,
         ));
-        guard.replace(&board.env, &candidate, T0.into());
+        guard
+            .replace(&board.store, &board.env, &candidate, T0.into())
+            .unwrap();
         assert!(!guard.is_reserved(), "a new generation starts unreserved");
 
         guard

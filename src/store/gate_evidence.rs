@@ -223,6 +223,9 @@ pub struct GateAttempt {
     pub intervals: Vec<GateInterval>,
     /// Physical gates, in execution order. A batch probe never resets the budget.
     pub executions: Vec<GateExecution>,
+    /// Current preparation journal, replaced by a synced archive at finalization.
+    #[serde(default)]
+    pub journal_path: Option<String>,
     /// Data loss, clock anomalies or evidence diagnostics outside one execution.
     pub diagnostics: Vec<String>,
 }
@@ -242,6 +245,7 @@ impl GateAttempt {
             verdict: None,
             intervals: vec![],
             executions: vec![],
+            journal_path: None,
             diagnostics: vec![],
         }
     }

@@ -14,6 +14,7 @@ mod batch;
 mod batch_preview;
 mod cleanup;
 mod control;
+mod cost;
 pub(crate) mod evidence;
 #[cfg(test)]
 mod journal_retirement_tests;
@@ -134,6 +135,7 @@ pub struct VerificationRetryOrigin {
 pub struct VerificationActivity {
     view_requests: super::activity::window::Requests,
     active: Arc<Mutex<BTreeMap<ProjectId, VerificationSlot>>>,
+    costs: cost::Traces,
     bus: ChangeBus,
 }
 
@@ -358,6 +360,7 @@ impl Drop for VerificationGuard {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if slots.get(&self.active.project).map(|slot| &slot.active) == Some(&self.active) {
+            cost::end(&self.registry.costs, &self.active.attempt_id);
             slots.remove(&self.active.project);
         }
     }
@@ -387,10 +390,11 @@ impl VerificationGuard {
     /// same lock, as admission does (SH-776).
     fn replace(
         &mut self,
+        store: &impl Store,
         env: &Environment,
         candidate: &VerificationCandidate,
         started_at: String,
-    ) {
+    ) -> Result<(), AppError> {
         assert_eq!(self.active.project, candidate.project);
         assert_eq!(self.active.story_id, candidate.story_id);
         let replacement = ActiveVerification {
@@ -410,6 +414,25 @@ impl VerificationGuard {
             .get_mut(&self.active.project)
             .expect("owned verification slot");
         assert_eq!(slot.active, self.active);
+        cost::end(&self.registry.costs, &self.active.attempt_id);
+        cost::sample(store, &self.registry, candidate.project)?;
+        let origin = Instant::now();
+        let record = store.write(|tx| {
+            cost::admission(
+                tx,
+                env,
+                candidate,
+                &replacement.attempt_id,
+                &replacement.started_at,
+            )
+        })?;
+        cost::register(
+            &self.registry.costs,
+            record,
+            origin,
+            env,
+            self.cancellation.clone(),
+        );
         let retired = evidence::retire_journal(env, candidate);
         slot.active = replacement.clone();
         slot.candidate = candidate.clone();
@@ -425,6 +448,7 @@ impl VerificationGuard {
         if let Err(detail) = retired {
             evidence::report_unretired(candidate, &detail);
         }
+        Ok(())
     }
 }
 
@@ -1477,7 +1501,9 @@ impl ShellVerificationActuator {
                     })
                 )
             });
-        if let Err(error) = std::fs::write(&journal, initial) {
+        if cost::execution_id(&self.activity, &attempt_id).is_none()
+            && let Err(error) = std::fs::write(&journal, initial)
+        {
             return VerificationOutcome::InfrastructureFailure {
                 detail: format!(
                     "could not initialize progress journal {}: {error}",
@@ -2188,6 +2214,38 @@ fn tick_with_bus<S, A, W>(
     inflight: &InFlight,
     project: ProjectId,
     bus: &ChangeBus,
+    admitted_request: Option<&mut Option<String>>,
+    wait_for_resubmission: W,
+) -> Result<TickResult, AppError>
+where
+    S: Store,
+    A: VerificationActuator,
+    W: FnMut(&VerificationCandidate) -> Result<ReconcileWait, AppError>,
+{
+    cost::observe(store, env, activity, project, || {
+        tick_cycle(
+            store,
+            env,
+            actuator,
+            activity,
+            inflight,
+            project,
+            bus,
+            admitted_request,
+            wait_for_resubmission,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tick_cycle<S, A, W>(
+    store: &S,
+    env: &Environment,
+    actuator: &A,
+    activity: &VerificationActivity,
+    inflight: &InFlight,
+    project: ProjectId,
+    bus: &ChangeBus,
     mut admitted_request: Option<&mut Option<String>>,
     mut wait_for_resubmission: W,
 ) -> Result<TickResult, AppError>
@@ -2360,7 +2418,14 @@ where
                     TickResult::Returned
                 });
             }
-            match refresh_authority(&queue, &mut active, &lifecycle_entry, env, &mut candidate)? {
+            match refresh_authority(
+                store,
+                &queue,
+                &mut active,
+                &lifecycle_entry,
+                env,
+                &mut candidate,
+            )? {
                 AuthorityRefresh::Current => {}
                 AuthorityRefresh::Replaced => continue,
                 AuthorityRefresh::Released => return Ok(TickResult::Returned),
@@ -2413,6 +2478,7 @@ where
                     )? {
                         GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                         GenerationWrite::Superseded => match refresh_authority(
+                            store,
                             &queue,
                             &mut active,
                             &lifecycle_entry,
@@ -2436,6 +2502,7 @@ where
                     )? {
                         GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                         GenerationWrite::Superseded => match refresh_authority(
+                            store,
                             &queue,
                             &mut active,
                             &lifecycle_entry,
@@ -2579,15 +2646,33 @@ where
             let (verified, found_by) = match head_verdict {
                 Some((outcome, found_by)) => (Ok(Some(outcome)), Some(found_by)),
                 None => (
-                    observation::verify(
+                    cost::execute(
                         store,
-                        bus,
+                        env,
+                        &active,
                         &candidate,
-                        &active.cancellation,
-                        |cancellation| {
-                            actuator.verify_cancellable(&candidate, &pull_request, cancellation)
+                        crate::store::GateInputs::default(),
+                        vec![cost::submission(&candidate)],
+                        || {
+                            observation::verify(
+                                store,
+                                bus,
+                                &candidate,
+                                &active.cancellation,
+                                |cancellation| {
+                                    actuator.verify_cancellable(
+                                        &candidate,
+                                        &pull_request,
+                                        cancellation,
+                                    )
+                                },
+                            )
                         },
-                    ),
+                        |result| match result {
+                            Ok(outcome) => Ok(outcome.clone()),
+                            Err(error) => Err(error.to_string()),
+                        },
+                    )?,
                     None,
                 ),
             };
@@ -2645,7 +2730,14 @@ where
                 &format!("verification outcome: {outcome:?}"),
             );
 
-            match refresh_authority(&queue, &mut active, &lifecycle_entry, env, &mut candidate)? {
+            match refresh_authority(
+                store,
+                &queue,
+                &mut active,
+                &lifecycle_entry,
+                env,
+                &mut candidate,
+            )? {
                 AuthorityRefresh::Current => {}
                 AuthorityRefresh::Replaced => continue,
                 AuthorityRefresh::Released => return Ok(TickResult::Returned),
@@ -2814,6 +2906,7 @@ where
                     let remediation_started = match remediation_started {
                         GenerationWrite::Applied(started) => started,
                         GenerationWrite::Superseded => match refresh_authority(
+                            store,
                             &queue,
                             &mut active,
                             &lifecycle_entry,
@@ -2845,7 +2938,7 @@ where
                             candidate.story_id
                         )));
                     }
-                    transfer_verifier(&mut active, &lifecycle_entry, env, &resubmitted);
+                    transfer_verifier(store, &mut active, &lifecycle_entry, env, &resubmitted)?;
                     candidate = resubmitted;
                     continue;
                 }
@@ -2928,7 +3021,14 @@ where
                 }
             }
 
-            match refresh_authority(&queue, &mut active, &lifecycle_entry, env, &mut candidate)? {
+            match refresh_authority(
+                store,
+                &queue,
+                &mut active,
+                &lifecycle_entry,
+                env,
+                &mut candidate,
+            )? {
                 AuthorityRefresh::Current | AuthorityRefresh::Replaced => continue,
                 AuthorityRefresh::Released => return Ok(TickResult::Returned),
             }
@@ -3182,6 +3282,7 @@ fn candidate_authority(
 }
 
 fn refresh_authority<S: Store>(
+    store: &S,
     queue: &VerificationQueue<'_, S>,
     active: &mut VerificationGuard,
     lifecycle_entry: &crate::daemon::lifecycle::Entry<'_>,
@@ -3216,7 +3317,7 @@ fn refresh_authority<S: Store>(
                     candidate.verifying_generation, resubmitted.verifying_generation
                 ),
             );
-            transfer_verifier(active, lifecycle_entry, env, &resubmitted);
+            transfer_verifier(store, active, lifecycle_entry, env, &resubmitted)?;
             *candidate = *resubmitted;
             Ok(AuthorityRefresh::Replaced)
         }
@@ -3225,14 +3326,16 @@ fn refresh_authority<S: Store>(
 }
 
 fn transfer_verifier(
+    store: &impl Store,
     active: &mut VerificationGuard,
     lifecycle_entry: &crate::daemon::lifecycle::Entry<'_>,
     env: &Environment,
     resubmitted: &VerificationCandidate,
-) {
+) -> Result<(), AppError> {
     let resumed_at = env.now();
-    active.replace(env, resubmitted, resumed_at.clone());
+    active.replace(store, env, resubmitted, resumed_at.clone())?;
     name_verification(lifecycle_entry, resubmitted, &resumed_at);
+    Ok(())
 }
 
 fn record_infrastructure_failure<S: Store>(

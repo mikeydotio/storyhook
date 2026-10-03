@@ -523,6 +523,7 @@ pub(super) fn run<S: Store>(
         ctx,
         batching,
         head,
+        owner,
         plan,
         cancellation: &cancellation,
         tracked: &tracked,
@@ -565,7 +566,9 @@ pub(super) fn run<S: Store>(
                 .unwrap_or_else(|error| vec![format!("(authority unreadable: {error})")])
         }
     };
-    attempt.finish(owner, stale, started)
+    let result = attempt.finish(owner, stale, started);
+    cost::check(owner)?;
+    result
 }
 
 fn plan<S: Store>(

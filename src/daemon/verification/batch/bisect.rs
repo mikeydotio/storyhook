@@ -481,7 +481,7 @@ impl<S: Store> Attempt<'_, S> {
         let item = format!("bisection prefix {prefix}");
         progress_item(self.env, self.head, &item, "running");
         let probe = if prefix == 1 {
-            self.probe_head(&tree, &head_commit, kind)
+            self.probe_head(&tree, &head_commit, kind)?
         } else {
             self.probe_batch(prefix, &commit, &tree, kind)?
         };
@@ -496,22 +496,27 @@ impl<S: Store> Attempt<'_, S> {
 
     /// Gates the head alone: its own pull request, whose merge tree is the
     /// first prefix's.
-    fn probe_head(&mut self, tree: &str, head_commit: &str, kind: ProbeKind) -> Probe {
+    fn probe_head(
+        &mut self,
+        tree: &str,
+        head_commit: &str,
+        kind: ProbeKind,
+    ) -> Result<Probe, AppError> {
         let link = match &self.head.pull_request {
             Ok(link) => link.clone(),
             Err(problem) => {
-                return Probe::Void(format!(
+                return Ok(Probe::Void(format!(
                     "the head has no pull request to gate alone: {}",
                     problem.message()
-                ));
+                )));
             }
         };
         let started = Instant::now();
-        let outcome = self.batching.gate(self.head, &link, self.cancellation);
+        let outcome = self.costed_gate(&link, 1)?;
         let seconds = started.elapsed().as_secs();
         let probe = classify(&outcome, tree, head_commit, kind, seconds);
         self.note_gate(1, kind, None, tree, &outcome, &probe, seconds);
-        probe
+        Ok(probe)
     }
 
     /// Records, publishes and gates a probe batch of the first `prefix`
@@ -588,7 +593,7 @@ impl<S: Store> Attempt<'_, S> {
         self.record = Some(child.clone());
         let link = pull_request_link(&child, self.env.now())?;
         let started = Instant::now();
-        let outcome = self.batching.gate(self.head, &link, self.cancellation);
+        let outcome = self.costed_gate(&link, prefix)?;
         let seconds = started.elapsed().as_secs();
         let probe = classify(&outcome, tree, commit, kind, seconds);
         self.note_gate(
