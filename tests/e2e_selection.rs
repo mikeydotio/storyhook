@@ -447,8 +447,8 @@ fn the_runner_lists_through_the_library_and_never_bare() {
         );
     }
     assert!(
-        !runner.contains("--list"),
-        "no non-comment line of scripts/run-e2e.sh may invoke --list itself; the flags \
+        !runner[offset_of(&runner, "repo_root=")..].contains("--list"),
+        "after early argument validation, scripts/run-e2e.sh must never invoke --list itself; the flags \
          that make its exit status meaningful live in the library"
     );
     for arm in [

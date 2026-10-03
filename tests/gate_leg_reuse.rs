@@ -571,6 +571,26 @@ fn browser_reporter_regression_changes_invalidate_browser_evidence() {
 }
 
 #[test]
+fn isolation_helper_changes_invalidate_browser_evidence() {
+    let repo = Repo::new();
+    let path = "scripts/e2e-isolation.py";
+    repo.write(path, "# original isolation planner\n");
+    repo.git(&["add", path]);
+    for label in ["e2e", "rust-contracts", "rust-suite"] {
+        assert!(repo.run_leg(label, true).status.success());
+    }
+    repo.write(path, "# changed isolation planner\n");
+    for label in ["e2e", "rust-contracts", "rust-suite"] {
+        assert!(repo.run_leg(label, true).status.success());
+        assert_eq!(
+            repo.executions(label),
+            if label == "rust-suite" { 1 } else { 2 },
+            "isolation helper changed the wrong evidence: {label}"
+        );
+    }
+}
+
+#[test]
 fn a_contract_test_edit_does_not_invalidate_the_core_rust_battery() {
     let repo = Repo::new();
     let labels = [

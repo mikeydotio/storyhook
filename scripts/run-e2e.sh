@@ -51,6 +51,37 @@
 # (SH-627); what changed is how many invocations run at once.
 set -euo pipefail
 
+# Refuse incompatible partitions before a build or artifact mutation.
+isolate_files=0
+caller_partition=0
+explicit_project=""
+extra_args=()
+for arg in "$@"; do
+  case "$arg" in
+    --isolate-files) isolate_files=1 ;;
+    --project=*) explicit_project="${arg#--project=}" ;;
+    --shard | --shard=* | --test-list | --test-list=*)
+      caller_partition=1
+      extra_args+=("$arg")
+      ;;
+    *) extra_args+=("$arg") ;;
+  esac
+done
+if [ "$isolate_files" = 1 ] && [ "$caller_partition" = 1 ]; then
+  echo "run-e2e.sh: cannot combine --isolate-files with --shard or --test-list" >&2
+  exit 2
+fi
+if [ "$isolate_files" = 1 ]; then
+  for arg in "${extra_args[@]+"${extra_args[@]}"}"; do
+    case "$arg" in
+      --config | --config=* | -c | -c?* | --reporter | --reporter=* | --output | --output=* | --workers | --workers=* | -j | -j?* | --retries | --retries=* | --fully-parallel | --repeat-each | --repeat-each=* | --list | --ui | --ui=* | --debug)
+        echo "run-e2e.sh: cannot combine --isolate-files with behavior override $arg" >&2
+        exit 2
+        ;;
+    esac
+  done
+fi
+
 . "$(dirname "${BASH_SOURCE[0]}")/python-runtime.sh"
 storyhook_python_init || { printf '%s\n' "$STORYHOOK_PYTHON_ERROR" >&2; exit 2; }
 
@@ -79,14 +110,24 @@ repo_root="$PWD"
 # Cargo's own mutable artifact. Never invoked: `$story_bin`, assigned after
 # the build below, is the leased hard link of it.
 story_artifact="$repo_root/target/debug/story"
-results_root="$repo_root/e2e/test-results/current"
+results_root="${STORYHOOK_E2E_RESULTS_DIR-$repo_root/e2e/test-results/current}"
 
 # One artifact tree for this invocation. Each Playwright project gets its own
 # output directory below, so a later project's startup no longer erases the
 # screenshots, traces and error contexts from earlier failures while this
 # script deliberately continues through the remaining matrix.
-rm -rf "$results_root"
-mkdir -p "$results_root"
+if [ "${STORYHOOK_E2E_RESULTS_DIR+x}" = x ]; then
+  case "$results_root" in
+    /*) ;;
+    *) echo "run-e2e.sh: STORYHOOK_E2E_RESULTS_DIR must be absolute" >&2; exit 2 ;;
+  esac
+  # mkdir (without -p) refuses an existing path, including a symlink. The
+  # caller owns its parent and no existing artifacts can be overwritten.
+  mkdir "$results_root" || { echo "run-e2e.sh: results directory must be new: $results_root" >&2; exit 2; }
+else
+  rm -rf "$results_root"
+  mkdir -p "$results_root"
+fi
 
 # --- The engine set, derived from the config (SH-335). ------------------
 #
@@ -763,9 +804,16 @@ WRAPPER
   # a browser launch. A dead browser then costs one launch timeout and a
   # refusal that names the machine, not one launch timeout per test.
   export E2E_PROJECT="$project"
+  if [ "$isolate_files" = 1 ]; then
+    mkdir -p "$results_root/reports" "$results_root/executed"
+    export E2E_ISOLATION_REPORT="$results_root/reports/$slice.json"
+  fi
   status=0
   "${keep_display_awake[@]+"${keep_display_awake[@]}"}" npx playwright test --project="$project" --output="$results_root/$slice" "${slice_args[@]+"${slice_args[@]}"}" "${playwright_args[@]+"${playwright_args[@]}"}" || status=$?
   e2e_elapsed=$(( $(date +%s) - e2e_start ))
+  if [ "$isolate_files" = 1 ]; then
+    printf '%s\n' "$status" >"$results_root/executed/$slice"
+  fi
 
   # --- Was the run's binary rebuilt under it? Informational either way
   # (SH-635): the lease is exactly what makes this harmless, and saying so
@@ -833,20 +881,6 @@ WRAPPER
 # form. A caller that partitions the selection itself -- `--shard` or
 # `--test-list`, in either spelling -- gets one slice per project, so its
 # partition is never cut a second time.
-explicit_project=""
-caller_partition=0
-extra_args=()
-for arg in "$@"; do
-  case "$arg" in
-    --project=*) explicit_project="${arg#--project=}" ;;
-    --shard | --shard=* | --test-list | --test-list=*)
-      caller_partition=1
-      extra_args+=("$arg")
-      ;;
-    *) extra_args+=("$arg") ;;
-  esac
-done
-
 if [ -n "$explicit_project" ]; then
   projects_to_run=("$explicit_project")
 else
@@ -925,7 +959,11 @@ plan_slices() {
   # Kept with the run's artifacts: which files each slice ran is the first
   # question a red slice raises.
   mkdir -p "$results_root/slices"
-  plan_rows="$(printf '%s\n' "$file_counts" | e2e_pool_plan "$((e2e_jobs * E2E_SLICES_PER_JOB))" "$results_root/slices" "${projects_to_run[@]}")"
+  if [ "$isolate_files" = 1 ]; then
+    plan_rows="$(printf '%s\n' "$file_counts" | python3 -B "$repo_root/scripts/e2e-isolation.py" plan "$results_root/slices" "${projects_to_run[@]}")" || return $?
+  else
+    plan_rows="$(printf '%s\n' "$file_counts" | e2e_pool_plan "$((e2e_jobs * E2E_SLICES_PER_JOB))" "$results_root/slices" "${projects_to_run[@]}")"
+  fi
   while IFS=$'\t' read -r slice project list count; do
     [ -n "$slice" ] || continue
     slice_names+=("$slice")
@@ -967,11 +1005,19 @@ unset _i
 
 # The pool's runner: one slice, by name, through its own fixture.
 run_slice() {
-  local i=0
+  local i=0 status=0
   while [ "$i" -lt "${#slice_names[@]}" ]; do
     if [ "${slice_names[$i]}" = "$1" ]; then
-      run_one_project "${slice_projects[$i]}" "$1" "${slice_lists[$i]}" "${extra_args[@]+"${extra_args[@]}"}"
-      return
+      if [ "$isolate_files" = 1 ]; then
+        mkdir -p "$results_root/logs" "$results_root/verdicts"
+        run_one_project "${slice_projects[$i]}" "$1" "${slice_lists[$i]}" "${extra_args[@]+"${extra_args[@]}"}" >"$results_root/logs/$1.log" 2>&1 || status=$?
+        printf '%s\n' "$status" >"$results_root/verdicts/$1"
+        cat "$results_root/logs/$1.log"
+        return "$status"
+      else
+        run_one_project "${slice_projects[$i]}" "$1" "${slice_lists[$i]}" "${extra_args[@]+"${extra_args[@]}"}"
+        return
+      fi
     fi
     i=$((i + 1))
   done
@@ -1001,6 +1047,23 @@ if [ "$overall_status" = 0 ] && [ -n "$plan_total" ] && [ "$tests_run" != "$plan
   echo "  test-list lost or gained a file; refusing rather than reporting part of the" >&2
   echo "  selection green. Each slice's list is in $results_root/slices." >&2
   exit 1
+fi
+
+if [ "$isolate_files" = 1 ]; then
+  # The outer pool has finished. Each rerun starts a new production fixture;
+  # its counts and artifacts must not overwrite the first attempt's evidence.
+  failed_slices="$(python3 -B "$repo_root/scripts/e2e-isolation.py" failed "$results_root")" || exit 1
+  initial_results_root="$results_root"
+  rerun_slices=()
+  while IFS= read -r failed_slice; do
+    [ -n "$failed_slice" ] || continue
+    rerun_slices+=("$failed_slice")
+  done < <(printf '%s\n' "$failed_slices")
+  if [ "${#rerun_slices[@]}" -gt 0 ]; then
+    (results_root="$initial_results_root/reruns";
+      e2e_pool_run 1 "$E2E_STOP_GRACE_SECONDS" run_slice "${rerun_slices[@]}") || overall_status=1
+  fi
+  python3 -B "$repo_root/scripts/e2e-isolation.py" report "$results_root" || overall_status=1
 fi
 
 exit "$overall_status"
