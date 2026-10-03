@@ -215,6 +215,13 @@
       "reason": "This SQLite busy_timeout configures a production-shaped direct connection used to plant or inspect test data. It is an input to the database, not an outer harness wait."
     }
   },
+  "tests/e2e_browser_coverage.rs": {
+    ".wait_with_output_within(budget": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The reporter cleanup wrapper passes graced_now(UTILITY_DEADLINE * 6 * 3): six lifecycle scenarios, each with startup, exit and reap patience. ChildGuard consumes that single caller-supplied budget."
+    }
+  },
   "tests/e2e_provider_doubles.rs": {
     "run_bounded(SHELL_DEADLINE": {
       "count": 3,
