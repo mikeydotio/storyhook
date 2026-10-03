@@ -428,7 +428,15 @@ witness. It ran 308.88 seconds including cleanup, at mean/max load
 136.20/190.95; no history was promoted and no comparison arm ran.
 `board-readiness.spec.ts:280` observed a closed Drafts modal for 65,347 ms
 after the real click, despite the preceding exact global count check passing.
-That prerequisite is adopted for investigation. The card witness now
+Its trace placed the delayed data response inside the click operation. A
+deterministic witness lasting longer than the old two-second delay reproduced
+the lost loading precondition on both engines: New became enabled before the
+test finished its pre-data assertions. Four related cases now hold data with
+an explicit latch, release it in `finally` and drain their routes. The existing
+timed `openProject` lower-bound proof remains unchanged. All ten affected
+desktop cases pass, including real global-count and Drafts-modal assertions.
+Post-release readiness uses the graced default; its two obsolete fixed-delay
+audit exceptions are removed. The card witness now
 distinguishes CSS class animations from the other timelines `getAnimations()`
 returns. A deterministic competing native Web Animation reproduced its overly
 broad check on both engines: CSSAnimation was paused while Animation was
