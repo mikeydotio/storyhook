@@ -1,3 +1,4 @@
+import { gracedOperationBudget } from "../load-grace";
 import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
@@ -9,6 +10,9 @@ import {
   seedToken,
   waitForDisplayedStoryBlockDeliveries,
 } from "./support";
+
+/** Existing idle patience for board update; SH-804 adds contention grace. */
+const BOARD_UPDATE_BASE_MS = 8_000;
 
 /**
  * Exercises SH-203 consumer 2's cleared-blocker dwell: when a blocker
@@ -164,7 +168,7 @@ test("a card names its open blocker in the badge; closing the blocker turns the 
   // dwell's whole point is that the reader sees *this* blocker turn green,
   // not merely that the badge vanished.
   await expect(workerCard.locator(".flag-blocked")).toHaveCount(0, {
-    timeout: 8000,
+    timeout: gracedOperationBudget(BOARD_UPDATE_BASE_MS),
   });
   const blockersRow = workerCard.locator(".card-blockers");
   await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId);
@@ -190,7 +194,7 @@ test("a card names its open blocker in the badge; closing the blocker turns the 
   // is gone -- populateCard() only appends .card-blockers at all when
   // there's still a dwelling entry to show.
   await expect(workerCard.locator(".card-blockers")).toHaveCount(0, {
-    timeout: 8000,
+    timeout: gracedOperationBudget(BOARD_UPDATE_BASE_MS),
   });
 
   // The blocker is left CLOSED -- cleanUpCreatedStories' afterEach reopens

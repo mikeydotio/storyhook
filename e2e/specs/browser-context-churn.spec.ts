@@ -1,4 +1,8 @@
+import { gracedPatience } from "../load-grace";
 import { test, expect } from "./support";
+
+/** Existing whole-sweep allowance; the test watchdog owns its load grace. */
+const CONTEXT_SWEEP_BASE_MS = 120_000;
 
 /**
  * SH-588: WebKit 2336 wedges a fresh page after roughly 65 navigations in
@@ -9,7 +13,7 @@ import { test, expect } from "./support";
  * Upstream: https://github.com/microsoft/playwright/issues/42385.
  */
 test("one browser keeps navigating across 128 fresh contexts", async ({ browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(CONTEXT_SWEEP_BASE_MS);
   for (let iteration = 0; iteration < 128; iteration++) {
     await test.step(`context ${iteration + 1}`, async () => {
       const context = await browser.newContext();
@@ -21,7 +25,7 @@ test("one browser keeps navigating across 128 fresh contexts", async ({ browser 
         }));
         // The failure issues no request and never recovers. Bound each probe
         // separately so its diagnostic identifies the wedged context.
-        const response = await page.goto("http://navigation.test/", { timeout: 5_000 });
+        const response = await page.goto("http://navigation.test/", { timeout: gracedPatience() });
         expect(response?.status()).toBe(200);
         await expect(page.getByRole("heading", { name: "Ready" })).toBeVisible();
       } finally {

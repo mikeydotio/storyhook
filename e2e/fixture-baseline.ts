@@ -1,6 +1,6 @@
 import { request } from "@playwright/test";
 import type { APIRequestContext, FullConfig } from "@playwright/test";
-import { fixtureApiUrl, requiredEnv } from "./fixture-api";
+import { fixtureApiUrl, gracedRequestBudget, requiredEnv } from "./fixture-api";
 
 /**
  * The run's fixture baseline (SH-765): every project's story and draft IDs as
@@ -40,7 +40,7 @@ export async function projectStories(
 ): Promise<BoardStory[]> {
   const resp = await api.get(
     fixtureApiUrl(`/api/repos/${encodeURIComponent(slug)}/data`),
-    { headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") } },
+    { timeout: gracedRequestBudget(), headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") } },
   );
   if (!resp.ok()) {
     throw new Error(`GET /data for "${label}" answered ${resp.status()}: ${await resp.text()}`);
@@ -59,6 +59,7 @@ export async function captureFixtureBaseline(
   api: APIRequestContext,
 ): Promise<Record<string, string[]>> {
   const resp = await api.get(fixtureApiUrl("/api/repos"), {
+    timeout: gracedRequestBudget(),
     headers: { "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") },
   });
   if (!resp.ok()) {
