@@ -379,7 +379,7 @@ diagnostic duration, not a completed-leg performance result.
 
 Two failures require `Dispatch` after a successful launch although the product
 now shows `Resume` (`dispatch.spec.ts:247,323`). SH-804 owns that contract repair.
-The other four failures are retained for diagnosis: an `entering` class remained
+The other four failures were retained for diagnosis: an `entering` class disappeared
 (`card-transient-classes.spec.ts:71`); Save Draft became enabled and restoring the
 project left submit disabled (`create-story-project.spec.ts:343,370`); and a
 frozen-clock footer did not change (`settings-version.spec.ts:58`). SH-813 owns
@@ -400,6 +400,49 @@ The shared machine's load is not comparable to SH-792's mean 52. Do not infer a
 speedup or regression from these wall times. Resume with the independently owned
 test repairs, account for remaining failures, then run a successful warm-up and
 the two interleaved pairs before accepting this story's performance claim.
+
+**Resumed repairs, 2026-10-03 UTC.** SH-804's completed changes are integrated.
+SH-813's completed assertion-grace, exit-animation and route-lifetime changes
+are reused with source attribution. Three separate SH-812 regression commits
+repair the retained timing assumptions without changing dashboard behavior:
+
+| Proof | Controlled precondition and retained assertion | RED → GREEN |
+|---|---|---|
+| Immediate create actions | Install the clock before navigation; hold the 150 ms vocabulary debounce across a native animation witness lasting twice that interval. Retain no-POST, disabled-control and restored-project checks. | Two WebKit failures → four Chromium/WebKit passes |
+| Unrelated render preserves classes | Pause the target card's CSS animations and JavaScript cleanup timers. Drive the real modal's opening frame explicitly; retain every transient class after a wall-time animation witness and real create/render. | Two lifecycle-control failures → two desktop passes |
+| Footer timer preserves version | Observe native DOM mutation records while advancing the clock. A one-second tick can correctly retain `Updated just now`; retain navigation, layout, version and three-second age-format checks. | Two repeated-label failures → six desktop passes |
+
+The combined card/footer run passed eight cases in 26 seconds. Strict
+TypeScript checking of the three changed specs and their imports passed.
+The combined SH-804/SH-813 timeout audit exposed a separate integration gap.
+Its repaired exception table classifies the assertion adapter's sampled and
+delegated budgets and the explicit-deadline precedence proofs. The new
+classification regression was RED before that repair; all 16 load-grace and
+10 text-assertion source checks now pass. Classifications remain path-,
+expression- and count-specific and reject unreviewed paths and changed values.
+Raw regression evidence is in `.storyhook/logs/sh812-resumed/`.
+
+The refreshed warm-up selected 1,507 tests in 16 slices, but was interrupted
+after a new Drafts readiness failure and a failure in the card animation-control
+witness. It ran 308.88 seconds including cleanup, at mean/max load
+136.20/190.95; no history was promoted and no comparison arm ran.
+`board-readiness.spec.ts:280` observed a closed Drafts modal for 65,347 ms
+after the real click, despite the preceding exact global count check passing.
+That prerequisite is adopted for investigation. The card witness now
+distinguishes CSS class animations from the other timelines `getAnimations()`
+returns. A deterministic competing native Web Animation reproduced its overly
+broad check on both engines: CSSAnimation was paused while Animation was
+running. Filtering the controlled owner passed both cases in a 15-second pool;
+strict TypeScript checking passed. Neither failure is attributed to load
+without further evidence.
+
+This preparation also copied Cargo's mutable artifact twice while a targeted
+test build was replacing it. The optimized run used SHA-256 `dc4e2297…330a053`;
+the baseline copy had `2d3ae503…56a84a`. They were not a matched binary pair.
+Future preparation must pin one copy first, hash it, copy both arms from that
+file and require both hashes to match the manifest before every arm. This
+attempt supplies diagnostic evidence only, retained in `/tmp/sh812-v2-bench/`
+and `.storyhook/logs/sh812-performance-v2/` with the driver and manifest.
 
 ### What slicing exposed
 
