@@ -47,6 +47,19 @@ cleanUpCreatedStories("Beta Project");
  * task, and `page.clock.runFor()` is what proves the timer did or did not fire. */
 const CREATE_VOCAB_DEBOUNCE_MS = 150;
 
+/** Consume wall time beyond the debounce without advancing a controlled JS clock. */
+async function crossDebounceInWallTime(page: Page): Promise<void> {
+  await page.evaluate(async (debounce) => {
+    const witness = document.createElement("span");
+    document.body.appendChild(witness);
+    try {
+      await witness.animate([{ opacity: 0 }, { opacity: 1 }], { duration: debounce * 2 }).finished;
+    } finally {
+      witness.remove();
+    }
+  }, CREATE_VOCAB_DEBOUNCE_MS);
+}
+
 interface CreateGuardSnapshot {
   selected: string;
   activeId: string;
@@ -335,20 +348,23 @@ test("an immediate Save Draft after Alpha to Beta cannot POST to Alpha", async (
 }) => {
   const alphaSlug = await projectSlug(request, "Alpha Project");
   const betaSlug = await projectSlug(request, "Beta Project");
+  await openClockedAlpha(page, alphaSlug);
   await page.locator("#new-story-btn").click();
   await page.locator("#create-title").fill("Immediate draft must stay local");
   await installStoryPostRecorder(page);
 
-  expect(await dispatchProjectChangeAndAttemptNow(page, betaSlug, "save")).toEqual([]);
-  await expect(page.locator("#create-modal")).toHaveClass(/open/);
-  await expect(page.locator("#create-save-draft")).toBeDisabled();
+  await onAFrozenClock(page, async () => {
+    expect(await dispatchProjectChangeAndAttemptNow(page, betaSlug, "save")).toEqual([]);
+    await crossDebounceInWallTime(page);
+    await expect(page.locator("#create-modal")).toHaveClass(/open/);
+    await expect(page.locator("#create-save-draft")).toBeDisabled();
 
-  // Return to the mounted Alpha vocabulary before the debounce can fire; the
-  // modal is then dismissible without leaving delayed work behind this test.
-  const restored = await dispatchProjectChangeNow(page, alphaSlug);
-  expect(restored.selected).toBe(alphaSlug);
-  expect(restored.saveDisabled).toBe(false);
-  expect(await recordedStoryPosts(page)).toEqual([]);
+    // Restore before the debounce, independent of driver scheduling latency.
+    const restored = await dispatchProjectChangeNow(page, alphaSlug);
+    expect(restored.selected).toBe(alphaSlug);
+    expect(restored.saveDisabled).toBe(false);
+    expect(await recordedStoryPosts(page)).toEqual([]);
+  });
   await page.locator("#create-discard").click();
 });
 
@@ -358,18 +374,22 @@ test("an immediate title Enter after Alpha to Beta cannot POST to Alpha", async 
 }) => {
   const alphaSlug = await projectSlug(request, "Alpha Project");
   const betaSlug = await projectSlug(request, "Beta Project");
+  await openClockedAlpha(page, alphaSlug);
   await page.locator("#new-story-btn").click();
   await page.locator("#create-title").fill("Immediate Enter must stay local");
   await installStoryPostRecorder(page);
 
-  expect(await dispatchProjectChangeAndAttemptNow(page, betaSlug, "enter")).toEqual([]);
-  await expect(page.locator("#create-modal")).toHaveClass(/open/);
-  await expect(page.locator("#create-submit")).toBeDisabled();
+  await onAFrozenClock(page, async () => {
+    expect(await dispatchProjectChangeAndAttemptNow(page, betaSlug, "enter")).toEqual([]);
+    await crossDebounceInWallTime(page);
+    await expect(page.locator("#create-modal")).toHaveClass(/open/);
+    await expect(page.locator("#create-submit")).toBeDisabled();
 
-  const restored = await dispatchProjectChangeNow(page, alphaSlug);
-  expect(restored.selected).toBe(alphaSlug);
-  expect(restored.submitDisabled).toBe(false);
-  expect(await recordedStoryPosts(page)).toEqual([]);
+    const restored = await dispatchProjectChangeNow(page, alphaSlug);
+    expect(restored.selected).toBe(alphaSlug);
+    expect(restored.submitDisabled).toBe(false);
+    expect(await recordedStoryPosts(page)).toEqual([]);
+  });
   await page.locator("#create-discard").click();
 });
 
