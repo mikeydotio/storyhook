@@ -77,8 +77,10 @@ A bounded, tool-free Luna classifier recognizes completed plans awaiting prose
 approval. In Default mode it supplies native continuation; in Plan mode it asks
 for the same plan in `proposed_plan` tags so the existing menu watcher can approve.
 Session/story checks and a persistent receipt allow at most one prose continuation.
-The classifier capability contract is currently verified only for Codex 0.154.0;
-other runtimes emit a diagnostic and retain the native menu path. See
+The classifier uses strict configuration and response validation without a Codex
+version allowlist, so compatible updates can occur during an active session.
+Actual configuration, execution or response failures emit a diagnostic without
+approval; the native menu path remains available. See
 [the design and probe contract](../../../docs/spec/codex-auto-plan-continuation.md).
 
 SH-687 adds an explicit handoff for built-in autonomous Default-mode sessions:
