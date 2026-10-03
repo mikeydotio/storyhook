@@ -36,7 +36,7 @@ export const BASE_TEST_TIMEOUT_MS = 15_000;
 /** SH-222's own measured budget for a single `expect(...)` call. Unchanged
  * for the same reason as {@link BASE_TEST_TIMEOUT_MS} -- an assertion that
  * exists to *prove* a bound states its own `{ timeout: N }`
- * (`DATA_DELAY_MS * 3`, `GONE_TIMEOUT`, `DISPATCH_COMPLETION_TIMEOUT`, …);
+ * (`DATA_DELAY_MS * 3`, `GONE_TIMEOUT`, `FIDELITY_TIMEOUT_MS`, …);
  * this default only ever governs how long the harness is willing to *wait*
  * for something it expects to become true, which is patience, not proof. */
 export const BASE_EXPECT_TIMEOUT_MS = 5_000;
@@ -165,7 +165,14 @@ export function resetTestBudget(
  * the base.
  */
 export function gracedPatience(ratio: number = contention()): number {
-  return loadGraceEnabled() ? gracedBudget(BASE_EXPECT_TIMEOUT_MS, ratio) : BASE_EXPECT_TIMEOUT_MS;
+  return gracedOperationBudget(BASE_EXPECT_TIMEOUT_MS, ratio);
+}
+
+/** Patience for one operation, sampled when it starts. Preserve the existing
+ * multiplier and kill switch, but cap the RESULT: a reset or dispatch may
+ * have a larger idle base than the config's test budget (SH-804). */
+export function gracedOperationBudget(baseMs: number, ratio: number = contention()): number {
+  return Math.min(MAX_TEST_TIMEOUT_MS, loadGraceEnabled() ? gracedBudget(baseMs, ratio) : baseMs);
 }
 
 /**

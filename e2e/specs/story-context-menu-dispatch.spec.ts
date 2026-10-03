@@ -1,3 +1,4 @@
+import { gracedOperationBudget } from "../load-grace";
 import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
@@ -6,6 +7,9 @@ import {
   openProject,
   seedToken,
 } from "./support";
+
+/** Existing idle patience for dispatch notice; SH-804 adds contention grace. */
+const DISPATCH_NOTICE_BASE_MS = 10_000;
 
 /**
  * Exercises SH-197's context menu Dispatch action. SH-523 aligns this surface
@@ -311,7 +315,7 @@ test("an in-flight dispatch disables the item with a warning and explanation", a
   await page.keyboard.press("Escape");
   poll.release();
   await expect(page.locator("#toast-stack .toast.success")).toBeVisible({
-    timeout: 10_000,
+    timeout: gracedOperationBudget(DISPATCH_NOTICE_BASE_MS),
   });
 
   await card.click({ button: "right" });

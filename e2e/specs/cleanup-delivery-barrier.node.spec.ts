@@ -6,8 +6,9 @@ import type { APIRequestContext, TestInfo } from "@playwright/test";
 import { BlockDeliveryBarrier, readBlockDeliverySnapshot } from "../block-delivery-barrier.cjs";
 import { fixtureApiUrl } from "../fixture-api";
 import { FIXTURE_BASELINE_ENV, fixtureBaseline } from "../fixture-baseline";
-import { BASE_EXPECT_TIMEOUT_MS, gracedPatience } from "../load-grace";
-import { execFileSync } from "node:child_process";
+import { BASE_EXPECT_TIMEOUT_MS, gracedOperationBudget, gracedPatience } from "../load-grace";
+import { execFile, execFileSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 
@@ -116,6 +117,35 @@ with sqlite3.connect(sys.argv[1]) as db:
   return path;
 }
 
+/** Own one real exclusive lock on the private DELETE-journal fixture. Closing
+ * stdin releases it; both readiness and exit errors stay visible to the test. */
+async function withDeliveryLock(path: string, body: () => Promise<void>): Promise<void> {
+  let exited!: (error: Error | null) => void;
+  const exit = new Promise<Error | null>(resolve => { exited = resolve; });
+  const child = execFile("python3", ["-c", `
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute("BEGIN EXCLUSIVE")
+    print("locked", flush=True)
+    sys.stdin.read()
+    db.rollback()
+`, path], { timeout: gracedOperationBudget(LOCK_HOLDER_BASE_MS) }, (error) => exited(error));
+  const ready = new Promise<void>((resolve, reject) => {
+    child.stdout!.once("data", chunk => {
+      if (String(chunk).trim() === "locked") resolve();
+      else reject(new Error(`unexpected SQLite lock receipt: ${chunk}`));
+    });
+  });
+  try {
+    await Promise.race([ready, exit.then(error => { throw error ?? new Error("lock holder exited before readiness"); })]);
+    await body();
+  } finally {
+    child.stdin!.end();
+    const error = await exit;
+    if (error) throw new Error("SQLite lock holder failed", { cause: error });
+  }
+}
+
 /** The python3 an unshimmed PATH resolves, for the shim to hand over to. */
 function realPython3(): string {
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
@@ -185,6 +215,36 @@ const PAST_THE_OLD_BOUND_MS = BASE_EXPECT_TIMEOUT_MS + 1_000;
 
 /** A patience short enough that the shimmed read cannot finish inside it. */
 const SHORT_PATIENCE_MS = 1_000;
+
+/** Cover the deliberate busy wait, its reader and orderly lock release. */
+const LOCK_HOLDER_BASE_MS = PAST_THE_OLD_BOUND_MS * 2 + BASE_EXPECT_TIMEOUT_MS;
+
+test("SQLite lock patience shares the read budget beyond the former busy timeout", async ({}, testInfo) => {
+  const holdMs = gracedOperationBudget(PAST_THE_OLD_BOUND_MS);
+  test.setTimeout(testInfo.timeout + holdMs);
+  const path = writeDeliveryFixture(testInfo);
+  let pendingRead: Promise<{ value: unknown; error: unknown }> | undefined;
+  await withDeliveryLock(path, async () => {
+    const reading = readBlockDeliverySnapshot(path, "alpha-project", "AA-171", holdMs + gracedPatience());
+    // Observe rejections immediately while keeping the lock beyond Python's
+    // former busy timeout; awaiting only after the delay would lose evidence.
+    const result = reading.then(value => ({ value, error: null }), error => ({ value: null, error }));
+    await delay(holdMs);
+    // Return from the body to release the lock, then inspect the read below.
+    pendingRead = result;
+  });
+  const result = await pendingRead!;
+  if (result.error) throw result.error;
+  expect(result.value).toEqual(snapshot([row(1, "attempting")]));
+});
+
+test("an unreleased SQLite lock is killed by the read budget", async ({}, testInfo) => {
+  const path = writeDeliveryFixture(testInfo);
+  await withDeliveryLock(path, async () => {
+    await expect(readBlockDeliverySnapshot(path, "alpha-project", "AA-171", SHORT_PATIENCE_MS))
+      .rejects.toThrow(/snapshot read.*did not finish within its 1000ms bound/);
+  });
+});
 
 test("the snapshot reader refuses absent or relative store paths", async () => {
   for (const path of [undefined, null, "", "relative-store.db"]) {
