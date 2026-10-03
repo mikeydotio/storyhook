@@ -140,6 +140,12 @@ harness_path_entries	:(glob)**/*
 help_topic_references	:(glob)**/*
 hook_budgets	:(glob)**/*
 hooks	:(glob)**/*
+host_admission	:(glob)scripts/host_admission/**
+host_admission	scripts/host-admission.py
+host_admission	scripts/tests/test_host_admission.py
+host_admission	scripts/tests/test_host_admission_activation.py
+host_admission	scripts/tests/test_host_admission_sensors.py
+host_admission	scripts/tests/test_host_admission_system.py
 implementer_test_scope	:(glob)plugins/story/**
 implementer_test_scope	:(glob)src/**
 implementer_test_scope	AGENTS.md

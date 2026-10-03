@@ -274,3 +274,56 @@ failure is an infrastructure error through existing supervision, distinct
 from a budget breach. It cannot silently become a successful disposition.
 The bundle includes the cost helper, and changes invalidate affected leg
 receipts through the existing contract fingerprint.
+
+## SH-868 host admission contract
+
+The host authority is a cooperative resource scheduler, separate from the
+project story store. SH-869 owns production runner adoption. Production
+activation requires a measured host policy; no fixture values are defaults.
+SH-801 still owns the controlled measurement campaign. This authority alone
+does not remove overload from runners that have not adopted it.
+
+One broker owns a permanent lock in the canonical host-local
+`/var/tmp/storyhook-host-admission-v1` directory. Clients use a Unix socket.
+Neither HOME, XDG state, repository settings nor compiler-slot overrides
+select a different authority. The initial service supports one OS account;
+another account must refuse, never create an independent cap. A VM has its
+own kernel and is not claimed to share physical-host admission.
+
+SQLite transactions retain allocation and evidence before acknowledgement.
+Requests have stable IDs; an identical retry returns the original capability,
+and a changed retry fails. Unknown state or cleanup fails closed. A root
+reserves CPU and memory together. Subgrants partition that envelope without
+charging the host twice. Holding a parent while waiting for another root or
+an enlargement is prohibited. Finish descendants, release, then requeue.
+
+The scheduler retains project and work-class deficit counters, charging
+dominant resource share. Positive release weight and aged-request backfill
+suppression prevent starvation while the host envelope remains supported.
+Separate repair capacity cannot be borrowed by ordinary work. Pressure and
+sensor failure can pause every class, including repair; cleanup stays usable.
+Durations and thresholds must come from the policy and its measurement
+references. Missing observations are unknown, not idle.
+
+Lease states are queued, reserved, running, draining, quarantined, released
+and cancelled. A blocked launch records the supervisor, child incarnation,
+session and lifetime guard before executing the command. Registered children
+must retain that ownership across exec. A detached service needs an explicit
+adapter. Session membership alone is not containment. Cancellation does not
+release capacity. Native process identity, session settlement and lifetime
+guard settlement must agree before release. Unknown supervisor or descendant
+ownership retains capacity until cleanup can be proved or a native boot
+identity change proves the old processes cannot survive.
+
+Authority events retain the policy, host, boot, lease lineage, queue waits,
+decisions, resource observations and recovery reasons. They do not certify a
+tree. The SH-867 importer will retain their attempt-bound projection without
+changing immutable gate inputs or the silence watchdog baseline.
+
+Darwin sensors use Mach CPU deltas, free plus inactive pages as a conservative
+available-memory estimate, kernel pressure flags, and the system `ps` state
+census. Its runnable-process field is an upper bound: each protected `?`
+state counts as runnable. It is not a runnable-thread count. Linux sensors
+use MemAvailable, CPU tick deltas, procs_running, and CPU/memory PSI. A first
+CPU observation supplies no interval; admission waits for the next valid
+sample. A stale observation gap restarts recovery hysteresis.
