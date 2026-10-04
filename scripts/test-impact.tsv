@@ -6,6 +6,10 @@ activity_script	:(glob)**/*
 attribution_preparation	:(glob)src/service/attribution/**
 attribution_preparation	:(glob)src/store/**
 attribution_rust	:(glob)src/service/attribution/**
+attribution_trees	:(glob)src/service/attribution/**
+attribution_trees	src/env/git_env.rs
+attribution_trees	src/service/isolated_merge.rs
+attribution_trees	src/service/private_objects.rs
 backup_restore	:(glob)**/*
 battery_completion	:(glob)scripts/**
 binary_lease	scripts/binary-lease.sh

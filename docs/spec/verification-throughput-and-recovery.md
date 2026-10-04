@@ -341,6 +341,23 @@ removing a failing test is not ablation evidence. Fixture-defect attribution
 must isolate the fixture change while preserving the assertion and production
 behavior. Raw journals and assessor proposals cannot construct return authority.
 
+Native Git preparation recomputes the failed merge from full base and head
+object IDs and requires the retained tree to match. Controls use private
+objects, an index and bare Git administration. Source checkout configuration,
+index hooks, filters and uncommitted work cannot supply diagnostic inputs.
+An unchanged control uses the base; a transplant copies exact candidate paths
+onto that base; an ablation restores exact base paths in the candidate. Every
+protected detector path must retain its mode and blob. Keep the complete binary
+candidate-to-control patch and its digest. These facts prove the tree operation,
+not the completeness or meaning of a caller-proposed detector closure.
+The native adapter must establish that closure before granting repair authority.
+
+Materialize native inputs from regular Git blobs, without smudge filters.
+Unsupported paths, symbolic links and submodules leave an unknown hold.
+Recheck the complete materialized path set, contents and modes before and after
+execution. Keep build products outside it. Changed inputs invalidate the
+observation. Explicit cleanup must succeed before claiming settled resources.
+
 Reserve each physical probe durably before launch. Allow at most eight starts
 and 300000 milliseconds of active diagnosis per submission, across admissions
 and daemon restarts. Interrupted work is not refunded. This limit is independent
