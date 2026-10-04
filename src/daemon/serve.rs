@@ -1679,10 +1679,16 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         cwd: std::path::PathBuf::new(),
     });
 
+    // Cloned out, never held across routing — the accept loop's own rule
+    // (SH-186), for the same reason. A project route runs the project's event
+    // hooks synchronously, for up to a minute; a read guard held that long
+    // kept `tailnet_reprobe`'s write waiting, and every new connection's
+    // admission read queued behind that writer, until the hook ended (SH-838).
     let trusted_hosts = serving
         .trusted_hosts
         .read()
-        .unwrap_or_else(PoisonError::into_inner);
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
     let routed = rest::route_with_activity(
         serving.store,
         &serving.env,
@@ -1699,7 +1705,6 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         },
         &trusted_hosts,
     );
-    drop(trusted_hosts);
     drop(entry);
     // Published here, at the request boundary: the write has committed and
     // its transaction is over, so a subscriber woken by this can read what
