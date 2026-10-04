@@ -228,6 +228,7 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "host_admission/scheduler.py",
     "host_admission/sensors.py",
     "host_admission/supervisor.py",
+    "host_admission/usage.py",
     "land-pr.sh",
     "landing-intent.sh",
     "machine-lock.sh",

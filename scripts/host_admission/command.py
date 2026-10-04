@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 
 from .activation import load_policy
@@ -50,7 +51,7 @@ def main(arguments=None, *, root=ROOT):
             finally:
                 broker.close()
             return 0
-        client = Client(root)
+        client = Client(root, timeout_ms=policy.value["stale_ms"])
         if args.operation in {"status", "events"}:
             result = client.call(args.operation, **({"after": args.after} if args.operation == "events" else {}))
             print(json.dumps(dict(version=1, enabled=True, value=result)))
@@ -68,33 +69,51 @@ def main(arguments=None, *, root=ROOT):
             publisher = Publisher(client, binding, args.journal)
         parent = os.environ.get("STORYHOOK_HOST_REQUEST")
         capability = os.environ.get("STORYHOOK_HOST_GRANT")
-        if parent or capability:
-            if not parent or not capability:
-                raise Refusal("incomplete inherited grant")
-            lease = client.call("subgrant", id=parent, token=capability,
-                                child=args.request_id, resources=amount)
-            if binding is not None and lease["binding"] != binding:
-                client.call("cancel", id=lease["id"], token=lease["token"])
-                client.call("finish", id=lease["id"], token=lease["token"])
-                raise Refusal("nested work must preserve its parent evidence binding")
-        else:
-            lease = client.call("enqueue", request=dict(id=args.request_id, project=args.project,
-                                work=args.work, resources=amount, **({"binding": binding} if binding else {})))
+        lease, interrupted, prior = None, None, {}
+        def interrupt(signum, _frame):
+            nonlocal interrupted
+            interrupted = signum
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            prior[signum] = signal.signal(signum, interrupt)
         try:
+            if parent or capability:
+                if not parent or not capability:
+                    raise Refusal("incomplete inherited grant")
+                lease = client.call("subgrant", id=parent, token=capability,
+                                    child=args.request_id, resources=amount)
+                if binding is not None and lease["binding"] != binding:
+                    raise Refusal("nested work must preserve its parent evidence binding")
+            else:
+                lease = client.call("enqueue", request=dict(id=args.request_id, project=args.project,
+                                    work=args.work, resources=amount, **({"binding": binding} if binding else {})))
             if publisher:
                 publisher.publish()
-            if lease["state"] == "queued":
+            while lease["state"] == "queued" and interrupted is None:
                 lease = client.call("wait", id=lease["id"], token=lease["token"])
+                if publisher:
+                    publisher.publish()
+            if interrupted is not None:
+                raise KeyboardInterrupt
             managed = ManagedProcess(client, lease, command, publisher=publisher)
             try:
-                result = managed.wait()
+                result = managed.wait(force_cancel=interrupted is not None)
                 return result if result >= 0 else 128 - result
             finally:
                 managed.close()
-        except KeyboardInterrupt:
-            client.call("cancel", id=lease["id"], token=lease["token"])
-            client.call("finish", id=lease["id"], token=lease["token"])
-            return 130
+        except (KeyboardInterrupt, Refusal, OSError, ValueError) as error:
+            if lease is not None:
+                try:
+                    client.call("cancel", id=lease["id"], token=lease["token"])
+                    if not client.call("finish", id=lease["id"], token=lease["token"]):
+                        raise Refusal("reservation retained until independent cleanup is proved")
+                except (Refusal, OSError) as cleanup:
+                    raise Refusal(f"request failed: {error}; cleanup: {cleanup}") from error
+            if isinstance(error, KeyboardInterrupt):
+                return 128 + (interrupted or signal.SIGINT)
+            raise
+        finally:
+            for signum, handler in prior.items():
+                signal.signal(signum, handler)
     except (Refusal, OSError, ValueError) as error:
         print(f"host-admission: {error}", file=sys.stderr)
         return 125

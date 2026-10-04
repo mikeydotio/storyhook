@@ -145,8 +145,10 @@ class Authority(Ledger):
             if execution is None:
                 raise Refusal("unknown execution settlement")
             result = prove(copy.deepcopy(execution))
-            if result is None:
-                row.update(state="quarantined", reason="descendant cleanup is unknown")
+            if result is not True:
+                reason = "descendant cleanup is unknown" if result is None else "descendant lifetime remains live"
+                drain(state, row, reason, self.event)
+                row.update(state="quarantined", reason=reason)
                 self.event(state, "quarantine", row, reason=row["reason"])
             elif result is True:
                 execution["settled"] = True
@@ -156,16 +158,30 @@ class Authority(Ledger):
 
     def usage(self, identity, token, sample):
         """Retain measured peaks; an overrun cancels but never frees the envelope."""
-        sample = resources(sample, "resource observation", minimum=0)
+        if not isinstance(sample, dict) or set(sample) != {"cpu", "memory"}:
+            raise Refusal("invalid resource observation")
+        for key, value in sample.items():
+            if key != "cpu" or value is not None:
+                integer(value, f"resource observation {key}", 0)
         with self.transaction() as state:
             row = self._row(state, identity, token)
             if row["state"] not in HELD:
                 raise Refusal("resource observation is outside a live lease")
-            old = row.get("peaks", dict(cpu=0, memory=0))
-            row["peaks"] = {k: max(old[k], sample[k]) for k in sample}
+            old = row.get("peaks", dict(cpu=None, memory=None))
+            row["peaks"] = {k: max(v for v in (old[k], sample[k]) if v is not None)
+                            if old[k] is not None or sample[k] is not None else None for k in sample}
             self.event(state, "usage", row, sample=sample, peaks=row["peaks"])
-            if any(sample[k] > row["resources"][k] for k in sample):
+            if any(sample[k] is not None and sample[k] > row["resources"][k] for k in sample):
                 drain(state, row, "resource envelope exceeded", self.event)
+
+    def quarantine(self, identity, reason):
+        """Retain an allocation when the broker cannot establish its required evidence."""
+        with self.transaction() as state:
+            row = state["leases"][identity]
+            if row["state"] in HELD and (row["state"] != "quarantined" or row["reason"] != reason):
+                drain(state, row, reason, self.event)
+                row.update(state="quarantined", reason=reason)
+                self.event(state, "quarantine", row, reason=reason)
 
     def finish(self, identity, token):
         """Release only a never-launched or proven-settled envelope and its descendants."""
@@ -237,11 +253,21 @@ class Authority(Ledger):
         return "wait for capacity and fair queue turn"
 
     def status(self):
-        """Expose allocation, pressure and queue order without bearer capabilities."""
+        """Expose arrival order and observed resources without bearer capabilities."""
         with self.transaction() as state:
+            queued = [r["id"] for r in state["leases"].values() if r["state"] == "queued"]
+            leases = []
+            for row in state["leases"].values():
+                value = {k: row[k] for k in ("id", "parent", "project", "work", "state", "resources", "reason")}
+                value.update(queue_position=queued.index(row["id"]) + 1 if row["id"] in queued else None,
+                             wait_ms=(row["granted_at"] if row["granted_at"] is not None else state["now"]) - row["queued_at"],
+                             peaks=row.get("peaks"),
+                             recovery_condition=("prove every registered session and lifetime guard settled"
+                                                 if row["executions"] else "restore the original supervisor or confirm a reboot")
+                             if row["state"] == "quarantined" else None)
+                leases.append(value)
             return dict(authority=state["authority"], policy=state["policy"], boot=state["boot"],
                         timing={k: self.policy.value[k] for k in ("sample_ms", "lease_ms", "cleanup_ms")},
-                        allocated=allocated(state), pressure=state["pressure"],
+                        allocated=allocated(state), pressure=state["pressure"], sample=state["sample"],
                         next_action=self._reason(state),
-                        leases=[{k: r[k] for k in ("id", "parent", "project", "work", "state", "resources", "reason")}
-                                for r in state["leases"].values()])
+                        leases=leases)

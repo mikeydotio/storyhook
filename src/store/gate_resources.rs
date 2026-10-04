@@ -20,11 +20,14 @@ fn vector(row: &Value, minimum: i64) -> Result<(), String> {
     if row.as_object().is_none_or(|r| r.len() != 2) {
         return Err("invalid resource vector".into());
     }
-    number(row, "cpu", minimum)?;
+    if minimum != 0 || !row.get("cpu").is_some_and(Value::is_null) {
+        number(row, "cpu", minimum)?;
+    }
     number(row, "memory", minimum)?;
     Ok(())
 }
 
+/// Require an exact attempt, execution and positive submission generation.
 pub(crate) fn binding(
     row: &Value,
     attempt: &str,
@@ -40,6 +43,7 @@ pub(crate) fn binding(
     Ok(())
 }
 
+/// Validate one observation without treating it as execution or certification proof.
 pub(crate) fn validate(
     row: &Value,
     attempt: &str,

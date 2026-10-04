@@ -14,12 +14,14 @@ from .client import MAX_MESSAGE
 from . import native
 from .namespace import check_file, directory, exclusive, open_private
 from .policy import Refusal
+from .ledger import HELD
+from .usage import Monitor
 
 
 class Broker:
     """Own one host namespace and process a versioned admission protocol."""
 
-    def __init__(self, root, policy, sensor):
+    def __init__(self, root, policy, sensor, *, monitor=None):
         self.root = directory(root, create=True)
         self.lock = exclusive(self.root / "broker.lock")
         self.authority = self.socket = self.selector = None
@@ -27,6 +29,7 @@ class Broker:
         try:
             self.policy, self.sensor = policy, sensor
             self.boot = native.boot_identity()
+            self.monitor = monitor or Monitor(self.boot)
             self.clock = lambda: time.monotonic_ns() // 1_000_000
             database = self.root / "state.db"
             marker = self.root / "initialized"
@@ -56,6 +59,7 @@ class Broker:
             raise
 
     def _sample(self):
+        self._usage()
         try:
             sample = self.sensor()
         except (OSError, ValueError, Refusal) as error:
@@ -63,6 +67,34 @@ class Broker:
                 self.authority.event(state, "sensor-error", reason=str(error))
             sample = None
         self.authority.sample(sample)
+
+    def _usage(self):
+        a = self.authority
+        with a.transaction() as state:
+            rows = list(state["leases"].values())
+        for row in rows:
+            if row["state"] not in HELD:
+                continue
+            descendants = {row["id"]}
+            for _ in rows:
+                descendants.update(r["id"] for r in rows if r["parent"] in descendants)
+            sessions = {e["session"] for r in rows if r["id"] in descendants
+                        for e in r["executions"] if not e["settled"]}
+            if not sessions:
+                continue
+            try:
+                sample = self.monitor.sample(row["id"], sessions)
+                a.usage(row["id"], row["token"], sample)
+            except (OSError, Refusal, ValueError) as error:
+                a.quarantine(row["id"], f"resource observation unavailable: {error}")
+        # Only independent settlement can recover a lost supervisor. Work that
+        # never attached has no lifetime proof and remains quarantined.
+        for row in reversed(rows):
+            if row["state"] == "quarantined" and row["executions"]:
+                for execution in row["executions"]:
+                    if not execution["settled"] and self._proof(execution) is True:
+                        a.settle(row["id"], row["token"], execution["id"], self._proof)
+                a.finish(row["id"], row["token"])
 
     def _proof(self, execution):
         try:
@@ -125,8 +157,6 @@ class Broker:
             return a.attach(row["id"], token, execution)
         if op == "settle":
             return a.settle(row["id"], token, message["execution_id"], self._proof)
-        if op == "usage":
-            return a.usage(row["id"], token, message["sample"])
         raise Refusal(f"unknown admission operation: {op}")
 
     def serve(self):
@@ -169,6 +199,7 @@ class Broker:
                             value = self.dispatch(message, state["owner"])
                             if message["operation"] == "wait" and value["state"] == "queued":
                                 state["waiting"] = message
+                                state["wait_until"] = self.clock() + self.policy.value["sample_ms"]
                                 state["input"].clear()
                                 continue
                             response = dict(version=1, value=value)
@@ -186,7 +217,7 @@ class Broker:
                 if state and state.get("waiting"):
                     try:
                         row = self.dispatch(state["waiting"], state["owner"])
-                        if row["state"] == "queued":
+                        if row["state"] == "queued" and self.clock() < state["wait_until"]:
                             continue
                         response = dict(version=1, value=row)
                     except (Refusal, OSError) as error:

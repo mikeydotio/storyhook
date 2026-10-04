@@ -70,6 +70,24 @@ fn resource_replay_keeps_ordered_peaks_without_changing_inputs_or_verdict() {
 }
 
 #[test]
+fn unknown_cpu_intervals_remain_unknown_and_cannot_mask_a_numeric_peak() {
+    let mut a = attempt();
+    let mut first = event(1);
+    first["event"] = json!("usage");
+    first["sample"] = json!({"cpu":null,"memory":3000});
+    first["peaks"] = json!({"cpu":null,"memory":3000});
+    import(&mut a, first.clone());
+    assert_eq!(observations(&a), vec![first.clone()]);
+    let mut bad = first.clone();
+    bad["sequence"] = json!(2);
+    bad["sample"]["cpu"] = json!(500);
+    import(&mut a, bad);
+    assert_eq!(a.executions[0].diagnostics.len(), 1);
+    assert_eq!(observations(&a), vec![first]);
+    a.validate().unwrap();
+}
+
+#[test]
 fn foreign_malformed_or_changed_evidence_is_diagnostic_not_authority() {
     let mut a = attempt();
     import(&mut a, event(2));

@@ -147,6 +147,7 @@ host_admission	scripts/tests/test_host_admission_activation.py
 host_admission	scripts/tests/test_host_admission_evidence.py
 host_admission	scripts/tests/test_host_admission_sensors.py
 host_admission	scripts/tests/test_host_admission_system.py
+host_admission	scripts/tests/test_host_admission_usage.py
 host_admission_evidence	:(glob)scripts/host_admission/**
 host_admission_evidence	:(glob)src/service/gate_cost/**
 host_admission_evidence	scripts/tests/test_host_admission.py

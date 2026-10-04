@@ -22,6 +22,7 @@ class ManagedProcess:
         self.client, self.lease, self.child, self.guard = client, lease, None, None
         self.publisher = publisher
         self.finished = False
+        self.result, self.failure = None, None
         self.execution_id = uuid.uuid4().hex
         self.boot = native.boot_identity()
         current = self.call("inspect")
@@ -35,29 +36,41 @@ class ManagedProcess:
         fcntl.flock(self.guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
         read_go, write_go = os.pipe()
         read_ready, write_ready = os.pipe()
+        read_exec, write_exec = os.pipe()
         try:
             env = dict(os.environ, STORYHOOK_HOST_GRANT=lease["token"],
                        STORYHOOK_HOST_REQUEST=lease["id"], STORYHOOK_HOST_LEASE_FD=str(self.guard))
             self.child = subprocess.Popen(
                 [sys.executable, "-B", str(Path(__file__).with_name("launcher.py")),
-                 str(read_go), str(write_ready), str(self.guard), *command],
-                start_new_session=True, pass_fds=(read_go, write_ready, self.guard), env=env)
+                 str(read_go), str(write_ready), str(self.guard), str(write_exec), *command],
+                start_new_session=True, pass_fds=(read_go, write_ready, self.guard, write_exec), env=env)
             os.close(read_go); read_go = None
             os.close(write_ready); write_ready = None
+            os.close(write_exec); write_exec = None
             if not select.select([read_ready], [], [], self.timing["lease_ms"] / 1000)[0] or os.read(read_ready, 1) != b"R":
                 raise Refusal("blocked launcher did not establish readiness")
             leader = native.identity(self.child.pid, self.boot)
             self.call("attach", execution=dict(id=self.execution_id, leader=leader,
                       session=self.child.pid, guard=guard_name))
             os.write(write_go, b"G")
-        except BaseException:
+            if not select.select([read_exec], [], [], self.timing["lease_ms"] / 1000)[0]:
+                raise Refusal("exec handshake exceeded the lease allowance")
+            error = os.read(read_exec, 4096)
+            if error:
+                raise Refusal(f"managed exec failed: {error.decode(errors='replace')}")
+        except BaseException as error:
             os.close(write_go); write_go = None
             if self.child:
-                self.child.wait(timeout=self.timing["cleanup_ms"] / 1000)
-            os.close(self.guard); self.guard = None
+                self.publisher = None
+                try:
+                    self.wait(force_cancel=True)
+                except (Refusal, OSError) as cleanup:
+                    raise Refusal(f"managed launch failed: {error}; cleanup: {cleanup}") from error
+            elif self.guard is not None:
+                os.close(self.guard); self.guard = None
             raise
         finally:
-            for fd in (read_go, write_go, read_ready, write_ready):
+            for fd in (read_go, write_go, read_ready, write_ready, read_exec, write_exec):
                 if fd is not None:
                     os.close(fd)
 
@@ -82,11 +95,14 @@ class ManagedProcess:
                 continue
         return members
 
-    def wait(self):
+    def wait(self, *, force_cancel=False):
         """Observe broker cancellation and drain only this pinned managed process group."""
         if self.finished:
-            return self.child.returncode
-        requested, sent_term, sent_kill = False, None, False
+            if self.failure is not None:
+                raise Refusal(self.failure)
+            return self.result
+        requested, sent_term, sent_kill = force_cancel, None, False
+        draining, failure = force_cancel, None
         prior = {}
         def cancel(_signal, _frame):
             nonlocal requested
@@ -95,16 +111,22 @@ class ManagedProcess:
             prior[signum] = signal.signal(signum, cancel)
         try:
             while True:
-                if requested:
-                    self.call("cancel"); requested = False
-                row = self.call("inspect")
-                if self.publisher:
-                    self.publisher.publish()
+                if failure is None:
+                    try:
+                        if requested:
+                            draining = True
+                            self.call("cancel"); requested = False
+                        row = self.call("inspect")
+                        draining = draining or row["state"] in {"draining", "quarantined"}
+                        if self.publisher:
+                            self.publisher.publish()
+                    except (Refusal, OSError) as error:
+                        failure, draining = str(error), True
                 exited = self._exited()
                 members = self._members()
                 if exited and not members:
                     break
-                if row["state"] in {"draining", "quarantined"} or exited:
+                if draining or exited:
                     now = time.monotonic_ns() // 1_000_000
                     if sent_term is None:
                         if members:
@@ -120,14 +142,23 @@ class ManagedProcess:
                 # This is the policy observation cadence, not a guessed workload delay.
                 select.select([], [], [], self.timing["sample_ms"] / 1000)
             result = self.child.wait()
+            self.result = 125 if draining and result == 0 else result
             os.close(self.guard); self.guard = None
-            self.call("settle", execution_id=self.execution_id)
+            self.finished = True
+            if failure:
+                raise Refusal(f"owned processes drained; admission control or evidence failed: {failure}")
+            row = self.call("inspect")
+            if any(e["id"] == self.execution_id for e in row["executions"]):
+                self.call("settle", execution_id=self.execution_id)
             if not self.call("finish"):
                 raise Refusal("managed work ended but descendant settlement remains unproved")
-            self.finished = True
             if self.publisher:
                 self.publisher.publish()
-            return result
+            return self.result
+        except (Refusal, OSError) as error:
+            if self.finished:
+                self.failure = str(error)
+            raise
         finally:
             for signum, handler in prior.items():
                 signal.signal(signum, handler)
@@ -137,7 +168,6 @@ class ManagedProcess:
         if self.child and not self.finished:
             # Journal failure must not prevent cleanup of the owned process group.
             self.publisher = None
-            self.call("cancel")
-            self.wait()
+            self.wait(force_cancel=True)
         if self.guard is not None:
             os.close(self.guard); self.guard = None

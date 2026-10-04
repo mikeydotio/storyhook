@@ -51,7 +51,15 @@ class Ledger:
                 if state.get("version") != 1 or state.get("host") != policy.value["host"]:
                     raise Refusal("foreign or unsupported authority state")
                 if state.get("policy") != policy.digest:
-                    raise Refusal("host policy changed; retained leases require their original policy")
+                    if any(r["state"] not in TERMINAL or any(not e["settled"] for e in r["executions"])
+                           for r in state["leases"].values()):
+                        raise Refusal("host policy changed; retained leases require their original policy")
+                    previous = state["policy"]
+                    state.update(policy=policy.digest, authority=uuid.uuid4().hex, scheduler={},
+                                 pressure="initial", recovery=None, sample=None)
+                    self.validate(state)
+                    self.event(state, "pressure", reason="idle policy revision activated", previous_policy=previous)
+                    self.db.execute("UPDATE authority SET payload=? WHERE id=1", (json.dumps(state),))
             self.db.execute("COMMIT")
         except BaseException:
             self.db.execute("ROLLBACK")
@@ -122,9 +130,9 @@ class Ledger:
         self.db.execute("INSERT INTO events(payload) VALUES(?)", (json.dumps(value),))
 
     def events(self, after):
-        """Return retained evidence after a durable sequence, without acknowledging delivery."""
+        """Return at most 100 observations after a sequence, without acknowledging delivery."""
         return [dict(json.loads(payload), sequence=seq) for seq, payload in
-                self.db.execute("SELECT sequence,payload FROM events WHERE sequence>? ORDER BY sequence", (after,))]
+                self.db.execute("SELECT sequence,payload FROM events WHERE sequence>? ORDER BY sequence LIMIT 100", (after,))]
 
     def close(self):
         """Close this database connection without releasing any process reservation."""

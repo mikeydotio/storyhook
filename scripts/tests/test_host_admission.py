@@ -75,6 +75,44 @@ class PolicyTests(unittest.TestCase):
 
 
 class AccountingTests(Fixture):
+    def test_policy_revision_requires_idle_state_and_keeps_old_evidence(self):
+        row = self.request("held")
+        before = self.a.events(0)
+        p = policy_value(); p["capacity"]["cpu"] += 1
+        self.policy = Policy(p, "fixture-host", fixture=True)
+        with self.assertRaisesRegex(Refusal, "policy"):
+            self.open()
+        self.a.finish(row["id"], row["token"])
+        revised = self.open()
+        self.assertEqual(revised.events(0)[:len(before)], before)
+        self.assertNotEqual(revised.status()["authority"], before[0]["authority"])
+        self.assertEqual(revised.status()["policy"], self.policy.digest)
+        self.assertIn("policy revision", revised.events(0)[-1]["reason"])
+
+    def test_status_retains_wait_peaks_and_recovery_without_capabilities(self):
+        held = self.request("held", cpu=6)
+        self.request("queued")
+        self.now += 11
+        self.a.usage("held", held["token"], dict(cpu=None, memory=120))
+        status = self.a.status()
+        rows = {r["id"]: r for r in status["leases"]}
+        self.assertEqual(rows["queued"]["queue_position"], 1)
+        self.assertEqual(rows["queued"]["wait_ms"], 11)
+        self.assertIsNone(rows["held"]["peaks"]["cpu"])
+        self.assertEqual(rows["held"]["peaks"]["memory"], 120)
+        self.assertNotIn(held["token"], str(status))
+        self.assertEqual(status["sample"]["at"], 1000)
+
+    def test_evidence_pages_are_bounded_and_contiguous(self):
+        with self.a.transaction() as state:
+            for _ in range(110):
+                self.a.event(state, "pressure", reason="fixture observation")
+        first = self.a.events(0)
+        self.assertEqual(len(first), 100)
+        rest = self.a.events(first[-1]["sequence"])
+        self.assertEqual(rest[0]["sequence"], first[-1]["sequence"] + 1)
+        self.assertEqual(len(first) + len(rest), 111)
+
     def test_cap_and_reserve_are_shared_across_projects(self):
         self.request("a", 6, 600)
         self.request("b", project="b")
@@ -193,6 +231,24 @@ class RecoveryTests(Fixture):
 
 
 class FairnessTests(Fixture):
+    def test_work_class_weights_preserve_a_positive_release_share(self):
+        p = policy_value(); p["weights"]["build"] = 3
+        self.policy = Policy(p, "fixture-host", fixture=True)
+        self.a = self.open()
+        self.a.sample(None)
+        for n in range(40):
+            for work in ("build", "release"):
+                self.request(f"{work}-{n}", 6, 600, work=work)
+        self.sample(); self.now += 20; self.sample()
+        order = []
+        for _ in range(32):
+            held = next(r for r in self.a.status()["leases"] if r["state"] == "reserved")
+            order.append(held["work"])
+            row = self.lease(held["id"])
+            self.a.finish(row["id"], row["token"])
+        self.assertEqual(order.count("build"), 24)
+        self.assertEqual(order.count("release"), 8)
+
     def test_full_quantum_requests_rotate_between_projects(self):
         self.a.sample(None)
         for n in range(4):
