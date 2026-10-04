@@ -2004,14 +2004,26 @@ fn lock_wait_evidence_requires_a_matching_live_identity() {
             "{output:?}"
         );
         let evidence = std::fs::read_to_string(journal).unwrap();
+        // The journal also carries the wait's own cost accounting (SH-867).
+        // Liveness is the `lock-wait` record alone; anything else must be cost.
+        let records: Vec<serde_json::Value> = evidence
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {evidence}")))
+            .collect();
+        let (liveness, other): (Vec<_>, Vec<_>) = records
+            .iter()
+            .partition(|record| record["kind"] == "lock-wait");
+        assert!(
+            other.iter().all(|record| record["kind"] == "cost"),
+            "only cost accounting may accompany liveness: {evidence}"
+        );
         if started == started_of(pid) {
-            let record: serde_json::Value = serde_json::from_str(&evidence).unwrap();
-            assert_eq!(record["kind"], "lock-wait");
-            assert_eq!(record["name"], "merge");
-            assert_eq!(record["pid"], pid);
+            assert_eq!(liveness.len(), 1, "{evidence}");
+            assert_eq!(liveness[0]["name"], "merge");
+            assert_eq!(liveness[0]["pid"], pid);
         } else {
             assert!(
-                evidence.is_empty(),
+                liveness.is_empty(),
                 "unconfirmed identity published liveness: {evidence}"
             );
         }
