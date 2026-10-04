@@ -49,6 +49,25 @@ fn bundled_names() -> BTreeSet<&'static str> {
 }
 
 #[test]
+fn host_admission_package_is_complete_in_the_verifier_bundle() {
+    let names = bundled_names();
+    assert!(names.contains("host-admission.py"));
+    let mut modules = 0;
+    for entry in fs::read_dir(scripts_dir().join("host_admission")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "py") {
+            let relative = path.strip_prefix(scripts_dir()).unwrap().to_str().unwrap();
+            assert!(
+                names.contains(relative),
+                "missing host admission module {relative}"
+            );
+            modules += 1;
+        }
+    }
+    assert!(modules > 1, "package scan found no admission modules");
+}
+
+#[test]
 fn every_embedded_file_is_the_tracked_script_byte_for_byte_with_its_executable_bit() {
     let mut seen = 0;
     for (name, executable, bytes) in verifier_bundle::files() {

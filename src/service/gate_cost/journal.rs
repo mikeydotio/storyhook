@@ -81,6 +81,24 @@ fn import(
             }
         }
         "cost" => interval(attempt, &row)?,
+        "resource" => {
+            let generation = submission.generation.map(|g| g.get());
+            crate::store::gate_resources::binding(&row, admission, &attempt.id, generation)?;
+            let event = &row["observation"];
+            crate::store::gate_resources::validate(event, admission, &attempt.id, generation)?;
+            if let Some(old) = attempt.resource_events.iter().find(|old| {
+                old["authority"] == event["authority"] && old["sequence"] == event["sequence"]
+            }) {
+                if old != event {
+                    return Err("resource event changed on replay".into());
+                }
+            } else {
+                let mut next = attempt.resource_events.clone();
+                next.push(event.clone());
+                crate::store::gate_resources::ordered(&next)?;
+                attempt.resource_events = next;
+            }
+        }
         "context" => {
             let inputs: GateInputs = serde_json::from_value(row["inputs"].clone())
                 .map_err(|e| format!("invalid gate input evidence: {e}"))?;
