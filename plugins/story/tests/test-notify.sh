@@ -20,7 +20,7 @@ out=$(
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       bash "$SCRIPT" dispatch "$id" 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "true" "dispatch: Codex lane exists"
+assert_ok "$out" "true" "dispatch: Codex lane exists"
 assert_eq "$(cat "$FAKE_TMUX_STATE/storyhook_agent")" "codex" \
   "dispatch: provider identity is stored on the window"
 
@@ -32,7 +32,7 @@ out=$(
     && PATH="$FAKE_TMUX_DIR:$PATH" STORY_PASTE_SETTLE_DELAY=0 \
       bash "$SCRIPT" notify "$id" "$message" 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "true" "notify: remediation delivered"
+assert_ok "$out" "true" "notify: remediation delivered"
 assert_eq "$(cat "$FAKE_TMUX_STATE/submitted")" "$message" \
   "notify: multi-line remediation submitted as one prompt"
 assert_eq "$(tail -n 1 "$FAKE_TMUX_STATE/submit_keys.log")" "Tab" \
@@ -45,7 +45,7 @@ out=$(
     && PATH="$FAKE_TMUX_DIR:$PATH" STORY_PASTE_SETTLE_DELAY=0 \
       bash "$SCRIPT" notify "$id" "must not land" 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "false" "notify: untagged pane refused"
+assert_ok "$out" "false" "notify: untagged pane refused"
 assert_eq "$(jqf "$out" .reason)" "pane-provider-unknown" \
   "notify: refusal identifies missing provider metadata"
 
@@ -56,7 +56,7 @@ out=$(
     && PATH="$FAKE_TMUX_DIR:$PATH" STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_PANE_COMMAND=zsh bash "$SCRIPT" notify "$id" "must not land" 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "false" "notify: changed pane refused"
+assert_ok "$out" "false" "notify: changed pane refused"
 assert_eq "$(jqf "$out" .reason)" "pane-changed" \
   "notify: refusal identifies the unrelated occupant"
 
@@ -64,7 +64,7 @@ id=$(new_story "$repo" "Claude verifier remediation")
 out=$(cd "$repo" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
   STORY_AGENT=claude STORY_READY_DELAY=0 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" dispatch "$id")
-assert_eq "$(jqf "$out" .ok)" true "notify: Claude has its own managed registration"
+assert_ok "$out" true "notify: Claude has its own managed registration"
 export FAKE_TMUX_PANES="$id	1	%1"
 remediate() {
   (cd "$repo" && PATH="$FAKE_TMUX_DIR:$PATH" STORY_PASTE_SETTLE_DELAY=0 STORY_CONFIRM_DELAY=0 \
@@ -73,7 +73,7 @@ remediate() {
 pastes() { wc -l < "$FAKE_TMUX_STATE/pastes.log" 2>/dev/null | tr -d ' ' || printf 0; }
 submits() { wc -l < "$FAKE_TMUX_STATE/submit_keys.log" 2>/dev/null | tr -d ' ' || printf 0; }
 out=$(remediate env)
-assert_eq "$(jqf "$out" .ok)" "true" "notify: Claude remediation delivered"
+assert_ok "$out" "true" "notify: Claude remediation delivered"
 assert_eq "$(tail -n 1 "$FAKE_TMUX_STATE/submit_keys.log")" "Enter" \
   "notify: Claude remediation retains its configured submit key"
 
@@ -83,7 +83,7 @@ assert_eq "$(tail -n 1 "$FAKE_TMUX_STATE/submit_keys.log")" "Enter" \
 printf '%s' "1. Yes" > "$FAKE_TMUX_STATE/input"
 pastes_before=$(pastes); submits_before=$(submits)
 out=$(remediate env)
-assert_eq "$(jqf "$out" .ok)" false "busy composer: refused"
+assert_ok "$out" false "busy composer: refused"
 assert_eq "$(jqf "$out" .reason)" composer-busy "busy composer: named"
 assert_contains "$(jqf "$out" .display)" "window" "busy composer: the refusal names the window"
 assert_eq "$(pastes)" "$pastes_before" "busy composer: nothing pasted"
@@ -100,7 +100,7 @@ assert_eq "$(submits)" "$submits_before" "no composer row: no submit key"
 # A paste that never shows in the composer is never submitted.
 submits_before=$(submits)
 out=$(remediate env FAKE_TMUX_DROP_PASTE=1)
-assert_eq "$(jqf "$out" .ok)" false "dropped paste: refused"
+assert_ok "$out" false "dropped paste: refused"
 assert_eq "$(jqf "$out" .reason)" delivery-failed "dropped paste: named"
 assert_eq "$(submits)" "$submits_before" "dropped paste: no submit key was sent"
 : > "$FAKE_TMUX_STATE/input"
@@ -111,7 +111,7 @@ assert_eq "$(submits)" "$submits_before" "dropped paste: no submit key was sent"
 # the agent worked on it, so the verifier parked the story.
 submits_before=$(submits)
 out=$(remediate env FAKE_TMUX_SLOW_CLEAR=2 STORY_CONFIRM_ATTEMPTS=2)
-assert_eq "$(jqf "$out" .ok)" true "late clear: delivered"
+assert_ok "$out" true "late clear: delivered"
 assert_eq "$(($(submits) - submits_before))" 1 "late clear: exactly one submit key"
 assert_eq "$(cat "$FAKE_TMUX_STATE/submitted")" "$message" "late clear: the remediation was submitted"
 
@@ -121,7 +121,7 @@ assert_eq "$(cat "$FAKE_TMUX_STATE/submitted")" "$message" "late clear: the reme
 printf '0' > "$FAKE_TMUX_STATE/prompt_submits"
 printf '9' > "$FAKE_TMUX_STATE/absorb"
 out=$(remediate env FAKE_TMUX_PASTE_PLACEHOLDER=faint STORY_CONFIRM_ATTEMPTS=2)
-assert_eq "$(jqf "$out" .ok)" false "faint placeholder: no false delivery"
+assert_ok "$out" false "faint placeholder: no false delivery"
 assert_eq "$(jqf "$out" .reason)" delivery-failed "faint placeholder: named as unconfirmed"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 0 "faint placeholder: nothing was really submitted"
 : > "$FAKE_TMUX_STATE/input"
@@ -144,7 +144,7 @@ out=$(
     && PATH="$FAKE_TMUX_DIR:$PATH" STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_PANE_COMMAND=claude bash "$SCRIPT" notify "$id" "must not land" 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "false" "notify: dead pane refused"
+assert_ok "$out" "false" "notify: dead pane refused"
 assert_eq "$(jqf "$out" .reason)" "pane-dead" \
   "notify: refusal names the exited pane, not a delivery failure"
 assert_contains "$(jqf "$out" .display)" "exited" \

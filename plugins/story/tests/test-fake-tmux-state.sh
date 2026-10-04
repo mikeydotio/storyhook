@@ -213,4 +213,127 @@ for order in before after protected; do
   assert_eq "$observed" "$selector_state/tmux.sock" "$order: client flags preserve selected socket"
 done
 
+# --- the default tmux server is always the test's own (SH-840) -------------
+#
+# A caller outside tmux is pointed at $TMUX_TMPDIR/tmux-<uid>/default, and an
+# unset TMUX_TMPDIR means the operator's real server under /tmp. Every lib.sh
+# instance keeps it inside the test home: the one that owns the home, and a
+# nested one under a harness that cleared its environment, which is how
+# tests/support/protect_domain.rs came to ask the machine's real server.
+tmpdir_after_lib() {
+  env "$@" bash -c 'source "$1/lib.sh"; printf "%s" "$TMUX_TMPDIR"' _ "$TESTS_DIR" 2>/dev/null
+}
+for inherited in unset outside; do
+  case "$inherited" in
+    unset) observed=$(tmpdir_after_lib -u TMUX_TMPDIR) ;;
+    outside) observed=$(tmpdir_after_lib TMUX_TMPDIR=/tmp) ;;
+  esac
+  case "$observed" in
+    "$STORYHOOK_TEST_HOME"/*) ;;
+    *) fail_test "a nested lib.sh with TMUX_TMPDIR $inherited left the default tmux server outside the test home [$observed]" ;;
+  esac
+done
+assert_eq "$(tmpdir_after_lib)" "$TMUX_TMPDIR" \
+  "a nested lib.sh keeps the home-local TMUX_TMPDIR its caller chose"
+
+# --- the fake server is published before every helper run (SH-840) ---------
+#
+# The daemon reads the fake's server model without the caller's FAKE_* knobs,
+# so the model must be published from the caller first. Production stopped
+# doing that as a side effect (SH-825, 90a4a55a); lib.sh does it before each
+# helper run. These cases pin the publication itself, with no production
+# probe involved: `unclaim` with no id is a usage error that never reaches one.
+publish_state=$(mktemp -d /tmp/story-test-publish.XXXXXX)
+_TMP_REPOS+=("$publish_state")
+publish_state=$(cd "$publish_state" && pwd -P)
+default_link="$TMUX_TMPDIR/tmux-$(id -u)/default"
+rows=$(printf 'TST-9\t1\t%%4')
+FAKE_TMUX_STATE="$publish_state" FAKE_TMUX_PANES="$rows" bash "$SCRIPT" unclaim >/dev/null 2>&1
+[ -e "$publish_state/tmux.sock" ] \
+  || fail_test "publish: the helper ran before the fake server had a socket"
+assert_eq "$(cat "$publish_state/resource_panes" 2>/dev/null)" "$rows" \
+  "publish: the caller's panes reach the model the daemon reads"
+assert_eq "$(readlink "$default_link")" "$publish_state/tmux.sock" \
+  "publish: a caller outside tmux finds the fake as its default server"
+
+# An unrelated bash run publishes nothing.
+quiet_state=$(mktemp -d /tmp/story-test-publish.XXXXXX)
+_TMP_REPOS+=("$quiet_state")
+FAKE_TMUX_STATE="$quiet_state" FAKE_TMUX_PANES="$rows" bash -c ':'
+[ ! -e "$quiet_state/tmux.sock" ] || fail_test "publish: a bash run that is not the helper published a server"
+
+# A server that is not this fixture's fake -- one that answers with another
+# socket, as a real tmux would -- is never linked as the default.
+real_bin=$(mktemp -d /tmp/story-test-realtmux.XXXXXX)
+_TMP_REPOS+=("$real_bin")
+printf '#!/bin/sh\nprintf "/private/tmp/tmux-0/default\\n"\n' >"$real_bin/tmux"
+chmod +x "$real_bin/tmux"
+PATH="$real_bin:$PATH" FAKE_TMUX_STATE="$quiet_state" bash "$SCRIPT" unclaim >/dev/null 2>&1
+assert_eq "$(readlink "$default_link")" "$publish_state/tmux.sock" \
+  "publish: a server that is not this fixture's fake is never linked"
+
+# The default path is never taken over from anything but an earlier link...
+blocked_dir="$STORYHOOK_TEST_HOME/tmux-blocked/tmux-$(id -u)"
+mkdir -p "${blocked_dir%/*}" && mkdir -m 700 "$blocked_dir"
+printf 'a real socket\n' >"$blocked_dir/default"
+TMUX_TMPDIR="$STORYHOOK_TEST_HOME/tmux-blocked" FAKE_TMUX_STATE="$publish_state" \
+  bash "$SCRIPT" unclaim >/dev/null 2>&1
+[ ! -L "$blocked_dir/default" ] \
+  || fail_test "publish: a default server that is not an earlier link was replaced by one"
+assert_eq "$(cat "$blocked_dir/default")" "a real socket" \
+  "publish: a default server that is not an earlier link keeps its content"
+
+# ...and never outside the test home, where the operator's real server lives.
+outside=$(mktemp -d /tmp/story-test-outside.XXXXXX)
+_TMP_REPOS+=("$outside")
+TMUX_TMPDIR="$outside" FAKE_TMUX_STATE="$publish_state" bash "$SCRIPT" unclaim >/dev/null 2>&1
+[ ! -e "$outside/tmux-$(id -u)/default" ] \
+  || fail_test "publish: a default server outside the test home was linked"
+
+# A test that registers a real session gets its default path back: the fake's
+# link is withdrawn before the real server needs it. A link to a real socket
+# (tmux-revivify keeps them) is never withdrawn. Subshells keep the
+# registration out of this test's own cleanup list.
+( _register_tmp_tmux_session story-test-withdraw-fake ) \
+  || fail_test "withdraw: registering a real session failed"
+[ ! -L "$default_link" ] && [ ! -e "$default_link" ] \
+  || fail_test "withdraw: the fake default link survived a real session's registration"
+FAKE_TMUX_STATE="$publish_state" bash "$SCRIPT" unclaim >/dev/null 2>&1
+assert_eq "$(readlink "$default_link")" "$publish_state/tmux.sock" \
+  "withdraw: the next helper run publishes the default again"
+real_socket="$STORYHOOK_TEST_HOME/real.sock"
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$real_socket"
+ln -sfn "$real_socket" "$default_link"
+( _register_tmp_tmux_session story-test-withdraw-real ) \
+  || fail_test "withdraw: registering beside a real socket failed"
+assert_eq "$(readlink "$default_link")" "$real_socket" \
+  "withdraw: a link to a real socket is never withdrawn"
+rm -f -- "$default_link" "$real_socket"
+
+# An inventory of a server nobody published fails loud, naming the fix. Empty
+# is a published state; unpublished is a fixture mistake.
+unpublished=$(mktemp -d /tmp/story-test-unpublished.XXXXXX)
+_TMP_REPOS+=("$unpublished")
+unpublished=$(cd "$unpublished" && pwd -P)
+: >"$unpublished/tmux.sock"
+inventory() {
+  "$FAKE_TMUX" -u -S "$unpublished/tmux.sock" list-panes -a -F \
+    $'#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-agent}\t#{pane_active}\t#{pane_current_path}'
+}
+rc=0
+out=$(inventory 2>&1) || rc=$?
+[ "$rc" -ne 0 ] || fail_test "unpublished: an inventory of a server nobody published succeeded"
+assert_contains "$out" "queried before any caller published it" "unpublished: the refusal says what is missing"
+# shellcheck disable=SC2016 # the literal command the refusal must name
+assert_contains "$out" 'bash "$SCRIPT"' "unpublished: and how to publish"
+: >"$unpublished/windows"
+rc=0
+out=$(inventory 2>&1) || rc=$?
+assert_eq "$rc:$out" "0:" "unpublished: a seeded empty server is an empty inventory, not an error"
+rm -f "$unpublished/windows"
+(cd "$pane_cwd" && FAKE_TMUX_STATE="$unpublished" "$FAKE_TMUX" display-message -p '#{socket_path}' >/dev/null)
+rc=0
+out=$(inventory 2>&1) || rc=$?
+assert_eq "$rc:$out" "0:" "unpublished: a published empty server is an empty inventory"
+
 finish

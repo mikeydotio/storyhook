@@ -39,7 +39,7 @@ codex_dispatch_tmux_state="$FAKE_TMUX_STATE"
 repo=$(mk_story_repo CDX)
 id=$(new_story "$repo" "Codex dispatch happy path")
 out=$(run_codex "$repo" dispatch "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "dispatch: ok"
+assert_ok "$out" "true" "dispatch: ok"
 assert_eq "$(jqf "$out" .agent)" "codex" "dispatch: selected provider"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "dispatch: readiness"
 assert_eq "$(jqf "$out" .plan_mode_confirmed)" "true" "dispatch: Plan footer"
@@ -77,7 +77,7 @@ fresh_tmux
 repo_loading=$(mk_story_repo CDL)
 id_loading=$(new_story "$repo_loading" "Codex model-loading Plan transition")
 out=$(FAKE_TMUX_CODEX_LOADING_POLLS=8 run_codex "$repo_loading" dispatch "$id_loading")
-assert_eq "$(jqf "$out" .ok)" "true" "model loading: dispatch waits and succeeds"
+assert_ok "$out" "true" "model loading: dispatch waits and succeeds"
 assert_eq "$(jqf "$out" .plan_mode_confirmed)" "true" "model loading: Plan confirmed"
 [ ! -f "$FAKE_TMUX_STATE/plan_key_ignored.log" ] \
   || fail_test "model loading: Shift+Tab was sent before Codex finished loading"
@@ -90,7 +90,7 @@ fresh_tmux
 repo_retry=$(mk_story_repo CDR)
 id_retry=$(new_story "$repo_retry" "Codex dropped first Plan key")
 out=$(FAKE_TMUX_IGNORE_PLAN_KEYS=1 run_codex "$repo_retry" dispatch "$id_retry")
-assert_eq "$(jqf "$out" .ok)" "true" "dropped Plan key: bounded retry succeeds"
+assert_ok "$out" "true" "dropped Plan key: bounded retry succeeds"
 assert_eq "$(jqf "$out" .plan_mode_confirmed)" "true" "dropped Plan key: Plan confirmed"
 assert_contains "$(cat "$FAKE_TMUX_STATE/plan_key_ignored.log")" "late TUI startup" \
   "dropped Plan key: fixture exercised the retry"
@@ -101,7 +101,7 @@ export FAKE_TMUX_STATE="$codex_dispatch_tmux_state"
 export FAKE_TMUX_PANES
 FAKE_TMUX_PANES=$(printf '%s\t1\t%%1' "$id")
 out=$(run_codex "$repo" reap "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "reap: ok"
+assert_ok "$out" "true" "reap: ok"
 assert_eq "$(jqf "$out" .removed.worktree)" "true" "reap: removed Codex worktree"
 assert_eq "$(jqf "$out" .removed.branch)" "true" "reap: removed merged branch"
 [ ! -d "$repo/.codex/worktrees/$id" ] || fail_test "reap: Codex worktree survived"
@@ -111,7 +111,7 @@ fresh_tmux
 repo_bad=$(mk_story_repo CDB)
 id_bad=$(new_story "$repo_bad" "Codex launch refusal")
 out=$(FAKE_TMUX_LAUNCH_MANGLE=1 STORY_READY_ATTEMPTS=2 run_codex "$repo_bad" dispatch "$id_bad")
-assert_eq "$(jqf "$out" .ok)" "false" "readiness refusal: ok:false"
+assert_ok "$out" "false" "readiness refusal: ok:false"
 assert_eq "$(jqf "$out" .reason)" "pane-not-ready" "readiness refusal: reason"
 assert_eq "$(cd "$repo_bad" && story show "$id_bad" --json | jq -r '.story.story.state')" "todo" \
   "readiness refusal: claim rolled back"
@@ -122,7 +122,7 @@ fresh_tmux
 repo_plan=$(mk_story_repo CDP)
 id_plan=$(new_story "$repo_plan" "Codex plan refusal")
 out=$(FAKE_TMUX_FAIL_SEND_KEYS=all run_codex "$repo_plan" dispatch "$id_plan")
-assert_eq "$(jqf "$out" .ok)" "false" "plan refusal: ok:false"
+assert_ok "$out" "false" "plan refusal: ok:false"
 assert_eq "$(jqf "$out" .reason)" "plan-mode-unconfirmed" "plan refusal: reason"
 assert_eq "$(cd "$repo_plan" && story show "$id_plan" --json | jq -r '.story.story.state')" "todo" \
   "plan refusal: claim rolled back"
@@ -130,7 +130,7 @@ assert_eq "$(cd "$repo_plan" && story show "$id_plan" --json | jq -r '.story.sto
 # Doctor reports and tests the selected provider contract.
 fresh_tmux
 out=$(FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" run_codex "$repo_plan" doctor)
-assert_eq "$(jqf "$out" .ok)" "true" "doctor: ok"
+assert_ok "$out" "true" "doctor: ok"
 assert_eq "$(jqf "$out" .agent)" "codex" "doctor: selected provider"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "doctor: readiness"
 assert_eq "$(jqf "$out" .plan_mode_confirmed)" "true" "doctor: Plan footer"
@@ -176,7 +176,7 @@ fresh_tmux
 repo_auto=$(mk_story_repo CDA)
 id_auto_real=$(new_story "$repo_auto" "Codex auto watcher")
 out=$(run_codex "$repo_auto" dispatch "$id_auto_real" --auto)
-assert_eq "$(jqf "$out" .ok)" "true" "real auto: dispatch succeeds"
+assert_ok "$out" "true" "real auto: dispatch succeeds"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
   "STORYHOOK_AUTO=$id_auto_real" "real auto: watcher carries the story marker"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
@@ -188,7 +188,7 @@ fresh_tmux
 repo_auto_fail=$(mk_story_repo CDF)
 id_auto_fail=$(new_story "$repo_auto_fail" "Codex auto watcher failure")
 out=$(FAKE_TMUX_FAIL_RUN_SHELL=1 run_codex "$repo_auto_fail" dispatch "$id_auto_fail" --auto)
-assert_eq "$(jqf "$out" .ok)" "false" "auto watcher failure: refused"
+assert_ok "$out" "false" "auto watcher failure: refused"
 assert_eq "$(jqf "$out" .reason)" "plan-approval-unarmed" \
   "auto watcher failure: reason"
 assert_eq "$(cd "$repo_auto_fail" && story show "$id_auto_fail" --json | jq -r '.story.story.state')" \
@@ -248,13 +248,13 @@ assert_contains "$(cat "$alias_err")" "STORY_AGENT=claude" "legacy env alias: ca
 
 # Deterministic readers ignore caller provider settings; launch still validates them.
 out=$(cd "$repo_plan" && STORY_AGENT=unknown bash "$SCRIPT" list 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "unknown caller provider: list succeeds"
+assert_ok "$out" "true" "unknown caller provider: list succeeds"
 assert_eq "$(printf '%s' "$out" | jq -r --arg id "$id_auto" '.stories | any(.id == $id)')" \
   "true" "unknown caller provider: list returns the ready story"
 
 out=$(cd "$repo_plan" && STORY_AGENT=unknown STORY_DRY_RUN=1 \
   bash "$SCRIPT" dispatch "$id_auto" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unknown launch provider: refused"
+assert_ok "$out" "false" "unknown launch provider: refused"
 assert_contains "$(jqf "$out" .display)" "supported agents" "unknown launch provider: names choices"
 
 finish

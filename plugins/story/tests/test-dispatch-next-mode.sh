@@ -29,7 +29,7 @@ high_id=$(new_story "$repo" "Higher-priority story")
 (cd "$repo" && story prioritize "$high_id" high >/dev/null)
 
 out=$(dispatch_next_real "$repo")
-assert_eq "$(jqf "$out" .ok)" "true" "next-mode happy: ok:true"
+assert_ok "$out" "true" "next-mode happy: ok:true"
 assert_eq "$(jqf "$out" .claimed)" "true" "next-mode happy: claimed:true"
 assert_eq "$(jqf "$out" .id)" "$high_id" "next-mode happy: the higher-priority story was picked, not the first created"
 assert_eq "$(jqf "$out" .state)" "in-progress" "next-mode happy: state is in-progress"

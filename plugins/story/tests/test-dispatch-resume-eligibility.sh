@@ -27,7 +27,7 @@ daemon_dispatch() {
 dispatch_then_lose_window() {
   local repo="$1" id="$2" out window_id
   out=$(daemon_dispatch "$repo" dispatch "$id")
-  assert_eq "$(jqf "$out" .ok)" "true" "$id: the original dispatch succeeds"
+  assert_ok "$out" "true" "$id: the original dispatch succeeds"
   window_id=$("$FAKE_TMUX_DIR/tmux" display-message -p -t "$(jqf "$out" .pane)" '#{window_id}')
   "$FAKE_TMUX_DIR/tmux" kill-window -t "$window_id"
   unset FAKE_TMUX_PANES
@@ -65,7 +65,7 @@ dispatch_then_lose_window "$repo" "$id"
 (cd "$repo" && story block "$id" "operator is inspecting the lane" >/dev/null)
 await_delivery_receipt "$repo" "$id" interrupt
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume)
-assert_eq "$(jqf "$out" .ok)" "false" "awaiting: the resume is refused"
+assert_ok "$out" "false" "awaiting: the resume is refused"
 assert_eq "$(jqf "$out" .reason)" "resume-ineligible" "awaiting: the refusal names eligibility"
 assert_contains "$(jqf "$out" .display)" "(awaiting)" "awaiting: the tracker's reason is named"
 assert_contains "$(jqf "$out" .display)" "operator is inspecting the lane" "awaiting: the hold text is quoted"
@@ -75,7 +75,7 @@ assert_untouched "$repo" "$id" "awaiting"
 (cd "$repo" && story unblock "$id" >/dev/null)
 await_delivery_receipt "$repo" "$id" resume
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume)
-assert_eq "$(jqf "$out" .ok)" "true" "eligible: the resume proceeds once the hold is lifted"
+assert_ok "$out" "true" "eligible: the resume proceeds once the hold is lifted"
 assert_eq "$(jqf "$out" .resumed)" "true" "eligible: it is a resume"
 
 # --- an open blocker refuses the resume ---------------------------------------
@@ -86,7 +86,7 @@ dispatch_then_lose_window "$repo" "$id"
 (cd "$repo" && story relate "$id" blocked-by "$blocker" >/dev/null)
 await_delivery_receipt "$repo" "$id" interrupt
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume)
-assert_eq "$(jqf "$out" .ok)" "false" "blocked-by: the resume is refused"
+assert_ok "$out" "false" "blocked-by: the resume is refused"
 assert_eq "$(jqf "$out" .reason)" "resume-ineligible" "blocked-by: the refusal names eligibility"
 assert_contains "$(jqf "$out" .display)" "(blocked)" "blocked-by: the tracker's reason is named"
 assert_contains "$(jqf "$out" .display)" "$blocker" "blocked-by: the blocker is named"
@@ -108,7 +108,7 @@ exec "$real_story" "\$@"
 SHIM
 chmod +x "$shim/story"
 out=$(PATH="$shim:$PATH" daemon_dispatch "$repo" dispatch "$id" --resume)
-assert_eq "$(jqf "$out" .ok)" "false" "unanswered: the resume is refused"
+assert_ok "$out" "false" "unanswered: the resume is refused"
 assert_eq "$(jqf "$out" .reason)" "resume-eligibility-unavailable" "unanswered: the refusal names the missing answer"
 assert_contains "$(jqf "$out" .display)" "no unambiguous active state role" "unanswered: the verb's own words are kept"
 assert_untouched "$repo" "$id" "unanswered"

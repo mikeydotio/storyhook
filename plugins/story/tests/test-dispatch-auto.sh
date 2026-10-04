@@ -36,7 +36,7 @@ dry() {
 expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. Before implementation, run ‘story help obviation-review’ and ‘story load-context --story ${id}’, then follow the review procedure for every candidate. Repeat the review when resuming work. Before filing a prerequisite or blocking $id, read ‘story help scope-rubric’. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Implement the approved work. Run only the tests this story adds or changes. Leave every other test to the central verifier and the release gates. Commit the work, but do not push, open a pull request, or run ‘story link-pr’ -- the verifier pushes your branch and opens or adopts the pull request for story $id. Then, from inside this worktree, move the story with ‘story move $id verifying’ as your absolute last action and stop: the centralized verifier owns submission, the full suite, merge, completion, and worktree cleanup. If verification returns the story to you, repair it here without rewriting published history. When a central gate failed, you may also rerun each test case that its log names as failing, by its exact name only. Never rerun a whole target, file, script, or suite for it. Never edit or weaken a test that this story did not write to make it pass. If a named test does not fail when you rerun it, change no code for it and say so in a comment before you resubmit. Commit, move $id back to verifying, and stop again. Do not run git push, gh pr create, make test, land-pr.sh, story move $id done, reap, semver bump, deployit deploy, or any release/version step from this worktree, and do not plan for them."
 
 out=$(dry)
-assert_eq "$(jqf "$out" .ok)" "true" "attended: ok:true"
+assert_ok "$out" "true" "attended: ok:true"
 assert_eq "$(jqf "$out" .auto)" "false" "attended: auto:false"
 assert_eq "$(jqf "$out" .council)" "false" "attended: council:false"
 assert_eq "$(jqf "$out" '.launch_source // "absent"')" "absent" \
@@ -58,7 +58,7 @@ esac
 #     STORY_COUNCIL=on pins the council charter regardless
 #     of what's actually installed wherever this suite runs. ---
 out=$(STORY_COUNCIL=on dry --auto)
-assert_eq "$(jqf "$out" .ok)" "true" "auto: ok:true"
+assert_ok "$out" "true" "auto: ok:true"
 assert_eq "$(jqf "$out" .auto)" "true" "auto: auto:true"
 assert_contains "$(jqf "$out" .prompt)" "StoryHook approves it automatically" "auto: plan approval needs no human reply"
 case "$(jqf "$out" .prompt)" in
@@ -121,7 +121,7 @@ assert_contains "$prompt" "make test, land-pr.sh, story move $id done, reap" \
 # --- SH-219: with no council reachable, the SOLO charter renders instead —
 #     every shared obligation still present, council-vote named nowhere. ---
 solo_out=$(STORY_COUNCIL=off dry --auto)
-assert_eq "$(jqf "$solo_out" .ok)" "true" "auto+council-off: ok:true"
+assert_ok "$solo_out" "true" "auto+council-off: ok:true"
 assert_eq "$(jqf "$solo_out" .auto)" "true" "auto+council-off: auto:true"
 assert_eq "$(jqf "$solo_out" .council)" "false" "auto+council-off: council:false"
 solo_prompt=$(jqf "$solo_out" .prompt)
@@ -189,7 +189,7 @@ done
 for agent in claude codex; do
   for council in on off; do
     prerequisite_out=$(STORY_AGENT="$agent" STORY_COUNCIL="$council" dry --auto)
-    assert_eq "$(jqf "$prerequisite_out" .ok)" "true" "$agent/$council: rendered"
+    assert_ok "$prerequisite_out" "true" "$agent/$council: rendered"
     prerequisite_prompt=$(jqf "$prerequisite_out" .prompt)
     for instruction in \
       "Before filing a prerequisite or blocking $id, read ‘story help scope-rubric’" \
@@ -258,18 +258,18 @@ assert_contains "$(jqf "$override_out" .display)" "may weaken unattendedness" \
 
 # --- --auto is accepted before the id too ---
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch --auto "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "auto-first: ok:true"
+assert_ok "$out" "true" "auto-first: ok:true"
 assert_eq "$(jqf "$out" .auto)" "true" "auto-first: auto:true"
 
 # --- a stray trailing token or unknown flag is now a hard fail, naming
 #     --auto in the usage string (dispatch used to silently ignore extras) ---
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$id" junk 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "trailing token: ok:false"
+assert_ok "$out" "false" "trailing token: ok:false"
 assert_contains "$(jqf "$out" .display)" "usage" "trailing token: usage message"
 assert_contains "$(jqf "$out" .display)" "--auto" "trailing token: usage names --auto"
 
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$id" --bogus 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unknown flag: ok:false"
+assert_ok "$out" "false" "unknown flag: ok:false"
 assert_contains "$(jqf "$out" .display)" "--auto" "unknown flag: usage names --auto"
 
 # --- STORY_AUTO_PROMPT overrides the charter, same seam as STORY_PROMPT --
@@ -324,7 +324,7 @@ out=$(
       FAKE_TMUX_CAPTURE=marker \
       bash "$SCRIPT" dispatch "$id" --auto 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "true" "real auto dispatch: ok:true"
+assert_ok "$out" "true" "real auto dispatch: ok:true"
 assert_eq "$(jqf "$out" .auto)" "true" "real auto dispatch: auto:true"
 assert_eq "$(jqf "$out" .claimed)" "true" "real auto dispatch: claimed:true"
 assert_contains "$(jqf "$out" .display)" "utonomous" "real auto dispatch: display names the session autonomous"
@@ -348,7 +348,7 @@ out=$(cd "$repo_fail" && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux
   STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker FAKE_TMUX_FAIL_RUN_SHELL=1 \
   bash "$SCRIPT" dispatch "$id_fail" --auto 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "Claude auto watcher failure: refused"
+assert_ok "$out" "false" "Claude auto watcher failure: refused"
 assert_eq "$(jqf "$out" .reason)" "plan-approval-unarmed" \
   "Claude auto watcher failure: reason"
 assert_eq "$(cd "$repo_fail" && story show "$id_fail" --json | jq -r '.story.story.state')" \

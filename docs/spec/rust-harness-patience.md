@@ -362,3 +362,87 @@ resistant descendant publishes readiness. A 200 ms startup delay is an explicit
 control. Both the normal wrapper and the readiness-driven test use the same
 quiescent capture routing. The production wrapper retains its original absolute
 timeout. No production deadline or cancellation behavior changes.
+
+## The window proof after a release, and answer evidence (SH-840)
+
+`test-unclaim.sh` failed once at contention 0.89 (PR 885, tree 4257f68c) with
+only `ok: false`. The other assertions in that case passed. In `cmd_unclaim`,
+that answer comes only from `RELEASE_WINDOW_ERROR`: the claim release
+succeeded, and then `_close_story_window` could not prove that the window was
+absent. That fixture has no pane, so only the post-release resource inventory
+could fail. At that tree, the inventory ran tmux with the fixed 3-second
+`TMUX_TIMEOUT`. The CLI floor above now covers that inventory. One local run
+confirmed the attribution: a real 4-second delay, armed after the release and
+with no declared floor, gives the same answer. The cause is deduced, not
+observed, because the gate log lost the answer.
+
+### As built
+
+- `plugins/story/tests/fakes/tmux`: the resource inventory fails with the text
+  of `$STATE/resource_fail` when that file exists.
+- `fakes/story-post-release-fault`: a `STORY_BIN` proxy runs the real
+  `unclaim` and arms that fault only after a successful release.
+  `test-unclaim.sh` uses it to pin the SH-840 answer without timing: the
+  release stands, the failed step and its cause are named, and nothing on disk
+  changes. A delay cannot do this: the two inventories before the release would
+  then race the same production deadline. `test-subprocess-patience.sh` also
+  names the post-release proof in its patient case.
+- `assert_ok <answer> <expected> <label>` (`lib.sh`) prints the whole answer
+  when the top-level `.ok` is wrong. A pass is the same as before. All ok
+  assertions in the plugin suite and in the `tests/support/protect_*.rs` shell
+  fixtures use it (council D1 on SH-840).
+- `test-answer-assertions.sh` proves the helper. It also fails the leg on any
+  tracked `assert_eq` over the `.ok` field read by `jqf`, and its message gives
+  the one-line `sed` fix.
+
+### Limits, named
+
+The guard covers the top-level `.ok` verdict only. About 1000 other field-only
+`jqf` assertions remain; when `ok` is correct, they still print only their
+field. The sweep shortens diagnosis. It does not prevent a load-dependent
+failure.
+
+### Fake server publication after SH-825 (SH-876, fixed in SH-840)
+
+SH-825 commit 90a4a55a takes a caller's tmux socket as a pure parse of `$TMUX`.
+Before it, the helper called `tmux display-message -p '#{socket_path}'` before
+every resource inventory. That call was the only place where `fakes/tmux`
+published its server model: the socket, the caller's `FAKE_TMUX_PANES` rows and
+the worktree directories. The daemon reads that model with an environment that
+has no `FAKE_*` knob. Dev b904c137 therefore failed 16 plugin scripts and one
+`plugin_install` case. It reached dev through a manual verifier override.
+
+As built:
+
+- `lib.sh` publishes the fake server before each helper run. A `bash` wrapper
+  (the `git` wrapper's pattern) catches `bash "$SCRIPT"` and installed
+  `.../story.sh` copies. It publishes only when the server answers with this
+  fixture's own socket. It links `$TMUX_TMPDIR/tmux-<uid>/default` to that
+  socket for callers outside tmux, only inside the test home, and only over an
+  earlier link. The link stays for the rest of the test, because
+  `env ... bash "$SCRIPT"` runs and daemon work after a run still use it.
+  `_register_tmp_tmux_session` removes it before a test starts a real server
+  on that path. It removes only a link to a regular file, never a link to a
+  real socket.
+- Every `lib.sh` instance keeps `TMUX_TMPDIR` inside `STORYHOOK_TEST_HOME`. A
+  nested instance under a harness that clears its environment had asked the
+  machine's real default server.
+- `fakes/tmux` refuses an inventory of a server that nobody published or
+  seeded, and its message names the fix. A published or seeded empty server
+  is still an empty inventory.
+- `test-fake-tmux-state.sh` pins the publication without a production probe:
+  socket, panes, default link, no link to a real server, no replacement of a
+  non-link, nothing outside the home, and the loud refusal.
+
+- Three tests that the removed probe had hidden were repaired. In
+  `test-dispatch-plugin-binding.sh`, `$TMUX` now names the case's own fake
+  server. In `test-dispatch-lane-budget.sh`, each engine lane gets its own
+  `TMUX_TMPDIR` and default server. `test_tmux_server_env.py` now composes the
+  verification view with `view_program`. Its hand-made copy had no
+  `process_observation`.
+
+Limit: entry points that run the helper without `bash` from a `lib.sh` shell
+(an `exec`, or a daemon-run dispatch script) do not publish. They reach the fake
+only after an earlier publication, a seeded `windows` file, or their own
+publication (as `test-dispatch-lane-budget.sh` does). If they do not, the fake
+refuses loudly.

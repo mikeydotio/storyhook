@@ -38,7 +38,7 @@ for resource in .claude/worktrees .codex/worktrees 'custom lane'; do
       fi
     )
     if [ "$(jqf "$out" .ok)" != true ]; then printf '%s\n' "$out"; fi
-    assert_eq "$(jqf "$out" .ok)" true "$resource/$caller: reset succeeds"
+    assert_ok "$out" true "$resource/$caller: reset succeeds"
     assert_eq "$(jqf "$out" '.removed.worktree')" true "$resource/$caller: removed actual worktree"
     if (cd "$repo" && git worktree list --porcelain | rg -F -- "worktree $path"); then fail_test "$resource/$caller: registration survived"; fi
     [ ! -e "$path" ] || fail_test "$resource/$caller: actual worktree survived"

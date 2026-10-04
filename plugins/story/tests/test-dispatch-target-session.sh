@@ -28,7 +28,7 @@ out=$(
       bash "$SCRIPT" dispatch "$id" 2>&1
 )
 
-assert_eq "$(jqf "$out" .ok)" "true" "target-session: ok:true with no \$TMUX/\$TMUX_PANE at all"
+assert_ok "$out" "true" "target-session: ok:true with no \$TMUX/\$TMUX_PANE at all"
 assert_eq "$(jqf "$out" .claimed)" "true" "target-session: claimed:true"
 assert_eq "$(jqf "$out" .session)" "editor-room" "target-session: reports the session it targeted"
 assert_eq "$(jqf "$out" .session_created)" "false" "target-session: did not create a session that already existed"

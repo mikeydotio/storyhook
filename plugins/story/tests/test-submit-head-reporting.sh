@@ -67,7 +67,7 @@ check_submission() {
   local receipt status head remote
   receipt=$(submit "$@"); status=$?
   assert_eq "$status" "0" "$scenario: helper succeeds: $receipt"
-  assert_eq "$(jqf "$receipt" .ok)" "true" "$scenario: successful receipt"
+  assert_ok "$receipt" "true" "$scenario: successful receipt"
   head=$(git -C "$worktree" rev-parse HEAD)
   remote=$(git -C "$repo" ls-remote --heads origin "$branch" | cut -f1)
   assert_eq "$remote" "$head" "$scenario: independently checked remote equals committed HEAD"

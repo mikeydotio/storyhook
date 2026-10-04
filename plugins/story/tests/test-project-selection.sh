@@ -31,11 +31,11 @@ ready_id=$(new_story "$repo" "Ready story")
 mkdir -p "$repo/src/deep/nested"
 
 out=$(cd "$repo/src/deep/nested" && bash "$SCRIPT" list 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "subdir: list resolves the project by walking up"
+assert_ok "$out" "true" "subdir: list resolves the project by walking up"
 assert_contains "$out" "$ready_id" "subdir: and it is this repository's story"
 
 out=$(cd "$repo/src/deep/nested" && bash "$SCRIPT" view "$ready_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "subdir: view resolves the same way"
+assert_ok "$out" "true" "subdir: view resolves the same way"
 
 # --- 2. a monorepo sub-project ----------------------------------------------
 # The SH-151 shape: one repository, a project at its top level and another in a
@@ -60,10 +60,10 @@ sub_id=$(cd "$mono/service-b" && story new "Only in service-b" --json 2>/dev/nul
 assert_contains "$sub_id" "SVCB" "fixture: the sub-project must mint its own prefix"
 
 out=$(cd "$mono/service-b" && bash "$SCRIPT" view "$sub_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "monorepo: view answers for the sub-project, not the repository root"
+assert_ok "$out" "true" "monorepo: view answers for the sub-project, not the repository root"
 
 out=$(cd "$mono/service-b" && bash "$SCRIPT" list 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "monorepo: list answers at all"
+assert_ok "$out" "true" "monorepo: list answers at all"
 assert_contains "$out" "$sub_id" "monorepo: list shows the sub-project's story"
 case "$out" in
 *"$root_id"*) fail_test "monorepo: list must NOT show the repository root project's story ($root_id)" ;;
@@ -79,27 +79,27 @@ assert_contains "$out" "$root_id" "monorepo: the repository root still answers f
 outside=$(mktemp -d /tmp/story-test-outside.XXXXXX)
 _TMP_REPOS+=("$outside")
 out=$(cd "$outside" && bash "$SCRIPT" list 2>&1) || true
-assert_eq "$(jqf "$out" .ok)" "false" "outside: an unresolvable directory refuses rather than reporting no work"
+assert_ok "$out" "false" "outside: an unresolvable directory refuses rather than reporting no work"
 assert_contains "$(jqf "$out" .display)" "--project" "outside: and the refusal carries the CLI's way out"
 
 # The other direction, which is what makes the assertion above mean something:
 # a project that genuinely has nothing ready still answers ok with a count of 0.
 empty=$(mk_story_repo)
 out=$(cd "$empty" && bash "$SCRIPT" list 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "empty project: still ok"
+assert_ok "$out" "true" "empty project: still ok"
 assert_eq "$(jqf "$out" .count)" "0" "empty project: with a count of zero, distinguishable from a refusal"
 
 # --- 4. outside a repository, with --project --------------------------------
 slug=$(slug_for "$repo")
 assert_contains "$slug" "" "fixture: a slug was read for the repository"
 out=$(cd "$outside" && bash "$SCRIPT" --project "$slug" list 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "outside + --project: resolves with no repository at all"
+assert_ok "$out" "true" "outside + --project: resolves with no repository at all"
 assert_contains "$out" "$ready_id" "outside + --project: and it is the named project's story"
 
 out=$(cd "$outside" && bash "$SCRIPT" --project="$slug" view "$ready_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "outside + --project=slug: the equals spelling works too"
+assert_ok "$out" "true" "outside + --project=slug: the equals spelling works too"
 
 out=$(cd "$outside" && bash "$SCRIPT" --project 2>&1) || true
-assert_eq "$(jqf "$out" .ok)" "false" "--project with no slug is refused rather than swallowing the verb"
+assert_ok "$out" "false" "--project with no slug is refused rather than swallowing the verb"
 
 finish

@@ -41,7 +41,7 @@ for query in all stale blocked; do
   for mode in process error malformed shape absent; do
     out=$(cd "$repo" && PATH="$proxy:$PATH" TRIAGE_REAL_STORY="$real_story" \
       TRIAGE_FAIL_QUERY="$query" TRIAGE_FAIL_MODE="$mode" bash "$SCRIPT" triage 2>&1)
-    assert_eq "$(jqf "$out" .ok)" false "$query/$mode: no successful findings"
+    assert_ok "$out" false "$query/$mode: no successful findings"
     if [ "$mode" = process ] || [ "$mode" = error ]; then
       assert_contains "$(jqf "$out" .display)" 'query transport unavailable' \
         "$query/$mode: original diagnosis survives"

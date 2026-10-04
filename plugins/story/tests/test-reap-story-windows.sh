@@ -28,7 +28,7 @@ out=$(cd "$worktree" && PATH="$TESTS_DIR/fakes:$PATH" \
   bash "$SCRIPT" --project "$slug" reap "$id" 2>&1)
 status=$?
 
-assert_eq "$(jqf "$out" .ok)" false "duplicate windows: reap refuses"
+assert_ok "$out" false "duplicate windows: reap refuses"
 assert_eq "$(jqf "$out" .reason)" resource-identity-unsafe "duplicate windows: ownership diagnostic"
 [ -e "$worktree" ] || fail_test "duplicate windows: worktree removed"
 [ ! -f "$FAKE_TMUX_STATE/kill_window_args.log" ] || fail_test "duplicate windows: session removed"
@@ -36,7 +36,7 @@ assert_eq "$(jqf "$out" .reason)" resource-identity-unsafe "duplicate windows: o
 # Resolving the fixture's competing session leaves one exact target.
 printf '@10\t%s\n@12\tSH-OTHER\n' "$id" >"$FAKE_TMUX_STATE/windows"
 out=$(cd "$worktree" && bash "$SCRIPT" --project "$slug" reap "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" true "unique window: reap succeeds"
+assert_ok "$out" true "unique window: reap succeeds"
 assert_eq "$(jqf "$out" '.removed.tmux')" true "unique window: exact target removed"
 assert_eq "$(cat "$FAKE_TMUX_STATE/windows")" $'@12\tSH-OTHER' "unique window: unrelated target preserved"
 [ ! -e "$worktree" ] || fail_test "unique window: worktree survived"
@@ -44,7 +44,7 @@ assert_eq "$(cat "$FAKE_TMUX_STATE/windows")" $'@12\tSH-OTHER' "unique window: u
 # The same durable lease is safe to replay after every owned resource is gone.
 again=$(cd "$repo" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$lease" \
   PATH="$TESTS_DIR/fakes:$PATH" bash "$SCRIPT" --project "$slug" reap "$id" 2>&1)
-assert_eq "$(jqf "$again" .ok)" "true" "story-window reap is idempotent"
+assert_ok "$again" "true" "story-window reap is idempotent"
 assert_eq "$(jqf "$again" '.removed.tmux')" "false" \
   "idempotent reap does not invent a tmux removal"
 assert_eq "$(cat "$FAKE_TMUX_STATE/windows")" $'@12\tSH-OTHER' \
@@ -54,7 +54,7 @@ assert_eq "$(cat "$FAKE_TMUX_STATE/windows")" $'@12\tSH-OTHER' \
 rm -f "$socket"
 server_gone=$(cd "$repo" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$lease" \
   PATH="$TESTS_DIR/fakes:$PATH" bash "$SCRIPT" --project "$slug" reap "$id" 2>&1)
-assert_eq "$(jqf "$server_gone" .ok)" "true" \
+assert_ok "$server_gone" "true" \
   "story-window reap accepts an absent tmux server"
 
 finish

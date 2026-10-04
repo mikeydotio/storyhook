@@ -15,7 +15,7 @@ run_capabilities() {
 # Opus+Sonnet (mapped to the real `opusplan` alias), Sonnet, Haiku -- with
 # automatic defaults resolved by the separate complexity policy.
 out=$(run_capabilities --agent=claude)
-assert_eq "$(jqf "$out" .ok)" "true" "claude: ok"
+assert_ok "$out" "true" "claude: ok"
 assert_eq "$(jqf "$out" .agent)" "claude" "claude: agent echoed"
 assert_eq "$(jqf "$out" '.models | map(.id) | sort | join(",")')" \
   "fable,haiku,opus,opusplan,sonnet" "claude: model id set"
@@ -34,7 +34,7 @@ assert_eq "$(jqf "$out" '.speeds | map(.id) | join(",")')" \
 # complexity policy decides),
 # and the provider's full effort range from "none" through "ultra".
 out=$(run_capabilities --agent=codex)
-assert_eq "$(jqf "$out" .ok)" "true" "codex: ok"
+assert_ok "$out" "true" "codex: ok"
 assert_eq "$(jqf "$out" .agent)" "codex" "codex: agent echoed"
 assert_eq "$(jqf "$out" '.models | map(.id) | sort | join(",")')" \
   "gpt-5.6-luna,gpt-5.6-sol,gpt-5.6-terra,gpt-6-astra" "codex: model id set"
@@ -57,13 +57,13 @@ assert_eq "$(jqf "$out" .agent)" "claude" "no agent given: defaults to claude"
 
 # Unknown agent refuses the same way every other agent-accepting verb does.
 out=$(run_capabilities --agent=gpt4)
-assert_eq "$(jqf "$out" .ok)" "false" "unknown agent: ok:false"
+assert_ok "$out" "false" "unknown agent: ok:false"
 assert_contains "$out" "unknown agent" "unknown agent: names the problem"
 
 # A stray extra argument is a hard usage failure, not a silent ignore --
 # matching dispatch/view/list's own convention for trailing tokens.
 out=$(run_capabilities --agent=claude extra)
-assert_eq "$(jqf "$out" .ok)" "false" "trailing argument: ok:false"
+assert_ok "$out" "false" "trailing argument: ok:false"
 assert_contains "$out" "usage" "trailing argument: usage message"
 
 finish

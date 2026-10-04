@@ -46,7 +46,7 @@ repo1=$(mk_story_repo)
 id1=$(new_story "$repo1" "Dispatched into a freshly created session")
 
 out1=$(dispatch_into "$repo1" "$id1" "dash-alpha")
-assert_eq "$(jqf "$out1" .ok)" "true" "create-session/absent: ok:true"
+assert_ok "$out1" "true" "create-session/absent: ok:true"
 assert_eq "$(jqf "$out1" .session)" "dash-alpha" "create-session/absent: reports the target session"
 assert_eq "$(jqf "$out1" .session_created)" "true" "create-session/absent: session_created:true"
 assert_eq "$(cat "$FAKE_TMUX_STATE/new_session_calls" 2>/dev/null || echo 0)" "1" \
@@ -67,7 +67,7 @@ repo2=$(mk_story_repo)
 id2=$(new_story "$repo2" "Dispatched into a pre-existing session")
 
 out2=$(dispatch_into "$repo2" "$id2" "dash-beta")
-assert_eq "$(jqf "$out2" .ok)" "true" "create-session/present: ok:true"
+assert_ok "$out2" "true" "create-session/present: ok:true"
 assert_eq "$(jqf "$out2" .session_created)" "false" "create-session/present: session_created:false"
 [ -f "$FAKE_TMUX_STATE/new_session_calls" ] \
   && fail_test "create-session/present: tmux new-session ran even though the session already existed"
@@ -86,7 +86,7 @@ repo3=$(mk_story_repo)
 id3=$(new_story "$repo3" "Dispatch whose session creation fails")
 
 out3=$(dispatch_into "$repo3" "$id3" "dash-gamma")
-assert_eq "$(jqf "$out3" .ok)" "false" "create-session/fails: ok:false"
+assert_ok "$out3" "false" "create-session/fails: ok:false"
 assert_contains "$(jqf "$out3" .display)" "failed to create tmux session" \
   "create-session/fails: names the session-creation failure"
 assert_contains "$(jqf "$out3" .display)" "Rolled the claim back" \
@@ -120,7 +120,7 @@ id4=$(new_story "$repo4" "Dispatch whose owned-session scrub fails")
 
 out4=$(dispatch_into "$repo4" "$id4" "dash-delta")
 unset FAKE_TMUX_FAIL_SHOW_ENVIRONMENT
-assert_eq "$(jqf "$out4" .ok)" "false" "create-session/scrub-fails: ok:false"
+assert_ok "$out4" "false" "create-session/scrub-fails: ok:false"
 assert_contains "$(jqf "$out4" .display)" "retained host environment" \
   "create-session/scrub-fails: names the scrub failure"
 assert_contains "$(jqf "$out4" .display)" "can't find session" \

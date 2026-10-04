@@ -20,17 +20,17 @@ child=$(new_story "$repo" "Actionable child")
 (cd "$repo" && story relate "$epic" parent-of "$child" >/dev/null)
 
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$epic" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "epic: ok:false"
+assert_ok "$out" "false" "epic: ok:false"
 assert_contains "$(jqf "$out" .display)" "is an epic" "epic: refusal names the structure"
 assert_contains "$(jqf "$out" .display)" "Full Auto engine" "epic: refusal names the engine"
 assert_contains "$(jqf "$out" .display)" "--auto" "epic: refusal gives the engine remedy"
 
 forced=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$epic" --force 2>&1)
-assert_eq "$(jqf "$forced" .ok)" "false" "forced epic: ok:false"
+assert_ok "$forced" "false" "forced epic: ok:false"
 assert_contains "$(jqf "$forced" .display)" "Full Auto engine" "forced bare epic: still gives the engine remedy"
 
 resumed=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$epic" --resume 2>&1)
-assert_eq "$(jqf "$resumed" .ok)" "false" "resumed epic: ok:false"
+assert_ok "$resumed" "false" "resumed epic: ok:false"
 assert_contains "$(jqf "$resumed" .display)" "ordinary named story" \
   "resumed epic: resume boundary is explicit"
 
@@ -42,7 +42,7 @@ assert_eq "$state" "todo" "epic: refused dispatch leaves effective state untouch
 # by an epic's engine-run path -- without this refusal the selector would
 # validate cleanly and then be silently discarded rather than doing anything.
 selector=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$epic" --auto --model=opus 2>&1)
-assert_eq "$(jqf "$selector" .ok)" "false" "epic + --model: ok:false"
+assert_ok "$selector" "false" "epic + --model: ok:false"
 assert_contains "$(jqf "$selector" .display)" "is an epic" "epic + --model: names the structure"
 assert_contains "$(jqf "$selector" .display)" "not yet supported" "epic + --model: names why"
 
@@ -54,7 +54,7 @@ preview=$(
     && unset TMUX TMUX_PANE STORY_TARGET_SESSION \
     && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$epic" --auto 2>&1
 )
-assert_eq "$(jqf "$preview" .ok)" "true" "epic auto preview: ok:true"
+assert_ok "$preview" "true" "epic auto preview: ok:true"
 assert_eq "$(jqf "$preview" .dry_run)" "true" "epic auto preview: dry_run:true"
 assert_eq "$(jqf "$preview" .kind)" "engine-run" "epic auto preview: distinct result kind"
 assert_eq "$(jqf "$preview" .epic)" "$epic" "epic auto preview: canonical scope"
@@ -69,7 +69,7 @@ for flag in --force --full-auto; do
       && unset TMUX TMUX_PANE STORY_TARGET_SESSION \
       && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$epic" --auto "$flag" 2>&1
   )
-  assert_eq "$(jqf "$refused" .ok)" "false" "epic auto $flag: ok:false"
+  assert_ok "$refused" "false" "epic auto $flag: ok:false"
   assert_contains "$(jqf "$refused" .display)" "$flag" "epic auto $flag: refusal names the flag"
 done
 
@@ -81,7 +81,7 @@ started=$(
     && unset TMUX TMUX_PANE STORY_TARGET_SESSION \
     && bash "$SCRIPT" dispatch "$epic" --auto --agent=codex 2>&1
 )
-assert_eq "$(jqf "$started" .ok)" "true" "epic auto: ok:true"
+assert_ok "$started" "true" "epic auto: ok:true"
 assert_eq "$(jqf "$started" .kind)" "engine-run" "epic auto: distinct result kind"
 assert_eq "$(jqf "$started" .epic)" "$epic" "epic auto: canonical scope"
 assert_eq "$(jqf "$started" .agent)" "codex" "epic auto: selected agent"
@@ -104,7 +104,7 @@ duplicate=$(
     && unset TMUX TMUX_PANE STORY_TARGET_SESSION \
     && bash "$SCRIPT" dispatch "$epic" --auto --agent=codex 2>&1
 )
-assert_eq "$(jqf "$duplicate" .ok)" "false" "duplicate epic auto: ok:false"
+assert_ok "$duplicate" "false" "duplicate epic auto: ok:false"
 assert_eq "$(jqf "$duplicate" .reason)" "engine-start-refused" \
   "duplicate epic auto: structured service refusal"
 assert_contains "$(jqf "$duplicate" .display)" "already has a live engine run" \
@@ -119,7 +119,7 @@ subtask=$(new_story "$repo" "Its sub-task")
 (cd "$repo" && story relate "$parent" parent-of "$subtask" >/dev/null)
 
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$parent" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "normal parent: dispatchable, because it is work"
+assert_ok "$out" "true" "normal parent: dispatchable, because it is work"
 case "$(jqf "$out" .display)" in
   *"is an epic"*) fail_test "normal parent: refused as an epic for having a child" ;;
 esac

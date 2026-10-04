@@ -20,10 +20,10 @@ printf '%s\n' "$HOME/unrelated-installed" >"$manifest"
 id=$(new_story "$repo" 'Branch-only cleanup on installed host')
 (cd "$repo" && git branch "worktree-$id" && story claim "$id" --no-comment >/dev/null) || exit 1
 out=$(cd "$repo" && STORY_AGENT=unsupported bash "$SCRIPT" reset "$id")
-assert_eq "$(jqf "$out" .ok)" true 'branch-only reset succeeds'
+assert_ok "$out" true 'branch-only reset succeeds'
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$id") && fail_test 'branch-only branch survives'
 id=$(new_story "$repo" 'Absent resource on installed host')
 (cd "$repo" && story claim "$id" --no-comment >/dev/null) || exit 1
 out=$(cd "$repo" && STORY_AGENT=unsupported bash "$SCRIPT" reset "$id")
-assert_eq "$(jqf "$out" .ok)" true 'absent reset succeeds'
+assert_ok "$out" true 'absent reset succeeds'
 finish

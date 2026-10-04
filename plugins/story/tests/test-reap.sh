@@ -27,7 +27,7 @@ close_story() { (cd "$repo" && story move "$1" done --json >/dev/null 2>&1); }
 op=$(new_story "$repo" "Still open")
 wop=$(mk_dispatched "$repo" "$op")
 out=$(cd "$repo" && bash "$SCRIPT" reap "$op" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "open: ok:false"
+assert_ok "$out" "false" "open: ok:false"
 assert_eq "$(jqf "$out" .reason)" "not-closed" "open: reason is not-closed"
 [ -d "$repo/.claude/worktrees/$wop" ] || fail_test "open: worktree was removed anyway"
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$wop") \
@@ -45,7 +45,7 @@ ab=$(new_story "$repo" "Abandoned, not completed")
 wab=$(mk_dispatched "$repo" "$ab")
 (cd "$repo" && story close "$ab" "the work was abandoned" >/dev/null 2>&1)
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$ab" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "abandonment: ok:false"
+assert_ok "$out" "false" "abandonment: ok:false"
 assert_eq "$(jqf "$out" .reason)" "not-completion-state" \
   "abandonment: reason distinguishes closure from completion"
 assert_eq "$(jqf "$out" .state)" "dropped" "abandonment: reports the state found"
@@ -62,7 +62,7 @@ wdy=$(mk_dispatched "$repo" "$dy")
 close_story "$dy"
 echo scratch >"$repo/.claude/worktrees/$wdy/scratch.txt"
 out=$(cd "$repo" && bash "$SCRIPT" reap "$dy" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "dirty: ok:false"
+assert_ok "$out" "false" "dirty: ok:false"
 assert_eq "$(jqf "$out" .reason)" "dirty-worktree" "dirty: reason is dirty-worktree"
 [ -d "$repo/.claude/worktrees/$wdy" ] || fail_test "dirty: worktree was removed anyway"
 [ -f "$repo/.claude/worktrees/$wdy/scratch.txt" ] || fail_test "dirty: uncommitted file was destroyed"
@@ -75,7 +75,7 @@ wun=$(mk_dispatched "$repo" "$un")
 close_story "$un"
 unsha=$(cd "$repo" && git rev-parse "refs/heads/worktree-$wun")
 out=$(cd "$repo" && bash "$SCRIPT" reap "$un" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unmerged: ok:false"
+assert_ok "$out" "false" "unmerged: ok:false"
 assert_eq "$(jqf "$out" .reason)" "unmerged-branch" "unmerged: reason is unmerged-branch"
 [ -d "$repo/.claude/worktrees/$wun" ] || fail_test "unmerged: worktree was removed despite the branch refusal"
 assert_eq "$(cd "$repo" && git rev-parse "refs/heads/worktree-$wun")" "$unsha" \
@@ -87,7 +87,7 @@ wlk=$(mk_dispatched "$repo" "$lk")
 close_story "$lk"
 (cd "$repo" && git worktree lock ".claude/worktrees/$wlk") >/dev/null 2>&1
 out=$(cd "$repo" && bash "$SCRIPT" reap "$lk" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "locked: ok:false"
+assert_ok "$out" "false" "locked: ok:false"
 assert_eq "$(jqf "$out" .reason)" "locked-worktree" "locked: reason is locked-worktree"
 [ -d "$repo/.claude/worktrees/$wlk" ] || fail_test "locked: worktree was removed"
 assert_contains "$(cd "$repo" && git worktree list --porcelain)" "locked" "locked: still locked afterwards"
@@ -97,7 +97,7 @@ dr=$(new_story "$repo" "Dry run me")
 wdr=$(mk_dispatched "$repo" "$dr")
 close_story "$dr"
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$dr" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "dry: ok"
+assert_ok "$out" "true" "dry: ok"
 assert_eq "$(jqf "$out" .dry_run)" "true" "dry: flagged"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "git worktree remove" "dry: previews the removal"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "kill-window" "dry: previews the window close"
@@ -116,7 +116,7 @@ out=$(cd "$repo/.claude/worktrees/$whp" \
   && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
      FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$whp")" \
      bash "$SCRIPT" --project "$(slug_for "$repo")" reap "$hp" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "happy: ok"
+assert_ok "$out" "true" "happy: ok"
 assert_eq "$(jqf "$out" '.removed.worktree')" "true" "happy: worktree removed"
 assert_eq "$(jqf "$out" '.removed.branch')" "true" "happy: branch removed"
 assert_contains "$(jqf "$out" .display)" "removed worktree" "happy: display names what it did"
@@ -130,7 +130,7 @@ grep -q -- '-t @7' "$FAKE_TMUX_STATE/kill_window_args.log" \
 nt=$(new_story "$repo" "Nothing to reclaim")
 close_story "$nt"
 out=$(cd "$repo" && bash "$SCRIPT" reap "$nt" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "nothing-to-reclaim: ok"
+assert_ok "$out" "true" "nothing-to-reclaim: ok"
 assert_eq "$(jqf "$out" '.removed.worktree')" "false" "nothing-to-reclaim: no worktree to remove"
 assert_eq "$(jqf "$out" '.removed.branch')" "false" "nothing-to-reclaim: no branch to remove"
 
@@ -144,7 +144,7 @@ wcustom=$(mk_dispatched "$repo" "$custom")
   && story state reorder todo,in-progress,verifying,blocked,shipped,done,dropped >/dev/null \
   && story move "$custom" shipped >/dev/null)
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$custom" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "shipped-first catalog: a story in shipped is refused"
+assert_ok "$out" "false" "shipped-first catalog: a story in shipped is refused"
 assert_eq "$(jqf "$out" .reason)" "not-completion-state" "shipped-first catalog: names the reason"
 assert_eq "$(jqf "$out" .completion_state)" "done" "shipped-first catalog: names done as completion"
 [ -d "$repo/.claude/worktrees/$wcustom" ] \
@@ -153,7 +153,7 @@ stilldone=$(new_story "$repo" "Done under a shipped-first catalog")
 wdone=$(mk_dispatched "$repo" "$stilldone")
 close_story "$stilldone"
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" reap "$stilldone" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "shipped-first catalog: done is still completion"
+assert_ok "$out" "true" "shipped-first catalog: done is still completion"
 assert_eq "$(jqf "$out" .dry_run)" "true" "shipped-first catalog: reaches the dry-run cleanup"
 [ -d "$repo/.claude/worktrees/$wdone" ] \
   || fail_test "shipped-first catalog: dry run removed the worktree"
@@ -174,7 +174,7 @@ assert_eq "$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD)" "refs/remote
   "dev-only: fixture cache still says main"
 close_story "$dv"
 out=$(cd "$repo" && bash "$SCRIPT" reap "$dv" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "dev-only: reaped — merged-ness was judged against origin's default: $out"
+assert_ok "$out" "true" "dev-only: reaped — merged-ness was judged against origin's default"
 assert_eq "$(jqf "$out" '.removed.branch')" "true" "dev-only: the branch merged only into dev was deleted"
 [ -d "$repo/.claude/worktrees/$wdv" ] && fail_test "dev-only: worktree survived a successful reap"
 (cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$wdv") \
@@ -183,9 +183,9 @@ git --git-dir="$origin" symbolic-ref HEAD refs/heads/main
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" reap 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "reap: missing id is ok:false"
+assert_ok "$out" "false" "reap: missing id is ok:false"
 out=$(cd "$repo" && bash "$SCRIPT" reap "bad id!" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "reap: invalid id is ok:false"
+assert_ok "$out" "false" "reap: invalid id is ok:false"
 assert_contains "$(jqf "$out" .display)" "alphanumeric" "reap: invalid id names the constraint"
 
 finish

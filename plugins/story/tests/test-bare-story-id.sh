@@ -36,7 +36,7 @@ number="${id##*-}"
 [ "$number" != "$id" ] || fail_test "bare-id: fixture minted no prefix, so there is nothing to resolve"
 
 out=$(dispatch_real "$repo" "$number")
-assert_eq "$(jqf "$out" .ok)" "true" "bare-id: dispatching by number succeeds"
+assert_ok "$out" "true" "bare-id: dispatching by number succeeds"
 assert_eq "$(jqf "$out" .id)" "$id" "bare-id: the response reports the canonical id"
 assert_eq "$(jqf "$out" .window_name)" "$id" "bare-id: the window is named from the canonical id"
 assert_eq "$(jqf "$out" '.cleanup_lease.version')" "1" \
