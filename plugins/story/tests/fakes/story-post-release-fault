@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Fake `story` CLI for test-unclaim.sh (SH-840): the claim release succeeds for
+# real, and only THEN does the fake tmux stop answering resource inventories.
+#
+# That is the one moment SH-840 failed in -- the window-absence proof that
+# follows a completed release -- and a fault armed before the run cannot reach
+# it: `unclaim` takes the same inventory twice BEFORE releasing, so an up-front
+# fault refuses there and releases nothing. Timing cannot reach it either: a
+# delay long enough to beat the probe deadline after the release would have to
+# leave the two probes before it inside that same deadline, which is the very
+# race SH-840 is about.
+#
+# Every call is proxied to the REAL binary (STORY_REAL_BIN: the test's leased
+# `story`, so the daemon the test shares keeps its identity). The `unclaim`
+# call runs first; only when it succeeds is STORY_POST_RELEASE_FAULT written to
+# the fake tmux's `resource_fail` file. Nothing is answered by this fake itself.
+#
+# It cannot go vacuously green: if the `unclaim` match stops matching, no fault
+# is armed, unclaim succeeds, and the test's ok:false assertion fails loudly.
+set -uo pipefail
+
+real="${STORY_REAL_BIN:?STORY_REAL_BIN must point at the real story binary}"
+fault="${STORY_POST_RELEASE_FAULT:?STORY_POST_RELEASE_FAULT must name the injected tmux failure}"
+state="${FAKE_TMUX_STATE:?FAKE_TMUX_STATE must name the fake tmux state directory}"
+
+# verb <argv...> — the subcommand, past the `--project <slug>` story.sh pins
+# ahead of every verb (SH-120).
+verb() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --project) shift 2 || return 1 ;;
+    --project=*) shift ;;
+    *)
+      printf '%s' "$1"
+      return 0
+      ;;
+    esac
+  done
+}
+
+if [ "$(verb "$@")" = unclaim ]; then
+  status=0
+  "$real" "$@" || status=$?
+  if [ "$status" -eq 0 ]; then
+    printf '%s\n' "$fault" >"$state/resource_fail" || exit 1
+  fi
+  exit "$status"
+fi
+
+exec "$real" "$@"

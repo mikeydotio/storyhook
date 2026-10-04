@@ -23,7 +23,7 @@ still_ready=$(cd "$repo" && story list --ready --json 2>/dev/null | jq --arg id 
 assert_eq "$still_ready" "false" "fixture sanity: an in-progress story is excluded from \`story list --ready\` (SH-236)"
 
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "already-in-progress: ok:false"
+assert_ok "$out" "false" "already-in-progress: ok:false"
 assert_eq "$(jqf "$out" .reason)" "resume-available" \
   "already-in-progress: active claim is offered as recoverable context"
 assert_eq "$(jqf "$out" .resources.claim)" "present" \
@@ -41,7 +41,7 @@ assert_eq "$state" "in-progress" "already-in-progress: state unchanged (still in
 # dispatch below proves the rest of the actuator still runs and the exported
 # event history remains unchanged.
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch --force "$id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "forced dry-run: ok:true"
+assert_ok "$out" "true" "forced dry-run: ok:true"
 assert_eq "$(jqf "$out" .forced)" "true" "forced dry-run: forced:true"
 assert_eq "$(jqf "$out" .reused_claim)" "true" "forced dry-run: reused_claim:true"
 assert_eq "$(jqf "$out" .claim_transitioned)" "false" "forced dry-run: claim_transitioned:false"
@@ -64,13 +64,13 @@ before=$(transition_count)
 out=$(
   cd "$repo" \
     && PATH="$TESTS_DIR/fakes:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker \
       bash "$SCRIPT" dispatch "$id" --force 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "true" "forced dispatch: ok:true"
+assert_ok "$out" "true" "forced dispatch: ok:true"
 assert_eq "$(jqf "$out" .claimed)" "true" "forced dispatch: claimed state is retained"
 assert_eq "$(jqf "$out" .forced)" "true" "forced dispatch: forced:true"
 assert_eq "$(jqf "$out" .reused_claim)" "true" "forced dispatch: reused_claim:true"
@@ -91,13 +91,13 @@ id_failed=$(new_story "$repo_failed" "Failed forced redispatch")
 out=$(
   cd "$repo_failed" \
     && PATH="$TESTS_DIR/fakes:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_LAUNCH_MANGLE=1 \
       bash "$SCRIPT" dispatch "$id_failed" --force 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "false" "failed forced dispatch: ok:false"
+assert_ok "$out" "false" "failed forced dispatch: ok:false"
 assert_eq "$(jqf "$out" .reason)" "pane-not-ready" "failed forced dispatch: later safety gate still applies"
 assert_eq "$(jqf "$out" .claimed)" "true" "failed forced dispatch: pre-existing claim is reported retained"
 assert_contains "$(jqf "$out" .display)" "pre-existing" "failed forced dispatch: display names retained claim"

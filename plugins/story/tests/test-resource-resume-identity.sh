@@ -23,7 +23,7 @@ chmod +x "$race_bin/git"
 worktree="$repo/.claude/worktrees/$id"
 mkdir -p "$worktree/.claude"
 printf 'original witness' >"$worktree/.claude/dispatch-sentinel.json"
-out=$(cd "$repo" && PATH="$race_bin:$TESTS_DIR/fakes:$PATH" TMUX=fake,0,0 TMUX_PANE=%0 \
+out=$(cd "$repo" && PATH="$race_bin:$TESTS_DIR/fakes:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
   STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   bash "$SCRIPT" dispatch "$id" --resume)

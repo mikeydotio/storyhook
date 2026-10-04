@@ -25,7 +25,7 @@ touch "$fake_bin/error.sock" "$fake_bin/empty.sock"
 
 out=$(cd "$repo" && TMUX="$fake_bin/error.sock,12,0" \
   bash "$SCRIPT" notify "$id" 'must not be delivered' 2>&1)
-assert_eq "$(jqf "$out" .ok)" false 'lookup failure refuses delivery'
+assert_ok "$out" false 'lookup failure refuses delivery'
 assert_eq "$(jqf "$out" .reason)" pane-query-failed 'lookup failure is not a missing pane'
 assert_contains "$(jqf "$out" .display)" error.sock 'failure identifies queried server'
 assert_contains "$(jqf "$out" .display)" 'Permission denied' 'failure preserves tmux diagnostic'

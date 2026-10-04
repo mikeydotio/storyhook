@@ -32,6 +32,7 @@ use crate::embedded::EmbeddedFile;
 include!(concat!(env!("OUT_DIR"), "/embedded_marketplace.rs"));
 
 pub mod guard;
+pub(crate) mod operation;
 pub(crate) mod provider_cli;
 pub mod receipt;
 pub(crate) mod registration;
@@ -717,12 +718,12 @@ fn append_settings_guidance(message: &mut String, project_root: &Path) {
 fn install_claude(project_root: &Path, source: &str) -> Result<String, AppError> {
     let target = PluginTarget::ClaudeCode;
     // Recorded before anything is removed, so a failure after the removes can
-    // put it back (`registration`'s module doc). A failing remove still stops
-    // here: nothing has been destroyed yet, so there is nothing to undo.
+    // put it back (`registration`'s module doc). Once the plugin is removed,
+    // a marketplace-removal failure must also restore the registration.
     let previous = registration::snapshot(target);
     remove_claude_plugin()?;
-    remove_claude_marketplace()?;
     (|| {
+        remove_claude_marketplace()?;
         add_claude_marketplace(source)?;
         install_claude_plugin()
     })()
@@ -819,16 +820,16 @@ fn verify_codex_install(installed_path: &str) -> Result<(), AppError> {
 fn install_codex(project_root: &Path, source: &str) -> Result<String, AppError> {
     let target = PluginTarget::Codex;
     // Recorded before anything is removed, so a failure after the removes can
-    // put it back (`registration`'s module doc). A failing remove still stops
-    // here: nothing has been destroyed yet, so there is nothing to undo.
+    // put it back (`registration`'s module doc). Once the plugin is removed,
+    // a marketplace-removal failure must also restore the registration.
     let previous = registration::snapshot(target);
     remove_codex_plugin()?;
-    remove_codex_marketplace()?;
     // The sandbox step is inside the transaction on purpose: a plugin whose
     // skills exec a launcher that was just rolled back is half-installed, and
     // that step restores its own files, so the two rollbacks compose — files
     // first, then registration — into exactly the previous state.
     let (installed_path, launcher_path, rule_path) = (|| {
+        remove_codex_marketplace()?;
         add_codex_marketplace(source)?;
         let installed_path = add_codex_plugin()?;
         verify_codex_install(&installed_path)?;
@@ -1013,54 +1014,58 @@ fn record_managed_paths() {
     let _ = fs::write(&file, body);
 }
 
+/// Installs this binary's plugin release into the requested provider.
 pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
+    install_with_verb(target, project_root, guard::Verb::Install)
+}
+
+/// Retains the caller's verb when a reinstall uses the same transaction.
+fn install_with_verb(
+    target: &str,
+    project_root: &Path,
+    verb: guard::Verb,
+) -> Result<String, AppError> {
     let warning = compatibility_alias_warning(target);
     let target = PluginTarget::parse(target)?;
     // After the target is parsed (an unknown one is a usage error before
     // anything else is consulted) and before anything is touched: the
     // provider preflight is a provider call, and the projection and the
     // manifest are writes under this process's data home.
-    guard::check(guard::Verb::Install, Some(target.install_token()))?;
-    preflight_provider(target)?;
-    let marketplace = materialize_release_marketplace()?;
-    record_managed_paths();
-    let source = marketplace.display().to_string();
-    let message = match target {
-        PluginTarget::ClaudeCode => install_claude(project_root, &source),
-        PluginTarget::Codex => install_codex(project_root, &source),
-    }?;
-    receipt::record_install(target)?;
-    Ok(format!("{}{message}", warning.unwrap_or_default()))
+    guard::check(verb, Some(target.install_token()))?;
+    let intended = release_marketplace_root()?.display().to_string();
+    operation::run(target, verb.token(), Some(&intended), || {
+        preflight_provider(target)?;
+        let marketplace =
+            operation::step("materialize marketplace", materialize_release_marketplace)?;
+        record_managed_paths();
+        let source = marketplace.display().to_string();
+        let message = match target {
+            PluginTarget::ClaudeCode => install_claude(project_root, &source),
+            PluginTarget::Codex => install_codex(project_root, &source),
+        }?;
+        operation::step("publish install receipt", || {
+            receipt::record_install(target)
+        })?;
+        Ok(format!("{}{message}", warning.unwrap_or_default()))
+    })
 }
 
 fn uninstall_claude(project_root: &Path) -> Result<String, AppError> {
     let mut removed = Vec::new();
 
     if provider_cli::available(PluginTarget::ClaudeCode)? {
-        let uninstalled = provider_cli::run(
-            PluginTarget::ClaudeCode,
-            &["plugin", "uninstall", PLUGIN_REF],
-        )?;
-        if uninstalled.status.success() {
-            removed.push(format!("unregistered {PLUGIN_REF} via claude"));
-        }
-        let _ = provider_cli::run(
-            PluginTarget::ClaudeCode,
-            &["plugin", "marketplace", "remove", MARKETPLACE_NAME],
-        );
+        remove_claude_plugin()?;
+        removed.push(format!("unregistered {PLUGIN_REF} via claude"));
+        remove_claude_marketplace()?;
     }
 
     // The provider's own uninstall leaves its plugin cache behind, and the
     // doctor reads that cache as a lost registration (SH-640): sweep every
     // directory this install owns, the legacy layout included.
-    for dir in remove_install_residue(PluginTarget::ClaudeCode)? {
+    for dir in operation::step("remove installed copies", || {
+        remove_install_residue(PluginTarget::ClaudeCode)
+    })? {
         removed.push(format!("removed installed copies at {}", dir.display()));
-    }
-    if let Some(receipt) = receipt::record_uninstall(PluginTarget::ClaudeCode)? {
-        removed.push(format!(
-            "recorded the uninstall in the install receipt at {}",
-            receipt.display()
-        ));
     }
 
     let claude_md_path = project_root.join("CLAUDE.md");
@@ -1068,7 +1073,9 @@ fn uninstall_claude(project_root: &Path) -> Result<String, AppError> {
         let content = fs::read_to_string(&claude_md_path)?;
         if content.contains(SENTINEL_BEGIN) {
             let cleaned = remove_sentinel_section(&content);
-            fs::write(&claude_md_path, cleaned)?;
+            operation::step("remove CLAUDE.md sentinel", || {
+                fs::write(&claude_md_path, cleaned).map_err(AppError::from)
+            })?;
             removed.push("removed storyhook section from CLAUDE.md".to_string());
         }
     }
@@ -1088,20 +1095,18 @@ fn uninstall_codex(project_root: &Path) -> Result<String, AppError> {
     remove_codex_marketplace()?;
     let mut message =
         format!("removed `{PLUGIN_REF}` and the `{MARKETPLACE_NAME}` marketplace from Codex");
-    for dir in remove_install_residue(PluginTarget::Codex)? {
+    for dir in operation::step("remove installed copies", || {
+        remove_install_residue(PluginTarget::Codex)
+    })? {
         message.push_str(&format!("\nremoved installed copies at {}", dir.display()));
-    }
-    if let Some(receipt) = receipt::record_uninstall(PluginTarget::Codex)? {
-        message.push_str(&format!(
-            "\nrecorded the uninstall in the install receipt at {}",
-            receipt.display()
-        ));
     }
 
     let home = home_dir()?;
     let launcher = codex_launcher_path(&home);
     let rule = codex_rule_path(&home);
-    match remove_managed_file(&launcher, CODEX_LAUNCHER_MARKER)? {
+    match operation::step("remove Codex launcher", || {
+        remove_managed_file(&launcher, CODEX_LAUNCHER_MARKER)
+    })? {
         ManagedRemoval::Removed => {
             message.push_str(&format!(
                 "\nremoved the Storyhook launcher {}",
@@ -1116,7 +1121,9 @@ fn uninstall_codex(project_root: &Path) -> Result<String, AppError> {
         }
         ManagedRemoval::Missing => {}
     }
-    match remove_managed_file(&rule, CODEX_RULE_MARKER)? {
+    match operation::step("remove Codex rule", || {
+        remove_managed_file(&rule, CODEX_RULE_MARKER)
+    })? {
         ManagedRemoval::Removed => {
             message.push_str(&format!(
                 "\nremoved the Storyhook sandbox rule {}",
@@ -1147,13 +1154,16 @@ fn uninstall_codex(project_root: &Path) -> Result<String, AppError> {
             INSTRUCTIONS_SENTINEL_BEGIN,
             INSTRUCTIONS_SENTINEL_END,
         ) {
-            fs::write(&agents_md_path, cleaned)?;
+            operation::step("remove AGENTS.md sentinel", || {
+                fs::write(&agents_md_path, cleaned).map_err(AppError::from)
+            })?;
             message.push_str("\nremoved the Storyhook sentinel block from AGENTS.md");
         }
     }
     Ok(message)
 }
 
+/// Removes the provider registration and publishes a completed uninstall receipt.
 pub fn uninstall(target: &str, project_root: &Path) -> Result<String, AppError> {
     let warning = compatibility_alias_warning(target);
     let target = PluginTarget::parse(target)?;
@@ -1161,11 +1171,21 @@ pub fn uninstall(target: &str, project_root: &Path) -> Result<String, AppError> 
     // before the residue sweep and the receipt: see `guard`'s module doc for
     // the run of this verb that this refuses.
     guard::check(guard::Verb::Uninstall, Some(target.install_token()))?;
-    let message = match target {
-        PluginTarget::ClaudeCode => uninstall_claude(project_root),
-        PluginTarget::Codex => uninstall_codex(project_root),
-    }?;
-    Ok(format!("{}{message}", warning.unwrap_or_default()))
+    operation::run(target, "uninstall", None, || {
+        let mut message = match target {
+            PluginTarget::ClaudeCode => uninstall_claude(project_root),
+            PluginTarget::Codex => uninstall_codex(project_root),
+        }?;
+        if let Some(receipt) = operation::step("publish uninstall receipt", || {
+            receipt::record_uninstall(target)
+        })? {
+            message.push_str(&format!(
+                "\nrecorded the uninstall in the install receipt at {}",
+                receipt.display()
+            ));
+        }
+        Ok(format!("{}{message}", warning.unwrap_or_default()))
+    })
 }
 
 fn remove_sentinel_section(content: &str) -> String {

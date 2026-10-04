@@ -2,11 +2,13 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
+use std::time::Instant;
 
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::process::run_captured;
 use crate::service::engine::TMUX_TIMEOUT;
+use crate::service::tmux_target;
 use serde::{Deserialize, Serialize};
 
 /// One server-local pane belonging to an exact named window.
@@ -35,6 +37,16 @@ pub fn panes(
     socket: &Path,
     names: &BTreeSet<String>,
 ) -> Result<Vec<ResourcePane>, AppError> {
+    resolved_panes(env, socket, names).map(|(_, panes)| panes)
+}
+
+/// Return the server selection with the evidence it produced. A later action
+/// must use this endpoint, not re-resolve a pane number onto another generation.
+pub(crate) fn resolved_panes(
+    env: &Environment,
+    socket: &Path,
+    names: &BTreeSet<String>,
+) -> Result<(tmux_target::Target, Vec<ResourcePane>), AppError> {
     inventory(env, socket, names, true)
 }
 
@@ -44,7 +56,7 @@ pub(crate) fn all_panes(
     socket: &Path,
     names: &BTreeSet<String>,
 ) -> Result<Vec<ResourcePane>, AppError> {
-    inventory(env, socket, names, false)
+    inventory(env, socket, names, false).map(|(_, panes)| panes)
 }
 
 fn inventory(
@@ -52,9 +64,18 @@ fn inventory(
     socket: &Path,
     names: &BTreeSet<String>,
     active_only: bool,
-) -> Result<Vec<ResourcePane>, AppError> {
-    match socket.try_exists() {
-        Ok(false) => return Ok(Vec::new()),
+) -> Result<(tmux_target::Target, Vec<ResourcePane>), AppError> {
+    let deadline = Instant::now() + env.subprocess_bound(TMUX_TIMEOUT);
+    let target = tmux_target::inspect(env, Some(socket), deadline, &Default::default())?;
+    match target.endpoint.try_exists() {
+        Ok(false) if target.protected => {
+            return Err(AppError::Validation(format!(
+                "protected tmux server {} has no endpoint {}",
+                target.socket.display(),
+                target.endpoint.display()
+            )));
+        }
+        Ok(false) => return Ok((target, Vec::new())),
         Ok(true) => {}
         Err(error) => {
             return Err(AppError::Validation(format!(
@@ -65,18 +86,20 @@ fn inventory(
     }
     let mut command = Command::new("tmux");
     crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
+    target.apply(&mut command, Some(socket));
     // ASCII locales make tmux replace tabs with underscores unless UTF-8 is explicit.
-    command.args(["-u", "-S"]).arg(socket).args(["list-panes", "-a", "-F", "#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-agent}\t#{pane_active}\t#{pane_current_path}"]);
-    let output = run_captured(command, env.subprocess_bound(TMUX_TIMEOUT))
+    command.args(["-u", "list-panes", "-a", "-F", "#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-agent}\t#{pane_active}\t#{pane_current_path}"]);
+    let output = run_captured(command, tmux_target::remaining(deadline)?)
         .map_err(|e| AppError::Validation(format!("tmux {}: {}", socket.display(), e.detail())))?;
     if !output.status.success() {
         let diagnostic = String::from_utf8_lossy(&output.stderr);
         // tmux emits this exact answer for ECONNREFUSED after its final window
         // exits. A leftover socket entry does not imply a listening server.
-        if output.stdout.is_empty()
+        if !target.protected
+            && output.stdout.is_empty()
             && diagnostic.trim_end() == format!("no server running on {}", socket.display())
         {
-            return Ok(Vec::new());
+            return Ok((target, Vec::new()));
         }
         return Err(AppError::Validation(format!(
             "cannot query recorded tmux server {}: {}",
@@ -127,7 +150,7 @@ fn inventory(
     }
     result.sort_by(|a, b| a.window_id.cmp(&b.window_id));
     result.dedup();
-    Ok(result)
+    Ok((target, result))
 }
 
 /// The `list-panes` format a conflict-reconcile hold asks the story's tmux
@@ -154,8 +177,26 @@ pub(crate) fn probe_story_panes(
     cancellation: &crate::process::Cancellation,
 ) -> crate::service::engine::WindowProbe {
     use crate::service::engine::WindowProbe;
-    match socket.try_exists() {
+    let deadline = Instant::now() + env.subprocess_bound(TMUX_TIMEOUT);
+    let target = match tmux_target::inspect(env, Some(socket), deadline, cancellation) {
+        Ok(target) => target,
+        Err(error) => {
+            return WindowProbe::Unanswered {
+                detail: error.to_string(),
+            };
+        }
+    };
+    match target.endpoint.try_exists() {
         Ok(true) => {}
+        Ok(false) if target.protected => {
+            return WindowProbe::Unanswered {
+                detail: format!(
+                    "protected tmux server {} has no endpoint {}",
+                    target.socket.display(),
+                    target.endpoint.display()
+                ),
+            };
+        }
         Ok(false) => {
             return WindowProbe::Gone {
                 detail: format!("tmux server socket {} no longer exists", socket.display()),
@@ -169,14 +210,20 @@ pub(crate) fn probe_story_panes(
     }
     let mut command = Command::new("tmux");
     crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
+    target.apply(&mut command, Some(socket));
     // ASCII locales make tmux replace tabs with underscores unless UTF-8 is explicit.
-    command
-        .args(["-u", "-S"])
-        .arg(socket)
-        .args(["list-panes", "-a", "-F", HOLD_PROBE_FORMAT]);
+    command.args(["-u", "list-panes", "-a", "-F", HOLD_PROBE_FORMAT]);
+    let timeout = match tmux_target::remaining(deadline) {
+        Ok(timeout) => timeout,
+        Err(error) => {
+            return WindowProbe::Unanswered {
+                detail: error.to_string(),
+            };
+        }
+    };
     let output = match crate::process::run_captured_cancellable(
         command,
-        env.subprocess_bound(TMUX_TIMEOUT),
+        timeout,
         crate::process::TerminationPolicy::Kill,
         cancellation,
         |_| Ok(()),
@@ -196,7 +243,8 @@ pub(crate) fn probe_story_panes(
         let diagnostic = String::from_utf8_lossy(&output.stderr);
         // tmux emits this exact answer for ECONNREFUSED after its final window
         // exits. A leftover socket entry does not imply a listening server.
-        if output.stdout.is_empty()
+        if !target.protected
+            && output.stdout.is_empty()
             && diagnostic.trim_end() == format!("no server running on {}", socket.display())
         {
             return WindowProbe::Gone {
@@ -390,12 +438,56 @@ mod tests {
         let root = storyhook_test_support::scratch_dir();
         assert!(matches!(
             probe_story_panes(
-                &Environment::at(root.path()),
+                &Environment::at(root.path()).with_subprocess_patience(),
                 &root.path().join("absent"),
                 &names(),
                 &crate::process::Cancellation::default()
             ),
             WindowProbe::Gone { .. }
         ));
+    }
+
+    #[test]
+    fn revivify_record_error_is_not_confirmed_resource_absence() {
+        let root = storyhook_test_support::scratch_dir();
+        let socket = root.path().join("absent");
+        broken_activation(root.path(), &socket);
+        let env = Environment::at(root.path()).with_subprocess_patience();
+        let result = panes(&env, &socket, &names());
+        assert!(
+            result.is_err(),
+            "protected evidence must be read first: {result:?}"
+        );
+        assert!(result.unwrap_err().to_string().contains("revivify"));
+    }
+
+    #[test]
+    fn revivify_record_error_is_not_a_gone_agent() {
+        let root = storyhook_test_support::scratch_dir();
+        let socket = root.path().join("absent");
+        broken_activation(root.path(), &socket);
+        let env = Environment::at(root.path()).with_subprocess_patience();
+        let result = probe_story_panes(&env, &socket, &names(), &Default::default());
+        assert!(
+            matches!(result, WindowProbe::Unanswered { .. }),
+            "{result:?}"
+        );
+    }
+
+    fn broken_activation(home: &Path, socket: &Path) {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+        let canonical = socket
+            .parent()
+            .unwrap()
+            .canonicalize()
+            .unwrap()
+            .join("absent");
+        let digest = format!("{:x}", Sha256::digest(canonical.as_os_str().as_bytes()));
+        let directory = home.join(".local/state/tmux-revivify/activation");
+        std::fs::create_dir_all(&directory).unwrap();
+        let record = directory.join(format!("{digest}.json"));
+        std::fs::write(&record, b"{invalid").unwrap();
+        std::fs::set_permissions(record, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 }

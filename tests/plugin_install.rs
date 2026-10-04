@@ -15,6 +15,8 @@ use storyhook_test_support::load_grace::{Patience, wait_for};
 use storyhook_test_support::{ChildGuard, PORTFILE_DEADLINE, daemon_containment, scratch_dir};
 use tempfile::TempDir;
 
+#[path = "support/plugin_operations.rs"]
+mod operation_tests;
 #[path = "support/protect_domain.rs"]
 mod protect_domain;
 #[path = "support/protect_helper.rs"]
@@ -105,6 +107,10 @@ if [ "${1:-}" = plugin ] && [ "${2:-}" = remove ]; then
 fi
 
 if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = remove ]; then
+  if [ "$mode" = "marketplace-remove-fail-once" ] && [ ! -f "$HOME/codex-remove-failed" ]; then
+    : > "$HOME/codex-remove-failed"
+    echo 'marketplace removal interrupted' >&2; exit 20
+  fi
   [ "$mode" = "marketplace-remove-fail" ] && { echo 'unrelated marketplace failure' >&2; exit 20; }
   if [ "$mode" = "marketplace-absent" ]; then
     echo 'Error: marketplace `storyhook` is not configured or installed' >&2
@@ -148,6 +154,10 @@ if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = add ]; th
   exit 0
 fi
 if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = remove ]; then
+  if [ "$mode" = "marketplace-remove-fail-once" ] && [ ! -f "$HOME/claude-remove-failed" ]; then
+    : > "$HOME/claude-remove-failed"
+    echo 'marketplace removal interrupted' >&2; exit 20
+  fi
   mkdir -p "$HOME/.claude/plugins"
   printf '{}\n' > "$HOME/.claude/plugins/known_marketplaces.json"
   exit 0
@@ -283,8 +293,20 @@ impl Harness {
             // This harness owns its home, and the binary under test is a test
             // build: the plugin guard refuses it the verbs without this. Set
             // on every child, including the explicitly owned daemon.
-            .env(storyhook::plugin::guard::OVERRIDE_VAR, "1")
-            .envs(preset);
+            .env(storyhook::plugin::guard::OVERRIDE_VAR, "1");
+        Self::declare_subprocess_patience(command);
+        command.envs(preset);
+    }
+
+    /// Native probes wait on fixture processes, including in shells whose owned
+    /// HOME makes lib.sh retain the outer harness's patience declaration.
+    fn declare_subprocess_patience(command: &mut Command) {
+        // Match the plugin shell harness's idle floor, then apply load grace.
+        let patience = storyhook_test_support::load_grace::graced_now(Duration::from_secs(30));
+        command.env(
+            "STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS",
+            patience.as_millis().to_string(),
+        );
     }
 
     fn daemon_file(&self) -> PathBuf {
@@ -763,6 +785,39 @@ fn provider_fixture_owns_readiness_beyond_the_client_startup_deadline() {
         "fixture daemon leaked"
     );
     assert!(!home.exists(), "fixture HOME leaked");
+}
+
+#[test]
+fn failed_marketplace_removal_restores_the_plugin_already_removed() {
+    for provider in ["claude", "codex"] {
+        let harness = Harness::for_provider(provider);
+        let previous = harness.seed_previous_registration(provider);
+        harness.set_mode(provider, "marketplace-remove-fail-once");
+        let output = harness.run(&["plugin", "install", provider]);
+        let message = combined(&output);
+        assert!(!output.status.success(), "{message}");
+        assert!(
+            message.contains("marketplace removal interrupted"),
+            "{message}"
+        );
+        assert_eq!(
+            harness.registered_source(provider),
+            Some(previous.display().to_string())
+        );
+        let installed = if provider == "claude" {
+            "claude-installed"
+        } else {
+            "codex-installed-version"
+        };
+        assert!(
+            harness.home.join(installed).exists(),
+            "{provider}: plugin not restored"
+        );
+        assert!(
+            message.contains("re-registered the previous marketplace"),
+            "{message}"
+        );
+    }
 }
 
 #[test]

@@ -14,7 +14,7 @@ dispatch_next_real() {
   (
     cd "$dir" \
       && PATH="$FAKE_TMUX_DIR:$PATH" \
-        TMUX="fake,0,0" TMUX_PANE="%0" \
+        TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
         STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
         STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
         FAKE_TMUX_CAPTURE=marker \
@@ -29,7 +29,7 @@ high_id=$(new_story "$repo" "Higher-priority story")
 (cd "$repo" && story prioritize "$high_id" high >/dev/null)
 
 out=$(dispatch_next_real "$repo")
-assert_eq "$(jqf "$out" .ok)" "true" "next-mode happy: ok:true"
+assert_ok "$out" "true" "next-mode happy: ok:true"
 assert_eq "$(jqf "$out" .claimed)" "true" "next-mode happy: claimed:true"
 assert_eq "$(jqf "$out" .id)" "$high_id" "next-mode happy: the higher-priority story was picked, not the first created"
 assert_eq "$(jqf "$out" .state)" "in-progress" "next-mode happy: state is in-progress"

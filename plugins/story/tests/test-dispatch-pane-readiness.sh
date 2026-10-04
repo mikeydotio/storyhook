@@ -72,7 +72,7 @@ id=$(new_story "$repo" "Ready story dispatched into a pane that never started Cl
 out=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=structural FAKE_TMUX_LAUNCH_MANGLE=1 \
@@ -112,7 +112,7 @@ esac
 
 # --- Secondary: dispatch should report failure and leave the story
 #     unclaimed rather than a false-positive success. ---
-assert_eq "$(jqf "$out" .ok)" "false" \
+assert_ok "$out" "false" \
   "structural-idle-pane: dispatch must not report success when the pane was never confirmed as an actual Claude session"
 state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 assert_eq "$state" "todo" \
@@ -123,14 +123,14 @@ survivor=$(new_story "$repo" "Readiness rollback meets a locked worktree")
 out=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=structural FAKE_TMUX_LAUNCH_MANGLE=1 \
       FAKE_TMUX_LOCK_WORKTREE_ON_OPEN=1 \
       bash "$SCRIPT" dispatch "$survivor" --auto 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "false" "rollback-survivor: dispatch refused"
+assert_ok "$out" "false" "rollback-survivor: dispatch refused"
 assert_contains "$(jqf "$out" .display)" "WARNING: dispatch cleanup is incomplete" \
   "rollback-survivor: the answer names incomplete cleanup"
 assert_contains "$(jqf "$out" .display)" "worktree remains" \

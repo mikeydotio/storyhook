@@ -42,9 +42,9 @@ hp=$(new_story "$repo" "Reset me")
 whp=$(mk_dispatched "$repo" "$hp")
 claim_it "$hp"
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$whp")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$whp")" \
      bash "$SCRIPT" --project "$slug" reset "$hp" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "happy: ok"
+assert_ok "$out" "true" "happy: ok"
 assert_eq "$(jqf "$out" .unclaimed)" "true" "happy: the claim was released"
 assert_eq "$(jqf "$out" .restored_to)" "todo" "happy: to the state it was claimed from"
 assert_eq "$(jqf "$out" '.removed.worktree')" "true" "happy: worktree removed"
@@ -62,11 +62,11 @@ wkf=$(mk_dispatched "$repo" "$kf")
 claim_it "$kf"
 status=0
 out=$(cd "$repo" \
-  && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wkf")" \
+  && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wkf")" \
      FAKE_TMUX_FAIL_KILL_WINDOW=1 \
      bash "$SCRIPT" --project "$slug" reset "$kf" 2>&1) || status=$?
 [ "$status" -ne 0 ] || fail_test "kill-failure: helper exited successfully"
-assert_eq "$(jqf "$out" .ok)" "false" "kill-failure: ok:false"
+assert_ok "$out" "false" "kill-failure: ok:false"
 assert_eq "$(jqf "$out" .closed_window)" "false" "kill-failure: window is not reported closed"
 assert_contains "$(jqf "$out" .display)" "could not prove tmux window absence" \
   "kill-failure: the failed postcondition is explicit"
@@ -80,7 +80,7 @@ wdy=$(mk_dispatched "$repo" "$dy")
 claim_it "$dy"
 echo scratch >"$repo/.claude/worktrees/$wdy/scratch.txt"
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" reset "$dy" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "dirty: ok:false"
+assert_ok "$out" "false" "dirty: ok:false"
 assert_eq "$(jqf "$out" .reason)" "dirty-worktree" "dirty: reason names it"
 wt_exists "$wdy" || fail_test "dirty: worktree was removed anyway"
 [ -f "$repo/.claude/worktrees/$wdy/scratch.txt" ] || fail_test "dirty: uncommitted work destroyed"
@@ -88,7 +88,7 @@ assert_eq "$(state_of "$dy")" "in-progress" "dirty: NOTHING was mutated, the cla
 assert_contains "$(jqf "$out" .display)" "--force" "dirty: names the override"
 
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" reset "$dy" --force 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "dirty --force: ok"
+assert_ok "$out" "true" "dirty --force: ok"
 assert_eq "$(jqf "$out" .forced)" "true" "dirty --force: flagged as forced"
 wt_exists "$wdy" && fail_test "dirty --force: worktree survived the override"
 
@@ -99,7 +99,7 @@ commit_in "$wup"
 claim_it "$up"
 upsha=$(cd "$repo" && git rev-parse "refs/heads/worktree-$wup")
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" reset "$up" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unpushed: ok:false"
+assert_ok "$out" "false" "unpushed: ok:false"
 assert_eq "$(jqf "$out" .reason)" "unpushed-commits" "unpushed: reason names it"
 assert_eq "$(jqf "$out" .unpushed)" "1" "unpushed: counts what would be destroyed"
 assert_eq "$(cd "$repo" && git rev-parse "refs/heads/worktree-$wup")" "$upsha" \
@@ -107,7 +107,7 @@ assert_eq "$(cd "$repo" && git rev-parse "refs/heads/worktree-$wup")" "$upsha" \
 assert_eq "$(state_of "$up")" "in-progress" "unpushed: nothing was mutated"
 
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" reset "$up" --force 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "unpushed --force: ok"
+assert_ok "$out" "true" "unpushed --force: ok"
 br_exists "$wup" && fail_test "unpushed --force: unmerged branch survived the override"
 
 # --- a REMOTE-BACKED branch is not unpushed, even though it is unmerged -----
@@ -120,7 +120,7 @@ commit_in "$wps"
 (cd "$repo" && git fetch -q origin "+refs/heads/worktree-$wps:refs/remotes/origin/worktree-$wps") >/dev/null 2>&1
 claim_it "$ps"
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" reset "$ps" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "remote-backed: no refusal — the remote has the commits"
+assert_ok "$out" "true" "remote-backed: no refusal — the remote has the commits"
 assert_eq "$(jqf "$out" .unpushed)" "0" "remote-backed: nothing is unrecoverable"
 assert_eq "$(jqf "$out" '.removed.branch')" "true" "remote-backed: the unmerged branch is deleted"
 br_exists "$wps" && fail_test "remote-backed: local branch survived"
@@ -131,13 +131,13 @@ wlk=$(mk_dispatched "$repo" "$lk")
 claim_it "$lk"
 (cd "$repo" && git worktree lock ".claude/worktrees/$wlk") >/dev/null 2>&1
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" reset "$lk" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "locked: ok:false"
+assert_ok "$out" "false" "locked: ok:false"
 assert_eq "$(jqf "$out" .reason)" "locked-worktree" "locked: reason names it"
 wt_exists "$wlk" || fail_test "locked: worktree was removed"
 assert_contains "$(cd "$repo" && git worktree list --porcelain)" "locked" "locked: still locked"
 
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" reset "$lk" --force 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "locked --force: ok"
+assert_ok "$out" "true" "locked --force: ok"
 wt_exists "$wlk" && fail_test "locked --force: worktree survived the override"
 
 # --- REFUSAL: a protected branch, which --force does NOT override ----------
@@ -148,7 +148,7 @@ for extra in "" "--force"; do
   # shellcheck disable=SC2086 # deliberate: "" must expand to no argument
   out=$(cd "$repo" && STORY_PROTECTED_BRANCHES="worktree-*" \
     bash "$SCRIPT" --project "$slug" reset "$pr" $extra 2>&1)
-  assert_eq "$(jqf "$out" .ok)" "false" "protected${extra:+ $extra}: ok:false"
+  assert_ok "$out" "false" "protected${extra:+ $extra}: ok:false"
   assert_eq "$(jqf "$out" .reason)" "protected-branch" "protected${extra:+ $extra}: reason names it"
 done
 wt_exists "$wpr" || fail_test "protected: worktree was removed"
@@ -163,9 +163,9 @@ claim_it "$sw"
 for extra in "" "--force"; do
   # shellcheck disable=SC2086
   out=$(cd "$repo" \
-    && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%0' "$wsw")" \
+    && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%0' "$wsw")" \
        bash "$SCRIPT" --project "$slug" reset "$sw" $extra 2>&1)
-  assert_eq "$(jqf "$out" .ok)" "false" "self-window${extra:+ $extra}: ok:false"
+  assert_ok "$out" "false" "self-window${extra:+ $extra}: ok:false"
   assert_eq "$(jqf "$out" .reason)" "self-window" "self-window${extra:+ $extra}: reason names it"
 done
 wt_exists "$wsw" || fail_test "self-window: worktree was removed"
@@ -180,7 +180,7 @@ for extra in "" "--force"; do
   # shellcheck disable=SC2086
   out=$(cd "$repo/.claude/worktrees/$wcw" \
     && bash "$SCRIPT" --project "$slug" reset "$cw" $extra 2>&1)
-  assert_eq "$(jqf "$out" .ok)" "false" "current-worktree${extra:+ $extra}: ok:false"
+  assert_ok "$out" "false" "current-worktree${extra:+ $extra}: ok:false"
   assert_eq "$(jqf "$out" .reason)" "current-worktree" "current-worktree${extra:+ $extra}: reason names it"
 done
 wt_exists "$wcw" || fail_test "current-worktree: worktree was removed"
@@ -193,7 +193,7 @@ assert_eq "$(state_of "$cw")" "in-progress" "current-worktree: nothing was mutat
 cf=$(new_story "$repo" "Never claimed")
 wcf=$(mk_dispatched "$repo" "$cf")
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" reset "$cf" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "conflict: still ok — the teardown is the verb"
+assert_ok "$out" "true" "conflict: still ok — the teardown is the verb"
 assert_eq "$(jqf "$out" .unclaimed)" "false" "conflict: no release happened"
 assert_eq "$(jqf "$out" .unclaim_conflict)" "todo" "conflict: names the state actually found"
 assert_contains "$(jqf "$out" .display)" "was not claimed" "conflict: display says so"
@@ -210,7 +210,7 @@ claim_it "$iw"
 out=$(cd "$repo" \
   && FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$wiw")" \
      bash "$SCRIPT" --project "$slug" reset "$iw" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "invisible-window: ok"
+assert_ok "$out" "true" "invisible-window: ok"
 assert_eq "$(jqf "$out" .window)" "open" "invisible-window: found and reported as open"
 assert_eq "$(jqf "$out" .closed_window)" "true" "invisible-window: and actually closed"
 wt_exists "$wiw" && fail_test "invisible-window: worktree survived"
@@ -219,7 +219,7 @@ wt_exists "$wiw" && fail_test "invisible-window: worktree survived"
 nd=$(new_story "$repo" "Nothing to remove")
 claim_it "$nd"
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" reset "$nd" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "nothing: ok"
+assert_ok "$out" "true" "nothing: ok"
 assert_eq "$(jqf "$out" '.removed.worktree')" "false" "nothing: no worktree to remove"
 assert_eq "$(jqf "$out" '.removed.branch')" "false" "nothing: no branch to remove"
 assert_eq "$(state_of "$nd")" "todo" "nothing: the claim was still released"
@@ -231,7 +231,7 @@ assert_eq "$(state_of "$nd")" "todo" "nothing: the claim was still released"
 nd2=$(new_story "$repo" "Nothing to remove either")
 claim_it "$nd2"
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" --project "$slug" reset "$nd2" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "dry-nothing: ok"
+assert_ok "$out" "true" "dry-nothing: ok"
 case "$(jqf "$out" .display)" in
 *"worktree"*) fail_test "dry-nothing: display names a worktree that does not exist" ;;
 esac
@@ -245,7 +245,7 @@ dr=$(new_story "$repo" "Dry run me")
 wdr=$(mk_dispatched "$repo" "$dr")
 claim_it "$dr"
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" --project "$slug" reset "$dr" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "dry: ok"
+assert_ok "$out" "true" "dry: ok"
 assert_eq "$(jqf "$out" .dry_run)" "true" "dry: flagged"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "git worktree remove" "dry: previews the removal"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "git branch -D" "dry: previews the branch deletion"
@@ -256,17 +256,17 @@ assert_eq "$(state_of "$dr")" "in-progress" "dry: the story did NOT move"
 
 echo scratch >"$repo/.claude/worktrees/$wdr/scratch.txt"
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" --project "$slug" reset "$dr" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "dry-refusal: a preview refuses exactly where a real run would"
+assert_ok "$out" "false" "dry-refusal: a preview refuses exactly where a real run would"
 assert_eq "$(jqf "$out" .reason)" "dirty-worktree" "dry-refusal: for the same reason"
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" reset 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "reset: missing id is ok:false"
+assert_ok "$out" "false" "reset: missing id is ok:false"
 assert_contains "$(jqf "$out" .display)" "usage:" "reset: missing id shows the usage line"
 out=$(cd "$repo" && bash "$SCRIPT" reset "bad id!" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "reset: invalid id is ok:false"
+assert_ok "$out" "false" "reset: invalid id is ok:false"
 assert_contains "$(jqf "$out" .display)" "alphanumeric" "reset: invalid id names the constraint"
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" reset "$nd" junk 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "reset: a word that lands nowhere is refused"
+assert_ok "$out" "false" "reset: a word that lands nowhere is refused"
 
 finish

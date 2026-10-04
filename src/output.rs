@@ -877,6 +877,8 @@ pub struct LogEntry {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Response {
+    /// Historical, non-authoritative verification cost evidence.
+    GateEvidence(Box<crate::service::gate_cost::view::EvidenceView>),
     /// Durable project fault evidence and the accepted repair disposition.
     ProjectRecovery(Box<crate::service::project_recovery::RecoveryView>),
     /// Shared verifier snapshot, rendered by the client.
@@ -1150,6 +1152,9 @@ pub fn render_error(error: &AppError, json: bool) -> String {
 
 fn render_json(response: &Response) -> String {
     let rendered = match response {
+        Response::GateEvidence(view) => {
+            serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "evidence":view}))
+        }
         Response::ProjectRecovery(view) => {
             serde_json::to_string_pretty(&serde_json::json!({"result":"ok", "recovery":view}))
         }
@@ -1495,6 +1500,7 @@ fn render_human(response: &Response) -> String {
                 .unwrap_or_else(|| "none".into()),
             view.state.subjects.len()
         ),
+        Response::GateEvidence(view) => view.render(),
         Response::VerifierStatus(status) => status.render_human(),
         Response::WithVerifier {
             response,

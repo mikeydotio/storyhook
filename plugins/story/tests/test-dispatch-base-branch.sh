@@ -16,7 +16,7 @@ dispatch_real() {
   (
     cd "$dir" \
       && env PATH="$FAKE_TMUX_DIR:$PATH" \
-        TMUX="fake,0,0" TMUX_PANE="%0" \
+        TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
         STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
         STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
         FAKE_TMUX_CAPTURE=marker "$@" \
@@ -39,7 +39,7 @@ assert_eq "$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD)" "refs/remote
   "fixture: the local origin/HEAD cache still says main"
 id=$(new_story "$repo" "Based on the real default")
 out=$(dispatch_real "$repo" "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "stale cache: dispatch succeeds: $out"
+assert_ok "$out" "true" "stale cache: dispatch succeeds"
 assert_eq "$(jqf "$out" .base_branch)" "dev" "stale cache: the base is origin's advertised default"
 assert_eq "$(jqf "$out" .base_source)" "origin" "stale cache: …asked of origin"
 assert_eq "$(jqf "$out" .base_ref)" "origin/dev" "stale cache: base_ref names it"
@@ -54,7 +54,7 @@ git -C "$repo" remote set-url origin /nonexistent/storyhook-origin.git
 main_tip=$(git -C "$repo" rev-parse refs/remotes/origin/main)
 id2=$(new_story "$repo" "Offline with a cache")
 out=$(dispatch_real "$repo" "$id2")
-assert_eq "$(jqf "$out" .ok)" "true" "cache: dispatch still succeeds offline: $out"
+assert_ok "$out" "true" "cache: dispatch still succeeds offline"
 assert_eq "$(jqf "$out" .base_branch)" "main" "cache: the cached default is used"
 assert_eq "$(jqf "$out" .base_source)" "cache" "cache: …and reported as the cache"
 assert_eq "$(jqf "$out" .base_oid)" "$main_tip" "cache: based on the last-known origin/main"
@@ -70,7 +70,7 @@ git -C "$repo2" remote remove origin
 head2=$(git -C "$repo2" rev-parse HEAD)
 id3=$(new_story "$repo2" "No origin")
 out=$(dispatch_real "$repo2" "$id3")
-assert_eq "$(jqf "$out" .ok)" "true" "none: dispatch succeeds with no origin: $out"
+assert_ok "$out" "true" "none: dispatch succeeds with no origin"
 assert_eq "$(jqf "$out" .base_branch)" "null" "none: no default branch is claimed"
 assert_eq "$(jqf "$out" .base_ref)" "null" "none: no base ref is claimed"
 assert_eq "$(jqf "$out" .base_source)" "none" "none: the source is stated"
@@ -82,7 +82,7 @@ assert_contains "$(jqf "$out" .warning)" "local checkout" "none: …and names th
 id4=$(new_story "$repo2" "Strict")
 before_state=$(cd "$repo2" && story show "$id4" --json | jq -r '.story.story.state')
 out=$(dispatch_real "$repo2" "$id4" STORY_REQUIRE_FRESH_BASE=1)
-assert_eq "$(jqf "$out" .ok)" "false" "strict: refused: $out"
+assert_ok "$out" "false" "strict: refused"
 assert_contains "$(jqf "$out" .display)" "STORY_REQUIRE_FRESH_BASE" "strict: names the knob"
 assert_eq "$(cd "$repo2" && story show "$id4" --json | jq -r '.story.story.state')" "$before_state" \
   "strict: the claim was rolled back"

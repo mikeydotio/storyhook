@@ -78,12 +78,14 @@ impl From<ProviderError> for AppError {
 
 /// Runs `<provider> <args>` until it exits or [`PROVIDER_CLI_TIMEOUT`] ends it.
 pub(super) fn run(target: PluginTarget, args: &[&str]) -> Result<Captured, ProviderError> {
-    run_at(
-        OsStr::new(target.executable()),
-        target,
-        args,
-        PROVIDER_CLI_TIMEOUT,
-    )
+    super::operation::provider(target, args, || {
+        run_at(
+            OsStr::new(target.executable()),
+            target,
+            args,
+            PROVIDER_CLI_TIMEOUT,
+        )
+    })
 }
 
 /// Whether the provider CLI is there to use. Claude keeps its historical
@@ -103,7 +105,9 @@ fn available_at(
     target: PluginTarget,
     deadline: Duration,
 ) -> Result<bool, ProviderError> {
-    match run_at(program, target, &["--version"], deadline) {
+    match super::operation::provider(target, &["--version"], || {
+        run_at(program, target, &["--version"], deadline)
+    }) {
         Ok(out) => Ok(target == PluginTarget::ClaudeCode || out.status.success()),
         Err(ProviderError::Missing(_)) => Ok(false),
         Err(error) => Err(error),
@@ -121,6 +125,7 @@ fn run_at(
     let shown = format!("{} {}", target.executable(), args.join(" "));
     let mut command = Command::new(program);
     apply_plugin_cli_allowlist(&mut command);
+    super::operation::inherit_lock(&mut command);
     command.args(args);
     let started = Instant::now();
     let captured = run_captured_answer(
@@ -172,9 +177,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
-    /// The deadline a test provider that never answers is given: long
-    /// enough for `sh` to start its grandchild on a loaded machine, where a
-    /// spawn can cost hundreds of times its idle latency (SH-643).
+    /// Injected timeout policy; child readiness is not required within it.
     const HANG_DEADLINE: Duration = Duration::from_secs(2);
 
     /// What a loaded gate may add to a timed-out run, on top of its deadline
@@ -199,12 +202,28 @@ mod tests {
     /// what it ran and for how long, and leave no process of that group.
     #[test]
     fn a_provider_that_never_answers_is_stopped_at_its_deadline() {
+        assert_hanging_provider("");
+    }
+
+    #[test]
+    fn a_provider_timeout_before_readiness_reaps_its_group() {
+        assert_hanging_provider("sleep 300 & wait\n");
+    }
+
+    fn assert_hanging_provider(startup: &str) {
         let dir = storyhook_test_support::scratch_dir();
+        let journal = dir.path().join("journal");
+        let _scope = crate::daemon::activity::context::enter(Some(
+            crate::daemon::activity::context::LogContext {
+                directory: journal.clone(),
+                label: "provider-timeout-regression".into(),
+            },
+        ));
         let grandchild = dir.path().join("grandchild");
         let program = provider(
             dir.path(),
             &format!(
-                "sleep 300 &\nprintf %s $! > '{}'\nwait",
+                "{startup}sleep 300 &\nprintf %s $! > '{}'\nwait",
                 grandchild.display()
             ),
         );
@@ -234,15 +253,39 @@ mod tests {
             elapsed < HANG_DEADLINE + PROVIDER_TERM_GRACE + LOAD_MARGIN,
             "the run took {elapsed:?}"
         );
-        let pid: libc::pid_t = std::fs::read_to_string(&grandchild)
-            .expect("the provider recorded its grandchild")
-            .trim()
-            .parse()
-            .expect("a pid");
+        // The parent owns this receipt even if timeout precedes all child code.
+        let mut pids = Vec::new();
+        for file in crate::daemon::activity::day_files(&journal).unwrap() {
+            for line in std::fs::read_to_string(file).unwrap().lines() {
+                let row: serde_json::Value = serde_json::from_str(line).unwrap();
+                if row["message"] == "process started" {
+                    let child = row["context"]
+                        .as_str()
+                        .unwrap()
+                        .split_whitespace()
+                        .find_map(|field| field.strip_prefix("child="))
+                        .expect("spawn receipt names its child");
+                    pids.push(child.parse::<libc::pid_t>().unwrap());
+                }
+            }
+        }
+        assert_eq!(pids.len(), 1, "one real provider must have started");
+        let pid = pids[0];
+        assert!(pid > 0);
         assert!(
             crate::process::pid_disappears(pid),
-            "the provider's grandchild {pid} outlived the deadline"
+            "provider {pid} outlived the deadline"
         );
+        assert!(
+            crate::process::pid_disappears(-pid),
+            "provider process group {pid} outlived the deadline"
+        );
+        if !startup.is_empty() {
+            assert!(
+                !grandchild.exists(),
+                "the stimulus must stall before readiness"
+            );
+        }
     }
 
     #[test]

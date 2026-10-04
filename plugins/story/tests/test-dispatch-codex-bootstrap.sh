@@ -11,14 +11,14 @@ _TMP_REPOS+=("$FAKE_TMUX_STATE")
 repo=$(mk_story_repo CBT)
 id=$(new_story "$repo" "First-turn initialization")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity \
   FAKE_TMUX_SESSION_ID=bootstrap-test-session \
   FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$SCRIPT" dispatch "$id" --auto)
-assert_eq "$(jqf "$out" .ok)" true "first-turn hook initializes and dispatch succeeds"
+assert_ok "$out" true "first-turn hook initializes and dispatch succeeds"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 2 "one initialization and one charter"
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" "$id" "last submission is the story charter"
 assert_eq "$(jq -r .session_id "$(jqf "$out" .worktree_path)/.claude/dispatch-sentinel.json")" \
@@ -80,13 +80,13 @@ FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-incomplete.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
 id=$(new_story "$repo" "Incomplete initialization")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_BOOTSTRAP_INCOMPLETE=1 \
   FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$SCRIPT" dispatch "$id" --auto)
-assert_eq "$(jqf "$out" .ok)" false "a hook receipt alone cannot deliver the charter"
+assert_ok "$out" false "a hook receipt alone cannot deliver the charter"
 assert_eq "$(jqf "$out" .wait_ready_reason)" bootstrap-incomplete "missing completion is diagnosed"
 assert_eq "$(jqf "$out" .bootstrap_phase)" submitted "refusal identifies the submitted initialization phase"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 1 "incomplete initialization is never resubmitted"
@@ -105,13 +105,13 @@ FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-unconfirmed.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
 id=$(new_story "$repo" "Unconfirmed initialization")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_ENTER_ABSORB=1 \
   FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$SCRIPT" dispatch "$id" --auto)
-assert_eq "$(jqf "$out" .ok)" false "unconfirmed: refused"
+assert_ok "$out" false "unconfirmed: refused"
 assert_eq "$(jqf "$out" .reason)" pane-not-ready "unconfirmed: pane-not-ready"
 assert_eq "$(jqf "$out" .wait_ready_reason)" bootstrap-submit-unconfirmed "unconfirmed: reason"
 assert_eq "$(jqf "$out" .bootstrap_phase)" submitted "unconfirmed: phase"
@@ -132,13 +132,13 @@ FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-undelivered.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
 id=$(new_story "$repo" "Undelivered initialization")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_DIALOG=paste \
   FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$SCRIPT" dispatch "$id" --auto)
-assert_eq "$(jqf "$out" .ok)" false "undelivered: refused"
+assert_ok "$out" false "undelivered: refused"
 assert_eq "$(jqf "$out" .reason)" pane-not-ready "undelivered: pane-not-ready"
 assert_eq "$(jqf "$out" .wait_ready_reason)" bootstrap-undelivered "undelivered: reason"
 assert_eq "$(jqf "$out" .bootstrap_phase)" not-started "undelivered: no initialization turn ran"
@@ -156,13 +156,13 @@ FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-bootstrap-plan.XXXXXX)
 _TMP_REPOS+=("$FAKE_TMUX_STATE")
 id=$(new_story "$repo" "Plan-less initialization")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_IGNORE_PLAN_KEYS=9 \
   FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$SCRIPT" dispatch "$id" --auto)
-assert_eq "$(jqf "$out" .ok)" false "plan: refused"
+assert_ok "$out" false "plan: refused"
 assert_eq "$(jqf "$out" .wait_ready_reason)" bootstrap-plan-unconfirmed "plan: reason"
 assert_eq "$(jqf "$out" .bootstrap_phase)" not-started "plan: nothing was submitted"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 0 "plan: nothing was typed"

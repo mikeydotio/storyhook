@@ -129,11 +129,11 @@ repo=$(mk_story_repo)
 cd "$repo" || exit 1
 printf 'A report about installed files\n' > "$repo/report.md"
 out=$(bash "$1" create --title 'Guard fixture' --description-file "$repo/report.md" --type bug --priority medium)
-assert_eq "$(jqf "$out" .ok)" true 'real create'
+assert_ok "$out" true 'real create'
 id=$(jqf "$out" .id)
 story claim "$id" --no-comment >/dev/null || fail_test claim
 out=$(bash "$1" unclaim "$id" --no-comment)
-assert_eq "$(jqf "$out" .ok)" true "real unclaim: $out"
+assert_ok "$out" true "real unclaim"
 assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" todo 'unclaim persisted'
 wname=$(wname_for "$repo" "$id")
 git worktree add -q --no-track -b "worktree-$wname" ".claude/worktrees/$wname" HEAD || exit 1
@@ -149,19 +149,26 @@ assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" in-progress 
 assert_eq "$(cat "$repo/.claude/worktrees/$wname/protected/file")" sentinel 'artifact survived'
 cp "$repo/manifest.backup" "$manifest"
 ln -s "$HOME/.codex" "$repo/redirect"
+# A slow native observation must reach the artifact guard. The delay is a
+# deliberate stimulus beyond the production probe bound, not readiness polling.
 for container in redirect/storyhook "../$(basename "$repo")/redirect/storyhook"; do
+  printf '%s\n' "$SH803_RESOURCE_DELAY" > "$FAKE_TMUX_STATE/resource_delay"
   out=$(STORY_WORKTREE_IGNORE_PATH="$container" bash "$1" reset "$id" --force)
-  assert_eq "$(jqf "$out" .reason)" installed-artifact-resource 'redirected configuration refused'
+  assert_eq "$(jqf "$out" .reason)" installed-artifact-resource "redirected configuration refused: $out"
   assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" in-progress 'redirect refusal precedes release'
+  assert_eq "$(cat "$repo/.claude/worktrees/$wname/protected/file")" sentinel 'redirect refusal preserves worktree'
+  git show-ref --verify --quiet "refs/heads/worktree-$wname" || fail_test 'redirect refusal preserves branch'
+  rm "$FAKE_TMUX_STATE/resource_delay"
 done
 out=$(bash "$1" reset "$id" --force --no-comment)
-assert_eq "$(jqf "$out" .ok)" true 'real reset'
+assert_ok "$out" true 'real reset'
 [ ! -d "$repo/.claude/worktrees/$wname" ] || fail_test 'worktree survived reset'
 git show-ref --verify --quiet "refs/heads/worktree-$wname" && fail_test 'branch survived reset'
 assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" todo 'reset persisted'
 [ "$_FAILED" -eq 0 ]
 "#, "installed-domain-test"])
             .arg(entry).arg(env!("CARGO_MANIFEST_DIR"))
+            .env("SH803_RESOURCE_DELAY", (storyhook::service::engine::TMUX_TIMEOUT + Duration::from_secs(1)).as_secs().to_string())
             .env("STORYHOOK_TEST_HOME", &harness.home);
         let output = run_bounded(
             command,

@@ -51,8 +51,8 @@ pub enum WindowCensus {
 /// Asks the tmux server the caller's environment names for its live agent
 /// windows.
 ///
-/// Deliberately a plain `tmux` on the caller's `PATH` with the caller's
-/// environment intact — never `ShellDispatcher`'s allowlisted spawn, which
+/// Uses `tmux` on the caller's `PATH` with the caller's environment intact
+/// after resolving protected ownership — never the daemon's allowlisted spawn, which
 /// strips `TMUX` and would ask the default socket on behalf of a client that
 /// is attached somewhere else.
 ///
@@ -60,7 +60,22 @@ pub enum WindowCensus {
 /// resolve one, so it names the production bound itself; lib tests reach the
 /// census only through `ShellDispatcher`, whose bound its `Environment` gives.
 pub fn count_live_agent_windows() -> WindowCensus {
-    census_through(Command::new("tmux"), TMUX_TIMEOUT)
+    let deadline = std::time::Instant::now() + TMUX_TIMEOUT;
+    let prepared = (|| {
+        let target = crate::service::tmux_target::inspect_ambient(deadline)?;
+        let mut command = Command::new("tmux");
+        target.apply(&mut command, None);
+        Ok::<_, crate::error::AppError>((
+            command,
+            crate::service::tmux_target::remaining(deadline)?,
+        ))
+    })();
+    match prepared {
+        Ok((command, bound)) => census_through(command, bound),
+        Err(error) => WindowCensus::Unanswered {
+            detail: error.to_string(),
+        },
+    }
 }
 
 /// The same census through a caller-prepared `tmux` command — the engine's
@@ -69,7 +84,8 @@ pub fn count_live_agent_windows() -> WindowCensus {
 /// on. One parser, one error vocabulary, two doors (SH-136). `bound` is the
 /// caller's per-call tmux bound.
 pub fn census_through(mut command: Command, bound: Duration) -> WindowCensus {
-    command.args(["list-windows", "-a", "-F", CENSUS_FORMAT]);
+    // Keep the protocol delimiters independent of the caller's locale.
+    command.args(["-u", "list-windows", "-a", "-F", CENSUS_FORMAT]);
     let captured = match run_captured(command, bound) {
         Ok(captured) => captured,
         Err(CaptureError::Timeout(_)) => {

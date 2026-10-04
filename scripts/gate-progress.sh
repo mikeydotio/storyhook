@@ -138,10 +138,31 @@ gate_progress_emit_case() {
     [ -n "$journal" ] || return 0
     path="$1"
     outcome="$2"
+    if [ "$#" -ge 3 ]; then
+        # Case identities are literal data and may contain JSON control characters.
+        . "$(dirname "${BASH_SOURCE[0]}")/python-runtime.sh" || return 1
+        storyhook_python_init || return 1
+        "$STORYHOOK_PYTHON" - "$path" "$outcome" "$3" <<'PY' >>"$journal"
+import json
+import sys
+
+print(json.dumps(dict(kind="case", path=sys.argv[1], outcome=sys.argv[2], name=sys.argv[3])))
+PY
+        return "$?"
+    fi
     printf '{"kind":"case","path":"%s","outcome":"%s"}\n' \
         "$(gate_progress_json_escape "$path")" \
         "$outcome" \
         >>"$journal"
+}
+
+# Emits a measured phase boundary. Unlike budget observations, a producer
+# boundary is real progress. IDs must match start/end and differ across runs.
+gate_progress_emit_cost() {
+    [ -n "$(gate_progress_journal)" ] || return 0
+    . "$(dirname "${BASH_SOURCE[0]}")/python-runtime.sh" || return 1
+    storyhook_python_init || return 1
+    "$STORYHOOK_PYTHON" "$(dirname "${BASH_SOURCE[0]}")/gate-progress-writer.py" cost "$@"
 }
 
 # Appends one non-checklist activity lifecycle event. No-op, silently, when
@@ -178,6 +199,10 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     (activity)
         shift
         gate_progress_emit_activity "$@"
+        ;;
+    (cost)
+        shift
+        gate_progress_emit_cost "$@"
         ;;
     (*)
         echo "gate-progress.sh: usage: gate-progress.sh item <path> <status> [key=value...] | gate-progress.sh case <path> <outcome> | gate-progress.sh activity <path> <label> <status>" >&2

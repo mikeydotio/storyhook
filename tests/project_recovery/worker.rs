@@ -340,6 +340,7 @@ fn existing_managed_claim_is_adopted_only_with_exact_lease_and_one_transition() 
             worktree_path: checkout.join(".codex/worktrees/SH-2"),
             branch: "worktree-SH-2".into(),
             tmux: TmuxCleanupTarget {
+                revivify: None,
                 socket_path: checkout.join("tmux.sock"),
             },
         };
@@ -522,6 +523,7 @@ fn proven_absence_resumes_only_the_exact_registered_lease_and_preserves_work() {
             worktree_path: worktree.clone(),
             branch: "worktree-SH-1".into(),
             tmux: TmuxCleanupTarget {
+                revivify: None,
                 socket_path: repository.join("absent.sock"),
             },
         };
@@ -625,6 +627,7 @@ fn a_retained_managed_lease_survives_a_project_prefix_change() {
         worktree_path: checkout.join(".codex/worktrees/SH-2"),
         branch: "worktree-SH-2".into(),
         tmux: TmuxCleanupTarget {
+            revivify: None,
             socket_path: checkout.join("tmux.sock"),
         },
     };

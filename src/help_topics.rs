@@ -2795,6 +2795,7 @@ Examples:
         m.insert(
             "verifier",
             r#"story verifier status
+story verifier evidence <story-id> [--json]
 story verifier start
 story verifier stop
 story verifier drain
@@ -2804,6 +2805,13 @@ story verifier repair show <recovery-id> --json
 story verifier repair decide <recovery-id> --input <json-file>
 
 Inspect and control this project's centralized verifier.
+
+  evidence reads retained admission, execution and submission costs. It works
+  without a live owner. Queue time is separate from the inclusive 900-second
+  admission budget. Breaches are sticky process observations, separate from
+  exact-tree test results; observation mode does not stop or return a gate.
+  Missing durations stay unknown. UTC wall intervals are estimates, and each
+  summary states its last observation. Shared execution cost is not divided.
 
   repair show reads durable project-fault evidence, revision, scope assessor,
   and accepted repair work. It does not grant implementation authority.
@@ -2837,8 +2845,10 @@ Inspect and control this project's centralized verifier.
   project_recoveries adds fault, affected stories, assessment and repair owner,
   repair PR, phase, completed-attempt budget, and next action. These records
   are distinct from infrastructure halts. Old payloads have no recovery rows.
-  Only unresolved recoveries are listed. A landed recovery leaves the list
-  when no affected story is held or still owes a fresh generation.
+  Unresolved and invalid recoveries are listed. A valid landed recovery leaves
+  the list when no affected story is held or still owes a fresh generation.
+  An invalid row names the record, locus, validation error and repair show
+  command. Ownership and attempt counts are unavailable for that row.
   The dashboard reads the same snapshot. Use repair show for full evidence.
 
   A story that the verifier returns keeps the verifier reserved while its

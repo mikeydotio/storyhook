@@ -88,14 +88,14 @@ _TMP_REPOS+=("$FAKE_TMUX_STATE")
 repo=$(mk_story_repo CSP)
 id=$(new_story "$repo" "Sparkled composer")
 out=$(cd "$repo" && PATH="$FAKE_BIN:$TESTS_DIR/fakes:$PATH" \
-  TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+  TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
   STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 STORY_CONFIRM_DELAY=0 \
   STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   FAKE_TMUX_CODEX_SPARKLE=1 \
   FAKE_TMUX_CODEX_SENTINEL_MODE=identity \
   FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$SCRIPT" dispatch "$id" --auto)
-assert_eq "$(jqf "$out" .ok)" true \
+assert_ok "$out" true \
   "a sparkled composer no longer defeats the submission check (wait_ready_reason=$(jqf "$out" .wait_ready_reason) bootstrap_phase=$(jqf "$out" .bootstrap_phase))"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 2 "one initialization turn and one charter"
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" "$id" "the charter reached the pane"

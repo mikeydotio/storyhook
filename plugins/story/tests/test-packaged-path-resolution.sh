@@ -34,7 +34,7 @@ expected_binding="--plugin-dir '$quoted_installed' --permission-mode plan"
 ln -s "$installed" "$cache/package alias"
 for helper in "$resolved_helper" "$cache/package alias/bin/story.sh"; do
   dispatch_out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$helper" dispatch "$id" 2>&1)
-  assert_eq "$(jqf "$dispatch_out" .ok)" "true" \
+  assert_ok "$dispatch_out" "true" \
     "relocated helper: dry dispatch succeeds through $helper"
   commands=$(jqf "$dispatch_out" '.commands|join(" ")')
   assert_contains "$commands" "$expected_binding" \

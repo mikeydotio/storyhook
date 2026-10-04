@@ -8,6 +8,7 @@ import tempfile
 import sys
 import unittest
 from unittest.mock import Mock, patch
+from test_codex_classifier import install_codex_fixture, response
 
 HOOKS = Path(__file__).resolve().parents[1] / 'hooks'
 sys.path.insert(0, str(HOOKS))
@@ -170,6 +171,41 @@ class StopTests(unittest.TestCase):
         result = self.run_hook()
         self.assertNotIn('decision', result)
         self.assertIn('Luna timed out', result['systemMessage'])
+
+    def test_updated_runtime_classifies_through_production_stop(self):
+        """Real classification preserves mode, eligibility and receipt boundaries."""
+        install_codex_fixture(self.root, 'codex-cli 0.159.3', response(APPROVAL))
+        self.classify = stop.classify
+        for mode in ('default', 'plan'):
+            with self.subTest(mode=mode), patch.dict(os.environ, {'PATH': str(self.root)}):
+                self.transcript = self.root / f'{mode}.jsonl'
+                self.payload['transcript_path'] = str(self.transcript)
+                self.transcript_for(mode=mode)
+                result = self.run_hook()
+                self.assertEqual(result.get('decision'), 'block', result)
+                expected = 'approved automatically' if mode == 'default' else 'Do not implement'
+                self.assertIn(expected, result['reason'])
+                journal = Path(str(self.transcript) + '.storyhook-plan-approval')
+                self.assertEqual(json.loads(journal.read_text())['mode'], mode)
+                self.assertEqual(self.run_hook(), {})
+        self.assertEqual(self.eligible.call_count, 4)
+        calls = (self.root / 'calls.jsonl').read_text().splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(json.loads(call)['argv'][0] == 'exec' for call in calls))
+
+    def test_updated_runtime_failure_does_not_consume_approval(self):
+        """A failed child cannot approve; a later compatible runtime can recover."""
+        self.classify = stop.classify
+        install_codex_fixture(self.root, 'codex-cli 0.159.3', response(APPROVAL),
+                              status=42, error='unsupported configuration')
+        with patch.dict(os.environ, {'PATH': str(self.root)}):
+            result = self.run_hook()
+            self.assertNotIn('decision', result)
+            self.assertIn('unsupported configuration', result['systemMessage'])
+            journal = Path(str(self.transcript) + '.storyhook-plan-approval')
+            self.assertEqual(journal.read_text(), '')
+            install_codex_fixture(self.root, 'codex-cli 0.999.0', response(APPROVAL))
+            self.assertEqual(self.run_hook().get('decision'), 'block')
 
     def test_one_prose_approval_per_session_even_on_a_new_turn(self):
         self.assertEqual(self.run_hook().get('decision'), 'block')

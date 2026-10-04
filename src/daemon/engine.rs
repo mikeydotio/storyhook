@@ -197,6 +197,15 @@ fn census_journal_edge(
 /// Public for store-backed integration tests, the same reason
 /// [`crate::daemon::verification::tick_with`] is.
 pub fn reconcile_tick<S: Store>(store: &S, env: &Environment) {
+    if let Err(error) = crate::service::engine::reconcile_restored_dispatches(store, env) {
+        super::activity::emit(
+            "WARN",
+            "restoration",
+            "event",
+            "",
+            &format!("retained dispatch restoration: {error}"),
+        );
+    }
     for run in reconcilable_runs(store) {
         reconcile_one(store, env, &run, None);
     }

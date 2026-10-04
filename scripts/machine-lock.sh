@@ -118,6 +118,7 @@ if [ -f "$script_dir/gate-progress.sh" ]; then
     . "$script_dir/gate-progress.sh"
 else
     gate_progress_emit_activity() { :; }
+    gate_progress_emit_cost() { :; }
 fi
 
 readonly USAGE="usage: machine-lock.sh [--plan] [--max-wait <seconds>] [--max-idle <seconds>] [--termination-grace <seconds>] <name> -- <command...>
@@ -403,6 +404,8 @@ descendant_snapshot() {
 
 mkdir -p "$lock_root" || die "could not create the lock root at $lock_root"
 emit_lock_activity running
+lock_cost="lock-$$-$RANDOM"
+gate_progress_emit_cost start resource-wait "$lock_cost" "locks/$name" || die "cannot record lock wait"
 
 waited=0
 nameless=0
@@ -562,6 +565,7 @@ trap 'on_signal TERM' TERM
 trap 'on_signal HUP' HUP
 
 emit_lock_activity passed
+gate_progress_emit_cost end resource-wait "$lock_cost" "locks/$name" || die "cannot record lock acquisition"
 
 if [ "$waited" -gt 0 ]; then
     note "took the '$name' lock after waiting ${waited}s"
@@ -583,6 +587,10 @@ export STORYHOOK_MACHINE_LOCKS
 # the watchdog would recreate SH-536 while printing a reassuring lock notice.
 journal="${STORYHOOK_GATE_PROGRESS:-}"
 if [ -n "$max_idle" ]; then
+    # Select once before launch; PATH changes cannot replace the observer runtime.
+    # shellcheck source=python-runtime.sh
+    . "$script_dir/python-runtime.sh" || die "cannot load the progress observer runtime"
+    storyhook_python_init || die "$STORYHOOK_PYTHON_ERROR"
     if [ -z "$journal" ]; then
         journal="$lock/progress.ndjson"
     fi
@@ -612,30 +620,26 @@ if [ -n "$max_idle" ]; then
         # retains inherited workspace locks. Bash defers this trap until that
         # child exits; the parent's wait then observes the complete watchdog.
         trap 'exit 0' TERM INT HUP
-        last_size="$(wc -c < "$journal" 2>/dev/null | tr -d ' ')" || {
+        observation="$("$STORYHOOK_PYTHON" -B "$script_dir/progress_journal.py" "$journal")" || {
             note "lost access to the progress journal at $journal before the watchdog could observe it"
             printf 'journal unreadable\n' > "$stalled"
             terminate_group "progress watchdog failed"
             exit 0
         }
+        read -r journal_cursor progressed <<< "$observation"
         idle=0
         while kill -0 "$child" 2>/dev/null; do
             sleep "$LOCK_POLL_SECS"
             kill -0 "$child" 2>/dev/null || exit 0
-            size="$(wc -c < "$journal" 2>/dev/null | tr -d ' ')" || {
-                note "lost access to the progress journal at $journal while the gate was running"
-                printf 'journal unreadable\n' > "$stalled"
+            observation="$("$STORYHOOK_PYTHON" -B "$script_dir/progress_journal.py" "$journal" "$journal_cursor")" || {
+                note "lost access to valid append-only progress journal data at $journal while the gate was running"
+                printf 'journal observation failed\n' > "$stalled"
                 terminate_group "progress watchdog failed"
                 exit 0
             }
-            if [ "$size" -lt "$last_size" ]; then
-                note "the append-only progress journal at $journal shrank from $last_size to $size bytes"
-                printf 'journal shrank\n' > "$stalled"
-                terminate_group "progress watchdog failed"
-                exit 0
-            fi
-            if [ "$size" -gt "$last_size" ]; then
-                last_size="$size"
+            read -r journal_cursor progressed <<< "$observation"
+            # Resource observations describe load, never completed execution work.
+            if [ "$progressed" = 1 ]; then
                 idle=0
                 continue
             fi

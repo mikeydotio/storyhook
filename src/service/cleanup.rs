@@ -815,6 +815,7 @@ mod tests {
                 worktree_path: workspace.worktree.clone(),
                 branch: workspace.branch.clone(),
                 tmux: TmuxCleanupTarget {
+                    revivify: None,
                     socket_path: workspace.root.path().join("no-tmux.sock"),
                 },
             };

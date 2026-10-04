@@ -32,13 +32,30 @@ mod tests;
 /// rely on, and composed rather than copied so both launchers that can start
 /// a tmux server apply one policy. The module defines names only, so its
 /// position ahead of the view's own `__main__` block runs nothing extra.
-const VIEW_PROGRAM: &str = concat!(
-    include_str!("../../../plugins/story/lib/probe_budget.py"),
-    "\nprobe_run = run\nprobe_operation = operation\n",
-    include_str!("../../../plugins/story/lib/tmux_server_env.py"),
-    "\n",
-    include_str!("../../../scripts/verification-view.py")
-);
+static VIEW_PROGRAM: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let modules = [
+        (
+            "process_identity",
+            include_str!("../../../plugins/story/lib/process_identity.py"),
+        ),
+        (
+            "process_observation",
+            include_str!("../../../plugins/story/lib/process_observation.py"),
+        ),
+        (
+            "restored_dispatch",
+            include_str!("../../../plugins/story/lib/restored_dispatch.py"),
+        ),
+    ];
+    format!(
+        "{}\nprobe_run = run\nprobe_operation = operation\n{}\n{}\nimport types,sys\nfor _name,_source in {}:\n    _module = types.ModuleType(_name)\n    sys.modules[_name] = _module\n    exec(_source, _module.__dict__)\n{}",
+        include_str!("../../../plugins/story/lib/probe_budget.py"),
+        include_str!("../../../plugins/story/lib/tmux_server_env.py"),
+        include_str!("../../../plugins/story/lib/tmux_target.py"),
+        serde_json::to_string(&modules).expect("embedded Python sources serialize"),
+        include_str!("../../../scripts/verification-view.py")
+    )
+});
 
 /// Opens or repairs only the explicitly owned project view.
 ///
@@ -76,7 +93,7 @@ fn open(env: &Environment, project: &str, directory: &Path, checkout: &Path, sto
         let binary = std::env::current_exe().map_err(|error| error.to_string())?;
         let mut command = Command::new("python3");
         command
-            .args(["-c", VIEW_PROGRAM])
+            .args(["-c", VIEW_PROGRAM.as_str()])
             .arg(project)
             .arg(directory)
             .arg(binary);

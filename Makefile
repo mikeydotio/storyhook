@@ -291,6 +291,20 @@ e2e-install:
 e2e:
 	bash scripts/run-e2e.sh $(ARGS)
 
+.PHONY: e2e-isolation e2e-isolation-watch e2e-isolation-status e2e-isolation-plist
+# The scheduled detector is independent of merge/release gate receipts.
+e2e-isolation:
+	bash scripts/run-e2e.sh --isolate-files $(ARGS)
+
+e2e-isolation-watch:
+	bash scripts/e2e-isolation-watch.sh watch
+
+e2e-isolation-status:
+	@bash scripts/e2e-isolation-watch.sh status
+
+e2e-isolation-plist:
+	@bash scripts/e2e-isolation-watch.sh plist
+
 # Retained as a migration aid after SH-521 retired the every-open-PR sweep.
 # Verification now begins when one linked story moves to `verifying`.
 merge-watch:
@@ -448,17 +462,15 @@ scratch-clean:
 # INSTALLED, never whatever `story` is on PATH: only that binary embeds the
 # payload being installed. The verb is daemon-routed, and a daemon of another
 # build stands down for the new client, so this install implicitly reseats the
-# daemon on the new binary -- which `scripts/release.sh` does by hand anyway.
+# daemon on the new binary.
 #
-# `|| echo` on purpose: this target is the recovery `StoreError::SchemaTooNew`
-# prescribes and stays ungated (docs/spec/release-lockstep.md), and
-# `scripts/release.sh` runs it under `set -e` between `daemon stop` and `daemon
-# start`. A plugin refresh that failed the install would leave that machine
-# with no daemon at all. The failure is named, with its retry, never swallowed.
+# Binary replacement stays ungated for SchemaTooNew recovery. A failed plugin
+# refresh is still an incomplete install and must return failure (SH-820).
+# The release caller leaves the incumbent running until this client replaces it.
 install:
 	# A literal make keeps make -n from executing this allocation wrapper.
 	python3 scripts/build-number.py -- make _install-build
-	"$(INSTALL_DIR)/story" plugin reinstall || echo "warning: the provider plugins were not reinstalled (exit $$?); run \`story plugin reinstall\`" >&2
+	"$(INSTALL_DIR)/story" plugin reinstall || { status=$$?; echo "error: the binary was installed, but the provider plugins were not reinstalled (exit $$status); run \`story plugin reinstall\`" >&2; exit $$status; }
 
 # Invoked under the build-number lock, including replacement of the destination.
 .PHONY: _install-build

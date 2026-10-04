@@ -1,4 +1,4 @@
-"""Opt-in, loopback-only Codex 0.154.0 wire/Stop probe; never contacts a model API.
+"""Opt-in, loopback-only installed Codex wire/Stop probe; no remote model API.
 
 Run through probe-codex-stop.sh so every story operation uses an isolated store.
 Model responses are data fixtures; the CLI, classifier, hooks, and tracker are real.
@@ -197,6 +197,8 @@ def run_probe(repo, story_id, mode='default', structured=False):
 
 
 if __name__ == '__main__':
+    print('Probed runtime (evidence, not an allowlist): '
+          + classifier.run_process(['codex', '--version'], timeout=2).strip(), flush=True)
     run_probe(sys.argv[1], sys.argv[2])
     run_probe(sys.argv[1], sys.argv[2], 'plan')
     run_probe(sys.argv[1], sys.argv[2], structured=True)

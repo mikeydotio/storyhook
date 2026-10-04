@@ -321,7 +321,10 @@ fn settled(project: &Project<'_>, story: &str, delivery: i64, expected: Delivery
                 record.detail,
                 "no agent reached: the golden corpus dispatches nothing"
             );
-            let acknowledgement = format!("{marker} interrupt unreached\n\n> {}", record.detail);
+            let acknowledgement = format!(
+                "{marker} interrupt unreached — {story}\n\n> {}",
+                record.detail
+            );
             assert!(
                 comments
                     .iter()

@@ -19,7 +19,7 @@ out=$(
     && PATH="$FAKE_TMUX_DIR:$PATH" \
       STORY_BIN="$TESTS_DIR/fakes/story-comment-failure" \
       STORY_REAL_BIN="$real_story" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker \
@@ -27,7 +27,7 @@ out=$(
 ) || status=$?
 
 [ "$status" -ne 0 ] || fail_test "comment failure: helper exited successfully"
-assert_eq "$(jqf "$out" .ok)" "false" "comment failure: ok:false"
+assert_ok "$out" "false" "comment failure: ok:false"
 assert_eq "$(jqf "$out" .reason)" "dispatch-comment-failed" \
   "comment failure: typed reason"
 assert_contains "$(jqf "$out" .display)" "claim, worktree, and tmux window were left in place" \

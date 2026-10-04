@@ -8,12 +8,12 @@ run_case() {
   repo=$(mk_story_repo RBK)
   id=$(new_story "$repo" "Refused handoff")
   wt="$repo/.claude/worktrees/$id"
-  out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX=fake TMUX_PANE=%0 \
+  out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 \
     STORY_READY_DELAY=0 STORY_READY_ATTEMPTS=2 FAKE_TMUX_SUPPRESS_SENTINEL=1 \
     FAKE_TMUX_KILL_WINDOW_PROBE="$wt" bash "$SCRIPT" dispatch "$id")
 }
 run_case
-assert_eq "$(jqf "$out" .ok)" false "readiness refusal"
+assert_ok "$out" false "readiness refusal"
 pid=$(cat "$FAKE_TMUX_STATE/pane_pid" 2>/dev/null || true)
 if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
   fail_test "failed dispatch left its owned process alive"
@@ -95,7 +95,7 @@ fi
 child=$(cat "$owned_dir/child")
 launch_start=$(python3 "$PLUGIN_ROOT/lib/agent_identity.py" capture "$pid" | jq -r .identity.start)
 stop_result=$(python3 "$PLUGIN_ROOT/lib/stop-dispatch-pane.py" "$pane" "$pid" "$launch_start")
-assert_eq "$(jqf "$stop_result" .ok)" true "real startup tree terminated"
+assert_ok "$stop_result" true "real startup tree terminated"
 if kill -0 "$pid" 2>/dev/null || kill -0 "$child" 2>/dev/null; then
   fail_test "real owned parent or descendant remains alive"
 fi

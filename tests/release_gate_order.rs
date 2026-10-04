@@ -430,6 +430,42 @@ fn local_install_refreshes_both_provider_plugins_after_the_binary() {
     );
 }
 
+/// Building or refreshing plugins can fail; neither warrants stopping the
+/// incumbent before the new client can perform its own lifecycle transition.
+#[test]
+fn failed_local_install_does_not_stop_the_running_daemon() {
+    let fixture = ReleaseFixture::new();
+    executable(
+        &fixture.repo.join("bin/make"),
+        "#!/bin/bash\n[ \"$1\" != install ] || exit 73\n",
+    );
+    executable(
+        &fixture.repo.join("bin/story"),
+        r#"#!/bin/bash
+case "$1 ${2:-}" in
+  '--version ') echo 'story 9.9.9' ;;
+  'daemon status') echo 'storyhook daemon 9.9.9 running' ;;
+  'daemon stop') echo stopped >> "$RELEASE_TEST_LOG" ;;
+  *) exit 91 ;;
+esac
+"#,
+    );
+    fixture.git(&["add", "bin/make", "bin/story"]);
+    fixture.git(&["commit", "-qm", "fixture failed install"]);
+    let result = fixture
+        .command("bash")
+        .args([
+            "scripts/release.sh",
+            "--yes",
+            "--skip-plugin",
+            "--local-only",
+        ])
+        .output()
+        .unwrap();
+    assert_exit(&result, 73);
+    assert!(!fixture.calls().contains("stopped"), "{}", fixture.calls());
+}
+
 #[test]
 fn a_failed_bump_never_reaches_the_gate_or_external_effects() {
     for local in [false, true] {

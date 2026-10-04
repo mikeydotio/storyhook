@@ -92,6 +92,11 @@ fn compiler_adapter_changes_invalidate_compilation_and_test_evidence() {
 fn orchestration_changes_invalidate_every_leg() {
     for input in [
         "scripts/gate-legs.sh",
+        "scripts/gate-progress-writer.py",
+        "scripts/gate_cost.py",
+        "scripts/host-admission.py",
+        "scripts/host_admission/authority.py",
+        "scripts/progress_journal.py",
         "scripts/python-runtime.sh",
         "scripts/python-bin/python3",
     ] {
@@ -584,6 +589,26 @@ fn browser_reporter_regression_changes_invalidate_browser_evidence() {
     repo.write(path, "# changed reporter regression\n");
     assert!(repo.run_leg("e2e", true).status.success());
     assert_eq!(repo.executions("e2e"), 2);
+}
+
+#[test]
+fn isolation_helper_changes_invalidate_browser_evidence() {
+    let repo = Repo::new();
+    let path = "scripts/e2e-isolation.py";
+    repo.write(path, "# original isolation planner\n");
+    repo.git(&["add", path]);
+    for label in ["e2e", "rust-contracts", "rust-suite"] {
+        assert!(repo.run_leg(label, true).status.success());
+    }
+    repo.write(path, "# changed isolation planner\n");
+    for label in ["e2e", "rust-contracts", "rust-suite"] {
+        assert!(repo.run_leg(label, true).status.success());
+        assert_eq!(
+            repo.executions(label),
+            if label == "rust-suite" { 1 } else { 2 },
+            "isolation helper changed the wrong evidence: {label}"
+        );
+    }
 }
 
 #[test]

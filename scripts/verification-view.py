@@ -12,6 +12,12 @@ and probe_budget.py followed by this file (src/daemon/activity/window.rs), which
 
 import fcntl
 import hashlib
+import json
+import shlex
+import shutil
+from process_observation import observe_process
+from process_identity import process_identity
+from restored_dispatch import restored_launch, live_provider
 import os
 from pathlib import Path
 import subprocess
@@ -22,6 +28,9 @@ import uuid
 FORMAT = ("#{window_id}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-journal}"
           "\t#{@storyhook-reader}\t#{pane_start_command}\t#{@storyhook-command}\t#{@storyhook-agent-started}")
 FIELDS = 10
+RESTORED_READERS = {}
+RESTORED_AGENTS = set()
+READER_PROOF = "@storyhook-reader-proof-v1"
 # Seconds before a missing agent pane is created again. A person who closes it
 # gets it back; a launch that fails at once cannot become a restart loop.
 AGENT_RESPAWN_COOLDOWN = 60
@@ -35,6 +44,18 @@ AGENT_LOOP = ('while :; do "$@"; status=$?; '
               'Press Enter to start it again.\\n" "$status"; '
               'read -r _ || exit "$status"; done')
 
+# One process performs one pass. Resolve again if a test invokes another pass,
+# but never switch generations between a pass's probe and allocation.
+VIEW_TARGET = None
+
+
+def view_target(ensure=False):
+    """Select the daemon's default logical socket before any terminal access."""
+    environment = client_environment(os.environ)
+    environment.pop("TMUX", None)
+    environment.pop("TMUX_PANE", None)
+    return resolve_target(None, environment, probe_run, environment, ensure=ensure)
+
 
 def tmux(*args):
     """Use literal argv and bounded clients on the default server.
@@ -47,7 +68,8 @@ def tmux(*args):
     env = client_environment(os.environ)
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
-    result = probe_run(["tmux", *args], env=env, capture_output=True, text=True)
+    target = VIEW_TARGET if VIEW_TARGET is not None else view_target()
+    result = probe_run(["tmux", *target_arguments(target, args)], env=env, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError(f"tmux {args[0]}: {result.stderr.strip()} (exit {result.returncode})")
     # Empty tab-delimited fields are identity evidence, even on the last row.
@@ -67,23 +89,27 @@ def is_reader(row):
 
 def reader_like(row):
     """A pane still running the recorded reader command, whatever the record says."""
-    return len(row) == FIELDS and row[8] != "" and row[7] == row[8]
+    return len(row) == FIELDS and (row[2] in RESTORED_READERS or row[8] != "" and row[7] == row[8])
 
 
 def is_agent(row, owner):
     """A pane this window launched as its Verifier Agent, known by its marker."""
-    return len(row) == FIELDS and AGENT_MARKER + owner in row[7]
+    return len(row) == FIELDS and (row[2] in RESTORED_AGENTS or AGENT_MARKER + owner in row[7])
 
 
 def healthy(row):
     """Reject a dead pane or a respawned command."""
-    return row[4] == "0" and reader_like(row)
+    return row[4] == "0" and reader_like(row) and RESTORED_READERS.get(row[2], True)
 
 
 def mark(window, pane, owner):
     """Record ownership and the reader's identity by exact IDs, after creation."""
     reader = tmux("display-message", "-p", "-t", pane, "#{pane_id}:#{pane_pid}")
     command = tmux("display-message", "-p", "-t", pane, "#{pane_start_command}")
+    native = observe_process(int(reader.split(':')[1]))
+    # A pane-local witness survives snapshotting; a window's numeric marker
+    # alone cannot identify which restored UUID was its reader.
+    tmux('set-option', '-p', '-t', pane, READER_PROOF, json.dumps(dict(owner=owner, process=native)))
     tmux("set-option", "-w", "-t", window, "@storyhook-journal", owner, ";",
          "set-option", "-w", "-t", window, "@storyhook-reader", reader, ";",
          "set-option", "-w", "-t", window, "@storyhook-command", command, ";",
@@ -102,6 +128,82 @@ def allocate(session, name, owner, reader, new_session=False):
     return window, pane
 
 
+def readopt_view(rows, owner):
+    """Join preserved viewer ownership to mapped UUIDs and exact native processes."""
+    RESTORED_READERS.clear()
+    RESTORED_AGENTS.clear()
+    evidence = restore_evidence(VIEW_TARGET, os.environ)
+    if evidence is None:
+        return False
+    parents_result = probe_run(['ps', '-axo', 'pid=,ppid='], capture_output=True, text=True)
+    if parents_result.returncode:
+        raise RuntimeError('verification restoration process census: ' + parents_result.stderr)
+    parents = {}
+    for line in parents_result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2 or not all(p.isdecimal() for p in parts):
+            raise RuntimeError('verification restoration has invalid ancestry')
+        pid, parent = map(int, parts)
+        if pid in parents:
+            raise RuntimeError('verification restoration has duplicate processes')
+        parents[pid] = parent
+    live = {row[2]: row for row in rows}
+    uuid_owners = {}
+    for line in tmux('list-panes', '-a', '-F', '#{pane_id}\t#{@revivify-uuid}').splitlines():
+        parts = line.split('\t')
+        if len(parts) != 2:
+            raise RuntimeError('invalid verification UUID inventory')
+        if parts[1]:
+            uuid_owners.setdefault(parts[1], set()).add(parts[0])
+    readers = []
+    for uuid_key, saved in evidence['panes'].items():
+        if saved['window']['options'].get('@storyhook-journal') != owner:
+            continue
+        row = live.get(saved['pane_id'])
+        if row is None and not uuid_owners.get(uuid_key):
+            continue  # A later owned replacement already retired this UUID.
+        if row is None or row[5] != owner or uuid_owners.get(uuid_key) != {row[2]}:
+            raise RuntimeError('restored verification pane is moved, duplicated or foreign')
+        if tmux('show-options', '-p', '-v', '-t', row[2], '@revivify-uuid') != uuid_key:
+            raise RuntimeError('restored verification pane UUID changed')
+        restored_launch(VIEW_TARGET, uuid_key, row[7])
+        proof = saved['pane']['options'].get(READER_PROOF)
+        if proof:
+            proof = json.loads(proof)
+            if proof.get('owner') != owner:
+                raise RuntimeError('restored reader owner changed')
+            # RV-10 does not relaunch generic reader commands. Only a currently
+            # running exact reader can be retained; a replay shell is stale.
+            root = observe_process(int(row[3])) if row[4] == '0' else None
+            old = proof['process']
+            healthy_reader = root is not None and (root['argv'], root['cwd'], root['process']['executable']) == (old['argv'], old['cwd'], old['process']['executable'])
+            RESTORED_READERS[row[2]] = healthy_reader
+            if healthy_reader:
+                readers.append((row, root))
+        agent = saved['pane'].get('agent')
+        if agent:
+            provider = agent.get('kind')
+            launch = shutil.which(provider) if provider in ('claude', 'codex') else None
+            if not launch or not agent.get('session_id'):
+                raise RuntimeError('restored verifier has no exact provider conversation')
+            root = process_identity(int(row[3]))
+            source = dict(provider=provider, session_id=agent['session_id'],
+                          provider_process=dict(executable=os.path.realpath(launch)),
+                          lease=dict(worktree_path=agent['resume_cwd']))
+            live_provider(source, root, parents, launch)
+            RESTORED_AGENTS.add(row[2])
+    if len(readers) > 1:
+        raise RuntimeError('multiple healthy restored verification readers')
+    if readers:
+        row, native = readers[0]
+        if observe_process(int(row[3])) != native:
+            raise RuntimeError('restored reader changed before publication')
+        if not is_reader(row) or row[7] != row[8]:
+            mark(row[0], row[2], owner)
+            return True
+    return False
+
+
 @probe_operation()
 def reconcile(session, directory, binary, checkout=None, *agent):
     """Keep the owned reader and agent alive without disturbing other terminal work.
@@ -110,6 +212,7 @@ def reconcile(session, directory, binary, checkout=None, *agent):
     the reader, or create the agent), so every pass fits the one operation
     budget and a failure leaves at most one step to recover.
     """
+    global VIEW_TARGET
     if os.environ.get("STORYHOOK_VERIFIER_MIRROR") == "0":
         return
     directory = Path(directory).resolve()
@@ -125,23 +228,36 @@ def reconcile(session, directory, binary, checkout=None, *agent):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return  # The current owner is already reconciling this project.
+        VIEW_TARGET = view_target(ensure=True)
         reader = [str(Path(binary).resolve()), "daemon", "logs", "--directory", str(directory), "--follow"]
         launch = (checkout, list(agent)) if checkout and agent else None
         # new-session -A is not suitable here: it attaches when the session exists.
         sessions = tmux("list-sessions", "-F", "#{session_name}") if server_has_sessions() else ""
         if session not in sessions.splitlines():
-            window, pane = allocate(session, "verification", owner, reader, new_session=True)
             try:
-                mark(window, pane, owner)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
-                rollback(window, error)
-                raise
-            return
+                window, pane = allocate(session, "verification", owner, reader, new_session=True)
+            except RuntimeError as error:
+                if "duplicate session:" not in str(error):
+                    raise
+                # Another project/helper can create the session while this pass
+                # holds only its own view lock. Never infer success from an
+                # unrelated allocation error or a prefix-matched session.
+                tmux("has-session", "-t", "=" + session)
+            else:
+                try:
+                    mark(window, pane, owner)
+                except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+                    rollback(window, error)
+                    raise
+                return
         rows = inventory(session)
         windows = {row[0] for row in rows if row[1] == "verification"}
         if len(windows) > 1 or any(row[1] == "verification" and row[5] != owner for row in rows):
             raise RuntimeError(f"verification ownership conflict in session {session}")
         own = [row for row in rows if row[1] == "verification"]
+        if readopt_view(own, owner):
+            rows = inventory(session)
+            own = [row for row in rows if row[1] == "verification"]
         reader_row = next((row for row in own if is_reader(row)), None)
         if reader_row and healthy(reader_row):
             reap_temporary(session, rows, owner)
@@ -271,7 +387,8 @@ def server_has_sessions():
         tmux("list-sessions", "-F", "#{session_name}")
         return True
     except RuntimeError as error:
-        if any(text in str(error) for text in ("no server running", "no sessions", "No such file or directory")):
+        absent = ("no sessions",) if VIEW_TARGET and VIEW_TARGET["protected"] else ("no server running", "no sessions", "No such file or directory")
+        if any(text in str(error) for text in absent):
             return False
         raise
 

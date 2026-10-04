@@ -17,7 +17,7 @@ dispatch_case() {
   local id="$1"
   (
     cd "$repo" || exit 1
-    TMUX="fake,0,0" TMUX_PANE="%0" \
+    TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker \
@@ -41,7 +41,7 @@ assert_eq "$(cd "$repo" && story show "$damaged" --json | jq -r '.story.story.st
   in-progress "refused cleanup preserves the claim"
 
 started=$(dispatch_case "$independent")
-assert_eq "$(jqf "$started" .ok)" true "independent story dispatches"
+assert_ok "$started" true "independent story dispatches"
 assert_eq "$(cd "$repo" && story show "$independent" --json | jq -r '.story.story.state')" \
   in-progress "independent claim advances"
 [ -d "$path" ] || fail_test "damaged worktree directory was removed"

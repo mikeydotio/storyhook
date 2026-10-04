@@ -1731,6 +1731,7 @@ mod tests {
             worktree_path: "/repo/.codex/worktrees/SH-1".into(),
             branch: "worktree-SH-1".into(),
             tmux: TmuxCleanupTarget {
+                revivify: None,
                 socket_path: "/repo/tmux.sock".into(),
             },
         }

@@ -23,7 +23,7 @@ repo=$(mk_story_repo)
 id=$(new_story "$repo" "Missing claim state")
 
 out=$(STORY_STATE_LIST_MODE=missing dispatch_without_tmux "$repo" "$id")
-assert_eq "$(jqf "$out" .ok)" "false" "missing state: ok:false"
+assert_ok "$out" "false" "missing state: ok:false"
 assert_eq "$(jqf "$out" .reason)" "claim-state-missing" "missing state: distinct reason"
 assert_contains "$(jqf "$out" .display)" "in-progress" "missing state: names the absent state"
 assert_contains "$(jqf "$out" .display)" "story doctor --fix" "missing state: names the remedy"
@@ -40,7 +40,7 @@ out=$(
       STORY_STATE_LIST_MODE=fail \
       STORY_TARGET_SESSION=test bash "$SCRIPT" dispatch "$id_fail" 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "false" "state-list failure: ok:false"
+assert_ok "$out" "false" "state-list failure: ok:false"
 assert_eq "$(jqf "$out" .reason)" "null" "state-list failure: no unproven classification"
 assert_contains "$(jqf "$out" .display)" "is not defined" "state-list failure: original error survives"
 
@@ -97,13 +97,13 @@ out=$(
   cd "$repo_happy" \
     && PATH="$fake_dir:$TESTS_DIR/fakes:$PATH" STORY_REAL_BIN="$real_story" \
       STORY_STATE_LIST_MODE=fail STORY_STATE_LIST_LOG="$state_log" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker \
       bash "$SCRIPT" dispatch "$id_happy" 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "true" "successful claim: ok:true"
+assert_ok "$out" "true" "successful claim: ok:true"
 classifier_reads=$(grep -c -- '--json' "$state_log" || true)
 assert_eq "$classifier_reads" "0" "successful claim: paid for a failure-only state-list read"
 resolver_reads=$(grep -cx 'state list' "$state_log" || true)

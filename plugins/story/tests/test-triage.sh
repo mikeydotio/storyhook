@@ -13,7 +13,7 @@ repo=$(mk_story_repo)
 
 # --- a fresh project answers ok:true ---
 out=$(cd "$repo" && bash "$SCRIPT" triage 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "fresh project: ok"
+assert_ok "$out" "true" "fresh project: ok"
 
 # --- current creation defaults to low, so it is not a legacy diagnostic ---
 defaulted=$(new_story "$repo" "Default priority")
@@ -81,10 +81,10 @@ assert_eq "$(jqf "$out" '.counts.cycle')" 0 "closed member: no remaining open cy
 # a real stale count), not that staleness fires (which needs an old story,
 # not reproducible without manipulating the clock) ---
 out=$(cd "$repo" && STORY_STALE_THRESHOLD=1h bash "$SCRIPT" triage 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "stale threshold: still ok with a custom window"
+assert_ok "$out" "true" "stale threshold: still ok with a custom window"
 assert_eq "$(jqf "$out" '.counts.stale')" "0" "stale threshold: nothing is old enough yet"
 out=$(cd "$repo" && STORY_STALE_THRESHOLD='not-a-duration' bash "$SCRIPT" triage 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "stale threshold: a malformed duration is rejected by the real CLI, not silently accepted"
+assert_ok "$out" "false" "stale threshold: a malformed duration is rejected by the real CLI, not silently accepted"
 
 # --- read-only: nothing about the real project changed ---
 assert_eq "$(cd "$repo" && story show "$defaulted" --json | jq -r '.story.story.priority')" "low" \
@@ -92,6 +92,6 @@ assert_eq "$(cd "$repo" && story show "$defaulted" --json | jq -r '.story.story.
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" triage extra 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "triage: rejects arguments"
+assert_ok "$out" "false" "triage: rejects arguments"
 
 finish

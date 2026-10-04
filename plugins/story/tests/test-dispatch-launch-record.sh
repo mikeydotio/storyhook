@@ -38,7 +38,7 @@ slug=$(slug_for "$repo")
 # Attended Claude with explicit selectors.
 id=$(new_story "$repo" "Attended with selectors")
 out=$(dispatch "$repo" dispatch "$id" --model=opus --effort=high)
-assert_eq "$(jqf "$out" .ok)" "true" "attended: the dispatch succeeds"
+assert_ok "$out" "true" "attended: the dispatch succeeds"
 record=$(record_of "$(jqf "$out" .worktree_path)")
 assert_eq "$(jqf "$record" .version)" "1" "attended: versioned record"
 assert_eq "$(jqf "$record" .project_slug)" "$slug" "attended: names the project"
@@ -53,7 +53,7 @@ assert_eq "$(jqf "$record" .autonomy)" "attended" "attended: the autonomy"
 # Autonomous Claude, defaults except a fast speed.
 id=$(new_story "$repo" "Autonomous and fast")
 out=$(dispatch "$repo" dispatch "$id" --auto --speed=fast)
-assert_eq "$(jqf "$out" .ok)" "true" "auto: the dispatch succeeds"
+assert_ok "$out" "true" "auto: the dispatch succeeds"
 record=$(record_of "$(jqf "$out" .worktree_path)")
 assert_eq "$(jqf "$record" .autonomy)" "auto" "auto: the autonomy"
 assert_eq "$(jqf "$record" .model)" "null" "auto: an unchosen model stays the default"
@@ -63,14 +63,14 @@ assert_eq "$(jqf "$record" .speed)" "fast" "auto: the chosen speed"
 # A Full Auto lane records itself as such.
 id=$(new_story "$repo" "A Full Auto lane")
 out=$(dispatch "$repo" dispatch "$id" --auto --full-auto)
-assert_eq "$(jqf "$out" .ok)" "true" "full-auto: the dispatch succeeds"
+assert_ok "$out" "true" "full-auto: the dispatch succeeds"
 assert_eq "$(jqf "$(record_of "$(jqf "$out" .worktree_path)")" .autonomy)" "full-auto" \
   "full-auto: the autonomy"
 
 # Codex records its own provider.
 id=$(new_story "$repo" "Attended Codex")
 out=$(STORY_AGENT=codex dispatch "$repo" dispatch "$id" --agent=codex)
-assert_eq "$(jqf "$out" .ok)" "true" "codex: the dispatch succeeds"
+assert_ok "$out" "true" "codex: the dispatch succeeds"
 assert_eq "$(jqf "$(record_of "$(jqf "$out" .worktree_path)")" .provider)" "codex" \
   "codex: the provider"
 
@@ -84,7 +84,7 @@ window_id=$("$FAKE_TMUX_DIR/tmux" display-message -p -t "$(jqf "$out" .pane)" '#
 unset FAKE_TMUX_PANES
 out=$(FAKE_TMUX_SUPPRESS_SENTINEL=1 STORY_READY_ATTEMPTS=3 \
   dispatch "$repo" dispatch "$id" --resume --if-absent --model=sonnet)
-assert_eq "$(jqf "$out" .ok)" "false" "failed resume: the attempt is not ready"
+assert_ok "$out" "false" "failed resume: the attempt is not ready"
 assert_eq "$(record_of "$worktree")" "$before" "failed resume: the confirmed record is untouched"
 
 finish

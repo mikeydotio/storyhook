@@ -71,6 +71,7 @@ fn candidate(fixture: &ServiceFixture, checkout: &Path) -> VerificationCandidate
             worktree_path: checkout.join(".codex/worktrees/SH-1"),
             branch: "worktree-SH-1".into(),
             tmux: TmuxCleanupTarget {
+                revivify: None,
                 socket_path: checkout.join("unused-private-tmux.sock"),
             },
         }),

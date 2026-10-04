@@ -1761,7 +1761,7 @@ macro_rules! store_conformance_suite {
                             repository_path: "/repos/alpha".into(),
                             worktree_path: "/repos/alpha/.codex/worktrees/SH-1".into(),
                             branch: "worktree-SH-1".into(),
-                            tmux: TmuxCleanupTarget {
+                            tmux: TmuxCleanupTarget { revivify: None,
                                 socket_path: "/tmp/tmux.sock".into(),
                             },
                         }),
@@ -4409,6 +4409,238 @@ macro_rules! store_conformance_suite {
                         reader.join().unwrap();
                     }
                 });
+            }
+
+            // ===============================================================
+            // Nested writes (SH-838)
+            // ===============================================================
+
+            /// How long a nested-write case may run before it is called a
+            /// hang.
+            ///
+            /// The refusal under test is a check made before any lock is
+            /// taken, so a conforming engine answers in microseconds and this
+            /// bound never decides a passing run. It exists for the regression
+            /// alone: an inner write that waits for the write around it never
+            /// returns, and without a bound the whole test binary wedges
+            /// instead of reporting one red case — SH-831 lost eleven minutes
+            /// to exactly that. Generous, because only a broken engine ever
+            /// spends it.
+            const NESTED_WRITE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(60);
+
+            /// How long the outer write in
+            /// `a_write_from_another_thread_waits_for_the_outer_write_instead_of_being_refused`
+            /// stays open after the other thread says it is about to write.
+            ///
+            /// It only widens the window in which the second write meets the
+            /// first one's lock. Every assertion there holds however the two
+            /// threads interleave, so no length of it can fail the case.
+            const CONTENTION_WINDOW: std::time::Duration = std::time::Duration::from_millis(50);
+
+            /// Runs `scenario` against a fresh fixture on a thread of its own,
+            /// and fails rather than hangs if it never finishes.
+            ///
+            /// The fixture is built on that thread, so the suite asks nothing
+            /// more of a fixture type than [`ConformanceFixture`] already does.
+            /// A thread still waiting at the deadline is abandoned, not
+            /// joined: joining it is the hang this exists to turn into a
+            /// failure.
+            fn without_hanging(scenario: impl FnOnce(&$fixture) + Send + 'static) {
+                let (done, finished) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
+                    {
+                        let f = <$fixture>::create();
+                        scenario(&f);
+                    }
+                    let _ = done.send(());
+                });
+                match finished.recv_timeout(NESTED_WRITE_PATIENCE) {
+                    Ok(()) => worker.join().expect("a scenario that finished joins"),
+                    // The sender dropped without a send: the scenario panicked.
+                    // Its own message is the diagnosis, not a hang.
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match worker.join() {
+                        Err(panic) => std::panic::resume_unwind(panic),
+                        Ok(()) => unreachable!("the scenario returned without reporting it"),
+                    },
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+                        "the scenario was still running after {NESTED_WRITE_PATIENCE:?}: a write \
+                         started inside another write is waiting for the write around it instead \
+                         of being refused with StoreError::NestedWrite (SH-838)"
+                    ),
+                }
+            }
+
+            fn next_story_no(store: &Subject, project: ProjectId) -> i64 {
+                store
+                    .read(|tx| tx.project(project))
+                    .expect("reading the project")
+                    .expect("the project exists")
+                    .next_story_no
+            }
+
+            #[test]
+            fn a_write_started_inside_a_write_is_refused_and_the_outer_write_rolls_back() {
+                without_hanging(|f| {
+                    let store = f.store();
+                    let project = seed(store, "alpha", "SH");
+                    let outcome = store.write(|tx| {
+                        tx.allocate_story_no(project)?;
+                        store.write(|_| Ok(()))?;
+                        Ok(())
+                    });
+                    assert!(
+                        matches!(outcome, Err(StoreError::NestedWrite)),
+                        "{outcome:?}"
+                    );
+                    assert_eq!(
+                        next_story_no(store, project),
+                        1,
+                        "the outer closure propagated the refusal, so the outer write must \
+                         have rolled back"
+                    );
+                    assert_eq!(
+                        store.write(|tx| tx.allocate_story_no(project)).unwrap(),
+                        StoryNo::new(1),
+                        "a refused nested write must leave its thread free to write again"
+                    );
+                });
+            }
+
+            #[test]
+            fn an_outer_write_that_handles_a_refused_nested_write_still_commits() {
+                without_hanging(|f| {
+                    let store = f.store();
+                    let project = seed(store, "alpha", "SH");
+                    let refusal = store
+                        .write(|tx| {
+                            tx.allocate_story_no(project)?;
+                            // The closure, not the store, decides what a
+                            // refusal means for the write around it.
+                            Ok(store.write(|_| Ok(())).err())
+                        })
+                        .expect("an outer write that handled the refusal commits");
+                    assert!(
+                        matches!(refusal, Some(StoreError::NestedWrite)),
+                        "{refusal:?}"
+                    );
+                    assert_eq!(next_story_no(store, project), 2, "the outer write committed");
+                    assert_eq!(
+                        store.write(|tx| tx.allocate_story_no(project)).unwrap(),
+                        StoryNo::new(2),
+                        "a committed outer write must leave its thread free to write again"
+                    );
+                });
+            }
+
+            #[test]
+            fn every_write_entry_point_refuses_to_start_inside_another() {
+                type Attempt = fn(&Subject, &Path) -> Result<(), StoreError>;
+                const REFUSED_LABEL: &str = "nested-refused";
+                without_hanging(|f| {
+                    let store = f.store();
+                    let dir = f.snapshot_dir();
+                    let inner: [(&str, Attempt); 3] = [
+                        ("write", |store, _| store.write(|_| Ok(()))),
+                        ("write_with_snapshot", |store, dir| {
+                            store
+                                .write_with_snapshot(dir, REFUSED_LABEL, |_| Ok(()))
+                                .map(|_| ())
+                        }),
+                        ("migrate", |store, _| store.migrate().map(|_| ())),
+                    ];
+                    for (name, attempt) in inner {
+                        let in_write = store
+                            .write(|_| Ok(attempt(store, &dir)))
+                            .expect("the outer write commits");
+                        assert!(
+                            matches!(in_write, Err(StoreError::NestedWrite)),
+                            "{name} inside write: {in_write:?}"
+                        );
+                        let in_snapshot = store
+                            .write_with_snapshot(&dir, "nested-outer", |_| Ok(attempt(store, &dir)))
+                            .expect("the outer write commits")
+                            .value;
+                        assert!(
+                            matches!(in_snapshot, Err(StoreError::NestedWrite)),
+                            "{name} inside write_with_snapshot: {in_snapshot:?}"
+                        );
+                    }
+                    // Refused before it does anything, copying included.
+                    let copies: Vec<String> = std::fs::read_dir(&dir)
+                        .expect("the outer writes' own copies created the directory")
+                        .map(|entry| {
+                            entry
+                                .expect("listing the snapshot directory")
+                                .file_name()
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                        .filter(|name| name.contains(REFUSED_LABEL))
+                        .collect();
+                    assert!(
+                        copies.is_empty(),
+                        "a refused write_with_snapshot left a copy behind: {copies:?}"
+                    );
+                });
+            }
+
+            #[test]
+            fn a_write_that_panicked_leaves_its_thread_free_to_write_again() {
+                without_hanging(|f| {
+                    let store = f.store();
+                    let project = seed(store, "alpha", "SH");
+                    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        store.write(|tx| -> Result<(), StoreError> {
+                            tx.allocate_story_no(project)?;
+                            panic!("a write closure that panics");
+                        })
+                    }));
+                    assert!(unwound.is_err(), "the panic must reach the caller");
+                    assert_eq!(
+                        store.write(|tx| tx.allocate_story_no(project)).unwrap(),
+                        StoryNo::new(1),
+                        "unwinding must release the write lock and every record of who held it"
+                    );
+                });
+            }
+
+            #[test]
+            fn a_write_from_another_thread_waits_for_the_outer_write_instead_of_being_refused() {
+                let f = <$fixture>::create();
+                let store = f.store();
+                let project = seed(store, "alpha", "SH");
+                // The scope encloses the outer write rather than sitting inside
+                // it: joining the other thread before the outer write commits
+                // would be a closure waiting on a write it handed to another
+                // thread, the one shape no engine can tell from contention.
+                let (outer, other) = std::thread::scope(|scope| {
+                    let (about_to_write, announced) = std::sync::mpsc::channel();
+                    let (outer, other) = store
+                        .write(|tx| {
+                            let outer = tx.allocate_story_no(project)?;
+                            let other = scope.spawn(move || {
+                                about_to_write
+                                    .send(())
+                                    .expect("the outer write is listening");
+                                store.write(|tx| tx.allocate_story_no(project))
+                            });
+                            announced
+                                .recv()
+                                .expect("the other thread announces its write");
+                            std::thread::sleep(CONTENTION_WINDOW);
+                            Ok((outer, other))
+                        })
+                        .expect("the outer write commits");
+                    (outer, other.join().expect("the other writer does not panic"))
+                });
+                assert_eq!(outer, StoryNo::new(1));
+                let other = other
+                    .expect("a write from another thread waits its turn; it is not a nested write");
+                assert_eq!(
+                    other,
+                    StoryNo::new(2),
+                    "the other thread's write must run after the outer write committed"
+                );
             }
 
             // ===============================================================

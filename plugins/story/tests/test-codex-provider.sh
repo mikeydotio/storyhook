@@ -23,7 +23,7 @@ run_codex() {
   (
     cd "$repo" &&
       PATH="$FAKE_BIN:$FAKE_TMUX_DIR:$PATH" \
-      TMUX=fake TMUX_PANE=%0 STORY_AGENT=codex \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT=codex \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker \
@@ -38,7 +38,7 @@ fresh_tmux
 repo=$(mk_story_repo CDX)
 id=$(new_story "$repo" "Codex dispatch happy path")
 out=$(run_codex "$repo" dispatch "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "dispatch: ok"
+assert_ok "$out" "true" "dispatch: ok"
 assert_eq "$(jqf "$out" .agent)" "codex" "dispatch: selected provider"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "dispatch: readiness"
 assert_eq "$(jqf "$out" .plan_mode_confirmed)" "true" "dispatch: Plan footer"
@@ -69,6 +69,43 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
 [ ! -e "$FAKE_TMUX_STATE/run_shell.log" ] \
   || fail_test "dispatch: attended Codex armed the autonomous plan watcher"
 
+# Safe reap uses the provider's path and removes only the closed, merged leaf.
+# Closure also wakes native cleanup. Own the workspace through our manual reap,
+# as the verifier does, and finish this fixture before changing fake servers.
+common=$(cd "$repo" && git rev-parse --path-format=absolute --git-common-dir)
+mkdir -p "$common/storyhook/workspace-locks"
+exec 8>>"$common/storyhook/workspace-locks/$id.lock"
+python3 -c 'import fcntl; fcntl.flock(8, fcntl.LOCK_EX | fcntl.LOCK_NB)' || exit 1
+python3 - "$common/storyhook/workspace-locks/$id.lock" <<'PY' || exit 1
+import fcntl, sys
+with open(sys.argv[1], 'a') as competitor:
+    try:
+        fcntl.flock(competitor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        pass
+    else:
+        raise AssertionError('manual reap fixture does not own its workspace')
+PY
+(cd "$repo" && story move "$id" "done" >/dev/null)
+# Provoke the competing worker instead of hoping the helper wins its race.
+cleanup=$(cd "$repo" && story cleanup --json)
+# The scheduled worker can still own the short controller lock while it
+# observes our workspace owner. Either caller must preserve the same resources.
+assert_eq "$(jqf "$cleanup" '.cleanup | (.skipped + .failed) | any(.reason == "workspace-busy" or .reason == "cleanup-busy")')" \
+  "true" "reap fixture excludes native cleanup; $cleanup"
+assert_eq "$(jqf "$cleanup" '.cleanup.removed | length')" "0" \
+  "native cleanup removes no owned resource; $cleanup"
+[ -d "$repo/.codex/worktrees/$id" ] || fail_test "native cleanup stole the reap fixture"
+export FAKE_TMUX_PANES
+FAKE_TMUX_PANES=$(printf '%s\t1\t%%1' "$id")
+out=$(run_codex "$repo" reap "$id")
+exec 8>&-
+assert_ok "$out" "true" "reap: ok"
+assert_eq "$(jqf "$out" .removed.worktree)" "true" "reap: removed Codex worktree; $out"
+assert_eq "$(jqf "$out" .removed.branch)" "true" "reap: removed merged branch"
+[ ! -d "$repo/.codex/worktrees/$id" ] || fail_test "reap: Codex worktree survived"
+unset FAKE_TMUX_PANES
+
 # Codex renders its prompt before the model is ready. A Shift+Tab sent during
 # that loading footer is silently ignored, so dispatch must wait for the footer
 # to clear rather than sending the mode key as soon as the input glyph appears.
@@ -76,7 +113,7 @@ fresh_tmux
 repo_loading=$(mk_story_repo CDL)
 id_loading=$(new_story "$repo_loading" "Codex model-loading Plan transition")
 out=$(FAKE_TMUX_CODEX_LOADING_POLLS=8 run_codex "$repo_loading" dispatch "$id_loading")
-assert_eq "$(jqf "$out" .ok)" "true" "model loading: dispatch waits and succeeds"
+assert_ok "$out" "true" "model loading: dispatch waits and succeeds"
 assert_eq "$(jqf "$out" .plan_mode_confirmed)" "true" "model loading: Plan confirmed"
 [ ! -f "$FAKE_TMUX_STATE/plan_key_ignored.log" ] \
   || fail_test "model loading: Shift+Tab was sent before Codex finished loading"
@@ -89,27 +126,17 @@ fresh_tmux
 repo_retry=$(mk_story_repo CDR)
 id_retry=$(new_story "$repo_retry" "Codex dropped first Plan key")
 out=$(FAKE_TMUX_IGNORE_PLAN_KEYS=1 run_codex "$repo_retry" dispatch "$id_retry")
-assert_eq "$(jqf "$out" .ok)" "true" "dropped Plan key: bounded retry succeeds"
+assert_ok "$out" "true" "dropped Plan key: bounded retry succeeds"
 assert_eq "$(jqf "$out" .plan_mode_confirmed)" "true" "dropped Plan key: Plan confirmed"
 assert_contains "$(cat "$FAKE_TMUX_STATE/plan_key_ignored.log")" "late TUI startup" \
   "dropped Plan key: fixture exercised the retry"
-
-# Safe reap uses the provider's path and removes only the closed, merged leaf.
-(cd "$repo" && story move "$id" "done" >/dev/null)
-export FAKE_TMUX_PANES
-FAKE_TMUX_PANES=$(printf '%s\t1\t%%1' "$id")
-out=$(run_codex "$repo" reap "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "reap: ok"
-assert_eq "$(jqf "$out" .removed.worktree)" "true" "reap: removed Codex worktree"
-assert_eq "$(jqf "$out" .removed.branch)" "true" "reap: removed merged branch"
-[ ! -d "$repo/.codex/worktrees/$id" ] || fail_test "reap: Codex worktree survived"
 
 # A launch that never becomes Codex refuses before typing and rolls everything back.
 fresh_tmux
 repo_bad=$(mk_story_repo CDB)
 id_bad=$(new_story "$repo_bad" "Codex launch refusal")
 out=$(FAKE_TMUX_LAUNCH_MANGLE=1 STORY_READY_ATTEMPTS=2 run_codex "$repo_bad" dispatch "$id_bad")
-assert_eq "$(jqf "$out" .ok)" "false" "readiness refusal: ok:false"
+assert_ok "$out" "false" "readiness refusal: ok:false"
 assert_eq "$(jqf "$out" .reason)" "pane-not-ready" "readiness refusal: reason"
 assert_eq "$(cd "$repo_bad" && story show "$id_bad" --json | jq -r '.story.story.state')" "todo" \
   "readiness refusal: claim rolled back"
@@ -120,7 +147,7 @@ fresh_tmux
 repo_plan=$(mk_story_repo CDP)
 id_plan=$(new_story "$repo_plan" "Codex plan refusal")
 out=$(FAKE_TMUX_FAIL_SEND_KEYS=all run_codex "$repo_plan" dispatch "$id_plan")
-assert_eq "$(jqf "$out" .ok)" "false" "plan refusal: ok:false"
+assert_ok "$out" "false" "plan refusal: ok:false"
 assert_eq "$(jqf "$out" .reason)" "plan-mode-unconfirmed" "plan refusal: reason"
 assert_eq "$(cd "$repo_plan" && story show "$id_plan" --json | jq -r '.story.story.state')" "todo" \
   "plan refusal: claim rolled back"
@@ -128,7 +155,7 @@ assert_eq "$(cd "$repo_plan" && story show "$id_plan" --json | jq -r '.story.sto
 # Doctor reports and tests the selected provider contract.
 fresh_tmux
 out=$(FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" run_codex "$repo_plan" doctor)
-assert_eq "$(jqf "$out" .ok)" "true" "doctor: ok"
+assert_ok "$out" "true" "doctor: ok"
 assert_eq "$(jqf "$out" .agent)" "codex" "doctor: selected provider"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "doctor: readiness"
 assert_eq "$(jqf "$out" .plan_mode_confirmed)" "true" "doctor: Plan footer"
@@ -174,20 +201,19 @@ fresh_tmux
 repo_auto=$(mk_story_repo CDA)
 id_auto_real=$(new_story "$repo_auto" "Codex auto watcher")
 out=$(run_codex "$repo_auto" dispatch "$id_auto_real" --auto)
-assert_eq "$(jqf "$out" .ok)" "true" "real auto: dispatch succeeds"
+assert_ok "$out" "true" "real auto: dispatch succeeds"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
   "STORYHOOK_AUTO=$id_auto_real" "real auto: watcher carries the story marker"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
   "STORYHOOK_FULL_AUTO=" "real auto: watcher contains the engine marker"
 assert_contains "$(cat "$FAKE_TMUX_STATE/run_shell.log")" \
-  "--approve-codex-plan %1 $(cat "$FAKE_TMUX_STATE/pane_pid")" \
-  "real auto: watcher targets the confirmed pane and original PID"
+  "approval_tmux.py watch" "real auto: watcher uses the process-bound wrapper"
 
 fresh_tmux
 repo_auto_fail=$(mk_story_repo CDF)
 id_auto_fail=$(new_story "$repo_auto_fail" "Codex auto watcher failure")
 out=$(FAKE_TMUX_FAIL_RUN_SHELL=1 run_codex "$repo_auto_fail" dispatch "$id_auto_fail" --auto)
-assert_eq "$(jqf "$out" .ok)" "false" "auto watcher failure: refused"
+assert_ok "$out" "false" "auto watcher failure: refused"
 assert_eq "$(jqf "$out" .reason)" "plan-approval-unarmed" \
   "auto watcher failure: reason"
 assert_eq "$(cd "$repo_auto_fail" && story show "$id_auto_fail" --json | jq -r '.story.story.state')" \
@@ -247,13 +273,13 @@ assert_contains "$(cat "$alias_err")" "STORY_AGENT=claude" "legacy env alias: ca
 
 # Deterministic readers ignore caller provider settings; launch still validates them.
 out=$(cd "$repo_plan" && STORY_AGENT=unknown bash "$SCRIPT" list 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "unknown caller provider: list succeeds"
+assert_ok "$out" "true" "unknown caller provider: list succeeds"
 assert_eq "$(printf '%s' "$out" | jq -r --arg id "$id_auto" '.stories | any(.id == $id)')" \
   "true" "unknown caller provider: list returns the ready story"
 
 out=$(cd "$repo_plan" && STORY_AGENT=unknown STORY_DRY_RUN=1 \
   bash "$SCRIPT" dispatch "$id_auto" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unknown launch provider: refused"
+assert_ok "$out" "false" "unknown launch provider: refused"
 assert_contains "$(jqf "$out" .display)" "supported agents" "unknown launch provider: names choices"
 
 finish

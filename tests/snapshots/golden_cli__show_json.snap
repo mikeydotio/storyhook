@@ -149,7 +149,7 @@ source: tests/golden_cli.rs
           "comments": [
             {
               "at": "[timestamp]",
-              "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached\n\n> no agent reached: the golden corpus dispatches nothing"
+              "text": "AGENT BLOCK DELIVERY #2 — interrupt unreached — SH-3\n\n> no agent reached: the golden corpus dispatches nothing"
             }
           ],
           "complexity": "medium",

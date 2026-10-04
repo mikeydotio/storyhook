@@ -51,6 +51,23 @@ class Fixture(unittest.TestCase):
 class PlannerTests(Fixture):
     """Weights affect scheduling, never coverage counts."""
 
+    def test_isolated_plans_publish_reusable_selection_manifests(self):
+        """Single-file plans provide the same execution contract as pooled plans."""
+        lists = self.root / "isolated"
+        lists.mkdir()
+        rows = "chromium\ta.spec.ts\t2\nwebkit\ta.spec.ts\t3\n"
+        out = self.run_command([sys.executable, str(ROOT / "scripts/e2e-isolation.py"),
+                                "plan", str(lists), "chromium", "webkit"], input=rows)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        manifests = []
+        for line in out.stdout.splitlines():
+            _, project, path, count = line.split("\t")
+            expected = Path(path + ".tsv")
+            self.assertTrue(expected.exists(), f"missing reusable selection: {expected}")
+            self.assertEqual(expected.read_text(), f"{project}\ta.spec.ts\t{count}\n")
+            manifests.append(expected.read_text())
+        self.assertEqual("".join(manifests), rows)
+
     def plan(self, lines, budget=3):
         """Drive the Bash 3.2 production planner directly."""
         lists = self.root / "lists"
@@ -213,10 +230,42 @@ class CacheTests(Fixture):
         self.assertEqual(list(self.root.glob("e2e-durations-*")), [])
 
 
+class RunnerJoinTests(Fixture):
+    """Exercise the production slice wrapper with a bounded fixture workload."""
+
+    def test_initial_and_rerun_slices_create_their_own_receipt_directories(self):
+        """A changed results root cannot lose timing or receipt output on rerun."""
+        runner = (ROOT / "scripts/run-e2e.sh").read_text()
+        function = runner.split("run_slice() {", 1)[1].split("\n}\n", 1)[0]
+        script = '''set -euo pipefail
+results_root="$1"
+isolate_files=1
+slice_names=(owned)
+slice_projects=(node)
+slice_lists=(owned.list)
+extra_args=()
+run_one_project() {
+  test -d "$results_root/timings" && test -d "$results_root/slice-reports"
+}
+run_slice() {''' + function + '''
+}
+run_slice owned
+results_root="$results_root/reruns"
+run_slice owned
+'''
+        out = self.run_command(["/bin/bash", "-c", script, "fixture", str(self.root / "results")])
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        for relative in ["results", "results/reruns"]:
+            root = self.root / relative
+            self.assertEqual((root / "verdicts/owned").read_text(), "0\n")
+            self.assertTrue((root / "timings").is_dir())
+            self.assertTrue((root / "slice-reports").is_dir())
+
+
 class ReporterTests(Fixture):
     """The actual Playwright process must produce authoritative slice receipts."""
 
-    def run_suite(self, body, expected_count=1, reporter_path=None):
+    def run_suite(self, body, expected_count=1, reporter_path=None, production_reporters=False):
         """Load the production reporter with fixture tests and no browser/daemon."""
         config = self.root / "playwright.config.cjs"
         config.write_text("module.exports = " + json.dumps(dict(testDir=str(self.root), workers=1,
@@ -229,11 +278,32 @@ class ReporterTests(Fixture):
         config.write_text(config.read_text()[:-1] + ',"projects":[{"name":"fixture"}]}')
         env = dict(os.environ, E2E_SLICE_REPORT=str(report),
                    E2E_SLICE_EXPECTED=str(expected), CI="1")
+        if production_reporters:
+            config = self.root / "playwright.config.ts"
+            config.write_text("import original from " + json.dumps(str(ROOT / "e2e/playwright.config.ts"))
+                              + "; const reporters = original.reporter.map(([name, ...options]) => ["
+                              + "name.startsWith('./') ? " + json.dumps(str(ROOT / "e2e") + "/")
+                              + " + name : name, ...options])"
+                              + "; export default {testDir:" + json.dumps(str(self.root))
+                              + ",workers:1,retries:0,reporter:reporters,projects:[{name:'fixture'}]};")
+            env.update(DASHBOARD_URL="http://fixture.invalid",
+                       E2E_ISOLATION_REPORT=str(self.root / "isolation.json"))
         for key in ["NO_COLOR", "STORYHOOK_GATE_PROGRESS", "STORYHOOK_GATE_PROGRESS_PATH"]:
             env.pop(key, None)
         report.unlink(missing_ok=True)
         out = self.run_command(["node", str(PLAYWRIGHT / "cli.js"), "test", "--config", str(config)], env=env, cwd=self.root)
         return out, report, expected
+
+    def test_production_config_writes_both_isolation_and_duration_receipts(self):
+        """The real reporter list must retain both independent evidence consumers."""
+        out, report, expected = self.run_suite(
+            "test('owned join fixture', async () => {expect(1).toBe(1)});", production_reporters=True)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.helper("validate", report, expected).returncode, 0)
+        isolation = json.loads((self.root / "isolation.json").read_text())
+        self.assertEqual(isolation["stats"]["expected"], 1)
+        self.assertEqual(isolation["stats"]["unexpected"], 0)
+        self.assertEqual(isolation["errors"], [])
 
     def test_success_is_recorded_and_validated(self):
         """A complete run records the selected file and positive duration."""

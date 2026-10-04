@@ -56,7 +56,7 @@ const REFUSED_CONNECTION_CEILING: Duration = Duration::from_secs(5);
 /// Comfortably beyond the client's own deadline and far short of "forever": the
 /// distinction being drawn is between a bounded wait and an unbounded one, not
 /// between two bounded ones.
-const PATIENCE: Duration = Duration::from_secs(45);
+const PATIENCE: Duration = Duration::from_secs(CLIENT_BOUND_FIRES_CEILING.as_secs() + 5);
 
 /// [`SPAWN_LOCK_DEADLINE`] (the client's own bound, which must fire) plus
 /// margin, and strictly below [`PATIENCE`] (this harness's own backstop,
@@ -358,8 +358,8 @@ fn ensure_gives_up_on_a_spawn_lock_somebody_else_holds() {
         "the failure must name what it was waiting for rather than describing a \
          daemon that never started: {error}"
     );
-    // The bound is 30s and `PATIENCE` is 45s. The assertion is that the client's
-    // own deadline fired, not the harness's — which is the whole difference
+    // PATIENCE exceeds this platform's client-bound ceiling. The assertion is
+    // that the client's deadline fired, not the harness's — the difference
     // between a bounded wait and an unbounded one.
     assert!(
         waited < CLIENT_BOUND_FIRES_CEILING,

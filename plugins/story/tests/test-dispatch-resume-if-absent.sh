@@ -40,7 +40,7 @@ forget_logs() {
 repo=$(mk_story_repo RIA)
 id=$(new_story "$repo" "Its agent is still working")
 out=$(daemon_dispatch "$repo" dispatch "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "live: the original dispatch succeeds"
+assert_ok "$out" "true" "live: the original dispatch succeeds"
 pane=$(jqf "$out" .pane)
 worktree=$(jqf "$out" .worktree_path)
 export FAKE_TMUX_PANES="$id	1	$pane"
@@ -51,7 +51,7 @@ forget_logs
 
 # --- a live pane: refused, nothing changed -----------------------------------
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
-assert_eq "$(jqf "$out" .ok)" "false" "live: the guarded resume is refused"
+assert_ok "$out" "false" "live: the guarded resume is refused"
 assert_eq "$(jqf "$out" .reason)" "agent-live" "live: the refusal names the live agent"
 assert_eq "$(jqf "$out" .live_pane)" "$pane" "live: the refusal names the pane"
 assert_contains "$(jqf "$out" .display)" "Nothing was changed" "live: the refusal says nothing changed"
@@ -62,7 +62,7 @@ assert_eq "$(cd "$repo" && story show "$id" --json | jq -r .story.story.state)" 
 
 # Control: plain --resume still replaces the pane with -k (SH-523's contract).
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume)
-assert_eq "$(jqf "$out" .ok)" "true" "unguarded: plain --resume still respawns"
+assert_ok "$out" "true" "unguarded: plain --resume still respawns"
 assert_contains "$(cat "$FAKE_TMUX_STATE/respawn_pane_args.log")" "-k -c $worktree" \
   "unguarded: plain --resume kills with -k"
 forget_logs
@@ -70,7 +70,7 @@ forget_logs
 # --- a dead pane: respawned in place, without -k -----------------------------
 kill_pane
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
-assert_eq "$(jqf "$out" .ok)" "true" "dead: the guarded resume succeeds"
+assert_ok "$out" "true" "dead: the guarded resume succeeds"
 assert_eq "$(jqf "$out" .resumed)" "true" "dead: it is a resume"
 assert_eq "$(jqf "$out" .window_reused)" "true" "dead: the same pane is respawned"
 assert_eq "$(jqf "$out" .pane)" "$pane" "dead: same pane id"
@@ -95,7 +95,7 @@ unset FAKE_TMUX_PANES
 occupant=$!
 out=$(STORY_READY_PROCESS_PATTERN='^(claude|node|codex|sleep)$' \
   daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
-assert_eq "$(jqf "$out" .ok)" "false" "occupied: a live agent outside the window refuses the resume"
+assert_ok "$out" "false" "occupied: a live agent outside the window refuses the resume"
 assert_eq "$(jqf "$out" .reason)" "agent-live" "occupied: the refusal names the live agent"
 assert_eq "$(jqf "$out" '.occupants[0].pid')" "$occupant" "occupied: the refusal names the process"
 assert_contains "$(jqf "$out" .display)" "pid $occupant sleep" "occupied: the display names it too"
@@ -104,7 +104,7 @@ kill "$occupant" 2>/dev/null || true
 wait "$occupant" 2>/dev/null || true
 
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume --if-absent)
-assert_eq "$(jqf "$out" .ok)" "true" "gone: the guarded resume recreates the window"
+assert_ok "$out" "true" "gone: the guarded resume recreates the window"
 assert_eq "$(jqf "$out" .window_reused)" "false" "gone: no pane survived to respawn"
 assert_eq "$(jqf "$out" .worktree_reused)" "true" "gone: the worktree is reused"
 assert_contains "$(cat "$FAKE_TMUX_STATE/new_window_args.log")" "-n $id " \
@@ -112,15 +112,15 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/new_window_args.log")" "-n $id " \
 
 # --- flag validation ----------------------------------------------------------
 out=$(daemon_dispatch "$repo" dispatch "$id" --if-absent)
-assert_eq "$(jqf "$out" .ok)" "false" "validation: --if-absent without --resume is refused"
+assert_ok "$out" "false" "validation: --if-absent without --resume is refused"
 assert_contains "$(jqf "$out" .display)" "--if-absent requires --resume" "validation: names --resume"
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume --if-absent --if-absent)
-assert_eq "$(jqf "$out" .ok)" "false" "validation: a repeated --if-absent is refused"
+assert_ok "$out" "false" "validation: a repeated --if-absent is refused"
 assert_contains "$(jqf "$out" .display)" "--if-absent may be specified only once" "validation: names the repeat"
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume --if-absent --require-absent --continuation-file=/nonexistent)
-assert_eq "$(jqf "$out" .ok)" "false" "validation: --if-absent with --require-absent is refused"
+assert_ok "$out" "false" "validation: --if-absent with --require-absent is refused"
 assert_contains "$(jqf "$out" .display)" "cannot be combined with --require-absent" "validation: names the conflict"
 out=$(daemon_dispatch "$repo" dispatch --next --resume --if-absent)
-assert_eq "$(jqf "$out" .ok)" "false" "validation: --if-absent needs a named story"
+assert_ok "$out" "false" "validation: --if-absent needs a named story"
 
 finish

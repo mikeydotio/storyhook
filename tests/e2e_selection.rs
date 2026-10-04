@@ -447,8 +447,8 @@ fn the_runner_lists_through_the_library_and_never_bare() {
         );
     }
     assert!(
-        !runner.contains("--list"),
-        "no non-comment line of scripts/run-e2e.sh may invoke --list itself; the flags \
+        !runner[offset_of(&runner, "repo_root=")..].contains("--list"),
+        "after early argument validation, scripts/run-e2e.sh must never invoke --list itself; the flags \
          that make its exit status meaningful live in the library"
     );
     for arm in [
@@ -490,6 +490,9 @@ fn planned_slices_reuse_discovery_and_require_execution_receipts() {
         "python3 \"$repo_root/scripts/e2e-durations.py\" validate \"$E2E_SLICE_REPORT\" \"$expected_manifest\" || status=1"
     ));
     assert!(runner.contains("[ \"$overall_status\" = 0 ] && [ \"$caller_partition\" = 0 ] && [ \"${#extra_args[@]}\" = 0 ]"));
+    assert!(runner.contains("[ \"${#extra_args[@]}\" = 0 ] && [ \"$isolate_files\" = 0 ]; then"));
+    let isolation_exit = offset_of(&runner, ">\"$results_root/executed/$slice\"");
+    assert!(run < isolation_exit && isolation_exit < validate);
 }
 
 #[test]

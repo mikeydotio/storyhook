@@ -18,7 +18,7 @@ dispatch_real() {
   (
     cd "$dir" \
       && PATH="$FAKE_TMUX_DIR:$PATH" \
-        TMUX="fake,0,0" TMUX_PANE="%0" \
+        TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
         STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
         STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
         FAKE_TMUX_CAPTURE=marker \
@@ -36,7 +36,7 @@ number="${id##*-}"
 [ "$number" != "$id" ] || fail_test "bare-id: fixture minted no prefix, so there is nothing to resolve"
 
 out=$(dispatch_real "$repo" "$number")
-assert_eq "$(jqf "$out" .ok)" "true" "bare-id: dispatching by number succeeds"
+assert_ok "$out" "true" "bare-id: dispatching by number succeeds"
 assert_eq "$(jqf "$out" .id)" "$id" "bare-id: the response reports the canonical id"
 assert_eq "$(jqf "$out" .window_name)" "$id" "bare-id: the window is named from the canonical id"
 assert_eq "$(jqf "$out" '.cleanup_lease.version')" "1" \

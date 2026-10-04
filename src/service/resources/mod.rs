@@ -87,7 +87,7 @@ pub struct ResourceReport {
     pub branch: Option<String>,
     /// Name used for the selected story window.
     pub window_name: String,
-    /// Selected creation-time tmux server, when recorded.
+    /// Selected tmux endpoint. Candidate leases retain creation-time authority.
     pub socket_path: Option<PathBuf>,
     /// Exact selected pane, when present and unambiguous.
     pub pane: Option<ResourcePane>,
@@ -115,7 +115,7 @@ impl<'a, S: Store> ResourceService<'a, S> {
 
     /// Resolves a story using store evidence and checked external observations.
     pub fn resolve(&self, id: &str, options: &ResourceOptions) -> Result<ResourceReport, AppError> {
-        let (project, checkout, mut leases, providers) = self.ctx.store().read(|tx| {
+        let evidence = self.ctx.store().read(|tx| {
             let project = tx
                 .project(self.ctx.project())?
                 .ok_or_else(|| crate::store::StoreError::NotFound("project disappeared".into()))?;
@@ -157,10 +157,28 @@ impl<'a, S: Store> ResourceService<'a, S> {
                 tx.checkout_path(project.id)?,
                 leases,
                 providers,
+                !tx.project_remotes(project.id)?.is_empty(),
             ))
         })?;
+        let (project, checkout, mut leases, providers, has_git_identity) = evidence;
+        let needs_inventory = checkout
+            .as_deref()
+            .map(|path| {
+                // A missing .git cannot erase a repository identity kept by the catalog.
+                if has_git_identity {
+                    Ok(true)
+                } else {
+                    git::needs_inventory(path, options.worktree_root.as_deref())
+                }
+            })
+            .transpose()?
+            .unwrap_or(false);
         if let Some(checkout) = checkout.as_deref() {
-            let root = git::inventory(checkout)?[0].path.clone();
+            let root = if needs_inventory {
+                git::inventory(checkout)?[0].path.clone()
+            } else {
+                checkout.to_path_buf()
+            };
             if let Some(pointer) = super::project::read_pointer(&root)?
                 && pointer.uuid != project.uuid
             {
@@ -221,7 +239,7 @@ impl<'a, S: Store> ResourceService<'a, S> {
             self.ctx.env(),
             &project.slug,
             id,
-            checkout.as_deref(),
+            checkout.as_deref().filter(|_| needs_inventory),
             leases,
             explicit.as_ref(),
             options,
@@ -404,9 +422,7 @@ fn resolve(
         }
         repositories.insert(lease.repository_path.clone());
     }
-    if repositories.is_empty() {
-        return Ok(report);
-    }
+    // Terminal evidence still applies when no Git repository was discovered.
     let mut candidates = BTreeMap::<(PathBuf, Option<PathBuf>, String), ResourceCandidate>::new();
     for repository in repositories {
         let records = match git::inventory(&repository) {
@@ -708,15 +724,15 @@ fn resolve(
     }
     if let Some(socket) = &report.socket_path {
         names.insert(report.window_name.clone());
-        match tmux::panes(env, socket, &names) {
-            Ok(panes) if panes.len() > 1 => {
+        match tmux::resolved_panes(env, socket, &names) {
+            Ok((_, panes)) if panes.len() > 1 => {
                 report.status = "ambiguous".into();
                 report.diagnostics.push(format!(
                     "multiple tmux windows on {}: {panes:?}",
                     socket.display()
                 ));
             }
-            Ok(mut panes) => {
+            Ok((target, mut panes)) => {
                 report.pane = panes.pop();
                 if let Some(pane) = &report.pane {
                     if let Some(worktree) = report.worktree.as_ref() {
@@ -740,6 +756,11 @@ fn resolve(
                         ));
                     }
                     report.provider = pane.provider.clone().or(report.provider);
+                }
+                // The report locates observed resources. The candidate's lease
+                // retains its durable identity even when transport has moved.
+                if target.protected {
+                    report.socket_path = Some(target.endpoint);
                 }
             }
             Err(e) => {

@@ -30,6 +30,9 @@ pub struct VerifierStatus {
     pub held_stories: Vec<String>,
     /// Process-local ownership; never inferred from queue rank.
     pub active: Option<ActiveVerification>,
+    /// Last durable cost checkpoint for the active admission. It does not renew silence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<crate::service::gate_cost::current::CurrentCost>,
     /// Why the owner holds a story that its own write took out of the queue
     /// (SH-768): ordinary activity, never a fault. Absent in legacy payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,6 +135,14 @@ pub(crate) fn snapshot(
     use crate::service::engine::elapsed_secs;
     let now = ctx.now();
     let active = owner.map(|owner| owner.active);
+    let cost = match active {
+        Some(active) => tx
+            .gate_attempts(ctx.project())?
+            .iter()
+            .find(|attempt| attempt.id == active.attempt_id)
+            .map(crate::service::gate_cost::current::CurrentCost::new),
+        None => None,
+    };
     let batch_preview = owner.and_then(|owner| owner.preview.cloned());
     let batch = owner.and_then(|owner| owner.batch.cloned());
     let project = tx
@@ -320,6 +331,7 @@ pub(crate) fn snapshot(
             verifying,
             held_stories,
             active: active.cloned(),
+            cost,
             reservation,
             recovery,
             project_recoveries: crate::service::project_recovery::status_snapshot(
@@ -399,6 +411,9 @@ impl VerifierStatus {
         if let Some(batch) = &self.batch {
             text.push_str(&format!("{}\n", batch.describe()));
         }
+        if let Some(cost) = &self.cost {
+            text.push_str(&cost.render());
+        }
         if let Some(preview) = &self.batch_preview {
             text.push_str(&format!("Batch preview: {}\n", preview.describe()));
         }
@@ -414,6 +429,13 @@ impl VerifierStatus {
             text.push_str(&format!("Last gate output: {seconds}s ago\n"));
         }
         for recovery in &self.project_recoveries {
+            if recovery.phase == "invalid" {
+                text.push_str(&format!(
+                    "Project recovery {}: {} at {}; invalid\nNext: {}\n",
+                    recovery.id, recovery.fault, recovery.locus, recovery.next_action
+                ));
+                continue;
+            }
             text.push_str(&format!("Project recovery {}: {} at {}; {}\nAffected: {}; assessor {}; repair {}; completed attempts {}/{}\nNext: {}\nInspect: story verifier repair show {} --json\n",
                 recovery.id, recovery.fault, recovery.locus, recovery.phase,
                 recovery.affected_stories.join(", "), recovery.assessment_owner,

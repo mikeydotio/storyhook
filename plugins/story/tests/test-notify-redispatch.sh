@@ -43,12 +43,12 @@ repo=$(mk_story_repo RDP)
 id=$(new_story "$repo" "Returned to a dead pane")
 out=$(
   cd "$repo" \
-    && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
+    && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_COUNCIL=off STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
       bash "$SCRIPT" dispatch "$id" --auto 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "true" "dead pane: the original autonomous dispatch succeeds"
+assert_ok "$out" "true" "dead pane: the original autonomous dispatch succeeds"
 worktree=$(jqf "$out" .worktree_path)
 pane=$(jqf "$out" .pane)
 window=$(jqf "$out" .window_name)
@@ -59,11 +59,11 @@ rm -f "$FAKE_TMUX_STATE/new_window_args.log"
 kill_pane
 
 out=$(verifier "$repo" notify "$id" "$diagnosis")
-assert_eq "$(jqf "$out" .ok)" "false" "dead pane: notify refuses"
+assert_ok "$out" "false" "dead pane: notify refuses"
 assert_eq "$(jqf "$out" .reason)" "pane-dead" "dead pane: the refusal names absence"
 
 out=$(verifier "$repo" dispatch "$id" --resume --auto)
-assert_eq "$(jqf "$out" .ok)" "true" "dead pane: the resume re-dispatch succeeds from outside tmux"
+assert_ok "$out" "true" "dead pane: the resume re-dispatch succeeds from outside tmux"
 assert_eq "$(jqf "$out" .resumed)" "true" "dead pane: it is a resume, not a fresh dispatch"
 assert_eq "$(jqf "$out" .reused_claim)" "true" "dead pane: the in-progress claim is reused"
 assert_eq "$(jqf "$out" .claim_transitioned)" "false" "dead pane: no state transition"
@@ -84,7 +84,7 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" "story move $id verifying"
   "dead pane: the charter still hands the story back to the verifier"
 
 out=$(verifier "$repo" notify "$id" "$diagnosis")
-assert_eq "$(jqf "$out" .ok)" "true" "dead pane: the diagnosis is delivered to the respawned agent"
+assert_ok "$out" "true" "dead pane: the diagnosis is delivered to the respawned agent"
 assert_eq "$(cat "$FAKE_TMUX_STATE/submitted")" "$diagnosis" \
   "dead pane: the diagnosis is submitted verbatim as one prompt"
 
@@ -96,12 +96,12 @@ repo=$(mk_story_repo RWG)
 id=$(new_story "$repo" "Returned to a missing window")
 out=$(
   cd "$repo" \
-    && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="fake,0,0" TMUX_PANE="%0" \
+    && PATH="$FAKE_TMUX_DIR:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_COUNCIL=off STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
       bash "$SCRIPT" dispatch "$id" --auto 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "true" "window gone: the original dispatch succeeds"
+assert_ok "$out" "true" "window gone: the original dispatch succeeds"
 worktree=$(jqf "$out" .worktree_path)
 window=$(jqf "$out" .window_name)
 # Remove the fixture-owned window from both persisted and legacy inventories.
@@ -111,11 +111,11 @@ unset FAKE_TMUX_PANES
 rm -f "$FAKE_TMUX_STATE/new_window_args.log"
 
 out=$(verifier "$repo" notify "$id" "$diagnosis")
-assert_eq "$(jqf "$out" .ok)" "false" "window gone: notify refuses"
+assert_ok "$out" "false" "window gone: notify refuses"
 assert_eq "$(jqf "$out" .reason)" "pane-unavailable" "window gone: the refusal names absence"
 
 out=$(verifier "$repo" dispatch "$id" --resume --auto)
-assert_eq "$(jqf "$out" .ok)" "true" "window gone: the resume re-dispatch succeeds"
+assert_ok "$out" "true" "window gone: the resume re-dispatch succeeds"
 assert_eq "$(jqf "$out" .resumed)" "true" "window gone: it is a resume"
 assert_eq "$(jqf "$out" .worktree_reused)" "true" "window gone: the worktree is reused"
 assert_eq "$(jqf "$out" .window_reused)" "false" "window gone: no pane survived to respawn"
@@ -130,7 +130,7 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" "resuming work already sta
 
 export FAKE_TMUX_PANES="$id	1	$(jqf "$out" .pane)"
 out=$(verifier "$repo" notify "$id" "$diagnosis")
-assert_eq "$(jqf "$out" .ok)" "true" "window gone: the diagnosis is delivered to the new window"
+assert_ok "$out" "true" "window gone: the diagnosis is delivered to the new window"
 assert_eq "$(cat "$FAKE_TMUX_STATE/submitted")" "$diagnosis" \
   "window gone: the diagnosis is submitted verbatim"
 

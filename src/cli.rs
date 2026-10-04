@@ -180,6 +180,11 @@ pub enum EngineAction {
 /// The controls under `story verifier` (SH-666).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerifierAction {
+    /// Read durable submission and gate-cost history without changing admission.
+    Evidence {
+        /// Story whose own and shared batch executions are requested.
+        story_id: String,
+    },
     /// Private subprocess callback bound to the daemon's live verification owner.
     RepairAdmit {
         /// Exact story owned by the verifier.
@@ -298,6 +303,7 @@ Usage:
   story engine pause|resume|ack [--run <id>]
   story engine stop [--run <id>] [--now]
   story verifier status | start | stop | drain
+  story verifier evidence <story-id> [--json]
   story verifier ack <incident-id> [--leave-stopped] (acknowledge and retry by default)
   story verifier repair show <recovery-id> --json
   story verifier repair decide <recovery-id> --input <json-file>
@@ -4047,10 +4053,19 @@ const VERIFIER_ACK_USAGE: &str = "usage: story verifier ack <incident-id> [--lea
 fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
     let Some(action) = args.get(1).map(String::as_str) else {
         return Err(AppError::Usage(
-            "usage: story verifier <status|start|stop|drain|ack|repair>".to_string(),
+            "usage: story verifier <status|evidence|start|stop|drain|ack|repair>".to_string(),
         ));
     };
     let action = match action {
+        "evidence" => {
+            const USAGE: &str = "usage: story verifier evidence <story-id> [--json]";
+            if args.len() != 3 || args[2].trim().is_empty() || is_flag_shaped(&args[2]) {
+                return Err(AppError::Usage(USAGE.into()));
+            }
+            VerifierAction::Evidence {
+                story_id: args[2].clone(),
+            }
+        }
         "repair-admit" => {
             const USAGE: &str = "usage: story verifier repair-admit <story> <attempt> <generation> <base> <head> <head-tree> <tree> --json (private verifier callback)";
             if args.len() != 9
@@ -4145,7 +4160,7 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
         }
         _ => {
             return Err(AppError::Usage(
-                "usage: story verifier <status|start|stop|drain|ack|repair>".to_string(),
+                "usage: story verifier <status|evidence|start|stop|drain|ack|repair>".to_string(),
             ));
         }
     };

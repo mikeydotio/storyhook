@@ -18,7 +18,7 @@ repo=$(mk_story_repo)
 
 # --- empty project ---
 out=$(cd "$repo" && bash "$SCRIPT" list 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "empty: ok"
+assert_ok "$out" "true" "empty: ok"
 assert_eq "$(jqf "$out" .count)" "0" "empty: count 0"
 assert_eq "$(jqf "$out" '.stories|length')" "0" "empty: no rows"
 assert_contains "$(jqf "$out" .display)" "No ready stories" "empty: display says so"
@@ -92,6 +92,6 @@ assert_eq "$(jqf "$out" '.stories[] | select(.id == "'"$ready"'") | .blocker_flo
 
 # --- arg validation ---
 out=$(cd "$repo" && bash "$SCRIPT" list extra 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "list: takes no arguments"
+assert_ok "$out" "false" "list: takes no arguments"
 
 finish

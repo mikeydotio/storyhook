@@ -108,29 +108,8 @@ enum Kind {
 const INVENTORY: &[(&str, &str, Kind)] = &[
     // GitHub calls use private file-backed capture and process-group deadlines.
     ("src/github_access/command.rs", "\"gh\"", Kind::Waited),
-    // Controller probes join ChildGuard and use a bounded control socket,
-    // without reading a child stdout/stderr pipe to EOF.
-    (
-        "src/service/story_reset/executor_tests.rs",
-        "\"sh\"",
-        Kind::Waited,
-    ),
-    // The lock regression waits for its pipe-gated child to exit.
-    (
-        "src/service/workspace_lock/tests.rs",
-        "\"sh\"",
-        Kind::Waited,
-    ),
     // Reset uses bounded, file-backed process capture.
     ("src/service/reset/resources.rs", "\"tmux\"", Kind::Waited),
-    // Out-of-line process tests are visible to this file-based census.
-    // ChildGuard bounds/drains the isolated probe; its shell children use
-    // production file-backed capture and whole-group deadline cleanup.
-    ("src/process/activity_tests.rs", "test_binary", Kind::Reads),
-    ("src/process/activity_tests.rs", "\"sh\"", Kind::Waited),
-    // SH-702's Bash cancellation probe retains output in regular files;
-    // cancellation terminates/reaps its group before captured bytes are read.
-    ("src/process/activity_tests.rs", "\"bash\"", Kind::Waited),
     // Isolated unit probes use ChildGuard's bounded concurrent pipe drains;
     // recording tools never create persistent terminal readers.
     (
@@ -179,18 +158,6 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     (
         "src/daemon/verification/batch/shell.rs",
         "\"bash\"",
-        Kind::Waited,
-    ),
-    // Workspace probes use production file-backed capture and bounded group
-    // cleanup. Their lock checks do not read a child pipe to EOF (SH-730).
-    (
-        "src/daemon/verification/workspace_tests.rs",
-        "\"bash\"",
-        Kind::Waited,
-    ),
-    (
-        "src/daemon/verification/workspace_tests.rs",
-        "\"python3\"",
         Kind::Waited,
     ),
     // `env::git_env::command` — the one place in `src/` that constructs a
@@ -334,10 +301,48 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
 /// spawns a deliberately missing binary, and it belongs in neither this
 /// inventory nor a reviewer's attention.
 fn production_sources(root: &Path, crate_root: &Path, into: &mut Vec<(String, String)>) {
+    let mut all = Vec::new();
+    source_files(root, crate_root, &mut all);
+    // Deliberately recognize only ordinary external modules. An unfamiliar
+    // attribute or declaration remains visible to the inventory, never exempt.
+    let external = regex::Regex::new(
+        r"(?m)^[ \t]*#\[cfg\(test\)\][ \t]*\n[ \t]*mod[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*;",
+    )
+    .unwrap();
+    let mut excluded = Vec::new();
+    for (relative, source) in &all {
+        let source = storyhook_test_support::without_rust_comments(source);
+        let path = Path::new(relative);
+        let stem = path.file_stem().unwrap().to_str().unwrap();
+        let parent = path.parent().unwrap();
+        let directory = if matches!(stem, "lib" | "main" | "mod") {
+            parent.to_path_buf()
+        } else {
+            parent.join(stem)
+        };
+        for capture in external.captures_iter(&source) {
+            let before = &source[..capture.get(0).unwrap().start()];
+            if before.trim_end().ends_with(']') {
+                // Other attributes (especially #[path]) can change resolution.
+                continue;
+            }
+            let module = directory.join(&capture[1]);
+            excluded.push(module.with_extension("rs"));
+            excluded.push(module);
+        }
+    }
+    into.extend(all.into_iter().filter(|(relative, _)| {
+        !excluded
+            .iter()
+            .any(|test_module| Path::new(relative).starts_with(test_module))
+    }));
+}
+
+fn source_files(root: &Path, crate_root: &Path, into: &mut Vec<(String, String)>) {
     for entry in std::fs::read_dir(root).expect("reading src/") {
         let path = entry.expect("a directory entry").path();
         if path.is_dir() {
-            production_sources(&path, crate_root, into);
+            source_files(&path, crate_root, into);
         } else if path.extension().is_some_and(|ext| ext == "rs") {
             let text = std::fs::read_to_string(&path).expect("reading a source file");
             let production = match text.find("\n#[cfg(test)]\nmod tests {") {
@@ -352,6 +357,38 @@ fn production_sources(root: &Path, crate_root: &Path, into: &mut Vec<(String, St
             into.push((relative, production));
         }
     }
+}
+
+#[test]
+fn external_test_modules_are_excluded_by_declaration_not_filename() {
+    let root = storyhook_test_support::scratch_dir();
+    let src = root.path().join("src");
+    std::fs::create_dir_all(src.join("owner/fixtures")).unwrap();
+    std::fs::create_dir_all(src.join("production")).unwrap();
+    std::fs::write(src.join("owner.rs"), "#[cfg(test)]\nmod fixtures;\n").unwrap();
+    std::fs::write(src.join("owner/fixtures.rs"), "Command::new(\"fixture\");").unwrap();
+    std::fs::write(
+        src.join("owner/fixtures/helper.rs"),
+        "Command::new(\"nested-fixture\");",
+    )
+    .unwrap();
+    std::fs::write(src.join("production.rs"), "// #[cfg(test)]\nmod tests;\n").unwrap();
+    std::fs::write(
+        src.join("production/tests.rs"),
+        "Command::new(\"production\");",
+    )
+    .unwrap();
+    let mut sources = vec![];
+    production_sources(&src, root.path(), &mut sources);
+    let found: Vec<_> = sources
+        .iter()
+        .flat_map(|(_, source)| programs(source))
+        .collect();
+    assert_eq!(
+        found,
+        vec!["\"production\""],
+        "test-only ancestry must not leak into the production census"
+    );
 }
 
 /// The expression each `Command::new(` in `source` is handed, verbatim.

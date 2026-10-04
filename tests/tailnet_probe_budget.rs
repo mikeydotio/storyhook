@@ -119,11 +119,20 @@ fn path_with_shim(env: &TestEnv, shim: &Path) -> OsString {
     std::env::join_paths(entries).expect("joining PATH")
 }
 
-/// How long this test waits for the daemon to confirm a tailnet bind before
-/// giving up. Generous relative to what it is bounding — the shim answers
-/// instantly — because a false "it's done" reading here would silently hide
-/// a probe that simply hadn't run yet under load.
-const SETTLE_DEADLINE: Duration = Duration::from_secs(5);
+/// Idle patience for the first successful probe: one production probe window
+/// plus one for scheduling and portfile publication. The shim answers at once;
+/// this is not a retry-completion bound. `Patience` adds the shared load grace.
+const SETTLE_DEADLINE: Duration =
+    storyhook::daemon::tailnet::TAILNET_PROBE_TIMEOUT.saturating_mul(2);
+
+#[test]
+fn first_probe_patience_includes_publication_margin() {
+    let probe = storyhook::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
+    assert!(
+        SETTLE_DEADLINE.saturating_sub(probe) >= probe,
+        "first-bind patience must leave one probe window for scheduling and publication"
+    );
+}
 
 /// Waits for the daemon to report a confirmed tailnet bind, then reads the
 /// probe counter — race-free, unlike watching the counter file for a quiet

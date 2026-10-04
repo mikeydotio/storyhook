@@ -16,20 +16,20 @@ doctor_case() {
   FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-doctor-state.XXXXXX)
   _TMP_REPOS+=("$FAKE_TMUX_STATE")
   out=$(cd "$repo" && PATH="$bins:$TESTS_DIR/fakes:$PATH" \
-    TMUX=fake TMUX_PANE=%0 STORY_READY_ATTEMPTS=3 STORY_READY_DELAY=0 \
+    TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_READY_ATTEMPTS=3 STORY_READY_DELAY=0 \
     STORY_READY_FALLBACK_DELAY=0 STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
     FAKE_TMUX_CAPTURE=marker env "$@" bash "$SCRIPT" doctor)
   assert_eq "$(cat "$repo/.claude/dispatch-sentinel.json")" "$original" "doctor preserves caller evidence"
 }
 
 doctor_case FAKE_TMUX_SUPPRESS_SENTINEL=1
-assert_eq "$(jqf "$out" .ok)" false "marker-only doctor must fail"
+assert_ok "$out" false "marker-only doctor must fail"
 assert_eq "$(jqf "$out" .terminal_readiness_confirmed)" true "terminal still works"
 assert_eq "$(jqf "$out" .readiness_confirmed)" false "missing hook cannot certify dispatch"
 assert_eq "$(jqf "$out" .wait_ready_reason)" no-sentinel "doctor names missing hook"
 
 doctor_case
-assert_eq "$(jqf "$out" .ok)" true "fresh hook and context certify readiness"
+assert_ok "$out" true "fresh hook and context certify readiness"
 assert_eq "$(jqf "$out" .sentinel_confirmed)" true "doctor checked the sentinel"
 assert_eq "$(jqf "$out" .context_status)" loaded "context was loaded"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 0 "Claude doctor submits no prompt"
@@ -41,7 +41,7 @@ assert_eq "$(jqf "$out" '.server_environment.retained | length')" 0 "a clean ser
 # SH-758: storyhook never rewrites a server it did not start, so doctor names
 # the session state that server would hand every new pane, the user's too.
 doctor_case FAKE_TMUX_GLOBAL_ENVIRONMENT='PATH=/usr/bin\nPLUGIN_ROOT=/codex/story\nCODEX_SHELL=1\nCODEX_HOME=/c\n-CLAUDECODE'
-assert_eq "$(jqf "$out" .ok)" true "retained server state is reported, not a readiness failure"
+assert_ok "$out" true "retained server state is reported, not a readiness failure"
 assert_eq "$(jqf "$out" '.server_environment.retained | join(",")')" "CODEX_SHELL,PLUGIN_ROOT" \
   "doctor names only the retained session-scoped names"
 assert_contains "$(jqf "$out" .display)" "retains another process's session state (CODEX_SHELL PLUGIN_ROOT)" \
@@ -54,11 +54,11 @@ assert_contains "$(jqf "$out" .server_environment.detail)" "can't find session" 
 assert_contains "$(jqf "$out" .display)" "tmux server environment: NOT checked" "doctor says what it could not check"
 
 doctor_case FAKE_TMUX_CLAUDE_SENTINEL_ROOT="$bins"
-assert_eq "$(jqf "$out" .ok)" false "foreign package cannot certify dispatch"
+assert_ok "$out" false "foreign package cannot certify dispatch"
 assert_eq "$(jqf "$out" .wait_ready_reason)" hook-identity-mismatch "doctor names foreign package"
 
 doctor_case FAKE_TMUX_FAIL_KILL_PANE=1
-assert_eq "$(jqf "$out" .ok)" false "cleanup failure cannot produce all-green"
+assert_ok "$out" false "cleanup failure cannot produce all-green"
 assert_eq "$(jqf "$out" .cleanup.ok)" false "cleanup failure is explicit"
 retained=$(jqf "$out" .preserved_path)
 _TMP_REPOS+=("$retained")
@@ -73,11 +73,11 @@ _TMP_REPOS+=("$retained")
 [ -d "$retained" ] || fail_test "lost process authority must retain scratch checkout"
 
 doctor_case STORY_AGENT=codex FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT"
-assert_eq "$(jqf "$out" .ok)" true "Codex doctor completes production bootstrap"
+assert_ok "$out" true "Codex doctor completes production bootstrap"
 assert_eq "$(cat "$FAKE_TMUX_STATE/prompt_submits")" 1 "Codex doctor submits only initialization"
 
 doctor_case STORY_AGENT=codex FAKE_TMUX_CODEX_SENTINEL_MODE=identity FAKE_TMUX_CODEX_PLUGIN_ROOT="$PLUGIN_ROOT" FAKE_TMUX_BOOTSTRAP_INCOMPLETE=1
-assert_eq "$(jqf "$out" .ok)" false "unfinished bootstrap is not ready"
+assert_ok "$out" false "unfinished bootstrap is not ready"
 assert_eq "$(jqf "$out" .wait_ready_reason)" bootstrap-incomplete "doctor reports bootstrap failure"
 
 # Force the actual CLI pre-RPC boundary only for the hook, preserving all
@@ -97,11 +97,11 @@ chmod +x "$bins/story"
 doctor_case
 assert_eq "$(jqf "$out" .readiness_confirmed)" true "degraded hook proves execution"
 assert_eq "$(jqf "$out" .context_status)" unavailable "doctor reports degraded context"
-assert_eq "$(jqf "$out" .ok)" false "degraded context cannot produce an all-green report"
+assert_ok "$out" false "degraded context cannot produce an all-green report"
 mkdir -p "$repo/.storyhook"
 ln -s absent "$repo/.storyhook/plugin-config.toml"
 doctor_case
-assert_eq "$(jqf "$out" .ok)" false "broken legacy settings cannot become enabled defaults"
+assert_ok "$out" false "broken legacy settings cannot become enabled defaults"
 assert_contains "$out" 'cannot copy plugin configuration' "doctor preserves configuration failure"
 [ ! -f "$FAKE_TMUX_STATE/window_cwd" ] || fail_test "unreadable settings must refuse before launching a probe"
 finish

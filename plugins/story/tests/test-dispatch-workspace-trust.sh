@@ -15,7 +15,7 @@ repo=$(mk_story_repo WTR)
 # Pass mode through the public dispatch API; the provider boundary alone is fake.
 launch() {
   (cd "$repo" && PATH="$fixture_bin:$PATH" \
-    TMUX=fake TMUX_PANE=%0 STORY_AGENT="$provider" STORY_COUNCIL=off \
+    TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 STORY_AGENT="$provider" STORY_COUNCIL=off \
     STORY_READY_DELAY=0.1 STORY_READY_ATTEMPTS="$attempts" STORY_CONFIRM_DELAY=0 \
     STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
     FAKE_TMUX_SUPPRESS_SENTINEL="$suppress_hook" \
@@ -42,7 +42,7 @@ for provider in "${providers[@]}"; do
     esac
     if [ "$mode" = attended ]; then out=$(launch); else out=$(launch "${flags[@]}"); fi
     if [ "$mode" = resume ]; then
-      assert_eq "$(jqf "$out" .ok)" true "$provider: initial dispatch before resume"
+      assert_ok "$out" true "$provider: initial dispatch before resume"
       PATH="$fixture_bin:$PATH" tmux kill-window -t "$(jqf "$out" .window)"
       session_id="$id-replacement"
       out=$(launch --auto --resume)
@@ -50,7 +50,7 @@ for provider in "${providers[@]}"; do
     fi
     case "$mode" in
       attended|missing-hook)
-        assert_eq "$(jqf "$out" .ok)" false "$provider $mode: readiness must refuse"
+        assert_ok "$out" false "$provider $mode: readiness must refuse"
         assert_eq "$(jqf "$out" .reason)" pane-not-ready "$provider $mode: one contextual result"
         expected_submits=0
         if [ "$mode" = attended ]; then
@@ -63,7 +63,7 @@ for provider in "${providers[@]}"; do
         fi
         ;;
       *)
-        assert_eq "$(jqf "$out" .ok)" true "$provider $mode: consent unblocks ordinary readiness"
+        assert_ok "$out" true "$provider $mode: consent unblocks ordinary readiness"
         expected_submits=1
         [ "$provider" != codex ] || expected_submits=2
         assert_contains "$(cat "$FAKE_TMUX_STATE/submitted" 2>/dev/null || true)" "$id" \

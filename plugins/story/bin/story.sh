@@ -600,22 +600,18 @@ LAUNCH_RECORD_FILE="storyhook-launch-v1.json"
 # sentinel-file gate the Claude provider actually uses.
 READY_PATTERN="${STORY_READY_PATTERN:-for shortcuts|for agents|mode on|to cycle}"
 # READY_ATTEMPTS * READY_DELAY is the whole poll budget both gates share (SH-544):
-# 180 * 0.25s = 45s, derived from src/daemon/lifecycle.rs's own
-# SPAWN_LOCK_DEADLINE (30s — this project's own documented tolerance for
-# ordinary daemon contention) plus a 15s margin for tmux round trips and the
-# time Claude itself takes to reach its first render, rather than a bare
-# literal (this project's own CLAUDE.md doctrine: a wall-clock ceiling must
-# derive from the deadline it disproves). Was 15s (60*0.25) — undocumented,
-# and well under SPAWN_LOCK_DEADLINE even though wait_ready_sentinel polls for
-# a file a daemon request has to complete to produce; a request that gets
-# queued behind ordinary contention on this project's own bounded worker pool
-# (`DISPATCHERS`, src/daemon/serve.rs) could legitimately outlast 15s without
-# anything about the launched agent being wrong. Widening this only ever costs
-# latency on a poll that would otherwise have timed out — both gates return
-# the instant their own conditions hold, every earlier poll included.
-# tests/dispatch_ready_budget.rs pins `>= SPAWN_LOCK_DEADLINE` so the two
-# numbers cannot silently drift apart again (the SH-136 shape).
-READY_ATTEMPTS="${STORY_READY_ATTEMPTS:-180}"
+# src/daemon/lifecycle.rs's SPAWN_LOCK_DEADLINE plus a 15s margin for tmux
+# round trips and the agent's first render. macOS includes bounded launchd
+# recovery (115s); Linux includes systemd control (70s); other platforms use
+# the fork-only bound (30s). Both readiness gates return as soon as ready.
+# tests/dispatch_ready_budget.rs executes these declarations and compares the
+# native default to the Rust deadline, so they cannot silently drift apart.
+# Readiness budget defaults (SH-820).
+case "$OSTYPE" in
+  darwin*) READY_ATTEMPTS="${STORY_READY_ATTEMPTS:-520}" ;; # (115 + 15) / 0.25
+  linux*) READY_ATTEMPTS="${STORY_READY_ATTEMPTS:-340}" ;;  # (70 + 15) / 0.25
+  *) READY_ATTEMPTS="${STORY_READY_ATTEMPTS:-180}" ;;       # (30 + 15) / 0.25
+esac
 READY_DELAY="${STORY_READY_DELAY:-0.25}"
 READY_FALLBACK_DELAY="${STORY_READY_FALLBACK_DELAY:-3}"
 READY_STABLE_POLLS="${STORY_READY_STABLE_POLLS:-3}"
@@ -1067,21 +1063,20 @@ ensure_provider_plan_mode() {
 # continuation; all shell-bound values are quoted before it invokes the hook.
 schedule_plan_approval() {
   local pane="$1" pane_pid="$2" auto_marker="$3" full_auto_marker="$4"
-  local hook_q pane_q pid_q auto_q full_auto_q approval_args
+  local binding identity
   [[ "$pane" =~ ^%[0-9]+$ ]] || return 1
   [[ "$pane_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  identity=$(tmux show-options -p -v -t "$pane" @storyhook-identity-v1) || return 1
+  binding=$(printf '%s' "$identity" | jq -c '{socket,pane,process,common,story}') || return 1
+  local helper_q hook_q binding_q auto_q full_auto_q provider_q
+  printf -v helper_q '%q' "$STORY_PLUGIN_ROOT/lib/approval_tmux.py"
   printf -v hook_q '%q' "$AUTO_APPROVAL_HOOK"
-  printf -v pane_q '%q' "$pane"
-  printf -v pid_q '%q' "$pane_pid"
+  printf -v binding_q '%q' "$binding"
   printf -v auto_q '%q' "$auto_marker"
   printf -v full_auto_q '%q' "$full_auto_marker"
-  case "$AGENT" in
-    claude) approval_args="--approve-claude-plan $pane_q $pid_q" ;;
-    codex) approval_args="--approve-codex-plan $pane_q $pid_q" ;;
-    *) return 1 ;;
-  esac
+  printf -v provider_q '%q' "$AGENT"
   tmux run-shell -b -t "$pane" \
-    "env STORYHOOK_AUTO=$auto_q STORYHOOK_FULL_AUTO=$full_auto_q bash $hook_q $approval_args" \
+    "env STORYHOOK_AUTO=$auto_q STORYHOOK_FULL_AUTO=$full_auto_q python3 $helper_q watch $binding_q $hook_q $provider_q 0" \
     >/dev/null 2>&1
 }
 
@@ -1283,21 +1278,22 @@ write_cleanup_lease_marker() {
   private_git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) || return 1
   repository_real=$(cd_resolve / "$repository") || return 1
   worktree_real=$(cd_resolve / "$worktree") || return 1
-  socket_path=$(tmux display-message -p -t "$pane" '#{socket_path}' 2>/dev/null) || return 1
+  socket_path=$(resource_socket_for_pane "$pane") || return 1
 
   [ -n "$socket_path" ] && [ "${socket_path#/}" != "$socket_path" ] || return 1
 
   marker="$private_git_dir/$CLEANUP_LEASE_MARKER"
   temp=$(mktemp "$private_git_dir/.storyhook-cleanup-lease.XXXXXX") || return 1
-  local lease_json
+  local lease_json tmux_target
+  tmux_target=$(resource_cleanup_target "$socket_path") || { rm -f "$temp"; return 1; }
   if ! lease_json=$(jq -n \
       --argjson version "$CLEANUP_LEASE_VERSION" \
       --arg project "$project" --arg story "$story" \
       --arg repository "$repository_real" --arg worktree "$worktree_real" \
-      --arg branch "$branch" --arg socket "$socket_path" \
+      --arg branch "$branch" --argjson tmux "$tmux_target" \
       '{version:$version, project_slug:$project, story_id:$story,
         repository_path:$repository, worktree_path:$worktree, branch:$branch,
-        tmux:{socket_path:$socket}}'); then
+        tmux:$tmux}'); then
     rm -f "$temp"
     return 1
   fi
@@ -1902,6 +1898,7 @@ cmd_dispatch() {
     state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
 
     if [ -n "$require_absent" ]; then
+      prepare_tmux_target ensure || refuse "tmux-protection-failed" "$RESOURCE_TARGET_ERROR"
       [ -f "$continuation_file" ] && [ ! -L "$continuation_file" ] \
         || refuse "continuation-unsafe" "continuation record is not an ordinary retained file."
       continuation_record=$(cat "$continuation_file") \
@@ -1959,6 +1956,9 @@ cmd_dispatch() {
   # and under
   # STORY_TARGET_SESSION — a non-interactive caller outside tmux dispatches
   # into a NAMED session, so its own tmux context is irrelevant).
+  if [ -z "$DRY_RUN" ] && [ -z "$require_absent" ]; then
+    prepare_tmux_target ensure || refuse "tmux-protection-failed" "$RESOURCE_TARGET_ERROR"
+  fi
   if [ -z "$DRY_RUN" ] && [ -z "$TARGET_SESSION" ]; then
     [ -n "${TMUX:-}" ] || fail "story requires tmux — run $AGENT_LABEL inside a tmux session."
     [ -n "${TMUX_PANE:-}" ] || fail "story requires \$TMUX_PANE — run $AGENT_LABEL inside a tmux pane."
@@ -2033,9 +2033,13 @@ cmd_dispatch() {
       if [ -n "${RESOURCE_PANE:-}" ]; then
         dispatch_session=$(tmux display-message -p -t "$RESOURCE_PANE" '#{session_name}') || fail "cannot inspect surviving session"
       elif [[ "$RESOURCE_CALLER_SOCKET" = /* ]]; then
-        dispatch_session=$(command tmux -S "$RESOURCE_CALLER_SOCKET" display-message -p -t "$RESOURCE_CALLER_PANE" '#{session_name}') || fail "cannot inspect caller session"
+        # A caller pane is a numeric binding, not permission to follow a restore.
+        if [ "$RESOURCE_PROTECTED" = true ] && [ "$RESOURCE_CALLER_SOCKET" != "$RESOURCE_SOCKET" ]; then
+          refuse "tmux-binding-unsafe" "caller pane requires re-adoption before selecting a restored session"
+        fi
+        dispatch_session=$(tmux -S "$RESOURCE_CALLER_SOCKET" display-message -p -t "$RESOURCE_CALLER_PANE" '#{session_name}') || fail "cannot inspect caller session"
       else
-        dispatch_session=$(command tmux display-message -p -t "${TMUX_PANE:-}" '#{session_name}') || fail "cannot inspect caller session"
+        dispatch_session=$(tmux display-message -p -t "${TMUX_PANE:-}" '#{session_name}') || fail "cannot inspect caller session"
       fi
       [ -n "$dispatch_session" ] \
         || fail "cannot resolve the tmux session that would receive this dispatch — no claim was made."
@@ -2696,13 +2700,12 @@ cmd_dispatch() {
   # failed `new-window` does, so a session that couldn't be made never leaves
   # a worktree with nothing to show for it.
   local session_created=false
-  if [ -n "$TARGET_SESSION" ] && [ -n "$CREATE_SESSION" ] \
-     && ! tmux has-session -t "$TARGET_SESSION" 2>/dev/null; then
-    if ! python3 "$STORY_PLUGIN_ROOT/lib/tmux-launch.py" new-session -d -s "$TARGET_SESSION" -c "$dir" 2>/dev/null; then
+  if [ -n "$TARGET_SESSION" ] && [ -n "$CREATE_SESSION" ]; then
+    if ! ensure_tmux_session "$TARGET_SESSION" "$dir"; then
       cleanup_dispatch_git "$worktree_path" "$worktree_branch" "$worktree_created" "$branch_created" || true
-      fail "failed to create tmux session \`$TARGET_SESSION\`. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
+      fail "failed to create tmux session \`$TARGET_SESSION\`: $SESSION_ERROR. $(dispatch_cleanup_note).$(claim_rollback_note "$id" "$pre_claim_state" "$claim_transitioned" "$state")"
     fi
-    session_created=true
+    session_created="$SESSION_CREATED"
   fi
   # Step 9c (SH-758): a server this dispatch did not start may retain another
   # process's session state (a host's plugin roots, CODEX_*, per-call storyhook

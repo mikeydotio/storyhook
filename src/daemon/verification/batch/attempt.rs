@@ -11,6 +11,7 @@ pub(super) struct Attempt<'a, S: Store> {
     pub(super) ctx: &'a Ctx<'a, S>,
     pub(super) batching: &'a dyn BatchActuator,
     pub(super) head: &'a VerificationCandidate,
+    pub(super) owner: &'a VerificationGuard,
     pub(super) plan: Plan,
     pub(super) cancellation: &'a Cancellation,
     /// Head and members whose authority the observer checks.
@@ -135,9 +136,32 @@ impl<S: Store> Attempt<'_, S> {
             self.env.now(),
         )?;
         let gate_started = Instant::now();
-        let outcome = self.batching.gate(self.head, &link, self.cancellation);
+        let outcome = self.costed_gate(&link, self.plan.members.len())?;
         self.gate = Some((outcome, gate_started.elapsed().as_secs()));
         self.bisect()
+    }
+
+    /// Every probe is a separate physical execution inside the same admission.
+    pub(super) fn costed_gate(
+        &self,
+        link: &PrLink,
+        prefix: usize,
+    ) -> Result<VerificationOutcome, AppError> {
+        cost::execute(
+            self.store,
+            self.env,
+            self.owner,
+            self.head,
+            crate::store::GateInputs::default(),
+            self.plan
+                .members
+                .iter()
+                .take(prefix)
+                .map(|member| cost::submission(&member.candidate))
+                .collect(),
+            || self.batching.gate(self.head, link, self.cancellation),
+            |outcome| Ok(Some(outcome.clone())),
+        )
     }
 
     /// Assembles the batch branch: the clean members as merge commits in

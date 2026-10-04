@@ -10,6 +10,12 @@ through it; it never writes the SH-524 journal format by hand:
     "$STORYHOOK_GATE_PROGRESS_WRITER" case unit pass
     "$STORYHOOK_GATE_PROGRESS_WRITER" leg pass unit
 
+`case <leg> pass|fail [name]` can retain the literal case identity. Names are
+UTF-8 data and JSON-escaped; the stricter checklist path rules do not apply.
+`cost start|end <phase> <id> <leg>` records a monotonic phase boundary. Pair
+the same ID at both boundaries, and use a new ID for each interval. Missing
+ends remain unknown. These are real work boundaries, never timer heartbeats.
+
 `leg start|pass|fail|skip <leg>` sets the checklist row "release gate/<leg>"
 to running, passed, failed or skipped. `case <leg> pass|fail` counts one
 finished test under that row. A leg may nest ("unit/Parser"). Every row is
@@ -37,8 +43,7 @@ invalidates the attempt's recovery evidence (gate_progress::fold), so the
 only safe answer to a bad leg is to write nothing. Arguments are checked
 before the environment, so a wrong call fails the same way in a local run.
 
-Each line is one os.write() to a descriptor opened O_APPEND, far below
-PIPE_BUF, so legs that run in parallel cannot interleave their lines. The
+Each line is one os.write() to a local regular file opened O_APPEND. The
 journal is never created here: the verifier prepares it, and a missing one
 means this run is not the verifier's.
 """
@@ -47,10 +52,9 @@ import datetime
 import json
 import os
 import sys
+import time
 
-# Upper bound on one leg's UTF-8 length. It keeps a whole line an order of
-# magnitude below PIPE_BUF (4096), the size up to which one O_APPEND write is
-# never split, and keeps a checklist row readable.
+# Upper bound on a checklist path, independent of literal case-name length.
 LEG_LIMIT = 256
 
 ITEM_STATUS = {"start": "running", "pass": "passed", "fail": "failed", "skip": "skipped"}
@@ -58,7 +62,8 @@ CASE_OUTCOMES = ("pass", "fail")
 ROOT = "release gate"
 USAGE = (
     "usage: gate-progress-writer.py leg start|pass|fail|skip <leg> | "
-    "gate-progress-writer.py case <leg> pass|fail"
+    "gate-progress-writer.py case <leg> pass|fail [name] | "
+    "gate-progress-writer.py cost start|end <phase> <id> <leg>"
 )
 
 
@@ -85,9 +90,19 @@ def leg_path(raw):
 
 def record(argv):
     """The one journal record `argv` asks for, or Refused."""
-    if len(argv) != 3:
+    if len(argv) == 5 and argv[0] == "cost":
+        _, event, phase, identity, path = argv
+        if event not in ("start", "end") or phase not in (
+                "workspace", "resource-wait", "discovery", "compile-link",
+                "execution", "cleanup", "verdict"):
+            raise Refused("invalid cost event or phase")
+        leg_path(identity)
+        return dict(kind="cost", event=event, phase=phase, id=identity,
+                    path=leg_path(path), monotonic_ns=time.monotonic_ns(),
+                    at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    if len(argv) not in (3, 4) or (len(argv) == 4 and argv[0] != "case"):
         raise Refused(USAGE)
-    verb, first, second = argv
+    verb, first, second = argv[:3]
     if verb == "leg":
         status = ITEM_STATUS.get(first)
         if status is None:
@@ -102,7 +117,14 @@ def record(argv):
     if verb == "case":
         if second not in CASE_OUTCOMES:
             raise Refused(f"unknown case outcome {second!r}; {USAGE}")
-        return {"kind": "case", "path": leg_path(first), "outcome": second}
+        result = {"kind": "case", "path": leg_path(first), "outcome": second}
+        if len(argv) == 4:
+            # Case identities are data, not checklist paths. JSON escapes controls.
+            try:
+                result["name"] = os.fsencode(argv[3]).decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise Refused(f"case name is not valid UTF-8: {error}") from None
+        return result
     raise Refused(f"unknown verb {verb!r}; {USAGE}")
 
 

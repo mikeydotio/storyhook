@@ -28,7 +28,7 @@ daemon_dispatch() {
 repo=$(mk_story_repo RSS)
 id=$(new_story "$repo" "Resumed after its window was lost")
 out=$(daemon_dispatch "$repo" dispatch "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "the original dispatch succeeds"
+assert_ok "$out" "true" "the original dispatch succeeds"
 worktree=$(jqf "$out" .worktree_path)
 sentinel="$worktree/.claude/dispatch-sentinel.json"
 [ -f "$sentinel" ] || fail_test "the original session published its readiness witness"
@@ -42,7 +42,7 @@ unset FAKE_TMUX_PANES
 
 # The replacement session never publishes a witness of its own.
 out=$(FAKE_TMUX_SUPPRESS_SENTINEL=1 STORY_READY_ATTEMPTS=3 daemon_dispatch "$repo" dispatch "$id" --resume)
-assert_eq "$(jqf "$out" .ok)" "false" "a replacement without its own witness is not ready"
+assert_ok "$out" "false" "a replacement without its own witness is not ready"
 assert_eq "$(jqf "$out" .reason)" "pane-not-ready" "the refusal names readiness"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
   "the old session's witness no longer stands in for the new one"
@@ -50,7 +50,7 @@ assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
 
 # Control: a replacement that publishes its own witness is ready.
 out=$(daemon_dispatch "$repo" dispatch "$id" --resume)
-assert_eq "$(jqf "$out" .ok)" "true" "a replacement that publishes its own witness is ready"
+assert_ok "$out" "true" "a replacement that publishes its own witness is ready"
 assert_eq "$(jqf "$out" .worktree_reused)" "true" "the resume reuses the surviving worktree"
 [ -f "$sentinel" ] || fail_test "the replacement published a fresh witness"
 

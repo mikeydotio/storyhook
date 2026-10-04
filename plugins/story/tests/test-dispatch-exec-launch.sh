@@ -22,14 +22,14 @@ id=$(new_story "$repo" "Exec launch mechanism")
 out=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_CAPTURE=marker \
       bash "$SCRIPT" dispatch "$id" 2>&1
 )
 
-assert_eq "$(jqf "$out" .ok)" "true" "exec-launch: an ordinary dispatch still succeeds"
+assert_ok "$out" "true" "exec-launch: an ordinary dispatch still succeeds"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "exec-launch: readiness confirms"
 
 # --- The launch never went through send-keys/paste_text -- it is new-window's
@@ -81,14 +81,14 @@ id2=$(new_story "$repo" "Exec launch that never becomes claude")
 out2=$(
   cd "$repo" \
     && PATH="$FAKE_TMUX_DIR:$PATH" \
-      TMUX="fake,0,0" TMUX_PANE="%0" \
+      TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
       STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 STORY_READY_ATTEMPTS=4 \
       STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
       FAKE_TMUX_STATE="$FAKE_TMUX_STATE2" \
       FAKE_TMUX_CAPTURE=structural FAKE_TMUX_LAUNCH_MANGLE=1 \
       bash "$SCRIPT" dispatch "$id2" 2>&1
 )
-assert_eq "$(jqf "$out2" .ok)" "false" "exec-launch: a launch that never becomes claude/node is still refused"
+assert_ok "$out2" "false" "exec-launch: a launch that never becomes claude/node is still refused"
 # SH-231: readiness is no longer a rendered-content check the process gate sits
 # on top of -- it is sentinel existence itself. A launch that never became
 # claude/node never runs a SessionStart hook, so no sentinel is ever

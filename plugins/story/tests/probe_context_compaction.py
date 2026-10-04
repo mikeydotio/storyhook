@@ -69,7 +69,6 @@ def run_probe(native_stop=False, repeated=False):
                             + '  handoff_message_id(capture,origin,document["handoff"],[json.loads(line) for line in transcript.splitlines()])\n'
                             + '  return json.dumps({"result":"ok","native_feedback":True,"continuation":{"id":"request-2" if "Second probe handoff" in kwargs.get("text","") else "request-1","story_id":"SH-1","status":"awaiting-ack","phase":"native-continuation"}})\n'
                             + ' if "session-eligibility" in argv: return json.dumps({"result":"ok","session_eligibility":{"schema_version":1,"story_id":"SH-1","eligible":True,"reason":"eligible"}})\n'
-                            + ' if argv[:2]==["codex","--version"]: return codex_classifier.SUPPORTED_VERSION\n'
                             + ' if argv[:2]==["codex","exec"]: return json.dumps({"type":"item.completed","item":{"type":"agent_message","text":json.dumps({"decision":"other","evidence":""})}})+"\\n"+json.dumps({"type":"turn.completed"})\n'
                             + ' raise RuntimeError("unexpected external command "+repr(argv))\n'
                             + 'codex_stop.run_process=external\n'

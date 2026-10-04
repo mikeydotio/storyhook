@@ -180,7 +180,11 @@ pub fn run(project_root: &Path) -> Result<Report, AppError> {
     // one per provider folded into the report by `execute`.
     super::guard::check(super::guard::Verb::Reinstall, None)?;
     execute(&plan(), |target| {
-        super::install(target.install_token(), project_root)
+        super::install_with_verb(
+            target.install_token(),
+            project_root,
+            super::guard::Verb::Reinstall,
+        )
     })
 }
 

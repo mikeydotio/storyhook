@@ -155,13 +155,13 @@
     }
   },
   "tests/daemon_lifecycle.rs": {
-    "Instant::now()+Duration::from_millis(500)": {
-      "count": 1,
+    "Instant::now()+DRAIN_OBSERVATION": {
+      "count": 2,
       "kind": "proof",
       "reason": "The 500/750 ms windows repeatedly prove that an unforced stop or restart does not finish or admit a successor while accepted work remains held. They are negative observations."
     },
-    "Instant::now()+Duration::from_millis(750)": {
-      "count": 2,
+    "Instant::now()+START_OBSERVATION": {
+      "count": 1,
       "kind": "proof",
       "reason": "The 500/750 ms windows repeatedly prove that an unforced stop or restart does not finish or admit a successor while accepted work remains held. They are negative observations."
     },
@@ -213,6 +213,13 @@
       "count": 4,
       "kind": "fixture",
       "reason": "This SQLite busy_timeout configures a production-shaped direct connection used to plant or inspect test data. It is an input to the database, not an outer harness wait."
+    }
+  },
+  "tests/e2e_browser_coverage.rs": {
+    ".wait_with_output_within(budget": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The reporter cleanup wrapper passes graced_now(UTILITY_DEADLINE * 6 * 3): six lifecycle scenarios, each with startup, exit and reap patience. ChildGuard consumes that single caller-supplied budget."
     }
   },
   "tests/e2e_provider_doubles.rs": {
@@ -349,7 +356,7 @@
     }
   },
   "tests/verification_queue.rs": {
-    "Instant::now()+Duration::from_secs(2)": {
+    "Instant::now()+PID_PUBLICATION_OBSERVATION": {
       "count": 1,
       "kind": "fixture",
       "reason": "recorded_pid is an optional post-kill observation. A helper killed before publication legitimately leaves no PID; the timeout ladder repeats that attempt. This window must not turn absence into a mandatory readiness wait."
@@ -446,10 +453,10 @@
       "kind": "proof",
       "reason": "OPEN_SSE_CEILING proves an open event stream does not block ordinary serving; it derives from PEER_IO_TIMEOUT."
     },
-    "started.elapsed()<TAILNET_SETTLE_DEADLINE": {
+    "started.elapsed()<CONTROL_DEADLINE": {
       "count": 1,
       "kind": "proof",
-      "reason": "Loopback startup must not spend the tailnet settle deadline waiting for an interface that never exists."
+      "reason": "Loopback startup must return within the production lifecycle control deadline even when the tailnet shim always fails. This proof is separate from first-bind patience and retains its five-second ceiling."
     }
   }
 }

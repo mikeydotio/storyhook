@@ -13,14 +13,14 @@ repo=$(mk_story_repo)
 id=$(new_story "$repo" "Handoff me")
 
 out=$(cd "$repo" && bash "$SCRIPT" handoff --since 1d 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "handoff: ok"
+assert_ok "$out" "true" "handoff: ok"
 assert_contains "$(jqf "$out" .display)" "$id" "handoff: display carries the real story"
 assert_contains "$(jqf "$out" .display)" "Session Handoff" "handoff: display is the real handoff document"
 assert_eq "$(jqf "$out" .summary.summary.total_open)" "1" "handoff: embeds a real summary snapshot"
 
 # --- no --since given: no --since is passed to the CLI at all ---
 out=$(cd "$repo" && bash "$SCRIPT" handoff 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "handoff: works with no --since"
+assert_ok "$out" "true" "handoff: works with no --since"
 
 # --- read-only ---
 assert_eq "$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')" "todo" \
@@ -28,6 +28,6 @@ assert_eq "$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" handoff --bogus 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "handoff: rejects an unknown flag"
+assert_ok "$out" "false" "handoff: rejects an unknown flag"
 
 finish

@@ -63,6 +63,7 @@ fn setup(fixture: &ServiceFixture, fake: &FakeDispatcher, initial: &str) -> Stri
                 worktree_path: repo.join("lane"),
                 branch: "worktree-SH-1".into(),
                 tmux: TmuxCleanupTarget {
+                    revivify: None,
                     socket_path: "/owned/socket".into(),
                 },
             });

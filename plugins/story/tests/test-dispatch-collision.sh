@@ -11,7 +11,7 @@ dispatch_real() {
   (
     cd "$dir" \
       && PATH="$FAKE_TMUX_DIR:$PATH" \
-        TMUX="fake,0,0" TMUX_PANE="%0" \
+        TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" \
         STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
         STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 \
         FAKE_TMUX_CAPTURE=marker \
@@ -23,7 +23,7 @@ repo=$(mk_story_repo)
 id=$(new_story "$repo" "Dispatched twice")
 
 first=$(dispatch_real "$repo" "$id")
-assert_eq "$(jqf "$first" .ok)" "true" "first dispatch: ok:true"
+assert_ok "$first" "true" "first dispatch: ok:true"
 
 # Move it back to a ready state so the SECOND attempt reaches the
 # worktree/branch collision check rather than being turned away earlier by
@@ -31,7 +31,7 @@ assert_eq "$(jqf "$first" .ok)" "true" "first dispatch: ok:true"
 (cd "$repo" && story move "$id" todo --if-state in-progress >/dev/null)
 
 second=$(dispatch_real "$repo" "$id")
-assert_eq "$(jqf "$second" .ok)" "false" "second dispatch: ok:false (worktree/branch collision)"
+assert_ok "$second" "false" "second dispatch: ok:false (worktree/branch collision)"
 assert_eq "$(jqf "$second" .reason)" "resume-available" \
   "second dispatch: collision is an interactive recovery boundary"
 assert_eq "$(jqf "$second" .resources.worktree)" "present" \

@@ -685,11 +685,25 @@ fn a_gate_that_only_prints_or_stays_silent_is_still_stopped() {
             "{case}: output is not progress; the {ceiling}s ceiling must stop the gate: {result:?}"
         );
         let text = fs::read_to_string(&journal).unwrap();
+        let records: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
         assert!(
-            text.lines()
-                .last()
-                .is_some_and(|line| line.contains(r#""path":"release gate","status":"failed""#)),
+            records
+                .iter()
+                .rev()
+                .find(|record| record["kind"] == "item")
+                .is_some_and(|record| {
+                    record["path"] == "release gate" && record["status"] == "failed"
+                }),
             "{case}: {text}"
+        );
+        assert!(
+            records.iter().any(|record| {
+                record["kind"] == "cost" && record["phase"] == "cleanup" && record["event"] == "end"
+            }),
+            "{case}: cleanup evidence must survive a watchdog stop: {text}"
         );
         assert_eq!(
             gate_progress::fold(&text).watchdog,

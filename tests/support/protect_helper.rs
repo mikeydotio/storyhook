@@ -287,13 +287,13 @@ source "$2/plugins/story/tests/lib.sh"
 repo=$(mk_story_repo)
 id=$(new_story "$repo" "Installed helper dispatch")
 cd "$repo" || exit 1
-export PATH="$TESTS_DIR/fakes:$PATH" TMUX=fake,0,0 TMUX_PANE=%0
+export PATH="$TESTS_DIR/fakes:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0
 export STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0
 export STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0
 export FAKE_TMUX_CAPTURE=marker
 out=$(bash "$1" dispatch "$id" --agent=claude)
 tmux kill-window -t "$id"
-assert_eq "$(jqf "$out" .ok)" true "installed dispatch succeeds"
+assert_ok "$out" true "installed dispatch succeeds"
 assert_eq "$(jqf "$out" .claimed)" true "installed dispatch claims"
 assert_eq "$(jqf "$out" .prompt_confirmed)" true "prompt was delivered"
 [ -d "$repo/.claude/worktrees/$id" ] || fail_test "missing worktree"

@@ -225,8 +225,9 @@ impl VerificationActivity {
             None
         };
         let mut slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        let origin = Instant::now();
         let attempt_id = uuid::Uuid::new_v4().to_string();
-        let (allowed, request_id, retry_origin) = store.write(|tx| {
+        let (record, request_id, retry_origin) = store.write(|tx| {
             let incident = tx.verification_incident(candidate.project)?;
             let prefix = tx
                 .project(candidate.project)?
@@ -264,9 +265,12 @@ impl VerificationActivity {
                 });
                 tx.put_verification_recovery(candidate.project, &recovery)?;
             }
-            Ok((allowed, request_id, retry_origin))
+            let record = allowed
+                .then(|| super::cost::admission(tx, env, candidate, &attempt_id, &started_at))
+                .transpose()?;
+            Ok((record, request_id, retry_origin))
         })?;
-        let admitted = allowed.then(|| {
+        let admitted = record.map(|record| {
             // Before the owner is published and under its lock, so no status
             // read sees the new attempt beside its predecessor's journal.
             let retired = super::evidence::retire_journal(env, candidate);
@@ -279,6 +283,7 @@ impl VerificationActivity {
             let mut guard =
                 self.acquire_locked(&mut slots, candidate, started_at, attempt_id, retry_origin);
             guard.recovery_request_id = request_id;
+            super::cost::register(&self.costs, record, origin, env, guard.cancellation.clone());
             // Assigned under the lock already held: the registry mutex is not reentrant.
             let slot = slots.get_mut(&candidate.project).expect("just acquired");
             slot.workspace = workspace.map(Arc::new);
@@ -645,7 +650,7 @@ mod tests {
         candidate.verifying_generation = Some(GlobalSeq::new(
             candidate.verifying_generation.unwrap().get() + 1,
         ));
-        guard.replace(&env, &candidate, env.now());
+        guard.replace(&store, &env, &candidate, env.now()).unwrap();
         assert!(guard.is_cancelled());
         assert!(activity.cancellation_for(project).is_cancelled());
         assert_eq!(

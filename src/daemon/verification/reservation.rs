@@ -13,15 +13,21 @@ use serde::{Deserialize, Serialize};
 
 use super::{ActiveVerification, RECOVERY_WAKE, VerificationActivity, VerificationGuard};
 use crate::daemon::verification_progress::{StoryVerificationStatus, VerificationStatus};
+use crate::plugin::provider_cli::{PROVIDER_CLI_TIMEOUT, PROVIDER_TERM_GRACE};
 use crate::service::VerificationCandidate;
 use crate::service::engine::{DISPATCH_TIMEOUT, STALL_CEILING_SECS};
 use crate::store::GlobalSeq;
 
-/// Longest one control verb (notify, re-dispatch, reap) runs under the
-/// production actuator: its timeout, then the grace before its process group
-/// is killed (`ShellVerificationActuator::new`).
-const CONTROL_VERB_CEILING: Duration =
-    Duration::from_secs(DISPATCH_TIMEOUT.as_secs() + RECOVERY_WAKE.as_secs());
+/// Longest one control verb (notify, re-dispatch, reap) takes under the
+/// production actuator: helper resolution may use a provider probe before
+/// the verb runs. Each phase includes its timeout and termination grace
+/// (`provider_cli` and `ShellVerificationActuator::new`, respectively).
+const CONTROL_VERB_CEILING: Duration = Duration::from_secs(
+    PROVIDER_CLI_TIMEOUT.as_secs()
+        + PROVIDER_TERM_GRACE.as_secs()
+        + DISPATCH_TIMEOUT.as_secs()
+        + RECOVERY_WAKE.as_secs(),
+);
 
 /// Why a project's verifier keeps its slot after its own write took the owned
 /// generation out of the verifying queue.
@@ -189,7 +195,18 @@ impl VerificationGuard {
             .get_mut(&self.active.project)
             .filter(|slot| slot.active == self.active)
         {
+            let before = slot.reservation.as_ref().map(|r| (r.reason, r.retired));
             update(&mut slot.reservation);
+            let after = slot.reservation.as_ref().map(|r| (r.reason, r.retired));
+            if before != after {
+                let phase = match after {
+                    Some((ReservationReason::Reconcile, true)) => "repair-hold",
+                    Some((ReservationReason::Remediation, true)) => "diagnosis-delivery",
+                    Some((ReservationReason::Cleanup, true)) => "cleanup",
+                    _ => "verdict",
+                };
+                super::cost::phase(&self.registry.costs, &self.active.attempt_id, Some(phase));
+            }
         }
     }
 }
@@ -499,7 +516,9 @@ mod tests {
         candidate.verifying_generation = Some(GlobalSeq::new(
             candidate.verifying_generation.unwrap().get() + 1,
         ));
-        guard.replace(&board.env, &candidate, T0.into());
+        guard
+            .replace(&board.store, &board.env, &candidate, T0.into())
+            .unwrap();
         assert!(!guard.is_reserved(), "a new generation starts unreserved");
 
         guard
@@ -511,23 +530,23 @@ mod tests {
 
     #[test]
     fn a_reservation_becomes_overdue_only_past_its_bound() {
-        // A paste, a resume re-dispatch and a second paste, each at its full
-        // production deadline, must never read as overdue.
-        let verb = crate::service::engine::DISPATCH_TIMEOUT + RECOVERY_WAKE;
-        assert!(ReservationReason::Remediation.overdue_after().unwrap() > 3 * verb);
-        // One reap at its full production deadline.
-        assert!(ReservationReason::Cleanup.overdue_after().unwrap() > verb);
-        // A hold that went quiet releases at the stall ceiling, judged once
-        // per wake (SH-770 decision D1).
-        assert_eq!(
-            ReservationReason::Reconcile.overdue_after(),
-            Some(Duration::from_secs(STALL_CEILING_SECS) + RECOVERY_WAKE)
-        );
+        // Each verb can resolve through a provider probe before it runs.
+        // Derive the full budget independently of CONTROL_VERB_CEILING so
+        // omitting either phase from the detector cannot pass (SH-817).
+        let verb = crate::plugin::provider_cli::PROVIDER_CLI_TIMEOUT
+            + crate::plugin::provider_cli::PROVIDER_TERM_GRACE
+            + crate::service::engine::DISPATCH_TIMEOUT
+            + RECOVERY_WAKE;
 
-        for reason in [
-            ReservationReason::Remediation,
-            ReservationReason::Cleanup,
-            ReservationReason::Reconcile,
+        for (reason, work_budget) in [
+            // A paste, a resume re-dispatch and a second paste.
+            (ReservationReason::Remediation, 3 * verb),
+            (ReservationReason::Cleanup, verb),
+            // A quiet hold releases at the stall ceiling (SH-770).
+            (
+                ReservationReason::Reconcile,
+                Duration::from_secs(STALL_CEILING_SECS),
+            ),
         ] {
             let board = Board::new();
             let held = board.story("Held", Some("verifying"));
@@ -538,6 +557,15 @@ mod tests {
             let ceiling = reason.overdue_after().unwrap();
             let bound = i64::try_from(ceiling.as_secs()).unwrap();
 
+            let at_full_deadline = board.status_at(
+                &activity,
+                &after(i64::try_from(work_budget.as_secs()).unwrap()),
+            );
+            assert_eq!(
+                at_full_deadline.warning, None,
+                "{reason:?}: {at_full_deadline:?}"
+            );
+            assert_eq!(ceiling, work_budget + RECOVERY_WAKE, "{reason:?}");
             let at_bound = board.status_at(&activity, &after(bound));
             assert_eq!(at_bound.warning, None, "{reason:?}: {at_bound:?}");
             let past = board.status_at(&activity, &after(bound + 1));

@@ -13,7 +13,7 @@ END='<!-- END STORYHOOK -->'
 
 # --- no CLAUDE.md at all: creates one ---
 out=$(bash "$SCRIPT" scaffold-claude-md 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "create: ok"
+assert_ok "$out" "true" "create: ok"
 assert_eq "$(jqf "$out" .action)" "created" "create: reports created"
 [ -f CLAUDE.md ] || fail_test "create: CLAUDE.md was not written"
 grep -qF "$BEGIN" CLAUDE.md || fail_test "create: begin sentinel missing"
@@ -54,15 +54,15 @@ assert_eq "$(jqf "$out" .path)" "AGENTS.md" "path: reports the override"
 # --- dry run previews without touching anything ---
 rm -f CLAUDE.md AGENTS.md
 out=$(STORY_DRY_RUN=1 bash "$SCRIPT" scaffold-claude-md 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "dry: ok"
+assert_ok "$out" "true" "dry: ok"
 assert_eq "$(jqf "$out" .dry_run)" "true" "dry: flagged"
 assert_contains "$(jqf "$out" .display)" "would create" "dry: correct present-tense verb, not \"would created\""
 [ -f CLAUDE.md ] && fail_test "dry: CLAUDE.md was actually written"
 
 # --- errors ---
 out=$(bash "$SCRIPT" scaffold-claude-md --path 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "path with no value: rejected"
+assert_ok "$out" "false" "path with no value: rejected"
 out=$(bash "$SCRIPT" scaffold-claude-md --bogus 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unknown flag: rejected"
+assert_ok "$out" "false" "unknown flag: rejected"
 
 finish

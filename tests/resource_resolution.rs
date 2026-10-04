@@ -17,6 +17,109 @@ fn report(project: &storyhook_test_support::Project<'_>, args: &[&str]) -> serde
 }
 
 #[test]
+fn a_non_git_project_has_no_git_resources_but_still_observes_its_terminal() {
+    let env = TestEnv::isolated();
+    let project = env.project().build();
+    let id = project.new_story("plain project resources");
+    std::fs::create_dir(project.path().join(".codex")).unwrap();
+    let absent = report(&project, &[&id]);
+    assert_eq!(absent["status"], "absent", "{absent}");
+    assert!(absent["repository"].is_null());
+    assert_eq!(absent["candidates"], serde_json::json!([]));
+
+    let owner = PrivateTmux::new();
+    owner.run(&[
+        "new-session",
+        "-d",
+        "-s",
+        "storyhook",
+        "-n",
+        &id,
+        "-c",
+        project.path().to_str().unwrap(),
+        "sleep 300",
+    ]);
+    let found = report(
+        &project,
+        &[&id, "--tmux-socket", owner.socket().to_str().unwrap()],
+    );
+    assert_eq!(found["status"], "invalid", "{found}");
+    assert_eq!(found["pane"]["window_name"], id);
+    assert!(
+        found["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item
+                .as_str()
+                .unwrap()
+                .contains("no matching worktree ownership")),
+        "{found}"
+    );
+}
+
+#[test]
+fn a_non_git_root_does_not_erase_a_lease_or_custom_workspace() {
+    let env = TestEnv::isolated();
+    let project = env.project().build();
+    let id = project.new_story("retained ownership evidence");
+    let lease = lease(
+        &project,
+        &id,
+        &project.path().join("old-workspace"),
+        &format!("worktree-{id}"),
+        &project.path().join("missing.sock"),
+    );
+    let found = report(&project, &[&id, "--lease-json", &lease]);
+    assert_eq!(found["status"], "unavailable", "{found}");
+    assert!(!found["diagnostics"].as_array().unwrap().is_empty());
+
+    std::fs::create_dir_all(project.path().join("custom").join(&id)).unwrap();
+    project
+        .story()
+        .args(["resources", &id, "--worktree-root", "custom", "--json"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn a_checkout_below_a_git_root_keeps_its_repository_and_branch_identity() {
+    use storyhook::service::{
+        NewStoryInput, StoryService,
+        resources::{ResourceOptions, ResourceService},
+    };
+    use storyhook::store::{Store, WriteOps};
+
+    let env = TestEnv::isolated();
+    let project = env.project().git().build();
+    let f = storyhook_test_support::ServiceFixture::new();
+    let nested = project.path().join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    // This reader's fixture owns the registered root's project identity.
+    std::fs::remove_file(project.path().join(".storyhook.toml")).unwrap();
+    f.store()
+        .write(|tx| tx.set_checkout_path(f.project(), Some(&nested)))
+        .unwrap();
+    StoryService::new(&f.ctx())
+        .create(&NewStoryInput {
+            title: "nested root".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    git(&env, project.path(), &["branch", "worktree-SH-1"]);
+    let found = ResourceService::new(&f.ctx())
+        .resolve("SH-1", &ResourceOptions::default())
+        .unwrap();
+    assert_eq!(found.status, "resolved");
+    assert_eq!(
+        found.repository.unwrap(),
+        project.path().canonicalize().unwrap()
+    );
+    assert_eq!(found.candidates.len(), 1);
+    assert_eq!(found.candidates[0].branch, "worktree-SH-1");
+}
+
+#[test]
 fn absence_branch_only_and_custom_name_preserve_identity() {
     let env = TestEnv::isolated();
     let project = env.project().with_local_origin().build();

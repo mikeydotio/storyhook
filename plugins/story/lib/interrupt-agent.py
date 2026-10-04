@@ -165,13 +165,13 @@ def interrupt(pane, provider, expected):
 if __name__ == "__main__":
     try:
         operation, pane, provider = sys.argv[1:4]
-        with probe_budget.operation():
+        with proc.tmux_client.operation():
             if operation == "target":
                 print(target(pane, provider))
             elif operation == "interrupt":
                 print(interrupt(pane, provider, sys.argv[4]))
             else:
                 raise proc.CleanupError(f"unknown operation: {operation}")
-    except (proc.CleanupError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+    except (proc.CleanupError, RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

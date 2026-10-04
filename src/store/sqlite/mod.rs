@@ -20,6 +20,15 @@
 //!   SQLite's own lock and nothing else — which is what
 //!   `tests/service_project_set_prefix.rs` relies on to stand in for a second
 //!   process, and what `write_guard` alone therefore cannot exclude.
+//!
+//!   The mutex is not reentrant, so a write started inside another write's
+//!   closure on the same thread would wait for the write around it forever.
+//!   `busy_timeout` cannot end that wait, because it never reaches SQLite.
+//!   The store therefore records which thread holds the mutex, and refuses
+//!   such a write at once with [`StoreError::NestedWrite`] (SH-838). The record
+//!   is per store, like the mutex: a nested write through a *second* store on
+//!   the same file meets SQLite's lock instead, and fails as `Busy` once
+//!   `busy_timeout` has passed.
 //! - **The pool is explicit**, a `Mutex<Vec<Connection>>` holding at most eight
 //!   idle connections, rather than a thread-local. A thread-local pool leaks
 //!   one connection per thread that ever touched the store and cannot be
@@ -36,6 +45,7 @@ mod continuation;
 mod dispatch_policy;
 mod dropped_cleanup;
 mod engine_reset;
+mod gate_evidence;
 mod landing;
 mod ownership;
 mod project_recovery;
@@ -47,7 +57,8 @@ pub(crate) mod write;
 use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::thread::ThreadId;
 use std::time::Duration;
 
 use rusqlite::Connection;
@@ -206,6 +217,16 @@ pub struct SqliteStore {
     config: StoreConfig,
     pool: Mutex<Vec<Connection>>,
     write_lock: Mutex<()>,
+    /// The thread holding `write_lock`, if any (SH-838).
+    ///
+    /// Invariant: this is `Some(t)` exactly while thread `t` holds
+    /// `write_lock`. Only the holder sets it, after acquiring the lock, and
+    /// [`WriteGuard`] clears it before releasing — so a thread that reads its
+    /// own id here is inside a write, and waiting for `write_lock` would be
+    /// waiting for itself. A separate mutex because the question has to be
+    /// answerable without taking `write_lock`; it is only ever held for one
+    /// comparison or one assignment.
+    write_owner: Mutex<Option<ThreadId>>,
     /// A connection that never enters the pool, reserved for
     /// [`Store::change_token`].
     ///
@@ -219,6 +240,26 @@ pub struct SqliteStore {
     /// Resolved once at open, by [`Self::resolve_access`]. Every connection
     /// this store hands out and every write it accepts is decided by it.
     access: Access,
+}
+
+/// The write lock, held, together with the record of which thread holds it.
+///
+/// The record is cleared in `drop`, which runs before the `_lock` field is
+/// dropped and the lock released, so `write_owner`'s invariant survives every
+/// way a write can end — return, error, or a panic unwinding through it. A
+/// thread that panicked mid-write must not be refused its next write as
+/// though it were still inside the first.
+struct WriteGuard<'a> {
+    owner: &'a Mutex<Option<ThreadId>>,
+    _lock: MutexGuard<'a, ()>,
+}
+
+impl Drop for WriteGuard<'_> {
+    fn drop(&mut self) {
+        // Poison ignored, as for the lock itself: panicking here while a
+        // panic unwinds would abort the process.
+        *self.owner.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
 }
 
 impl SqliteStore {
@@ -249,6 +290,7 @@ impl SqliteStore {
             config,
             pool: Mutex::new(Vec::new()),
             write_lock: Mutex::new(()),
+            write_owner: Mutex::new(None),
             change_conn: Mutex::new(Connection::open_in_memory()?),
             access,
         };
@@ -365,14 +407,19 @@ impl SqliteStore {
             .len()
     }
 
-    /// Takes the process-wide write lock.
+    /// Takes the process-wide write lock, or refuses a write this thread has
+    /// already started.
+    ///
+    /// A thread that already holds the lock gets [`StoreError::NestedWrite`]
+    /// at once instead of waiting for itself forever (SH-838). Every other
+    /// thread waits for the lock exactly as it always has.
     ///
     /// Poisoning is deliberately ignored. A panic inside a write transaction
     /// leaves the *database* untouched — the transaction rolls back when it
     /// drops — so the invariant a poisoned mutex exists to protect was never
     /// broken. Propagating the poison would instead turn one panicking request
     /// into a permanently unusable store.
-    fn write_guard(&self) -> Result<std::sync::MutexGuard<'_, ()>, StoreError> {
+    fn write_guard(&self) -> Result<WriteGuard<'_>, StoreError> {
         // SH-530: the one gate over every write this store can perform. It
         // returns a `Result` rather than consulting `self.access` at each call
         // site precisely so that the compiler, not a reviewer, is what keeps
@@ -381,10 +428,27 @@ impl SqliteStore {
         if let Some(refusal) = self.access.refuse_write() {
             return Err(refusal);
         }
-        Ok(self
+        let me = std::thread::current().id();
+        if *self
+            .write_owner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            == Some(me)
+        {
+            return Err(StoreError::NestedWrite);
+        }
+        let lock = self
             .write_lock
             .lock()
-            .unwrap_or_else(PoisonError::into_inner))
+            .unwrap_or_else(PoisonError::into_inner);
+        *self
+            .write_owner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(me);
+        Ok(WriteGuard {
+            owner: &self.write_owner,
+            _lock: lock,
+        })
     }
 
     /// Rewrites a corruption error into a diagnosis and a way back.
@@ -856,6 +920,12 @@ macro_rules! impl_read_ops {
             ) -> Result<Vec<crate::store::VerificationBatch>, StoreError> {
                 verification_batch::list(&self.conn, project)
             }
+            fn gate_attempts(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<crate::store::GateAttempt>, StoreError> {
+                gate_evidence::list(&self.conn, project)
+            }
             fn continuations(
                 &self,
                 project: ProjectId,
@@ -1191,6 +1261,19 @@ impl WriteOps for SqliteWriteTx<'_> {
         expected: i64,
     ) -> Result<bool, StoreError> {
         verification_batch::update(&self.conn, batch, expected)
+    }
+    fn insert_gate_attempt(
+        &mut self,
+        attempt: &crate::store::GateAttempt,
+    ) -> Result<(), StoreError> {
+        gate_evidence::insert(&self.conn, attempt)
+    }
+    fn update_gate_attempt(
+        &mut self,
+        attempt: &crate::store::GateAttempt,
+        expected: i64,
+    ) -> Result<bool, StoreError> {
+        gate_evidence::update(&self.conn, attempt, expected)
     }
     fn prune_verification_batches(
         &mut self,
