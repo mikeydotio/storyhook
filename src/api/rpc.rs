@@ -25,7 +25,7 @@ use crate::api::wire::{WireRequest, WireResponse};
 use crate::daemon::lifecycle::{self, Entry, Hello, PROTOCOL};
 use crate::env::Environment;
 use crate::error::AppError;
-use crate::invoke::{InvokeRequest, Invoker, StoreInvoker};
+use crate::invoke::{Invoker, StoreInvoker};
 use crate::store::Store;
 
 /// The header carrying the daemon's bearer token.
@@ -230,13 +230,7 @@ fn invoke<S: Store>(
         StoreInvoker::new(store, &request.cwd, env.clone())
             .verification_activity(activity)
             .hook_depth(request.hook_depth)
-            .invoke(
-                InvokeRequest::new(request.invocation.clone())
-                    .no_hooks(request.no_hooks)
-                    .stdin(request.stdin.clone())
-                    .project(request.project.clone())
-                    .actor(request.actor.clone()),
-            )
+            .invoke(request.invoke_request())
     }))
     .unwrap_or_else(|_| {
         Err(AppError::Storage(

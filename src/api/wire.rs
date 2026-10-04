@@ -234,6 +234,35 @@ impl WireRequest {
         self.project = project;
         self
     }
+
+    /// The envelope that carries `request`, run from `cwd` at `hook_depth`.
+    ///
+    /// With [`invoke_request`](Self::invoke_request), the one place a request's
+    /// caller facts are packed for the wire and unpacked from it, so a fact
+    /// added to [`crate::invoke::InvokeRequest`] cannot cross on one side only.
+    #[must_use]
+    pub fn carrying(
+        request: crate::invoke::InvokeRequest,
+        cwd: impl Into<PathBuf>,
+        hook_depth: u32,
+    ) -> Self {
+        Self::new(request.invocation, cwd)
+            .no_hooks(request.no_hooks)
+            .hook_depth(hook_depth)
+            .stdin(request.stdin)
+            .project(request.project)
+            .actor(request.actor)
+    }
+
+    /// The request this envelope carries, with every caller fact it crossed with.
+    #[must_use]
+    pub fn invoke_request(&self) -> crate::invoke::InvokeRequest {
+        crate::invoke::InvokeRequest::new(self.invocation.clone())
+            .no_hooks(self.no_hooks)
+            .stdin(self.stdin.clone())
+            .project(self.project.clone())
+            .actor(self.actor.clone())
+    }
 }
 
 /// What the daemon answered.

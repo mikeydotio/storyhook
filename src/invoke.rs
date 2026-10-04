@@ -3823,12 +3823,7 @@ impl From<ureq::Error> for Transport {
 
 impl Invoker for HttpInvoker {
     fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError> {
-        let wire = crate::api::wire::WireRequest::new(request.invocation, &self.cwd)
-            .no_hooks(request.no_hooks)
-            .hook_depth(self.hook_depth)
-            .stdin(request.stdin)
-            .project(request.project)
-            .actor(request.actor);
+        let wire = crate::api::wire::WireRequest::carrying(request, &self.cwd, self.hook_depth);
 
         // Always `None` in production: `bound` exists only as a test seam
         // (`send`'s own docstring) since SH-174 deleted its sole production
