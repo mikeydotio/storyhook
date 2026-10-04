@@ -729,6 +729,27 @@ processes have exited. Performance acceptance remains open: diagnose and repair
 the adopted causes with regressions, then refresh both snapshots and complete
 the successful warm-up and two comparable pairs.
 
+**V8 prerequisite repairs, 2026-10-04 UTC.** All six retained observations
+have reproduced causes and focused repairs:
+
+| Origin | Repair and evidence |
+|---|---|
+| Shared clock acquisition | The two-second lead could expire during transport. Public `setFixedTime`, `pauseAt`, then `setSystemTime` acquire the pause without a future-time race. Cleanup resumes after acquisition or body failure. Three latency/failure controls were RED; all 39 selected clock/card/dispatch cases pass. |
+| Continuation fixture routes | Routes survived deletion of their subject and rejected the cleanup-triggered data read. Both engines reproduced that boundary. A `finally` now drains/removes routes before deletion; board readiness precedes the resolved-chip absence check. Both engines pass deletion plus reload. |
+| Mutation timeout stimulus | A global 300 ms deadline also timed out preferences. Only the named native XHR POST now gets that stimulus; the real write, response delay, native timeout and refetch proof remain. Both new deadline controls reproduced the stub failure. Four cases pass; the two existing measured WebKit skips remain. |
+| Blocker dwell observation | Both trace failures precede cancellation. The test now controls the dwell clock around the real close and SSE update. Both engines fail when a reader delay exceeds the unowned lifetime, then pass with clock ownership and explicit expiry. Color, count and 13px size assertions remain. |
+| Whole-test grace | Logs show the watchdog granted 448004 ms at elapsed 451996 ms. Playwright counts elapsed time against a total timeout, so the remaining-time grant expired near half the 900-second cap. Total grants now include elapsed time; an independent owner timer enforces the cap across fixture slots. The exact arithmetic and native-slot controls were RED. All 12 controls, both 128-context sweeps and all 16 Rust audits pass. |
+
+Strict TypeScript, scoped warning-denied Clippy, formatting and diff checks
+pass. The formatter's two tuple-access spacing changes in the existing browser
+coverage target are a separate format-only commit. No product lifetime or
+coverage rule changed. The original clock validation attempt suffered an
+owned output-directory collision and is excluded; the clean repeat is
+`/tmp/sh812-freeze-green2.log`. Other focused evidence uses
+`/tmp/sh812-{continuation,mutation,dwell,budget}-*.log`. All five behavior fixes
+have separate commits. Performance acceptance still requires the matched
+successful comparison; these focused results are not timing evidence.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The
