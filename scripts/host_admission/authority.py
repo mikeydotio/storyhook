@@ -100,7 +100,9 @@ class Authority(Ledger):
             children = [r for r in state["leases"].values() if r["parent"] == parent and r["state"] in HELD]
             if any(amount[k] + sum(r["resources"][k] for r in children) > row["resources"][k] for k in amount):
                 raise Refusal("subgrant exceeds parent partition; cannot wait for an upgrade")
-            child = dict(copy.deepcopy(row), id=identity, parent=parent, resources=amount,
+            # Inherit provenance, never the parent's observations or lifecycle state.
+            child = dict({k: copy.deepcopy(row[k]) for k in ("project", "work", "request", "binding")},
+                         id=identity, parent=parent, resources=amount, reason=None,
                          owner=copy.deepcopy(owner),
                          token=secrets.token_hex(32), executions=[], state="reserved",
                          queued_at=state["now"], granted_at=state["now"])

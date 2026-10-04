@@ -150,6 +150,17 @@ class AccountingTests(Fixture):
         self.assertTrue(self.a.finish("parent", parent["token"]))
         self.assertEqual(self.a.status()["allocated"]["cpu"], 0)
 
+    def test_subgrant_observations_belong_only_to_that_partition(self):
+        parent = self.request("parent", 6, 600)
+        self.a.usage("parent", parent["token"], dict(cpu=5, memory=500))
+        child = self.a.subgrant("parent", parent["token"], "child", dict(cpu=4, memory=400))
+        self.assertIsNone(child.get("peaks"))
+        self.a.usage("child", child["token"], dict(cpu=None, memory=100))
+        self.assertEqual(self.lease("child")["peaks"], dict(cpu=None, memory=100))
+        grandchild = self.a.subgrant("child", child["token"], "grandchild", dict(cpu=2, memory=200))
+        self.assertIsNone(grandchild.get("peaks"))
+        self.assertEqual(self.lease("parent")["peaks"], dict(cpu=5, memory=500))
+
     def test_nested_root_upgrade_is_refused_without_waiting(self):
         parent = self.request("p")
         with self.assertRaisesRegex(Refusal, "subgrant"):
