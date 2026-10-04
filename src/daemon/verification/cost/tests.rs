@@ -3,6 +3,9 @@ use crate::service::NewStoryInput;
 use crate::store::SqliteStore;
 use storyhook_test_support::{ServiceFixture, load_grace};
 
+#[path = "diagnosis_tests.rs"]
+mod diagnosis;
+
 struct Board {
     _fixture: ServiceFixture,
     store: SqliteStore,
@@ -190,7 +193,7 @@ assert open(journal, 'rb').read() == original, 'sampler wrote a progress heartbe
 with open(journal, 'a') as output:
     output.write(json.dumps({'kind':'case','outcome':'fail','path':'unit','name':'parser::literal "é"','target':'parser'}) + '\n')
 "#;
-        execute(&board.store, &board.env, &guard, &board.candidate, GateInputs::default(), vec![submission(&board.candidate)], || {
+        execute(&board.store, &board.env, &guard, &board.candidate, GateExecutionPurpose::Gate, GateInputs::default(), vec![submission(&board.candidate)], |_| {
             board.age(&guard.active.attempt_id, 900);
             let patience = load_grace::graced_now(Duration::from_secs(30)).as_secs_f64().to_string();
             let output = Command::new("python3").arg("-c").arg(script)
@@ -292,9 +295,10 @@ fn production_shell_supervision_preserves_cost_binding_context_and_red_verdict()
                 &board.env,
                 &guard,
                 &board.candidate,
+                GateExecutionPurpose::Gate,
                 GateInputs::default(),
                 vec![submission(&board.candidate)],
-                || actuator.verify(&board.candidate, &link),
+                |_| actuator.verify(&board.candidate, &link),
                 |outcome| Ok(Some(outcome.clone())),
             )?;
             assert!(
@@ -355,12 +359,13 @@ fn retry_links_prior_admission_without_erasing_cost_or_reusing_execution_identit
                         &board.env,
                         &guard,
                         &board.candidate,
+                        GateExecutionPurpose::Gate,
                         GateInputs {
                             tree: Some(tree.repeat(40)),
                             ..Default::default()
                         },
                         vec![submission(&board.candidate)],
-                        || VerificationOutcome::Cancelled,
+                        |_| VerificationOutcome::Cancelled,
                         |outcome| Ok(Some(outcome.clone())),
                     )?;
                 }
@@ -588,9 +593,10 @@ fn completed_certification_and_process_budget_failure_are_independent() {
                 &board.env,
                 &guard,
                 &board.candidate,
+                GateExecutionPurpose::Gate,
                 GateInputs::default(),
                 vec![submission(&board.candidate)],
-                || certified.clone(),
+                |_| certified.clone(),
                 |outcome| Ok(Some(outcome.clone())),
             )?;
             assert_eq!(outcome, certified);

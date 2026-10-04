@@ -18,12 +18,21 @@ pub struct SubmissionCost {
     pub queue_milliseconds: Option<u64>,
     /// Sum of admission elapsed observations, not CPU time or submission wall time.
     pub admission_milliseconds: Option<u64>,
-    /// Total physical gate time; unknown if any physical execution is incomplete.
+    /// Total physical gate time; unknown if any gate execution is incomplete.
     pub execution_milliseconds: Option<u64>,
-    /// Sum of the completed physical execution durations that are known.
+    /// Sum of the completed physical gate durations that are known.
     pub known_execution_milliseconds: Option<u64>,
-    /// Unique physical executions represented by this submission.
+    /// Unique physical gate executions represented by this submission.
     pub executions: usize,
+    /// Diagnostic preparation and probe time; unknown if an execution is incomplete.
+    #[serde(default)]
+    pub diagnosis_milliseconds: Option<u64>,
+    /// Sum of the completed diagnostic durations that are known.
+    #[serde(default)]
+    pub known_diagnosis_milliseconds: Option<u64>,
+    /// Unique diagnostic preparation and probe executions, separate from gates.
+    #[serde(default)]
+    pub diagnosis_executions: usize,
     /// Admission identities with sticky process-budget breaches.
     pub breaches: Vec<String>,
     /// Wall and queue intervals use UTC boundaries and are estimates.
@@ -127,10 +136,11 @@ impl EvidenceView {
         for submission in &self.submissions {
             let number =
                 |value: Option<u64>| value.map_or_else(|| "unknown".into(), |n| n.to_string());
-            output.push_str(&format!("\nGeneration {}: wall {} ms (UTC estimate), queue {} ms, admission cost {} ms, physical gate cost {} ms; {} breach(es). Observed through {}.\n",
+            output.push_str(&format!("\nGeneration {}: wall {} ms (UTC estimate), queue {} ms, admission cost {} ms, physical gate cost {} ms, diagnosis cost {} ms; {} breach(es). Observed through {}.\n",
                 submission.submission.generation.map_or_else(|| "unknown".into(), |g| g.get().to_string()),
                 number(submission.wall_milliseconds), number(submission.queue_milliseconds),
                 number(submission.admission_milliseconds), number(submission.execution_milliseconds),
+                number(submission.diagnosis_milliseconds),
                 submission.breaches.len(), submission.observed_through.as_deref().unwrap_or("unknown")));
         }
         if self.attempts.is_empty() {
@@ -187,10 +197,19 @@ fn summarize(submission: GateSubmission, all: &[GateAttempt]) -> SubmissionCost 
         })
         .filter(|e| seen.insert(&e.id))
         .collect();
-    let execution_milliseconds = executions
+    let (gates, diagnoses): (Vec<_>, Vec<_>) =
+        executions.into_iter().partition(|e| e.purpose.is_gate());
+    let execution_milliseconds = gates
         .iter()
         .try_fold(0_u64, |sum, e| sum.checked_add(e.milliseconds?));
-    let known_execution_milliseconds = executions
+    let known_execution_milliseconds = gates
+        .iter()
+        .filter_map(|e| e.milliseconds)
+        .try_fold(0_u64, u64::checked_add);
+    let diagnosis_milliseconds = diagnoses
+        .iter()
+        .try_fold(0_u64, |sum, e| sum.checked_add(e.milliseconds?));
+    let known_diagnosis_milliseconds = diagnoses
         .iter()
         .filter_map(|e| e.milliseconds)
         .try_fold(0_u64, u64::checked_add);
@@ -203,7 +222,10 @@ fn summarize(submission: GateSubmission, all: &[GateAttempt]) -> SubmissionCost 
         admission_milliseconds,
         execution_milliseconds,
         known_execution_milliseconds,
-        executions: executions.len(),
+        executions: gates.len(),
+        diagnosis_milliseconds,
+        known_diagnosis_milliseconds,
+        diagnosis_executions: diagnoses.len(),
         breaches: attempts
             .iter()
             .filter(|a| a.elapsed.breached_at.is_some())

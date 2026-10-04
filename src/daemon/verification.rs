@@ -2648,9 +2648,10 @@ where
                         env,
                         &active,
                         &candidate,
+                        crate::store::GateExecutionPurpose::Gate,
                         crate::store::GateInputs::default(),
                         vec![cost::submission(&candidate)],
-                        || {
+                        |_| {
                             observation::verify(
                                 store,
                                 bus,

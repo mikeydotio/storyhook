@@ -353,6 +353,16 @@ operation or unproved cleanup prevents another launch, including from a later
 attempt. Settle preparation before reserving a probe in a separate transaction;
 the completion cannot supply both a new reservation and its claimed result.
 Legacy records without preparation remain readable observations.
+
+Each SH-867 physical execution carries an immutable purpose: ordinary gate,
+diagnosis preparation, or a bound attribution/probe pair. Missing legacy purpose
+means ordinary gate. Diagnostic starts persist before the callback receives its
+execution identity and separately owned journal. Diagnostic completion and
+interrupted-diagnosis restart preserve the original gate result and journal.
+Diagnostic outcomes cannot report certification. Evidence and progress expose
+diagnostic time separately from physical gate time; admission elapsed time still
+includes all owned work. An incomplete diagnostic has unknown total cost, with
+its completed lower bound retained. Purpose and cost remain observations only.
 SH-868 and SH-869 retain resource authority and runner integration; missing
 supported resource evidence cannot be replaced by matching worker counts.
 

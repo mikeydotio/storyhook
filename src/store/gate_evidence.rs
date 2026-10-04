@@ -133,11 +133,52 @@ impl GateInputs {
     }
 }
 
-/// One physical gate within an admission, with its own immutable tree identity.
+/// Immutable reason for a physical execution. This is observation metadata, not authority.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum GateExecutionPurpose {
+    /// An ordinary gate or bisection execution under existing verifier authority.
+    #[default]
+    Gate,
+    /// Owned setup for a diagnosis, separate from its bounded test probes.
+    DiagnosisPreparation {
+        /// Attribution record that owns preparation.
+        attribution: String,
+    },
+    /// One reserved diagnostic probe, which cannot certify a tree.
+    Diagnosis {
+        /// Attribution record that owns the probe.
+        attribution: String,
+        /// Durable probe reservation within that record.
+        probe: String,
+    },
+}
+
+impl GateExecutionPurpose {
+    /// Whether this execution contributes to ordinary physical gate cost.
+    pub fn is_gate(&self) -> bool {
+        matches!(self, Self::Gate)
+    }
+
+    fn valid(&self) -> bool {
+        match self {
+            Self::Gate => true,
+            Self::DiagnosisPreparation { attribution } => !attribution.trim().is_empty(),
+            Self::Diagnosis { attribution, probe } => {
+                !attribution.trim().is_empty() && !probe.trim().is_empty()
+            }
+        }
+    }
+}
+
+/// One physical execution within an admission, with its own immutable tree identity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateExecution {
     /// Unique physical execution token; never reused by a bisection probe.
     pub id: String,
+    /// Gate or diagnostic operation; missing legacy values mean ordinary gate.
+    #[serde(default, skip_serializing_if = "GateExecutionPurpose::is_gate")]
+    pub purpose: GateExecutionPurpose,
     /// UTC time before calling the actuator.
     pub started_at: String,
     /// UTC return after supervision and cleanup, absent if interrupted.
@@ -178,6 +219,7 @@ impl GateExecution {
     pub fn new(id: String, at: &str, journal_path: String) -> Self {
         Self {
             id,
+            purpose: GateExecutionPurpose::Gate,
             started_at: at.into(),
             finished_at: None,
             milliseconds: None,
@@ -203,6 +245,7 @@ impl GateExecution {
             return self == next;
         }
         self.id == next.id
+            && self.purpose == next.purpose
             && self.started_at == next.started_at
             && self.submissions == next.submissions
             && self.inputs.preserved_by(&next.inputs)
@@ -331,6 +374,7 @@ impl GateAttempt {
             super::gate_resources::ordered(&execution.resource_events)
                 .map_err(StoreError::Validation)?;
             if execution.id.is_empty()
+                || !execution.purpose.valid()
                 || !ids.insert(&execution.id)
                 || chrono::DateTime::parse_from_rfc3339(&execution.started_at).is_err()
                 || execution

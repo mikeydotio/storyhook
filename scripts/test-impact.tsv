@@ -118,6 +118,9 @@ fixture_isolation	:(glob)**/*
 gate_completion	:(glob)**/*
 gate_cost_producers	:(glob)scripts/**
 gate_cost_producers	e2e/gate-progress-reporter.ts
+gate_diagnosis_cost	:(glob)src/service/gate_cost/**
+gate_diagnosis_cost	:(glob)src/store/**
+gate_diagnosis_cost	src/service/gate_cost.rs
 gate_evidence	:(glob)src/service/gate_cost/**
 gate_evidence	:(glob)src/store/**
 gate_evidence	src/service/gate_cost.rs

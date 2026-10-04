@@ -90,7 +90,8 @@ pub mod test_support;
 pub mod types;
 pub mod verification_batch;
 pub use gate_evidence::{
-    GateAttempt, GateExecution, GateFailedCase, GateInputs, GateInterval, GateLeg, GateSubmission,
+    GateAttempt, GateExecution, GateExecutionPurpose, GateFailedCase, GateInputs, GateInterval,
+    GateLeg, GateSubmission,
 };
 
 use std::collections::BTreeMap;
