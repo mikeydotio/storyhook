@@ -1,6 +1,6 @@
 //! Durable, non-authoritative evidence for admitted verifier attempts.
 
-use super::{GlobalSeq, ProjectId, StoreError};
+use super::{GlobalSeq, ProjectId, StoreError, StoryNo};
 use crate::service::gate_cost::Elapsed;
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,38 @@ pub struct GateSubmission {
     pub generation: Option<GlobalSeq>,
     /// Original queue-entry time, never replaced by retry admission.
     pub submitted_at: Option<String>,
+}
+
+impl GateSubmission {
+    /// Stable story number from the canonical ID retained when evidence was recorded.
+    /// The project key, not a historical prefix, determines the owning project.
+    pub fn story_number(&self) -> Option<StoryNo> {
+        recorded_number(&self.story_id)
+    }
+
+    /// Associates history with a story across prefix changes, within its owning project.
+    pub fn matches_story(&self, project: ProjectId, story_id: &str) -> bool {
+        self.project == project
+            && self
+                .story_number()
+                .is_some_and(|number| Some(number) == recorded_number(story_id))
+    }
+
+    /// Associates a submission across renames without weakening immutable payload equality.
+    /// Legacy evidence without a generation also needs the same queue-entry timestamp.
+    pub fn same_generation(&self, other: &Self) -> bool {
+        self.matches_story(other.project, &other.story_id)
+            && self.generation == other.generation
+            && (self.generation.is_some() || self.submitted_at == other.submitted_at)
+    }
+}
+
+fn recorded_number(id: &str) -> Option<StoryNo> {
+    let (prefix, _) = id.rsplit_once('-')?;
+    if crate::domain::prefix::validate(prefix).ok()? != prefix {
+        return None;
+    }
+    StoryNo::parse_id(prefix, id).ok()
 }
 
 /// A measured producer interval; a missing end is not zero work.

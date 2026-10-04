@@ -297,6 +297,13 @@ plans and completed results immutable. Later assessments append evidence;
 they do not replace the original failure or an earlier uncertain diagnosis.
 Record updates use a transaction and compare-and-swap revision.
 
+Associate retained evidence by project key, canonical story number and
+verification generation. A project prefix rename changes the current display
+ID, not a hold, allowance or cost history. Keep the original IDs in immutable
+payloads. Live status and next-action commands use the current prefix. Legacy
+cost rows without a generation also require the same queue-entry timestamp
+when grouping their history.
+
 | Cause | Submission effect |
 |---|---|
 | Candidate-caused | Return only the proved components and their reproductions |

@@ -632,8 +632,11 @@ fn publish_project(
             }
             rendered
         };
-        let cost_view =
-            crate::service::gate_cost::view::EvidenceView::new(&candidate.story_id, costs.clone());
+        let cost_view = crate::service::gate_cost::view::EvidenceView::new(
+            candidate.project,
+            &candidate.story_id,
+            costs.clone(),
+        );
         if let Some(summary) =
             crate::service::gate_cost::current::progress(&cost_view, candidate.verifying_generation)
         {

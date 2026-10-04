@@ -8,6 +8,59 @@ use storyhook::store::{
 
 const AT: &str = "2026-10-03T00:00:00Z";
 
+#[test]
+fn retained_submission_identity_is_canonical_project_scoped_and_not_payload_equality() {
+    use storyhook::service::gate_cost::view::EvidenceView;
+    use storyhook::store::ProjectId;
+    let original = GateSubmission {
+        project: ProjectId::new(1),
+        story_id: "GC-1".into(),
+        generation: Some(GlobalSeq::new(7)),
+        submitted_at: Some(AT.into()),
+    };
+    let mut renamed = original.clone();
+    renamed.story_id = "NEW2-1".into();
+    assert!(original.same_generation(&renamed));
+    assert_ne!(
+        original, renamed,
+        "immutable payload equality still includes the recorded ID"
+    );
+    for (project, id) in [
+        (2, "GC-1"),
+        (1, "GC-2"),
+        (1, "gc-1"),
+        (1, "GC-01"),
+        (1, "GC-0"),
+        (1, "-1"),
+        (1, "BAD-PREFIX-1"),
+    ] {
+        assert!(
+            !original.matches_story(ProjectId::new(project), id),
+            "{project}: {id}"
+        );
+    }
+    let mut foreign = original.clone();
+    foreign.project = ProjectId::new(2);
+    let view = EvidenceView::new(
+        original.project,
+        "NEW2-1",
+        vec![
+            GateAttempt::new("ours".into(), original.clone(), AT),
+            GateAttempt::new("foreign".into(), foreign, AT),
+        ],
+    );
+    assert_eq!(view.attempts.len(), 1);
+    assert_eq!(view.attempts[0].id, "ours");
+    renamed.generation = Some(GlobalSeq::new(8));
+    assert!(!original.same_generation(&renamed));
+    let mut legacy = original;
+    legacy.generation = None;
+    renamed.generation = None;
+    assert!(legacy.same_generation(&renamed));
+    renamed.submitted_at = None;
+    assert!(!legacy.same_generation(&renamed));
+}
+
 fn execution(id: &str, tree: &str) -> GateExecution {
     let mut execution = GateExecution::new(id.into(), AT, format!("/tmp/{id}.ndjson"));
     execution.inputs = GateInputs {

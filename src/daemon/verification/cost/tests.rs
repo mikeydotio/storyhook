@@ -86,6 +86,32 @@ fn admission_is_durable_before_preparation_and_breach_does_not_cancel() {
 }
 
 #[test]
+fn prefix_rename_preserves_the_previous_admission_and_retry_queue_boundary() {
+    let mut board = Board::new();
+    drop(board.admit());
+    sample(&board.store, &board.activity, board.candidate.project).unwrap();
+    let first = board.rows().remove(0);
+    crate::service::ProjectService::new(&board.store, board._fixture.cwd())
+        .set_prefix(
+            board.candidate.project,
+            "NW",
+            &board.env.maintenance_backups_dir(),
+        )
+        .unwrap();
+    board.candidate = VerificationQueue::new(&board.store)
+        .next()
+        .unwrap()
+        .unwrap();
+    let _guard = board.admit();
+    let rows = board.rows();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].previous_attempt.as_deref(), Some(first.id.as_str()));
+    assert_eq!(rows[1].intervals[0].started_at, first.finished_at);
+    assert_eq!(rows[0], first);
+    assert_eq!(rows[1].submission.story_id, "NW-1");
+}
+
+#[test]
 fn status_and_progress_report_cost_without_refreshing_silence_or_repeating_breach_notice() {
     let board = Board::new();
     let guard = board.admit();

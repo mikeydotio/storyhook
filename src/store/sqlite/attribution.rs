@@ -97,10 +97,10 @@ fn check_reservation(
     let records = list(conn, next.submission.project)?;
     let mut starts = 0usize;
     let mut milliseconds = 0u64;
-    for record in records.iter().filter(|r| {
-        r.submission.story_id == next.submission.story_id
-            && r.submission.generation == next.submission.generation
-    }) {
+    for record in records
+        .iter()
+        .filter(|r| r.submission.same_generation(&next.submission))
+    {
         starts = starts
             .checked_add(record.probes.len())
             .ok_or_else(|| refused("probe count overflow"))?;

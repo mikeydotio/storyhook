@@ -1075,8 +1075,12 @@ fn dispatch_verifier<S: Store>(
                 ))
             })?;
             return Ok(Response::GateEvidence(Box::new(
-                crate::service::gate_cost::view::EvidenceView::new(story_id, attempts)
-                    .with_attributions(attributions),
+                crate::service::gate_cost::view::EvidenceView::new(
+                    ctx.project(),
+                    story_id,
+                    attempts,
+                )
+                .with_attributions(ctx.project(), attributions),
             )));
         }
         VerifierAction::RepairShow { recovery_id } => {

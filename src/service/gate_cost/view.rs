@@ -1,5 +1,5 @@
 //! Read-only cost history. Shared physical work is never divided by members.
-use crate::store::{GateAttempt, GateSubmission};
+use crate::store::{GateAttempt, GateSubmission, ProjectId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -48,24 +48,28 @@ pub struct EvidenceView {
 
 impl EvidenceView {
     /// Selects a story's history without dividing or duplicating shared costs.
-    pub fn new(story_id: &str, attempts: Vec<GateAttempt>) -> Self {
+    pub fn new(project: ProjectId, story_id: &str, attempts: Vec<GateAttempt>) -> Self {
         let mut seen = BTreeSet::new();
         let attempts: Vec<_> = attempts
             .into_iter()
             .filter(|a| {
-                let involved = a.submission.story_id == story_id
-                    || a.executions
-                        .iter()
-                        .any(|e| e.submissions.iter().any(|s| s.story_id == story_id));
+                let involved = a.submission.matches_story(project, story_id)
+                    || a.executions.iter().any(|e| {
+                        e.submissions
+                            .iter()
+                            .any(|s| s.matches_story(project, story_id))
+                    });
                 involved && seen.insert(a.id.clone())
             })
             .collect();
-        let mut identities = Vec::new();
+        let mut identities: Vec<GateSubmission> = Vec::new();
         for attempt in &attempts {
             for identity in std::iter::once(&attempt.submission)
                 .chain(attempt.executions.iter().flat_map(|e| &e.submissions))
             {
-                if identity.story_id == story_id && !identities.contains(identity) {
+                if identity.matches_story(project, story_id)
+                    && !identities.iter().any(|s| s.same_generation(identity))
+                {
                     identities.push(identity.clone());
                 }
             }
@@ -86,11 +90,12 @@ impl EvidenceView {
     /// Attach this story's causal history from the same project snapshot as its costs.
     pub fn with_attributions(
         mut self,
+        project: ProjectId,
         records: Vec<crate::service::attribution::AttributionRecord>,
     ) -> Self {
         self.attributions = records
             .into_iter()
-            .filter(|r| r.submission.story_id == self.story_id)
+            .filter(|r| r.submission.matches_story(project, &self.story_id))
             .collect();
         self
     }
@@ -142,10 +147,10 @@ fn summarize(submission: GateSubmission, all: &[GateAttempt]) -> SubmissionCost 
     let attempts: Vec<_> = all
         .iter()
         .filter(|a| {
-            a.submission == submission
+            a.submission.same_generation(&submission)
                 || a.executions
                     .iter()
-                    .any(|e| e.submissions.contains(&submission))
+                    .any(|e| e.submissions.iter().any(|s| s.same_generation(&submission)))
         })
         .collect();
     let observed_through = attempts
@@ -176,8 +181,8 @@ fn summarize(submission: GateSubmission, all: &[GateAttempt]) -> SubmissionCost 
         .iter()
         .flat_map(|a| {
             a.executions.iter().filter(|e| {
-                e.submissions.contains(&submission)
-                    || (e.submissions.is_empty() && a.submission == submission)
+                e.submissions.iter().any(|s| s.same_generation(&submission))
+                    || (e.submissions.is_empty() && a.submission.same_generation(&submission))
             })
         })
         .filter(|e| seen.insert(&e.id))
@@ -234,7 +239,7 @@ mod tests {
         let a = attempt("a", "2026-10-03T00:01:00Z", "2026-10-03T00:16:00Z", 900_000);
         let mut b = attempt("b", "2026-10-03T00:20:00Z", "2026-10-03T00:21:00Z", 60_000);
         b.verdict = Some("certified".into());
-        let view = EvidenceView::new("SH-1", vec![a.clone(), a, b]);
+        let view = EvidenceView::new(ProjectId::new(1), "SH-1", vec![a.clone(), a, b]);
         assert_eq!(view.attempts.len(), 2);
         let cost = &view.submissions[0];
         assert_eq!(cost.wall_milliseconds, Some(1_260_000));
@@ -254,13 +259,13 @@ mod tests {
         gate.milliseconds = Some(900_000);
         a.executions.push(gate.clone());
         for story in ["SH-1", "SH-2"] {
-            let view = EvidenceView::new(story, vec![a.clone()]);
+            let view = EvidenceView::new(ProjectId::new(1), story, vec![a.clone()]);
             assert_eq!(view.submissions[0].execution_milliseconds, Some(900_000));
         }
         gate.id = "unfinished".into();
         gate.milliseconds = None;
         a.executions.push(gate);
-        let view = EvidenceView::new("SH-2", vec![a]);
+        let view = EvidenceView::new(ProjectId::new(1), "SH-2", vec![a]);
         assert_eq!(view.submissions[0].execution_milliseconds, None);
         assert_eq!(
             view.submissions[0].known_execution_milliseconds,

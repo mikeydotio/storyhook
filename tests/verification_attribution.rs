@@ -306,6 +306,47 @@ fn interrupted_reservations_prevent_another_attempt_from_spending_the_allowance(
 }
 
 #[test]
+fn prefix_rename_cannot_refund_starts_time_or_unsettled_execution() {
+    use storyhook::service::ProjectService;
+    for limit in ["starts", "time", "unsettled"] {
+        let (root, store) = new_store();
+        let project = seed_project(&store, "causal", "CA");
+        let other = seed_project(&store, "other", "OT");
+        let mut first = record(project);
+        store.write(|tx| tx.insert_attribution(&first)).unwrap();
+        for index in 0..if limit == "starts" { 8 } else { 1 } {
+            reserve(&mut first, index);
+            save(&store, &first);
+            if limit != "unsettled" {
+                complete(&mut first, if limit == "time" { 300_000 } else { 1 });
+                save(&store, &first);
+            }
+        }
+        ProjectService::new(&store, root.path())
+            .set_prefix(project, "NW", &root.path().join("backups"))
+            .unwrap();
+        drop(store);
+        let store = SqliteStore::open(root.path().join("store.db")).unwrap();
+        assert_eq!(store.read(|tx| tx.attributions(project)).unwrap(), [first]);
+        for (name, owner, id, generation, refused) in [
+            ("same", project, "NW-1", 7, true),
+            ("other-story", project, "NW-2", 7, false),
+            ("other-project", other, "OT-1", 7, false),
+            ("new-submission", project, "NW-1", 8, false),
+        ] {
+            let mut retry = record(owner);
+            retry.id = name.into();
+            retry.submission.story_id = id.into();
+            retry.submission.generation = Some(GlobalSeq::new(generation));
+            store.write(|tx| tx.insert_attribution(&retry)).unwrap();
+            reserve(&mut retry, 0);
+            let result = store.write(|tx| tx.update_attribution(&retry, 0));
+            assert_eq!(result.is_err(), refused, "{limit}: {name}: {result:?}");
+        }
+    }
+}
+
+#[test]
 fn assessments_must_describe_evidence_already_complete_at_the_named_revision() {
     use storyhook::service::attribution::AttributionAssessment;
     let (_root, store) = new_store();

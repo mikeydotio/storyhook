@@ -146,3 +146,77 @@ fn held_status_counts_the_allowance_across_retired_attempts() {
         "diagnosis allowance exhausted"
     );
 }
+
+#[test]
+fn prefix_rename_keeps_the_hold_and_current_status_without_rewriting_evidence() {
+    let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
+    submitted(&fixture, "held across rename", Priority::High, PR_ONE);
+    let actuator = FakeActuator::new(VerificationOutcome::InvalidSubmission {
+        detail: "unknown input".into(),
+    });
+    tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap();
+    let mut first = fixture
+        .store()
+        .read(|tx| tx.attributions(fixture.project()))
+        .unwrap()
+        .remove(0);
+    first.revision = 1;
+    first.diagnosis_ms = storyhook::service::attribution::MAX_DIAGNOSIS_MS;
+    fixture
+        .store()
+        .write(|tx| tx.update_attribution(&first, 0))
+        .unwrap();
+    storyhook::service::ProjectService::new(fixture.store(), fixture.cwd())
+        .set_prefix(
+            fixture.project(),
+            "NW",
+            &fixture.env().maintenance_backups_dir(),
+        )
+        .unwrap();
+    let reopened = SqliteStore::open(fixture.store().path()).unwrap();
+    assert!(VerificationQueue::new(&reopened).next().unwrap().is_none());
+    let ctx = Ctx::new(
+        &reopened,
+        fixture.project(),
+        fixture.cwd().to_path_buf(),
+        fixture.env().clone(),
+    )
+    .no_hooks(true);
+    let status = VerificationActivity::new().status(&ctx).unwrap();
+    assert!(status.render_human().contains("NW-1"));
+    assert!(status.render_human().contains(&first.id));
+    let json = serde_json::to_value(status).unwrap();
+    assert_eq!(json["attribution_holds"][0]["story_id"], "NW-1");
+    assert_eq!(
+        json["attribution_holds"][0]["diagnosis"],
+        "diagnosis allowance exhausted"
+    );
+    assert!(
+        json["attribution_holds"][0]["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("NW-1")
+    );
+    let answer = storyhook::invoke::dispatch(
+        &ctx,
+        storyhook::cli::Invocation::Verifier {
+            action: storyhook::cli::VerifierAction::Evidence {
+                story_id: "NW-1".into(),
+            },
+        },
+    )
+    .unwrap();
+    let storyhook::output::Response::GateEvidence(view) = answer else {
+        panic!("expected evidence")
+    };
+    assert_eq!(view.attributions, [first.clone()]);
+    assert_eq!(view.attempts[0].submission.story_id, "SH-1");
+    assert_eq!(
+        reopened
+            .read(|tx| tx.attributions(fixture.project()))
+            .unwrap(),
+        [first]
+    );
+    assert!(actuator.notified.lock().unwrap().is_empty());
+}

@@ -47,9 +47,12 @@ pub(super) fn admission(
         .gate_attempts(candidate.project)?
         .into_iter()
         .rev()
-        .find(|old| old.submission.story_id == candidate.story_id);
+        .find(|old| {
+            old.submission
+                .matches_story(candidate.project, &candidate.story_id)
+        });
     let queue_start = match &previous {
-        Some(old) if old.submission == record.submission => old.finished_at.clone(),
+        Some(old) if old.submission.same_generation(&record.submission) => old.finished_at.clone(),
         _ => candidate.verifying_since.clone(),
     };
     record.intervals.push(GateInterval {

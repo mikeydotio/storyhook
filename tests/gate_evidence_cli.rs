@@ -148,3 +148,66 @@ fn legacy_evidence_without_attribution_means_no_retained_diagnosis() {
     );
     assert!(view.render().contains("No retained attribution evidence"));
 }
+
+#[test]
+fn prefix_rename_keeps_cost_history_and_groups_the_original_generation() {
+    use storyhook::service::ProjectService;
+    use storyhook::store::ReadOps;
+    let fixture = ServiceFixture::new();
+    let at = "2026-10-03T00:00:00Z";
+    let mut first = GateAttempt::new(
+        "before-rename".into(),
+        GateSubmission {
+            project: fixture.project(),
+            story_id: "SH-1".into(),
+            generation: Some(GlobalSeq::new(1)),
+            submitted_at: Some(at.into()),
+        },
+        at,
+    );
+    first.elapsed.observe(10, at);
+    fixture
+        .store()
+        .write(|tx| tx.insert_gate_attempt(&first))
+        .unwrap();
+    ProjectService::new(fixture.store(), fixture.cwd())
+        .set_prefix(
+            fixture.project(),
+            "NW",
+            &fixture.env().maintenance_backups_dir(),
+        )
+        .unwrap();
+    let mut second = first.clone();
+    second.id = "after-rename".into();
+    second.submission.story_id = "NW-1".into();
+    fixture
+        .store()
+        .write(|tx| tx.insert_gate_attempt(&second))
+        .unwrap();
+    let answer = dispatch(
+        &fixture.ctx(),
+        Invocation::Verifier {
+            action: VerifierAction::Evidence {
+                story_id: "NW-1".into(),
+            },
+        },
+    )
+    .unwrap();
+    let Response::GateEvidence(view) = answer else {
+        panic!("expected evidence")
+    };
+    assert_eq!(view.attempts, [first.clone(), second.clone()]);
+    assert_eq!(view.submissions.len(), 1);
+    assert_eq!(view.submissions[0].admission_milliseconds, Some(20));
+    assert_eq!(
+        view.submissions[0].attempts,
+        ["before-rename", "after-rename"]
+    );
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.gate_attempts(fixture.project()))
+            .unwrap(),
+        [first, second]
+    );
+}

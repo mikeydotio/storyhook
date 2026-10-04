@@ -32,7 +32,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                 return Ok(GenerationWrite::Superseded);
             }
             let attempts = tx.gate_attempts(project)?;
-            let attempt = attempts.iter().rev().find(|a| a.submission.story_id == candidate.story_id);
+            let attempt = attempts.iter().rev().find(|a| a.submission.matches_story(project, &candidate.story_id));
             // Legacy submissions may be held, but the probe store still requires an exact generation.
             let Some(attempt) = attempt.filter(|a| a.id == attempt_id
                 && a.submission.generation == candidate.verifying_generation
