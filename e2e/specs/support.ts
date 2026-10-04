@@ -969,30 +969,6 @@ export async function focusMenuItemByLabel(
 }
 
 /**
- * How far ahead of the page's own clock {@link freezeClock} aims.
- *
- * A lead is not a choice, it is forced by the API: `clock.pauseAt` is a
- * jump-then-pause primitive whose jump must be forward, and the clock keeps
- * ticking while `Date.now()` round-trips to this process — so
- * `pauseAt(pageNow)` fails with `Cannot fast-forward to the past` every time.
- * Measured, not reasoned about: it failed on all four probes of SH-318's spike
- * before the lead was added.
- *
- * The value satisfies an inequality rather than modelling anything, which is
- * why it is a bound and not a fudge factor. It must exceed one test-to-page
- * round trip (single-digit to tens of milliseconds, even loaded) and stay well
- * under the shortest interval the jump would otherwise fire — the dashboard's
- * 15s SSE watchdog, and far below its 50s staleness threshold. Two orders of
- * magnitude of headroom at each end. The only timer this jump does fire is the
- * 1s footer tick, once.
- *
- * Nothing asserts on it. A caller freezes *before* the behaviour under test
- * exists, so the lead is spent on an empty page and no margin anywhere depends
- * on its value.
- */
-const FREEZE_LEAD_MS = 2000;
-
-/**
  * Pauses the page's clock, so that from here on time advances only when a test
  * says so with `page.clock.runFor()`.
  *
@@ -1000,7 +976,16 @@ const FREEZE_LEAD_MS = 2000;
  * Prefer {@link onAFrozenClock}, which cannot leave the clock paused.
  */
 async function freezeClock(page: Page): Promise<void> {
-  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + FREEZE_LEAD_MS);
+  const time = await page.evaluate(() => Date.now());
+  // A future lead still races transport latency. Pin Date first: pauseAt's
+  // target cannot become past, while monotonic timer deadlines remain intact.
+  await page.clock.setFixedTime(time);
+  try {
+    await page.clock.pauseAt(time);
+  } finally {
+    // runFor must advance Date as well as timers inside the frozen body.
+    await page.clock.setSystemTime(time);
+  }
 }
 
 /**
@@ -1030,8 +1015,8 @@ export async function onAFrozenClock(
   page: Page,
   body: () => Promise<void>,
 ): Promise<void> {
-  await freezeClock(page);
   try {
+    await freezeClock(page);
     await body();
   } finally {
     await page.clock.resume();

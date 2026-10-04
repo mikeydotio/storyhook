@@ -13,6 +13,8 @@ for (const fails of [false, true]) {
     const page = {
       clock: {
         install: async () => { installed = true; },
+        setFixedTime: async () => {},
+        setSystemTime: async () => {},
         pauseAt: async () => { paused = true; },
         resume: async () => { paused = false; },
       },
