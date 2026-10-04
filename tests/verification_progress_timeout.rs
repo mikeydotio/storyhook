@@ -65,6 +65,9 @@ fn exercise<T>(
     std::fs::write(tools.path().join("verify-pr.sh"), script).unwrap();
     for name in [
         "machine-lock.sh",
+        "progress_journal.py",
+        "python-runtime.sh",
+        "python-bin",
         "gate-progress.sh",
         "gate-progress-writer.py",
     ] {

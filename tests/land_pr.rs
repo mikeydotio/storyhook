@@ -59,6 +59,7 @@ impl LandRepo {
             "land-pr.sh",
             "github-access.sh",
             "machine-lock.sh",
+            "progress_journal.py",
             "merge-preflight.sh",
             "gate-receipt.sh",
             "tree-receipt.sh",

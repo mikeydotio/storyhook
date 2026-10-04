@@ -83,6 +83,22 @@ fn read_checkout_file(relative: &str) -> String {
         .unwrap_or_else(|e| panic!("{} must be readable: {e}", path.display()))
 }
 
+/// Use the shipping observer and shell door; fixture data supplies only records.
+#[test]
+fn resource_observations_do_not_renew_the_shell_watchdog() {
+    let output = Command::new("python3")
+        .args(["-B"])
+        .arg(checkout().join("scripts/tests/test_progress_journal.py"))
+        .output()
+        .expect("run resource progress regressions");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// A disposable root holding symlinks to the tracked scripts and its own lock
 /// directory. The symlink rather than a copy is the `tests/orphan_check.rs`
 /// rule: the artifact under test is the one that ships.
@@ -99,7 +115,14 @@ impl Fixture {
     fn new() -> Self {
         let root = scratch_dir();
         std::fs::create_dir_all(root.path().join("scripts")).expect("fixture: creating scripts/");
-        for script in ["machine-lock.sh", "gate-progress.sh"] {
+        for script in [
+            "machine-lock.sh",
+            "gate-progress.sh",
+            "gate-progress-writer.py",
+            "progress_journal.py",
+            "python-runtime.sh",
+            "python-bin",
+        ] {
             std::os::unix::fs::symlink(
                 checkout().join("scripts").join(script),
                 root.path().join("scripts").join(script),

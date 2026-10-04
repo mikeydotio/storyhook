@@ -306,14 +306,15 @@ impl Fixture {
             std::os::unix::fs::symlink(entry.path(), path.join("scripts").join(name))
                 .unwrap_or_else(|e| panic!("fixture: linking the tracked {name}: {e}"));
         }
-        // `run-tests.sh` reaches these non-shell observers only while running
-        // Cargo. Derive their names from the tracked callers instead of
+        // The runner and its lock reach these non-shell observers. Derive
+        // their names from the tracked callers instead of
         // extending the old hand-kept shell list with another exception.
         let mut observers = BTreeSet::new();
         let shell_observers = format!(
-            "{}\n{}",
+            "{}\n{}\n{}",
             read_checkout_file("scripts/run-tests.sh"),
-            read_checkout_file("scripts/gate-progress.sh")
+            read_checkout_file("scripts/gate-progress.sh"),
+            read_checkout_file("scripts/machine-lock.sh")
         );
         for token in shell_observers.split('"') {
             if !token.ends_with(".py") && !token.ends_with(".awk") {

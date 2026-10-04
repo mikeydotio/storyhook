@@ -96,6 +96,7 @@ fn orchestration_changes_invalidate_every_leg() {
         "scripts/gate_cost.py",
         "scripts/host-admission.py",
         "scripts/host_admission/authority.py",
+        "scripts/progress_journal.py",
         "scripts/python-runtime.sh",
         "scripts/python-bin/python3",
     ] {
