@@ -45,8 +45,8 @@ follow the workflow below.
 - Record test results and final context: `story comment {prefix}-<n> "<context>"`.
 - Move the story to Verifying: `story move {prefix}-<n> verifying`, from inside the story's worktree so the verifier can find your branch. Make this your last action.
 - Stop work. Do not push, open a PR, run `story link-pr`, merge, close the story, or remove the work lane yourself.
-- The verifier pushes the branch, opens or adopts the PR, then runs `make test` on the proposed merge.
-- If tests pass, it merges the PR and moves the story to `{done_state}`. It then removes the work lane.
+- The verifier pushes the branch, opens or adopts the PR, and runs `make test` on the proposed merge when verification is enabled. When verification is stopped, eligible submissions still publish and merge without tests. Release gates provide fallback coverage.
+- If tests pass or verification is stopped, it merges the PR and moves the story to `{done_state}`. It then removes the work lane.
 - If the story returns to In Progress, read its comments. After a failed gate they name the only other tests you may rerun. Fix it in the worktree, commit, and submit again.
 
 ## Planning
@@ -270,6 +270,7 @@ to manage tasks.
 - Commit, then make `story move <id> verifying` your last action, from inside
   the story's worktree. The verifier pushes your branch, opens the PR, and owns
   the full suite, merge, completion, and cleanup.
+- When verification is stopped, eligible submissions still publish and merge without tests. Release gates provide fallback coverage.
 - Use `story handoff --since 2h` to summarize work at session end.
 - Found a second problem while working? Prefer adopting it into the story you
   are on over filing a new one — run `story help scope-rubric` before you file.

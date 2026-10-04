@@ -102,6 +102,8 @@ use tempfile::TempDir;
 
 #[path = "support/merge_gate_wait.rs"]
 mod blocking_fixture;
+#[path = "merge_gate/stopped.rs"]
+mod stopped;
 
 /// A fetch during verification must not restore newer bytes under the old
 /// shared index when private Git administration is detached at gate exit.

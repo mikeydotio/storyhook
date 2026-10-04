@@ -34,7 +34,7 @@ Read and claim
 3. Before implementation or resumption, run story help obviation-review and
    story load-context --story <id>. Follow the procedure for every candidate.
 4. Run only the tests this story adds or changes. Leave every other test to
-   the central verifier and the release gates. Use the repository's workflow
+   the central verifier and the release gates. When verification is stopped, eligible submissions still publish and merge without tests. Release gates provide fallback coverage. Use the repository's workflow
    for commits and submission. Claiming a story does not approve a plan or
    authorize deployment.
 

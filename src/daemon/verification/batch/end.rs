@@ -531,7 +531,8 @@ pub(super) fn outcome_detail(outcome: &VerificationOutcome) -> String {
         VerificationOutcome::TestsFailed {
             detail, log, gate, ..
         } => format!("`{gate}` failed. Full log: {log}. {detail}"),
-        VerificationOutcome::Conflict { detail }
+        VerificationOutcome::Prepared { detail, .. }
+        | VerificationOutcome::Conflict { detail }
         | VerificationOutcome::InvalidSubmission { detail }
         | VerificationOutcome::InfrastructureFailure { detail, .. } => detail.clone(),
         VerificationOutcome::ProjectFault { fault } => format!("project fault: {fault:?}"),

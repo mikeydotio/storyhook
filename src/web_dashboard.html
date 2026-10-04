@@ -5388,9 +5388,12 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       return;
     }
     if (!halted) {
-      var title = mode === "stopped" ? "Central verification stopped" : mode === "stopping" ? "Central verification stopping" : mode === "draining" ? "Central verification draining" : observation.resumed ? "Central verification halt cleared" : requestState === "scheduled" ? "Central verification retry scheduled" : "Central verification needs attention";
+      var title = mode === "stopped" ? "Verification stopped — submissions continue without tests" : mode === "stopping" ? "Central verification stopping" : mode === "draining" ? "Central verification draining" : observation.resumed ? "Central verification halt cleared" : requestState === "scheduled" ? "Central verification retry scheduled" : "Central verification needs attention";
       var children = [el("div", { class: "engine-banner-title" }, [title])];
       if (verifier && verifier.warning) children.push(el("div", {}, [verifier.warning]));
+      if (mode === "stopped" && verifier) (verifier.held_reasons || []).forEach(function(hold) {
+        children.push(el("div", {}, ["Held ", hold[0], ": ", hold[1]]));
+      });
       if (request) children.push(el("div", {}, ["Recovery request ", el("code", {}, [request.id]), ": ", requestState]));
       if (request && request.admission) children.push(el("div", {}, ["Attempt ", el("code", {}, [request.admission.attempt_id]), " on ", request.admission.story_id]));
       if (recovery && recovery.acknowledgement) children.push(el("div", {}, ["Acknowledged ", recovery.acknowledgement.incident.incident_id, " at ", timeNode(recovery.acknowledgement.at, "second")]));
@@ -5489,13 +5492,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
     var status = column.querySelector(".verification-control-status");
     var text = pending ? "Updating verifier…" : mode === "draining" ? "Finishing inflight verification…"
-      : mode === "stopping" ? "Stopping inflight verification…" : mode === "stopped" ? "Verifier stopped"
+      : mode === "stopping" ? "Stopping inflight verification…" : mode === "stopped" ? "Verification stopped — submissions continue without tests"
       : mode === "halted" ? "Verification needs acknowledgement" : "";
     // A verifier held for a story its own write took out of the queue is
     // ordinary work (SH-768): it reads here, beside the mode, never as the
     // attention banner.
     var verifier = state.data && state.data.verifier;
-    var reservation = !pending && (mode === "running" || mode === "draining") &&
+    if (!pending && mode === "stopped" && verifier && verifier.active) {
+      text += " · Processing " + verifier.active.story_id;
+    }
+    var reservation = !pending && (mode === "running" || mode === "draining" || mode === "stopped") &&
       verifier && verifier.reservation;
     // A running verification batch (SH-832) is ordinary activity as well:
     // it reads here, never in the alert banner, and replaces the preview of

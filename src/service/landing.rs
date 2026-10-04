@@ -2,6 +2,7 @@
 
 use super::block_delivery::{SubmissionGate, derive_block_edges};
 use super::{Ctx, VerificationCandidate, VerificationQueue};
+use crate::domain::landing::LandingAuthority;
 pub use crate::domain::landing::VerifiedSubmission;
 use crate::error::AppError;
 use crate::store::{GlobalSeq, LandingIntent, ReadOps, Store, StoreError, StoryNo, WriteOps};
@@ -26,6 +27,16 @@ impl<S: Store> VerificationQueue<'_, S> {
         ctx: &Ctx<'_, S>,
         candidate: &VerificationCandidate,
         certification: &VerifiedSubmission,
+    ) -> Result<LandingAdmission, AppError> {
+        self.begin_authorized_landing(ctx, candidate, &certification.clone().into())
+    }
+
+    /// Admits evidence supplied by the owned attempt, with the same submission fences.
+    pub(crate) fn begin_authorized_landing(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        certification: &LandingAuthority,
     ) -> Result<LandingAdmission, AppError> {
         certification.validate()?;
         if ctx.project() != candidate.project {
@@ -118,14 +129,19 @@ impl<S: Store> VerificationQueue<'_, S> {
                 if !completable(tx, intent, candidate)? {
                     return Ok(false);
                 }
-                let comment = format!(
-                    "{} merge tree `{}` passed `{}` and pull request {} landed.\n\n{}",
-                    super::VERIFICATION_GREEN_PREFIX,
-                    intent.certification.tree,
-                    intent.certification.gate,
-                    intent.pull_request,
-                    crate::text_lint::quote_evidence(detail)
-                );
+                let comment = match &intent.certification {
+                    LandingAuthority::Certified(certified) => format!(
+                        "{} merge tree `{}` passed `{}` and pull request {} landed.\n\n{}",
+                        super::VERIFICATION_GREEN_PREFIX, certified.tree, certified.gate,
+                        intent.pull_request, crate::text_lint::quote_evidence(detail)
+                    ),
+                    LandingAuthority::Skipped(prepared) => format!(
+                        "{} pull request {} landed with head `{}` and merge tree `{}`. Verification was stopped at admission {}; no gate ran. Release gates retain test coverage.\n\n{}",
+                        super::verification::VERIFICATION_SKIPPED_PREFIX, intent.pull_request,
+                        prepared.head, prepared.tree, prepared.attempt,
+                        crate::text_lint::quote_evidence(detail)
+                    ),
+                };
                 complete_story(tx, ctx, intent, comment)?;
                 Ok(true)
             })

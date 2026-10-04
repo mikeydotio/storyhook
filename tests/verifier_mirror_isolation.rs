@@ -185,7 +185,8 @@ fn record_actuator_children(env: Environment) -> BTreeMap<String, Option<String>
             head: "a".repeat(40),
             tree: "b".repeat(40),
             gate: "test gate".into(),
-        },
+        }
+        .into(),
         created_at: FIXTURE_NOW.into(),
         batch: None,
     };

@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 pub enum GateVerdict {
     /// Ancestry proved the work already landed; this attempt ran no gate.
     AlreadyLanded,
+    /// The exact merge was prepared without running a gate.
+    VerificationSkipped,
     /// The exact merge tree passed the gate.
     Certified,
     /// The exact merge tree failed the gate.
@@ -45,6 +47,7 @@ impl GateVerdict {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::AlreadyLanded => "already-landed",
+            Self::VerificationSkipped => "verification-skipped",
             Self::Certified => "certified",
             Self::TestsFailed => "tests-failed",
             Self::Conflict => "conflict",
@@ -70,6 +73,7 @@ mod tests {
         use GateVerdict::*;
         for verdict in [
             AlreadyLanded,
+            VerificationSkipped,
             Certified,
             TestsFailed,
             Conflict,

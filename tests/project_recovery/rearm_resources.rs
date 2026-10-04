@@ -100,7 +100,8 @@ fn reset_landing_and_quarantine_prevent_policy_rearm() {
                                 head: "a".repeat(40),
                                 tree: "b".repeat(40),
                                 gate: "fixture gate".into(),
-                            },
+                            }
+                            .into(),
                             created_at: ctx.now(),
                             batch: None,
                         })

@@ -245,7 +245,7 @@ This project uses **storyhook** (`story` CLI) for work tracking.
 3. Update story status as you work: `story move {prefix}-<n> in-progress`
 4. Add progress notes: `story comment {prefix}-<n> "what changed and why"`
 5. {test_scope} Commit the work. Do not push or open a PR: the verifier pushes your branch and opens one.
-6. Record final context, then make `story move {prefix}-<n> verifying` your last action. The verifier runs the full suite, lands green work, and moves the story to `{done_state}`.
+6. Record final context, then make `story move {prefix}-<n> verifying` your last action. The verifier runs the full suite when enabled, lands eligible work, and moves the story to `{done_state}`. When verification is stopped, eligible submissions still publish and merge without tests. Release gates provide fallback coverage.
 
 ## Planning mode
 

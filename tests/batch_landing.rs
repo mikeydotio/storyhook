@@ -204,7 +204,7 @@ fn a_certified_batch_lands_every_member_together() {
         );
         assert_eq!(row.landing_pull_request(), BATCH_PR);
         assert_eq!(row.landing_attempt(), intent.batch.landing);
-        assert_eq!(row.certification, certification());
+        assert_eq!(row.certification, certification().into());
     }
     assert!(
         candidates(&f, &ids)

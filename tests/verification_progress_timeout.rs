@@ -504,7 +504,8 @@ fn progressing_landing_outlives_the_control_budget_but_silence_keeps_authority_u
                         head: "a".repeat(40),
                         tree: "b".repeat(40),
                         gate: "test gate".into(),
-                    },
+                    }
+                    .into(),
                     created_at: FIXTURE_NOW.into(),
                     batch: None,
                 };

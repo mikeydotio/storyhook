@@ -41,6 +41,19 @@ pub(super) fn admission(
     at: &str,
 ) -> Result<GateAttempt, StoreError> {
     let mut record = GateAttempt::new(id.into(), submission(candidate), at);
+    record.mode =
+        if let Some(intent) = tx.landing_intents()?.iter().find(|intent| {
+            intent.project == candidate.project && intent.story_id == candidate.story_id
+        }) {
+            match intent.certification {
+                LandingAuthority::Certified(_) => VerificationMode::Gated,
+                LandingAuthority::Skipped(_) => VerificationMode::VerificationSkipped,
+            }
+        } else if tx.verification_enabled(candidate.project)? {
+            VerificationMode::Gated
+        } else {
+            VerificationMode::VerificationSkipped
+        };
     record.journal_path = Some(journal_path(env, candidate).display().to_string());
     let previous = tx
         .gate_attempts(candidate.project)?
@@ -370,6 +383,28 @@ pub(super) fn observe<T>(
         observed?;
         result
     })
+}
+
+/// Records preparation without inventing a physical gate execution.
+pub(super) fn preparation(
+    store: &impl Store,
+    owner: &VerificationGuard,
+    result: &Result<Option<VerificationOutcome>, AppError>,
+) -> Result<(), AppError> {
+    let mut traces = owner
+        .registry
+        .costs
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let trace = traces
+        .get_mut(&owner.active.attempt_id)
+        .ok_or_else(|| AppError::Storage("skipped preparation has no admission evidence".into()))?;
+    trace.record.verdict = Some(
+        crate::domain::gate_verdict::GateVerdict::of(result, owner.is_cancelled())
+            .as_str()
+            .into(),
+    );
+    flush(store, trace)
 }
 
 /// Persists an execution before it starts and its result before disposition.

@@ -2911,9 +2911,13 @@ Inspect and control this project's centralized verifier.
   Text-only legacy incidents remain held. Conversion needs matching typed
   recovery evidence and archives the old incident before releasing its halt.
 
-  start enables admission without clearing a halt. drain prevents new
-  admission while owned work finishes. stop also cancels owned work.
-  Starting while stopped work still owns an attempt is refused.
+  start enables gates for future admissions without clearing a halt.
+  drain finishes owned work, then eligible submissions publish and merge
+  without tests. stop cancels and settles owned work before doing the same.
+  Verification stopped means submissions continue without tests; release
+  gates provide fallback coverage. Each attempt retains its admitted policy.
+  Starting while cancellation or a gated drain still owns an attempt is refused.
+  Managed repairs remain held until their required certification can run.
 
   A merge conflict returns the story and holds this project's queue until
   the story resubmits. The hold releases itself when the reconcile stops:
@@ -2923,7 +2927,8 @@ Inspect and control this project's centralized verifier.
   resubmission joins the queue in priority order.
 
   ack validates the exact halted incident and enables admission atomically.
-  --leave-stopped clears the incident but disables admission; start resumes it.
+  --leave-stopped clears the incident but keeps tests disabled; eligible
+  submissions continue. start restores gates for future admissions.
   Fix the reported infrastructure cause before retrying. A stale id, an
   incident still retrying, or an owned attempt prevents explicit retry.
 

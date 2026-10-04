@@ -76,6 +76,7 @@ impl GateVerdict {
             Ok(Some(outcome)) => match outcome {
                 VerificationOutcome::AlreadyLanded { .. } => Self::AlreadyLanded,
                 VerificationOutcome::Certified { .. } => Self::Certified,
+                VerificationOutcome::Prepared { .. } => Self::VerificationSkipped,
                 VerificationOutcome::TestsFailed { .. } => Self::TestsFailed,
                 VerificationOutcome::Conflict { .. } => Self::Conflict,
                 VerificationOutcome::InvalidSubmission { .. } => Self::InvalidSubmission,

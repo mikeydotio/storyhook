@@ -145,7 +145,7 @@ test("verifier recovery banner remains actionable at desktop and phone widths", 
     await page.setViewportSize({ width, height: 844 });
     await openProject(page, "Alpha Project");
     const banner = page.locator("#verification-banner-region");
-    await expect(banner).toContainText("Central verification stopped");
+    await expect(banner).toContainText("Verification stopped — submissions continue without tests");
     await expect(banner).toContainText("fixture:703");
     await expect(banner.getByRole("button", { name: "Start verifier", exact: true })).toBeVisible();
     expect(await banner.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);

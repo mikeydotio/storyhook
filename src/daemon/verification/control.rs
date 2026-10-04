@@ -13,11 +13,11 @@ use crate::store::StoreError;
 pub enum VerificationControlState {
     /// Admission is enabled; the queue may be empty.
     Running,
-    /// Admission is disabled while the owned attempt finishes.
+    /// Gates are disabled while the admitted gated attempt finishes.
     Draining,
     /// The owned attempt is cancelling and cleaning up.
     Stopping,
-    /// Admission is disabled and no attempt remains owned.
+    /// Tests are disabled; submission and landing may still be owned.
     Stopped,
 }
 
@@ -25,8 +25,10 @@ fn state(enabled: bool, slot: Option<&VerificationSlot>) -> VerificationControlS
     match (enabled, slot) {
         (_, Some(slot)) if slot.cancellation.is_cancelled() => VerificationControlState::Stopping,
         (true, _) => VerificationControlState::Running,
-        (false, Some(_)) => VerificationControlState::Draining,
-        (false, None) => VerificationControlState::Stopped,
+        (false, Some(slot)) if slot.active.mode == VerificationMode::Gated => {
+            VerificationControlState::Draining
+        }
+        (false, _) => VerificationControlState::Stopped,
     }
 }
 
@@ -54,7 +56,12 @@ impl VerificationActivity {
         let slot = slots.get(&project);
         let enabled = action == VerificationAction::Start;
         let recovery = store.write(|tx| {
-            if enabled && slot.is_some() && !tx.verification_enabled(project)? {
+            if enabled
+                && slot.is_some_and(|slot| {
+                    slot.cancellation.is_cancelled() || slot.active.mode == VerificationMode::Gated
+                })
+                && !tx.verification_enabled(project)?
+            {
                 return Err(AppError::Validation(
                     "the verifier is still stopping; wait for its owned attempt to exit".into(),
                 )
@@ -65,7 +72,10 @@ impl VerificationActivity {
             if enabled && slot.is_none() {
                 recovery.schedule(now);
             } else if !enabled {
-                recovery.settle_pending("stopped", "Operator disabled verifier admission");
+                recovery.settle_pending(
+                    "stopped",
+                    "Operator disabled verification; eligible submissions continue without tests",
+                );
             }
             tx.put_verification_recovery(project, &recovery)?;
             Ok(recovery)
@@ -138,7 +148,7 @@ impl VerificationActivity {
             } else {
                 recovery.settle_pending(
                     "stopped",
-                    "Acknowledged with admission disabled; run story verifier start",
+                    "Acknowledged with tests disabled; eligible submissions continue without tests",
                 );
             }
             tx.put_verification_recovery(ctx.project(), &recovery)?;
@@ -241,8 +251,17 @@ impl VerificationActivity {
                 && !tx
                     .story_reset(candidate.project, no)?
                     .is_some_and(|reset| !reset.completed)
-                && tx.verification_enabled(candidate.project)?
-                && !incident.as_ref().is_some_and(|incident| incident.halted);
+                && !incident.as_ref().is_some_and(|incident| incident.halted)
+                && (tx.verification_enabled(candidate.project)?
+                    || !crate::service::project_recovery::requires_certification(
+                        tx,
+                        candidate.project,
+                        no,
+                    )?
+                    || tx
+                        .landing_intents()?
+                        .iter()
+                        .any(|intent| intent.project == candidate.project && intent.story == no));
             let retry_origin = incident
                 .filter(|incident| incident_matches(incident, candidate))
                 .map(|incident| VerificationRetryOrigin {
@@ -283,6 +302,12 @@ impl VerificationActivity {
             let mut guard =
                 self.acquire_locked(&mut slots, candidate, started_at, attempt_id, retry_origin);
             guard.recovery_request_id = request_id;
+            guard.active.mode = record.mode;
+            slots
+                .get_mut(&candidate.project)
+                .expect("just acquired")
+                .active
+                .mode = record.mode;
             super::cost::register(&self.costs, record, origin, env, guard.cancellation.clone());
             // Assigned under the lock already held: the registry mutex is not reentrant.
             let slot = slots.get_mut(&candidate.project).expect("just acquired");
@@ -859,7 +884,8 @@ PY
                 head: "a".repeat(40),
                 tree: "b".repeat(40),
                 gate: "true".into(),
-            },
+            }
+            .into(),
             created_at: env.now(),
             batch: None,
         };
