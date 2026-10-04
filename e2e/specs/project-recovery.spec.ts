@@ -35,3 +35,32 @@ for (const infrastructureHalted of [false, true]) {
     await expect(page.locator(".verification-halted-banner")).toHaveCount(infrastructureHalted ? 1 : 0);
   });
 }
+
+test("invalid project recovery shows literal diagnostics without ownership or counts", async ({ page, request }) => {
+  await seedToken(page);
+  const slug = await projectSlug(request, "Alpha Project");
+  const diagnostic = 'Recovery invalid-fixture is invalid: <script>alert("invalid")</script>. Inspect: story verifier repair show invalid-fixture --json';
+  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async route => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.verifier = { ...data.verifier, project_recoveries: [{
+      id: "invalid-fixture", fault: "missing-certification", locus: "gate/<invalid>",
+      affected_stories: [], assessment_owner: "", repair_story: null, repair_link: null,
+      phase: "invalid", completed_attempts: 0, attempt_limit: 0, next_action: diagnostic,
+    }] };
+    await route.fulfill({ response, json: data });
+  });
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const recovery = page.locator(".project-recovery-banner");
+  await expect(recovery).toBeVisible();
+  for (const text of ["invalid-fixture", "missing-certification", "invalid", "gate/<invalid>", diagnostic]) {
+    await expect(recovery).toContainText(text);
+  }
+  for (const text of ["Affected:", "assessor", "undecided", "Completed repair attempts:", "0/0"]) {
+    await expect(recovery).not.toContainText(text);
+  }
+  await expect(recovery.locator("script, invalid")).toHaveCount(0);
+  await expect(recovery.getByRole("link", { name: "Repair PR" })).toHaveCount(0);
+  await expect(recovery.locator("code")).toHaveText("story verifier repair show invalid-fixture --json");
+});

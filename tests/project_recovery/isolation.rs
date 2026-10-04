@@ -4,7 +4,7 @@
 //! before SH-848: the claim into SH-1 is retracted and SH-1 is purged under
 //! the recovery, so its exact event references no longer resolve. Readers
 //! that ask about another story must not fail; readers for a story the
-//! record names, and the diagnostics that read every record, stay loud.
+//! record names stay strict. Status reports invalid records as diagnostic rows.
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use storyhook::daemon::{lifecycle::InFlight, verification::*};
@@ -19,7 +19,7 @@ use storyhook::store::{
 use storyhook_test_support::{DispatcherStep, FakeDispatcher};
 
 /// A decided recovery whose subject SH-1 was purged; SH-2 is its repair.
-fn stranded(f: &ServiceFixture) -> RecoveryView {
+pub(super) fn stranded(f: &ServiceFixture) -> RecoveryView {
     let view = resume::decided(f);
     RelationService::new(&f.ctx())
         .relate("SH-2", "blocks", "SH-1", true)

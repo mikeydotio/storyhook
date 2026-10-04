@@ -60,7 +60,7 @@ A recovery record keeps story numbers and exact event sequences for as long as i
 
 - **Delete refuses a named story.** `story delete` and its preview refuse any story a recovery names (`project_recovery::references::stories`, plus the record's observation rows) and point at `story close`. Tolerating the missing story was rejected: no command retires a recovery, so one whose repair or assessor vanished would stay held forever.
 - **A prefix change keeps retained leases valid.** A retained managed lease records the story id its worktree, branch and pane were created under. Validation compares the number that id was minted with, not the id under the current prefix.
-- **Readers validate only the records that name their story.** `attempts::owner` (admission, completion, observation, landing), `owns_resume` (block-edge derivation in every story write), `owns_coordination` (Full Auto lanes) and `reconcile_incident` read only the records that name their story, or whose own observations corroborate the incident. The queue reads judged generations from the immutable observation rows. For a valid store every answer is unchanged. An invalid record still fails closed for the stories it names, for a new fault with its code and locus, and in `repair show` and the status snapshot; status-snapshot isolation is SH-851.
+- **Readers validate only the records that name their story.** `attempts::owner` (admission, completion, observation, landing), `owns_resume` (block-edge derivation in every story write), `owns_coordination` (Full Auto lanes) and `reconcile_incident` read only the records that name their story, or whose own observations corroborate the incident. The queue reads judged generations from the immutable observation rows. For a valid store every answer is unchanged. An invalid record still fails closed for the stories it names, for a new fault with its code and locus, and in `repair show`. The status snapshot isolates invalid records as described below (SH-851).
 
 ### Bounded agent scope judgment
 
@@ -145,7 +145,7 @@ requires a scope decision and later fresh submission, never replay of the old ga
 
 ### Resolution: when a recovery leaves current status (SH-775)
 
-A certified landing retires the record (`active = false`), but it does not end the work. Affected stories still owe a fresh verification generation. The status projection (`story verifier status`, the dashboard banner, and `verifier.project_recoveries` in load-context, next, and summary JSON) shows a recovery until it owes nothing, and then never again. The durable record stays: coordination, resume ownership, and `story verifier repair show <id> --json` read it permanently. The recovery ID is also in the story comments of each affected story and in the repair story description.
+A certified landing retires the record (`active = false`), but it does not end the work. Affected stories still owe a fresh verification generation. The status projection (`story verifier status`, the dashboard banner, and `verifier.project_recoveries` in load-context, next, and summary JSON) shows a valid recovery until it owes nothing, and then leaves it out. If retained state later fails validation, the invalid-row contract below applies. The durable record stays: coordination, resume ownership, and `story verifier repair show <id> --json` read it permanently. The recovery ID is also in the story comments of each affected story and in the repair story description.
 
 After landing, the recovery computes two story sets:
 
@@ -177,7 +177,17 @@ For existing incidents, automatically convert only those whose retained structur
 
 ## Interfaces, diagnostics, and tests
 
-Expose additive recovery status in the shared CLI/dashboard snapshot: fault, affected stories, assessment/repair owner, repair link, phase, attempt budget, and next action. Distinguish repair dependency from infrastructure halt. Existing payloads deserialize with no recovery records. The snapshot lists only unresolved recoveries (see Resolution).
+Expose additive recovery status in the shared CLI/dashboard snapshot: fault, affected stories, assessment/repair owner, repair link, phase, attempt budget, and next action. Distinguish repair dependency from infrastructure halt. Existing payloads deserialize with no recovery records. The snapshot lists unresolved recoveries (see Resolution) and invalid diagnostic rows (see below).
+
+### Invalid recovery diagnostics (SH-851)
+
+Status validates each recovery separately. A `StoreError::Corrupt` from that record's `read_view` becomes a row with phase `invalid`; status continues with the remaining records. It does not treat other errors as corruption. Failures to read project metadata, enumerate recoveries, or perform a storage query still fail the request.
+
+An invalid row uses only the durable envelope: recovery ID, fault code, and locus. Its `next_action` includes the recovery ID, the complete validation detail, and `story verifier repair show <id> --json`. No field from partially decoded state supplies authority. Existing wire fields remain present: affected stories and assessment owner are empty, repair ownership and link are absent, and both attempt counters are zero. These placeholders mean unavailable, not an empty workload or an exhausted budget. They have no diagnostic meaning when phase is `invalid`.
+
+CLI and dashboard render the identity, locus, diagnostic, and inspection command. They suppress ownership and attempt summaries for invalid rows. Dashboard diagnostic text remains literal through text nodes. Invalid records stay visible even when inactive: failed validation cannot establish resolution. Healthy resolved records remain omitted under SH-775.
+
+Status is read-only; it neither repairs nor retires records. `repair show`, coordination, and mutation keep strict validation. All status consumers retain unrelated queue, active-attempt, incident, and control facts. The shared projection also keeps next, load-context, summary, engine status, and the cross-project lane-budget census available when one recovery is invalid.
 
 Test through production service, dispatch, subprocess, and queue paths, mocking external endpoints or provider responses rather than recovery behavior:
 

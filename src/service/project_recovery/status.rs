@@ -7,6 +7,9 @@ use crate::store::{ProjectId, ReadOps, StoreError, StoryNo};
 use serde::{Deserialize, Serialize};
 
 /// Durable recovery summary; it never grants new recovery authority.
+/// When `phase` is `invalid`, only identity, fault, locus and next action
+/// carry diagnostic meaning. Empty ownership and zero attempt fields are
+/// unavailable placeholders, not conclusions drawn from invalid state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryStatus {
     /// Stable coordinator identity accepted by `verifier repair show`.
@@ -23,7 +26,7 @@ pub struct RecoveryStatus {
     pub repair_story: Option<String>,
     /// Current repair pull request, when linked.
     pub repair_link: Option<String>,
-    /// Current coordination phase, distinct from infrastructure incidents.
+    /// Current coordination phase, or `invalid` when record validation fails.
     pub phase: String,
     /// Completed, changed-input repair attempts across this lineage.
     pub completed_attempts: usize,
@@ -33,9 +36,9 @@ pub struct RecoveryStatus {
     pub next_action: String,
 }
 
-/// Current recoveries only: every row still owes work. A resolved recovery
-/// is left out, while its durable record stays for coordination, resume
-/// ownership and `verifier repair show`.
+/// Unresolved recoveries and invalid diagnostic rows. A valid resolved
+/// recovery is left out, while its durable record stays for coordination,
+/// resume ownership and `verifier repair show`.
 pub(crate) fn snapshot(
     tx: &impl ReadOps,
     project: ProjectId,
@@ -45,7 +48,31 @@ pub(crate) fn snapshot(
         .ok_or_else(|| StoreError::Corrupt("recovery project missing".into()))?;
     let mut current = Vec::new();
     for record in tx.project_recoveries(project)? {
-        let view = persistence::read_view(tx, record)?;
+        // Preserve only envelope identity across strict validation. An invalid
+        // record cannot establish ownership, attempt counts or resolution.
+        let (id, fault, locus) = (record.id.clone(), record.code.clone(), record.locus.clone());
+        let view = match persistence::read_view(tx, record) {
+            Ok(view) => view,
+            Err(StoreError::Corrupt(detail)) => {
+                current.push(RecoveryStatus {
+                    next_action: format!(
+                        "Recovery {id} is invalid: {detail}. Inspect: story verifier repair show {id} --json"
+                    ),
+                    id,
+                    fault,
+                    locus,
+                    phase: "invalid".into(),
+                    affected_stories: Vec::new(),
+                    assessment_owner: String::new(),
+                    repair_story: None,
+                    repair_link: None,
+                    completed_attempts: 0,
+                    attempt_limit: 0,
+                });
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let repair = view.state.decision.as_ref().and_then(|d| d.repair_story);
         let repair_story = repair.map(|story| story.to_id(&metadata.prefix));
         let Some((phase, next_action)) =
