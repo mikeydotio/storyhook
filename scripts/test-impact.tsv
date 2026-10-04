@@ -5,6 +5,7 @@ activity_log	:(glob)**/*
 activity_script	:(glob)**/*
 attribution_preparation	:(glob)src/service/attribution/**
 attribution_preparation	:(glob)src/store/**
+attribution_rust	:(glob)src/service/attribution/**
 backup_restore	:(glob)**/*
 battery_completion	:(glob)scripts/**
 binary_lease	scripts/binary-lease.sh

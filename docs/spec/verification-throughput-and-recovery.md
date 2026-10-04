@@ -321,6 +321,19 @@ missing output, or inconsistent extra probe prevents a causal finding. Two
 pairs are the minimum protocol; they do not prove an arbitrary flaky test
 deterministic. Unsupported detectors remain uncertain.
 
+The Rust observation adapter selects a literal package and target and an exact
+libtest case. Build, listing and execution are separate operations. Listing
+must contain only that test. Execution requires one matching case line, one
+one-test header, a consistent summary and a matching native exit status.
+Missing, ignored, truncated, multi-case, malformed and signalled results are
+unavailable. These parser results are observations, not causal return proof.
+Failure signatures retain the complete captured panic body and source location.
+Only the numeric runtime thread identifier in the selected case's one panic
+header is normalized. Different assertion values remain different signatures;
+unstable paths or output can conservatively prevent attribution. The executor
+must independently prove libtest harness identity, detector preservation,
+supported environment and cleanup before using these observations.
+
 The control is the pinned base with the unchanged detector, a validated
 detector transplant, or a controlled ablation. Retain the patch and resulting
 tree when the control changes. Preserve the assertion and its meaning;
