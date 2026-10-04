@@ -100,9 +100,11 @@ pub(super) fn read_view(
     if let Some(decision) = &state.decision {
         let mut subjects = std::collections::BTreeSet::new();
         for hold in &decision.dependency_holds {
+            // A hold needs a repair to wait for, or an external prerequisite.
             if !subjects.insert((hold.story, hold.generation))
                 || Some(hold.story) == decision.repair_story
-                || decision.repair_story.is_none()
+                || (decision.repair_story.is_none()
+                    && decision.input.scope != super::RepairScope::External)
                 || !state.subjects.iter().any(|subject| subject.returned && subject.story == hold.story
                     && subject.candidate.verifying_generation == Some(hold.generation))
                 || !tx.events_for(record.project, hold.story)?.iter().any(|event| event.global_seq == hold.event

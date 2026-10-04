@@ -63,7 +63,14 @@ pub(crate) fn owns_coordination(
                 return Ok(true);
             }
         }
-        if let Some(decision) = &view.state.decision {
+        // An external prerequisite waits on a person for an unbounded time, so
+        // its hold must not keep a Full Auto lane (SH-849).
+        if let Some(decision) = view
+            .state
+            .decision
+            .as_ref()
+            .filter(|d| d.input.scope != super::RepairScope::External)
+        {
             for hold in decision
                 .dependency_holds
                 .iter()

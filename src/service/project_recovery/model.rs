@@ -201,7 +201,8 @@ pub enum AssessmentDelivery {
     Uncertain(String),
 }
 
-/// A dependency hold belongs to one returned submission and one exact awaiting event.
+/// A recovery-owned hold — a wait for the repair, or an external prerequisite —
+/// belongs to one returned submission and one exact awaiting event.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OwnedDependencyHold {
