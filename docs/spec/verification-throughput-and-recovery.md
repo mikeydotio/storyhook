@@ -369,16 +369,19 @@ the current valid host sample, each lease's observed peaks, elapsed wait,
 arrival queue position and quarantine recovery condition. Arrival order is
 not a prediction that overrides weighted class or project scheduling.
 
-SH-869 must wrap each managed spawn boundary with `ManagedProcess`, preserve
-the blocked-launch handshake, and pass inherited grant capabilities to nested
-adapters. An inherited `STORYHOOK_HOST_REQUEST` and `STORYHOOK_HOST_GRANT`
-select a subgrant. The broker also rejects a new root from a registered
-execution session if these environment values are removed. Nested adapters
-must budget their own overhead inside the root envelope, and retain the
-parent evidence binding. A child cannot enlarge the parent or wait for an
-unavailable partition. Sequential reuse requires independent settlement.
+`host-admission.py run` with an inherited `STORYHOOK_HOST_REQUEST` and
+`STORYHOOK_HOST_GRANT` takes an explicit subgrant. The broker also rejects a
+new root from a registered execution session if these environment values are
+removed. A subgrant must budget its own overhead inside the root envelope and
+retain the parent evidence binding. A child cannot enlarge the parent or wait
+for an unavailable partition. Sequential reuse requires independent
+settlement. Production runners use the share-passing contract in "SH-869
+runner adoption" below instead; explicit subgrants remain for future
+overlapping legs (SH-872).
 
-Ordinary descendants must remain in their owned session and process group.
+Ordinary descendants must remain in their owned session. Process groups
+inside the session are ordinary: captured children, `machine-lock.sh` and
+test fixtures create them.
 `STORYHOOK_HOST_LEASE_FD` names an inherited lifetime descriptor. An adapter
 that closes descriptors on spawn must explicitly preserve this descriptor
 where work can outlive its caller. Detached services, workers hosted by
@@ -386,10 +389,14 @@ another daemon, or descendants that discard both session and descriptor
 ownership are unsupported until an adapter supplies a lifetime proof. This
 cooperative protocol is not a security boundary or kernel containment.
 
-The supervisor keeps its leader unreaped while it sends group signals, so
-that PID cannot be reused as an unrelated group. An exec-error pipe separates
-launch refusal from a workload's exit. Control or journal failure first
-drains the supervisor's own pinned group, then reports the failure; it does
+The supervisor keeps its leader unreaped while it signals the session, so
+that PID cannot be reused as an unrelated group or session. Each pass signals
+the pinned leader group and every confirmed session member outside it, and
+re-signals members found by a later census, so a member forked after a
+signal is still reached. Inheritable descriptors of the caller, such as a
+Cargo jobserver, pass through to the command unchanged. An exec-error pipe
+separates launch refusal from a workload's exit. Control or journal failure
+first drains the supervisor's own pinned session, then reports the failure; it does
 not release capacity from the error alone. Broker restart preserves state.
 A dead supervisor with an attached execution can recover after independent
 session, native identity and lifetime-guard proof. A lost supervisor with no
@@ -451,3 +458,125 @@ prevents revision. The transaction retains prior evidence and records the
 previous digest under a new authority epoch. Never reinterpret a held grant
 under a different cap. SH-869 retains production adoption; neither this
 implementation nor fixture measurements authorize enabling production.
+
+## SH-869 runner adoption
+
+Every production runner asks the host authority before it loads the host.
+The decisions and their reasons are recorded on SH-869 as D1 to D11.
+
+### Modes
+
+`scripts/host-admit.py --entry <id> [--units N] -- <argv>` is the one
+adapter. It resolves one mode before it runs anything:
+
+| Mode | Condition | Behaviour |
+|---|---|---|
+| Disabled | `policy.json` is absent under the canonical namespace | `execv` the command unchanged; today's slots, pools and locks apply |
+| Inherit | an inherited `STORYHOOK_HOST_GRANT` and `STORYHOOK_HOST_REQUEST`, or an inherited lease descriptor proved held | run inside the parent's grant; no broker call and no new session |
+| Root | the policy exists and nothing is inherited | enqueue, wait, then run under `ManagedProcess` |
+
+The disabled check is one `lstat` before the package is imported, so the
+Cargo runner costs one interpreter start when the authority is off. A policy
+that exists but does not validate, or a broker that does not answer, is a
+refusal with exit 125. That is a broken authority, never a reason to run
+unbounded.
+
+### Inventory and amounts
+
+`scripts/host_admission/entries.py` names every entry, its root class and
+the policy workloads it reserves: one `unit`, and an optional `overhead`
+reserved once. A root asks for `overhead + units × unit`, with `units`
+capped to what fits the normal capacity. A workload missing from an enabled
+policy is a refusal. No resource number lives in code.
+
+| Entry | Root class | Caller |
+|---|---|---|
+| `rustc` | build | `scripts/rustc-slot.py`, through Cargo's `rustc-wrapper` |
+| `cargo-test-binary` | test | Cargo's target `runner` in `.cargo/config.toml`; `scripts/capture-baseline.sh` |
+| `rust-pool` | test | `scripts/run-tests.sh`, after its gate-lock re-exec |
+| `plugin-pool` | test | `plugins/story/tests/run-tests.sh` |
+| `plugin-script` | test | `plugins/story/tests/lib.sh`, for a script run directly |
+| `browser-pool` | test | `scripts/run-e2e.sh` |
+| `verifier-python-workers` | test | `scripts/tests/run_verifier_tests.py` |
+| `verifier-gate` | test, or repair | `scripts/verifier-owner.py` |
+| `release` | release | `scripts/release.sh` |
+| `release-observer` | release | `scripts/release-observer.py` |
+
+`tests/runner_admission_inventory.rs` pins every production launch of
+Cargo, Playwright or a Makefile gate tier. Each is entered, admitted through
+Cargo's wrapper and runner, a gate tier whose legs are admitted, or an
+explicit exception with its reason. Every entry needs a production caller.
+The Cargo runner admits test binaries under `target/<profile>/deps/` and
+rustdoc's doctest binaries. A top-level `cargo run` or example binary is an
+application run and passes through. Build scripts are compiled through the
+wrapper but run unadmitted outside an enclosing grant; Cargo has no hook for
+them.
+
+### Topology: a root grant and a divided share
+
+There is one root per outermost managed entry. Everything below it runs in
+that grant; nested runners make no broker call and create no session, so
+`verifier-owner.py` and `machine-lock.sh` keep their cleanup reach. A root
+exports `STORYHOOK_HOST_SHARE` (granted CPU and memory, less the entry's
+overhead). A pool takes `units = max(1, min(requested, floor(share / unit)))`,
+exports `STORYHOOK_HOST_UNITS` for its own concurrency, and exports a
+per-worker share of `share / units`. Nested concurrency therefore cannot
+exceed the grant at any depth. A share smaller than one unit still runs one
+worker: that worker is the share's occupant. The broker samples the root's
+session and drains it when observed use exceeds the envelope.
+
+The verifier gate's root belongs to `verifier-owner.py`, which already
+supervises the gate session. It enqueues in-process, forks, waits for the
+child's `setsid`, attaches that session with an inheritable lease guard,
+then releases the launch. It watches the lease at the policy's sample
+interval. Only after its own census proves the session empty does it close
+its guard, settle and finish.
+
+### Lock order and compiler slots
+
+A gate lock is always taken before admission, and a grant holder never
+waits on a lock. `rustc-slot.py` uses admission only in root mode, and keeps
+its per-user slots in the disabled and inherit modes, so a slot holder never
+waits for a grant. A root below `machine-lock.sh` receives a termination
+grace that covers its drain allowance (`host-admit.py --drain-seconds`, 0
+when disabled), so the lock's KILL does not orphan a draining session.
+
+### Attribution
+
+A broker drain or a refusal of the gate root is published with the gate
+execution as state `admission` and a typed cause, and as an `admission`
+journal record. The gate is never `tests-failed` for it.
+
+| Cause | Verdict |
+|---|---|
+| severe pressure, sensor failure, broker unavailable | retryable infrastructure failure; the story stays Verifying |
+| lease deadline, envelope exceeded, workload missing, invalid policy | permanent infrastructure failure; a visible process defect |
+
+An interactive root prints the cause and exits 125.
+
+### Waiting
+
+The adapter writes the activity `waiting for host admission (<entry>)`,
+re-reported while it waits, then `host admission granted (<entry>)`, and a
+`resource-wait` cost interval. `story verifier status` shows a running wait
+of any producer (`waiting for ...`) as `Waiting for resources`, with an
+additive `resource_wait` field. Interactive roots print the wait on stderr.
+
+### Fixtures
+
+Every Cargo-run test binary is enveloped, so fixtures inherit and never
+contact the production broker. Only suites that drive a fixture authority
+remove the bearer `STORYHOOK_HOST_GRANT` and `STORYHOOK_HOST_REQUEST`.
+General test isolation keeps them, because Python launchers drop inherited
+descriptors and the environment is the inheritance signal that survives.
+
+### Activation prerequisites
+
+Production stays disabled. Before a measured policy is installed:
+
+- every entry's workloads must be calibrated (SH-801, SH-867);
+- `lease_ms` must exceed the longest supported gate, or the broker drains it;
+- leaked test daemons (SH-879) must be fixed, because a daemon holding a
+  lease guard keeps its capacity quarantined;
+- the Lima guest of `release-linux.sh` is a separate kernel; the host reserves
+  it only through the `release` entry's measured workload.
