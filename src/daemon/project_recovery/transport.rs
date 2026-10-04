@@ -175,9 +175,12 @@ fn message(view: &RecoveryView, operation: &Operation) -> String {
         return crate::service::project_recovery::assessment_charter(view);
     }
     let task = if operation.kind == Some(WorkKind::Resume) {
-        "Certified repair landed. Refresh source and gate configuration from the current base, reconcile the existing worktree, and resubmit for a fresh verification generation."
+        format!(
+            "{} Refresh source and gate configuration from the current base, reconcile the existing worktree, and resubmit for a fresh verification generation.",
+            crate::service::project_recovery::resume_sentence(view)
+        )
     } else {
-        "Continue the accepted repair scope in the same recovery lineage. Preserve the worktree and all required coverage and certification."
+        "Continue the accepted repair scope in the same recovery lineage. Preserve the worktree and all required coverage and certification.".to_string()
     };
     format!(
         "PROJECT RECOVERY {} — effect {}. Read `story verifier repair show {} --json` and current story comments. {} {IMPLEMENTER_TEST_SCOPE} Commit, then move the story to verifying as the last action. The central verifier owns submission, the full suite, merge, and cleanup. Do not repeat completed work if this identity was already handled.",

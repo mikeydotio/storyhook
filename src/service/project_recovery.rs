@@ -334,6 +334,16 @@ pub fn assessment_charter(view: &RecoveryView) -> String {
     )
 }
 
+/// The sentence that opens a managed resume delivery: what released the hold.
+///
+/// Only a released recovery holds resume work (`read_view` refuses one that
+/// does not), so the fallback names the release without claiming its cause.
+pub(crate) fn resume_sentence(view: &RecoveryView) -> &'static str {
+    resolution::release(&view.state).map_or("The recovery released this hold.", |release| {
+        release.cause.resume_sentence()
+    })
+}
+
 /// Whether an active recovery needs this repair to supply an actual certification.
 pub(crate) fn requires_certification(
     tx: &impl ReadOps,

@@ -5,13 +5,68 @@
 //! asks what is still outstanding (docs/spec/project-fault-recovery.md,
 //! "Resolution").
 
-use super::RecoveryView;
+use super::{RecoveryState, RecoveryView};
 use crate::{
     domain::{StateDef, StoryEvent, SuperState},
     service::verification::VERIFYING_STATE,
     store::{GlobalSeq, ProjectId, ReadOps, StoreError, StoryNo},
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+/// What released a recovery's holds and retired its record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReleaseCause {
+    /// The repair passed central verification and its merge was confirmed.
+    RepairLanded,
+}
+
+impl ReleaseCause {
+    /// The first sentence of the status next action after release.
+    pub(super) fn lead(self) -> &'static str {
+        match self {
+            Self::RepairLanded => "Repair landed.",
+        }
+    }
+
+    /// The status phase while affected stories owe only a fresh generation.
+    pub(super) fn owed_phase(self) -> &'static str {
+        match self {
+            Self::RepairLanded => "landed",
+        }
+    }
+
+    /// The clause that names the cause in the release comment and work detail.
+    pub(super) fn clause(self) -> &'static str {
+        match self {
+            Self::RepairLanded => "certified repair landed",
+        }
+    }
+
+    /// The sentence that opens a managed resume delivery.
+    pub(super) fn resume_sentence(self) -> &'static str {
+        match self {
+            Self::RepairLanded => "Certified repair landed.",
+        }
+    }
+}
+
+/// The authority that released a recovery: its cause, and the event that
+/// every hold release must follow.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Release {
+    /// The event that recorded the release authority.
+    pub anchor: GlobalSeq,
+    /// What released the recovery.
+    pub cause: ReleaseCause,
+}
+
+/// The recovery's release authority, or `None` while nothing has released it.
+pub(super) fn release(state: &RecoveryState) -> Option<Release> {
+    state.landing.as_ref().map(|landing| Release {
+        anchor: landing.event,
+        cause: ReleaseCause::RepairLanded,
+    })
+}
 
 /// What a landed recovery still owes, by story.
 #[derive(Debug)]
