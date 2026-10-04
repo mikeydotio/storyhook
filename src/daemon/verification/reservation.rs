@@ -40,6 +40,8 @@ pub enum ReservationReason {
     Remediation,
     /// Completed; held while the story's worktree, branch and window are reaped.
     Cleanup,
+    /// An attribution hold committed; the attempt is releasing its execution ownership.
+    Attribution,
 }
 
 impl ReservationReason {
@@ -50,6 +52,7 @@ impl ReservationReason {
             Self::Reconcile => "merge-conflict reconcile until it resubmits",
             Self::Remediation => "delivery of its returned diagnosis",
             Self::Cleanup => "cleanup of its worktree and window",
+            Self::Attribution => "release after a causal attribution hold",
         }
     }
 
@@ -70,6 +73,7 @@ impl ReservationReason {
             Self::Remediation => Some(CONTROL_VERB_CEILING * 3 + RECOVERY_WAKE),
             // One reap, plus one wake of store work around it.
             Self::Cleanup => Some(CONTROL_VERB_CEILING + RECOVERY_WAKE),
+            Self::Attribution => Some(RECOVERY_WAKE),
         }
     }
 }
@@ -203,6 +207,7 @@ impl VerificationGuard {
                     Some((ReservationReason::Reconcile, true)) => "repair-hold",
                     Some((ReservationReason::Remediation, true)) => "diagnosis-delivery",
                     Some((ReservationReason::Cleanup, true)) => "cleanup",
+                    Some((ReservationReason::Attribution, true)) => "attribution-hold",
                     _ => "verdict",
                 };
                 super::cost::phase(&self.registry.costs, &self.active.attempt_id, Some(phase));

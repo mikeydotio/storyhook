@@ -10,6 +10,27 @@
 use super::*;
 use crate::service::verification::{FAILED_GATE_RERUN_SCOPE, IMPLEMENTER_TEST_SCOPE};
 
+/// Hold an unproved failure without sending a repair assignment to the implementer.
+pub(super) fn hold_for_attribution<S: Store>(
+    queue: &VerificationQueue<'_, S>,
+    ctx: &Ctx<'_, S>,
+    candidate: &VerificationCandidate,
+    check: &str,
+    detail: &str,
+    owner: &VerificationGuard,
+) -> Result<GenerationWrite<()>, AppError> {
+    if owner.is_cancelled() {
+        return Ok(GenerationWrite::Superseded);
+    }
+    let pending = owner.reserve(ReservationReason::Attribution, ctx.now());
+    let result =
+        queue.record_generation_held(ctx, candidate, &owner.active.attempt_id, check, detail)?;
+    if matches!(result, GenerationWrite::Applied(())) {
+        pending.retire();
+    }
+    Ok(result)
+}
+
 /// How a returned story's diagnosis reaches its agent.
 pub(super) trait ReturnTransport {
     /// Pastes `message` into the story's agent pane.

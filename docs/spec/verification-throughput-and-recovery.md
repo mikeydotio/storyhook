@@ -280,6 +280,16 @@ receipts through the existing contract fingerprint.
 Status: approved implementation contract; completion requires the runtime
 and regression evidence below. Attribution does not change certification.
 
+Administrative submission failures retain an unknown-cause hold: missing
+leases, unavailable or ambiguous submission identity, invalid checkout input,
+helper refusal, and a conflicting pull request link. The verifier records the
+original diagnostic and evidence identity in the same transaction, and does
+not deliver an implementer repair assignment. That transaction checks the
+admitted attempt, verifier control epoch, generation, policy and landing holds.
+Queue selection excludes the held generation after restart. A new submission
+keeps the history but does not inherit the old hold. Status exposes these holds
+separately from active gate progress and infrastructure incidents.
+
 Retain one versioned attribution record for each failed admission outcome,
 with separate failure components. Reference the original submission generation,
 head, pinned base, merge tree, and SH-867 physical execution records. Keep probe

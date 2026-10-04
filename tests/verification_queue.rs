@@ -41,6 +41,8 @@ mod own_submission;
 
 #[path = "verification_queue/already_landed.rs"]
 mod already_landed;
+#[path = "verification_queue/attribution_holds.rs"]
+mod attribution_holds;
 use storyhook::api::http::TrustedHosts;
 use storyhook::api::rest;
 use storyhook::daemon::http1::{Header, Method};
@@ -959,7 +961,13 @@ fn a_project_without_a_checkout_remains_visible_as_configuration_work() {
         .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
         .unwrap()
         .unwrap();
-    assert_eq!(returned.state, "in-progress");
+    assert_eq!(returned.state, "verifying");
+    assert!(
+        VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -2671,7 +2679,7 @@ fn a_paste_that_fails_after_a_successful_redispatch_is_recorded_not_parked() {
 }
 
 #[test]
-fn an_origin_mismatch_returns_the_story_for_a_safe_resubmission() {
+fn an_origin_mismatch_holds_the_story_without_assigning_a_repair() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let id = submitted(&fixture, "wrong checkout", Priority::High, PR_ONE);
@@ -2695,16 +2703,16 @@ fn an_origin_mismatch_returns_the_story_for_a_safe_resubmission() {
         .read(|tx| tx.story(fixture.project(), StoryNo::parse_id("SH", &id).unwrap()))
         .unwrap()
         .unwrap();
-    assert_eq!(row.state, "in-progress");
+    assert_eq!(row.state, "verifying");
     assert!(
         row.snapshot
             .comments
             .last()
             .unwrap()
             .text
-            .contains("INVALID SUBMISSION")
+            .contains("invalid submission")
     );
-    assert_eq!(actuator.notified.lock().unwrap().len(), 1);
+    assert!(actuator.notified.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -5077,11 +5085,11 @@ fn a_leased_resubmission_with_a_linked_pull_request_is_pushed_again_before_verif
     }));
 }
 
-/// An unleased story is not the verifier's to push: it is returned naming the
+/// An unleased story is not the verifier's to push: it is held naming the
 /// cause — the story entered `verifying` from outside its worktree — and the
 /// actuator is never asked to submit.
 #[test]
-fn an_unleased_story_without_a_pull_request_is_returned_without_a_submission_attempt() {
+fn an_unleased_story_without_a_pull_request_is_held_without_a_submission_attempt() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let ctx = fixture.ctx();
@@ -5119,21 +5127,21 @@ fn an_unleased_story_without_a_pull_request_is_returned_without_a_submission_att
 
     assert!(actuator.submitted.lock().unwrap().is_empty());
     let row = story_row(&fixture, &id);
-    assert_eq!(row.state, "in-progress");
+    assert_eq!(row.state, "verifying");
     let notified = actuator.notified.lock().unwrap();
-    assert_eq!(notified.len(), 1);
-    assert!(notified[0].contains("No cleanup lease"), "{}", notified[0]);
+    assert!(notified.is_empty());
     assert!(
-        notified[0].contains("story move <id> verifying"),
-        "{}",
-        notified[0]
+        row.snapshot
+            .comments
+            .iter()
+            .any(|c| c.text.contains("No cleanup lease"))
     );
 }
 
-/// A refusal the helper classes as the agent's returns the story with the
+/// A helper refusal holds the submission with the
 /// helper's own words — the dirty files — and never reaches verification.
 #[test]
-fn a_refused_submission_returns_the_story_with_the_helpers_diagnosis() {
+fn a_refused_submission_holds_the_story_with_the_helpers_diagnosis() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let root = scratch_dir();
@@ -5164,7 +5172,7 @@ fn a_refused_submission_returns_the_story_with_the_helpers_diagnosis() {
     );
 
     let row = story_row(&fixture, &id);
-    assert_eq!(row.state, "in-progress");
+    assert_eq!(row.state, "verifying");
     assert!(
         row.snapshot
             .comments
@@ -5173,8 +5181,13 @@ fn a_refused_submission_returns_the_story_with_the_helpers_diagnosis() {
         "the diagnosis is durable on the story"
     );
     let notified = actuator.notified.lock().unwrap();
-    assert_eq!(notified.len(), 1);
-    assert!(notified[0].contains("Dirty: src/lib.rs"), "{}", notified[0]);
+    assert!(notified.is_empty());
+    assert!(
+        VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .is_none()
+    );
     let links = fixture
         .store()
         .read(|tx| tx.pr_links(fixture.project()))

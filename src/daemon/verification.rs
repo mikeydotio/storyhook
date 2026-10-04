@@ -37,7 +37,7 @@ mod repair_return;
 mod reservation;
 pub(crate) use recovery_transport::ControlOwner;
 pub use repair_return::resume_plan;
-use repair_return::{red_diagnosis, return_for_repair};
+use repair_return::{hold_for_attribution, red_diagnosis, return_for_repair};
 pub(crate) use reservation::{Reservation, SlotView};
 pub use reservation::{ReservationReason, VerifierReservation};
 pub mod status;
@@ -559,9 +559,8 @@ pub enum LandingOutcome {
 /// Why a leased submission did not leave one open pull request (SH-647).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubmissionFailure {
-    /// The helper refused by name with something the agent has to fix — a
-    /// dirty worktree or a rejected push. The
-    /// story is returned to the agent carrying `display`.
+    /// The helper refused by name, for example a dirty worktree or rejected push.
+    /// The submission stays Verifying with `display` retained as unproved evidence.
     Refused {
         /// The helper's refusal token, such as `dirty-worktree`.
         reason: String,
@@ -2467,14 +2466,13 @@ where
                 Err(VerificationProblem::MissingPullRequest)
                     if candidate.cleanup_lease.is_none() =>
                 {
-                    match return_for_repair(
+                    match hold_for_attribution(
                         &queue,
                         &ctx,
-                        actuator,
                         &candidate,
+                        "unleased submission",
                         UNLEASED_SUBMISSION,
                         &active,
-                        ReservationReason::Remediation,
                     )? {
                         GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                         GenerationWrite::Superseded => match refresh_authority(
@@ -2491,14 +2489,13 @@ where
                     }
                 }
                 Err(problem) => {
-                    match return_for_repair(
+                    match hold_for_attribution(
                         &queue,
                         &ctx,
-                        actuator,
                         &candidate,
+                        "submission identity",
                         &problem.message(),
                         &active,
-                        ReservationReason::Remediation,
                     )? {
                         GenerationWrite::Applied(_) => return Ok(TickResult::Returned),
                         GenerationWrite::Superseded => match refresh_authority(
@@ -2943,19 +2940,13 @@ where
                     continue;
                 }
                 VerificationOutcome::InvalidSubmission { detail } => {
-                    let result = return_for_repair(
+                    let result = hold_for_attribution(
                         &queue,
                         &ctx,
-                        actuator,
                         &candidate,
-                        &format!(
-                            "CENTRAL VERIFICATION INVALID SUBMISSION — repair the submission from the story's worktree. Move {} back to verifying. {}.\n\n{}",
-                            candidate.story_id,
-                            push_promise(candidate.cleanup_lease.is_some(), true),
-                            crate::text_lint::quote_evidence(&detail)
-                        ),
+                        "invalid submission",
+                        &detail,
                         &active,
-                        ReservationReason::Remediation,
                     )?;
                     if matches!(result, GenerationWrite::Applied(_)) {
                         return Ok(TickResult::Returned);
@@ -3165,14 +3156,13 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
                          run `story move {} verifying` again.",
                         pull_request.url, linked.url, candidate.story_id
                     );
-                    return Ok(return_for_repair(
+                    return Ok(hold_for_attribution(
                         queue,
                         ctx,
-                        actuator,
                         candidate,
+                        "pull request identity",
                         &diagnosis,
                         owner,
-                        ReservationReason::Remediation,
                     )?
                     .map(|_| Submission::Ended(TickResult::Returned)));
                 }
@@ -3194,16 +3184,12 @@ fn submit_candidate<S: Store, A: VerificationActuator>(
                 Err(error) => Err(error),
             }
         }
-        Err(SubmissionFailure::Refused { display, .. }) => Ok(return_for_repair(
-            queue,
-            ctx,
-            actuator,
-            candidate,
-            &display,
-            owner,
-            ReservationReason::Remediation,
-        )?
-        .map(|_| Submission::Ended(TickResult::Returned))),
+        Err(SubmissionFailure::Refused { display, .. }) => {
+            Ok(
+                hold_for_attribution(queue, ctx, candidate, "submission refused", &display, owner)?
+                    .map(|_| Submission::Ended(TickResult::Returned)),
+            )
+        }
         Err(SubmissionFailure::Infrastructure { detail }) => Ok(record_infrastructure_failure(
             queue,
             ctx,

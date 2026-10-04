@@ -22,6 +22,7 @@ use super::gate_progress::GATE_PROGRESS_PREFIX;
 use super::story::{append_state_transition, state_transition_events};
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 
+mod attribution_hold;
 pub(crate) mod human;
 mod landed;
 
@@ -1373,6 +1374,10 @@ pub(crate) fn held_verifying_for(
             Some(QueueHold::ProjectRecovery) => {
                 "project recovery owns this verification generation".to_string()
             }
+            Some(QueueHold::Attribution) => format!(
+                "causal attribution held; inspect story verifier evidence {} --json",
+                row.snapshot.id
+            ),
         };
         held.push((row.story_no.to_id(&project.prefix), why));
     }
@@ -1494,6 +1499,8 @@ pub(crate) enum QueueHold {
     Reset,
     /// Project recovery has observed this verification generation.
     ProjectRecovery,
+    /// Retained causal evidence has not released this submission.
+    Attribution,
 }
 
 /// Why the queue leaves out `row`, a story in `verifying`, or `None` when it
@@ -1520,6 +1527,8 @@ fn queue_hold(
         Some(QueueHold::Reset)
     } else if generation.is_some_and(|generation| observed.contains(&(row.story_no, generation))) {
         Some(QueueHold::ProjectRecovery)
+    } else if super::attribution::holds::held(tx, project, &row.snapshot.id, generation)? {
+        Some(QueueHold::Attribution)
     } else {
         None
     })

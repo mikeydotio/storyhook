@@ -376,15 +376,23 @@ fn every_return_reserves_the_verifier_while_its_diagnosis_is_delivered() {
 
         assert_eq!(result, TickResult::Returned, "{case}");
         let probes = actuator.probes();
-        assert_eq!(probes.len(), 1, "{case}");
-        assert_eq!(probes[0].0, "notify", "{case}");
-        assert_reserved(&probes[0].1, &id, reason, case);
+        if case == "invalid submission" {
+            assert!(
+                probes.is_empty(),
+                "administrative evidence cannot assign repair"
+            );
+            assert_eq!(story_row(&fixture, &id).state, "verifying");
+        } else {
+            assert_eq!(probes.len(), 1, "{case}");
+            assert_eq!(probes[0].0, "notify", "{case}");
+            assert_reserved(&probes[0].1, &id, reason, case);
+        }
         assert!(activity.active_for(fixture.project()).is_none(), "{case}");
     }
 }
 
 #[test]
-fn a_refused_submission_reserves_the_verifier_while_its_diagnosis_is_delivered() {
+fn a_refused_submission_releases_ownership_without_a_repair_delivery() {
     let fixture = ServiceFixture::new();
     let root = scratch_dir();
     let (id, _) = leased_submission(&fixture, root.path(), "dirty", None);
@@ -414,16 +422,14 @@ fn a_refused_submission_reserves_the_verifier_while_its_diagnosis_is_delivered()
 
     assert_eq!(result, TickResult::Returned);
     let probes = actuator.probes();
-    assert_eq!(probes.len(), 1);
-    assert_reserved(&probes[0].1, &id, ReservationReason::Remediation, "refused");
+    assert!(probes.is_empty());
+    assert_eq!(story_row(&fixture, &id).state, "verifying");
+    assert!(activity.active_for(fixture.project()).is_none());
 }
 
-/// The reservation is kept once the return commits, even when the delivery
-/// that follows fails and the story has already come back: the tick then
-/// continues, and the new generation must replace the reservation before any
-/// refresh finds it current (a debug assertion pins that order).
+/// An administrative refusal cannot invoke a delivery callback that changes the story.
 #[test]
-fn a_failed_delivery_after_a_resubmission_continues_with_the_new_generation() {
+fn an_unproved_refusal_never_enters_the_delivery_resubmission_callback() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let root = scratch_dir();
@@ -469,13 +475,25 @@ fn a_failed_delivery_after_a_resubmission_continues_with_the_new_generation() {
 
     assert_eq!(result, TickResult::Returned);
     let verified = actuator.verified.lock().unwrap().clone();
-    assert_eq!(verified.len(), 1, "only the resubmission is verified");
-    assert_ne!(verified[0], returned);
+    assert!(
+        verified.is_empty(),
+        "no verification after a held submission refusal"
+    );
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.attributions(fixture.project()))
+            .unwrap()[0]
+            .submission
+            .generation,
+        returned
+    );
     let probes = actuator.probes();
-    assert_eq!(probes.len(), 2);
-    for (_, status) in &probes {
-        assert_reserved(status, &id, ReservationReason::Remediation, "delivery");
-    }
+    assert!(
+        probes.is_empty(),
+        "no repair delivery or resubmission callback"
+    );
+    assert_eq!(story_row(&fixture, &id).state, "verifying");
     assert!(activity.active_for(fixture.project()).is_none());
 }
 
