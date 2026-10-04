@@ -798,6 +798,28 @@ whitespace checks pass. Evidence: `/tmp/sh812-native-{red,green}.log` and the
 corresponding isolated results directories. These focused passes do not replace
 the pending matched performance comparison.
 
+**Verification ownership correction, 2026-10-04 UTC.** The user directed the
+implementer to run only tests it authored and leave other tests to the verifier.
+This supersedes the earlier permission for implementer-run full-leg comparisons.
+V10's warm-up was stopped through normal TERM cleanup; no comparison arm started
+and no timing history was promoted. Its source was `25786736`, with binary
+SHA-256 `29e174c8f09db097ae03f1956e6505be3b7562e854799e510b8c7cdc8bda15c0`.
+Interrupted wall time was 1,937.663 seconds, mean load 160.887 and maximum load
+235.063. Those partial values are diagnostics, not performance acceptance.
+Both WebKit native canaries passed before cancellation. The soft-assertion
+control's intentional expected failure is not an unexpected test failure;
+post-TERM errors are cancellation evidence.
+
+The implementation and authored regressions are submitted for verification.
+Full-leg coverage and the successful warm-up plus two comparable baseline/optimized
+pairs remain verifier-owned acceptance work. Preserve identical specs, dependencies,
+binary bytes, eight jobs and sixteen slices; require matching outcomes and at most
+20% difference in paired mean load before claiming improvement. No successful
+matched pair or measured improvement is claimed here. Complete V10 artifacts are
+in `/tmp/sh812-v10-bench/`; compact evidence is retained under
+`.storyhook/logs/sh812-performance-v10/`. The stopped driver has exited, and all
+owned test descendants have ended.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The
