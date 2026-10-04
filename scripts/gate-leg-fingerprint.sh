@@ -76,6 +76,8 @@ is_gate_contract() {
     case "$1" in
     (Makefile | scripts/gate-legs.sh | scripts/leg.sh | scripts/gate-leg-fingerprint.sh | scripts/cargo_diagnostics.py) return 0 ;;
     (scripts/gate-progress.sh | scripts/gate-progress-writer.py | scripts/gate_cost.py | scripts/activity-log.sh) return 0 ;;
+    (scripts/host-admission.py | scripts/host_admission/*) return 0 ;;
+    (scripts/progress_journal.py) return 0 ;;
     (scripts/python-runtime.sh | scripts/python-bin/python3) return 0 ;;
     (*) return 1 ;;
     esac

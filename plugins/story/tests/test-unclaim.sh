@@ -35,7 +35,7 @@ claim_it "$hp"
 out=$(cd "$repo" \
   && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$hp")" \
      bash "$SCRIPT" --project "$slug" unclaim "$hp" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "happy: ok"
+assert_ok "$out" "true" "happy: ok"
 assert_eq "$(jqf "$out" .unclaimed_from)" "in-progress" "happy: names the state released"
 assert_eq "$(jqf "$out" .restored_to)" "todo" "happy: names where it landed"
 assert_eq "$(jqf "$out" .window)" "open" "happy: the window was someone else's"
@@ -55,7 +55,7 @@ wwt=$(mk_dispatched "$repo" "$wt")
 echo scratch >"$repo/.claude/worktrees/$wwt/scratch.txt"
 claim_it "$wt"
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" unclaim "$wt" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "worktree: ok"
+assert_ok "$out" "true" "worktree: ok"
 assert_eq "$(jqf "$out" .worktree_status)" "dirty" "worktree: its state is reported, not hidden"
 [ -d "$repo/.claude/worktrees/$wwt" ] || fail_test "worktree: unclaim removed a worktree"
 [ -f "$repo/.claude/worktrees/$wwt/scratch.txt" ] || fail_test "worktree: uncommitted work was destroyed"
@@ -69,7 +69,7 @@ mk_dispatched "$repo" "$nc" >/dev/null
 out=$(cd "$repo" \
   && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$nc")" \
      bash "$SCRIPT" --project "$slug" unclaim "$nc" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unclaimed: ok:false"
+assert_ok "$out" "false" "unclaimed: ok:false"
 assert_eq "$(jqf "$out" .reason)" "unclaim-conflict" "unclaimed: reason is unclaim-conflict"
 assert_contains "$(jqf "$out" .display)" "todo" "unclaimed: names the state actually found"
 assert_eq "$(state_of "$nc")" "todo" "unclaimed: nothing moved"
@@ -88,7 +88,7 @@ kills_before=$(kill_count)
 out=$(cd "$repo" \
   && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%0' "$sf")" \
      bash "$SCRIPT" --project "$slug" unclaim "$sf" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "self: still ok — the release is the verb"
+assert_ok "$out" "true" "self: still ok — the release is the verb"
 assert_eq "$(jqf "$out" .window)" "self" "self: the window is classified as the caller's own"
 assert_eq "$(jqf "$out" .closed_window)" "false" "self: it was NOT closed"
 assert_eq "$(state_of "$sf")" "todo" "self: the release really happened"
@@ -102,7 +102,7 @@ assert_eq "$(kill_count)" "$kills_before" \
 nw=$(new_story "$repo" "No window")
 claim_it "$nw"
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" unclaim "$nw" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "no-window: ok"
+assert_ok "$out" "true" "no-window: ok"
 assert_eq "$(jqf "$out" .window)" "none" "no-window: reported as none"
 assert_eq "$(jqf "$out" .closed_window)" "false" "no-window: nothing was closed"
 
@@ -120,7 +120,7 @@ kills_before=$(kill_count)
 out=$(cd "$repo" \
   && FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$ow")" \
      bash "$SCRIPT" --project "$slug" unclaim "$ow" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "invisible-window: ok"
+assert_ok "$out" "true" "invisible-window: ok"
 assert_eq "$(jqf "$out" .window)" "open" "invisible-window: found and reported as open"
 assert_eq "$(jqf "$out" .closed_window)" "true" "invisible-window: and actually closed"
 [ "$(kill_count)" -gt "$kills_before" ] || fail_test "invisible-window: no kill-window call was made"
@@ -135,11 +135,45 @@ out=$(cd "$repo" \
      FAKE_TMUX_FAIL_KILL_WINDOW=1 \
      bash "$SCRIPT" --project "$slug" unclaim "$kf" 2>&1) || status=$?
 [ "$status" -ne 0 ] || fail_test "kill-failure: helper exited successfully"
-assert_eq "$(jqf "$out" .ok)" "false" "kill-failure: ok:false"
+assert_ok "$out" "false" "kill-failure: ok:false"
 assert_eq "$(jqf "$out" .closed_window)" "false" "kill-failure: window is not reported closed"
 assert_contains "$(jqf "$out" .display)" "could not prove tmux window absence" \
   "kill-failure: the failed postcondition is explicit"
 assert_eq "$(state_of "$kf")" "todo" "kill-failure: the completed release remains observable"
+
+# --- an unanswered window proof AFTER the release is a failed cleanup -------
+# SH-840's gate failure, made deterministic: the release went through, then the
+# inventory that proves the story's window absent went unanswered (a timeout
+# under load, then). The answer must say both halves -- the claim WAS released,
+# and which step failed and why -- and nothing on disk may be touched. The fault
+# can only be armed by the release itself (fakes/story-post-release-fault):
+# unclaim takes the same inventory twice before releasing.
+pf=$(new_story "$repo" "Window proof unanswered after release")
+pfw=$(mk_dispatched "$repo" "$pf")
+echo scratch >"$repo/.claude/worktrees/$pfw/scratch.txt"
+claim_it "$pf"
+status=0
+out=$(cd "$repo" \
+  && STORY_BIN="$TESTS_DIR/fakes/story-post-release-fault" STORY_REAL_BIN="$(command -v story)" \
+     STORY_POST_RELEASE_FAULT="fixture tmux: inventory not answered" \
+     bash "$SCRIPT" --project "$slug" unclaim "$pf" 2>&1) || status=$?
+[ -f "$FAKE_TMUX_STATE/resource_fail" ] \
+  || fail_test "post-release proof: the release never armed the fault: $out"
+rm -f "$FAKE_TMUX_STATE/resource_fail"
+[ "$status" -ne 0 ] || fail_test "post-release proof: helper exited successfully"
+assert_ok "$out" "false" "post-release proof: ok:false"
+assert_eq "$(state_of "$pf")" "todo" "post-release proof: the completed release stands"
+assert_eq "$(jqf "$out" .unclaimed_from)" "in-progress" "post-release proof: the release is reported"
+assert_eq "$(jqf "$out" .worktree_status)" "dirty" "post-release proof: the worktree is still reported"
+assert_contains "$(jqf "$out" .display)" "reset" \
+  "post-release proof: display still names the verb that would remove the worktree"
+assert_contains "$(jqf "$out" .display)" "could not prove tmux window absence" \
+  "post-release proof: the failed step is named"
+assert_contains "$(jqf "$out" .display)" "fixture tmux: inventory not answered" \
+  "post-release proof: and so is its cause"
+[ -f "$repo/.claude/worktrees/$pfw/scratch.txt" ] || fail_test "post-release proof: uncommitted work was destroyed"
+(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$pfw") \
+  || fail_test "post-release proof: unclaim deleted a branch"
 
 # --- leased cleanup ignores mutable checkout/provider paths ----------------
 # Stop-now owns only claim release plus tmux cleanup. Its creation-time lease
@@ -158,7 +192,7 @@ lease=$(jq -nc --arg project "$slug" --arg story "$lu" --arg socket "$socket" '
 out=$(cd /tmp \
   && STORYHOOK_REAP_LEASE_V1="$lease" \
      bash "$SCRIPT" --project "$slug" unclaim "$lu" 2>&1)
-assert_eq "$(jqf "$out" .ok)" false "invalid lease: unclaim refuses"
+assert_ok "$out" false "invalid lease: unclaim refuses"
 assert_eq "$(jqf "$out" .reason)" resource-query-failed "invalid lease: missing repository is explicit"
 assert_eq "$(state_of "$lu")" in-progress "invalid lease: claim is preserved"
 assert_contains "$(cat "$FAKE_TMUX_STATE/windows")" "$lu" "invalid lease: terminal is preserved"
@@ -167,24 +201,24 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/windows")" "$lu" "invalid lease: termin
 cm=$(new_story "$repo" "With a reason")
 claim_it "$cm"
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" unclaim "$cm" --comment "blocked on TST-9" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "comment: ok"
+assert_ok "$out" "true" "comment: ok"
 assert_contains "$(comments_of "$cm")" "blocked on TST-9" "comment: the caller's own sentence is stored"
 
 nq=$(new_story "$repo" "Quietly")
 claim_it "$nq"
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" unclaim "$nq" --no-comment 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "no-comment: ok"
+assert_ok "$out" "true" "no-comment: ok"
 assert_eq "$(comments_of "$nq")" "" "no-comment: nothing was stored"
 
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" unclaim "$nq" --comment x --no-comment 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "comment+no-comment: refused rather than resolved by precedence"
+assert_ok "$out" "false" "comment+no-comment: refused rather than resolved by precedence"
 
 # --- the fallback is reported, not performed silently -----------------------
 # A story created directly in the active state has no earlier state to go back
 # to; SH-483 requires that be said out loud rather than substituted quietly.
 fb=$(cd "$repo" && story new "Born claimed" --state in-progress --json | jq -r '.story.story.id')
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" unclaim "$fb" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "fallback: ok"
+assert_ok "$out" "true" "fallback: ok"
 assert_eq "$(jqf "$out" .restore_fallback)" "no-prior-state" "fallback: the reason is carried through"
 assert_eq "$(jqf "$out" .restored_to)" "todo" "fallback: landed on the required fallback state"
 assert_contains "$(jqf "$out" .display)" "no-prior-state" "fallback: and display says so"
@@ -197,7 +231,7 @@ kills_before=$(kill_count)
 out=$(cd "$repo" \
   && TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE=%0 FAKE_TMUX_PANES="$(printf '%s\t1\t%%7' "$dr")" \
      STORY_DRY_RUN=1 bash "$SCRIPT" --project "$slug" unclaim "$dr" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "dry: ok"
+assert_ok "$out" "true" "dry: ok"
 assert_eq "$(jqf "$out" .dry_run)" "true" "dry: flagged"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "story unclaim" "dry: previews the release"
 assert_contains "$(jqf "$out" '.commands|join(" ")')" "kill-window" "dry: previews the window close"
@@ -213,17 +247,17 @@ assert_eq "$(kill_count)" "$kills_before" \
 # A dry run that would conflict says so, rather than previewing a release that
 # could not happen: the CLI's own --dry-run reads for real.
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" --project "$slug" unclaim "$nc" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "dry-conflict: a preview of an impossible release refuses"
+assert_ok "$out" "false" "dry-conflict: a preview of an impossible release refuses"
 assert_eq "$(jqf "$out" .reason)" "unclaim-conflict" "dry-conflict: for the same reason a real run would"
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" unclaim 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unclaim: missing id is ok:false"
+assert_ok "$out" "false" "unclaim: missing id is ok:false"
 assert_contains "$(jqf "$out" .display)" "usage:" "unclaim: missing id shows the usage line"
 out=$(cd "$repo" && bash "$SCRIPT" unclaim "bad id!" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unclaim: invalid id is ok:false"
+assert_ok "$out" "false" "unclaim: invalid id is ok:false"
 assert_contains "$(jqf "$out" .display)" "alphanumeric" "unclaim: invalid id names the constraint"
 out=$(cd "$repo" && bash "$SCRIPT" --project "$slug" unclaim "$nc" --force 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "unclaim: --force is not a flag this verb has"
+assert_ok "$out" "false" "unclaim: --force is not a flag this verb has"
 
 finish

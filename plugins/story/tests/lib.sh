@@ -58,6 +58,8 @@ _register_tmp() {
 # sessions cannot be caught by a broad prefix sweep.
 _register_tmp_tmux_session() {
   local session
+  # A real server is about to take this test's default path (SH-840).
+  _withdraw_fake_tmux_default || return 1
   for session in "$@"; do
     case "$session" in
       story-test-*) _TMP_TMUX_SESSIONS+=("$session") ;;
@@ -196,9 +198,6 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   fi
   export STORYHOOK_TEST_SUBPROCESS_PATIENCE_MS="$((_STORY_PROBE_SECONDS * 1000))"
   unset _STORY_PROBE_SECONDS
-  # Read-only native resource queries must never inspect the operator server.
-  export TMUX_TMPDIR="$STORYHOOK_TEST_HOME/tmux"
-  mkdir -p "$TMUX_TMPDIR"
 
   # A standalone `bash test-foo.sh` (this branch) has no SH-524 progress
   # journal of its own to write to; an ambient one set by some other daemon-
@@ -207,6 +206,21 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   # stays here rather than joining the shared table.
   unset STORYHOOK_GATE_PROGRESS
 fi
+
+# Read-only native resource queries must never inspect the operator's tmux
+# server. A caller outside tmux is pointed at its DEFAULT server,
+# $TMUX_TMPDIR/tmux-<uid>/default, by tmux and, since SH-825 (90a4a55a), by the
+# helper's own socket selection -- so an unset TMUX_TMPDIR means the real one
+# under /tmp. This used to be set only by the instance that owns the home, and a
+# nested instance under a harness that clears its environment
+# (tests/support/protect_*.rs) inherited none: its unclaim asked the machine's
+# real default server and was refused as an unowned socket (SH-840). Every
+# instance therefore keeps the directory inside the test's own home.
+case "${TMUX_TMPDIR:-}" in
+  "$STORYHOOK_TEST_HOME"/*) ;;
+  *) export TMUX_TMPDIR="$STORYHOOK_TEST_HOME/tmux" ;;
+esac
+mkdir -p "$TMUX_TMPDIR"
 
 # --- the binary under test -------------------------------------------------
 #
@@ -387,6 +401,76 @@ fi
 # necessary. Per-file fake directories may override individual programs.
 export PATH="$TESTS_DIR/fakes:$PATH"
 
+# --- the fake server is published before every helper run (SH-840) ---------
+#
+# fakes/tmux keeps its server model in $FAKE_TMUX_STATE, but the native
+# resource inventory reads that model from the DAEMON, through
+# `tmux -S <socket> list-panes`, with an environment allowlist that carries no
+# FAKE_* knob. So the model must be published from the caller's environment
+# first: the socket created, the caller's FAKE_TMUX_PANES rows and worktree
+# directories written down. The fake's `display-message -p '#{socket_path}'` arm
+# does exactly that. Until SH-825 (90a4a55a) the helper asked that question
+# itself before every inventory, so publication was a side effect of production
+# code. Production now reads the caller's socket from $TMUX without asking --
+# rightly: an unrelated broken caller server must not veto a lease -- and every
+# fixture that leaned on the side effect read an empty server (sixteen plugin
+# scripts on dev b904c137). The fixture publishes for itself now, immediately
+# before each run of the helper, the one point every test passes through.
+#
+# Only the fake is published: the server must answer with this fixture's own
+# socket, so a real tmux on PATH is left untouched. A caller outside tmux is
+# pointed at the default server, so that path is linked to the fake's socket --
+# but only inside the test home and never over anything but an earlier link.
+# The link stays for the rest of the test, because helper runs that bypass this
+# wrapper (`env ... bash "$SCRIPT"`) and daemon work that outlives a run still
+# reach the default server. A test that starts a REAL server on its own default
+# path declares it through _register_tmp_tmux_session, which withdraws the link
+# first (test-dispatch-failure-cleanup.sh otherwise met "Socket operation on
+# non-socket").
+_publish_fake_tmux() {
+  local answer state default_dir
+  [ -n "${FAKE_TMUX_STATE:-}" ] && [ -d "$FAKE_TMUX_STATE" ] || return 0
+  answer=$(tmux display-message -p '#{socket_path}' 2>/dev/null) || return 0
+  state=$(cd "$FAKE_TMUX_STATE" && pwd -P) || return 1
+  [ "$answer" = "$state/tmux.sock" ] || return 0
+  case "${TMUX_TMPDIR:-}" in "$STORYHOOK_TEST_HOME"/*) ;; *) return 0 ;; esac
+  default_dir="$TMUX_TMPDIR/tmux-$(id -u)"
+  mkdir -p "$TMUX_TMPDIR" || return 1
+  [ -d "$default_dir" ] || mkdir -m 700 "$default_dir" || return 1
+  if [ -L "$default_dir/default" ] || [ ! -e "$default_dir/default" ]; then
+    ln -sfn "$answer" "$default_dir/default" || return 1
+  fi
+}
+
+# Withdraw a fake default-server link before a real server needs the path. Only
+# a link to a regular file is the fake's: a real server's socket is a socket,
+# and a link to one (tmux-revivify makes them) is never removed.
+_withdraw_fake_tmux_default() {
+  local link target
+  case "${TMUX_TMPDIR:-}" in "$STORYHOOK_TEST_HOME"/*) ;; *) return 0 ;; esac
+  link="$TMUX_TMPDIR/tmux-$(id -u)/default"
+  [ -L "$link" ] || return 0
+  target=$(readlink "$link") || return 1
+  [ -f "$target" ] && [ ! -S "$target" ] || return 0
+  rm -f -- "$link"
+}
+
+# Every test runs the helper as `bash "$SCRIPT" ...` (or an installed copy,
+# `bash <...>/story.sh`), so this one wrapper publishes for all of them without
+# a hand-kept list of call sites -- the reason the `git` wrapper above exists.
+# A per-call `FAKE_TMUX_PANES=... bash "$SCRIPT"` reaches the function's
+# environment, exactly as it reached the helper's own probe.
+bash() {
+  case "${1:-}" in
+    "$SCRIPT" | */story.sh)
+      _publish_fake_tmux || {
+        printf 'lib.sh: cannot publish the fake tmux server in %s (SH-840)\n' "${FAKE_TMUX_STATE:-}" >&2
+        return 1
+      } ;;
+  esac
+  command bash "$@"
+}
+
 # mk_story_repo — build a temp git repo with a real storyhook project
 # initialized (`story project new`), and a LOCAL bare origin so dispatch's `git
 # fetch` resolves fully offline and deterministically (no network, no
@@ -515,6 +599,21 @@ assert_contains() {
   *"$2"*) : ;;
   *) fail_test "$3 — [$1] does not contain [$2]" ;;
   esac
+}
+
+# assert_ok <answer> <expected> <label> — assert a helper answer's top-level
+# `.ok`. `.ok` says only THAT a verb refused; the answer's `reason` and
+# `display` say WHY, and a gate log is the only evidence a load-dependent
+# failure leaves behind. So a mismatch prints the WHOLE answer, raw, whatever it
+# is -- JSON, a crash, nothing (SH-840: test-unclaim.sh answered ok:false once
+# under gate load, and nothing else it said survived). Like assert_eq, it always
+# returns 0, and an answer jq cannot read never trips a caller's `set -e`.
+assert_ok() {
+  local actual
+  actual=$(jqf "$1" .ok) || :
+  if [ "$actual" != "$2" ]; then
+    fail_test "$3 — expected [$2], got [$actual] — answer: [$1]"
+  fi
 }
 
 # router_verbs <story.sh> — derive the helper's accepted verb vocabulary from

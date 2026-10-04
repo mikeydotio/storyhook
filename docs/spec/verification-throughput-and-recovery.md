@@ -373,3 +373,180 @@ Controlled regressions cover behavior and fixture defects, base defects,
 host faults, overload, conflicts, new detectors, mixed failures, budget
 exhaustion, restart and stale authority. Historical diagnoses are provenance,
 not causal proof; keep provisional findings provisional.
+
+## SH-868 host admission contract
+
+The host authority is a cooperative resource scheduler, separate from the
+project story store. SH-869 owns production runner adoption. Production
+activation requires a measured host policy; no fixture values are defaults.
+SH-801 still owns the controlled measurement campaign. This authority alone
+does not remove overload from runners that have not adopted it.
+
+One broker owns a permanent lock in the canonical host-local
+`/var/tmp/storyhook-host-admission-v1` directory. Clients use a Unix socket.
+Neither HOME, XDG state, repository settings nor compiler-slot overrides
+select a different authority. The initial service supports one OS account;
+another account must refuse, never create an independent cap. A VM has its
+own kernel and is not claimed to share physical-host admission.
+
+SQLite transactions retain allocation and evidence before acknowledgement.
+Requests have stable IDs; an identical retry returns the original capability,
+and a changed retry fails. Unknown state or cleanup fails closed. A root
+reserves CPU and memory together. Subgrants partition that envelope without
+charging the host twice. Holding a parent while waiting for another root or
+an enlargement is prohibited. Finish descendants, release, then requeue.
+
+The scheduler retains project and work-class deficit counters, charging
+dominant resource share. Positive release weight and aged-request backfill
+suppression prevent starvation while the host envelope remains supported.
+Separate repair capacity cannot be borrowed by ordinary work. Pressure and
+sensor failure can pause every class, including repair; cleanup stays usable.
+Durations and thresholds must come from the policy and its measurement
+references. Missing observations are unknown, not idle.
+
+Lease states are queued, reserved, running, draining, quarantined, released
+and cancelled. A blocked launch records the supervisor, child incarnation,
+session and lifetime guard before executing the command. Registered children
+must retain that ownership across exec. A detached service needs an explicit
+adapter. Session membership alone is not containment. Cancellation does not
+release capacity. Native process identity, session settlement and lifetime
+guard settlement must agree before release. Unknown supervisor or descendant
+ownership retains capacity until cleanup can be proved or a native boot
+identity change proves the old processes cannot survive.
+
+Authority events retain the policy, host, boot, lease lineage, queue waits,
+decisions, resource observations and recovery reasons. They do not certify a
+tree. The SH-867 importer retains their attempt-bound projection without
+changing immutable gate inputs or the silence watchdog baseline.
+
+Darwin sensors use Mach CPU deltas, free plus inactive pages as a conservative
+available-memory estimate, kernel pressure flags, and the system `ps` state
+census. Its runnable-process field is an upper bound: each protected `?`
+state counts as runnable. It is not a runnable-thread count. Linux sensors
+use MemAvailable, CPU tick deltas, procs_running, and CPU/memory PSI. A first
+CPU observation supplies no interval; admission waits for the next valid
+sample. A stale observation gap restarts recovery hysteresis.
+
+### Protocol and adapter boundary
+
+`python3 scripts/host-admission.py status` reports disabled when calibration
+is absent. After host policy activation, `serve` runs the single foreground
+broker. A service manager must retain that service under the same OS account.
+The command does not install a service or silently start a second authority.
+
+The run interface is:
+
+```
+python3 scripts/host-admission.py run --request-id <stable-id> \
+  --project <project-id> --class <build|test|release|repair> \
+  --cpu <milli-CPUs> --memory <bytes> \
+  [--attempt-id <attempt> --execution-id <execution> --generation <sequence> \
+   --journal <existing-progress-journal>] -- <argv...>
+```
+
+The four evidence arguments are all required together. The journal must
+already exist and belong to the service account. The child retains inherited
+standard streams and working directory. Ordinary command exit status is
+preserved; signals map to `128 + signal`. Admission, launch, evidence and
+cleanup failures return 125 with a diagnostic. A queued signal cancels the
+request before launch. A failed transport reply is ambiguous: retry the
+same request ID from the same live supervisor, never invent a replacement ID.
+
+The socket accepts one newline-delimited JSON request per connection:
+`{"version":1,"operation":"status"}` is the read-only status request.
+`enqueue` carries `request` with `id`, `project`, `work`, `resources` and an
+optional `binding`. `inspect`, `wait`, `cancel`, `finish` and `subgrant` use
+`id` and `token`; a subgrant also has `child` and `resources`. `wait` returns
+at a sample boundary even if the request remains queued. Clients must loop
+over queued replies. Socket I/O is bounded by the calibrated `stale_ms`.
+`events` accepts `after`, returns at most 100 records, and advances only by
+the returned durable sequence. `attach` and `settle` are supervisor protocol
+operations, not claims that a command may make about its own cleanup.
+
+The status view omits capabilities. It reports allocated resources, pressure,
+the current valid host sample, each lease's observed peaks, elapsed wait,
+arrival queue position and quarantine recovery condition. Arrival order is
+not a prediction that overrides weighted class or project scheduling.
+
+SH-869 must wrap each managed spawn boundary with `ManagedProcess`, preserve
+the blocked-launch handshake, and pass inherited grant capabilities to nested
+adapters. An inherited `STORYHOOK_HOST_REQUEST` and `STORYHOOK_HOST_GRANT`
+select a subgrant. The broker also rejects a new root from a registered
+execution session if these environment values are removed. Nested adapters
+must budget their own overhead inside the root envelope, and retain the
+parent evidence binding. A child cannot enlarge the parent or wait for an
+unavailable partition. Sequential reuse requires independent settlement.
+
+Ordinary descendants must remain in their owned session and process group.
+`STORYHOOK_HOST_LEASE_FD` names an inherited lifetime descriptor. An adapter
+that closes descriptors on spawn must explicitly preserve this descriptor
+where work can outlive its caller. Detached services, workers hosted by
+another daemon, or descendants that discard both session and descriptor
+ownership are unsupported until an adapter supplies a lifetime proof. This
+cooperative protocol is not a security boundary or kernel containment.
+
+The supervisor keeps its leader unreaped while it sends group signals, so
+that PID cannot be reused as an unrelated group. An exec-error pipe separates
+launch refusal from a workload's exit. Control or journal failure first
+drains the supervisor's own pinned group, then reports the failure; it does
+not release capacity from the error alone. Broker restart preserves state.
+A dead supervisor with an attached execution can recover after independent
+session, native identity and lifetime-guard proof. A lost supervisor with no
+attachment remains quarantined because absence does not prove no launch.
+Do not delete the database or lock to clear quarantine. Missing or truncated
+initialized state is a refusal, not permission to create a fresh budget.
+
+The broker samples CPU counters and resident bytes for all registered
+sessions in each envelope, including subgrants. CPU is in milli-CPUs, so
+1000 means one fully used CPU. CPU is `null` until the same process
+incarnations span a valid interval. Resident memory is summed RSS, which can
+conservatively count shared pages more than once. Sampled peaks do not claim
+to capture every short-lived spike. Host pressure remains an independent
+admission constraint. A required census failure retains quarantine.
+
+Resource journal records have kind `resource`, the exact gate binding, and
+an `observation` with authority epoch, sequence, host, boot and policy digest.
+The importer rejects changed replay and foreign bindings, and deduplicates
+exact replay. These records never renew the execution idle deadline. The
+authority retains undelivered events after journal failure; a fresh publisher
+may replay them. Evidence cannot alter immutable inputs or certify a tree.
+
+### Calibration and policy revision
+
+No production policy ships with this implementation. The host owner must
+provide private `policy.json` and `calibration-<sha256>.json` files under the
+canonical namespace. The policy schema is version 1. Required parameters are:
+
+| Parameter | Meaning and unit |
+|---|---|
+| `host` | Exact native machine identity |
+| `capacity`, `headroom`, `reserve` | CPU milli-CPUs and memory bytes |
+| `weights` | Positive integers for build, test, release and repair |
+| `project_weight` | Equal positive quantum for each project |
+| `sample_ms`, `stale_ms`, `recover_ms` | Observation cadence, freshness and continuous recovery interval |
+| `starvation_ms`, `lease_ms`, `cleanup_ms` | Backfill stop age, maximum lease age and each cleanup signal allowance |
+| `thresholds` | Recovery, stop and severe levels for CPU, memory and runnable pressure |
+| `workloads` | Named measured concurrent CPU and memory envelopes |
+| `calibration`, `measurements` | `measured` and nonempty `sha256:<digest>` references |
+
+CPU and memory pressure thresholds are permille, from 0 to 1000. Runnable
+thresholds use the native adapter's documented census unit. The usable host
+cap is capacity minus headroom; ordinary work cannot consume the repair
+reserve. Available-memory observations also constrain outstanding promises.
+
+Each calibration record must have version 1, the matching host,
+`result: "calibrated"`, nonempty `observations`, and `parameters` equal to
+every policy field except `calibration` and `measurements`. Its bytes must
+match the named SHA-256. Combined `sources` must include SH-801 and SH-867.
+These checks establish retained provenance and parameter consistency, not
+the scientific adequacy of a campaign. The missing activation evidence is
+SH-801's accepted gate/interactive-latency comparison plus SH-867 workload
+cost observations, and a documented derivation for every numeric parameter.
+Fixture policies cannot satisfy the production calibration check.
+
+To revise a policy, first settle all requests and executions, then restart
+the broker with the new validated policy. Live, queued or quarantined work
+prevents revision. The transaction retains prior evidence and records the
+previous digest under a new authority epoch. Never reinterpret a held grant
+under a different cap. SH-869 retains production adoption; neither this
+implementation nor fixture measurements authorize enabling production.

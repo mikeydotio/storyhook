@@ -79,6 +79,7 @@ pub use engine_reset::EngineReset;
 pub mod error;
 pub mod fault;
 mod gate_evidence;
+pub(crate) mod gate_resources;
 pub mod ids;
 pub mod landing;
 pub mod migrate;
@@ -173,6 +174,16 @@ pub trait Store: Send + Sync + 'static {
     /// Rollback is by construction rather than by convention: the transaction
     /// rolls itself back when dropped, so an early return, an error, or a panic
     /// all leave the database untouched.
+    ///
+    /// `f` must not start another write on this store — `write`,
+    /// [`Self::write_with_snapshot`] or [`Self::migrate`]. Writes serialize, so
+    /// the inner one could only wait for the write around it. An
+    /// implementation refuses it at once with [`StoreError::NestedWrite`]
+    /// rather than waiting (SH-838), and `f` then decides, as for any error,
+    /// whether this write commits or rolls back. A write from another thread
+    /// is not nested: it waits its turn. The one shape no implementation can
+    /// tell from that ordinary wait is `f` handing a write to another thread
+    /// and waiting for it — that still deadlocks, so do such work on `tx`.
     fn write<T>(
         &self,
         f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
@@ -250,6 +261,9 @@ pub trait Store: Send + Sync + 'static {
     /// could be written here is `snapshot()` then `write()`, which is the
     /// defect, and a defaulted method would ship it silently to the next
     /// engine.
+    ///
+    /// `f` is bound by [`Self::write`]'s rule against nested writes, and this
+    /// method is itself one of the writes that rule names.
     fn write_with_snapshot<T>(
         &self,
         dir: &Path,

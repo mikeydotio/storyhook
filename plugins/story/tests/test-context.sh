@@ -8,13 +8,13 @@ repo=$(mk_story_repo)
 id=$(new_story "$repo" "Context me")
 
 out=$(cd "$repo" && bash "$SCRIPT" context 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "context: ok"
+assert_ok "$out" "true" "context: ok"
 assert_eq "$(jqf "$out" .full)" "false" "context: full defaults false"
 assert_contains "$(jqf "$out" .display)" "$id" "context: display carries the real story"
 
 # --- --full appends the three deep-dive sections, none present by default ---
 out=$(cd "$repo" && bash "$SCRIPT" context --full 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "full: ok"
+assert_ok "$out" "true" "full: ok"
 assert_eq "$(jqf "$out" .full)" "true" "full: reports itself"
 assert_contains "$(jqf "$out" .display)" "Critical path" "full: appends critical-path"
 assert_contains "$(jqf "$out" .display)" "Blocked stories" "full: appends blocked"
@@ -31,7 +31,7 @@ assert_contains "$(jqf "$out" .display)" "Stale (1d+)" "full: honours STORY_STAL
 
 # --- a malformed STORY_STALE_THRESHOLD fails loudly, not "(unavailable)" ---
 out=$(cd "$repo" && STORY_STALE_THRESHOLD='not-a-duration' bash "$SCRIPT" context --full 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "full: a malformed threshold is a real failure, not silently swallowed"
+assert_ok "$out" "false" "full: a malformed threshold is a real failure, not silently swallowed"
 assert_contains "$(jqf "$out" .display)" "invalid duration" "full: names the real CLI error"
 
 # --- read-only ---
@@ -40,6 +40,6 @@ assert_eq "$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 
 # --- errors ---
 out=$(cd "$repo" && bash "$SCRIPT" context --bogus 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "context: rejects an unknown flag"
+assert_ok "$out" "false" "context: rejects an unknown flag"
 
 finish

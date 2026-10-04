@@ -56,7 +56,7 @@ answers() { lines_of dialog_answers; }
 
 # ---- Family A: the launch never started (the SH-226 field cause) -------------
 dispatch_run FAKE_TMUX_CAPTURE=structural FAKE_TMUX_LAUNCH_MANGLE=1
-assert_eq "$(jqf "$out" .ok)" "false" "A: a pane that never became claude is refused"
+assert_ok "$out" "false" "A: a pane that never became claude is refused"
 assert_eq "$(jqf "$out" .reason)" "pane-not-ready" "A: refusal names the pane"
 # SH-231: dispatch now gates on sentinel existence, not rendered content -- a
 # launch that never became claude/node never runs a SessionStart hook, so
@@ -84,7 +84,7 @@ esac
 # the actual proof that claim: if `send-keys -l` were reachable anywhere on
 # this path, paste_text's own `|| return 1` would surface as a failure here.
 dispatch_run FAKE_TMUX_CAPTURE=structural FAKE_TMUX_FAIL_SEND_KEYS=literal
-assert_eq "$(jqf "$out" .ok)" "true" \
+assert_ok "$out" "true" \
   "B: a launch-keystroke-failure knob no longer reaches dispatch -- the launch is execed, not typed"
 assert_eq "$(state_of)" "in-progress" "B: the story is claimed normally"
 
@@ -92,7 +92,7 @@ assert_eq "$(state_of)" "in-progress" "B: the story is claimed normally"
 # A claude occupant with a drifted footer must STILL confirm via the structural
 # tier -- the fix must not have broken the tier it narrowed.
 dispatch_run FAKE_TMUX_CAPTURE=structural
-assert_eq "$(jqf "$out" .ok)" "true" "C: claude + drifted footer still confirms structurally: $out"
+assert_ok "$out" "true" "C: claude + drifted footer still confirms structurally"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "C: ...and says so"
 assert_eq "$(submits)" "1" "C: ...and the prompt is delivered exactly once"
 
@@ -100,7 +100,7 @@ assert_eq "$(submits)" "1" "C: ...and the prompt is delivered exactly once"
 # enforced that until now -- with a shell occupant they must refuse.
 for fixture in modal busy churn; do
   dispatch_run FAKE_TMUX_CAPTURE=$fixture FAKE_TMUX_LAUNCH_MANGLE=1
-  assert_eq "$(jqf "$out" .ok)" "false" "C: fixture '$fixture' on a shell pane must not confirm"
+  assert_ok "$out" "false" "C: fixture '$fixture' on a shell pane must not confirm"
   assert_eq "$(submits)" "0" "C: fixture '$fixture' must not deliver the charter"
 done
 
@@ -109,7 +109,7 @@ done
 # this is the invariant SUBMIT-AFTER-RECEIPT, and before SH-226 an Enter was
 # pressed here regardless.
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_DROP_PASTE=1
-assert_eq "$(jqf "$out" .ok)" "false" "D: an undelivered prompt fails the dispatch"
+assert_ok "$out" "false" "D: an undelivered prompt fails the dispatch"
 assert_eq "$(jqf "$out" .reason)" "handoff-undelivered" "D: named as undelivered"
 assert_eq "$(jqf "$out" .delivery_phase)" "undelivered" "D: phase recorded"
 assert_eq "$(submits)" "0" "D: no Enter is sent when receipt was never observed"
@@ -122,7 +122,7 @@ assert_eq "$(state_of)" "todo" "D: undelivered is the one send failure safe to r
 # front of a live agent, so the claim must SURVIVE -- rolling back here would
 # hand the same story to a second session.
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_ENTER_ABSORB=9
-assert_eq "$(jqf "$out" .ok)" "false" "D: an unconfirmed submission fails the dispatch"
+assert_ok "$out" "false" "D: an unconfirmed submission fails the dispatch"
 assert_eq "$(jqf "$out" .reason)" "handoff-unconfirmed" "D: named as unconfirmed"
 assert_eq "$(jqf "$out" .delivery_phase)" "received-unsubmitted" "D: phase recorded"
 assert_eq "$(state_of)" "in-progress" \
@@ -172,7 +172,7 @@ assert_eq "$(state_of)" "in-progress" "D-dialog-submit: the claim is kept after 
 # The real Claude dispatch: the charter collapses to "[Pasted text #1]"
 # (~/.claude/history.jsonl, every storyhook dispatch), which is receipt.
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PASTE_PLACEHOLDER=1
-assert_eq "$(jqf "$out" .ok)" "true" "D-placeholder: a collapsed paste is this prompt"
+assert_ok "$out" "true" "D-placeholder: a collapsed paste is this prompt"
 assert_eq "$(submits)" "1" "D-placeholder: submitted once"
 assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" "$RUN_ID" "D-placeholder: the whole charter was submitted"
 
@@ -197,14 +197,14 @@ assert_eq "$(pastes)" "0" "D-no-composer: nothing typed"
 # The key submitted, but the screen showed the clear only after the
 # confirmation window: that is a submission, and no second key is sent.
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_SLOW_CLEAR=2
-assert_eq "$(jqf "$out" .ok)" "true" "D-slow-clear: a late clear is a submission"
+assert_ok "$out" "true" "D-slow-clear: a late clear is a submission"
 assert_eq "$(keys)" "1" "D-slow-clear: exactly one submit key"
 assert_eq "$(submits)" "1" "D-slow-clear: submitted once"
 
 # A faint placeholder with a swallowed key is NOT an empty composer: the
 # charter is still there, so the submission is not confirmed.
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PASTE_PLACEHOLDER=faint FAKE_TMUX_ENTER_ABSORB=9
-assert_eq "$(jqf "$out" .ok)" "false" "D-faint-placeholder: no false confirmation"
+assert_ok "$out" "false" "D-faint-placeholder: no false confirmation"
 assert_eq "$(jqf "$out" .reason)" "handoff-unconfirmed" "D-faint-placeholder: unconfirmed"
 assert_eq "$(submits)" "0" "D-faint-placeholder: nothing was really submitted"
 
@@ -220,7 +220,7 @@ assert_eq "$(submits)" "0" "D-faint-placeholder: nothing was really submitted"
 # now gated BEHIND a real sentinel rather than in front of rendered content.
 dispatch_run FAKE_TMUX_CAPTURE=structural FAKE_TMUX_LAUNCH_MANGLE=1 \
         STORY_READY_PROCESS_PATTERN=.
-assert_eq "$(jqf "$out" .ok)" "false" \
+assert_ok "$out" "false" \
   "E: the escape hatch cannot rescue a launch that never published a sentinel -- there is nothing to relax"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
   "E: ...it fails for the same reason Family A does, unaffected by the pattern"
@@ -229,17 +229,17 @@ assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
 # name the default pattern refuses -- the scenario `.` was actually meant for.
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_COMMAND=some-unlisted-wrapper \
         STORY_READY_PROCESS_PATTERN=.
-assert_eq "$(jqf "$out" .ok)" "true" \
+assert_ok "$out" "true" \
   "E: STORY_READY_PROCESS_PATTERN=. still rescues an unrecognised occupant NAME, once a sentinel is real"
 
 # An operator whose claude reports an unexpected name can name it.
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_COMMAND=claude-wrapper \
         STORY_READY_PROCESS_PATTERN='^claude-wrapper$' 
-assert_eq "$(jqf "$out" .ok)" "true" "E: a custom occupant pattern is honoured"
+assert_ok "$out" "true" "E: a custom occupant pattern is honoured"
 
 # ...and the default rejects it, so the knob is load-bearing rather than cosmetic.
 dispatch_run FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_COMMAND=claude-wrapper
-assert_eq "$(jqf "$out" .ok)" "false" "E: the default pattern does not match it"
+assert_ok "$out" "false" "E: the default pattern does not match it"
 case "$(jqf "$out" .display)" in
   *STORY_READY_PROCESS_PATTERN*) ;;
   *) fail_test "E: a fail-closed gate must print the knob that unsticks it" ;;
@@ -265,7 +265,7 @@ F_ROOT=$(mk_versioned_claude 2.1.228 2.1.227)
 # with NO escape hatch set. This is the whole bug.
 dispatch_run PATH="$F_ROOT/bin:$FAKE_TMUX_DIR:$PATH" \
         FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_COMMAND=2.1.228
-assert_eq "$(jqf "$out" .ok)" "true" \
+assert_ok "$out" "true" \
   "F: a version-named claude binary is recognised without an escape hatch"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "F: ...and readiness is confirmed"
 assert_eq "$(submits)" "1" "F: ...and the prompt is delivered exactly once"
@@ -275,7 +275,7 @@ assert_eq "$(submits)" "1" "F: ...and the prompt is delivered exactly once"
 dispatch_run PATH="$F_ROOT/bin:$FAKE_TMUX_DIR:$PATH" \
         FAKE_TMUX_CAPTURE=structural FAKE_TMUX_PANE_COMMAND=zsh \
         FAKE_TMUX_LAUNCH_MANGLE=1
-assert_eq "$(jqf "$out" .ok)" "false" "F: a shell is STILL refused (SH-226 holds)"
+assert_ok "$out" "false" "F: a shell is STILL refused (SH-226 holds)"
 assert_eq "$(submits)" "0" "F: nothing is typed into a shell"
 assert_eq "$(state_of)" "todo" "F: and the claim is rolled back"
 
@@ -285,7 +285,7 @@ assert_eq "$(state_of)" "todo" "F: and the claim is rolled back"
 # binary's own directory is still that install.
 dispatch_run PATH="$F_ROOT/bin:$FAKE_TMUX_DIR:$PATH" \
         FAKE_TMUX_CAPTURE=marker FAKE_TMUX_PANE_COMMAND=2.1.227
-assert_eq "$(jqf "$out" .ok)" "true" \
+assert_ok "$out" "true" \
   "F: a pane still running the PREVIOUS version is recognised after an update"
 
 # F4: the sibling rule is BOUNDED. A version-shaped name that names no file in
@@ -294,7 +294,7 @@ assert_eq "$(jqf "$out" .ok)" "true" \
 dispatch_run PATH="$F_ROOT/bin:$FAKE_TMUX_DIR:$PATH" \
         FAKE_TMUX_CAPTURE=structural FAKE_TMUX_PANE_COMMAND=9.9.9 \
         FAKE_TMUX_LAUNCH_MANGLE=1
-assert_eq "$(jqf "$out" .ok)" "false" \
+assert_ok "$out" "false" \
   "F: a version-shaped name with no such binary installed is refused"
 assert_eq "$(submits)" "0" "F: ...and nothing is typed into it"
 

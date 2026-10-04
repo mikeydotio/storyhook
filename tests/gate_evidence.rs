@@ -269,3 +269,45 @@ fn distinct_executions_keep_their_trees_and_cannot_replace_finished_evidence() {
         Some("head-tree")
     );
 }
+
+#[test]
+fn host_observations_survive_reopen_and_cannot_be_replaced() {
+    let (root, store) = new_store();
+    let project = seed_project(&store, "resources", "GR");
+    let mut record = GateAttempt::new(
+        "resource-attempt".into(),
+        GateSubmission {
+            project,
+            story_id: "GR-1".into(),
+            generation: Some(GlobalSeq::new(7)),
+            submitted_at: None,
+        },
+        AT,
+    );
+    record.executions.push(execution("gate", "tree"));
+    let event = serde_json::json!({"version":1,"authority":"broker","sequence":1,"host":"host",
+        "boot":"boot","policy":"a".repeat(64),"at":1000,"event":"pressure","lease":null,
+        "reason":"sensor unavailable","sample":null});
+    record.executions[0].resource_events.push(event);
+    store.write(|tx| tx.insert_gate_attempt(&record)).unwrap();
+    let mut changed = record.clone();
+    changed.revision = 1;
+    changed.executions[0].resource_events[0]["reason"] = serde_json::json!("ready");
+    assert!(
+        store
+            .write(|tx| tx.update_gate_attempt(&changed, 0))
+            .is_err()
+    );
+    changed.executions[0].resource_events.clear();
+    assert!(
+        store
+            .write(|tx| tx.update_gate_attempt(&changed, 0))
+            .is_err()
+    );
+    drop(store);
+    let reopened = SqliteStore::open(root.path().join("store.db")).unwrap();
+    assert_eq!(
+        reopened.read(|tx| tx.gate_attempts(project)).unwrap(),
+        vec![record]
+    );
+}

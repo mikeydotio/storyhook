@@ -39,7 +39,7 @@ repo=$(mk_story_repo)
 id=$(new_story "$repo" "ID-MODE claim routes through the verb")
 
 out=$(dispatch_real "$repo" "$id")
-assert_eq "$(jqf "$out" .ok)" "true" "claim: ok:true"
+assert_ok "$out" "true" "claim: ok:true"
 assert_eq "$(jqf "$out" .claimed)" "true" "claim: claimed:true"
 assert_eq "$(jqf "$out" .state)" "in-progress" "claim: reported state is the claimed state"
 
@@ -81,7 +81,7 @@ assert_eq "$comment_entries" \
 # script re-acquiring the second opinion the collapse exists to delete.
 dry_id=$(new_story "$repo" "Dry-run previews the verb")
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$dry_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "dry-run: ok:true"
+assert_ok "$out" "true" "dry-run: ok:true"
 assert_eq "$(jqf "$out" '.commands[0]')" \
   "story claim $dry_id --comment \"Dispatching to tmux window <current-session>:$dry_id.\"" \
   "dry-run: the previewed claim command is the verb"
@@ -104,7 +104,7 @@ force_repo=$(mk_story_repo FRC)
 force_id=$(new_story "$force_repo" "Forced reuse plans no claim")
 (cd "$force_repo" && story move "$force_id" in-progress >/dev/null)
 out=$(cd "$force_repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$force_id" --force 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "force: ok:true reusing the existing claim"
+assert_ok "$out" "true" "force: ok:true reusing the existing claim"
 assert_eq "$(jqf "$out" .reused_claim)" "true" "force: reused_claim:true"
 assert_eq "$(jqf "$out" '.commands | map(select(startswith("story claim"))) | length')" "0" \
   "force: no claim command is planned for a reused claim"
@@ -115,12 +115,12 @@ assert_eq "$(jqf "$out" '.commands | map(select(startswith("story comment"))) | 
 # specific message -- not with the verb's `conflict`, whose `expected` is the
 # pseudo-state `unclaimed` and reads as a lost race rather than a redispatch.
 out=$(cd "$force_repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$force_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "false" "guard: an already-claimed story is still refused"
+assert_ok "$out" "false" "guard: an already-claimed story is still refused"
 assert_contains "$(jqf "$out" .display)" "already" "guard: names the story as already claimed"
 assert_contains "$(jqf "$out" .display)" "--force" "guard: offers the force remedy"
 
 forced=$(dispatch_real "$force_repo" "$force_id" --force)
-assert_eq "$(jqf "$forced" .ok)" "true" "force: real redispatch succeeds"
+assert_ok "$forced" "true" "force: real redispatch succeeds"
 force_repo_real=$(cd "$force_repo" && pwd -P)
 force_comment=$(cd "$force_repo" && story show "$force_id" --json \
   | jq -r '.story.story.comments[-1].text')
@@ -135,7 +135,7 @@ session_id=$(new_story "$session_repo" "No tmux session identity")
 export FAKE_TMUX_NO_SESSION=1
 session_out=$(dispatch_real "$session_repo" "$session_id")
 unset FAKE_TMUX_NO_SESSION
-assert_eq "$(jqf "$session_out" .ok)" "false" "session: missing identity refuses"
+assert_ok "$session_out" "false" "session: missing identity refuses"
 assert_contains "$(jqf "$session_out" .display)" "no claim was made" \
   "session: refusal names the no-side-effect boundary"
 assert_eq "$(cd "$session_repo" && story show "$session_id" --json | jq -r '.story.story.state')" \

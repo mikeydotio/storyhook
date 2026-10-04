@@ -46,7 +46,7 @@ out=$(
 # Prove the ROUTE, not just the actor labels: a future accident that puts the
 # real tmux back on PATH must fail here, loudly, rather than pass by
 # coincidence the way this test used to.
-assert_eq "$(jqf "$out" .ok)" "false" "the mangled launch is refused"
+assert_ok "$out" "false" "the mangled launch is refused"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "false" "readiness never confirms"
 assert_eq "$(jqf "$out" .wait_ready_reason)" "no-sentinel" \
   "refused for the stated reason -- no sentinel ever published, not a window-open failure"

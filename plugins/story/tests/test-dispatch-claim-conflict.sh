@@ -32,7 +32,7 @@ out=$(
       STORY_TARGET_SESSION="conflict-room" \
       bash "$SCRIPT" dispatch "$id" 2>&1
 )
-assert_eq "$(jqf "$out" .ok)" "false" "conflict: ok:false"
+assert_ok "$out" "false" "conflict: ok:false"
 assert_eq "$(jqf "$out" .reason)" "claim-conflict" "conflict: reason is claim-conflict, not a generic failure"
 assert_contains "$(jqf "$out" .display)" "another dispatch likely won the race" "conflict: display names the cause"
 

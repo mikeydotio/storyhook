@@ -36,7 +36,7 @@ for agent in claude codex; do
         out=$(render "$agent" "$resumed" --agent="$agent" --resume ${flags[@]+"${flags[@]}"})
       fi
       label="$agent $autonomy $target"
-      assert_eq "$(jqf "$out" .ok)" "true" "$label: the dry run renders"
+      assert_ok "$out" "true" "$label: the dry run renders"
       [ "$target" = fresh ] || assert_eq "$(jqf "$out" .resumed)" "true" "$label: it is a resume"
       commands=$(jqf "$out" '.commands | join(" ")')
       launch=${commands#* -P -F #\{pane_id\} }

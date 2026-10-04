@@ -150,6 +150,9 @@ pub struct GateExecution {
     pub verdict: Option<String>,
     /// Input identity and environment as they become known.
     pub inputs: GateInputs,
+    /// Ordered host admission observations, separate from immutable launch inputs.
+    #[serde(default)]
+    pub resource_events: Vec<serde_json::Value>,
     /// Producer intervals, which may overlap and must not be added as wall time.
     pub intervals: Vec<GateInterval>,
     /// Latest observed state of each gate leg.
@@ -181,6 +184,7 @@ impl GateExecution {
             estimated: false,
             verdict: None,
             inputs: GateInputs::default(),
+            resource_events: vec![],
             intervals: vec![],
             legs: vec![],
             failed_cases: vec![],
@@ -202,6 +206,7 @@ impl GateExecution {
             && self.started_at == next.started_at
             && self.submissions == next.submissions
             && self.inputs.preserved_by(&next.inputs)
+            && next.resource_events.starts_with(&self.resource_events)
             && next.journal_offset >= self.journal_offset
             && next.failed_cases.starts_with(&self.failed_cases)
             && self.logs.iter().all(|log| next.logs.contains(log))
@@ -314,6 +319,17 @@ impl GateAttempt {
         }
         let mut ids = std::collections::BTreeSet::new();
         for execution in &self.executions {
+            for event in &execution.resource_events {
+                super::gate_resources::validate(
+                    event,
+                    &self.id,
+                    &execution.id,
+                    self.submission.generation.map(|g| g.get()),
+                )
+                .map_err(StoreError::Validation)?;
+            }
+            super::gate_resources::ordered(&execution.resource_events)
+                .map_err(StoreError::Validation)?;
             if execution.id.is_empty()
                 || !ids.insert(&execution.id)
                 || chrono::DateTime::parse_from_rfc3339(&execution.started_at).is_err()

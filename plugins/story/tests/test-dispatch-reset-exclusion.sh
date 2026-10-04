@@ -13,7 +13,7 @@ fcntl.flock(8, fcntl.LOCK_EX | fcntl.LOCK_NB)
 PY
 for mode in --force --resume; do
   out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.sock,0,0" TMUX_PANE="%0" bash "$SCRIPT" dispatch "$id" "$mode" 2>&1)
-  assert_eq "$(jqf "$out" .ok)" "false" "$mode refuses an owned workspace"
+  assert_ok "$out" "false" "$mode refuses an owned workspace"
   assert_contains "$(jqf "$out" .display)" "workspace is busy" "$mode diagnoses the exact exclusion"
 done
 [ ! -d "$repo/.claude/worktrees/$id" ] || fail_test "busy dispatch created a worktree"
@@ -22,6 +22,6 @@ out=$(cd "$repo" && PATH="$TESTS_DIR/fakes:$PATH" TMUX="$FAKE_TMUX_STATE/tmux.so
   STORY_WORKSPACE_LOCK_FD=8 STORY_READY_DELAY=0 STORY_READY_FALLBACK_DELAY=0 \
   STORY_CONFIRM_DELAY=0 STORY_PASTE_SETTLE_DELAY=0 FAKE_TMUX_CAPTURE=marker \
   bash "$SCRIPT" dispatch "$id" --force 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "inherited verifier ownership permits its own dispatch"
+assert_ok "$out" "true" "inherited verifier ownership permits its own dispatch"
 exec 8>&-
 finish

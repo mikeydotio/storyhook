@@ -30,7 +30,7 @@ same_name=$(mk_dispatched "$repo" "$same_id")
 (cd "$repo" && story move "$same_id" done >/dev/null)
 out=$(cd "$repo/.claude/worktrees/$same_name" \
   && bash "$SCRIPT" --project "$slug" reap "$same_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "same checkout: reap succeeds"
+assert_ok "$out" "true" "same checkout: reap succeeds"
 assert_eq "$(jqf "$out" '.removed.worktree')" "true" \
   "same checkout: worktree is removed"
 assert_eq "$(jqf "$out" '.removed.branch')" "true" \
@@ -62,7 +62,7 @@ story --project "$slug" project link checkout "$other" >/dev/null
 
 out=$(cd "$repo/.claude/worktrees/$switched_name" \
   && bash "$SCRIPT" --project "$slug" reap "$switched_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" false "switched checkout: duplicate story ownership refuses"
+assert_ok "$out" false "switched checkout: duplicate story ownership refuses"
 assert_eq "$(jqf "$out" .reason)" resource-identity-unsafe "switched checkout: ambiguity is explicit"
 [ -d "$repo/.claude/worktrees/$switched_name" ] || fail_test "switched checkout: original evidence lost"
 [ -d "$other_root/unexpected-worktree" ] || fail_test "switched checkout: replacement evidence lost"
@@ -84,7 +84,7 @@ lease=$(jq -n --arg project "$slug" --arg story "$leased_id" \
     tmux:{socket_path:"/tmp/storyhook-never-created-tmux.sock"}}')
 out=$(cd "$other" && env -u STORY_AGENT STORYHOOK_REAP_LEASE_V1="$lease" \
   bash "$SCRIPT" --project "$slug" reap "$leased_id" 2>&1)
-assert_eq "$(jqf "$out" .ok)" "true" "leased switch: exact reap succeeds"
+assert_ok "$out" "true" "leased switch: exact reap succeeds"
 assert_eq "$(jqf "$out" .receipt_version)" "1" "leased switch: receipt version"
 assert_eq "$(jqf "$out" .story_id)" "$leased_id" "leased switch: receipt story"
 assert_eq "$(jqf "$out" '.postconditions.worktree_registration_absent')" "true" \
