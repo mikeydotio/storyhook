@@ -2866,8 +2866,15 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * `readyState` claims. */
   var sse = { connected: false, lastEventAt: Date.now(), source: null };
 
+  /** Keep API, authentication, attachments and SSE under the document mount. */
+  var dashboardBase = window.location.pathname.replace(/\/+$/, "");
+  function dashboardPath(path) {
+    return path.indexOf("/api/") === 0 || path === "/token" || path === "/handoff"
+      ? dashboardBase + path : path;
+  }
+
   /** The `/api/repos/<id>` prefix every per-repo route hangs off. */
-  function repoApiBase(id) { return "/api/repos/" + encodeURIComponent(id); }
+  function repoApiBase(id) { return dashboardPath("/api/repos/" + encodeURIComponent(id)); }
 
   /** ...scoped to the repo currently selected on the "repo" screen. */
   function apiBase() { return repoApiBase(state.repoId); }
@@ -3346,7 +3353,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       }
       function attempt() {
         var xhr = new XMLHttpRequest();
-        xhr.open(method, path, true);
+        xhr.open(method, dashboardPath(path), true);
         xhr.setRequestHeader("X-Storyhook", "1");
         xhr.setRequestHeader("Content-Type", opts.rawBody ? "application/octet-stream" : "application/json");
         if (opts.headers) {
@@ -3532,7 +3539,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // project's stories entirely.
     var askedFor = state.repoId;
     var xhr = new XMLHttpRequest();
-    xhr.open("GET", apiBase() + "/data", true);
+    xhr.open("GET", dashboardPath(apiBase() + "/data"), true);
     // SH-319: the daemon's cookie-borne-read gate accepts this marker on
     // its own -- the same one api() already sends on every other request --
     // instead of depending on Sec-Fetch-Site, which a plain-http tailnet
@@ -3787,7 +3794,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function fetchReposOnce(onDone) {
     var ticket = ++reposFetchTicket;
     var xhr = new XMLHttpRequest();
-    xhr.open("GET", "/api/repos", true);
+    xhr.open("GET", dashboardPath("/api/repos"), true);
     // SH-319: see the identical comment in fetchData().
     xhr.setRequestHeader("X-Storyhook", "1");
     xhr.timeout = CATALOG_FETCH_TIMEOUT_MS;
@@ -4998,7 +5005,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     $("token-error").textContent = "";
     setTokenModalInFlight(true);
     var xhr = new XMLHttpRequest();
-    xhr.open("POST", "/token", true);
+    xhr.open("POST", dashboardPath("/token"), true);
     xhr.setRequestHeader("X-Storyhook", "1");
     xhr.setRequestHeader("X-Storyhook-Token", value);
     xhr.timeout = TOKEN_EXCHANGE_TIMEOUT_MS;
@@ -16864,7 +16871,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // just sees a connection failure (the browser never surfaces the status
     // code); the safety poll's own `fetchData`/`fetchReposOnce` calls are
     // what actually detect a 401 and reprompt.
-    var es = new EventSource("/api/events");
+    var es = new EventSource(dashboardPath("/api/events"));
     sse.source = es;
     es.onopen = function() {
       sse.connected = true;
@@ -17029,7 +17036,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     }
 
     var xhr = new XMLHttpRequest();
-    xhr.open("POST", "/handoff", true);
+    xhr.open("POST", dashboardPath("/handoff"), true);
     xhr.setRequestHeader("X-Storyhook", "1");
     xhr.setRequestHeader("X-Storyhook-Handoff", coupon);
     xhr.timeout = HANDOFF_TIMEOUT_MS;
