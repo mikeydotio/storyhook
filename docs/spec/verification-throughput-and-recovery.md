@@ -333,6 +333,13 @@ and 300000 milliseconds of active diagnosis per submission, across admissions
 and daemon restarts. Interrupted work is not refunded. This limit is independent
 of the 900-second gate observation and does not issue a receipt. Execute through
 the verifier's existing ownership, cancellation, scheduling and cleanup path.
+Reserve preparation before creating the control tree or contrast plan. Retain
+its output and monotonic duration as an immutable completion. Preparation and
+probe launches share one submission-wide allowance check. An unfinished
+operation or unproved cleanup prevents another launch, including from a later
+attempt. Settle preparation before reserving a probe in a separate transaction;
+the completion cannot supply both a new reservation and its claimed result.
+Legacy records without preparation remain readable observations.
 SH-868 and SH-869 retain resource authority and runner integration; missing
 supported resource evidence cannot be replaced by matching worker counts.
 

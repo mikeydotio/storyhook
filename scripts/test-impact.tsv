@@ -3,6 +3,8 @@
 # :(glob)**/* is the honest conservative declaration for a dynamic tree read.
 activity_log	:(glob)**/*
 activity_script	:(glob)**/*
+attribution_preparation	:(glob)src/service/attribution/**
+attribution_preparation	:(glob)src/store/**
 backup_restore	:(glob)**/*
 battery_completion	:(glob)scripts/**
 binary_lease	scripts/binary-lease.sh

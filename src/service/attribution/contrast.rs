@@ -28,6 +28,7 @@ pub(super) fn classify_evidence(
         FailureCause::Unknown => {}
     }
     if record.submission.generation.is_none()
+        || record.has_unsettled_diagnosis()
         || [
             &record.inputs.head,
             &record.inputs.base,

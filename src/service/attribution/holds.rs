@@ -75,7 +75,7 @@ pub(crate) fn current(
         {
             milliseconds = milliseconds.saturating_add(attempt.diagnosis_ms);
             starts = starts.saturating_add(attempt.probes.len());
-            unsettled |= attempt.probes.iter().any(|p| p.completed.is_none());
+            unsettled |= attempt.has_unsettled_diagnosis();
         }
         let diagnosis = if unsettled {
             "unsettled execution"

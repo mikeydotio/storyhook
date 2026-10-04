@@ -200,6 +200,9 @@ pub struct AttributionRecord {
     pub created_at: String,
     /// All independently observed failure components.
     pub components: Vec<FailureComponent>,
+    /// Reservation retained before control preparation; absent in legacy observations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation: Option<super::DiagnosticPreparation>,
     /// Validated, immutable plans, retained in preparation order.
     pub plans: Vec<ContrastPlan>,
     /// Durable physical reservations, retained in execution order.
@@ -212,4 +215,15 @@ pub struct AttributionRecord {
     pub held: bool,
     /// Terminal release or supersession explanation, absent while held.
     pub retired: Option<String>,
+}
+
+impl AttributionRecord {
+    /// Unfinished execution or unproved cleanup prevents any further diagnosis launch.
+    pub(crate) fn has_unsettled_diagnosis(&self) -> bool {
+        self.preparation.as_ref().is_some_and(|p| p.unsettled())
+            || self
+                .probes
+                .iter()
+                .any(|p| p.completed.as_ref().is_none_or(|r| !r.cleanup_complete))
+    }
 }

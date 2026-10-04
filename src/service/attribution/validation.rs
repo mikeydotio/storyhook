@@ -48,6 +48,19 @@ impl AttributionRecord {
         let mut ids = BTreeSet::new();
         let mut executions = BTreeSet::new();
         let mut elapsed = 0u64;
+        if let Some(preparation) = &self.preparation {
+            if chrono::DateTime::parse_from_rfc3339(&preparation.started_at).is_err() {
+                return Err(invalid("preparation reservation needs a valid timestamp"));
+            }
+            if let Some(result) = &preparation.completed {
+                if result.log.trim().is_empty() || result.detail.trim().is_empty() {
+                    return Err(invalid(
+                        "completed preparation needs raw output and diagnostics",
+                    ));
+                }
+                elapsed = result.milliseconds;
+            }
+        }
         for (index, probe) in self.probes.iter().enumerate() {
             if probe.id.trim().is_empty()
                 || !ids.insert(&probe.id)
@@ -136,6 +149,11 @@ impl AttributionRecord {
             && self.inputs == next.inputs
             && self.created_at == next.created_at
             && self.components == next.components
+            && self.preparation.as_ref().is_none_or(|old| {
+                next.preparation
+                    .as_ref()
+                    .is_some_and(|new| old.preserved_by(new))
+            })
             && next.plans.starts_with(&self.plans)
             && next.assessments.starts_with(&self.assessments)
             && next.assessments[self.assessments.len()..]

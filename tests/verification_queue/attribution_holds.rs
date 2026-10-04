@@ -220,3 +220,50 @@ fn prefix_rename_keeps_the_hold_and_current_status_without_rewriting_evidence() 
     );
     assert!(actuator.notified.lock().unwrap().is_empty());
 }
+
+#[test]
+fn preparation_or_uncertain_cleanup_is_visible_as_unsettled_diagnosis() {
+    use storyhook::service::attribution::{DiagnosticPreparation, PreparationResult};
+    let fixture = ServiceFixture::new();
+    fixture.github_checkout("https://github.com/acme/widgets");
+    submitted(&fixture, "pending preparation", Priority::High, PR_ONE);
+    let actuator = FakeActuator::new(VerificationOutcome::InvalidSubmission {
+        detail: "unknown input".into(),
+    });
+    tick_with(fixture.store(), fixture.env(), &actuator, fixture.project()).unwrap();
+    let mut record = fixture
+        .store()
+        .read(|tx| tx.attributions(fixture.project()))
+        .unwrap()
+        .remove(0);
+    record.preparation = Some(DiagnosticPreparation {
+        started_at: record.created_at.clone(),
+        completed: None,
+    });
+    for completed in [false, true] {
+        if completed {
+            record.preparation.as_mut().unwrap().completed = Some(PreparationResult {
+                milliseconds: 10,
+                log: "/tmp/preparation.log".into(),
+                detail: "cleanup cannot be proved".into(),
+                cleanup_complete: false,
+            });
+            record.diagnosis_ms = 10;
+        }
+        record.revision += 1;
+        fixture
+            .store()
+            .write(|tx| tx.update_attribution(&record, record.revision - 1))
+            .unwrap();
+        let reopened = SqliteStore::open(fixture.store().path()).unwrap();
+        assert!(VerificationQueue::new(&reopened).next().unwrap().is_none());
+        let status =
+            serde_json::to_value(VerificationActivity::new().status(&fixture.ctx()).unwrap())
+                .unwrap();
+        assert_eq!(
+            status["attribution_holds"][0]["diagnosis"],
+            "unsettled execution"
+        );
+    }
+    assert!(actuator.notified.lock().unwrap().is_empty());
+}

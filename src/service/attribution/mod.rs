@@ -3,11 +3,13 @@
 mod contrast;
 pub(crate) mod holds;
 mod model;
+mod preparation;
 mod validation;
 mod view;
 pub use contrast::classify;
 pub use holds::AttributionHold;
 pub use model::*;
+pub use preparation::{DiagnosticPreparation, PreparationResult};
 pub(crate) use view::render as render_evidence;
 
 #[cfg(test)]

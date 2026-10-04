@@ -59,7 +59,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                     log: format!("story:{}:attribution:{id}", candidate.story_id),
                     observed_cause: FailureCause::Unknown,
                 }],
-                plans: vec![], probes: vec![], assessments: vec![], diagnosis_ms: 0,
+                preparation: None, plans: vec![], probes: vec![], assessments: vec![], diagnosis_ms: 0,
                 held: true, retired: None,
             };
             tx.insert_attribution(&record)?;

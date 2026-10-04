@@ -27,6 +27,7 @@ pub(super) fn insert(conn: &Connection, record: &AttributionRecord) -> Result<()
     record.validate()?;
     if record.revision != 0
         || !record.held
+        || record.preparation.is_some()
         || !record.probes.is_empty()
         || !record.assessments.is_empty()
         || record.diagnosis_ms != 0
@@ -74,21 +75,36 @@ fn check_reservation(
     old: &AttributionRecord,
     next: &AttributionRecord,
 ) -> Result<(), StoreError> {
-    if next.probes.len() == old.probes.len() {
+    let preparing = old.preparation.is_none() && next.preparation.is_some();
+    let probing = next.probes.len() != old.probes.len();
+    if !preparing && !probing {
         return Ok(());
     }
     let refused = |why: &str| {
         StoreError::Validation(format!(
-            "attribution {} cannot reserve a probe: {why}",
+            "attribution {} cannot reserve diagnosis work: {why}",
             next.id
         ))
     };
+    let valid_preparation = preparing
+        && !probing
+        && next.probes.is_empty()
+        && next.plans == old.plans
+        && next.assessments == old.assessments
+        && next
+            .preparation
+            .as_ref()
+            .is_some_and(|p| p.completed.is_none());
+    let valid_probe = probing
+        && !preparing
+        && next.preparation == old.preparation
+        && next.probes.len() == old.probes.len() + 1
+        && next.probes.last().is_some_and(|p| p.completed.is_none())
+        && next.probes.starts_with(&old.probes);
     if next.submission.generation.is_none()
-        || next.probes.len() != old.probes.len() + 1
-        || next.probes.last().is_none_or(|p| p.completed.is_some())
+        || (!valid_preparation && !valid_probe)
         || !next.held
         || next.diagnosis_ms != old.diagnosis_ms
-        || !next.probes.starts_with(&old.probes)
     {
         return Err(refused(
             "one unfinished reservation with an exact live submission is required",
@@ -107,7 +123,7 @@ fn check_reservation(
         milliseconds = milliseconds
             .checked_add(record.diagnosis_ms)
             .ok_or_else(|| refused("elapsed time overflow"))?;
-        if record.probes.iter().any(|p| p.completed.is_none()) {
+        if record.has_unsettled_diagnosis() {
             return Err(refused("an earlier reserved execution remains unsettled"));
         }
     }

@@ -31,6 +31,7 @@ fn contrast() -> AttributionRecord {
         },
         created_at: AT.into(),
         components: vec![component.clone()],
+        preparation: None,
         plans: vec![ContrastPlan {
             component: component.id.clone(),
             candidate_tree: "3".repeat(40),
@@ -105,6 +106,33 @@ fn reproducible_contrast_identifies_only_the_selected_candidate_failure() {
     shared.signature = "unrelated assertion".into();
     record.components.push(shared.clone());
     assert_eq!(classify(&record, &shared), FailureCause::Unknown);
+    assert_eq!(cause(&record), FailureCause::CandidateCaused);
+}
+
+#[test]
+fn unsettled_preparation_prevents_a_causal_finding_even_with_contrasting_probes() {
+    let mut record = contrast();
+    record.preparation = Some(DiagnosticPreparation {
+        started_at: AT.into(),
+        completed: None,
+    });
+    assert_eq!(cause(&record), FailureCause::Unknown);
+    record.preparation.as_mut().unwrap().completed = Some(PreparationResult {
+        milliseconds: 10,
+        log: "/tmp/preparation.log".into(),
+        detail: "control prepared".into(),
+        cleanup_complete: false,
+    });
+    record.diagnosis_ms += 10;
+    assert_eq!(cause(&record), FailureCause::Unknown);
+    record
+        .preparation
+        .as_mut()
+        .unwrap()
+        .completed
+        .as_mut()
+        .unwrap()
+        .cleanup_complete = true;
     assert_eq!(cause(&record), FailureCause::CandidateCaused);
 }
 

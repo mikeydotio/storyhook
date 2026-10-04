@@ -7,17 +7,25 @@ pub(crate) fn render(records: &[AttributionRecord]) -> String {
             .into();
     }
     let mut output = String::from(
-        "\n| Attribution | Generation | State | Probe starts | Active diagnosis ms |\n|---|---|---|---:|---:|\n",
+        "\n| Attribution | Generation | State | Preparation | Probe starts | Active diagnosis ms |\n|---|---|---|---|---:|---:|\n",
     );
     for record in records {
         output.push_str(&format!(
-            "| {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} |\n",
             cell(&record.id),
             record
                 .submission
                 .generation
                 .map_or_else(|| "unknown".into(), |g| g.get().to_string()),
             if record.held { "held" } else { "retired" },
+            record
+                .preparation
+                .as_ref()
+                .map_or("not recorded", |p| if p.unsettled() {
+                    "unsettled"
+                } else {
+                    "settled"
+                }),
             record.probes.len(),
             record.diagnosis_ms
         ));
