@@ -5358,14 +5358,23 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (mount.dataset.fingerprint === fingerprint) return;
     clear(mount);
     projectRecoveries.forEach(function(item) {
+      var invalid = item.phase === "invalid";
       var details = [
-        el("div", { class: "engine-banner-title" }, ["Project repair: ", item.fault, " · ", item.phase]),
-        el("div", {}, ["Affected: ", (item.affected_stories || []).join(", "), "; assessor ", item.assessment_owner, "; repair ", item.repair_story || "undecided"]),
-        el("div", {}, ["Completed repair attempts: ", String(item.completed_attempts), "/", String(item.attempt_limit), "; ", item.locus]),
+        el("div", { class: "engine-banner-title" }, ["Project repair: ", item.fault, " · ", item.phase])
+      ];
+      if (invalid) {
+        details.push(el("div", {}, ["Recovery ", item.id, "; ", item.locus]));
+      } else {
+        details.push(
+          el("div", {}, ["Affected: ", (item.affected_stories || []).join(", "), "; assessor ", item.assessment_owner, "; repair ", item.repair_story || "undecided"]),
+          el("div", {}, ["Completed repair attempts: ", String(item.completed_attempts), "/", String(item.attempt_limit), "; ", item.locus])
+        );
+      }
+      details.push(
         el("div", {}, [item.next_action]),
         el("code", {}, ["story verifier repair show " + item.id + " --json"])
-      ];
-      if (item.repair_link && /^https?:\/\//.test(item.repair_link)) details.push(el("a", { href: item.repair_link, target: "_blank", rel: "noopener noreferrer" }, ["Repair PR"]));
+      );
+      if (!invalid && item.repair_link && /^https?:\/\//.test(item.repair_link)) details.push(el("a", { href: item.repair_link, target: "_blank", rel: "noopener noreferrer" }, ["Repair PR"]));
       mount.appendChild(el("article", { class: "engine-banner project-recovery-banner", role: "status" }, details));
     });
     if (journalWarning) {

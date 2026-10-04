@@ -429,6 +429,13 @@ impl VerifierStatus {
             text.push_str(&format!("Last gate output: {seconds}s ago\n"));
         }
         for recovery in &self.project_recoveries {
+            if recovery.phase == "invalid" {
+                text.push_str(&format!(
+                    "Project recovery {}: {} at {}; invalid\nNext: {}\n",
+                    recovery.id, recovery.fault, recovery.locus, recovery.next_action
+                ));
+                continue;
+            }
             text.push_str(&format!("Project recovery {}: {} at {}; {}\nAffected: {}; assessor {}; repair {}; completed attempts {}/{}\nNext: {}\nInspect: story verifier repair show {} --json\n",
                 recovery.id, recovery.fault, recovery.locus, recovery.phase,
                 recovery.affected_stories.join(", "), recovery.assessment_owner,
