@@ -639,6 +639,38 @@ fn a_failing_run_releases_the_gate_lock() {
     );
 }
 
+/// Match the case identity without restricting additive evidence fields.
+fn is_completed_fixture_case(record: &serde_json::Value) -> bool {
+    record["kind"] == "case"
+        && record["path"] == "release gate/rust-suite"
+        && record["outcome"] == "pass"
+        && record["name"] == "proves_progress"
+        && record["target"] == "progressing"
+}
+
+#[test]
+fn case_observation_accepts_additive_fields_but_requires_identity() {
+    let record: serde_json::Value = serde_json::from_str(
+        r#"{"extra":true,"target":"progressing","name":"proves_progress","outcome":"pass","path":"release gate/rust-suite","kind":"case"}"#,
+    )
+    .unwrap();
+    assert!(is_completed_fixture_case(&record));
+    for field in ["kind", "path", "outcome", "name", "target"] {
+        let mut changed = record.clone();
+        changed[field] = serde_json::json!("wrong");
+        assert!(
+            !is_completed_fixture_case(&changed),
+            "accepted wrong {field}"
+        );
+        changed.as_object_mut().unwrap().remove(field);
+        assert!(
+            !is_completed_fixture_case(&changed),
+            "accepted absent {field}"
+        );
+    }
+    assert!(!is_completed_fixture_case(&serde_json::Value::Null));
+}
+
 /// SH-536's end-to-end wiring: the daemon-provided journal crosses the
 /// run-tests re-exec into machine-lock, and completed libtest output still
 /// appends progress while the watchdog owns the gate.
@@ -667,22 +699,42 @@ fn a_running_suite_advances_the_journal_observed_by_the_gate() {
         "progress parsing must not remove raw test output from the full gate log: {out:?}"
     );
     let progress = std::fs::read_to_string(&journal).expect("reading gate progress");
+    let records: Vec<serde_json::Value> = progress
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()
+        .unwrap_or_else(|error| panic!("invalid gate progress: {error}: {progress}"));
+    let case = records
+        .iter()
+        .position(is_completed_fixture_case)
+        .unwrap_or_else(|| {
+            panic!("the completed case must reach the gate journal: {progress}\noutput: {out:?}")
+        });
+    let total = records
+        .iter()
+        .position(|record| {
+            record["kind"] == "item"
+                && record["path"] == "release gate/rust-suite"
+                && record["total"] == 1
+        })
+        .unwrap_or_else(|| panic!("the journal must record the suite total: {progress}"));
     assert!(
-        progress.contains(r#"{"kind":"case","path":"release gate/rust-suite","outcome":"pass"}"#),
-        "the case completion must reach the exact journal machine-lock observes: {progress}\noutput: {out:?}"
+        total < case,
+        "the suite total must precede its completion: {progress}"
     );
-    assert!(
-        progress.contains(r#""total":1"#),
-        "the journal must know the suite total before recording its completion: {progress}"
-    );
-    let case = progress
-        .find(r#""kind":"case""#)
-        .expect("the fixture must record its completed test");
-    let ledger_start = progress
-        .find(r#""label":"recording test results","status":"running""#)
+    let is_ledger_activity = |record: &serde_json::Value, status: &str| {
+        record["kind"] == "activity"
+            && record["path"] == "release gate/rust-suite"
+            && record["label"] == "recording test results"
+            && record["status"] == status
+    };
+    let ledger_start = records
+        .iter()
+        .position(|record| is_ledger_activity(record, "running"))
         .unwrap_or_else(|| panic!("ledger work must replace the completed-test step: {progress}"));
-    let ledger_end = progress
-        .find(r#""label":"recording test results","status":"passed""#)
+    let ledger_end = records
+        .iter()
+        .position(|record| is_ledger_activity(record, "passed"))
         .unwrap_or_else(|| {
             panic!("successful ledger work must terminate its activity: {progress}")
         });
