@@ -2004,14 +2004,26 @@ fn lock_wait_evidence_requires_a_matching_live_identity() {
             "{output:?}"
         );
         let evidence = std::fs::read_to_string(journal).unwrap();
+        // The journal also carries the wait's own cost accounting (SH-867).
+        // Liveness is the `lock-wait` record alone; anything else must be cost.
+        let records: Vec<serde_json::Value> = evidence
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {evidence}")))
+            .collect();
+        let (liveness, other): (Vec<_>, Vec<_>) = records
+            .iter()
+            .partition(|record| record["kind"] == "lock-wait");
+        assert!(
+            other.iter().all(|record| record["kind"] == "cost"),
+            "only cost accounting may accompany liveness: {evidence}"
+        );
         if started == started_of(pid) {
-            let record: serde_json::Value = serde_json::from_str(&evidence).unwrap();
-            assert_eq!(record["kind"], "lock-wait");
-            assert_eq!(record["name"], "merge");
-            assert_eq!(record["pid"], pid);
+            assert_eq!(liveness.len(), 1, "{evidence}");
+            assert_eq!(liveness[0]["name"], "merge");
+            assert_eq!(liveness[0]["pid"], pid);
         } else {
             assert!(
-                evidence.is_empty(),
+                liveness.is_empty(),
                 "unconfirmed identity published liveness: {evidence}"
             );
         }
@@ -2363,15 +2375,20 @@ fn reentrancy_is_per_project() {
 #[test]
 fn watchdog_timer_cannot_outlive_inherited_workspace_ownership() {
     let fixture = Fixture::new();
+    let patience = storyhook_test_support::load_grace::graced_now(poll_ceiling());
+    let stopped_hold = std::time::Duration::from_secs(2 * lock_poll_secs());
     let mut command = Command::new("python3");
     command
         .arg(checkout().join("tests/support/machine_lock_workspace.py"))
         .arg(fixture.script())
-        .arg(fixture.path());
+        .arg(fixture.path())
+        .arg(patience.as_secs_f64().to_string())
+        .arg(stopped_hold.as_secs_f64().to_string());
     let output = ChildGuard::spawn_with_output(&mut command)
         .expect("starting the real watchdog lifetime regression")
         .wait_with_output_within(
-            storyhook_test_support::load_grace::graced_now(2 * poll_ceiling()),
+            // Per mode: discovery, wrapper exit, census, and two failure-cleanup waits.
+            2 * (5 * patience + stopped_hold),
             || "watchdog or its timer retained workspace authority after completion".to_string(),
         );
     assert!(
@@ -2380,4 +2397,18 @@ fn watchdog_timer_cannot_outlive_inherited_workspace_ownership() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// Scheduling delay must not silently restore the Python observer's bare bounds.
+#[test]
+fn watchdog_observer_uses_the_callers_patience() {
+    let mut command = Command::new("python3");
+    command.arg(checkout().join("tests/support/test_machine_lock_workspace.py"));
+    let output = ChildGuard::spawn_with_output(&mut command)
+        .expect("starting watchdog observer regressions")
+        .wait_with_output_within(
+            storyhook_test_support::load_grace::graced_now(poll_ceiling()),
+            || "watchdog observer regression did not finish".to_string(),
+        );
+    assert!(output.status.success(), "{output:?}");
 }
