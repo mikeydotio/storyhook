@@ -784,6 +784,20 @@ All earlier failed cohorts remain. Performance acceptance is still open; after
 the new regression repair, refresh both snapshots and complete the approved
 successful warm-up and two comparable pairs.
 
+**Native canary repair, 2026-10-04 UTC.** A deliberate four-second reader
+delay reproduces the missing headline in both desktop engines. The reduced-motion
+locator read was interrupted after those conclusive failures, so it is not a
+completed RED verdict. Both canaries now install a DOM observer before dispatch.
+It retains visible text, leaving style, native animation-start events, history
+row count and removal of the same node. It changes no timer, focus or lifetime.
+The normal case requires the actual `toast-out` event; the reduced-motion case
+requires no animation at either boundary. Both retain the delayed-reader
+stimulus. A negative control proves that no appearance means no completed
+lifecycle. All six selected browser cases pass, and strict TypeScript and
+whitespace checks pass. Evidence: `/tmp/sh812-native-{red,green}.log` and the
+corresponding isolated results directories. These focused passes do not replace
+the pending matched performance comparison.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The
