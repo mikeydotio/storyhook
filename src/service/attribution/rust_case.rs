@@ -27,8 +27,8 @@ pub enum RustTarget {
 /// An exact test in one package and one libtest harness.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RustCase {
-    package: String,
-    target: RustTarget,
+    pub(super) package: String,
+    pub(super) target: RustTarget,
     name: String,
 }
 

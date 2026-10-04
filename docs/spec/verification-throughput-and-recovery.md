@@ -358,6 +358,16 @@ Recheck the complete materialized path set, contents and modes before and after
 execution. Keep build products outside it. Changed inputs invalidate the
 observation. Explicit cleanup must succeed before claiming settled resources.
 
+Rust diagnosis resolves a local workspace package and literal target from
+Cargo metadata version 1 and checks the manifest for a native test harness.
+The completed JSON build stream must name exactly one matching executable,
+including full package ID, manifest, source path, target kind and test profile.
+Failed, truncated, ambiguous or warning-bearing builds are unavailable.
+Retain an open regular executable under the owned output directory and recheck
+its device, inode, mode, length and digest before and after execution.
+These target and artifact observations do not establish detector closure or
+causal authority; the supervised executor must establish their provenance.
+
 Reserve each physical probe durably before launch. Allow at most eight starts
 and 300000 milliseconds of active diagnosis per submission, across admissions
 and daemon restarts. Interrupted work is not refunded. This limit is independent
