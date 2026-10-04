@@ -3,6 +3,7 @@ use crate::service::NewStoryInput;
 use crate::store::SqliteStore;
 use storyhook_test_support::{ServiceFixture, load_grace};
 
+#[cfg(test)]
 #[path = "diagnosis_tests.rs"]
 mod diagnosis;
 
