@@ -30,8 +30,19 @@ fn host_admission_usage_contract() {
     run("test_host_admission_usage.py");
 }
 
+#[test]
+fn host_admission_runner_adapter_contract() {
+    run("test_host_admission_adapter.py");
+}
+
+/// These suites drive their own fixture authorities. A grant inherited from
+/// the production runner that admitted this test binary (SH-869) would make
+/// the client refuse every fixture root, so the bearer capability is removed;
+/// the lease descriptor stays, and it names no fixture authority.
 fn run(script: &str) {
     let output = std::process::Command::new("python3")
+        .env_remove("STORYHOOK_HOST_GRANT")
+        .env_remove("STORYHOOK_HOST_REQUEST")
         .arg("-B")
         .arg(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

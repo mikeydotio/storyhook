@@ -152,8 +152,11 @@ hook_budgets	:(glob)**/*
 hooks	:(glob)**/*
 host_admission	:(glob)scripts/host_admission/**
 host_admission	scripts/host-admission.py
+host_admission	scripts/host-admit.py
+host_admission	scripts/tests/host_admit_fixture.py
 host_admission	scripts/tests/test_host_admission.py
 host_admission	scripts/tests/test_host_admission_activation.py
+host_admission	scripts/tests/test_host_admission_adapter.py
 host_admission	scripts/tests/test_host_admission_evidence.py
 host_admission	scripts/tests/test_host_admission_sensors.py
 host_admission	scripts/tests/test_host_admission_system.py

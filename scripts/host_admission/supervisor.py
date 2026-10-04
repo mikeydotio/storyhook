@@ -32,9 +32,11 @@ def inherited_descriptors():
 class ManagedProcess:
     """A blocked-launch supervisor; SH-869 adapters own preserving its child contract."""
 
-    def __init__(self, client, lease, command, *, publisher=None):
+    def __init__(self, client, lease, command, *, publisher=None, env=None):
         self.client, self.lease, self.child, self.guard = client, lease, None, None
         self.publisher = publisher
+        # The authority's reason for withdrawing this grant, once observed.
+        self.drain_reason = None
         self.finished = False
         self.result, self.failure = None, None
         self.execution_id = uuid.uuid4().hex
@@ -52,7 +54,7 @@ class ManagedProcess:
         read_ready, write_ready = os.pipe()
         read_exec, write_exec = os.pipe()
         try:
-            env = dict(os.environ, STORYHOOK_HOST_GRANT=lease["token"],
+            env = dict(os.environ if env is None else env, STORYHOOK_HOST_GRANT=lease["token"],
                        STORYHOOK_HOST_REQUEST=lease["id"], STORYHOOK_HOST_LEASE_FD=str(self.guard))
             # pass_fds forces close_fds; the caller's inheritable descriptors
             # (a Cargo jobserver, a lock holder's stdin) must still reach the
@@ -148,7 +150,9 @@ class ManagedProcess:
                             draining = True
                             self.call("cancel"); requested = False
                         row = self.call("inspect")
-                        draining = draining or row["state"] in {"draining", "quarantined"}
+                        if row["state"] in {"draining", "quarantined"}:
+                            draining = True
+                            self.drain_reason = self.drain_reason or row.get("reason")
                         if self.publisher:
                             self.publisher.publish()
                     except (Refusal, OSError) as error:
