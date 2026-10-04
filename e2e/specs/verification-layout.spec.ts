@@ -1,4 +1,5 @@
 import type { Locator } from "@playwright/test";
+import { withDrainedRoutes } from "../route-lifetime";
 import {
   clickHeaderAction,
   expect,
@@ -8,6 +9,13 @@ import {
   seedToken,
   test,
 } from "./support";
+
+// Response builders read the page clock and must finish before it closes.
+test.use({
+  page: async ({ page }, use) => {
+    await withDrainedRoutes(page, () => use(page));
+  },
+});
 
 /** SH-611: text presence alone cannot detect a path painted outside its badge. */
 async function expectContainedText(chip: Locator): Promise<void> {
@@ -63,6 +71,7 @@ test("verification text stays inside cards on initial render, refresh, and timer
   const token = "uninterrupted".repeat(32);
   let label = compiler;
   let stalled = false;
+  let sampleStarted = 0;
 
   // Clone the daemon's real wire shape, replacing data only. The dashboard's
   // render/reconcile and elapsed-label timer execute unchanged.
@@ -86,10 +95,11 @@ test("verification text stays inside cards on initial render, refresh, and timer
       view.is_ready = false;
       view.is_blocked = false;
       view.open_prs = [];
+      const elapsed = Math.floor(((await page.evaluate(() => Date.now())) - sampleStarted) / 1000);
       view.verification = stalled
         ? { status: "stalled", attempts: 3, detail: label, halted: true }
-        : { status: "running", elapsed_seconds: 144,
-            current_step: { label, elapsed_seconds: 18 } };
+        : { status: "running", elapsed_seconds: 144 + elapsed,
+            current_step: { label, elapsed_seconds: 18 + elapsed } };
       data.stories.push(view);
       await route.fulfill({ response, json: data });
     },
@@ -102,6 +112,7 @@ test("verification text stays inside cards on initial render, refresh, and timer
       stalled = sample.startsWith("stalled ");
       await test.step(`${width}px: ${stalled ? "stalled" : sample === compiler ? "compiler path" : sample === token ? "single token" : "short status"}`, async () => {
         await onAFrozenClock(page, async () => {
+          sampleStarted = await page.evaluate(() => Date.now());
           await openProject(page, "Alpha Project");
           const card = page.locator('.card[data-id="SH-9611"]');
           const chip = card.locator(".verification-chip");
@@ -111,11 +122,24 @@ test("verification text stays inside cards on initial render, refresh, and timer
           await expect(chip).toHaveText(description);
           await expect(card).toHaveAttribute("aria-label", "SH-9611: SH-611 verification layout fixture — " + description);
           await expectContainedText(chip);
-          await page.clock.runFor(1000);
-          const updated = stalled ? description : description.replace("2m 24s total", "2m 25s total").replace(/18s$/, "19s");
-          await expect(chip).toHaveText(updated);
-          await expect(card).toHaveAttribute("aria-label", "SH-9611: SH-611 verification layout fixture — " + updated);
-          await expectContainedText(chip);
+          // The footer interval and a data refresh have independent phases.
+          // Hold one wall-time target while their real callbacks execute.
+          await page.clock.setFixedTime(sampleStarted + 1000);
+          try {
+            await page.clock.runFor(1000);
+            const updated = stalled ? description : description.replace("2m 24s total", "2m 25s total").replace(/18s$/, "19s");
+            await expect(chip).toHaveText(updated);
+            await expect(card).toHaveAttribute("aria-label", "SH-9611: SH-611 verification layout fixture — " + updated);
+            await expectContainedText(chip);
+            // A real refresh must retain elapsed progress, not reset the fixture.
+            await clickHeaderAction(page, "home-btn");
+            await openProject(page, "Alpha Project");
+            await expect(chip).toHaveText(updated);
+            await expect(card).toHaveAttribute("aria-label", "SH-9611: SH-611 verification layout fixture — " + updated);
+            await expectContainedText(chip);
+          } finally {
+            await page.clock.setSystemTime(sampleStarted + 1000);
+          }
         });
         // Returning through the real project navigation obtains fresh status
         // data for the next sample rather than writing directly into the DOM.

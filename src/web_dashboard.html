@@ -12938,10 +12938,24 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var input = el("input", inputProps);
     var panel = el("div", { class: "fdd-panel" }, []);
     panel.hidden = true;
-    var wrap = el("div", { class: "label-combobox" + (options.className ? " " + options.className : "") }, [chips, input, panel]);
+    var saving = el("span", { role: "status" }, ["Saving labels…"]);
+    saving.hidden = true;
+    var wrap = el("div", { class: "label-combobox" + (options.className ? " " + options.className : ""), "aria-busy": "false" }, [chips, input, panel, saving]);
+
+    // The optimistic chip is not a completed write. Enforce the same pending
+    // boundary in the controls so a new token cannot be typed then discarded
+    // by the mutation guard. Read-only preserves the input's focus and caret.
+    function setPending(value) {
+      pending = value;
+      input.readOnly = value;
+      wrap.setAttribute("aria-busy", String(value));
+      saving.hidden = !value;
+      chips.querySelectorAll("button").forEach(function(button) { button.disabled = value; });
+      if (value) closeAllPopovers();
+    }
 
     function mutationFailed(before, retryValue, err) {
-      pending = false;
+      setPending(false);
       selected = before;
       if (retryValue !== null) input.value = retryValue;
       renderChips();
@@ -12954,9 +12968,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       selected = selected.filter(function(item) { return item !== label; });
       renderChips();
       if (!options.onRemove) return;
-      pending = true;
+      setPending(true);
       Promise.resolve(options.onRemove([label]))
-        .then(function() { pending = false; })
+        .then(function() { setPending(false); })
         .catch(function(err) { mutationFailed(before, null, err); });
     }
 
@@ -12993,13 +13007,14 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       selected = canonicalLabels(selected.concat(additions));
       renderChips();
       if (!options.onAdd) return;
-      pending = true;
+      setPending(true);
       Promise.resolve(options.onAdd(additions))
-        .then(function() { pending = false; })
+        .then(function() { setPending(false); })
         .catch(function(err) { mutationFailed(before, value, err); });
     }
 
     function openPanel() {
+      if (pending) return;
       var query = input.value.trim().toLowerCase();
       var matches = suggestions.filter(function(s) {
         return selected.indexOf(s) === -1 && (!query || s.indexOf(query) !== -1);

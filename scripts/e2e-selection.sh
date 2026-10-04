@@ -54,6 +54,13 @@ e2e_selection_measured_playwright() {
 E2E_SELECTION_EMPTY=3
 E2E_SELECTION_UNREADABLE=4
 
+# Counts real-dispatch files in project/file/count rows from the listing.
+# Playwright lists relative to config.rootDir (specs/), not to the checkout.
+# Exact equality excludes story-context-menu-dispatch, whose calls are stubbed.
+e2e_selection_real_dispatch() {
+    awk -F '\t' '$2 == "dispatch.spec.ts" || $2 == "engine.spec.ts" { n++ } END { print n + 0 }'
+}
+
 # Prints the test count from a `--reporter=list` listing's own summary line
 # (`Total: N tests in M files`; `test`/`file` singular for 1). Returns 1 and
 # prints nothing when the listing carries no such line. Portable BRE, not

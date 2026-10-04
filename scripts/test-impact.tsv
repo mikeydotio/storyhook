@@ -80,8 +80,15 @@ dropped_cleanup	:(glob)tests/dropped_cleanup/**
 dropped_cleanup	src/service/cleanup.rs
 e2e_browser_coverage	:(glob)**/*
 e2e_daemon_check	scripts/e2e-daemon-check.sh
+e2e_dispatch_selection	scripts/e2e-selection.sh
 e2e_display_awake	scripts/e2e-selection.sh
 e2e_display_awake	scripts/run-e2e.sh
+e2e_durations	scripts/e2e-durations.py
+e2e_durations	scripts/e2e-isolation.py
+e2e_durations	scripts/e2e-pool.sh
+e2e_durations	scripts/run-e2e.sh
+e2e_durations	scripts/tests/load_grace.py
+e2e_durations	scripts/tests/test_e2e_durations.py
 e2e_fixture_hygiene	:(glob)**/*
 e2e_isolation	:(glob)**/*
 e2e_launch_probe	:(glob)**/*

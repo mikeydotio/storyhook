@@ -120,12 +120,6 @@ const TIMEOUT_EXCEPTIONS: &[(&str, &str, usize, &str)] = &[
         "config kill switch",
     ),
     (
-        "e2e/specs/board-readiness.spec.ts",
-        "DATA_DELAY_MS*3",
-        2,
-        "delayed data proof",
-    ),
-    (
         "e2e/specs/notification-contract.spec.ts",
         "GONE_TIMEOUT",
         2,

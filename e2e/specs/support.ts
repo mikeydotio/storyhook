@@ -284,8 +284,8 @@ const LOAD_GRACE_RESET_INTERVAL_MS = 5_000;
  *
  * Samples contention every {@link LOAD_GRACE_SAMPLE_INTERVAL_MS} and calls
  * `testInfo.setTimeout()` *before* the deadline can fire -- Playwright has no
- * hook that runs after a test's timeout has already torn it down. In this
- * auto-fixture slot the grant is a duration from *now*. Under sustained
+ * hook that runs after a test's timeout has already torn it down. The grant
+ * includes time already spent in the runnable. Under sustained
  * contention each rate-limited reset restores a complete graced window,
  * shortened as the absolute 15-minute wall-clock ceiling approaches. Adopts
  * a spec's
@@ -353,10 +353,19 @@ export const test = base.extend<{ assertionGrace: void; loadGrace: void; testTok
       // began protecting the current runnable, so its own monotonic origin is
       // the correct and portable clock.
       const startedAtMs = performance.now();
-      const absoluteCeilingAtMs = startedAtMs + MAX_TEST_TIMEOUT_MS;
-      let grantedUntilMs = Math.min(absoluteCeilingAtMs, startedAtMs + grantedMs);
+      let expired = false;
+      // A worker fixture can have its own elapsed origin. Its timeout grant
+      // cannot be used as proof of this owner's absolute wall-clock ceiling.
+      const ceilingTimer = setTimeout(() => {
+        expired = true;
+        testInfo.setTimeout(1); // Zero disables timeouts in Playwright.
+        const line = `load-grace: absolute ${MAX_TEST_TIMEOUT_MS}ms ceiling exhausted for "${testInfo.title}"`;
+        process.stderr.write(`${line}\n`);
+        testInfo.annotations.push({ type: "load-grace", description: line });
+      }, MAX_TEST_TIMEOUT_MS);
       const watchdogTimeouts = new Set<number>();
       const timer = setInterval(() => {
+        if (expired) return;
         const observedMs = testInfo.timeout;
         if (observedMs !== observedTimeoutMs) {
           observedTimeoutMs = observedMs;
@@ -372,32 +381,26 @@ export const test = base.extend<{ assertionGrace: void; loadGrace: void; testTok
         lastResetAtMs = nowMs;
         const elapsedMs = Math.max(0, nowMs - startedAtMs);
         // A lower contention sample must not retract time already granted.
-        // Preserve that absolute deadline, while resetTestBudget's shrinking
-        // wall-clock remainder prevents any reset from moving past the cap.
-        const remainingGrantMs = Math.max(1, Math.round(grantedUntilMs - nowMs));
-        const remainingWallMs = Math.max(1, Math.round(absoluteCeilingAtMs - nowMs));
+        // Playwright counts elapsed time inside its total timeout budget.
         const wantMs = Math.min(
-          remainingWallMs,
-          Math.max(remainingGrantMs, resetTestBudget(floorMs, elapsedMs, ratio)),
+          MAX_TEST_TIMEOUT_MS,
+          Math.max(grantedMs, resetTestBudget(floorMs, elapsedMs, ratio)),
         );
         watchdogTimeouts.add(wantMs);
         testInfo.setTimeout(wantMs);
         const line =
-          `load-grace: reset "${testInfo.title}" to ${wantMs}ms from now ` +
+          `load-grace: reset "${testInfo.title}" to ${wantMs}ms total ` +
           `(contention=${ratio.toFixed(2)}, floor=${floorMs}ms, ` +
           `elapsed=${Math.round(elapsedMs)}ms, was ${grantedMs}ms)`;
         process.stderr.write(`${line}\n`);
         testInfo.annotations.push({ type: "load-grace", description: line });
         grantedMs = wantMs;
-        grantedUntilMs = Math.min(
-          absoluteCeilingAtMs,
-          Math.max(grantedUntilMs, nowMs + wantMs),
-        );
       }, LOAD_GRACE_SAMPLE_INTERVAL_MS);
       try {
         await use();
       } finally {
         clearInterval(timer);
+        clearTimeout(ceilingTimer);
       }
     },
     { auto: true },
@@ -969,30 +972,6 @@ export async function focusMenuItemByLabel(
 }
 
 /**
- * How far ahead of the page's own clock {@link freezeClock} aims.
- *
- * A lead is not a choice, it is forced by the API: `clock.pauseAt` is a
- * jump-then-pause primitive whose jump must be forward, and the clock keeps
- * ticking while `Date.now()` round-trips to this process — so
- * `pauseAt(pageNow)` fails with `Cannot fast-forward to the past` every time.
- * Measured, not reasoned about: it failed on all four probes of SH-318's spike
- * before the lead was added.
- *
- * The value satisfies an inequality rather than modelling anything, which is
- * why it is a bound and not a fudge factor. It must exceed one test-to-page
- * round trip (single-digit to tens of milliseconds, even loaded) and stay well
- * under the shortest interval the jump would otherwise fire — the dashboard's
- * 15s SSE watchdog, and far below its 50s staleness threshold. Two orders of
- * magnitude of headroom at each end. The only timer this jump does fire is the
- * 1s footer tick, once.
- *
- * Nothing asserts on it. A caller freezes *before* the behaviour under test
- * exists, so the lead is spent on an empty page and no margin anywhere depends
- * on its value.
- */
-const FREEZE_LEAD_MS = 2000;
-
-/**
  * Pauses the page's clock, so that from here on time advances only when a test
  * says so with `page.clock.runFor()`.
  *
@@ -1000,7 +979,16 @@ const FREEZE_LEAD_MS = 2000;
  * Prefer {@link onAFrozenClock}, which cannot leave the clock paused.
  */
 async function freezeClock(page: Page): Promise<void> {
-  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + FREEZE_LEAD_MS);
+  const time = await page.evaluate(() => Date.now());
+  // A future lead still races transport latency. Pin Date first: pauseAt's
+  // target cannot become past, while monotonic timer deadlines remain intact.
+  await page.clock.setFixedTime(time);
+  try {
+    await page.clock.pauseAt(time);
+  } finally {
+    // runFor must advance Date as well as timers inside the frozen body.
+    await page.clock.setSystemTime(time);
+  }
 }
 
 /**
@@ -1030,8 +1018,8 @@ export async function onAFrozenClock(
   page: Page,
   body: () => Promise<void>,
 ): Promise<void> {
-  await freezeClock(page);
   try {
+    await freezeClock(page);
     await body();
   } finally {
     await page.clock.resume();
@@ -1859,6 +1847,9 @@ export async function awaitNoOverlay(page: Page): Promise<void> {
  * measurement hostage to a toast animating somewhere else, and a live poll can
  * restart a card animation at any moment (the residual race SH-420 names; it
  * is in the failure message so the next reader does not re-derive it).
+ * Sample on a render frame: WebKit can report a transition as finished
+ * between frames while computed layout still contains its penultimate
+ * values (SH-812). Animation state alone at that point is not settled layout.
  *
  * `paused` is deliberately not `running`. A paused animation is not moving,
  * so a box read under it IS settled — just not at its final position. Nothing
@@ -1881,8 +1872,8 @@ export async function awaitSettled(root: Locator, surface: string = String(root)
   await expect
     .poll(
       async () =>
-        root.evaluate((node) =>
-          node
+        root.evaluate((node) => new Promise<string[]>((resolve) => {
+          requestAnimationFrame(() => resolve(node
             .getAnimations({ subtree: true })
             .filter((a) => a.playState === "running")
             .map((a) => {
@@ -1893,8 +1884,8 @@ export async function awaitSettled(root: Locator, surface: string = String(root)
                 (a as unknown as { transitionProperty?: string }).transitionProperty ||
                 "animation"
               } on ${target}`;
-            }),
-        ),
+            })));
+        })),
       {
         message:
           `${surface}: animations under this surface never settled, so a ` +

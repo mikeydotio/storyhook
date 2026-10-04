@@ -268,24 +268,23 @@ fn watchdog_resets_from_now_without_moving_the_absolute_wall_clock_ceiling() {
     let support = read("e2e/specs/support.ts");
 
     assert!(
-        module.contains("MAX_TEST_TIMEOUT_MS - elapsed")
-            && module.contains("Math.max(1,")
-            && !module.contains("elapsedMs)) + gracedTestBudget"),
-        "resetTestBudget must grant a duration from now that shrinks to the remaining wall-clock \
-         ceiling, never elapsed-plus-window (which Playwright treats as a fresh fixture duration \
-         and can therefore extend forever); the floor must stay above zero because zero disables \
-         Playwright timeouts"
+        module.contains("elapsed + gracedTestBudget(baseMs, ratio)")
+            && module.contains("Math.min(MAX_TEST_TIMEOUT_MS, Math.max(1,"),
+        "Playwright counts elapsed time against the total timeout. Retain the remaining window \
+         without passing a total above the approved ceiling or zero (which disables timeouts)."
     );
     assert!(
         support.contains("resetTestBudget(floorMs, elapsedMs, ratio)"),
         "the running watchdog must call resetTestBudget with measured elapsed time"
     );
     assert!(
-        support.contains("absoluteCeilingAtMs")
-            && support.contains("grantedUntilMs")
-            && support.contains("remainingWallMs"),
-        "the running watchdog must preserve earlier grants as absolute deadlines while clamping \
-         every fresh fixture-duration reset to the same wall-clock ceiling"
+        support.contains("const ceilingTimer = setTimeout(")
+            && support.contains("testInfo.setTimeout(1)")
+            && support.contains("if (expired) return;")
+            && support.contains("clearTimeout(ceilingTimer)")
+            && support.contains("Math.max(grantedMs, resetTestBudget"),
+        "keep previous grants and independently exhaust the owner at the wall ceiling, even \
+         inside a fixture's private timeout slot; later samples cannot resurrect it"
     );
 }
 

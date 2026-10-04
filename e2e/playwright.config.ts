@@ -102,7 +102,7 @@ export default defineConfig({
   // The initial probe cannot detect a browser lost later in the run. Stop
   // that project after a launch failure while preserving its failed result.
   reporter: [
-    ["list"], ["./gate-progress-reporter.ts"], ["./browser-launch-reporter.ts"],
+    ["list"], ["./gate-progress-reporter.ts"], ["./browser-launch-reporter.ts"], ["./slice-reporter.ts"],
     // Isolation validates the completed project/file selection independently
     // of the process exit code. Ordinary runs keep their existing reporters.
     ...(process.env.E2E_ISOLATION_REPORT

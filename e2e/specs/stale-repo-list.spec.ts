@@ -275,19 +275,12 @@ test("a project list taken before a project existed must not evict the user from
 for (const surface of ["Home", "project menu", "Settings"] as const) {
   for (const arrival of ["none", "success", "failure"] as const) {
     test(`a ${surface} project press survives catalog ${arrival}`, async ({ page, request }) => {
-      let target = page.locator(".repo-card-name", { hasText: "Alpha Project" });
-      let root = page.locator("#home-view");
-      if (surface === "project menu") {
-        await page.locator("#projsel-btn").click();
-        target = page.locator(".projsel-item", { hasText: "Alpha Project" });
-        root = page.locator("#projsel-menu");
-      } else if (surface === "Settings") {
-        await clickHeaderAction(page, "settings-btn");
-        target = page.locator(".settings-table tbody tr", { hasText: "Alpha Project" })
-          .getByRole("button", { name: "Statuses" });
-        root = page.locator("#settings-view");
-      }
-
+      let pressStarted = false;
+      const prematureCatalogReplies: string[] = [];
+      page.on("requestfinished", (read) => {
+        if (!pressStarted && new URL(read.url()).pathname === "/api/repos")
+          prematureCatalogReplies.push(read.url());
+      });
       let deliver = async () => {};
       const failedCatalogReads: string[] = [];
       if (arrival === "success") {
@@ -314,16 +307,32 @@ for (const surface of ["Home", "project menu", "Settings"] as const) {
         await createStory(request, "Beta Project", "SH-737 catalog press failure");
         deliver = held.refuse;
       } else {
-        // Establish a quiet catalog before the control gesture; otherwise
-        // bootstrap or SSE reads can repaint during coordinate preparation.
-        const held = await holdUntilRefused(page, (url) => url.pathname === "/api/repos");
+        // Keep navigation and safety-poll reads pending through the control
+        // gesture so neither success nor failure can repaint its target.
+        await holdUntilRefused(page, (url) => url.pathname === "/api/repos");
         await createStory(request, "Beta Project", "SH-737 catalog press control");
-        await held.refuse();
+      }
+
+      // Entering Settings fetches the catalog. Own that request before
+      // navigation so its response cannot replace the target during setup.
+      let target = page.locator(".repo-card-name", { hasText: "Alpha Project" });
+      let root = page.locator("#home-view");
+      if (surface === "project menu") {
+        await page.locator("#projsel-btn").click();
+        target = page.locator(".projsel-item", { hasText: "Alpha Project" });
+        root = page.locator("#projsel-menu");
+      } else if (surface === "Settings") {
+        await clickHeaderAction(page, "settings-btn");
+        target = page.locator(".settings-table tbody tr", { hasText: "Alpha Project" })
+          .getByRole("button", { name: "Statuses" });
+        root = page.locator("#settings-view");
       }
 
       const box = await settledBoundingBox(root, target);
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      expect(prematureCatalogReplies, "catalog replies must stay held during gesture preparation").toEqual([]);
       await page.mouse.down();
+      pressStarted = true;
       let swallowed: string[];
       try {
         await deliver();

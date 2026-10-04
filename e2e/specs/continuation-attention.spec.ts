@@ -2,9 +2,11 @@ import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
   createStory,
+  deleteStory,
   openProject,
   projectSlug,
   seedToken,
+  waitForBoardData,
 } from "./support";
 
 cleanUpCreatedStories("Alpha Project");
@@ -22,40 +24,52 @@ test("an unresolved continuation is visible on the card and in its detail", asyn
     next_step: `Run story continuation status ${id} --json and review the exact request.`,
   };
   let unresolved = true;
-  await page.route(
-    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
-    async (route) => {
-      const response = await route.fetch();
-      const data = await response.json();
-      const view = data.stories.find((candidate: { story: { id: string } }) => candidate.story.id === id);
-      if (!view) throw new Error("created fixture story is missing from project data");
-      if (unresolved) view.continuation_alerts = [alert];
-      else delete view.continuation_alerts;
-      await route.fulfill({ response, json: data });
-    },
-  );
-  await page.route(
-    (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/story/${id}`,
-    async (route) => {
-      const response = await route.fetch();
-      const view = await response.json();
-      if (unresolved) view.continuation_alerts = [alert];
-      else delete view.continuation_alerts;
-      await route.fulfill({ response, json: view });
-    },
-  );
+  try {
+    await page.route(
+      (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`,
+      async (route) => {
+        const response = await route.fetch();
+        const data = await response.json();
+        const view = data.stories.find((candidate: { story: { id: string } }) => candidate.story.id === id);
+        if (!view) throw new Error("created fixture story is missing from project data");
+        if (unresolved) view.continuation_alerts = [alert];
+        else delete view.continuation_alerts;
+        await route.fulfill({ response, json: data });
+      },
+    );
+    await page.route(
+      (url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/story/${id}`,
+      async (route) => {
+        const response = await route.fetch();
+        const view = await response.json();
+        if (unresolved) view.continuation_alerts = [alert];
+        else delete view.continuation_alerts;
+        await route.fulfill({ response, json: view });
+      },
+    );
 
-  await page.reload();
-  const card = page.locator(`.card[data-id="${id}"]`);
-  await expect(card.locator(".continuation-alert-chip")).toContainText("Continuation needs attention");
-  await expect(card).toHaveAttribute("aria-label", /Continuation needs attention/);
-  await card.click();
-  const banner = page.locator("#drawer-body .continuation-alert-banner");
-  await expect(banner).toContainText("request-sh744");
-  await expect(banner).toContainText(alert.detail);
-  await expect(banner).toContainText(alert.next_step);
+    await page.reload();
+    const card = page.locator(`.card[data-id="${id}"]`);
+    await expect(card.locator(".continuation-alert-chip")).toContainText("Continuation needs attention");
+    await expect(card).toHaveAttribute("aria-label", /Continuation needs attention/);
+    await card.click();
+    const banner = page.locator("#drawer-body .continuation-alert-banner");
+    await expect(banner).toContainText("request-sh744");
+    await expect(banner).toContainText(alert.detail);
+    await expect(banner).toContainText(alert.next_step);
 
-  unresolved = false;
+    unresolved = false;
+    await page.reload();
+    await waitForBoardData(page);
+    await expect(page.locator(`.card[data-id="${id}"] .continuation-alert-chip`)).toHaveCount(0);
+  } finally {
+    // Remove assertion-only routes before cleanup can delete their subject.
+    await page.unrouteAll({ behavior: "wait" });
+  }
+
+  // A fixture's routes must not outlive the story removed by shared cleanup.
+  await deleteStory(page, "SH-744 delayed continuation fixture");
   await page.reload();
-  await expect(page.locator(`.card[data-id="${id}"] .continuation-alert-chip`)).toHaveCount(0);
+  await waitForBoardData(page);
+  await expect(page.locator(`.card[data-id="${id}"]`)).toHaveCount(0);
 });
