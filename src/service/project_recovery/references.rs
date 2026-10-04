@@ -134,6 +134,7 @@ pub(super) fn stories(state: &RecoveryState) -> BTreeSet<StoryNo> {
     for RepairRefusalRecord {
         candidate: _,
         label_revision: _,
+        control_revision: _,
         id: _,
         story,
         generation: _,

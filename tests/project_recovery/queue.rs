@@ -181,6 +181,13 @@ fn queue_disposes_refusal_or_lands_only_the_admitted_repair_input() {
         if unchanged {
             assert!(current.state.refusals[0].disposition.is_some());
             assert!(current.state.attempts.is_empty());
+            let row = f
+                .store()
+                .read(|tx| tx.story(f.project(), StoryNo::new(1)))
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.state, "verifying");
+            assert!(row.awaiting.is_some());
             assert!(
                 f.store()
                     .read(|tx| tx.verification_incident(f.project()))

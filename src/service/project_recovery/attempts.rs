@@ -83,6 +83,9 @@ pub struct RepairRefusalRecord {
     /// Latest recovery reservation, including a removed no-auto label.
     #[serde(default)]
     pub label_revision: Option<GlobalSeq>,
+    /// Verifier control epoch at refusal; legacy absence grants no new disposition authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_revision: Option<i64>,
     /// Exact refused verifier attempt.
     pub id: String,
     /// Original target story.
@@ -214,6 +217,9 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                     view.state.refusals.push(RepairRefusalRecord {
                         candidate: candidate.clone(),
                         label_revision,
+                        control_revision: Some(
+                            tx.verification_control_revision(candidate.project)?,
+                        ),
                         id: attempt.into(),
                         story,
                         generation,
