@@ -105,15 +105,34 @@ test.describe("load-grace pure functions", () => {
     expect(gracedTestBudget(120_000, 0.5)).toBe(120_000);
   });
 
-  test("resetTestBudget resets from now without crossing the absolute wall-clock ceiling", () => {
-    expect(resetTestBudget(BASE_TEST_TIMEOUT_MS, 20_000, 2)).toBe(30_000);
-    expect(resetTestBudget(BASE_TEST_TIMEOUT_MS, MAX_TEST_TIMEOUT_MS - 1_000, 2)).toBe(1_000);
-    expect(resetTestBudget(BASE_TEST_TIMEOUT_MS, MAX_TEST_TIMEOUT_MS + 1_000, 2)).toBe(1);
+  test("resetTestBudget includes elapsed time without crossing the absolute ceiling", () => {
+    expect(resetTestBudget(BASE_TEST_TIMEOUT_MS, 20_000, 2)).toBe(50_000);
+    expect(resetTestBudget(BASE_TEST_TIMEOUT_MS, MAX_TEST_TIMEOUT_MS - 1_000, 2)).toBe(MAX_TEST_TIMEOUT_MS);
+    expect(resetTestBudget(BASE_TEST_TIMEOUT_MS, MAX_TEST_TIMEOUT_MS + 1_000, 2)).toBe(MAX_TEST_TIMEOUT_MS);
+    // Exact SH-812 v8 observation: this must retain 448004 ms of patience,
+    // not set a total budget already exhausted at elapsed 451996 ms.
+    expect(resetTestBudget(120_000, 451_996, 42.31) - 451_996).toBe(448_004);
   });
 
   test("MAX_TEST_TIMEOUT_MS is exactly the user's own 15-minute determination", () => {
     expect(MAX_TEST_TIMEOUT_MS).toBe(15 * 60 * 1000);
   });
+});
+
+// This control must own its timeout; the ordinary watchdog would hide the bug.
+const bounded = test.extend({ loadGrace: async ({}, use) => { await use(); } });
+
+bounded("a native timeout slot retains the second half of its granted lifetime", async ({}, testInfo) => {
+  const scale = 180; // Scale the same 900-second arithmetic to a five-second proof.
+  const started = performance.now();
+  const grant = () => testInfo.setTimeout(resetTestBudget(120_000, (performance.now() - started) * scale, 20) / scale);
+  grant();
+  const timer = setInterval(grant, 20);
+  try {
+    await delay(3_500);
+  } finally {
+    clearInterval(timer);
+  }
 });
 
 /** An intentionally short context default; the explicit request budget must

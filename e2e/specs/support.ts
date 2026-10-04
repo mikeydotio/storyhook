@@ -284,8 +284,8 @@ const LOAD_GRACE_RESET_INTERVAL_MS = 5_000;
  *
  * Samples contention every {@link LOAD_GRACE_SAMPLE_INTERVAL_MS} and calls
  * `testInfo.setTimeout()` *before* the deadline can fire -- Playwright has no
- * hook that runs after a test's timeout has already torn it down. In this
- * auto-fixture slot the grant is a duration from *now*. Under sustained
+ * hook that runs after a test's timeout has already torn it down. The grant
+ * includes time already spent in the runnable. Under sustained
  * contention each rate-limited reset restores a complete graced window,
  * shortened as the absolute 15-minute wall-clock ceiling approaches. Adopts
  * a spec's
@@ -353,10 +353,19 @@ export const test = base.extend<{ assertionGrace: void; loadGrace: void; testTok
       // began protecting the current runnable, so its own monotonic origin is
       // the correct and portable clock.
       const startedAtMs = performance.now();
-      const absoluteCeilingAtMs = startedAtMs + MAX_TEST_TIMEOUT_MS;
-      let grantedUntilMs = Math.min(absoluteCeilingAtMs, startedAtMs + grantedMs);
+      let expired = false;
+      // A worker fixture can have its own elapsed origin. Its timeout grant
+      // cannot be used as proof of this owner's absolute wall-clock ceiling.
+      const ceilingTimer = setTimeout(() => {
+        expired = true;
+        testInfo.setTimeout(1); // Zero disables timeouts in Playwright.
+        const line = `load-grace: absolute ${MAX_TEST_TIMEOUT_MS}ms ceiling exhausted for "${testInfo.title}"`;
+        process.stderr.write(`${line}\n`);
+        testInfo.annotations.push({ type: "load-grace", description: line });
+      }, MAX_TEST_TIMEOUT_MS);
       const watchdogTimeouts = new Set<number>();
       const timer = setInterval(() => {
+        if (expired) return;
         const observedMs = testInfo.timeout;
         if (observedMs !== observedTimeoutMs) {
           observedTimeoutMs = observedMs;
@@ -372,32 +381,26 @@ export const test = base.extend<{ assertionGrace: void; loadGrace: void; testTok
         lastResetAtMs = nowMs;
         const elapsedMs = Math.max(0, nowMs - startedAtMs);
         // A lower contention sample must not retract time already granted.
-        // Preserve that absolute deadline, while resetTestBudget's shrinking
-        // wall-clock remainder prevents any reset from moving past the cap.
-        const remainingGrantMs = Math.max(1, Math.round(grantedUntilMs - nowMs));
-        const remainingWallMs = Math.max(1, Math.round(absoluteCeilingAtMs - nowMs));
+        // Playwright counts elapsed time inside its total timeout budget.
         const wantMs = Math.min(
-          remainingWallMs,
-          Math.max(remainingGrantMs, resetTestBudget(floorMs, elapsedMs, ratio)),
+          MAX_TEST_TIMEOUT_MS,
+          Math.max(grantedMs, resetTestBudget(floorMs, elapsedMs, ratio)),
         );
         watchdogTimeouts.add(wantMs);
         testInfo.setTimeout(wantMs);
         const line =
-          `load-grace: reset "${testInfo.title}" to ${wantMs}ms from now ` +
+          `load-grace: reset "${testInfo.title}" to ${wantMs}ms total ` +
           `(contention=${ratio.toFixed(2)}, floor=${floorMs}ms, ` +
           `elapsed=${Math.round(elapsedMs)}ms, was ${grantedMs}ms)`;
         process.stderr.write(`${line}\n`);
         testInfo.annotations.push({ type: "load-grace", description: line });
         grantedMs = wantMs;
-        grantedUntilMs = Math.min(
-          absoluteCeilingAtMs,
-          Math.max(grantedUntilMs, nowMs + wantMs),
-        );
       }, LOAD_GRACE_SAMPLE_INTERVAL_MS);
       try {
         await use();
       } finally {
         clearInterval(timer);
+        clearTimeout(ceilingTimer);
       }
     },
     { auto: true },
