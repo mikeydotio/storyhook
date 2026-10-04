@@ -9,9 +9,9 @@ use crate::store::{ProjectId, StoreError, VerificationIncident, WriteOps};
 pub enum VerificationAction {
     /// Permit admission after the previous owned attempt exits.
     Start,
-    /// Prevent admission and finish the owned attempt.
+    /// Disable future gates and finish the owned attempt before skipped submissions.
     Drain,
-    /// Prevent admission and cancel the owned attempt.
+    /// Disable gates and settle cancellation before skipped submissions.
     Stop,
 }
 
@@ -21,7 +21,7 @@ pub enum VerificationAction {
 pub enum VerificationAcknowledgement {
     /// Acknowledge and permit a new attempt.
     Retry,
-    /// Acknowledge and keep admissions disabled.
+    /// Acknowledge and keep tests disabled while eligible submissions continue.
     LeaveStopped,
 }
 

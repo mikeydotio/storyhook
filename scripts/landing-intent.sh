@@ -4,8 +4,9 @@ set -uo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 # shellcheck source=github-access.sh
 . "$script_dir/github-access.sh" || exit 1
-[ "$#" -eq 5 ] || exit 1
+[ "$#" -eq 5 ] || [ "$#" -eq 6 ] || exit 1
 mode="$1" pr="$2" expected_head="$3" expected_tree="$4" marker="$5"
+skipped_attempt="${6:-}"
 verdict() {
     jq -n --arg result "$1" --arg detail "$2" '{result:$result, detail:$detail}'
     exit 0
@@ -29,7 +30,11 @@ if [ "$mode" = attempt ]; then
     [ ! -e "$marker" ] || verdict uncertain "this intent has already attempted a merge"
     export STORYHOOK_LANDING_HEAD="$expected_head" STORYHOOK_LANDING_TREE="$expected_tree"
     export STORYHOOK_LANDING_ATTEMPT_MARKER="$marker"
-    output="$(bash "$script_dir/land-pr.sh" "$pr" 2>&1)"
+    landing_args=("$pr")
+    if [ -n "$skipped_attempt" ]; then
+        landing_args=(--stopped-intent "$skipped_attempt" "$expected_head" "$expected_tree" "$pr")
+    fi
+    output="$(bash "$script_dir/land-pr.sh" "${landing_args[@]}" 2>&1)"
     status=$?
     if [ "$status" -ne 0 ] && [ ! -e "$marker" ]; then
         not_attempted="$output"
@@ -55,5 +60,5 @@ git merge-base --is-ancestor "$merge_oid" "$recovery_ref" \
     || verdict uncertain "reported merge is not on the fetched base"
 actual_tree="$(git rev-parse "$merge_oid^{tree}" 2>/dev/null)" \
     || verdict uncertain "cannot resolve landed tree"
-[ "$actual_tree" = "$expected_tree" ] || verdict uncertain "landed tree differs from certified tree"
-verdict merged "confirmed admitted head $expected_head landed as $merge_oid with certified tree $actual_tree"
+[ "$actual_tree" = "$expected_tree" ] || verdict uncertain "landed tree differs from admitted tree"
+verdict merged "confirmed admitted head $expected_head landed as $merge_oid with admitted tree $actual_tree"

@@ -206,6 +206,9 @@ pub(crate) fn intervals_preserved(old: &[GateInterval], next: &[GateInterval]) -
 /// One persisted admission. It grants neither execution ownership nor certification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateAttempt {
+    /// Observed admission policy; this evidence grants no merge authority.
+    #[serde(default)]
+    pub mode: crate::domain::landing::VerificationMode,
     /// Evidence protocol version.
     pub version: u32,
     /// Unique verifier attempt token.
@@ -239,6 +242,7 @@ impl GateAttempt {
     /// Starts a new observation without asserting unknown gate inputs.
     pub fn new(id: String, submission: GateSubmission, at: &str) -> Self {
         Self {
+            mode: crate::domain::landing::VerificationMode::Gated,
             version: 1,
             id,
             submission,

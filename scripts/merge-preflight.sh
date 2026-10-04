@@ -56,7 +56,7 @@
 
 set -uo pipefail
 
-readonly USAGE="usage: merge-preflight.sh [--json] [--object-dir <absolute-directory>] <base-ref> <head-ref>"
+readonly USAGE="usage: merge-preflight.sh [--json] [--prepare-only] [--object-dir <absolute-directory>] <base-ref> <head-ref>"
 structured=0
 if [ "${1:-}" = "--json" ]; then
     structured=1
@@ -88,6 +88,12 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || die "cannot resolv
 . "$script_dir/python-runtime.sh" || die "missing Python runtime policy in $script_dir"
 storyhook_python_init || die "$STORYHOOK_PYTHON_ERROR"
 
+# Preparing stopped-mode work proves only a clean merge, never certification.
+prepare_only=0
+if [ "${1:-}" = --prepare-only ]; then
+    prepare_only=1
+    shift
+fi
 object_arg=""
 if [ "${1:-}" = "--object-dir" ]; then
     [ "$#" -eq 4 ] || die "$USAGE"
@@ -291,6 +297,10 @@ fi
 
 tree="$output"
 [ "$structured" -eq 1 ] || printf '%s\n' "$tree"
+if [ "$prepare_only" -eq 1 ]; then
+    report prepared verification-skipped "merge prepared without reading certification"
+    exit 0
+fi
 
 # Opening is authoritative: a directory, unreadable file, or dangling link
 # is a reader failure, never proof that the project omitted certification.

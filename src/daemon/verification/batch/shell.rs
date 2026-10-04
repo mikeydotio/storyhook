@@ -151,7 +151,13 @@ impl BatchActuator for ShellVerificationActuator {
         pull_request: &PrLink,
         cancellation: &Cancellation,
     ) -> VerificationOutcome {
-        self.run_verify_pr(head, pull_request, cancellation, RepairAdmission::Withheld)
+        self.run_verify_pr(
+            head,
+            pull_request,
+            cancellation,
+            RepairAdmission::Withheld,
+            VerificationMode::Gated,
+        )
     }
 
     fn retire(

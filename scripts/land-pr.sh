@@ -204,6 +204,26 @@ fi
 # path supplies this script's own GitHub phase as that command. Tests supply a
 # filesystem witness, not a fake `gh`, so they prove refusal and ordering
 # without making claims about an imitation GitHub API.
+if [ "${1:-}" = "--prepared-run" ]; then
+    require_merge_lock
+    [ "$#" -ge 7 ] && [ "${6:-}" = -- ] \
+        || die "private usage: land-pr.sh --prepared-run <base> <head> <tree> <attempt> -- <command...>"
+    base="$2" head="$3" expected_tree="$4" admission="$5"
+    case "$admission" in ''|*[!a-zA-Z0-9-]*) die "invalid stopped-mode admission identity" ;; esac
+    [ "$head" = "${STORYHOOK_LANDING_HEAD:-}" ] \
+        && [ "$expected_tree" = "${STORYHOOK_LANDING_TREE:-}" ] \
+        && [ -n "${STORYHOOK_LANDING_ATTEMPT_MARKER:-}" ] \
+        || die "prepared merge has no matching landing intent"
+    shift 6
+    tree="$(bash "$script_dir/merge-preflight.sh" --prepare-only "$base" "$head")"
+    status=$?
+    [ "$status" -eq 0 ] || exit "$status"
+    [ "$tree" = "$expected_tree" ] || die "prepared merge tree changed before landing"
+    export STORYHOOK_PREPARED_MERGE_TREE="$tree"
+    note "prepared tree $tree inside the merge lock; verification skipped for $admission"
+    exec "$@"
+fi
+
 if [ "${1:-}" = "--certified-run" ]; then
     require_merge_lock
     [ "$#" -ge 5 ] && [ "${4:-}" = "--" ] \
@@ -225,23 +245,28 @@ fi
 # Live GitHub mutation. This mode is reachable only from --locked, through the
 # certified-command path above, with both the lock proof and exact tree in its
 # environment.
-if [ "${1:-}" = "--merge" ]; then
+if [ "${1:-}" = "--merge" ] || [ "${1:-}" = "--merge-prepared" ]; then
     require_merge_lock
     [ "$#" -eq 6 ] \
         || die "private usage: land-pr.sh --merge <number> <base-ref> <head-ref> <head-sha> <base-remote-ref>"
-    [ -n "${STORYHOOK_CERTIFIED_MERGE_TREE:-}" ] \
-        || die "the merge phase has no certified merge tree"
+    if [ "$1" = --merge-prepared ]; then
+        [ -n "${STORYHOOK_PREPARED_MERGE_TREE:-}" ] && [ -n "${STORYHOOK_LANDING_ATTEMPT_MARKER:-}" ] \
+            || die "the prepared merge phase has no landing authority"
+        expected_tree="$STORYHOOK_PREPARED_MERGE_TREE"
+    else
+        [ -n "${STORYHOOK_CERTIFIED_MERGE_TREE:-}" ] \
+            || die "the merge phase has no certified merge tree"
+        expected_tree="$STORYHOOK_CERTIFIED_MERGE_TREE"
+    fi
 
     number="$2"
     base_ref="$3"
     head_ref="$4"
     head_sha="$5"
     base_remote_ref="$6"
-    expected_tree="$STORYHOOK_CERTIFIED_MERGE_TREE"
-
     if [ -n "${STORYHOOK_LANDING_ATTEMPT_MARKER:-}" ]; then
         [ "$head_sha" = "${STORYHOOK_LANDING_HEAD:-}" ] || die "landing intent head changed before merge"
-        [ "$expected_tree" = "${STORYHOOK_LANDING_TREE:-}" ] || die "landing intent certified tree changed before merge"
+        [ "$expected_tree" = "${STORYHOOK_LANDING_TREE:-}" ] || die "landing intent tree changed before merge"
         # Written before sending: failure or interruption after this point is ambiguous.
         (set -C; printf '%s\n' "$head_sha $expected_tree" > "$STORYHOOK_LANDING_ATTEMPT_MARKER") \
             || die "cannot record a fresh landing attempt"
@@ -271,9 +296,9 @@ if [ "${1:-}" = "--merge" ]; then
     actual_tree="$(git rev-parse "$merge_oid^{tree}" 2>/dev/null)" \
         || die "could not read the tree of landed merge commit $merge_oid"
     [ "$actual_tree" = "$expected_tree" ] \
-        || die "HARD FAILURE: PR #$number landed tree $actual_tree, but the certified tree was $expected_tree (SH-474 base race)"
+        || die "HARD FAILURE: PR #$number landed tree $actual_tree, but the admitted tree was $expected_tree (SH-474 base race)"
 
-    note "verified PR #$number merged at $merged_at as $merge_oid with certified tree $actual_tree"
+    note "verified PR #$number merged at $merged_at as $merge_oid with admitted tree $actual_tree"
 
     remaining="$(github_git ls-remote --heads origin "refs/heads/$head_ref" 2>&1)" \
         || die "PR #$number merged and verified, but reading remote branch $head_ref failed: $remaining"
@@ -294,8 +319,20 @@ fi
 # Everything from metadata resolution through verification stays under the
 # lock. The freshly fetched target ref defines the certification base. A head
 # disagreement is refused because GitHub can enforce that same head at merge.
-if [ "${1:-}" = "--locked" ]; then
+if [ "${1:-}" = --stopped-intent ]; then
+    [ "$#" -eq 5 ] || die "private stopped landing requires attempt, head, tree and PR"
+    exec bash "$script_dir/machine-lock.sh" merge -- bash "$script" --locked-stopped "$2" "$3" "$4" "$5"
+fi
+if [ "${1:-}" = "--locked" ] || [ "${1:-}" = --locked-stopped ]; then
     require_merge_lock
+    stopped_attempt=""
+    if [ "$1" = --locked-stopped ]; then
+        [ "$#" -eq 5 ] || die "invalid private stopped landing arguments"
+        stopped_attempt="$2"
+        [ "$3" = "${STORYHOOK_LANDING_HEAD:-}" ] && [ "$4" = "${STORYHOOK_LANDING_TREE:-}" ] \
+            || die "stopped landing arguments differ from durable authority"
+        shift 3
+    fi
     shift
     stated_base=""
     if [ "${1:-}" = "--base" ]; then
@@ -344,6 +381,10 @@ if [ "${1:-}" = "--locked" ]; then
     [ "$head_ref" = "$initial_head_ref" ] \
         || die "PR #$number changed head branch from $initial_head_ref to $head_ref while its refs were being refreshed; rerun land-pr.sh"
 
+    if [ -n "$stopped_attempt" ]; then
+        exec bash "$script" --prepared-run "$fetched_base" "$head_sha" "$STORYHOOK_LANDING_TREE" "$stopped_attempt" -- \
+            bash "$script" --merge-prepared "$number" "$base_ref" "$head_ref" "$head_sha" "$base_remote_ref"
+    fi
     exec bash "$script" --certified-run "$fetched_base" "$head_sha" -- \
         bash "$script" --merge "$number" "$base_ref" "$head_ref" "$head_sha" "$base_remote_ref"
 fi

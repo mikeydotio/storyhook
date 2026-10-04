@@ -230,6 +230,7 @@ mod tests {
             pull_request: Err(VerificationProblem::MissingPullRequest),
         };
         let active = ActiveVerification {
+            mode: Default::default(),
             attempt_id: "attempt-now".into(),
             project: candidate.project,
             story_id: candidate.story_id.clone(),

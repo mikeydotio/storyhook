@@ -28,6 +28,9 @@ pub struct VerifierStatus {
     pub verifying: Vec<String>,
     /// Stories held by stopped admission or an infrastructure incident.
     pub held_stories: Vec<String>,
+    /// Queue exclusions and their authoritative reasons, independent of gate policy.
+    #[serde(default)]
+    pub held_reasons: Vec<(String, String)>,
     /// Process-local ownership; never inferred from queue rank.
     pub active: Option<ActiveVerification>,
     /// Last durable cost checkpoint for the active admission. It does not renew silence.
@@ -206,7 +209,10 @@ pub(crate) fn snapshot(
         incident_is_current,
         batch.as_ref(),
     );
-    let stopped = control != VerificationControlState::Running;
+    let stopped = matches!(
+        control,
+        VerificationControlState::Stopping | VerificationControlState::Draining
+    );
     let held_stories = if stopped || incident_is_current {
         verifying.clone()
     } else {
@@ -330,6 +336,7 @@ pub(crate) fn snapshot(
             retry_count,
             verifying,
             held_stories,
+            held_reasons: crate::service::verification::held_verifying_for(tx, ctx.project())?,
             active: active.cloned(),
             cost,
             reservation,
@@ -371,11 +378,16 @@ impl VerifierStatus {
                     VerificationControlState::Running => "running",
                     VerificationControlState::Draining => "draining",
                     VerificationControlState::Stopping => "stopping",
-                    VerificationControlState::Stopped => "stopped",
+                    VerificationControlState::Stopped => {
+                        "verification stopped; submissions continue without tests"
+                    }
                 }
             },
             self.verifying.len()
         );
+        for (story, reason) in &self.held_reasons {
+            text.push_str(&format!("Held {story}: {reason}\n"));
+        }
         if let Some(i) = &self.incident {
             if self.incident_is_current {
                 text.push_str(&format!("Incident {}: {}; first hit {}; age {}s; {} attempts ({} retries); unacknowledged\n{}\nHeld: {}\n",

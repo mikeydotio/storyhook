@@ -1,7 +1,7 @@
 //! Durable merge authority, retained across uncertain external outcomes.
 
 use super::{BatchId, BatchPhase, GlobalSeq, ProjectId, ReadOps, StoreError, StoryNo, StoryQuery};
-use crate::domain::landing::VerifiedSubmission;
+use crate::domain::landing::LandingAuthority;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -25,7 +25,7 @@ pub struct LandingIntent {
     /// Registered checkout used for the operation.
     pub checkout: PathBuf,
     /// Evidence the merge must continue to match.
-    pub certification: VerifiedSubmission,
+    pub certification: LandingAuthority,
     /// When the intent was durably admitted.
     pub created_at: String,
     /// The verification batch this story lands with, when it is a batch
@@ -74,7 +74,7 @@ pub struct BatchLandingIntent {
     /// What binds the rows to their batch.
     pub batch: BatchLanding,
     /// The batch certification every row carries.
-    pub certification: VerifiedSubmission,
+    pub certification: LandingAuthority,
     /// The members' own intents still pending, in story order.
     pub rows: Vec<LandingIntent>,
 }
@@ -150,7 +150,7 @@ fn validate_batch(tx: &impl ReadOps, batch: &BatchLandingIntent) -> Result<(), S
         .into_iter()
         .find(|record| record.id == batch.batch.id)
         .ok_or_else(|| refuse("the batch record is missing"))?;
-    if record.tip != batch.certification.head
+    if record.tip != batch.certification.head()
         || record
             .pull_request
             .as_ref()
@@ -198,6 +198,9 @@ pub(crate) fn validate_intent(tx: &impl ReadOps, intent: &LandingIntent) -> Resu
         ))
     };
     intent.certification.validate()?;
+    if intent.batch.is_some() && intent.certification.certified().is_none() {
+        return Err(refuse("a batch landing requires actual certification"));
+    }
     if tx.story_resets(intent.project)?.contains_key(&intent.story)
         || tx
             .story_reset(intent.project, intent.story)?

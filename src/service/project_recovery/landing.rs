@@ -53,11 +53,12 @@ pub(crate) fn record_landing(
 }
 
 fn matches_intent(attempt: &RepairAttempt, intent: &LandingIntent) -> bool {
-    attempt.story == intent.story
+    intent.certification.certified().is_some()
+        && attempt.story == intent.story
         && attempt.generation == intent.generation
         && attempt.completion == Some(RepairCompletion::Certified)
-        && attempt.input.head == intent.certification.head
-        && attempt.input.tree == intent.certification.tree
+        && attempt.input.head == intent.certification.head()
+        && attempt.input.tree == intent.certification.tree()
         && attempt.candidate.project == intent.project
         && attempt.candidate.project_slug == intent.project_slug
         && attempt.candidate.story_id == intent.story_id

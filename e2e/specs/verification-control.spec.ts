@@ -112,16 +112,16 @@ test("draining can escalate and restart waits for owned cleanup", async ({ page,
   await expect(column.getByRole("button", { name: "Start verifier", exact: true })).toBeEnabled();
 });
 
-test("stopped admission remains visible after an incident is acknowledged", async ({ page }) => {
+test("stopped verification explains continuing submission after reload", async ({ page }) => {
   const column = page.locator('.column[data-state="verifying"]');
   await column.getByRole("button", { name: "Stop verifier", exact: true }).click();
   await page.getByRole("menuitem", { name: "Stop inflight verifications" }).click();
   const banner = page.locator('#verification-banner-region');
   await expect(banner).toBeVisible();
-  await expect(banner).toContainText("Central verification stopped");
+  await expect(banner).toContainText("Verification stopped — submissions continue without tests");
   await expect(banner.getByRole("button", { name: "Start verifier", exact: true })).toBeVisible();
   await page.reload();
-  await expect(banner).toContainText("Central verification stopped");
+  await expect(banner).toContainText("Verification stopped — submissions continue without tests");
   await banner.getByRole("button", { name: "Start verifier", exact: true }).click();
   await expect(column.getByRole("button", { name: "Stop verifier", exact: true })).toBeVisible();
 });
@@ -263,4 +263,27 @@ test("a reserved verifier reads as activity in its column, not as attention", as
   await page.reload();
   await expect(status).toContainText("Finishing inflight verification…");
   await expect(status).toContainText("Held for ALPHA-7");
+});
+
+
+test("stopped verification shows active submission without claiming a gate passed", async ({ page, request }) => {
+  const slug = await projectSlug(request, "Alpha Project");
+  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.verification_incident = null;
+    data.verification_control = { state: "stopped" };
+    data.verifier = { ...data.verifier, control: "stopped", warning: null,
+      active: { story_id: "ALPHA-7", mode: "verification-skipped" },
+      held_reasons: [["ALPHA-8", "verification stopped: managed repair requires certification"]],
+      reservation: null, batch: null, batch_preview: null,
+      recovery: { acknowledgement: null, request: null } };
+    await route.fulfill({ response, json: data });
+  });
+  await page.reload();
+  const column = page.locator('.column[data-state="verifying"]');
+  await expect(column.getByRole("status")).toHaveText("Verification stopped — submissions continue without tests · Processing ALPHA-7");
+  await expect(column.getByRole("button", { name: "Start verifier", exact: true })).toBeEnabled();
+  await expect(page.locator('#verification-banner-region')).toContainText("Verification stopped — submissions continue without tests");
+  await expect(page.locator('#verification-banner-region')).toContainText("Held ALPHA-8: verification stopped: managed repair requires certification");
 });
