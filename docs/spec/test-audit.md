@@ -750,6 +750,40 @@ owned output-directory collision and is excluded; the clean repeat is
 have separate commits. Performance acceptance still requires the matched
 successful comparison; these focused results are not timing evidence.
 
+**Ninth measurement, 2026-10-04 UTC.** Source `d109221f` includes all five
+v8 repairs. Both snapshots use ordinary binary SHA-256
+`f5864518f629df4547eb02bcd323f20c030d08c20c7babffad73d25bd0c9f3ef`.
+Discovery selected 1,526 cases, sixteen slices and eight jobs. The warm-up
+failed on WebKit's real-timer notification canary and was stopped through normal
+parent TERM cleanup at 02:47:55.070Z. Interrupted wall time was 1,102.543 seconds;
+mean/max load was 146.421/170.320. No duration history was created and no
+baseline/optimized comparison arm started.
+
+`notification-contract.spec.ts:293` passed the success toast's visibility check,
+then found no element for the exact `AA-67 dispatched` headline at line 310.
+The trace starts visibility at 741746.190, starts the text assertion at
+742738.180 and ends that failed assertion at 823057.680. The assertion's
+80,183 ms patience cannot recover an expired node. The observed failure is
+independent of the later cancellation; channel/page closure and revoked-token
+cleanup errors after TERM remain cancellation diagnostics.
+
+This new prerequisite is adopted into SH-812. Preserve the canary's native
+timers, real fade, exact wording, absence of a durable success row and cleanup.
+Investigate browser-side observation installed before dispatch, so retained
+appearance/departure facts survive a delayed driver. Reproduce with a delayed
+reader; absence alone cannot pass. Do not freeze the clock, force the lifetime,
+enable Keep notices or mock timer callbacks. Review the second real-time
+reduced-motion canary for the same observation boundary. The scope rubric
+requires the new extra work to continue in fresh context; it becomes assigned
+work there. No new blocker story is needed.
+
+Stable trace/context, screenshot, live pool logs, source manifest, cancellation
+identity and samples are retained in `.storyhook/logs/sh812-performance-v9/`.
+The driver retains complete final artifacts in `/tmp/sh812-v9-bench/`.
+All earlier failed cohorts remain. Performance acceptance is still open; after
+the new regression repair, refresh both snapshots and complete the approved
+successful warm-up and two comparable pairs.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The
