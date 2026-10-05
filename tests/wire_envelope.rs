@@ -2242,6 +2242,12 @@ fn invocation_corpus() -> Vec<Invocation> {
             },
         },
         Invocation::Verifier {
+            action: VerifierAction::RepairSatisfy {
+                recovery_id: "recovery-1".into(),
+                input: "satisfied.json".into(),
+            },
+        },
+        Invocation::Verifier {
             action: VerifierAction::Start,
         },
         Invocation::Verifier {
@@ -2395,6 +2401,61 @@ fn every_invocation_survives_a_wire_hop() {
             "`{}` changed across a wire hop",
             invocation_name(&invocation)
         );
+    }
+}
+
+/// Every caller fact of a request crosses the wire and back (SH-849).
+/// `WireRequest::carrying` and `invoke_request` are the one pack and unpack
+/// pair, so a fact added to the request cannot cross on one side only.
+#[test]
+fn a_request_keeps_every_caller_fact_across_a_wire_hop() {
+    use storyhook::api::wire::{ProjectSelector, WireRequest};
+    use storyhook::invoke::InvokeRequest;
+    let request = InvokeRequest::new(Invocation::Summary)
+        .no_hooks(true)
+        .stdin(Some("piped input".into()))
+        .project(Some(ProjectSelector::Flag {
+            slug: "alpha".into(),
+        }))
+        .actor(storyhook::domain::provenance::ActorLabel::parse("operator").unwrap())
+        .agent_session(true);
+    let wire = WireRequest::carrying(request.clone(), "/tmp/project", 1);
+    let decoded: WireRequest =
+        serde_json::from_str(&serde_json::to_string(&wire).unwrap()).unwrap();
+    assert_eq!(decoded.invoke_request(), request);
+    assert_eq!(decoded.hook_depth, 1);
+    assert_eq!(decoded.cwd, PathBuf::from("/tmp/project"));
+}
+
+/// An ordinary session sends no agent marker, and an envelope from an older
+/// client, which never sent one, reads as an ordinary session (SH-849).
+#[test]
+fn an_ordinary_or_older_envelope_carries_no_agent_session() {
+    use storyhook::api::wire::WireRequest;
+    let value = serde_json::to_value(WireRequest::new(Invocation::Summary, "/tmp")).unwrap();
+    assert!(value.get("agent_session").is_none(), "{value}");
+    let decoded: WireRequest = serde_json::from_value(value).unwrap();
+    assert!(!decoded.agent_session);
+    assert!(!decoded.invoke_request().agent_session);
+}
+
+/// Any one nonblank dispatch marker makes an agent session; a blank one, the
+/// trace of a careless unset, does not (SH-849).
+#[test]
+fn an_agent_session_is_any_nonblank_dispatch_marker() {
+    use storyhook::invoke::{AGENT_SESSION_VARS, is_agent_session};
+    assert!(!is_agent_session(|_| None));
+    for name in AGENT_SESSION_VARS {
+        assert!(
+            is_agent_session(|var| (var == name).then(|| "SH-1".to_string())),
+            "{name}"
+        );
+        for blank in ["", " "] {
+            assert!(
+                !is_agent_session(|var| (var == name).then(|| blank.to_string())),
+                "{name}={blank:?}"
+            );
+        }
     }
 }
 

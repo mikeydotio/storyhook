@@ -133,9 +133,12 @@ pub(super) fn apply<S: Store>(
             });
         }
         append(tx, ctx, subject.story, &events)?;
+        // Own the hold by its exact event, so only this recovery's release can
+        // clear it: a repair dependency, or an external prerequisite (SH-849).
         if receipt
             .repair_story
             .is_some_and(|repair| repair != subject.story)
+            || receipt.input.scope == RepairScope::External
         {
             let (event, awaiting) = tx
                 .events_for(project, subject.story)?

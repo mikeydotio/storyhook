@@ -451,7 +451,7 @@ impl VerifierStatus {
             text.push_str(&format!("Project recovery {}: {} at {}; {}\nAffected: {}; assessor {}; repair {}; completed attempts {}/{}\nNext: {}\nInspect: story verifier repair show {} --json\n",
                 recovery.id, recovery.fault, recovery.locus, recovery.phase,
                 recovery.affected_stories.join(", "), recovery.assessment_owner,
-                recovery.repair_story.as_deref().unwrap_or("undecided"), recovery.completed_attempts, recovery.attempt_limit,
+                recovery.repair_story.as_deref().unwrap_or(if recovery.scope == Some(crate::service::project_recovery::RepairScope::External) { "none (external)" } else { "undecided" }), recovery.completed_attempts, recovery.attempt_limit,
                 recovery.next_action, recovery.id));
             if let Some(link) = &recovery.repair_link {
                 text.push_str(&format!("Repair PR: {link}\n"));

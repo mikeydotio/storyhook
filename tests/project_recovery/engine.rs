@@ -139,7 +139,7 @@ fn restart_does_not_quarantine_pending_recovery_or_owned_repair_dependency() {
 
 #[test]
 fn operator_replaced_hold_and_terminal_recovery_are_not_engine_exemptions() {
-    for change in ["awaiting", "state", "label", "terminal", "stop"] {
+    for change in ["awaiting", "state", "label", "terminal", "stop", "external"] {
         let f = fixture();
         let candidate = submitted(&f, "revoked recovery lane");
         let ctx = f.ctx();
@@ -167,6 +167,25 @@ fn operator_replaced_hold_and_terminal_recovery_are_not_engine_exemptions() {
             "stop" => {
                 f.store()
                     .write(|tx| tx.put_verification_enabled(f.project(), false))
+                    .unwrap();
+            }
+            // An external prerequisite waits on a person for an unbounded
+            // time; its owned hold must not keep a Full Auto lane (SH-849).
+            "external" => {
+                let claimed = recovery.claim_assessment(&view.record.id).unwrap().unwrap();
+                let delivered = recovery
+                    .settle_assessment(
+                        &view.record.id,
+                        &claimed.state.assessment.dispatch_identity,
+                        1,
+                        AssessmentDelivery::Delivered,
+                    )
+                    .unwrap();
+                recovery
+                    .decide(
+                        &view.record.id,
+                        &decision::input(&delivered, RepairScope::External),
+                    )
                     .unwrap();
             }
             _ => {

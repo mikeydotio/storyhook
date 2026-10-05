@@ -1642,7 +1642,7 @@ retained observations. All explanation and evidence fields must be nonempty.
 |---|---|---|
 | `same-story` | None | Original story owns repair; other current subjects depend on it. |
 | `separate-story` | `repair: {title, description, acceptance}` | One critical bug in the owning project, reciprocal dependencies, and a delivery identity. |
-| `external` | `prerequisite` | Contextual awaiting reason, without a repair or delivery identity. |
+| `external` | `prerequisite` | Contextual awaiting reason owned by its exact event, without a repair or delivery identity. An operator's `story verifier repair satisfy` statement retires the recovery and releases those holds (SH-849). |
 
 Critical priority is an explicit exception for this recovery path. It does not
 reprioritize unrelated work. The accepted input is retained for exact replay;

@@ -831,6 +831,41 @@ mod tests {
     }
 
     #[test]
+    fn committed_repair_after_an_override_is_never_reaped() {
+        let repo = Repo::new(true);
+        let out = crate::env::git_env::command(&repo.worktree)
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "repair after the published head",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let repair = git_text(&repo.worktree, &["rev-parse", "HEAD"]).unwrap();
+        let refusal = clean_candidate(
+            &repo.env().with_subprocess_patience(),
+            &repo.checkout,
+            &repo.lease,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(refusal.reason, "unmerged-work");
+        assert!(refusal.detail.contains(repair.trim()));
+        assert!(repo.worktree.exists());
+        assert!(repo.workspace.local_branch_exists());
+    }
+
+    #[test]
     fn merged_inactive_story_removes_the_worktree_and_local_branch_and_never_the_remote() {
         let repo = Repo::new(true);
         assert!(repo.workspace.origin_has_branch(), "fixture control");

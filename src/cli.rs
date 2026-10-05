@@ -208,6 +208,14 @@ pub enum VerifierAction {
         /// JSON file resolved against the caller's working directory.
         input: String,
     },
+    /// Accept an operator's statement that an External recovery's
+    /// prerequisite is satisfied (SH-849); a dispatched agent is refused.
+    RepairSatisfy {
+        /// Exact stable recovery identity.
+        recovery_id: String,
+        /// JSON file resolved against the caller's working directory.
+        input: String,
+    },
     /// Inspect gate configuration in a pinned proposed merge without the store.
     GateConfig {
         /// Repository containing the pinned parents.
@@ -307,6 +315,7 @@ Usage:
   story verifier ack <incident-id> [--leave-stopped] (acknowledge and retry by default)
   story verifier repair show <recovery-id> --json
   story verifier repair decide <recovery-id> --input <json-file>
+  story verifier repair satisfy <recovery-id> --input <json-file>
   story verifier gate-config <checkout> <base> <head> <tree> --json
   story resources <id> [--json]                    (inspect existing resource identity)
   story cleanup [--dry-run]                         (clean closed-story resources and retry incomplete cleanup)
@@ -4095,7 +4104,7 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
         "repair" => {
-            const USAGE: &str = "usage: story verifier repair show <recovery-id> | decide <recovery-id> --input <json-file>";
+            const USAGE: &str = "usage: story verifier repair show <recovery-id> | decide <recovery-id> --input <json-file> | satisfy <recovery-id> --input <json-file>";
             let id = args
                 .get(3)
                 .filter(|s| !is_flag_shaped(s))
@@ -4108,6 +4117,14 @@ fn parse_verifier(args: &[String]) -> Result<Invocation, AppError> {
                     if args.len() == 6 && args[4] == "--input" && !is_flag_shaped(&args[5]) =>
                 {
                     VerifierAction::RepairDecide {
+                        recovery_id: id.clone(),
+                        input: args[5].clone(),
+                    }
+                }
+                Some("satisfy")
+                    if args.len() == 6 && args[4] == "--input" && !is_flag_shaped(&args[5]) =>
+                {
+                    VerifierAction::RepairSatisfy {
                         recovery_id: id.clone(),
                         input: args[5].clone(),
                     }

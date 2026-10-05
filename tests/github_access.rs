@@ -424,6 +424,34 @@ fn recording_transport(root: &Path) {
 }
 
 #[test]
+fn publication_fetch_preserves_fetch_head_without_broadening_push_options() {
+    let root = checkout("https://github.example.com/acme/widgets.git");
+    recording_transport(root.path());
+    for operation in ["fetch", "push"] {
+        let output = helper(
+            root.path(),
+            &[
+                "git",
+                "--checkout",
+                root.path().to_str().unwrap(),
+                "--",
+                operation,
+                "--no-write-fetch-head",
+                "origin",
+                "1111111111111111111111111111111111111111",
+            ],
+            Some(RECORD_GH),
+        );
+        assert_eq!(
+            output.status.success(),
+            operation == "fetch",
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn git_transport_uses_host_scoped_gh_credentials_and_explicit_https_origin() {
     for origin in [
         "git@github.example.com:acme/widgets.git",
