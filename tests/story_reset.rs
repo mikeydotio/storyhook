@@ -1,4 +1,6 @@
 //! Native and card reset preserve their distinct contracts under shared ownership.
+#[path = "story_reset/busy.rs"]
+mod busy;
 #[path = "story_reset/card.rs"]
 mod card;
 #[path = "story_reset/compatibility.rs"]

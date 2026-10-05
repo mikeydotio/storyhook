@@ -4,6 +4,7 @@ use super::workspace_lock::WorkspaceLock;
 use super::{Ctx, append_and_fold, project_prefix, resolve_open_story};
 use crate::domain::{StoryCleanupLease, StoryEvent, StorySnapshot, is_epic};
 use crate::error::AppError;
+use crate::store::patience::{Shutdown, patiently};
 use crate::store::{
     EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo, WriteOps,
 };
@@ -146,57 +147,63 @@ pub fn reset_story<S: Store>(
         caller,
         &lock,
     )?;
-    ctx.write_stories(|tx| {
-        if !preflight_project_unchanged(tx, &project, &checkout)? {
-            return Err(AppError::Validation(
-                "project identity or checkout changed during reset preflight; retry".into(),
-            )
-            .into());
-        }
-        let prefix = project_prefix(tx, ctx.project())?;
-        let (_, row) = resolve_open_story(tx, ctx.project(), &prefix, id)?;
-        let stored = tx.story_resets(ctx.project())?.remove(&number);
-        if let Some(stored) = stored {
-            let current: ResetReservation = serde_json::from_str(&stored)?;
-            if current.operation != reservation.operation {
-                return Err(AppError::Validation("reset ownership changed; retry".into()).into());
-            }
-        } else {
-            if !preflight_authority_unchanged(tx, ctx.project(), number, head, row.head_seq)? {
+    // A reset must finish: every write waits out contention (SH-886).
+    let shutdown = Shutdown::new();
+    patiently(&shutdown, None, || {
+        ctx.write_stories(|tx| {
+            if !preflight_project_unchanged(tx, &project, &checkout)? {
                 return Err(AppError::Validation(
-                    "story changed during reset preflight; retry".into(),
+                    "project identity or checkout changed during reset preflight; retry".into(),
                 )
                 .into());
             }
-            let states = tx.state_map(ctx.project())?;
-            append_and_fold(
+            let prefix = project_prefix(tx, ctx.project())?;
+            let (_, row) = resolve_open_story(tx, ctx.project(), &prefix, id)?;
+            let stored = tx.story_resets(ctx.project())?.remove(&number);
+            if let Some(stored) = stored {
+                let current: ResetReservation = serde_json::from_str(&stored)?;
+                if current.operation != reservation.operation {
+                    return Err(
+                        AppError::Validation("reset ownership changed; retry".into()).into(),
+                    );
+                }
+            } else {
+                if !preflight_authority_unchanged(tx, ctx.project(), number, head, row.head_seq)? {
+                    return Err(AppError::Validation(
+                        "story changed during reset preflight; retry".into(),
+                    )
+                    .into());
+                }
+                let states = tx.state_map(ctx.project())?;
+                append_and_fold(
+                    tx,
+                    ctx.project(),
+                    number,
+                    &prefix,
+                    &states,
+                    ExpectedSeq::Exact(row.head_seq),
+                    &[StoryEvent::StoryAwaitingSet {
+                        at: ctx.now(),
+                        awaiting: format!(
+                            "Reset pending for {id}. Run story reset {id} to finish cleanup."
+                        ),
+                    }],
+                    ctx.provenance(),
+                )?;
+            }
+            super::block_delivery::supersede_pending(
                 tx,
                 ctx.project(),
                 number,
-                &prefix,
-                &states,
-                ExpectedSeq::Exact(row.head_seq),
-                &[StoryEvent::StoryAwaitingSet {
-                    at: ctx.now(),
-                    awaiting: format!(
-                        "Reset pending for {id}. Run story reset {id} to finish cleanup."
-                    ),
-                }],
-                ctx.provenance(),
+                "native reset owns workspace replacement",
             )?;
-        }
-        super::block_delivery::supersede_pending(
-            tx,
-            ctx.project(),
-            number,
-            "native reset owns workspace replacement",
-        )?;
-        tx.put_legacy_story_reset(
-            ctx.project(),
-            number,
-            Some(&serde_json::to_string(&reservation)?),
-        )?;
-        Ok(())
+            tx.put_legacy_story_reset(
+                ctx.project(),
+                number,
+                Some(&serde_json::to_string(&reservation)?),
+            )?;
+            Ok(())
+        })
     })?;
     let cleanup = resources::remove(
         &reservation,
@@ -211,22 +218,23 @@ pub fn reset_story<S: Store>(
         reservation.detail = format!(
             "Reset incomplete: {error}. Retry story reset {id}; add --force only to discard worktree changes."
         );
-        ctx.store()
-            .write(|tx| {
+        patiently(&shutdown, None, || {
+            ctx.store().write(|tx| {
                 tx.put_legacy_story_reset(
                     ctx.project(),
                     number,
                     Some(&serde_json::to_string(&reservation)?),
                 )
             })
-            .map_err(|journal| {
-                AppError::Storage(format!(
-                    "{error}; also failed to record reset diagnostics: {journal}"
-                ))
-            })?;
+        })
+        .map_err(|journal| {
+            AppError::Storage(format!(
+                "{error}; also failed to record reset diagnostics: {journal}"
+            ))
+        })?;
         return Err(AppError::Validation(reservation.detail));
     }
-    let snapshot = finish(ctx, id, number, &reservation)?;
+    let snapshot = finish(ctx, id, number, &reservation, &shutdown)?;
     // A hook may dispatch the now-reset story; publish completion and release
     // external exclusion before invoking user code, as other transitions do.
     drop(lock);
@@ -246,8 +254,10 @@ fn finish(
     id: &str,
     number: StoryNo,
     reservation: &ResetReservation,
+    shutdown: &Shutdown,
 ) -> Result<StorySnapshot, AppError> {
-    Ok(ctx.write_stories(|tx| {
+    Ok(patiently(shutdown, None, || {
+        ctx.write_stories(|tx| {
         let prefix = project_prefix(tx, ctx.project())?;
         let (_, row) = resolve_open_story(tx, ctx.project(), &prefix, id)?;
         let stored = tx.story_resets(ctx.project())?.remove(&number)
@@ -277,5 +287,6 @@ fn finish(
             tx, ctx.project(), number, &prefix, &states,
             ExpectedSeq::Exact(row.head_seq), &events, ctx.provenance(),
         )?)
+    })
     })?)
 }

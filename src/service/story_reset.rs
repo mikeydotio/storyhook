@@ -7,9 +7,17 @@ use super::workspace_lock::WorkspaceLock;
 use super::{Ctx, StoryService, append_and_fold, project_prefix, resolve_open_story};
 use crate::domain::{StoryEvent, SuperState};
 use crate::error::AppError;
+use crate::store::patience::{Shutdown, patiently};
 use crate::store::{
     ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryReset, WriteOps,
 };
+use std::time::{Duration, Instant};
+
+/// How long a reservation waits out store contention before reporting it.
+///
+/// Shorter than the dashboard's 75-second mutation deadline, so a contended
+/// request still answers before its client gives up.
+pub(crate) const RESERVE_PATIENCE: Duration = Duration::from_secs(60);
 
 /// Rejects lifecycle changes while an unfinished reset owns a story.
 pub(crate) fn refuse_reserved(
@@ -69,82 +77,98 @@ pub(crate) fn foreign_owner(
 /// Transactional card-reset coordinator; external cleanup runs outside store locks.
 pub struct StoryResetService<'a, S: Store> {
     ctx: &'a Ctx<'a, S>,
+    shutdown: Shutdown,
 }
 
 impl<'a, S: Store> StoryResetService<'a, S> {
     /// Binds reset operations to the caller's project and environment.
     pub fn new(ctx: &'a Ctx<'a, S>) -> Self {
-        Self { ctx }
+        Self {
+            ctx,
+            shutdown: Shutdown::new(),
+        }
+    }
+
+    /// Commits one write, waiting out contention: a reserved reset must finish.
+    fn write<T>(
+        &self,
+        mut f: impl FnMut(&mut S::WriteTx<'_>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        patiently(&self.shutdown, None, || self.ctx.store().write(&mut f))
     }
 
     /// Reserves one ordinary open story after exact typed-ID confirmation.
     pub fn reserve(&self, id: &str, confirmation: &str) -> Result<StoryReset, AppError> {
-        Ok(self.ctx.store().write(|tx| {
-            let project = self.ctx.project();
-            let prefix = project_prefix(tx, project)?;
-            let (story, row) = resolve_open_story(tx, project, &prefix, id)?;
-            if confirmation != row.snapshot.id {
-                return Err(AppError::Validation(
-                    "Type the canonical story ID exactly to confirm reset".into(),
-                )
-                .into());
-            }
-            if row.snapshot.story_type.as_deref() == Some("epic") {
-                return Err(AppError::Validation(
-                    "Reset an ordinary child story, not an epic".into(),
-                )
-                .into());
-            }
-            if let Some(reset) = tx.story_reset(project, story)?
-                && !reset.completed
-            {
-                return Ok(reset);
-            }
-            if tx.engine_reset(project, story)?.is_some() {
-                return Err(AppError::Validation(
-                    "Stop Now already owns this story reset; finish that operation first".into(),
-                )
-                .into());
-            }
-            let states = tx.state_map(project)?;
-            if !states
-                .get("todo")
-                .is_some_and(|state| state.super_state == SuperState::Open)
-            {
-                return Err(
-                    AppError::Validation("Reset requires the OPEN todo state".into()).into(),
-                );
-            }
-            let slug = tx
-                .project(project)?
-                .ok_or_else(|| StoreError::NotFound("project".into()))?
-                .slug;
-            let mut lanes = Vec::new();
-            for run in tx.engine_runs(&slug)? {
-                lanes.extend(
-                    tx.engine_lanes(&run.id)?
-                        .into_iter()
-                        .filter(|lane| lane.story_id.as_deref() == Some(&row.snapshot.id))
-                        .map(|lane| crate::store::ResetLane {
-                            run_id: lane.run_id,
-                            lane_index: lane.lane_index,
-                        }),
-                );
-            }
-            let reset = StoryReset {
-                project,
-                story,
-                story_id: row.snapshot.id,
-                token: uuid::Uuid::new_v4().simple().to_string(),
-                original_state: row.state,
-                lanes,
-                resources: None,
-                paths: Vec::new(),
-                completed: false,
-                failure: None,
-            };
-            tx.put_story_reset(&reset)?;
-            Ok(reset)
+        let deadline = Instant::now() + RESERVE_PATIENCE;
+        Ok(patiently(&self.shutdown, Some(deadline), || {
+            self.ctx.store().write(|tx| {
+                let project = self.ctx.project();
+                let prefix = project_prefix(tx, project)?;
+                let (story, row) = resolve_open_story(tx, project, &prefix, id)?;
+                if confirmation != row.snapshot.id {
+                    return Err(AppError::Validation(
+                        "Type the canonical story ID exactly to confirm reset".into(),
+                    )
+                    .into());
+                }
+                if row.snapshot.story_type.as_deref() == Some("epic") {
+                    return Err(AppError::Validation(
+                        "Reset an ordinary child story, not an epic".into(),
+                    )
+                    .into());
+                }
+                if let Some(reset) = tx.story_reset(project, story)?
+                    && !reset.completed
+                {
+                    return Ok(reset);
+                }
+                if tx.engine_reset(project, story)?.is_some() {
+                    return Err(AppError::Validation(
+                        "Stop Now already owns this story reset; finish that operation first"
+                            .into(),
+                    )
+                    .into());
+                }
+                let states = tx.state_map(project)?;
+                if !states
+                    .get("todo")
+                    .is_some_and(|state| state.super_state == SuperState::Open)
+                {
+                    return Err(
+                        AppError::Validation("Reset requires the OPEN todo state".into()).into(),
+                    );
+                }
+                let slug = tx
+                    .project(project)?
+                    .ok_or_else(|| StoreError::NotFound("project".into()))?
+                    .slug;
+                let mut lanes = Vec::new();
+                for run in tx.engine_runs(&slug)? {
+                    lanes.extend(
+                        tx.engine_lanes(&run.id)?
+                            .into_iter()
+                            .filter(|lane| lane.story_id.as_deref() == Some(&row.snapshot.id))
+                            .map(|lane| crate::store::ResetLane {
+                                run_id: lane.run_id,
+                                lane_index: lane.lane_index,
+                            }),
+                    );
+                }
+                let reset = StoryReset {
+                    project,
+                    story,
+                    story_id: row.snapshot.id,
+                    token: uuid::Uuid::new_v4().simple().to_string(),
+                    original_state: row.state,
+                    lanes,
+                    resources: None,
+                    paths: Vec::new(),
+                    completed: false,
+                    failure: None,
+                };
+                tx.put_story_reset(&reset)?;
+                Ok(reset)
+            })
         })?)
     }
 
@@ -197,7 +221,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
             return Ok(reset);
         }
         reset.failure = None;
-        self.ctx.store().write(|tx| tx.put_story_reset(&reset))?;
+        self.write(|tx| tx.put_story_reset(&reset))?;
         let result = (|| {
             quiesce()?;
             let report = match &reset.resources {
@@ -216,9 +240,9 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                 cleanup::validate(&report, self.ctx.cwd(), self.ctx.env())?;
                 reset.paths = identity::capture(&report)?;
                 reset.resources = Some(report);
-                self.ctx.store().write(|tx| tx.put_story_reset(&reset))?;
+                self.write(|tx| tx.put_story_reset(&reset))?;
             }
-            self.ctx.store().write(|tx| {
+            self.write(|tx| {
                 super::block_delivery::supersede_pending(
                     tx,
                     reset.project,
@@ -240,7 +264,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
             Ok(done) => Ok(done),
             Err(error) => {
                 reset.failure = Some(error.to_string());
-                self.ctx.store().write(|tx| tx.put_story_reset(&reset)).map_err(|persist| AppError::Storage(format!("reset {} failed: {error}; recording diagnostics also failed: {persist}", reset.token)))?;
+                self.write(|tx| tx.put_story_reset(&reset)).map_err(|persist| AppError::Storage(format!("reset {} failed: {error}; recording diagnostics also failed: {persist}", reset.token)))?;
                 Err(error)
             }
         }
@@ -252,7 +276,8 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         workspace: Option<WorkspaceLock>,
     ) -> Result<StoryReset, AppError> {
         let now = self.ctx.now();
-        let (before, snapshot, done) = self.ctx.write_stories(|tx| {
+        let (before, snapshot, done) = patiently(&self.shutdown, None, || {
+            self.ctx.write_stories(|tx| {
             let current = tx.story_reset(reset.project, reset.story)?.ok_or_else(|| StoreError::Invariant("reset disappeared".into()))?;
             if current.token != reset.token || current.completed { return Err(StoreError::Invariant("reset owner changed".into())); }
             let prefix = project_prefix(tx, reset.project)?;
@@ -279,6 +304,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
             let events = [StoryEvent::StoryStateChanged { at: now.clone(), state: "todo".into() }, StoryEvent::StoryAwaitingCleared { at: now.clone() }, StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("Reset {} completed. Stopped the story worker. Removed its worktree and local branch. Released ownership and returned to todo. Preserved remote branches and pull requests.", reset.token) }];
             let snapshot = append_and_fold(tx, reset.project, reset.story, &prefix, &states, ExpectedSeq::Exact(row.head_seq), &events, self.ctx.provenance())?;
             Ok((row.snapshot, snapshot, done))
+        })
         })?;
         // Transition hooks may dispatch the now-ready story.
         drop(workspace);

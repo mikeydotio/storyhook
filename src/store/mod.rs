@@ -83,6 +83,7 @@ pub(crate) mod gate_resources;
 pub mod ids;
 pub mod landing;
 pub mod migrate;
+pub mod patience;
 pub mod rebuild;
 pub mod sqlite;
 #[cfg(feature = "fault-injection")]
