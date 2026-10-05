@@ -93,6 +93,11 @@ These settings do not disable cleanup triggered by closure. The verifier no
 longer reaps story workspaces itself; it commits completion and releases its
 locks. Batch scratch-resource retirement remains part of verification.
 
+A failed request posts a `STORY RESOURCE CLEANUP REQUIRED` comment when its
+diagnostic is news. A retry that changes only numbers, such as an elapsed time,
+a load average or a process id, is not news: the request stores the latest
+detail but adds no comment (SH-881).
+
 `story cleanup` runs the same controller and can retry before the automatic
 backoff expires. `story cleanup --dry-run` performs discovery and preflight without
 reserving, terminating, removing, or updating request state. An interrupted
