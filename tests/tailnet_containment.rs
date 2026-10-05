@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use storyhook::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
 use storyhook::env::TailnetPolicy;
-use storyhook_test_support::load_grace::{Patience, graced_now};
+use storyhook_test_support::load_grace::Patience;
 use storyhook_test_support::{DaemonGuard, TestEnv, scratch_dir, wait_for_server};
 
 /// An address no machine owns: a bind to it always fails, so a daemon that
@@ -27,9 +27,18 @@ const DOCUMENTATION_IP: &str = "192.0.2.1";
 
 /// How long a daemon that binds the tailnet takes, at most, to ask for its
 /// address once it is serving: its first probe fires at once, and this leaves
-/// one probe window for scheduling. The control below proves the window is
-/// enough; the negative case waits exactly as long before it reads.
+/// one probe window for scheduling. The control below waits this long with
+/// load grace.
 const FIRST_PROBE_WINDOW: Duration = TAILNET_PROBE_TIMEOUT.saturating_mul(2);
+
+/// The negative case's fixed observation, deliberately not load-graced.
+///
+/// A negative observation that grew with load would only ever cost time: on a
+/// saturated machine it slept for minutes to prove an absence. A probe that a
+/// regression put back fires at once after the daemon starts serving, so at
+/// ordinary load it lands well inside this window and the test fails every
+/// time; under extreme load the window can only miss it, never invent one.
+const ABSENCE_OBSERVATION: Duration = FIRST_PROBE_WINDOW;
 
 /// A directory holding a `tailscale` that appends one byte to `counter` per
 /// `status` call and reports [`DOCUMENTATION_IP`].
@@ -129,8 +138,7 @@ fn a_test_environment_daemon_never_asks_tailscale_and_listens_on_loopback_only()
 
     start_daemon(&env, dir.path(), &path, &[]);
 
-    // A fixed negative observation, as long as the control's patience.
-    std::thread::sleep(graced_now(FIRST_PROBE_WINDOW));
+    std::thread::sleep(ABSENCE_OBSERVATION);
     assert_eq!(
         probes(&counter),
         0,
