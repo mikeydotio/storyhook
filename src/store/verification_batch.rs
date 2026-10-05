@@ -280,6 +280,10 @@ pub struct VerificationBatch {
     /// Selected stories that did not become members.
     #[serde(default)]
     pub excluded: Vec<BatchExclusion>,
+    /// Members a story reset took out while the batch was landing (SH-886):
+    /// their landing intents are gone, and the batch lands without them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withdrawn: Vec<StoryNo>,
     /// How its gate ended, once it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<BatchGate>,
@@ -336,6 +340,17 @@ impl VerificationBatch {
         }
         if self.branch != self.id.branch() {
             return refuse("the branch is named for the batch id");
+        }
+        let mut withdrawn = self.withdrawn.clone();
+        withdrawn.sort();
+        withdrawn.dedup();
+        if withdrawn.len() != self.withdrawn.len()
+            || self
+                .withdrawn
+                .iter()
+                .any(|story| !self.members.iter().any(|member| member.story == *story))
+        {
+            return refuse("a withdrawn story is a member, withdrawn once");
         }
         let pinned =
             |oid: &str| matches!(oid.len(), 40 | 64) && oid.bytes().all(|b| b.is_ascii_hexdigit());
@@ -482,6 +497,7 @@ mod tests {
             pull_request: None,
             phase: BatchPhase::Assembled,
             members,
+            withdrawn: Vec::new(),
             excluded: Vec::new(),
             gate: None,
             detail: None,

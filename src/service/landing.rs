@@ -318,10 +318,36 @@ pub(super) fn admit_intent(
 pub(crate) fn supersede_for_reset(
     tx: &mut impl WriteOps,
     intent: &LandingIntent,
+    now: &str,
 ) -> Result<String, StoreError> {
+    let mut batch_note = String::new();
+    if let Some(binding) = &intent.batch
+        && let Some(record) = tx
+            .verification_batches(intent.project)?
+            .into_iter()
+            .find(|record| record.id == binding.id)
+        && record.phase == crate::store::BatchPhase::Landing
+    {
+        // The batch lands without this member; it stays valid only if the
+        // record says so before the member's intent goes.
+        let mut next = record.clone();
+        next.withdrawn.push(intent.story);
+        next.revision = record.revision + 1;
+        next.updated_at = now.to_owned();
+        if !tx.update_verification_batch(&next, record.revision)? {
+            return Err(StoreError::Invariant(format!(
+                "verification batch {} changed while a reset withdrew {}",
+                record.id, intent.story_id
+            )));
+        }
+        batch_note = format!(
+            "; it was a member of verification batch {}, whose pull request can still land its commits",
+            record.id
+        );
+    }
     tx.remove_landing_intent(intent)?;
     Ok(format!(
-        "the pending landing of {} (its merge outcome is unknown; the pull request can still merge)",
+        "the pending landing of {} (its merge outcome is unknown; the pull request can still merge{batch_note})",
         intent.pull_request
     ))
 }

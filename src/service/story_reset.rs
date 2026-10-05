@@ -246,7 +246,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                     return Ok(reset);
                 }
                 // The final lever outranks every other owner of the story.
-                let superseded = takeover::supersede_owners(tx, project, story)?;
+                let superseded = takeover::supersede_owners(tx, project, story, &self.ctx.now())?;
                 let states = tx.state_map(project)?;
                 if !states
                     .get("todo")

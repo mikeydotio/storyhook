@@ -12,6 +12,7 @@ pub(super) fn supersede_owners(
     tx: &mut impl WriteOps,
     project: ProjectId,
     story: StoryNo,
+    now: &str,
 ) -> Result<Vec<String>, StoreError> {
     let mut superseded = Vec::new();
     if let Some(engine) = tx.engine_reset(project, story)? {
@@ -34,7 +35,9 @@ pub(super) fn supersede_owners(
         .into_iter()
         .filter(|intent| intent.project == project && intent.story == story)
     {
-        superseded.push(crate::service::landing::supersede_for_reset(tx, &intent)?);
+        superseded.push(crate::service::landing::supersede_for_reset(
+            tx, &intent, now,
+        )?);
     }
     Ok(superseded)
 }
