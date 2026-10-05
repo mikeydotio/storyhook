@@ -164,6 +164,15 @@ pub struct RecoveryState {
     /// Original incidents converted only with matching typed fault observations.
     #[serde(default)]
     pub legacy_incidents: Vec<crate::store::VerificationIncident>,
+    /// An operator's accepted statement that the external prerequisite is
+    /// satisfied; it retires an External recovery (SH-849). Absent fields are
+    /// not written, so an older binary still reads a record without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prerequisite: Option<super::PrerequisiteReceipt>,
+    /// The latest retired recovery with the same fault code and locus when
+    /// this one opened, so a recurrence after a release is visible (SH-849).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
 }
 
 /// Exact structured evidence originally produced by the verifier.

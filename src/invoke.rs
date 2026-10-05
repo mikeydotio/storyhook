@@ -1125,6 +1125,15 @@ fn dispatch_verifier<S: Store>(
                 .decide(recovery_id, &decision)
                 .map(|view| Response::ProjectRecovery(Box::new(view)));
         }
+        VerifierAction::RepairSatisfy { recovery_id, input } => {
+            let raw = read_input(ctx.cwd(), None, Some(input))?;
+            let statement = serde_json::from_str(&raw).map_err(|error| {
+                AppError::Validation(format!("invalid prerequisite statement JSON: {error}"))
+            })?;
+            return recovery
+                .satisfy(recovery_id, &statement)
+                .map(|view| Response::ProjectRecovery(Box::new(view)));
+        }
         _ => {}
     }
     let activity = ctx.verification_activity().ok_or_else(|| {
@@ -1144,7 +1153,8 @@ fn dispatch_verifier<S: Store>(
         }
         VerifierAction::Evidence { .. }
         | VerifierAction::RepairShow { .. }
-        | VerifierAction::RepairDecide { .. } => {
+        | VerifierAction::RepairDecide { .. }
+        | VerifierAction::RepairSatisfy { .. } => {
             unreachable!("recovery operations returned above")
         }
         VerifierAction::GateConfig { .. } => {

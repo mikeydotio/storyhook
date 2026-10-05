@@ -169,10 +169,16 @@ fn phase(
         )));
     }
     if let Some(decision) = &state.decision {
-        if decision.input.scope == RepairScope::External {
+        // Until an operator states that it is restored, the prerequisite is
+        // open operator work, and the record still governs later faults.
+        if decision.input.scope == RepairScope::External && state.prerequisite.is_none() {
             return Ok(Some((
                 "external-prerequisite",
-                decision.input.prerequisite.clone().unwrap_or_default(),
+                format!(
+                    "{} An operator, not an agent, must restore it and then record that with `story verifier repair satisfy {} --input <json-file>`. That statement is an attestation, not a check: each affected story still needs a fresh generation that passes central verification.",
+                    decision.input.prerequisite.as_deref().unwrap_or_default(),
+                    view.record.id
+                ),
             )));
         }
         // An outstanding external call always shows, even when moot.

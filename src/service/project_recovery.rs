@@ -14,6 +14,7 @@ mod legacy;
 mod managed_claim;
 mod model;
 mod persistence;
+mod prerequisite;
 mod rearm;
 mod references;
 mod refusal;
@@ -45,6 +46,7 @@ pub(crate) use landing::record_landing;
 pub(crate) use legacy::reconcile_incident;
 pub use model::*;
 use persistence::{find, read_view, save, serialize, timestamp};
+pub use prerequisite::{PrerequisiteInput, PrerequisiteReceipt};
 pub(crate) use references::naming;
 pub use refusal::RepairRefusalDisposition;
 pub(crate) use resume::owns_resume;
@@ -124,12 +126,15 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
                     return Err(StoreError::Validation("repair fault does not match a completed admitted attempt in its lineage".into()));
                 }
             }
+            // A recurrence after a release opens a new record that names the
+            // retired one, so a repeat is visible and countable (SH-849).
+            let supersedes = records.iter().rev().find(|r| !r.active && r.code == code && r.locus == locus).map(|r| r.id.clone());
             let existing = repair_owner.map(|owner| owner.record).or_else(|| records.into_iter().find(|r| r.active && r.code == code && r.locus == locus));
             let mut view = if let Some(record) = existing {
                 read_view(tx, record)?
             } else {
                 let state = RecoveryState {
-                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(), attempts: Vec::new(), refusals: Vec::new(), landing: None, legacy_incidents: Vec::new(),
+                    version: 1, created_at: now.clone(), updated_at: now.clone(), subjects: Vec::new(), decision: None, holds: Vec::new(), work: Vec::new(), attempts: Vec::new(), refusals: Vec::new(), landing: None, legacy_incidents: Vec::new(), prerequisite: None, supersedes,
                     assessment: Assessment {
                         dispatch_identity: uuid::Uuid::new_v4().to_string(), story, generation,
                         status: if policy_hold.is_some() { AssessmentStatus::Held } else { AssessmentStatus::Pending },
@@ -324,8 +329,11 @@ impl<'a, S: Store> ProjectRecoveryService<'a, S> {
 
 /// The durable charter reused by managed notification delivery.
 pub fn assessment_charter(view: &RecoveryView) -> String {
+    let recurrence = view.state.supersedes.as_ref().map_or_else(String::new, |prior| {
+        format!(" This fault recurs after retired recovery {prior}: read `story verifier repair show {prior} --json` before deciding, because a repeat can mean that its prerequisite or repair did not hold.")
+    });
     format!(
-        "Read `story help scope-rubric` and `story verifier repair show {} --json`. Inspect the project source and retained evidence. Before edits, decide scope: same-story, separate-story, or external. Submit the versioned decision with `story verifier repair decide {} --input <json-file>`, using the current recovery revision, owning project {}, originating generation {}, and dispatch_identity {}. Include evidence references and nonempty Context, Question, Decision, and Rationale. Separate work needs a repair description and acceptance criteria; it becomes one critical repair in the owning project. Do not edit before the decision is accepted. Preserve all required coverage and certification; never manufacture receipts or bypass permissions.",
+        "Read `story help scope-rubric` and `story verifier repair show {} --json`. Inspect the project source and retained evidence. Before edits, decide scope: same-story, separate-story, or external. Submit the versioned decision with `story verifier repair decide {} --input <json-file>`, using the current recovery revision, owning project {}, originating generation {}, and dispatch_identity {}. Include evidence references and nonempty Context, Question, Decision, and Rationale. Separate work needs a repair description and acceptance criteria; it becomes one critical repair in the owning project. Do not edit before the decision is accepted. Preserve all required coverage and certification; never manufacture receipts or bypass permissions.{recurrence}",
         view.record.id,
         view.record.id,
         view.record.project.get(),

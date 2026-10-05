@@ -2242,6 +2242,12 @@ fn invocation_corpus() -> Vec<Invocation> {
             },
         },
         Invocation::Verifier {
+            action: VerifierAction::RepairSatisfy {
+                recovery_id: "recovery-1".into(),
+                input: "satisfied.json".into(),
+            },
+        },
+        Invocation::Verifier {
             action: VerifierAction::Start,
         },
         Invocation::Verifier {
