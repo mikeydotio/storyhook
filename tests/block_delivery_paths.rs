@@ -29,6 +29,8 @@ fn event_writers(root: &Path) -> BTreeSet<String> {
             if [
                 "append_and_fold(",
                 "append_restored_and_fold(",
+                // SH-886: a reset's return to todo uses its own admission.
+                "append_reset_and_fold(",
                 "append_and_fold_maintenance(",
                 // SH-772: the landing door called only this one, so a scan that
                 // knew three names never saw it.

@@ -282,3 +282,60 @@ fn reset_proceeds_without_exclusion_once_its_patience_is_spent() {
             .success()
     );
 }
+
+#[test]
+fn a_finish_that_keeps_failing_degrades_instead_of_stranding_the_story() {
+    let fixture = ServiceFixture::new();
+    let store = SqliteStore::open(fixture.env().store_path()).unwrap();
+    let project = store
+        .read(|tx| Ok(tx.project_by_slug("fixture")?.unwrap().id))
+        .unwrap();
+    store
+        .write(|tx| tx.set_checkout_path(project, None))
+        .unwrap();
+    let env = crate::env::Environment::at(fixture.env().home());
+    let ctx = Ctx::new(&store, project, fixture.cwd(), env).no_hooks(true);
+    let story = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "Degrade the finish".into(),
+            state: Some("in-progress".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let service = StoryResetService::new(&ctx);
+    let reset = service.reserve(&story.id, &story.id).unwrap();
+    let done = service
+        .finish_degraded(
+            &reset,
+            None,
+            &StoreError::Invariant("injected finish failure".into()),
+        )
+        .unwrap();
+    assert!(done.completed);
+    assert!(
+        done.failure
+            .as_deref()
+            .is_some_and(|note| note.contains("injected finish failure")),
+        "{done:?}"
+    );
+    let row = store
+        .read(|tx| tx.story(project, StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    // Ownership is released even though the state could not change.
+    assert_eq!(row.state, "in-progress");
+    assert!(
+        row.snapshot
+            .comments
+            .last()
+            .unwrap()
+            .text
+            .contains("finished without returning the story to todo")
+    );
+    assert!(
+        StoryService::new(&ctx)
+            .set_state(&story.id, "todo", None, None, None)
+            .is_ok(),
+        "the completed receipt no longer reserves the story"
+    );
+}

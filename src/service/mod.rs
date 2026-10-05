@@ -552,6 +552,33 @@ pub(crate) fn append_restored_and_fold(
     )
 }
 
+/// Appends a reset's own events (SH-886, decision D3).
+///
+/// A reset is the final lever: blocker ordering, which refuses a blocked
+/// story's advance through the catalog, never refuses its return to todo.
+/// Every other admission applies exactly as for [`append_and_fold`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_reset_and_fold(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    story: StoryNo,
+    prefix: &str,
+    states: &BTreeMap<String, StateDef>,
+    expected: ExpectedSeq,
+    events: &[StoryEvent],
+    provenance: &Provenance,
+) -> Result<StorySnapshot, AppError> {
+    if events
+        .iter()
+        .any(|event| matches!(event, StoryEvent::StoryStateChanged { .. }))
+    {
+        story_reset::refuse_reserved(tx, project, story)?;
+    }
+    append_and_fold_maintenance(
+        tx, project, story, prefix, states, expected, events, provenance,
+    )
+}
+
 /// Folds deterministic maintenance without applying new workflow policy to history.
 ///
 /// Only catalog migration and integrity repair may call this directly; the

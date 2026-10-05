@@ -6,8 +6,10 @@ mod takeover;
 
 use super::executor_lock::ExecutorLock;
 use super::workspace_lock::WorkspaceLock;
-use super::{Ctx, StoryService, append_and_fold, project_prefix, resolve_open_story};
-use crate::domain::{StoryEvent, SuperState};
+use super::{
+    Ctx, StoryService, append_and_fold, append_reset_and_fold, project_prefix, resolve_open_story,
+};
+use crate::domain::{StoryEvent, StorySnapshot, SuperState};
 use crate::error::AppError;
 use crate::store::patience::{Shutdown, patiently};
 use crate::store::{
@@ -20,6 +22,12 @@ use std::time::{Duration, Instant};
 /// Shorter than the dashboard's 75-second mutation deadline, so a contended
 /// request still answers before its client gives up.
 pub(crate) const RESERVE_PATIENCE: Duration = Duration::from_secs(60);
+
+/// Attempts of the finish transaction before the reset degrades (D3).
+const FINISH_ATTEMPTS: u32 = 3;
+
+/// Pause between finish attempts.
+const FINISH_PAUSE: Duration = Duration::from_secs(1);
 
 /// How long a reset waits for another process to release the story's
 /// workspace lock before it proceeds without that exclusion (SH-886).
@@ -445,89 +453,31 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         }
     }
 
+    /// Commits the reset's one mandatory effect: the story returns to todo,
+    /// ownership and lanes are released, and the receipt completes. A finish
+    /// that keeps failing degrades instead of stranding the story (D3).
     fn finish(
         &self,
         reset: &StoryReset,
         workspace: Option<WorkspaceLock>,
     ) -> Result<StoryReset, AppError> {
         let now = self.ctx.now();
-        let (before, snapshot, done) = patiently(&self.shutdown, None, || {
-            self.ctx.write_stories(|tx| {
-                let current = tx
-                    .story_reset(reset.project, reset.story)?
-                    .ok_or_else(|| StoreError::Invariant("reset disappeared".into()))?;
-                if current.token != reset.token || current.completed {
-                    return Err(StoreError::Invariant("reset owner changed".into()));
+        let mut attempt = 1;
+        let released = loop {
+            match patiently(&self.shutdown, None, || self.release(reset, &now)) {
+                Ok(released) => break released,
+                Err(StoreError::Busy(detail)) => return Err(StoreError::Busy(detail).into()),
+                Err(_) if attempt < FINISH_ATTEMPTS => {
+                    attempt += 1;
+                    std::thread::sleep(FINISH_PAUSE);
                 }
-                let prefix = project_prefix(tx, reset.project)?;
-                let (_, row) = resolve_open_story(tx, reset.project, &prefix, &reset.story_id)?;
-                let states = tx.state_map(reset.project)?;
-                let mut done = current;
-                done.completed = true;
-                done.failure = None;
-                done.residue = reset.residue.clone();
-                let mut recovery = reset.recovery.clone().unwrap_or_default();
-                recovery.cleared_awaiting = row.snapshot.awaiting.clone();
-                done.recovery = Some(recovery);
-                super::block_delivery::supersede_pending(
-                    tx,
-                    reset.project,
-                    reset.story,
-                    "card reset completed; prior session authority retired",
-                )?;
-                tx.put_story_reset(&done)?;
-                if let Some(incident) = tx.verification_incident(reset.project)?
-                    && incident.story == reset.story
-                {
-                    tx.clear_verification_incident(&incident.incident_id)?;
-                }
-
-                for owner in &reset.lanes {
-                    if let Some(lane) = tx
-                        .engine_lanes(&owner.run_id)?
-                        .into_iter()
-                        .find(|lane| lane.lane_index == owner.lane_index)
-                    {
-                        // An already-started dispatch may fail and release its lane while reset waits.
-                        if lane.story_id.as_deref() != Some(&reset.story_id) {
-                            continue;
-                        }
-                        let mut idle =
-                            super::engine::idle_lane(&owner.run_id, owner.lane_index, &now);
-                        idle.outcome = Some("story-reset".into());
-                        super::engine::put_or_retire_idle_lane(tx, &idle)?;
-                    }
-                }
-                let mut events = vec![
-                    StoryEvent::StoryStateChanged {
-                        at: now.clone(),
-                        state: "todo".into(),
-                    },
-                    StoryEvent::StoryAwaitingCleared { at: now.clone() },
-                ];
-                if let Some(hold) = summary::dispatch_hold(&done) {
-                    events.push(StoryEvent::StoryAwaitingSet {
-                        at: now.clone(),
-                        awaiting: hold,
-                    });
-                }
-                events.push(StoryEvent::StoryCommentAdded {
-                    at: now.clone(),
-                    text: summary::completion(&done),
-                });
-                let snapshot = append_and_fold(
-                    tx,
-                    reset.project,
-                    reset.story,
-                    &prefix,
-                    &states,
-                    ExpectedSeq::Exact(row.head_seq),
-                    &events,
-                    self.ctx.provenance(),
-                )?;
-                Ok((row.snapshot, snapshot, done))
-            })
-        })?;
+                Err(error) => return self.finish_degraded(reset, workspace, &error),
+            }
+        };
+        let Some((before, snapshot, done)) = released else {
+            // Another executor finished this reset first.
+            return self.get(&reset.story_id, &reset.token);
+        };
         // Transition hooks may dispatch the now-ready story.
         drop(workspace);
         StoryService::new(self.ctx).fire_transition_hooks(
@@ -540,6 +490,180 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         );
         Ok(done)
     }
+
+    /// The finish transaction; `None` when the reset was already completed.
+    #[allow(clippy::type_complexity)]
+    fn release(
+        &self,
+        reset: &StoryReset,
+        now: &str,
+    ) -> Result<Option<(StorySnapshot, StorySnapshot, StoryReset)>, StoreError> {
+        self.ctx.write_stories(|tx| {
+            let current = tx
+                .story_reset(reset.project, reset.story)?
+                .filter(|current| current.token == reset.token)
+                .ok_or_else(|| StoreError::Invariant("reset disappeared".into()))?;
+            if current.completed {
+                return Ok(None);
+            }
+            let prefix = project_prefix(tx, reset.project)?;
+            let (_, row) = resolve_open_story(tx, reset.project, &prefix, &reset.story_id)?;
+            let states = tx.state_map(reset.project)?;
+            let mut done = current;
+            done.completed = true;
+            done.failure = None;
+            done.residue = reset.residue.clone();
+            let mut recovery = reset.recovery.clone().unwrap_or_default();
+            recovery.cleared_awaiting = row.snapshot.awaiting.clone();
+            done.recovery = Some(recovery);
+            let to_todo = states
+                .get("todo")
+                .is_some_and(|state| state.super_state == SuperState::Open);
+            if !to_todo {
+                done.residue.push(crate::store::ResetResidue {
+                    resource: "story state".into(),
+                    reason: format!(
+                        "the project has no open todo state, so the story keeps `{}`",
+                        row.state
+                    ),
+                    blocks_dispatch: false,
+                });
+            }
+            super::block_delivery::supersede_pending(
+                tx,
+                reset.project,
+                reset.story,
+                "card reset completed; prior session authority retired",
+            )?;
+            tx.put_story_reset(&done)?;
+            if let Some(incident) = tx.verification_incident(reset.project)?
+                && incident.story == reset.story
+            {
+                tx.clear_verification_incident(&incident.incident_id)?;
+            }
+            idle_lanes(tx, reset, now)?;
+            let mut events = Vec::new();
+            if to_todo {
+                events.push(StoryEvent::StoryStateChanged {
+                    at: now.into(),
+                    state: "todo".into(),
+                });
+            }
+            events.push(StoryEvent::StoryAwaitingCleared { at: now.into() });
+            if let Some(hold) = summary::dispatch_hold(&done) {
+                events.push(StoryEvent::StoryAwaitingSet {
+                    at: now.into(),
+                    awaiting: hold,
+                });
+            }
+            events.push(StoryEvent::StoryCommentAdded {
+                at: now.into(),
+                text: summary::completion(&done),
+            });
+            let snapshot = append_reset_and_fold(
+                tx,
+                reset.project,
+                reset.story,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &events,
+                self.ctx.provenance(),
+            )?;
+            Ok(Some((row.snapshot, snapshot, done)))
+        })
+    }
+
+    /// Completes the receipt and idles its lanes when the full finish keeps
+    /// failing, so the reservation never strands the story. The story keeps
+    /// its state; the comment names the error when the story still takes one.
+    fn finish_degraded(
+        &self,
+        reset: &StoryReset,
+        workspace: Option<WorkspaceLock>,
+        error: &StoreError,
+    ) -> Result<StoryReset, AppError> {
+        let now = self.ctx.now();
+        let note = format!("finished without returning the story to todo: {error}");
+        let done = self.write(|tx| {
+            let mut done = tx
+                .story_reset(reset.project, reset.story)?
+                .filter(|current| current.token == reset.token)
+                .ok_or_else(|| StoreError::Invariant("reset disappeared".into()))?;
+            if done.completed {
+                return Ok(done);
+            }
+            done.completed = true;
+            done.failure = Some(note.clone());
+            done.residue = reset.residue.clone();
+            done.recovery = reset.recovery.clone();
+            super::block_delivery::supersede_pending(
+                tx,
+                reset.project,
+                reset.story,
+                "card reset completed; prior session authority retired",
+            )?;
+            tx.put_story_reset(&done)?;
+            idle_lanes(tx, reset, &now)?;
+            Ok(done)
+        })?;
+        let comment = patiently(&self.shutdown, None, || {
+            self.ctx.write_stories(|tx| {
+                let prefix = project_prefix(tx, reset.project)?;
+                let (_, row) = resolve_open_story(tx, reset.project, &prefix, &reset.story_id)?;
+                let states = tx.state_map(reset.project)?;
+                append_reset_and_fold(
+                    tx,
+                    reset.project,
+                    reset.story,
+                    &prefix,
+                    &states,
+                    ExpectedSeq::Exact(row.head_seq),
+                    &[StoryEvent::StoryCommentAdded {
+                        at: now.clone(),
+                        text: format!("Reset {} {note}.", reset.token),
+                    }],
+                    self.ctx.provenance(),
+                )?;
+                Ok(())
+            })
+        });
+        // The receipt already carries the note; a refused comment is reported.
+        if let Err(comment_error) = comment {
+            crate::daemon::activity::emit(
+                "ERROR",
+                "reset",
+                "event",
+                &reset.story_id,
+                &format!(
+                    "reset {} {note}; its comment failed: {comment_error}",
+                    reset.token
+                ),
+            );
+        }
+        drop(workspace);
+        Ok(done)
+    }
+}
+
+/// Idles each engine lane the reset reserved that still holds its story.
+fn idle_lanes(tx: &mut impl WriteOps, reset: &StoryReset, now: &str) -> Result<(), StoreError> {
+    for owner in &reset.lanes {
+        if let Some(lane) = tx
+            .engine_lanes(&owner.run_id)?
+            .into_iter()
+            .find(|lane| lane.lane_index == owner.lane_index)
+        {
+            // An already-started dispatch may fail and release its lane while reset waits.
+            if lane.story_id.as_deref() != Some(&reset.story_id) {
+                continue;
+            }
+            let mut idle = super::engine::idle_lane(&owner.run_id, owner.lane_index, now);
+            idle.outcome = Some("story-reset".into());
+            super::engine::put_or_retire_idle_lane(tx, &idle)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

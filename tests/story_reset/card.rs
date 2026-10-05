@@ -501,3 +501,65 @@ fn reset_allows_an_existing_dispatch_to_release_its_lane() {
         .unwrap();
     assert!(service.get(&story.id, &reset.token).unwrap().completed);
 }
+
+#[test]
+fn reset_returns_a_blocked_story_to_todo_even_where_the_catalog_puts_todo_later() {
+    use storyhook::domain::SuperState;
+    use storyhook::service::{ConfigService, RelationService};
+    let fixture = ServiceFixture::new();
+    fixture
+        .store()
+        .write(|tx| tx.set_checkout_path(fixture.project(), None))
+        .unwrap();
+    let ctx = fixture.ctx().no_hooks(true);
+    let config = ConfigService::new(&ctx);
+    config
+        .add_state("triage", SuperState::Open, None, None)
+        .unwrap();
+    let mut order: Vec<String> = config
+        .list_states()
+        .unwrap()
+        .into_iter()
+        .map(|listing| listing.state.slug)
+        .filter(|slug| slug != "triage")
+        .collect();
+    order.insert(0, "triage".into());
+    config.reorder_states(&order).unwrap();
+    let stories = StoryService::new(&ctx);
+    let story = stories
+        .create(&NewStoryInput {
+            title: "Blocked before todo".into(),
+            state: Some("triage".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let blocker = stories
+        .create(&NewStoryInput {
+            title: "Open blocker".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    RelationService::new(&ctx)
+        .relate(&story.id, "blocked-by", &blocker.id, false)
+        .unwrap();
+    // An ordinary transition refuses: todo is later than triage while blocked.
+    assert!(
+        stories
+            .set_state(&story.id, "todo", None, None, None)
+            .is_err()
+    );
+    let service = StoryResetService::new(&ctx);
+    let reset = service.reserve(&story.id, &story.id).unwrap();
+    assert!(
+        service
+            .execute(&story.id, &reset.token, || Ok(()))
+            .unwrap()
+            .completed
+    );
+    let after = fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.state, "todo");
+}
