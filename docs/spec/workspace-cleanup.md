@@ -58,6 +58,16 @@ closure. Reports distinguish safety refusals (`skipped`) from operational
 failures (`failed`); requests retain the latest diagnosis and retry time.
 A changed failure produces one story comment, not a comment on every retry.
 
+## Pane termination helper
+
+The binary stops a captured pane with `plugins/story/lib/dropped-cleanup-pane.py`.
+It does not use the installed plugin, which can be a different version. It
+writes the whole `plugins/story/lib` directory that it embeds, never a list of
+files, and runs the helper from that copy. The helper then resolves its imports
+as it does in the installed plugin and in the plugin tests. A hand-kept list of
+five files missed the `tmux_client`, `tmux_target` and `tmux_server_env` imports
+that SH-825 added, and every pane cleanup failed until SH-881.
+
 ## Scheduling and manual retry
 
 The daemon wakes on project-change notifications and at startup, with a bounded

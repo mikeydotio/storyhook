@@ -69,30 +69,7 @@ pub(super) fn stop<S: Store>(
     let bundle = tempfile::Builder::new()
         .prefix("story-dropped-cleanup-")
         .tempdir_in("/tmp")?;
-    for (name, source) in [
-        (
-            "dropped-cleanup-pane.py",
-            include_str!("../../../../plugins/story/lib/dropped-cleanup-pane.py"),
-        ),
-        (
-            "stop-dispatch-pane.py",
-            include_str!("../../../../plugins/story/lib/stop-dispatch-pane.py"),
-        ),
-        (
-            "process_identity.py",
-            include_str!("../../../../plugins/story/lib/process_identity.py"),
-        ),
-        (
-            "workspace_ownership.py",
-            include_str!("../../../../plugins/story/lib/workspace_ownership.py"),
-        ),
-        (
-            "probe_budget.py",
-            include_str!("../../../../plugins/story/lib/probe_budget.py"),
-        ),
-    ] {
-        std::fs::write(bundle.path().join(name), source)?;
-    }
+    prepare_bundle(bundle.path())?;
     let directory = ctx.env().daemon_state_dir().join("dropped-cleanup");
     std::fs::create_dir_all(&directory)?;
     let journal = directory.join(format!("{}.json", record.token));
@@ -128,9 +105,43 @@ pub(super) fn stop<S: Store>(
     Ok(())
 }
 
+/// Writes the helper and everything it can import: the whole plugin library
+/// this binary embeds, never a list of the files it is thought to need
+/// (SH-881).
+fn prepare_bundle(bundle: &std::path::Path) -> Result<(), AppError> {
+    crate::plugin::library::project(bundle)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::CLEANUP_HELPER_TIMEOUT;
+    use super::{CLEANUP_HELPER_TIMEOUT, prepare_bundle};
+    use std::process::Command;
+
+    /// The helper runs from the bundle exactly as `stop` starts it, so its
+    /// whole import graph loads before it reads its arguments. Missing
+    /// arguments are its own reported error; a missing module is a traceback
+    /// that never reaches that handler (SH-881). `-E` keeps an inherited
+    /// `PYTHONPATH` from supplying what the bundle lacks; `-I` cannot be used
+    /// because it also drops the script's directory from `sys.path`.
+    #[test]
+    fn the_helper_bundle_resolves_every_module_the_helper_imports() {
+        let bundle = storyhook_test_support::scratch_dir();
+        prepare_bundle(bundle.path()).unwrap();
+        let output = Command::new("python3")
+            .args(["-E", "-s", "-B"])
+            .arg(bundle.path().join("dropped-cleanup-pane.py"))
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+        assert!(stderr.is_empty(), "the helper did not load: {stderr}");
+        let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(answer["ok"], false, "{answer}");
+        assert!(
+            crate::embedded::matches(&crate::plugin::library::files(), bundle.path()),
+            "the bundle must be exactly the embedded plugin library"
+        );
+    }
 
     /// The cleanup helper's probe budget leaves a third of its kill bound for
     /// interpreter start and exit under load, so its own cleanup resumes any
