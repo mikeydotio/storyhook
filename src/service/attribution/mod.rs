@@ -14,7 +14,9 @@ mod view;
 pub use contrast::classify;
 pub use holds::AttributionHold;
 pub use model::*;
-pub use native::{NativeProbeBinding, NativeRustComparison};
+pub use native::{
+    CausalReturnEvidence, NativeProbeBinding, NativeRustComparison, SettledRustComparison,
+};
 pub use preparation::{DiagnosticPreparation, PreparationResult};
 pub use rust_cargo::{CargoTarget, RustExecutable};
 pub use rust_case::{RustCase, RustCaseObservation, RustTarget};

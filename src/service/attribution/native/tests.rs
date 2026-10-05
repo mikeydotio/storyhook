@@ -1,4 +1,5 @@
 use super::*;
+mod proof;
 use std::{
     fs,
     process::{Command, Stdio},
@@ -148,6 +149,7 @@ fn actual_behavior_and_fixture_comparisons_retain_four_native_observations() {
     for fixture in [false, true] {
         let f = Fixture::new(fixture);
         let mut native = f.comparison();
+        let evidence = proof::Evidence::new();
         let mut signatures = vec![];
         let mut environment = None;
         for (index, side) in [
@@ -177,7 +179,7 @@ fn actual_behavior_and_fixture_comparisons_retain_four_native_observations() {
                                     project: "fixture",
                                     attempt,
                                     execution,
-                                    generation: 7,
+                                    generation: evidence.generation(),
                                     request,
                                     journal: &journal,
                                     output: &output,
@@ -196,7 +198,7 @@ fn actual_behavior_and_fixture_comparisons_retain_four_native_observations() {
                         project: "fixture",
                         attempt: "attempt",
                         execution: &id,
-                        generation: 7,
+                        generation: evidence.generation(),
                         request: &id,
                         journal: &journal,
                         output: &output,
@@ -230,7 +232,7 @@ fn actual_behavior_and_fixture_comparisons_retain_four_native_observations() {
         assert_eq!(signatures.len(), 2);
         assert_eq!(signatures[0], signatures[1]);
         assert_eq!(native.observations.len(), 4);
-        native.close().unwrap();
+        proof::exercise(native, &f, evidence, fixture);
     }
 }
 

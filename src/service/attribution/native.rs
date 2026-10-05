@@ -1,6 +1,8 @@
 //! Native executions, distinct from serializable observations and return authority.
 
 mod pipeline;
+mod proof;
+pub use proof::{CausalReturnEvidence, SettledRustComparison};
 #[cfg(test)]
 mod tests;
 
@@ -25,6 +27,8 @@ pub struct NativeRustComparison {
     observations: Vec<(ProbeSide, ProbeResult)>,
     binding: Option<(String, String, i64)>,
     requests: std::collections::BTreeSet<String>,
+    started: Instant,
+    archives: Vec<proof::Archive>,
     #[cfg(test)]
     fixture: Option<std::path::PathBuf>,
 }
@@ -60,7 +64,8 @@ impl NativeRustComparison {
         deadline: Instant,
         cancellation: &Cancellation,
     ) -> Result<Self, AppError> {
-        let deadline = deadline.min(Instant::now() + Duration::from_millis(MAX_DIAGNOSIS_MS));
+        let started = Instant::now();
+        let deadline = deadline.min(started + Duration::from_millis(MAX_DIAGNOSIS_MS));
         let RustTarget::Integration(target) = &case.target else {
             return Err(invalid("native comparison requires an integration case"));
         };
@@ -93,6 +98,8 @@ impl NativeRustComparison {
             observations: vec![],
             binding: None,
             requests: Default::default(),
+            started,
+            archives: vec![],
             #[cfg(test)]
             fixture: None,
         })
@@ -165,6 +172,9 @@ impl NativeRustComparison {
         self.control.verify_unchanged()?;
         self.binding = Some(identity);
         let result = pipeline::execute(self, side, binding)?;
+        if result.executions == 1 {
+            self.archives.extend(proof::Archive::probe(binding.output)?);
+        }
         self.observations.push((side, result.clone()));
         Ok(result)
     }

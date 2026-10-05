@@ -340,7 +340,7 @@ fn read_json(path: &Path) -> Result<Value, String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn read(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+pub(super) fn read(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)

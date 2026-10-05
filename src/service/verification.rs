@@ -23,6 +23,7 @@ use super::story::{append_state_transition, state_transition_events};
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 
 mod attribution_hold;
+mod causal_return;
 pub(crate) mod human;
 mod landed;
 
@@ -1169,7 +1170,7 @@ fn completion_state_or_refuse(states: &[StateDef]) -> Result<StateDef, AppError>
     })
 }
 
-fn submission_is_current(
+pub(super) fn submission_is_current(
     tx: &impl ReadOps,
     row: &StoryRow,
     candidate: &VerificationCandidate,

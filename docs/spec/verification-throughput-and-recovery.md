@@ -395,8 +395,20 @@ Missing or unsupported resource evidence cannot establish a causal contrast.
 Original failure extraction requires one complete, unambiguous Cargo frame for
 the exact integration target. The same native panic parser derives both original
 and diagnostic signatures. An absent, repeated, truncated or foreign frame remains
-unknown. These native observations still need the durable coordinator and final
-transactional return boundary; this adapter does not grant a repair return.
+unknown. A native comparison must explicitly settle its owned resources before
+it can produce a `SettledRustComparison`. Only that opaque owner can mint a
+non-serializable `CausalReturnEvidence`, by matching its private observations
+with the complete durable record, original failed gate and physical preparation
+and diagnostic cost executions. Capture raw-output digests at the native boundary;
+changed or missing output prevents application.
+
+`record_causal_return` checks the full retained history, latest admission,
+submission, control revision, human reservation, blockers, awaiting and landing
+state in the same transaction as the return. It records a native assessment and
+raw evidence digests without changing any gate result. A mixed record keeps its
+unproved components and hold; the repair text names only the proved component.
+The daemon diagnosis coordinator and migration of all existing return paths to
+this boundary remain required before SH-870 is complete.
 
 Reserve each physical probe durably before launch. Allow at most eight starts
 and 300000 milliseconds of active diagnosis per submission, across admissions
