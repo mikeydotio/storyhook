@@ -66,7 +66,16 @@ fn reset_uses_observed_endpoint_and_preserves_the_foreign_public_window() {
     fixture.start(&fixture.endpoint.clone(), "SH-1");
     fixture.start(&fixture.endpoint.clone(), "keepalive");
     let report = report(&fixture, &fixture.endpoint);
-    remove(&report, &[], fixture.env.home(), &fixture.env, None).unwrap();
+    let mut residue = Residue::default();
+    remove(
+        &report,
+        &[],
+        &Authority::default(),
+        &fixture.env,
+        None,
+        &mut residue,
+    );
+    assert_eq!(residue.into_entries(), vec![]);
     assert_eq!(windows(&fixture, &fixture.socket), "SH-1\n");
     assert_eq!(windows(&fixture, &fixture.endpoint), "keepalive\n");
 }
@@ -77,8 +86,45 @@ fn reset_cannot_redirect_old_numeric_identity_from_logical_to_private_endpoint()
     fixture.start(&fixture.socket.clone(), "SH-1");
     fixture.start(&fixture.endpoint.clone(), "SH-1");
     let report = report(&fixture, &fixture.socket);
-    let error = remove(&report, &[], fixture.env.home(), &fixture.env, None).unwrap_err();
-    assert!(error.to_string().contains("generation changed"), "{error}");
+    let mut residue = Residue::default();
+    remove(
+        &report,
+        &[],
+        &Authority::default(),
+        &fixture.env,
+        None,
+        &mut residue,
+    );
+    // The redirected window is left in place and reported; the reset goes on.
+    let residue = residue.into_entries();
+    assert_eq!(residue.len(), 1, "{residue:?}");
+    assert_eq!(residue[0].resource, "tmux window SH-1");
+    assert!(
+        residue[0].reason.contains("generation changed"),
+        "{residue:?}"
+    );
     assert_eq!(windows(&fixture, &fixture.socket), "SH-1\n");
+    assert_eq!(windows(&fixture, &fixture.endpoint), "SH-1\n");
+}
+
+#[test]
+fn a_window_that_appeared_after_reservation_is_left_and_reported() {
+    let mut fixture = Fixture::new();
+    fixture.start(&fixture.endpoint.clone(), "SH-1");
+    let mut report = report(&fixture, &fixture.endpoint);
+    // Reset pinned no pane: whatever runs in this window now is not proven its.
+    report.pane = None;
+    let mut residue = Residue::default();
+    remove(
+        &report,
+        &[],
+        &Authority::default(),
+        &fixture.env,
+        None,
+        &mut residue,
+    );
+    let residue = residue.into_entries();
+    assert_eq!(residue.len(), 1, "{residue:?}");
+    assert!(residue[0].reason.contains("new tmux window"), "{residue:?}");
     assert_eq!(windows(&fixture, &fixture.endpoint), "SH-1\n");
 }

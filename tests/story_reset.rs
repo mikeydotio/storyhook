@@ -15,3 +15,7 @@ mod delivery;
 
 #[path = "story_reset/quiescent.rs"]
 mod quiescent;
+#[path = "story_reset/residue.rs"]
+mod residue;
+#[path = "story_reset/workspace.rs"]
+mod workspace;

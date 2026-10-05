@@ -1,6 +1,7 @@
 //! A card reset holds readiness until exact resource cleanup succeeds.
 mod cleanup;
 pub(crate) mod identity;
+mod summary;
 
 use super::executor_lock::ExecutorLock;
 use super::workspace_lock::WorkspaceLock;
@@ -18,6 +19,12 @@ use std::time::{Duration, Instant};
 /// Shorter than the dashboard's 75-second mutation deadline, so a contended
 /// request still answers before its client gives up.
 pub(crate) const RESERVE_PATIENCE: Duration = Duration::from_secs(60);
+
+/// Attempts to identify a story's resources before reset pins them for good.
+const RESOLVE_ATTEMPTS: u32 = 5;
+
+/// Pause between resource identification attempts.
+const RESOLVE_PAUSE: Duration = Duration::from_secs(2);
 
 /// Rejects lifecycle changes while an unfinished reset owns a story.
 pub(crate) fn refuse_reserved(
@@ -87,6 +94,45 @@ impl<'a, S: Store> StoryResetService<'a, S> {
             ctx,
             shutdown: Shutdown::new(),
         }
+    }
+
+    /// Identifies the story's resources, retrying while observation fails.
+    /// A report that stays unidentifiable is returned as `unavailable`, so
+    /// teardown removes nothing and reports why instead of failing.
+    fn identify(&self, id: &str) -> super::resources::ResourceReport {
+        let mut outcome = Err(AppError::Validation("not attempted".into()));
+        for attempt in 0..RESOLVE_ATTEMPTS {
+            if attempt > 0 {
+                if self.shutdown.requested() {
+                    break;
+                }
+                std::thread::sleep(RESOLVE_PAUSE);
+            }
+            outcome =
+                super::resources::ResourceService::new(self.ctx).resolve(id, &Default::default());
+            if outcome
+                .as_ref()
+                .is_ok_and(|report| report.status != "unavailable")
+            {
+                break;
+            }
+        }
+        outcome.unwrap_or_else(|error| super::resources::ResourceReport {
+            location_only: false,
+            project: String::new(),
+            story_id: id.into(),
+            status: "unavailable".into(),
+            repository: None,
+            worktree: None,
+            branch: None,
+            window_name: id.into(),
+            socket_path: None,
+            pane: None,
+            provider: None,
+            candidates: Vec::new(),
+            observations: Vec::new(),
+            diagnostics: vec![format!("identifying resources: {error}")],
+        })
     }
 
     /// Commits one write, waiting out contention: a reserved reset must finish.
@@ -165,6 +211,8 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                     paths: Vec::new(),
                     completed: false,
                     failure: None,
+                    residue: Vec::new(),
+                    recovery: None,
                 };
                 tx.put_story_reset(&reset)?;
                 Ok(reset)
@@ -226,8 +274,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
             quiesce()?;
             let report = match &reset.resources {
                 Some(report) => report.clone(),
-                None => super::resources::ResourceService::new(self.ctx)
-                    .resolve(id, &Default::default())?,
+                None => self.identify(id),
             };
             // Dispatch and verification release the shared workspace before we
             // acquire it; surviving cleanup children retain this same ownership.
@@ -237,8 +284,18 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                 .map(|repository| WorkspaceLock::acquire(repository, &reset.story_id))
                 .transpose()?;
             if reset.resources.is_none() {
-                cleanup::validate(&report, self.ctx.cwd(), self.ctx.env())?;
-                reset.paths = identity::capture(&report)?;
+                // Pinned once, even when identification failed: teardown then
+                // withholds removal and reports why, and the reset still ends.
+                let mut report = report;
+                match identity::capture(&report) {
+                    Ok(paths) => reset.paths = paths,
+                    Err(error) => {
+                        report.status = "unavailable".into();
+                        report
+                            .diagnostics
+                            .push(format!("pinning filesystem identity: {error}"));
+                    }
+                }
                 reset.resources = Some(report);
                 self.write(|tx| tx.put_story_reset(&reset))?;
             }
@@ -251,13 +308,31 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                 )?;
                 Ok(())
             })?;
-            cleanup::remove(
-                reset.resources.as_ref().expect("pinned resources"),
+            let report = reset.resources.clone().expect("pinned resources");
+            let mut residue = cleanup::Residue::default();
+            let authority = cleanup::authorize(
+                &report,
                 &reset.paths,
                 self.ctx.cwd(),
                 self.ctx.env(),
+                &mut residue,
+            );
+            // Recorded before anything is removed, and never overwritten by a
+            // retry that can no longer see what an earlier attempt discarded.
+            if reset.recovery.is_none() {
+                reset.recovery = Some(cleanup::recovery(&report, &authority));
+                self.write(|tx| tx.put_story_reset(&reset))?;
+            }
+            cleanup::remove(
+                &report,
+                &reset.paths,
+                &authority,
+                self.ctx.env(),
                 workspace.as_ref(),
-            )?;
+                &mut residue,
+            );
+            cleanup::dispatch_overlap(&report, &authority, self.ctx.env(), &mut residue);
+            reset.residue = residue.into_entries();
             self.finish(&reset, workspace)
         })();
         match result {
@@ -278,33 +353,80 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         let now = self.ctx.now();
         let (before, snapshot, done) = patiently(&self.shutdown, None, || {
             self.ctx.write_stories(|tx| {
-            let current = tx.story_reset(reset.project, reset.story)?.ok_or_else(|| StoreError::Invariant("reset disappeared".into()))?;
-            if current.token != reset.token || current.completed { return Err(StoreError::Invariant("reset owner changed".into())); }
-            let prefix = project_prefix(tx, reset.project)?;
-            let (_, row) = resolve_open_story(tx, reset.project, &prefix, &reset.story_id)?;
-            let states = tx.state_map(reset.project)?;
-            let mut done = current;
-            done.completed = true;
-            done.failure = None;
-            super::block_delivery::supersede_pending(tx, reset.project, reset.story, "card reset completed; prior session authority retired")?;
-            tx.put_story_reset(&done)?;
-            if let Some(incident) = tx.verification_incident(reset.project)? && incident.story == reset.story {
-                tx.clear_verification_incident(&incident.incident_id)?;
-            }
-
-            for owner in &reset.lanes {
-                if let Some(lane) = tx.engine_lanes(&owner.run_id)?.into_iter().find(|lane| lane.lane_index == owner.lane_index) {
-                    // An already-started dispatch may fail and release its lane while reset waits.
-                    if lane.story_id.as_deref() != Some(&reset.story_id) { continue; }
-                    let mut idle = super::engine::idle_lane(&owner.run_id, owner.lane_index, &now);
-                    idle.outcome = Some("story-reset".into());
-                    super::engine::put_or_retire_idle_lane(tx, &idle)?;
+                let current = tx
+                    .story_reset(reset.project, reset.story)?
+                    .ok_or_else(|| StoreError::Invariant("reset disappeared".into()))?;
+                if current.token != reset.token || current.completed {
+                    return Err(StoreError::Invariant("reset owner changed".into()));
                 }
-            }
-            let events = [StoryEvent::StoryStateChanged { at: now.clone(), state: "todo".into() }, StoryEvent::StoryAwaitingCleared { at: now.clone() }, StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("Reset {} completed. Stopped the story worker. Removed its worktree and local branch. Released ownership and returned to todo. Preserved remote branches and pull requests.", reset.token) }];
-            let snapshot = append_and_fold(tx, reset.project, reset.story, &prefix, &states, ExpectedSeq::Exact(row.head_seq), &events, self.ctx.provenance())?;
-            Ok((row.snapshot, snapshot, done))
-        })
+                let prefix = project_prefix(tx, reset.project)?;
+                let (_, row) = resolve_open_story(tx, reset.project, &prefix, &reset.story_id)?;
+                let states = tx.state_map(reset.project)?;
+                let mut done = current;
+                done.completed = true;
+                done.failure = None;
+                done.residue = reset.residue.clone();
+                let mut recovery = reset.recovery.clone().unwrap_or_default();
+                recovery.cleared_awaiting = row.snapshot.awaiting.clone();
+                done.recovery = Some(recovery);
+                super::block_delivery::supersede_pending(
+                    tx,
+                    reset.project,
+                    reset.story,
+                    "card reset completed; prior session authority retired",
+                )?;
+                tx.put_story_reset(&done)?;
+                if let Some(incident) = tx.verification_incident(reset.project)?
+                    && incident.story == reset.story
+                {
+                    tx.clear_verification_incident(&incident.incident_id)?;
+                }
+
+                for owner in &reset.lanes {
+                    if let Some(lane) = tx
+                        .engine_lanes(&owner.run_id)?
+                        .into_iter()
+                        .find(|lane| lane.lane_index == owner.lane_index)
+                    {
+                        // An already-started dispatch may fail and release its lane while reset waits.
+                        if lane.story_id.as_deref() != Some(&reset.story_id) {
+                            continue;
+                        }
+                        let mut idle =
+                            super::engine::idle_lane(&owner.run_id, owner.lane_index, &now);
+                        idle.outcome = Some("story-reset".into());
+                        super::engine::put_or_retire_idle_lane(tx, &idle)?;
+                    }
+                }
+                let mut events = vec![
+                    StoryEvent::StoryStateChanged {
+                        at: now.clone(),
+                        state: "todo".into(),
+                    },
+                    StoryEvent::StoryAwaitingCleared { at: now.clone() },
+                ];
+                if let Some(hold) = summary::dispatch_hold(&done) {
+                    events.push(StoryEvent::StoryAwaitingSet {
+                        at: now.clone(),
+                        awaiting: hold,
+                    });
+                }
+                events.push(StoryEvent::StoryCommentAdded {
+                    at: now.clone(),
+                    text: summary::completion(&done),
+                });
+                let snapshot = append_and_fold(
+                    tx,
+                    reset.project,
+                    reset.story,
+                    &prefix,
+                    &states,
+                    ExpectedSeq::Exact(row.head_seq),
+                    &events,
+                    self.ctx.provenance(),
+                )?;
+                Ok((row.snapshot, snapshot, done))
+            })
         })?;
         // Transition hooks may dispatch the now-ready story.
         drop(workspace);

@@ -291,6 +291,8 @@ fn reservation_identity_cannot_change_and_competing_reset_cannot_acquire_it() {
         paths: vec![],
         completed: false,
         failure: None,
+        residue: vec![],
+        recovery: None,
     };
     assert!(
         f.fixture

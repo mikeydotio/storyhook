@@ -23,10 +23,49 @@ pub struct StoryReset {
     /// Filesystem objects pinned with the resource report.
     #[serde(default)]
     pub paths: Vec<ResetPathIdentity>,
-    /// Whether absence has been proved and finalization committed.
+    /// Whether the reset finished: the story is released and its receipt final.
     pub completed: bool,
-    /// Latest failed attempt, retained until an explicit retry.
+    /// The latest obstacle the reset is waiting out, cleared when it finishes.
     pub failure: Option<String>,
+    /// Resources the reset left in place, with the reason for each (SH-886).
+    #[serde(default)]
+    pub residue: Vec<ResetResidue>,
+    /// What the reset discarded that can still be found, recorded before removal.
+    #[serde(default)]
+    pub recovery: Option<ResetRecovery>,
+}
+
+/// One resource a reset did not remove, and why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResetResidue {
+    /// The resource, named the way a person finds it: window, path or branch.
+    pub resource: String,
+    /// Why the reset left it in place.
+    pub reason: String,
+    /// Whether the next dispatch of the story would collide with it.
+    #[serde(default)]
+    pub blocks_dispatch: bool,
+}
+
+/// Recovery evidence captured before a reset removes local work.
+///
+/// Branch deletion and worktree removal also delete their reflogs, so without
+/// this record unpushed commits would be recoverable but undetectable.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResetRecovery {
+    /// The local branch the reset deletes.
+    pub branch: Option<String>,
+    /// That branch's tip commit before deletion.
+    pub tip: Option<String>,
+    /// Commits on that tip that no other branch, tag or remote contains.
+    pub unpushed: Option<u64>,
+    /// Tracked paths with uncommitted changes that the reset discards.
+    pub dirty: Option<u64>,
+    /// Untracked paths that the reset discards.
+    pub untracked: Option<u64>,
+    /// The awaiting reason the reset cleared, recorded when it finished.
+    #[serde(default)]
+    pub cleared_awaiting: Option<String>,
 }
 
 /// Identity of the one engine lane reserved with a story reset.

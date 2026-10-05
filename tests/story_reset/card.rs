@@ -1,8 +1,10 @@
-//! A reset owns the story until every resource is gone.
+//! A reset owns the story until it finishes; what it cannot remove is reported.
 use storyhook::service::story_reset::StoryResetService;
 use storyhook::service::{NewStoryInput, StoryService};
 use storyhook::store::{ReadOps, Store, StoryNo, WriteOps};
 use storyhook_test_support::ServiceFixture;
+
+use super::workspace::{Workspace, commit, git};
 
 #[test]
 fn reservation_survives_reopen_deduplicates_and_prevents_state_changes() {
@@ -245,18 +247,6 @@ fn reset_reservation_cannot_be_rebound_and_is_excluded_from_claim_next() {
     );
 }
 
-fn git(cwd: &std::path::Path, args: &[&str]) {
-    let output = storyhook::env::git_env::command(cwd)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 #[test]
 fn dirty_locked_unpushed_worktree_is_removed_before_story_becomes_todo() {
     forced_worktree_reset(true);
@@ -267,158 +257,58 @@ fn local_only_worktree_reset_does_not_require_an_origin() {
     forced_worktree_reset(false);
 }
 
+/// Removes dirty, locked and unpushed local work and records how to recover it.
 fn forced_worktree_reset(with_origin: bool) {
-    let fixture = ServiceFixture::new();
-    let root = storyhook_test_support::scratch_dir();
-    let repo = root.path().join("repo");
-    let remote = root.path().join("remote.git");
-    std::fs::create_dir(&repo).unwrap();
+    let workspace = Workspace::new(with_origin);
+    commit(&workspace.worktree, "unpushed");
+    let tip = git(&workspace.worktree, &["rev-parse", "HEAD"])
+        .trim()
+        .to_string();
+    std::fs::write(workspace.worktree.join("uncommitted.txt"), "destroy me").unwrap();
     git(
-        root.path(),
-        &[
-            "init",
-            "--bare",
-            "--initial-branch=main",
-            remote.to_str().unwrap(),
-        ],
+        &workspace.repo,
+        &["worktree", "lock", workspace.worktree.to_str().unwrap()],
     );
-    git(&repo, &["init", "--initial-branch=main"]);
-    storyhook_test_support::approve_fixture_identity(&repo, "Reset fixture", "reset@example.test");
-    git(
-        &repo,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "base",
-        ],
-    );
-    git(
-        &repo,
-        &["remote", "add", "origin", remote.to_str().unwrap()],
-    );
-    git(&repo, &["push", "origin", "main"]);
-    let repo = repo.canonicalize().unwrap();
-    fixture
-        .store()
-        .write(|tx| tx.set_checkout_path(fixture.project(), Some(&repo)))
-        .unwrap();
-    let ctx = fixture.ctx();
-    let story = StoryService::new(&ctx)
-        .create(&NewStoryInput {
-            title: "Discard local work".into(),
-            state: Some("in-progress".into()),
-            ..Default::default()
-        })
-        .unwrap();
-    let worktree = repo.join(".codex/worktrees").join(&story.id);
-    git(
-        &repo,
-        &[
-            "worktree",
-            "add",
-            "-b",
-            "worktree-SH-1",
-            worktree.to_str().unwrap(),
-        ],
-    );
-    git(
-        &worktree,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "unpushed",
-        ],
-    );
-    std::fs::write(worktree.join("uncommitted.txt"), "destroy me").unwrap();
-    git(&repo, &["worktree", "lock", worktree.to_str().unwrap()]);
-    if !with_origin {
-        git(&repo, &["remote", "remove", "origin"]);
-    }
-    let service = StoryResetService::new(&ctx);
-    let reset = service.reserve(&story.id, &story.id).unwrap();
-    let mut pinned = reset.clone();
-    pinned.resources = Some(
-        storyhook::service::resources::ResourceService::new(&ctx)
-            .resolve(&story.id, &Default::default())
-            .unwrap(),
-    );
-    pinned.paths = pinned_paths(pinned.resources.as_ref().unwrap());
-    fixture
-        .store()
-        .write(|tx| tx.put_story_reset(&pinned))
-        .unwrap();
-    git(&worktree, &["switch", "-c", "replacement"]);
+    let reset = workspace.reserve_pinned();
+    let done = workspace.execute(&reset);
+    assert_eq!(done.residue, vec![]);
+    assert!(!workspace.worktree.exists());
+    assert!(!workspace.branch_exists("worktree-SH-1"));
+    assert!(workspace.branch_exists("main"));
+    let recovery = done.recovery.unwrap();
+    assert_eq!(recovery.branch.as_deref(), Some("worktree-SH-1"));
+    assert_eq!(recovery.tip.as_deref(), Some(tip.as_str()));
+    assert_eq!(recovery.unpushed, Some(1));
+    assert_eq!((recovery.dirty, recovery.untracked), (Some(0), Some(1)));
+    let comment = workspace.last_comment();
     assert!(
-        service
-            .execute(&story.id, &reset.token, || Ok(()))
-            .unwrap_err()
-            .to_string()
-            .contains("identity changed")
+        comment.contains(&format!("git branch worktree-SH-1 {tip}")),
+        "{comment}"
     );
-    assert!(worktree.exists());
-    git(&worktree, &["switch", "worktree-SH-1"]);
-    if std::env::var_os("SH717_ARTIFACT_TEST_CHILD").is_some() {
-        let manifest = storyhook::plugin::managed_paths_file().unwrap();
-        std::fs::write(&manifest, format!("{}\n", worktree.display())).unwrap();
-        assert!(
-            service
-                .execute(&story.id, &reset.token, || Ok(()))
-                .unwrap_err()
-                .to_string()
-                .contains("installed artifact")
-        );
-        assert!(worktree.exists());
-        std::fs::remove_file(&manifest).unwrap();
-    }
-    let saved = worktree.with_extension("original");
-    std::fs::rename(&worktree, &saved).unwrap();
-    std::fs::create_dir(&worktree).unwrap();
-    std::fs::copy(saved.join(".git"), worktree.join(".git")).unwrap();
-    assert!(
-        service
-            .execute(&story.id, &reset.token, || Ok(()))
-            .unwrap_err()
-            .to_string()
-            .contains("filesystem identity changed")
-    );
-    std::fs::remove_file(worktree.join(".git")).unwrap();
-    std::fs::remove_dir(&worktree).unwrap();
-    std::fs::rename(&saved, &worktree).unwrap();
-    let caller = storyhook::service::Ctx::new(
-        fixture.store(),
-        fixture.project(),
-        worktree.clone(),
-        fixture.env().clone(),
-    )
-    .no_hooks(true);
-    assert!(
-        StoryResetService::new(&caller)
-            .execute(&story.id, &reset.token, || Ok(()))
-            .unwrap_err()
-            .to_string()
-            .contains("calling worktree")
-    );
-    assert!(
-        service
-            .execute(&story.id, &reset.token, || Ok(()))
-            .unwrap()
-            .completed
-    );
-    assert!(!worktree.exists());
-    assert!(!storyhook::service::resources::git::branch_exists(&repo, "worktree-SH-1").unwrap());
-    assert!(storyhook::service::resources::git::branch_exists(&repo, "main").unwrap());
-    let after = fixture
-        .store()
-        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
-        .unwrap()
-        .unwrap();
-    assert_eq!(after.state, "todo");
+    assert!(comment.contains("1 untracked"), "{comment}");
+    let story = workspace.story();
+    assert_eq!(story.state, "todo");
+    assert_eq!(story.awaiting, None);
+}
+
+/// A worktree that holds installed StoryHook artifacts is never removed.
+fn installed_artifact_worktree_is_left_in_place() {
+    let workspace = Workspace::new(false);
+    let reset = workspace.reserve_pinned();
+    let manifest = storyhook::plugin::managed_paths_file().unwrap();
+    std::fs::write(&manifest, format!("{}\n", workspace.worktree.display())).unwrap();
+    let done = workspace.execute(&reset);
+    std::fs::remove_file(&manifest).unwrap();
+    let resource = format!("worktree {}", workspace.worktree.display());
+    let left = done
+        .residue
+        .iter()
+        .find(|entry| entry.resource == resource)
+        .unwrap_or_else(|| panic!("{:?}", done.residue));
+    assert!(left.reason.contains("installed artifact"), "{left:?}");
+    assert!(workspace.worktree.exists());
+    assert!(workspace.branch_exists("worktree-SH-1"));
+    assert_eq!(workspace.story().state, "todo");
 }
 
 #[test]
@@ -542,7 +432,7 @@ fn resetting_one_engine_story_preserves_the_other_lane_and_run() {
 #[test]
 fn installed_artifact_registry_is_independent_of_the_story_database() {
     if std::env::var_os("SH717_ARTIFACT_TEST_CHILD").is_some() {
-        forced_worktree_reset(false);
+        installed_artifact_worktree_is_left_in_place();
         return;
     }
     let registry = storyhook_test_support::scratch_dir();
@@ -562,38 +452,6 @@ fn installed_artifact_registry_is_independent_of_the_story_database() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-fn pinned_paths(
-    report: &storyhook::service::resources::ResourceReport,
-) -> Vec<storyhook::store::ResetPathIdentity> {
-    use std::os::unix::fs::MetadataExt;
-    let repo = report.repository.as_ref().unwrap();
-    let common = storyhook::service::resources::git::text(
-        repo,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )
-    .unwrap();
-    let worktree = report.worktree.as_ref().unwrap();
-    let private =
-        storyhook::service::resources::git::text(worktree, &["rev-parse", "--absolute-git-dir"])
-            .unwrap();
-    [
-        (std::path::PathBuf::from(common.trim()), false),
-        (worktree.clone(), true),
-        (std::path::PathBuf::from(private.trim()), true),
-    ]
-    .into_iter()
-    .map(|(path, removable)| {
-        let metadata = std::fs::symlink_metadata(&path).unwrap();
-        storyhook::store::ResetPathIdentity {
-            path,
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            removable,
-        }
-    })
-    .collect()
 }
 
 #[test]
