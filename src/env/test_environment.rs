@@ -71,6 +71,25 @@ pub enum Disposition {
     Clear,
 }
 
+impl Disposition {
+    /// Whether a parameter of this shape keeps a daemon contained rather than
+    /// naming where data lives or removing something.
+    ///
+    /// A literal or the owning process's identity is the same for every root,
+    /// so it is what a child that already reaches the caller's store still
+    /// needs in order to stay inside the caller's contract: which port a daemon
+    /// it starts takes, which process that daemon dies with, which interfaces
+    /// it listens on. Paths come from a root the child already inherits, and a
+    /// removal is satisfied by not passing the variable on.
+    #[must_use]
+    pub const fn contains_daemons(self) -> bool {
+        matches!(
+            self,
+            Self::Literal(_) | Self::OwnPid | Self::OwnProcessStartTime
+        )
+    }
+}
+
 /// Where a parameter may be applied.
 ///
 /// The distinction is **who else reads this variable**, and it is load-bearing
@@ -405,6 +424,27 @@ pub fn resolve(root: &Path, pid: u32, scope: Scope) -> Vec<Setting> {
             value: parameter.value(root, pid),
         })
         .collect()
+}
+
+/// The parameters that keep a daemon contained, in [`TEST_ENVIRONMENT`]'s order:
+/// every [`Scope::Anywhere`] parameter whose disposition
+/// [`contains_daemons`](Disposition::contains_daemons).
+///
+/// A child environment that still reaches the caller's store must carry these
+/// too. Otherwise a `story` run in that child can start a daemon for the
+/// caller's store that dies with nobody and listens wherever production would.
+/// Every name here is a storyhook variable and none is a credential, so an
+/// allowlist that admits them admits no secret.
+pub fn daemon_containment_parameters() -> impl Iterator<Item = &'static Parameter> {
+    TEST_ENVIRONMENT.iter().filter(|parameter| {
+        matches!(parameter.scope, Scope::Anywhere) && parameter.disposition.contains_daemons()
+    })
+}
+
+/// Whether `name` is one of the [`daemon_containment_parameters`].
+#[must_use]
+pub fn is_daemon_containment(name: &str) -> bool {
+    daemon_containment_parameters().any(|parameter| parameter.name == name)
 }
 
 /// The directories an environment rooted at `root` needs to exist before a
@@ -788,6 +828,33 @@ mod tests {
                 Disposition::Clear => assert_eq!(setting.value, None),
             }
         }
+    }
+
+    /// The containment set is pinned by name, so a row that joins or leaves it
+    /// is a decision someone makes here rather than a side effect of its
+    /// disposition. Every name is a storyhook variable: allowlists admit this
+    /// set wholesale, and a prefix outside storyhook's own could be somebody
+    /// else's credential.
+    #[test]
+    fn the_daemon_containment_set_is_every_root_independent_parameter() {
+        let names: Vec<&str> = daemon_containment_parameters().map(|p| p.name).collect();
+        assert_eq!(
+            names,
+            [
+                "STORYHOOK_DAEMON_ADDR",
+                "STORYHOOK_PARENT_PID",
+                "STORYHOOK_PARENT_START_TIME",
+                "STORYHOOK_VERIFIER_MIRROR",
+                "STORYHOOK_VERIFIER_AGENT",
+            ]
+        );
+        for name in &names {
+            assert!(name.starts_with("STORYHOOK_"), "{name} is not storyhook's");
+            assert!(is_daemon_containment(name), "{name} is not recognized");
+        }
+        assert!(!is_daemon_containment("STORYHOOK_STORE_PATH"));
+        assert!(!is_daemon_containment("GH_TOKEN"));
+        assert!(!is_daemon_containment("HOME"));
     }
 
     #[test]
