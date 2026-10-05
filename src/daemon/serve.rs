@@ -402,6 +402,14 @@ where
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                crate::daemon::repair_publication::poll(store, &env, &stop)
+            });
+        }
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
             let bus = bus.clone();
             let activity = verification_activity.clone();
             let inflight = Arc::clone(&serving.inflight);

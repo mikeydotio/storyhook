@@ -536,8 +536,24 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         if_state: Option<&str>,
         awaiting: Option<&str>,
     ) -> Result<StorySnapshot, AppError> {
-        let now = self.ctx.now();
         let project = self.ctx.project();
+        if state == COMPLETION_STATE_SLUG && comment.is_some_and(|text| !text.trim().is_empty()) {
+            let overriding = self.ctx.store().read(|tx| {
+                let prefix = project_prefix(tx, project)?;
+                let number = StoryNo::parse_id(&prefix, id)?;
+                Ok(tx
+                    .story(project, number)?
+                    .is_some_and(|row| row.state == VERIFYING_STATE_SLUG))
+            })?;
+            if overriding && let Err(error) = crate::daemon::repair_publication::flush(self.ctx, id)
+            {
+                self.comment(id, &format!(
+                    "OVERRIDE WITH UNPUBLISHED REPAIR\n\n{}\n\nOverride remains allowed. Preserve the local branch and inspect its unpublished commits.",
+                    crate::text_lint::quote_evidence(&error.to_string())
+                ))?;
+            }
+        }
+        let now = self.ctx.now();
         let cleanup_lease = if state == VERIFYING_STATE_SLUG {
             super::cleanup_lease::marker_at(self.ctx.cwd())?
         } else {
