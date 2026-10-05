@@ -35,10 +35,11 @@ assert_eq "$(cd "$repo" && story show "$damaged" --json | jq -r '.story.story.st
   "$before" "refusal preserves tracker state"
 (cd "$repo" && story claim "$damaged" --no-comment >/dev/null) || exit 1
 reset=$(cd "$repo" && bash "$SCRIPT" reset "$damaged" --force)
-assert_eq "$(jqf "$reset" .reason)" resource-identity-unsafe \
-  "cleanup refuses the damaged target even with force"
-assert_eq "$(cd "$repo" && story show "$damaged" --json | jq -r '.story.story.state')" \
-  in-progress "refused cleanup preserves the claim"
+# SH-886 (council C2): reset never refuses; the damaged target is residue.
+assert_ok "$reset" true "reset of the damaged target completes"
+assert_contains "$(residue_reasons "$reset" "")" "stale registration" \
+  "cleanup leaves the damaged target even with force"
+assert_held_out_of_dispatch "$repo" "$damaged" "damaged target"
 
 started=$(dispatch_case "$independent")
 assert_ok "$started" true "independent story dispatches"

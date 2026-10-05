@@ -53,8 +53,13 @@ first="$repo/.claude/worktrees/$id"
 second="$repo/.codex/worktrees/$id"
 (cd "$repo" && git worktree add -q -b "worktree-$id" "$first" HEAD && git worktree add -q --force "$second" "worktree-$id" && story claim "$id" --no-comment >/dev/null)
 out=$(cd "$repo" && STORY_AGENT=unsupported bash "$SCRIPT" reset "$id" --force)
-assert_eq "$(jqf "$out" .reason)" resource-identity-unsafe "force: ambiguity refuses"
+# SH-886 (council C2): reset never refuses; both candidates are residue.
+assert_ok "$out" true "force: reset completes"
+assert_contains "$(residue_reasons "$out" "")" "multiple resources claim this story" "force: ambiguity is left in place"
+left=$(jqf "$out" '[.residue[].resource] | join("|")')
+assert_contains "$left" "/.claude/worktrees/$id" "force: the first candidate is named"
+assert_contains "$left" "/.codex/worktrees/$id" "force: the second candidate is named"
 [ -d "$first" ] && [ -d "$second" ] || fail_test "force: a candidate was removed"
-assert_eq "$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')" in-progress "force: claim preserved"
+assert_held_out_of_dispatch "$repo" "$id" "force"
 
 finish
