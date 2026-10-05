@@ -80,6 +80,8 @@ fn verifier_usage_covers_every_control() {
         "verifier start",
         "verifier stop",
         "verifier drain",
+        "verifier evidence SH-1",
+        "verifier evidence SH-1 --json",
         "verifier ack 2:28821",
         "verifier ack 2:28821 --leave-stopped",
         "verifier gate-config /tmp/project 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567 0123456789abcdef0123456789abcdef01234567 --json",
