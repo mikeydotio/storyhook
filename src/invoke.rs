@@ -107,6 +107,34 @@ pub struct InvokeRequest {
     /// control-character-free by the time anything can store or render it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<ActorLabel>,
+    /// Whether the caller runs in a dispatched agent session (SH-849).
+    ///
+    /// Read by the CLI from its own environment ([`is_agent_session`]) for the
+    /// reason [`actor`](Self::actor) is: the daemon cannot see the caller's
+    /// shell. A service that only an operator may perform refuses it. It is a
+    /// guard against an agent running a command it was shown, not
+    /// authentication: a caller that clears its environment is not refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_session: bool,
+}
+
+/// The variables that mark a dispatched agent session: every dispatch sets
+/// the first, and an autonomous lane also sets one of the others
+/// (`story help test-environment`).
+pub const AGENT_SESSION_VARS: [&str; 3] = [
+    "STORYHOOK_DISPATCH",
+    "STORYHOOK_AUTO",
+    "STORYHOOK_FULL_AUTO",
+];
+
+/// Whether an environment, read through `var`, is a dispatched agent session.
+///
+/// An empty or blank value is no marker, as for every other storyhook
+/// variable: an `export` unset the careless way leaves an empty string behind.
+pub fn is_agent_session(var: impl Fn(&str) -> Option<String>) -> bool {
+    AGENT_SESSION_VARS
+        .iter()
+        .any(|name| var(name).is_some_and(|value| !value.trim().is_empty()))
 }
 
 impl InvokeRequest {
@@ -118,7 +146,15 @@ impl InvokeRequest {
             stdin: None,
             project: None,
             actor: None,
+            agent_session: false,
         }
+    }
+
+    /// Marks the caller as a dispatched agent session (SH-849).
+    #[must_use]
+    pub fn agent_session(mut self, agent_session: bool) -> Self {
+        self.agent_session = agent_session;
+        self
     }
 
     /// Supplies who the caller says it is (SH-246).
@@ -4486,6 +4522,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
         let ctx = Ctx::new(self.store, project, &self.cwd, self.env.clone())
             .no_hooks(request.no_hooks)
             .hook_depth(self.hook_depth)
+            .agent_session(request.agent_session)
             .with_stdin(request.stdin)
             .with_provenance(provenance)
             .with_verification_activity(self.verification_activity);

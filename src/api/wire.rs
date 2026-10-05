@@ -157,6 +157,13 @@ pub struct WireRequest {
     /// own CLI does not get to skip the constraint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<ActorLabel>,
+    /// Whether the client runs in a dispatched agent session (SH-849).
+    ///
+    /// Carried for the reason [`actor`](Self::actor) is: it is a fact about
+    /// the caller's environment, which the daemon cannot read. Absent on older
+    /// clients, which reads as an ordinary session.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_session: bool,
     /// What to do.
     #[serde(deserialize_with = "deserialize_invocation")]
     pub invocation: Invocation,
@@ -196,6 +203,7 @@ impl WireRequest {
             hook_depth: 0,
             stdin: None,
             actor: None,
+            agent_session: false,
             invocation,
         }
     }
@@ -228,6 +236,13 @@ impl WireRequest {
         self
     }
 
+    /// Marks the client as a dispatched agent session (SH-849).
+    #[must_use]
+    pub fn agent_session(mut self, agent_session: bool) -> Self {
+        self.agent_session = agent_session;
+        self
+    }
+
     /// Names the project this request acts on.
     #[must_use]
     pub fn project(mut self, project: Option<ProjectSelector>) -> Self {
@@ -252,6 +267,7 @@ impl WireRequest {
             .stdin(request.stdin)
             .project(request.project)
             .actor(request.actor)
+            .agent_session(request.agent_session)
     }
 
     /// The request this envelope carries, with every caller fact it crossed with.
@@ -262,6 +278,7 @@ impl WireRequest {
             .stdin(self.stdin.clone())
             .project(self.project.clone())
             .actor(self.actor.clone())
+            .agent_session(self.agent_session)
     }
 }
 
