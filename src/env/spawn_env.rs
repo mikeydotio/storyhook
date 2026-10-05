@@ -70,8 +70,24 @@
 //! narrow. The helper's terminal launcher scrubs credentials from the client
 //! and overrides credentials retained by an existing server before pane
 //! startup. SSH agent and model-provider keys remain excluded.
+//!
+//! # The daemon containment names travel with `HOME`
+//!
+//! Every list here admits `HOME` and the XDG directories, and those alone are
+//! enough for a `story` run in the child to resolve its parent's store and
+//! state home. Such a run can therefore also start a daemon for that store
+//! whenever none is serving it. The daemon inherits the child's environment,
+//! so whatever contract kept the parent's daemon contained must reach the
+//! child too: the port it binds, the process it dies with, the interfaces it
+//! listens on. [`crate::env::test_environment::daemon_containment_parameters`]
+//! names that contract, and every list admits it. A list that kept the store
+//! and dropped the contract started test daemons that outlived their test
+//! and listened on the tailnet. Production sets none of these names, so
+//! admitting them changes nothing there, and none of them is a credential.
 
 use std::process::Command;
+
+use super::test_environment::is_daemon_containment;
 
 /// Names both trusted spawns below may see unconditionally: how to find and
 /// run the child ([`PATH`](Self)), where its own configuration and credential
@@ -146,7 +162,7 @@ fn dispatch_permits(name: &str) -> bool {
 ///
 /// Narrower than [`dispatch_permits`] on purpose — see this module's header.
 fn plugin_cli_permits(name: &str) -> bool {
-    COMMON_MAY_SEE.contains(&name)
+    COMMON_MAY_SEE.contains(&name) || is_daemon_containment(name)
 }
 
 /// True if `name` is one the verifier's submission helper may see: the whole
@@ -161,6 +177,7 @@ fn verification_permits(name: &str) -> bool {
     COMMON_MAY_SEE.contains(&name)
         || GITHUB_CREDENTIAL_MAY_SEE.contains(&name)
         || VERIFICATION_EXTRA_MAY_SEE.contains(&name)
+        || is_daemon_containment(name)
 }
 
 /// Clears `command`'s environment, then restores every currently-set variable
@@ -405,6 +422,31 @@ mod tests {
         );
     }
 
+    /// Every list that lets a child find its parent's store also carries the
+    /// contract that keeps a daemon contained. `HOME` alone resolves the
+    /// store, so a list admitting it but dropping the owning pid lets a
+    /// `story` in that child start a daemon that dies with nobody, on the
+    /// production port, listening wherever production listens.
+    #[test]
+    fn every_allowlist_that_admits_home_carries_daemon_containment() {
+        let lists: [(&str, fn(&str) -> bool); 4] = [
+            ("dispatch", dispatch_permits),
+            ("plugin management", plugin_cli_permits),
+            ("verification", verification_permits),
+            ("submission", submission_permits),
+        ];
+        for (list, permits) in lists {
+            assert!(permits("HOME"), "the {list} list no longer admits HOME");
+            for parameter in crate::env::test_environment::daemon_containment_parameters() {
+                assert!(
+                    permits(parameter.name),
+                    "the {list} list admits HOME but drops {}",
+                    parameter.name
+                );
+            }
+        }
+    }
+
     /// The narrower plugin-CLI list must reject what the dispatch list allows,
     /// proving the two are genuinely separate rather than one list reused.
     #[test]
@@ -432,7 +474,7 @@ mod tests {
                 "import json, sys; sys.path.insert(0, sys.argv[1]); import tmux_server_env as m; \
                  print(json.dumps({'common': m.COMMON_MAY_SEE, 'routing': m.TMUX_ROUTING, \
                  'server': sorted(m.SERVER_MAY_SEE), 'credentials': m.GITHUB_CREDENTIALS, \
-                 'selectors': m.PANE_SELECTORS}))",
+                 'selectors': m.PANE_SELECTORS, 'containment': m.DAEMON_CONTAINMENT}))",
             )
             .arg(&library)
             .output()
@@ -482,6 +524,14 @@ mod tests {
             names("selectors"),
             children,
             "pane selectors drifted from child_vars"
+        );
+        let containment: Vec<&str> = crate::env::test_environment::daemon_containment_parameters()
+            .map(|parameter| parameter.name)
+            .collect();
+        assert_eq!(
+            names("containment"),
+            containment,
+            "pane daemon containment drifted from the test environment table"
         );
     }
 }
