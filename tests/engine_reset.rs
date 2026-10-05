@@ -945,3 +945,125 @@ fn a_failed_reserved_unclaim_keeps_the_lane_for_the_next_stop_now() {
             .all(|call| matches!(call, DispatcherCall::Unclaim(_)))
     );
 }
+
+fn engine_reset_row(fixture: &ServiceFixture) -> Option<storyhook::store::EngineReset> {
+    fixture
+        .store()
+        .read(|tx| tx.engine_reset(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+}
+
+fn story_state(fixture: &ServiceFixture) -> String {
+    fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap()
+        .state
+}
+
+#[test]
+fn a_story_reset_supersedes_a_failed_stop_now_reset_and_the_run_still_finishes() {
+    let fixture = ServiceFixture::new();
+    let fake = FakeDispatcher::new([DispatcherStep::ResetFailure("helper wedged".into())]);
+    let run = setup(&fixture, &fake, "todo");
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &fake);
+    assert!(engine.stop(&run, true).is_err());
+    assert!(engine_reset_row(&fixture).is_some());
+    let service = storyhook::service::story_reset::StoryResetService::new(&ctx);
+    let card = service.reserve("SH-1", "SH-1").unwrap();
+    assert!(engine_reset_row(&fixture).is_none());
+    // Stop Now defers to the story reset; it never recreates its reservation
+    // and never calls its helper again.
+    assert_eq!(
+        engine.reconcile(&run).unwrap().run_state,
+        EngineRunState::Draining
+    );
+    assert!(engine_reset_row(&fixture).is_none());
+    assert_eq!(fake.calls().len(), 1);
+    assert!(
+        service
+            .execute("SH-1", &card.token, || Ok(()))
+            .unwrap()
+            .completed
+    );
+    assert_eq!(
+        engine.reconcile(&run).unwrap().run_state,
+        EngineRunState::Finished
+    );
+    assert_eq!(story_state(&fixture), "todo");
+}
+
+#[test]
+fn a_stop_now_reset_superseded_while_its_helper_runs_defers_instead_of_failing() {
+    use storyhook::error::AppError;
+    use storyhook::lane_budget::WindowCensus;
+    use storyhook::service::engine::{DispatchRequest, Dispatcher, UnclaimRequest, WindowProbe};
+    use storyhook::store::EngineReset;
+
+    /// Lets a story reset take the story over while the Stop Now helper runs.
+    struct SupersededMidReset<'a> {
+        fixture: &'a ServiceFixture,
+    }
+    impl Dispatcher for SupersededMidReset<'_> {
+        fn dispatch(&self, _: DispatchRequest) -> Result<DispatchOutcome, AppError> {
+            panic!("stop must not dispatch")
+        }
+        fn unclaim(&self, _: UnclaimRequest) -> Result<DispatchOutcome, AppError> {
+            panic!("stop must not unclaim")
+        }
+        fn kill_window(&self, _: &str) -> Result<(), AppError> {
+            panic!("reset actuator owns closure")
+        }
+        fn census(&self) -> WindowCensus {
+            WindowCensus::Counted { windows: vec![] }
+        }
+        fn probe_window(&self, _: &str) -> WindowProbe {
+            WindowProbe::Gone {
+                detail: "agent exited".into(),
+            }
+        }
+        fn reset(
+            &self,
+            request: EngineReset,
+            _workspace: std::os::fd::BorrowedFd<'_>,
+        ) -> Result<DispatchOutcome, AppError> {
+            storyhook::service::story_reset::StoryResetService::new(&self.fixture.ctx())
+                .reserve("SH-1", "SH-1")
+                .unwrap();
+            Ok(DispatchOutcome::from_payload(
+                serde_json::json!({"ok":true,"token":request.token,"lease":request.lease,
+                "postconditions":{"tmux_story_windows_absent":true,"worktree_registration_absent":true,"worktree_path_absent":true,"branch_absent":true}}),
+            ))
+        }
+    }
+    let fixture = ServiceFixture::new();
+    let run = setup(&fixture, &FakeDispatcher::default(), "todo");
+    let dispatcher = SupersededMidReset { fixture: &fixture };
+    let ctx = fixture.ctx();
+    let engine = EngineService::new(&ctx, &dispatcher);
+    assert_eq!(
+        engine.stop(&run, true).unwrap().run.state,
+        EngineRunState::Draining,
+        "a superseded lane defers; the stop itself does not fail"
+    );
+    assert!(engine_reset_row(&fixture).is_none());
+    let card = fixture
+        .store()
+        .read(|tx| tx.story_reset(fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .unwrap();
+    let service = storyhook::service::story_reset::StoryResetService::new(&ctx);
+    assert!(
+        service
+            .execute("SH-1", &card.token, || Ok(()))
+            .unwrap()
+            .completed
+    );
+    assert_eq!(
+        engine.reconcile(&run).unwrap().run_state,
+        EngineRunState::Finished
+    );
+    assert_eq!(story_state(&fixture), "todo");
+}

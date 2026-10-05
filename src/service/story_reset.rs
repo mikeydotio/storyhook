@@ -2,6 +2,7 @@
 mod cleanup;
 pub(crate) mod identity;
 mod summary;
+mod takeover;
 
 use super::executor_lock::ExecutorLock;
 use super::workspace_lock::WorkspaceLock;
@@ -236,13 +237,8 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                 {
                     return Ok(reset);
                 }
-                if tx.engine_reset(project, story)?.is_some() {
-                    return Err(AppError::Validation(
-                        "Stop Now already owns this story reset; finish that operation first"
-                            .into(),
-                    )
-                    .into());
-                }
+                // The final lever outranks every other owner of the story.
+                let superseded = takeover::supersede_owners(tx, project, story)?;
                 let states = tx.state_map(project)?;
                 if !states
                     .get("todo")
@@ -283,6 +279,26 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                     recovery: None,
                 };
                 tx.put_story_reset(&reset)?;
+                if !superseded.is_empty() {
+                    let states = tx.state_map(project)?;
+                    append_and_fold(
+                        tx,
+                        project,
+                        story,
+                        &prefix,
+                        &states,
+                        ExpectedSeq::Exact(row.head_seq),
+                        &[StoryEvent::StoryCommentAdded {
+                            at: self.ctx.now(),
+                            text: format!(
+                                "Reset {} superseded {}. Those operations no longer own the story.",
+                                reset.token,
+                                superseded.join("; ")
+                            ),
+                        }],
+                        self.ctx.provenance(),
+                    )?;
+                }
                 Ok(reset)
             })
         })?)

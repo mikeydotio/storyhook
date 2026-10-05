@@ -18,13 +18,13 @@ fn reservation() -> String {
 }
 
 #[test]
-fn native_and_card_reservations_exclude_each_other_without_losing_the_owner() {
+fn a_card_reset_supersedes_a_native_reservation_that_cannot_join_it_afterwards() {
     for native_first in [true, false] {
         let fixture = ServiceFixture::new();
         let ctx = fixture.ctx();
         let story = StoryService::new(&ctx)
             .create(&NewStoryInput {
-                title: "One reset contract at a time".into(),
+                title: "One reset owner at a time".into(),
                 ..Default::default()
             })
             .unwrap();
@@ -37,21 +37,30 @@ fn native_and_card_reservations_exclude_each_other_without_losing_the_owner() {
                     tx.put_legacy_story_reset(fixture.project(), StoryNo::new(1), Some(&native))
                 })
                 .unwrap();
-            assert!(service.reserve(&story.id, &story.id).is_err());
+            // The final lever takes the story over instead of refusing.
+            let card = service.reserve(&story.id, &story.id).unwrap();
             fixture
                 .store()
                 .read(|tx| {
+                    assert!(tx.story_resets(fixture.project())?.is_empty());
                     assert_eq!(
-                        tx.story_resets(fixture.project())?.get(&StoryNo::new(1)),
-                        Some(&native)
-                    );
-                    assert!(
                         tx.story_reset(fixture.project(), StoryNo::new(1))?
-                            .is_none()
+                            .unwrap()
+                            .token,
+                        card.token
                     );
+                    let row = tx.story(fixture.project(), StoryNo::new(1))?.unwrap();
+                    let note = &row.snapshot.comments.last().unwrap().text;
+                    assert!(note.contains("native-reset-owner"), "{note}");
                     Ok(())
                 })
                 .unwrap();
+            assert!(
+                service
+                    .execute(&story.id, &card.token, || Ok(()))
+                    .unwrap()
+                    .completed
+            );
         } else {
             let card = service.reserve(&story.id, &story.id).unwrap();
             assert!(

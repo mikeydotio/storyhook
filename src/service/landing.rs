@@ -310,6 +310,22 @@ pub(super) fn admit_intent(
     tx.insert_landing_intent(intent)
 }
 
+/// Releases `intent` because a story reset supersedes it (SH-886, D4).
+///
+/// The merge outcome is unknown: the pull request may still merge, and the
+/// verifier treats the vanished intent as not completable. Answers what was
+/// superseded, as a person reads it.
+pub(crate) fn supersede_for_reset(
+    tx: &mut impl WriteOps,
+    intent: &LandingIntent,
+) -> Result<String, StoreError> {
+    tx.remove_landing_intent(intent)?;
+    Ok(format!(
+        "the pending landing of {} (its merge outcome is unknown; the pull request can still merge)",
+        intent.pull_request
+    ))
+}
+
 /// Releases `intent` in the caller's transaction, for a merge that was
 /// provably never requested.
 pub(super) fn release_intent(
