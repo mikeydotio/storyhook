@@ -209,6 +209,16 @@ fn reset_discards_the_worktree_and_local_branch_and_records_how_to_recover_them(
     let reset = json(&project, &["reset", &id]);
     // Council C1 guardrail 1: the reset's own output carries the record.
     assert!(reset.to_string().contains(&recover), "{reset}");
+    // The structured result says what this reset removed (SH-886).
+    let result = &reset["story"]["reset"];
+    assert_eq!(result["completed"], true, "{reset}");
+    assert_eq!(result["removed"]["worktree"], true, "{reset}");
+    assert_eq!(result["removed"]["branch"], true, "{reset}");
+    assert_eq!(result["recovery"]["tip"], commit.as_str(), "{reset}");
+    assert!(
+        result["residue"].as_array().is_none_or(Vec::is_empty),
+        "{reset}"
+    );
     assert!(!path.exists());
     assert!(
         !std::process::Command::new("git")
@@ -295,6 +305,18 @@ fn the_callers_worktree_is_left_while_the_story_is_released() {
         String::from_utf8_lossy(&output.stdout)
     );
     assert!(path.exists(), "the caller's own worktree is never removed");
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let result = &result["story"]["reset"];
+    assert_eq!(result["completed"], true, "{result}");
+    assert_eq!(result["removed"]["worktree"], false, "{result}");
+    assert!(
+        result["residue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["resource"].as_str().unwrap().starts_with("worktree ")),
+        "{result}"
+    );
     let shown = json(&project, &["show", &id]);
     assert_eq!(shown["story"]["story"]["state"], "todo");
     let completion = shown["story"]["story"]["comments"]

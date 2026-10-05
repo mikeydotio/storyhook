@@ -4,6 +4,8 @@ pub(crate) mod identity;
 mod summary;
 mod takeover;
 
+pub(crate) use summary::view;
+
 use super::executor_lock::ExecutorLock;
 use super::workspace_lock::WorkspaceLock;
 use super::{

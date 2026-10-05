@@ -37,7 +37,7 @@ fn reset(fixture: &ServiceFixture, card: bool) -> Result<(), storyhook::error::A
         service.execute("SH-1", &owner.token, || Ok(()))?;
         Ok(())
     } else {
-        reset_story(&ctx, "SH-1", false, &ResetCaller::default())
+        reset_story(&ctx, "SH-1", false, &ResetCaller::default()).map(drop)
     }
 }
 

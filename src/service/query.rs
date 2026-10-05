@@ -1197,13 +1197,7 @@ pub fn story_views(
 
         let story_no = StoryNo::parse_id(&reset_prefix, &id)?;
         let reset = match unfinished.get(&story_no) {
-            Some(card) => Some(crate::output::ResetView {
-                operation: card.token.clone(),
-                detail: card
-                    .failure
-                    .clone()
-                    .unwrap_or_else(|| "The daemon is finishing this reset.".into()),
-            }),
+            Some(card) => Some(crate::service::story_reset::view(card)),
             None => resets
                 .get(&story_no)
                 .map(|encoded| {
@@ -1211,6 +1205,10 @@ pub fn story_views(
                         |legacy| crate::output::ResetView {
                             operation: legacy.operation,
                             detail: legacy.detail,
+                            completed: false,
+                            removed: crate::output::ResetRemoved::default(),
+                            residue: Vec::new(),
+                            recovery: None,
                         },
                     )
                 })

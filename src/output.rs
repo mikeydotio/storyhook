@@ -84,14 +84,38 @@ pub struct ContinuationAlert {
     pub next_step: String,
 }
 
-/// An unfinished reset, as `story show` reports it (SH-886). Plugin dispatch
-/// refuses while it is present; the daemon finishes the reset by itself.
+/// A story reset (SH-886). `story show` reports an unfinished one, which plugin
+/// dispatch refuses on and the daemon finishes by itself; `story reset` reports
+/// the one it ran, finished or not.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResetView {
     /// The reset operation's identity.
     pub operation: String,
-    /// Its progress, or the last obstacle it is waiting out.
+    /// Its progress, the last obstacle it is waiting out, or its outcome.
     pub detail: String,
+    /// Whether the reset has finished.
+    #[serde(default)]
+    pub completed: bool,
+    /// What the reset removed; all false until it finishes.
+    #[serde(default)]
+    pub removed: ResetRemoved,
+    /// What the reset left in place, and why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub residue: Vec<crate::store::ResetResidue>,
+    /// How to find discarded work again, recorded before anything was removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<crate::store::ResetRecovery>,
+}
+
+/// Which of the story's workspace resources a finished reset removed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResetRemoved {
+    /// The story's tmux window was closed.
+    pub window: bool,
+    /// The story's worktree was removed.
+    pub worktree: bool,
+    /// The story's local branch was deleted.
+    pub branch: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

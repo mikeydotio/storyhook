@@ -5896,13 +5896,29 @@ cmd_reset() {
     story_cli comment "$id" "$REL_COMMENT_TEXT" >/dev/null \
       || fail "story reset $id finished, but its comment could not be added"
   fi
+  # The native answer carries the reset it ran: whether it finished, what it
+  # removed, what it left in place and why, and the recovery record.
   printf '%s' "$shown" | jq --arg id "$id" '
     .story as $view
+    | ($view.reset // {}) as $reset
+    | ($reset.completed // false) as $done
+    | [ if $reset.removed.window then "tmux window" else empty end,
+        if $reset.removed.worktree then "worktree" else empty end,
+        if $reset.removed.branch then "local branch" else empty end ] as $gone
+    | [ ($reset.residue // [])[] | .resource ] as $left
     | {
-        ok: true, id: $id, state: $view.story.state, reset: ($view.reset // null),
+        ok: true, id: $id, state: $view.story.state, completed: $done,
+        removed: { worktree: ($reset.removed.worktree // false), branch: ($reset.removed.branch // false) },
+        closed_window: ($reset.removed.window // false),
+        residue: ($reset.residue // []), recovery: ($reset.recovery // null),
+        reset: ($view.reset // null),
         display: ("[story] reset " + $id
-          + (if $view.reset then ": the daemon is still finishing it (" + $view.reset.detail + ")."
-             else ": returned to `" + $view.story.state + "`. The story comment lists what was removed and how to recover it." end))
+          + (if $done then
+               ": returned to `" + $view.story.state + "`."
+               + (if ($gone | length) > 0 then " Removed its " + ($gone | join(", ")) + "." else " Removed nothing." end)
+               + (if ($left | length) > 0 then " Left in place: " + ($left | join(", ")) + "." else "" end)
+               + " The story comment says why, and how to recover discarded work."
+             else ": the daemon is still finishing it (" + ($reset.detail // "running") + ")." end))
       }'
 }
 

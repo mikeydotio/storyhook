@@ -10,7 +10,7 @@ use super::story_reset::StoryResetService;
 use super::{Ctx, project_prefix, resolve_open_story};
 use crate::domain::StoryCleanupLease;
 use crate::error::AppError;
-use crate::store::{ResetOrigin, Store};
+use crate::store::{ResetOrigin, Store, StoryReset};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
@@ -58,15 +58,15 @@ pub struct ResetReservation {
     pub detail: String,
 }
 
-/// Resets an open ordinary story. Once reserved, the reset never fails: the
-/// daemon's reset runtime finishes it, and this call waits up to
-/// [`NATIVE_WAIT`] before it returns with the reset still running.
+/// Resets an open ordinary story and returns its receipt. Once reserved, the
+/// reset never fails: the daemon's reset runtime finishes it, and this call
+/// waits up to [`NATIVE_WAIT`] before it returns the receipt still running.
 pub fn reset_story<S: Store>(
     ctx: &Ctx<'_, S>,
     id: &str,
     force: bool,
     caller: &ResetCaller,
-) -> Result<(), AppError> {
+) -> Result<StoryReset, AppError> {
     // Every reset discards local work (council C1); `--force` changes nothing.
     let _ = force;
     let canonical = ctx.store().read(|tx| {
@@ -85,15 +85,17 @@ pub fn reset_story<S: Store>(
     let reset = service.reserve_from(&canonical, &canonical, &origin)?;
     let Some(runtime) = ctx.reset_runtime() else {
         // In-process callers have no runtime: the reset runs here.
-        service.execute(&canonical, &reset.token, || {
+        return service.execute(&canonical, &reset.token, || {
             super::engine::await_card_reset_dispatch(ctx, &reset)
-        })?;
-        return Ok(());
+        });
     };
     runtime.request(&reset);
     let deadline = Instant::now() + NATIVE_WAIT;
-    while Instant::now() < deadline && !service.get(&canonical, &reset.token)?.completed {
+    loop {
+        let current = service.get(&canonical, &reset.token)?;
+        if current.completed || Instant::now() >= deadline {
+            return Ok(current);
+        }
         std::thread::sleep(NATIVE_POLL);
     }
-    Ok(())
 }

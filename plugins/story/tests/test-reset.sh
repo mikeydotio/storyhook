@@ -35,6 +35,10 @@ assert_ok "$out" "true" "reset: ok"
 assert_eq "$(jqf "$out" .state)" "todo" "reset: the answer reports todo"
 assert_eq "$(state_of "$hp")" "todo" "reset: the REAL story moved"
 assert_contains "$(jqf "$out" .display)" "returned to" "reset: the display says where it went"
+assert_eq "$(jqf "$out" .completed)" "true" "reset: the answer says it finished"
+assert_eq "$(jqf "$out" .removed.worktree)" "true" "reset: the answer reports the worktree removed"
+assert_eq "$(jqf "$out" .removed.branch)" "true" "reset: the answer reports the branch removed"
+assert_contains "$(jqf "$out" .recovery.branch)" "worktree-$whp" "reset: the answer carries the recovery record"
 wt_exists "$whp" && fail_test "reset: worktree still on disk"
 br_exists "$whp" && fail_test "reset: branch still in git"
 assert_contains "$(comments_of "$hp")" "git branch worktree-$whp" \
@@ -49,6 +53,19 @@ assert_ok "$out" "true" "force: ok"
 assert_eq "$(state_of "$fo")" "todo" "force: the story moved"
 assert_contains "$(comments_of "$fo")" "Restart from scratch" "force: --comment was recorded"
 wt_exists "$wfo" && fail_test "force: worktree still on disk"
+
+# --- what reset cannot remove is reported, never refused --------------------
+# The caller's own worktree is residue: the story is still released.
+own=$(new_story "$repo" "Reset from inside")
+wown=$(mk_dispatched "$repo" "$own")
+claim_it "$own"
+out=$(cd "$repo/.claude/worktrees/$wown" && bash "$SCRIPT" --project "$slug" reset "$own" 2>&1)
+assert_ok "$out" "true" "own: ok"
+assert_eq "$(state_of "$own")" "todo" "own: the story moved"
+wt_exists "$wown" || fail_test "own: the caller's worktree was removed"
+assert_eq "$(jqf "$out" .removed.worktree)" "false" "own: the worktree is not reported removed"
+assert_contains "$(jqf "$out" '[.residue[].resource] | join(",")')" "worktree " "own: the answer names the worktree left in place"
+assert_contains "$(jqf "$out" .display)" "Left in place" "own: the display says what was left"
 
 # --- a dry run previews the delegated command and changes nothing ----------
 dr=$(new_story "$repo" "Dry run")

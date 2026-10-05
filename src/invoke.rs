@@ -704,8 +704,13 @@ fn dispatch_inner<S: Store>(
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
         Invocation::Reset { id, force, caller } => {
-            crate::service::reset::reset_story(ctx, &id, force, &caller)?;
-            ctx.story_view(&id)
+            let reset = crate::service::reset::reset_story(ctx, &id, force, &caller)?;
+            let mut response = ctx.story_view(&id)?;
+            // The reset this command ran, finished or not, with what it removed.
+            if let crate::output::Response::Story(view) = &mut response {
+                view.reset = Some(crate::service::story_reset::view(&reset));
+            }
+            Ok(response)
         }
         Invocation::SupersedeBlockDeliveries { id } => {
             let receipt = ctx.store().write(|tx| {
