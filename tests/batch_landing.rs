@@ -101,6 +101,7 @@ fn gating(f: &ServiceFixture, members: &[VerificationCandidate]) -> Verification
                 branch: None,
             })
             .collect(),
+        withdrawn: Vec::new(),
         excluded: Vec::new(),
         gate: None,
         detail: None,
@@ -513,4 +514,34 @@ fn the_pr_poller_never_calls_a_landing_batch_members_merge_uncertified() {
         }));
     }
     assert_eq!(intents(&f), intent.rows);
+}
+
+#[test]
+fn a_story_reset_withdraws_one_member_and_the_batch_still_lands_the_rest() {
+    // The head member first, then a later one.
+    for withdrawn in [0, 1] {
+        let (f, ids) = submitted(2);
+        let members = candidates(&f, &ids);
+        let batch = gating(&f, &members);
+        let intent = admit(&f, &members, &batch);
+        let reset = storyhook::service::story_reset::StoryResetService::new(&f.ctx())
+            .reserve(&ids[withdrawn], &ids[withdrawn])
+            .expect("a reset outranks a batch landing (SH-886)");
+        assert!(!reset.completed);
+        let story = StoryNo::parse_id("SH", &ids[withdrawn]).unwrap();
+        assert_eq!(record(&f, &batch.id).withdrawn, vec![story]);
+        assert_eq!(
+            intents(&f).len(),
+            1,
+            "only the withdrawn member's intent goes"
+        );
+        let kept = ids[1 - withdrawn].clone();
+        let completed = VerificationQueue::new(f.store())
+            .complete_batch_landing(&f.ctx(), &intent, "landed as 1234", &members)
+            .unwrap();
+        assert_eq!(completed, vec![kept.clone()]);
+        assert_eq!(record(&f, &batch.id).phase, BatchPhase::Landed);
+        assert_eq!(state(&f, &kept), "done");
+        assert_eq!(state(&f, &ids[withdrawn]), "verifying");
+    }
 }

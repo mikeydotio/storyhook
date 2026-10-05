@@ -439,6 +439,7 @@ story verifier ack <incident-id> [--leave-stopped]
 story verifier gate-config <checkout> <base> <head> <tree> --json
 story verifier repair show <recovery-id> --json
 story verifier repair decide <recovery-id> --input <json-file>
+story verifier repair satisfy <recovery-id> --input <json-file>
 story resources <id> [--json]
 story cleanup [--dry-run]
 story summary
@@ -518,15 +519,24 @@ Global flags — `--json`, `--quiet`, `--no-hooks`, `--store-path <file>`, `--pr
 `--deadline <secs>` — precede the verb and work on any command; see
 [Automation and scripting](#automation-and-scripting).
 
-### Native story reset
+### Story reset
 
-`story reset <id>` stops the story's active work and returns it to `todo`.
-It preserves local branches and any request for human input. A locked worktree
-or uncommitted changes require `--force` to remove the worktree. A retry must
-supply `--force` again when that consent is required.
+`story reset <id>` is the final lever for a wedged story, like
+`git reset --hard`. It closes the story's tmux window, **discards its worktree
+and local branch** (including uncommitted, untracked, locked and unpushed
+work), clears its awaiting reason and returns it to `todo`. Remote branches,
+pull requests and the story's content are kept. `--force` is accepted and
+changes nothing. To release a story and keep its work, use `story unclaim`.
 
-The dashboard's reset action has a separate contract: it requires the exact
-story ID, deletes the owned worktree and branch, and clears awaiting input.
+Once reserved, a reset never fails. Whatever it cannot prove the story owns
+(your own worktree or tmux window, a protected branch, a replaced directory)
+is left in place and named in the story's completion comment. That comment
+also records the deleted branch's tip and the `git branch <name> <sha>`
+command that restores it. If something left behind would collide with the
+next dispatch, the story waits with an awaiting reason that says what to
+remove. The daemon finishes an interrupted reset by itself; `story show`
+reports it under `reset` until then. The dashboard's Reset action follows the
+same contract and asks you to type the story ID first.
 
 ### Workspace cleanup
 
@@ -739,7 +749,8 @@ deliberately:
 - Release the claim and close its window while keeping the worktree and branch
   with `/story unclaim <story-id>`.
 - Discard the preserved workspace only when it has no value with
-  `/story reset <story-id>`; this deletes the worktree and branch.
+  `/story reset <story-id>`; this deletes the worktree and local branch,
+  uncommitted work included, and records how to restore the branch.
 
 `story engine stop` is graceful: occupied lanes finish and no new story is
 claimed. `story engine stop --now` closes lane windows and returns their claims
@@ -891,7 +902,7 @@ The dashboard is a single background daemon shared by every project — not one 
 The dashboard is reachable from **localhost and your tailnet only — never the public internet, never a plain LAN address**:
 
 - It always binds `127.0.0.1`. This is hardcoded and not configurable.
-- If the `tailscale` CLI is installed and reports an IP, it *also* binds that tailnet IP, so other devices on your tailnet can reach it directly — no reverse proxy needed. This is best-effort: if the bind fails for any reason, the dashboard keeps serving on localhost and logs a warning. The bind itself happens on a background thread, after the dashboard is already serving loopback — a wedged or slow `tailscale` CLI delays only the tailnet interface's own availability, never the dashboard's.
+- If the `tailscale` CLI is installed and reports an IP, it *also* binds that tailnet IP, so other devices on your tailnet can reach it directly — no reverse proxy needed. Set `STORYHOOK_TAILNET=0` to keep a daemon on localhost only: it then never asks `tailscale` and never binds a second address. Every test environment sets it (`story help test-environment`). The switch only narrows; no value widens the bind, and any value other than `0` or `1` is refused. This is best-effort: if the bind fails for any reason, the dashboard keeps serving on localhost and logs a warning. The bind itself happens on a background thread, after the dashboard is already serving loopback — a wedged or slow `tailscale` CLI delays only the tailnet interface's own availability, never the dashboard's.
 - It never binds `0.0.0.0` or any other wildcard/public-facing address, and it never binds a generic LAN IP — enforced, not merely never attempted: the daemon refuses to serve a socket bound anywhere else.
 - Every connection is checked again as it arrives, against the interface it arrived on: the loopback listener admits only a loopback peer, and the tailnet listener admits loopback plus Tailscale's own address ranges. A peer outside those ranges is refused before a single byte of its request is read — no `tailscale` process is ever consulted to decide this, so a wedged or missing `tailscale` CLI cannot affect it either way.
 
@@ -1058,9 +1069,12 @@ so a spawned daemon behaves:
 ```bash
 export STORYHOOK_DAEMON_ADDR=127.0.0.1:0   # a kernel-assigned port, not 3456
 export STORYHOOK_PARENT_PID=$$             # the daemon dies with this run
+export STORYHOOK_TAILNET=0                 # loopback only, never your tailnet
 ```
 
-Those three are the minimum. **`story help test-environment` lists the whole
+Those four are the minimum. Once the process `STORYHOOK_PARENT_PID` names has
+exited, `story` refuses to start a daemon for it at all: a leftover helper of a
+finished run would otherwise bring the deleted fixture back. **`story help test-environment` lists the whole
 set** — every variable, what each one protects, and a shell block that
 applies all of them to a throwaway root. It is the same set storyhook's own test
 suite runs under, and it ships in the binary rather than living here, so a suite

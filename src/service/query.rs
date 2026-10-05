@@ -1159,6 +1159,12 @@ pub fn story_views(
     }
 
     let resets = tx.story_resets(project)?;
+    let unfinished: BTreeMap<StoryNo, crate::store::StoryReset> = tx
+        .unfinished_story_resets()?
+        .into_iter()
+        .filter(|reset| reset.project == project)
+        .map(|reset| (reset.story, reset))
+        .collect();
     let reset_prefix = project_prefix(tx, project)?;
     let floors = BlockerFloors::compute(&stories);
     let mut views = Vec::with_capacity(stories.len());
@@ -1189,11 +1195,27 @@ pub fn story_views(
             comment_mentions: comment_mentions_by_id.remove(&id).unwrap_or_default(),
         };
 
-        views.push(StoryView {
-            reset: resets
-                .get(&StoryNo::parse_id(&reset_prefix, &id)?)
-                .map(|encoded| serde_json::from_str(encoded))
+        let story_no = StoryNo::parse_id(&reset_prefix, &id)?;
+        let reset = match unfinished.get(&story_no) {
+            Some(card) => Some(crate::service::story_reset::view(card)),
+            None => resets
+                .get(&story_no)
+                .map(|encoded| {
+                    serde_json::from_str::<crate::service::reset::ResetReservation>(encoded).map(
+                        |legacy| crate::output::ResetView {
+                            operation: legacy.operation,
+                            detail: legacy.detail,
+                            completed: false,
+                            removed: crate::output::ResetRemoved::default(),
+                            residue: Vec::new(),
+                            recovery: None,
+                        },
+                    )
+                })
                 .transpose()?,
+        };
+        views.push(StoryView {
+            reset,
             story,
             derived_relationships: derived_relationships.get(&id).cloned().unwrap_or_default(),
             referenced_by,

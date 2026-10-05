@@ -406,6 +406,7 @@ fn record(project: ProjectId, members: &[&VerificationCandidate]) -> Verificatio
                 branch: None,
             })
             .collect(),
+        withdrawn: Vec::new(),
         excluded: Vec::new(),
         gate: None,
         detail: None,

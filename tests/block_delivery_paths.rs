@@ -29,6 +29,8 @@ fn event_writers(root: &Path) -> BTreeSet<String> {
             if [
                 "append_and_fold(",
                 "append_restored_and_fold(",
+                // SH-886: a reset's return to todo uses its own admission.
+                "append_reset_and_fold(",
                 "append_and_fold_maintenance(",
                 // SH-772: the landing door called only this one, so a scan that
                 // knew three names never saw it.
@@ -69,12 +71,12 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "pr_check",
         "project",
         "project_recovery",
+        "project_recovery/prerequisite",
         "project_recovery/rearm",
         "project_recovery/refusal",
         "project_recovery/resume",
         "project_recovery/test_return",
         "relation",
-        "reset",
         "story",
         "story_reset",
         "transfer",

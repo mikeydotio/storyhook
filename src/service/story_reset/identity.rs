@@ -44,6 +44,43 @@ pub(crate) fn capture(report: &ResourceReport) -> Result<Vec<ResetPathIdentity>,
     Ok(paths)
 }
 
+/// Names each pinned object that no longer has its pinned identity.
+///
+/// Expected removal of a removable object is not a change, so a retry after a
+/// partial cleanup sees none. An object that cannot be observed counts as
+/// changed: cleanup never acts on what it cannot identify.
+pub(crate) fn replaced(paths: &[ResetPathIdentity]) -> Vec<(&ResetPathIdentity, String)> {
+    paths
+        .iter()
+        .filter_map(|expected| match std::fs::symlink_metadata(&expected.path) {
+            Ok(metadata)
+                if metadata.is_dir()
+                    && metadata.dev() == expected.device
+                    && metadata.ino() == expected.inode =>
+            {
+                None
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && expected.removable => {
+                None
+            }
+            Ok(_) => Some((
+                expected,
+                format!(
+                    "filesystem identity changed at {} after reset began",
+                    expected.path.display()
+                ),
+            )),
+            Err(error) => Some((
+                expected,
+                format!(
+                    "cannot observe {} to confirm its identity: {error}",
+                    expected.path.display()
+                ),
+            )),
+        })
+        .collect()
+}
+
 /// Refuses replacements; expected removal does not invalidate a retry.
 pub(crate) fn validate(paths: &[ResetPathIdentity]) -> Result<(), AppError> {
     for expected in paths {

@@ -728,12 +728,6 @@ fn git_text(cwd: &Path, args: &[&str]) -> Result<String, String> {
 /// at exit 0), is an error naming why — absence is not an answer (SH-372).
 /// The plugin's `default_branch` and the verifier bundle's
 /// `origin-default-branch.sh` are this derivation's shell copies.
-pub(crate) fn origin_default_branch(repository: &Path) -> Result<String, String> {
-    let observation = crate::github_access::OriginObservation::resolve(repository)
-        .map_err(|error| format!("origin did not answer: {error}"))?;
-    observed_default_branch(&observation)
-}
-
 fn observed_default_branch(
     observation: &crate::github_access::OriginObservation,
 ) -> Result<String, String> {
@@ -834,6 +828,41 @@ mod tests {
         fn env(&self) -> crate::env::Environment {
             crate::env::Environment::at(self.root())
         }
+    }
+
+    #[test]
+    fn committed_repair_after_an_override_is_never_reaped() {
+        let repo = Repo::new(true);
+        let out = crate::env::git_env::command(&repo.worktree)
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "repair after the published head",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let repair = git_text(&repo.worktree, &["rev-parse", "HEAD"]).unwrap();
+        let refusal = clean_candidate(
+            &repo.env().with_subprocess_patience(),
+            &repo.checkout,
+            &repo.lease,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(refusal.reason, "unmerged-work");
+        assert!(refusal.detail.contains(repair.trim()));
+        assert!(repo.worktree.exists());
+        assert!(repo.workspace.local_branch_exists());
     }
 
     #[test]

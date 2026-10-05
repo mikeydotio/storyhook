@@ -352,6 +352,23 @@ fn the_shell_rendering_and_the_library_isolate_identically() {
 const SHELL_BOOKKEEPING: [&str; 4] = ["_", "SHLVL", "PWD", "OLDPWD"];
 
 /// The shell rendering creates the directories the library says it needs.
+/// Every shell-isolated run keeps its daemons off the tailnet, whatever the
+/// parent exported. The plugin suite and every `make test` leg isolate
+/// through this rendering, so a daemon one of them starts listens on
+/// loopback only.
+#[test]
+fn the_shell_rendering_keeps_daemons_off_the_tailnet() {
+    let fixture = scratch_dir();
+    let (seen, _) = isolate_in_bash(fixture.path(), &[]);
+    assert_eq!(
+        seen.get(storyhook::env::TailnetPolicy::VARIABLE)
+            .map(String::as_str),
+        Some(storyhook::env::TailnetPolicy::LoopbackOnly.as_env_value()),
+        "the shell rendering left the tailnet switch at {:?}",
+        seen.get(storyhook::env::TailnetPolicy::VARIABLE)
+    );
+}
+
 #[test]
 fn the_shell_rendering_creates_every_directory_the_library_names() {
     let fixture = scratch_dir();

@@ -146,29 +146,27 @@ if sys.argv[1] == 'prepared':
             lock.try_lock_exclusive().is_err(),
             "orphaned Git child lost workspace ownership"
         );
+        drop(lock);
         let service = StoryResetService::new(&ctx);
         let reset = service.reserve(&story.id, &story.id).unwrap();
-        let error = service
-            .execute(&story.id, &reset.token, || Ok(()))
-            .unwrap_err();
-        assert!(error.to_string().contains("workspace is busy"), "{error}");
-        assert!(!service.get(&story.id, &reset.token).unwrap().completed);
-        fs::write(&release, "continue").unwrap();
-        let mut deadline =
-            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
-        while lock.try_lock_exclusive().is_err() {
-            assert!(
-                !deadline.expired(),
-                "{deadline}; orphaned Git never released workspace ownership"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        drop(lock);
+        // The retry waits for the orphan instead of racing it or refusing.
+        let releaser = std::thread::spawn({
+            let release = release.clone();
+            move || {
+                std::thread::sleep(Duration::from_millis(200));
+                fs::write(release, "continue").unwrap();
+            }
+        });
+        let done = service.execute(&story.id, &reset.token, || Ok(())).unwrap();
+        releaser.join().unwrap();
+        assert!(done.completed);
         assert!(
-            service
-                .execute(&story.id, &reset.token, || Ok(()))
-                .unwrap()
-                .completed
+            !done
+                .residue
+                .iter()
+                .any(|entry| entry.resource == "workspace lock"),
+            "the retry must take exclusion after the orphan exits: {:?}",
+            done.residue
         );
     };
     // Let the real hook exit even if an assertion fails; no orphan survives the fixture.

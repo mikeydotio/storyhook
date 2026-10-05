@@ -109,14 +109,6 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // GitHub calls use private file-backed capture and process-group deadlines.
     ("src/github_access/command.rs", "\"gh\"", Kind::Waited),
     // Reset uses bounded, file-backed process capture.
-    ("src/service/reset/resources.rs", "\"tmux\"", Kind::Waited),
-    // SH-825 revivify fixtures use workspace_lock::capture, the same bounded
-    // file-backed capture.
-    (
-        "src/service/reset/resources_revivify_tests.rs",
-        "\"tmux\"",
-        Kind::Waited,
-    ),
     // Isolated unit probes use ChildGuard's bounded concurrent pipe drains;
     // recording tools never create persistent terminal readers.
     (

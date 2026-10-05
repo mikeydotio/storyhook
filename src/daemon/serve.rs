@@ -9,6 +9,10 @@
 //! third-party reverse proxy. Nothing is ever bound to `0.0.0.0`, to any other
 //! wildcard, or to a plain LAN address.
 //!
+//! A daemon whose [`crate::env::TailnetPolicy`] is loopback-only
+//! (`STORYHOOK_TAILNET=0`, which every test environment sets) never probes
+//! `tailscale` and never binds a second listener. The switch only narrows.
+//!
 //! Binding the tailnet interface is also what *grants* trust to its names: the
 //! mutation guard's allowlist gains the tailnet IP and the MagicDNS FQDN only
 //! when the interface they would arrive on is actually being served. Trust
@@ -44,6 +48,7 @@ use crate::api::rpc;
 use crate::daemon::bus::{Change, ChangeBus};
 use crate::daemon::http1::{self, Header, Method, Request};
 use crate::daemon::lifecycle::Hello;
+use crate::daemon::parent_contract::ParentContract;
 use crate::daemon::tailnet::{TailnetBind, tailnet_identity};
 use crate::env::Environment;
 use crate::error::AppError;
@@ -180,6 +185,8 @@ struct Serving<'a, S: Store> {
     /// handle those `'static` workers require.
     engine: Arc<crate::api::engine::EngineController>,
     reset: Arc<crate::api::reset::ResetController>,
+    /// Drives every reserved reset to completion on this daemon's store.
+    reset_runtime: Arc<crate::daemon::reset::ResetRuntime>,
     /// Every handoff coupon this daemon has armed and not yet spent (SH-251).
     /// An `Arc` for the same reason `dispatch_registry` is one: redemption
     /// needs nothing from the store, so it is answered on the `worker` thread
@@ -271,6 +278,7 @@ where
     let verification_activity =
         crate::daemon::verification::VerificationActivity::new().with_bus(bus.clone());
     let inflight = Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone()));
+    let reset_runtime = Arc::new(crate::daemon::reset::ResetRuntime::new());
     let serving = Serving {
         store,
         env: env.clone(),
@@ -290,9 +298,9 @@ where
         engine: Arc::new(crate::api::engine::EngineController::open(env)?),
         reset: Arc::new(crate::api::reset::ResetController::open(
             env,
-            verification_activity.clone(),
-            Arc::clone(&inflight),
+            Arc::clone(&reset_runtime),
         )?),
+        reset_runtime,
         handoff: Arc::new(crate::api::handoff::HandoffRegistry::new()),
         tokens: Arc::new(crate::api::tokens::TokenRegistry::load(env)),
         cookie_name: crate::api::tokens::cookie_name(env),
@@ -328,6 +336,15 @@ where
     // every server thread exists and `ready()` has fired; restart
     // reconciliation already ran before portfile publication.
     let (engine_start_tx, engine_start_rx) = mpsc::channel::<()>();
+    // Borrowed by the reset runtime's scoped workers for the daemon's life.
+    let reset_daemon = crate::daemon::reset::Daemon {
+        store,
+        env: &serving.env,
+        bus: &serving.bus,
+        dispatch: &serving.dispatch_registry,
+        activity: &serving.verification_activity,
+        inflight: &serving.inflight,
+    };
 
     // Every background thread lives inside this scope, which is what lets the
     // change-token poller and every dispatcher borrow the store rather than
@@ -335,6 +352,15 @@ where
     // so the accept loop signals `stop` before it returns and the joins take
     // one poll interval rather than forever.
     thread::scope(|scope| {
+        // SH-886: every reserved reset runs to completion on this store, and
+        // unfinished ones resume at startup and on each sweep.
+        {
+            let (daemon, runtime, stop) = (&reset_daemon, &*serving.reset_runtime, &*stop);
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                crate::daemon::reset::run(scope, daemon, runtime, stop);
+            });
+        }
         {
             let (bus, stop) = (bus.clone(), Arc::clone(&stop));
             scope.spawn(move || {
@@ -402,6 +428,14 @@ where
         {
             let stop = Arc::clone(&stop);
             let env = env.clone();
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                crate::daemon::repair_publication::poll(store, &env, &stop)
+            });
+        }
+        {
+            let stop = Arc::clone(&stop);
+            let env = env.clone();
             let bus = bus.clone();
             let activity = verification_activity.clone();
             let inflight = Arc::clone(&serving.inflight);
@@ -449,7 +483,12 @@ where
                 crate::daemon::cleanup::poll_cleanup(store, &env, &bus, &stop)
             });
         }
-        if !has_tailnet && let Some(loopback_addr) = loopback_addr {
+        // A loopback-only daemon never asks `tailscale` at all: an answer it
+        // will not act on is a subprocess, and a wedged one, for nothing.
+        if !has_tailnet
+            && env.tailnet_policy().binds()
+            && let Some(loopback_addr) = loopback_addr
+        {
             let stop = Arc::clone(&stop);
             let serving = &serving;
             let on_late_tailnet_bind = &on_late_tailnet_bind;
@@ -588,7 +627,9 @@ where
     F: FnOnce(BoundAddress, String),
 {
     let (mut listeners, mut bound) = bind_listeners(port)?;
-    if let Some((listener, bind)) = probe_and_bind_tailnet(bound.port()) {
+    if env.tailnet_policy().binds()
+        && let Some((listener, bind)) = probe_and_bind_tailnet(bound.port())
+    {
         bound.tailnet = Some(bind);
         listeners.push(listener);
     }
@@ -1375,8 +1416,6 @@ fn worker(
             trusted_hosts,
             token,
             reset,
-            dispatch_registry,
-            &bus,
             tokens,
             cookie_name,
         )
@@ -1603,6 +1642,7 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
     let surface = rpc::Surface {
         store: serving.store,
         verification_activity: &serving.verification_activity,
+        reset_runtime: &serving.reset_runtime,
         env: &serving.env,
         token: &serving.token,
         hello: &serving.hello,
@@ -1631,6 +1671,8 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
                 // this daemon's own answer to the shutdown request can also
                 // see a dequeue racing ahead of this store.
                 serving.draining.store(true, Ordering::Relaxed);
+                // Patient reset waits return; the next daemon resumes them.
+                serving.reset_runtime.shutdown();
                 // Tell every connected browser to reconnect *before*
                 // answering, so a client that is about to lose its stream
                 // knows why.
@@ -1835,15 +1877,14 @@ fn poll_change_token<S: Store>(
 /// from one a real crash left, misleading the crash detector the next daemon
 /// runs at startup (SH-287).
 fn watch_parent(env: &Environment, stop: &AtomicBool) {
-    let Some(parent) = crate::daemon::lifecycle::parent_pid() else {
+    let contract = env.parent_contract();
+    if matches!(contract, ParentContract::Unwatched) {
         return;
-    };
-    let parent_start_time = crate::daemon::lifecycle::parent_start_time();
+    }
     while !stop.load(Ordering::Relaxed) {
         thread::sleep(SHUTDOWN_CHECK);
-        if !crate::daemon::lifecycle::process_identity_is_live(parent, parent_start_time.as_deref())
-        {
-            eprintln!("storyhook daemon: parent process {parent} is gone; exiting");
+        if !contract.is_live() {
+            eprintln!("storyhook daemon: parent process is gone ({contract:?}); exiting");
             crate::daemon::lifecycle::exit_cleanly(env);
         }
     }

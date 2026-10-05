@@ -243,14 +243,32 @@ pub(crate) fn built_on_this_thread() -> u64 {
 /// watching nothing fail. A test can only pin this by reading a real child's
 /// real environment, which is what `the_allowlist_is_the_childs_whole_environment`
 /// does through this function.
+///
+/// It also passes on the daemon containment contract. `HOME` resolves the
+/// store, so a storyhook hook that git fires can start a daemon for it, and
+/// that daemon must die with, and listen like, the caller's own (see
+/// [`super::spawn_env`]'s header, "The daemon containment names travel with
+/// `HOME`"). Production sets none of these names.
 fn apply_allowlist(command: &mut Command) {
+    apply_allowlist_from(command, |name| std::env::var_os(name));
+}
+
+/// [`apply_allowlist`] with the parent's values read through `lookup`, so a
+/// test can hand a child values this process does not hold without writing
+/// to its own environment.
+fn apply_allowlist_from(command: &mut Command, lookup: impl Fn(&str) -> Option<OsString>) {
     command.env_clear();
-    for name in GIT_MAY_SEE {
-        if let Some(value) = std::env::var_os(name) {
+    for name in GIT_MAY_SEE.into_iter().chain(containment_names()) {
+        if let Some(value) = lookup(name) {
             command.env(name, value);
         }
     }
     command.env(NO_TERMINAL_PROMPT.0, NO_TERMINAL_PROMPT.1);
+}
+
+/// The daemon containment names a `git` carries beside [`GIT_MAY_SEE`].
+fn containment_names() -> impl Iterator<Item = &'static str> {
+    super::test_environment::daemon_containment_parameters().map(|parameter| parameter.name)
 }
 
 /// The names a `git` may carry, for a test that asserts the set exactly rather
@@ -261,7 +279,8 @@ fn apply_allowlist(command: &mut Command) {
 #[must_use]
 pub fn allowlist() -> Vec<OsString> {
     GIT_MAY_SEE
-        .iter()
+        .into_iter()
+        .chain(containment_names())
         .map(OsString::from)
         .chain(std::iter::once(OsString::from(NO_TERMINAL_PROMPT.0)))
         .collect()
@@ -347,6 +366,42 @@ mod tests {
             names.iter().any(|name| name == smuggled),
             "the probe is broken: its own marker never arrived, so this test proves nothing"
         );
+    }
+
+    /// A `git` carries the daemon containment contract into the hooks it
+    /// fires. Read from a real child, as above, with every containment name
+    /// given a value the child can only have received through the allowlist.
+    #[test]
+    fn the_git_allowlist_carries_daemon_containment() {
+        let expected: Vec<(&str, String)> =
+            crate::env::test_environment::daemon_containment_parameters()
+                .map(|parameter| (parameter.name, format!("contained-{}", parameter.name)))
+                .collect();
+        let mut probe = Command::new("/usr/bin/env");
+        apply_allowlist_from(&mut probe, |name| {
+            expected
+                .iter()
+                .find(|(contained, _)| *contained == name)
+                .map(|(_, value)| OsString::from(value))
+                .or_else(|| (name == "PATH").then(|| OsString::from("/usr/bin:/bin")))
+        });
+        let seen = probe.output().expect("running /usr/bin/env");
+        assert!(seen.status.success(), "the probe child must run");
+        let stdout = String::from_utf8_lossy(&seen.stdout);
+        for (name, value) in &expected {
+            assert!(
+                stdout.lines().any(|line| line == format!("{name}={value}")),
+                "a git child dropped {name}; a hook it fires could start a daemon \
+                 that outlives its owner. Child environment:\n{stdout}"
+            );
+        }
+        let permitted = allowlist();
+        for (name, _) in &expected {
+            assert!(
+                permitted.iter().any(|allowed| allowed == name),
+                "allowlist() omits {name}"
+            );
+        }
     }
 
     /// The credential-prompt guard is set on every git, not merely permitted.

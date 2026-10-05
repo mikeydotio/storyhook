@@ -5109,6 +5109,26 @@ cmd_reap_leased() {
     || refuse "protected-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is protected."
   [ "$branch_status" != unmerged ] \
     || refuse "unmerged-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is not merged into \`$default\`.${refresh_note:+ $refresh_note}"
+  if [ "$branch_status" = deletable ]; then
+    local merged_links merged_url merged_view merged_head
+    merged_links=$(printf '%s' "$LEASE_SHOW_JSON" | jq -c '[.story.referenced_by.prs[]? | select(.close_on_merge == true and .status == "merged")]')
+    if [ "$(printf '%s' "$merged_links" | jq length)" -gt 0 ]; then
+      [ "$(printf '%s' "$merged_links" | jq length)" -eq 1 ] \
+        || refuse "merged-pr-unverifiable" "Multiple merged PRs name $canonical_id; preserve $leased_branch."
+      merged_url=$(printf '%s' "$merged_links" | jq -r '.[0].url')
+      export STORYHOOK_GITHUB_AUTHORITY="${STORYHOOK_GITHUB_AUTHORITY:-$LEASED_REPO}"
+      github_begin || refuse "merged-pr-unverifiable" "Cannot establish origin for $merged_url."
+      merged_view=$(github_exec pr view "$merged_url" --json url,state,headRefOid,headRefName,isCrossRepository 2>&1) \
+        || refuse "merged-pr-unverifiable" "Cannot inspect $merged_url: $merged_view"
+      merged_head=$(printf '%s' "$merged_view" | jq -er --arg url "$merged_url" --arg branch "$leased_branch" \
+        'select(.url == $url and .state == "MERGED" and .headRefName == $branch and .isCrossRepository == false) | .headRefOid | select(test("^([0-9a-f]{40}|[0-9a-f]{64})$"))') \
+        || refuse "merged-pr-unverifiable" "Invalid merged head for $merged_url; preserve $leased_branch."
+      submission_git -C "$LEASED_REPO" fetch --quiet --no-write-fetch-head origin "$merged_head" \
+        || refuse "merged-pr-unverifiable" "Cannot fetch merged PR head $merged_head."
+      git merge-base --is-ancestor "refs/heads/$leased_branch" "$merged_head" \
+        || refuse "unpublished-repair" "$leased_branch has commits absent from merged PR $merged_url at $merged_head; preserve the branch."
+    fi
+  fi
   leased_story_windows "$lease" "$canonical_id" \
     || refuse "cleanup-lease-tmux-unverifiable" "story.sh reap: the leased tmux server exists but its story windows cannot be enumerated."
   local initial_tmux_windows="$LEASE_TMUX_WINDOWS"
@@ -5199,8 +5219,8 @@ leased_submit_receipt() {
 # `git push` of an already-pushed tip is a no-op, and adoption finds what a
 # crashed earlier run created, so a daemon restart at any point re-runs the
 # whole verb and converges. Runs on EVERY generation a leased story enters
-# verifying, linked PR or not — after a RED return the agent only commits, so
-# this is the one place the fix reaches the remote.
+# verifying, linked PR or not. Commit notifications also use this transport
+# to publish repairs before verifier admission.
 #
 # The base is `default_branch()` — origin's own advertised default, asked of
 # the remote at submission time (SH-691: the local origin/HEAD cache went
@@ -5217,11 +5237,24 @@ leased_submit_receipt() {
 # record; the daemon writes the link and the comment under its generation
 # guard, so a submission recorded against a story that has since moved on is
 # a write that never happens rather than one that has to be retracted.
+# Validate the publication destination before any remote mutation and again
+# before a receipt. The daemon supplies the linked PR, never a branch-name guess.
+publication_open_pr() {
+  local url="$1" branch="$2" default="$3" observed
+  [ -n "$url" ] || submit_refuse repair "publication-pr-unavailable" "Publication requires an existing PR."
+  observed=$(github_exec pr view "$url" --json url,state,headRefName,baseRefName,isCrossRepository 2>&1) \
+    || submit_refuse infrastructure "publication-pr-unreadable" "Cannot inspect publication PR $url: $observed"
+  printf '%s' "$observed" | jq -e --arg url "$url" --arg branch "$branch" --arg base "$default" \
+    '.url == $url and .state == "OPEN" and .headRefName == $branch and .baseRefName == $base and .isCrossRepository == false' >/dev/null \
+    || submit_refuse repair "publication-pr-unavailable" "Publication PR $url is closed or no longer matches $branch against $default; preserve the local work."
+}
+
 cmd_submit_leased() {
   local typed_id="$1" lease="$2"
   validate_cleanup_lease submit "$typed_id" "$lease"
   local canonical_id="$LEASE_CANONICAL_ID" worktree="$LEASED_WORKTREE" branch="$LEASED_BRANCH"
-  [ "$LEASE_STATE" = verifying ] \
+  local publication_head="${STORYHOOK_PUBLICATION_HEAD:-}" publication_pr="${STORYHOOK_PUBLICATION_PR:-}"
+  [ -n "$publication_head" ] || [ "$LEASE_STATE" = verifying ] \
     || submit_refuse repair "not-verifying" "story.sh submit: $canonical_id is in state \`$LEASE_STATE\`, not \`verifying\`; only a story submitted for verification is pushed."
   registered_worktree_branch "$worktree" >/dev/null 2>&1 \
     || submit_refuse repair "cleanup-lease-worktree-missing" "story.sh submit: leased worktree \`$worktree\` is not a registered worktree; nothing to push."
@@ -5236,11 +5269,24 @@ cmd_submit_leased() {
   local dirty dirty_json
   dirty=$(git -C "$worktree" status --porcelain 2>/dev/null) \
     || submit_refuse infrastructure "worktree-unverifiable" "story.sh submit: git status failed in \`$worktree\`."
-  if [ -n "$dirty" ]; then
+  if [ -z "$publication_head" ] && [ -n "$dirty" ]; then
     dirty_json=$(printf '%s\n' "$dirty" | sed 's/^...//' | jq -R . | jq -s .)
     submit_refuse repair "dirty-worktree" \
       "story.sh submit: $canonical_id's worktree ($worktree) has uncommitted changes; commit or discard them, then run \`story move $canonical_id verifying\` again. Dirty: $(printf '%s' "$dirty_json" | jq -r 'join(", ")')." \
       "$(jq -n --argjson f "$dirty_json" '{dirty_files:$f}')"
+  fi
+
+  # Commit publication adopts only the exact existing PR. A closed or
+  # replaced PR never grants permission to create a new remote branch/PR.
+  if [ -n "$publication_head" ]; then
+    case "$LEASE_STATE" in
+      in-progress|verifying|done) ;;
+      *) submit_refuse repair "publication-state" "Cannot publish $canonical_id from state $LEASE_STATE." ;;
+    esac
+    [[ "$publication_head" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] \
+      || submit_refuse repair "publication-head-invalid" "Publication requires a full commit ID."
+    git -C "$worktree" merge-base --is-ancestor "$publication_head" "refs/heads/$branch" \
+      || submit_refuse repair "publication-head-changed" "Commit $publication_head no longer belongs to $branch."
   fi
 
   local head_oid fetch_out
@@ -5250,6 +5296,7 @@ cmd_submit_leased() {
     || submit_refuse infrastructure "base-fetch-failed" "story.sh submit: fetching origin/$default for $canonical_id failed: $fetch_out"
   head_oid=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
     || submit_refuse infrastructure "worktree-unverifiable" "story.sh submit: cannot resolve HEAD in \`$worktree\`."
+  [ -z "$publication_head" ] || head_oid="$publication_head"
   local base_oid base_tree ancestry_out ancestry_rc=0
   base_oid=$(git -C "$worktree" rev-parse --verify "refs/remotes/origin/$default^{commit}" 2>/dev/null) \
     || submit_refuse infrastructure "base-unverifiable" "story.sh submit: cannot resolve fetched origin/$default."
@@ -5279,6 +5326,8 @@ cmd_submit_leased() {
     *) submit_refuse infrastructure "ancestry-unverifiable" "story.sh submit: ancestry check failed for $head_oid and $base_oid (exit $ancestry_rc): $ancestry_out" ;;
   esac
 
+  [ -z "$publication_head" ] || publication_open_pr "$publication_pr" "$branch" "$default"
+
   local remote_before remote_after push_out push_rc=0 pushed=false
   remote_before=$(submission_remote_head "$worktree" "$branch" 2>&1) \
     || submit_refuse infrastructure "remote-read-failed" "story.sh submit: reading origin/$branch before pushing $canonical_id failed: $remote_before"
@@ -5286,7 +5335,7 @@ cmd_submit_leased() {
     # Reads and writes share one credential boundary: a successful anonymous
     # read says nothing about whether the subsequent push can authenticate.
     push_out=$(submission_git -C "$worktree" \
-      push origin "refs/heads/$branch:refs/heads/$branch" 2>&1) || push_rc=$?
+      push origin "$head_oid:refs/heads/$branch" 2>&1) || push_rc=$?
     if [ "$push_rc" -ne 0 ]; then
       case "$push_out" in
         *rejected*|*non-fast-forward*|*"fetch first"*|*"stale info"*|*"hook declined"*|*"pre-push hook"*)
@@ -5328,6 +5377,7 @@ cmd_submit_leased() {
   count=$(printf '%s' "$open" | jq 'length')
   case "$count" in
     0)
+      [ -z "$publication_head" ] || submit_refuse repair "publication-pr-unavailable" "Publication PR $publication_pr closed during the push; preserve $branch."
       title="$canonical_id: $(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.title // ""')"
       body="Story $canonical_id — $(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.title // ""')
 
@@ -5344,6 +5394,11 @@ Submitted by the storyhook verifier from branch \`$branch\`. Verification, merge
     1) pr=$(printf '%s' "$open" | jq -c '.[0]'); adopted=true ;;
     *) submit_refuse repair "multiple-pull-requests" "story.sh submit: more than one open pull request targets \`$default\` from \`$branch\`: $(printf '%s' "$open" | jq -r 'map(.url) | join(", ")'). Close all but one, then run \`story move $canonical_id verifying\` again." ;;
   esac
+  if [ -n "$publication_head" ]; then
+    [ "$(printf '%s' "$pr" | jq -r .url)" = "$publication_pr" ] \
+      || submit_refuse repair "publication-pr-unavailable" "Publication PR changed; preserve $branch."
+    publication_open_pr "$publication_pr" "$branch" "$default"
+  fi
   local pull_request display
   # PR metadata can lag a successful push; the receipt names the head already
   # verified against the origin branch, independently of GitHub's API view.
@@ -5805,22 +5860,16 @@ cmd_unclaim() {
   [ "$cleanup_ok" = true ]
 }
 
-# cmd_reset <story-id> [--force] — unclaim, then delete the worktree AND the
-# branch. For a story inadvertently abandoned (a crash, a reboot) where
-# restarting beats inheriting somebody else's half-finished scratch directory.
+# cmd_reset <story-id> [--force] — the native `story reset` (SH-886): close the
+# story's tmux window, discard its worktree and local branch, clear its awaiting
+# reason and return it to todo. Once the story is reserved the reset never
+# fails: whatever it cannot prove the story owns is left in place and named in
+# the story's completion comment, with the deleted branch's tip and the
+# `git branch` command that recovers it. Remote branches and pull requests are
+# kept. `--force` is accepted and changes nothing (council C1 on SH-886). Use
+# `unclaim` to release a story and keep its work.
 #
-# Every `--force`-able refusal below asks ONE question — "am I about to destroy
-# something that is not recoverable elsewhere?" — which is why there is one
-# flag and not three. The two refusals `--force` does NOT cover are the two
-# that ask something else: a protected branch is a repository-level statement
-# rather than a scratch artifact, and self-termination is about destroying the
-# caller's own ground mid-command.
-#
-# UNPUSHED, not UNMERGED, is the branch question here — see CMP_BR_UNPUSHED in
-# _complete_prepare. reap refuses `unmerged`, which is strictly stronger and
-# would refuse the case this verb exists for; `deletable`/`unmerged` therefore
-# does not gate anything here, and the deletion is `git branch -D` rather than
-# delete_merged_local_branch for exactly that reason.
+# The engine mode below is Stop Now's leased helper, which is unchanged.
 cmd_reset() {
   _parse_release_args "$RESET_USAGE" true "$@"
   if [ -n "${STORYHOOK_ENGINE_RESET_V1:-}" ]; then
@@ -5829,182 +5878,48 @@ cmd_reset() {
     cmd_engine_reset "$REL_ID" "$STORYHOOK_ENGINE_RESET_V1"
     return
   fi
-  _complete_prepare "$REL_ID"
-  local id="$CMP_ID"
-  if [ -z "$DRY_RUN" ]; then
-    reserve_story_workspace "$id"
-  fi
-
-  # Refusals first, most-absolute first, before anything at all is mutated.
-  if [ "$CMP_WINDOW_STATUS" = "self" ]; then
-    refuse "self-window" \
-      "story.sh reset: $id's tmux window \`$CMP_WNAME\` is the one you are in — resetting it would delete this shell's own ground mid-command. Run it from another window (\`--force\` does not override this)."
-  fi
-  if [ "$CMP_WT_STATUS" = "current" ]; then
-    refuse "current-worktree" \
-      "story.sh reset: you are standing in $id's worktree ($CMP_WT_PATH) — removing it would leave this shell in a deleted directory. \`cd\` out of it first (\`--force\` does not override this)."
-  fi
-  if [ "$CMP_BR_STATUS" = "protected" ]; then
-    refuse "protected-branch" \
-      "story.sh reset: $id's branch ($CMP_WT_BRANCH) is protected — refusing to delete it, and \`--force\` does not override this."
-  fi
-  if [ "$REL_FORCE" != true ]; then
-    case "$CMP_WT_STATUS" in
-      locked)
-        refuse "locked-worktree" \
-          "story.sh reset: $id's worktree ($CMP_WT_PATH) is locked — somebody took that lock deliberately. Unlock it, or pass \`--force\`." ;;
-      dirty)
-        refuse "dirty-worktree" \
-          "story.sh reset: $id's worktree ($CMP_WT_PATH) has uncommitted changes, which exist nowhere else — refusing to discard them. Commit them, or pass \`--force\` to destroy them." ;;
-    esac
-    if [ "$CMP_BR_UNPUSHED" -gt 0 ]; then
-      # refuse_with, not refuse: the COUNT is the evidence for this verdict,
-      # and a refusal that only says "some" makes the operator run git
-      # themselves to decide whether to override it.
-      refuse_with "unpushed-commits" \
-        "story.sh reset: $id's branch ($CMP_WT_BRANCH) has $CMP_BR_UNPUSHED commit(s) on no remote — refusing to discard work nothing else has. Push the branch, or pass \`--force\`." \
-        "$(jq -n --argjson n "$CMP_BR_UNPUSHED" '{unpushed: $n}')"
-    fi
-  fi
-
-  revalidate_story_resources
-  if [ -z "$DRY_RUN" ] && ! supersede_block_deliveries "$id"; then
-    fail "$BLOCK_DELIVERY_ERROR. Reset did not release the story or remove its resources."
-  fi
-  _release_story reset "$id"
-  local unclaimed=false conflict=""
-  case "$REL_RESULT" in
-    ok) unclaimed=true ;;
-    # A conflict PROVES no claim is held: the story is not in the active state,
-    # so nobody is working it through the state machine. The worktree is still
-    # litter `reap` refuses to touch (the story is open), and this is the verb
-    # for that, so the teardown proceeds and the conflict is reported.
-    conflict) conflict="$REL_ACTUAL" ;;
-    *) fail "story unclaim $id failed: $REL_ERROR — nothing was removed." ;;
-  esac
-
+  local id="$REL_ID"
+  local -a native=(reset "$id")
+  [ "$REL_FORCE" = true ] && native+=(--force)
   if [ -n "$DRY_RUN" ]; then
-    local -a dry_cmds=()
-    [ "$REL_RESULT" = "ok" ] && dry_cmds+=("story unclaim $id")
-    if [ "$CMP_WT_STATUS" != "missing" ]; then
-      dry_cmds+=("git worktree remove --force $CMP_WT_PATH")
-    fi
-    [ "$CMP_BR_STATUS" != "missing" ] && dry_cmds+=("git branch -D $CMP_WT_BRANCH")
-    [ "$CMP_WINDOW_STATUS" != "self" ] && dry_cmds+=("tmux kill-window -t <window of $CMP_WNAME>")
-    local dry_json
-    dry_json=$(printf '%s\n' "${dry_cmds[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
-    # The sentence is a PROJECTION of the command list, never a fixed one
-    # written beside it. "would delete its worktree, its branch and its tmux
-    # window" is a false statement whenever there is no worktree or no branch,
-    # and a preview is the one place the reader has nothing else to check it
-    # against. Written as a jq projection rather than as shell string-building
-    # so the two structurally cannot drift.
-    jq -n --arg id "$id" --argjson cmds "$dry_json" --argjson forced "$REL_FORCE" \
-          --argjson unclaimed "$([ "$REL_RESULT" = "ok" ] && printf true || printf false)" '
+    jq -n --arg id "$id" --arg cmd "story ${native[*]}" '
       {
-        ok: true, dry_run: true, id: $id, forced: $forced, commands: $cmds,
-        display: ("[story] DRY RUN reset " + $id + ": would "
-          + (if $unclaimed then "release it" else "release nothing (it is not claimed)" end)
-          + ", then run: "
-          + ($cmds | map(select(startswith("story unclaim") | not)) | join("; "))
-          + ".")
+        ok: true, dry_run: true, id: $id, commands: [$cmd],
+        display: ("[story] DRY RUN reset " + $id + ": would run `" + $cmd + "`, which closes the story window, discards its worktree and local branch, and returns it to todo.")
       }'
     return 0
   fi
-
-  local removed_wt=false removed_br=false wt_fail="" br_fail=""
-  if [ "$CMP_WT_STATUS" != "missing" ]; then
-    # --force unconditionally: a dirty worktree that got this far was either
-    # clean or explicitly acknowledged above, and git's own veto would only
-    # re-litigate a decision already taken. A LOCKED one needs --force twice,
-    # which is git's own spelling for "yes, the lock too".
-    local -a rm_args=(worktree remove --force "$CMP_WT_PATH")
-    if [ "$CMP_WT_STATUS" = "locked" ]; then
-      rm_args=(worktree remove --force --force "$CMP_WT_PATH")
-    fi
-    if git "${rm_args[@]}" >/dev/null 2>&1; then
-      removed_wt=true
-    else
-      wt_fail="git worktree remove refused for $CMP_WT_PATH"
-    fi
+  local shown
+  shown=$(story_cli "${native[@]}" --json) \
+    || fail "story reset $id did not start: $(printf '%s' "$shown" | jq -r '.error // empty' 2>/dev/null)"
+  if [ "$REL_COMMENT_MODE" = "text" ]; then
+    story_cli comment "$id" "$REL_COMMENT_TEXT" >/dev/null \
+      || fail "story reset $id finished, but its comment could not be added"
   fi
-  if [ "$CMP_BR_STATUS" != "missing" ]; then
-    if [ -n "$wt_fail" ]; then
-      br_fail="branch $CMP_WT_BRANCH left in place: its worktree could not be removed"
-    elif git branch -D "$CMP_WT_BRANCH" >/dev/null 2>&1; then
-      removed_br=true
-    else
-      br_fail="could not delete branch $CMP_WT_BRANCH"
-    fi
-  fi
-
-  if ! registration_absent "$CMP_WT_PATH" || [ -e "$CMP_WT_PATH" ]; then
-    wt_fail="${wt_fail:-worktree cleanup postcondition failed for $CMP_WT_PATH}"
-    removed_wt=false
-  fi
-  if local_branch_exists "$CMP_WT_BRANCH"; then
-    br_fail="${br_fail:-branch cleanup postcondition failed for $CMP_WT_BRANCH}"
-    removed_br=false
-  fi
-
-  # `self` already refused above, so this can only find somebody else's window
-  # — or one this caller could not see from outside tmux.
-  _close_release_window "$CMP_WNAME"
-  local closed="$RELEASE_CLOSED"
-  local reset_ok=true
-  if [ -n "$wt_fail" ] || [ -n "$br_fail" ] || [ -n "$RELEASE_WINDOW_ERROR" ]; then
-    reset_ok=false
-  fi
-
-  local display="[story] reset $id: "
-  if [ "$unclaimed" = true ]; then
-    display="${display}released from \`$REL_FROM\` back to \`$REL_TO\`$(_release_fallback_clause)"
-    display="${display%.} — "
-  else
-    display="${display}the story was not claimed (it is \`$conflict\`), so nothing was released — "
-  fi
-  if [ "$removed_wt" = true ]; then
-    display="${display}removed worktree \`$CMP_WT_PATH\`, "
-  elif [ -n "$wt_fail" ]; then
-    display="${display}left worktree \`$CMP_WT_PATH\` in place, "
-  else
-    display="${display}worktree already gone, "
-  fi
-  if [ "$removed_br" = true ]; then
-    display="${display}deleted branch \`$CMP_WT_BRANCH\`."
-  elif [ -n "$br_fail" ]; then
-    display="${display}left branch \`$CMP_WT_BRANCH\` in place."
-  else
-    display="${display}branch already gone."
-  fi
-  [ "$closed" = true ] && display="$display Closed its tmux window \`$CMP_WNAME\`."
-  [ -n "$wt_fail" ] && display="$display $wt_fail."
-  [ -n "$br_fail" ] && display="$display $br_fail."
-  [ -z "$RELEASE_WINDOW_ERROR" ] || display="$display $RELEASE_WINDOW_ERROR."
-  [ "$REL_FORCE" = true ] && display="$display (\`--force\`)"
-
-  jq -n --argjson ok "$reset_ok" --arg id "$id" --argjson unclaimed "$unclaimed" --arg conflict "$conflict" \
-        --arg from "$REL_FROM" --arg to "$REL_TO" --arg fallback "$REL_FALLBACK" \
-        --argjson forced "$REL_FORCE" --argjson rwt "$removed_wt" --argjson rbr "$removed_br" \
-        --arg wtfail "$wt_fail" --arg brfail "$br_fail" \
-        --arg window "$RELEASE_WINDOW" --argjson closed "$closed" \
-        --argjson unpushed "$CMP_BR_UNPUSHED" --arg display "$display" '
-    {
-      ok: $ok, id: $id, forced: $forced,
-      unclaimed: $unclaimed
-    }
-    + (if $conflict == "" then {} else {unclaim_conflict: $conflict} end)
-    + (if $unclaimed then {unclaimed_from: $from, restored_to: $to} else {} end)
-    + (if $fallback == "" then {} else {restore_fallback: $fallback} end)
-    + {
-      removed: { worktree: $rwt, branch: $rbr },
-      unpushed: $unpushed,
-      window: $window, closed_window: $closed
-    }
-    + (if $wtfail == "" then {} else {worktree_error: $wtfail} end)
-    + (if $brfail == "" then {} else {branch_error: $brfail} end)
-    + { display: $display }'
-  [ "$reset_ok" = true ]
+  # The native answer carries the reset it ran: whether it finished, what it
+  # removed, what it left in place and why, and the recovery record.
+  printf '%s' "$shown" | jq --arg id "$id" '
+    .story as $view
+    | ($view.reset // {}) as $reset
+    | ($reset.completed // false) as $done
+    | [ if $reset.removed.window then "tmux window" else empty end,
+        if $reset.removed.worktree then "worktree" else empty end,
+        if $reset.removed.branch then "local branch" else empty end ] as $gone
+    | [ ($reset.residue // [])[] | .resource ] as $left
+    | {
+        ok: true, id: $id, state: $view.story.state, completed: $done,
+        removed: { worktree: ($reset.removed.worktree // false), branch: ($reset.removed.branch // false) },
+        closed_window: ($reset.removed.window // false),
+        residue: ($reset.residue // []), recovery: ($reset.recovery // null),
+        reset: ($view.reset // null),
+        display: ("[story] reset " + $id
+          + (if $done then
+               ": returned to `" + $view.story.state + "`."
+               + (if ($gone | length) > 0 then " Removed its " + ($gone | join(", ")) + "." else " Removed nothing." end)
+               + (if ($left | length) > 0 then " Left in place: " + ($left | join(", ")) + "." else "" end)
+               + " The story comment says why, and how to recover discarded work."
+             else ": the daemon is still finishing it (" + ($reset.detail // "running") + ")." end))
+      }'
 }
 
 # ---- router -----------------------------------------------------------------
