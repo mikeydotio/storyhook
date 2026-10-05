@@ -2978,8 +2978,11 @@ your tailnet only, never the public internet or a plain LAN address.
 Default port is 3456; --port or STORYHOOK_DAEMON_ADDR moves it. That
 variable chooses the port only: 127.0.0.1 is the one IP it accepts,
 and any other is refused rather than accepted and quietly ignored,
-because there is no other address for it to name. Data refreshes
-every 3 seconds via polling.
+because there is no other address for it to name. STORYHOOK_TAILNET=0
+keeps the server on 127.0.0.1 only: it never asks 'tailscale' and
+never binds a second address. Every test environment sets it. The
+switch only narrows, and any value but 0 or 1 is refused. Data
+refreshes every 3 seconds via polling.
 
 Commands:
   start        Start the dashboard as a background daemon (does not
