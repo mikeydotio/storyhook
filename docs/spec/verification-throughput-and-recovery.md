@@ -381,6 +381,23 @@ Validate every fixture path and byte, and the complete native file inventory.
 This syntax and input evidence does not establish execution, resource support,
 the original failure, or return authority. Broader programs remain unknown.
 
+`NativeRustComparison` owns the prepared pair and runs C-B-B-C through the fixed
+embedded driver. It rejects changed inputs, duplicate physical identities,
+changed admission bindings and expired authority before launch. The Rust owner
+independently checks complete Cargo metadata/artifact messages, actual executable
+fingerprints, exact listing and execution arguments, native libtest output,
+toolchain fingerprints and versions, and the completed broker lease. The compiler
+wrapper retains the host's existing lock namespace despite isolated HOME and
+Cargo directories. Standalone tools and rustup-resolved native tools are supported.
+The absolute named-clock deadline cannot extend the owner's 300-second ceiling.
+Missing or unsupported resource evidence cannot establish a causal contrast.
+
+Original failure extraction requires one complete, unambiguous Cargo frame for
+the exact integration target. The same native panic parser derives both original
+and diagnostic signatures. An absent, repeated, truncated or foreign frame remains
+unknown. These native observations still need the durable coordinator and final
+transactional return boundary; this adapter does not grant a repair return.
+
 Reserve each physical probe durably before launch. Allow at most eight starts
 and 300000 milliseconds of active diagnosis per submission, across admissions
 and daemon restarts. Interrupted work is not refunded. This limit is independent

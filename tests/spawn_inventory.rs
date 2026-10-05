@@ -106,6 +106,20 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // Native attribution uses bounded file-backed capture. The Python driver owns
+    // a broker-supervised session; a reaped driver alone cannot prove cleanup.
+    (
+        "src/service/attribution/native/pipeline.rs",
+        "\"bash\"",
+        Kind::Waited,
+    ),
+    // The fixture broker has no output pipe and lives until its owned stdin closes.
+    // Its ready file and exit are both observed within the test's bounded patience.
+    (
+        "src/service/attribution/native/tests.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
     // GitHub calls use private file-backed capture and process-group deadlines.
     ("src/github_access/command.rs", "\"gh\"", Kind::Waited),
     // Reset uses bounded, file-backed process capture.

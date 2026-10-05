@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -38,6 +39,8 @@ class Pipeline:
         for directory in (self.source, *self.source.parents):
             if any(os.path.lexists(directory / ".cargo" / name) for name in ("config", "config.toml")):
                 raise Refusal("ambient Cargo configuration prevents isolated compilation")
+        if request["tools"] is None:
+            request["tools"] = self.resolve_tools()
         self.env = {"PATH": str(Path(sys.executable).parent)+os.pathsep+os.defpath,
                     "LANG": "C", "LC_ALL": "C", "RUST_BACKTRACE": "0", "CARGO_INCREMENTAL": "0",
                     "CARGO_BUILD_JOBS": "1", "RUSTC": request["tools"]["rustc"],
@@ -50,6 +53,26 @@ class Pipeline:
             directory.mkdir(mode=0o700)
             self.env[key] = str(directory)
         self.observed = {"version": 1}
+
+    def resolve_tools(self):
+        """Resolve actual executables, including rustup shims, outside source configuration."""
+        tools = {}
+        for name in ("cargo", "rustc"):
+            found = shutil.which(name)
+            if found is None:
+                raise Refusal(f"native diagnostic tool is missing: {name}")
+            path = Path(found).resolve(strict=True)
+            if path.name == "rustup":
+                result = subprocess.run([str(path), "which", name], cwd=self.output,
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    timeout=self.remaining())
+                if result.returncode or result.stderr or not result.stdout.strip():
+                    raise Refusal(f"rustup did not resolve one native {name}")
+                path = Path(result.stdout.strip()).resolve(strict=True)
+            if not path.is_absolute() or path.name == "rustup":
+                raise Refusal(f"unresolved native diagnostic tool: {name}")
+            tools[name] = str(path)
+        return tools
 
     def remaining(self):
         """Every stage consumes the parent's single monotonic allowance."""
@@ -103,6 +126,7 @@ class Pipeline:
             raise Refusal("native Cargo and Rust compiler paths must be pinned")
         pinned = {name: self.fingerprint(path) for name, path in tools.items()}
         pinned["wrapper"] = self.fingerprint(request["wrapper"])
+        pinned["python"] = self.fingerprint(Path(sys.executable).resolve(strict=True))
         for name, path in tools.items():
             self.successful(name+"-version", [path, "-vV"])
         # The wrapper preserves the machine-wide compiler bound as well as the
@@ -130,6 +154,7 @@ class Pipeline:
         self.observed["artifact_after"] = self.fingerprint(executable)
         after = {name: self.fingerprint(path) for name, path in tools.items()}
         after["wrapper"] = self.fingerprint(request["wrapper"])
+        after["python"] = self.fingerprint(Path(sys.executable).resolve(strict=True))
         if after != pinned or self.observed["artifact_before"] != self.observed["artifact_after"]:
             raise Refusal("native toolchain or executable changed during diagnosis")
         self.observed["tools"] = pinned

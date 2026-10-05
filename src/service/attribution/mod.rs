@@ -3,6 +3,7 @@
 mod contrast;
 pub(crate) mod holds;
 mod model;
+mod native;
 mod preparation;
 mod rust_cargo;
 mod rust_case;
@@ -13,6 +14,7 @@ mod view;
 pub use contrast::classify;
 pub use holds::AttributionHold;
 pub use model::*;
+pub use native::{NativeProbeBinding, NativeRustComparison};
 pub use preparation::{DiagnosticPreparation, PreparationResult};
 pub use rust_cargo::{CargoTarget, RustExecutable};
 pub use rust_case::{RustCase, RustCaseObservation, RustTarget};

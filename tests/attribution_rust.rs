@@ -114,6 +114,39 @@ fn rust_failures_keep_assertion_identity_across_native_processes() {
     assert_ne!(first, result("different assertion value"));
 }
 
+#[test]
+fn original_gate_failure_requires_one_complete_exact_target_frame() {
+    let selected = case();
+    let out = native(&selected.run_arguments(), "original assertion");
+    let ProbeOutcome::Failed { signature } = selected
+        .observe(&out.stdout, &out.stderr, false, out.status.code())
+        .outcome
+    else {
+        panic!("native case did not fail");
+    };
+    let body = String::from_utf8(out.stdout).unwrap();
+    let header =
+        "     Running tests/attribution_rust.rs (/owned/target/debug/deps/attribution_rust-abc)\n";
+    let log = format!(
+        "preparation output\n{header}{body}error: test failed, to rerun pass --test attribution_rust\n"
+    );
+    assert_eq!(
+        selected.original_failure(log.as_bytes()).unwrap(),
+        signature
+    );
+    for invalid in [
+        body.clone(),
+        log.replace("tests/attribution_rust.rs", "tests/another.rs"),
+        log.replace("test native_case ... FAILED", "test foreign ... FAILED"),
+        log.replace("1 failed", "2 failed"),
+        log.replace("test result: FAILED", "truncated: FAILED"),
+        format!("{log}{log}"),
+        format!("{log}running 1 test\ntest native_case ... FAILED\n"),
+        log.replace("failures:\n    native_case", "failures:\n    foreign"),
+        log.replace(&body, "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"),
+    ] { assert!(selected.original_failure(invalid.as_bytes()).is_err(), "{invalid}"); }
+}
+
 fn assert_unavailable(check: &RustCase, out: &[u8], err: &[u8], cut: bool, code: Option<i32>) {
     let result = check.observe(out, err, cut, code);
     assert_eq!(result.executions, 0, "{result:?}");

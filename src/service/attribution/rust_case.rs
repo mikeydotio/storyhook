@@ -42,6 +42,61 @@ pub struct RustCaseObservation {
 }
 
 impl RustCase {
+    /// Bind an original gate log to one exact Cargo frame and native assertion failure.
+    /// Unsupported or ambiguous framing is unknown, never a guessed reproduction.
+    pub fn original_failure(&self, log: &[u8]) -> Result<String, String> {
+        if log.len() > 16 * 1024 * 1024 {
+            return Err("original gate log exceeds the native observation bound".into());
+        }
+        let RustTarget::Integration(target) = &self.target else {
+            return Err("original gate adapter requires an integration target".into());
+        };
+        let text = complete_text(log, &[], false)?;
+        let header = format!("     Running tests/{target}.rs (");
+        let mut offset = 0;
+        let mut frames = Vec::new();
+        for line in text.split_inclusive('\n') {
+            if line.starts_with("     Running ") {
+                frames.push((offset, offset + line.len(), line));
+            }
+            offset += line.len();
+        }
+        let matching: Vec<_> = frames
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, line))| line.starts_with(&header) && line.ends_with(")\n"))
+            .collect();
+        let [(index, (_, start, _))] = matching.as_slice() else {
+            return Err("original gate lacks one unambiguous exact Cargo target frame".into());
+        };
+        let end = frames
+            .get(index + 1)
+            .map_or(text.len(), |(offset, _, _)| *offset);
+        let frame = &text[*start..end];
+        let summaries: Vec<_> = frame.match_indices("\ntest result:").collect();
+        let [(summary, _)] = summaries.as_slice() else {
+            return Err("original native result is incomplete or ambiguous".into());
+        };
+        let summary_end = frame[*summary + 1..]
+            .find('\n')
+            .map(|n| *summary + 1 + n + 1)
+            .ok_or("original native summary is truncated")?;
+        if frame[summary_end..].lines().any(|line| {
+            ["running ", "test ", "failures:", "---- ", "thread '"]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+        }) {
+            return Err(
+                "original native frame contains additional or incomplete test output".into(),
+            );
+        }
+        let observation = self.observe(&frame.as_bytes()[..summary_end], &[], false, Some(101));
+        match observation.outcome {
+            ProbeOutcome::Failed { signature } if observation.executions == 1 => Ok(signature),
+            _ => Err("original native frame is not the exact complete assertion failure".into()),
+        }
+    }
+
     /// Validate a literal package, target and case before any command is built.
     pub fn new(package: &str, target: RustTarget, name: &str) -> Result<Self, String> {
         if !literal_target(package)

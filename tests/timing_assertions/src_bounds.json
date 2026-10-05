@@ -159,6 +159,13 @@
       "reason": "The cancel check answers true at once, so nothing spawns and the bound never starts."
     }
   },
+  "src/service/attribution/native/pipeline.rs": {
+    "production run_captured_cancellable(remaining(native.deadline)?": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The native comparison owns one absolute diagnosis deadline capped at 300 seconds. remaining subtracts elapsed preparation and earlier probes; the subprocess also observes cancellation. Cleanup grace never extends evidence validity."
+    }
+  },
   "src/service/cleanup.rs": {
     "production run_captured(Duration::from_secs(60)": {
       "count": 1,
