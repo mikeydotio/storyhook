@@ -156,6 +156,7 @@ host_admission	plugins/story/tests/lib.sh
 host_admission	plugins/story/tests/run-tests.sh
 host_admission	scripts/host-admission.py
 host_admission	scripts/host-admit.py
+host_admission	scripts/merge-watch.sh
 host_admission	scripts/release-observer.py
 host_admission	scripts/release-watch.sh
 host_admission	scripts/run-e2e.sh
@@ -172,6 +173,10 @@ host_admission	scripts/tests/test_host_admission_system.py
 host_admission	scripts/tests/test_host_admission_usage.py
 host_admission	scripts/tests/test_runner_admission_wiring.py
 host_admission	scripts/tests/test_rustc_slot_admission.py
+host_admission	scripts/tests/test_verifier_admission.py
+host_admission	scripts/verifier-owner.py
+host_admission	scripts/verifier_result.py
+host_admission	scripts/verify-pr.sh
 host_admission_evidence	:(glob)scripts/host_admission/**
 host_admission_evidence	:(glob)src/service/gate_cost/**
 host_admission_evidence	scripts/tests/test_host_admission.py

@@ -68,10 +68,21 @@ def loader(value):
 
 
 def serve(root, value, ready):
-    """The real broker over a fixture root, with a constant healthy sensor."""
-    broker = Broker(root, Policy(value, value["host"], fixture=True),
-                    lambda: dict(at=time.monotonic_ns() // 1_000_000,
-                                 available=2000 * MIB, cpu=0, memory=0, runnable=0))
+    """The real broker over a fixture root, with a scripted sensor.
+
+    CPU pressure is 0 permille unless the test writes a permille value to
+    `<root>/../pressure`, which drives the broker's real pressure policy.
+    """
+    pressure = Path(root).parent / "pressure"
+
+    def sensor():
+        try:
+            cpu = int(pressure.read_text())
+        except (OSError, ValueError):
+            cpu = 0
+        return dict(at=time.monotonic_ns() // 1_000_000, available=2000 * MIB, cpu=cpu, memory=0, runnable=0)
+
+    broker = Broker(root, Policy(value, value["host"], fixture=True), sensor)
     try:
         ready.send("ready")
         broker.serve()

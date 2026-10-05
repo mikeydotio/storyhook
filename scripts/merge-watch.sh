@@ -275,7 +275,9 @@ if [ "${1:-}" = "--speculative-run" ]; then
         # supplies both writers -- the SH-665 receipt writer and the SH-777
         # progress writer, which appends to the $STORYHOOK_GATE_PROGRESS
         # journal passed through above. Set both here rather than trusting
-        # an inherited path from another run.
+        # an inherited path from another run. The repair admission itself
+        # is scrubbed, but the gate's host admission class keeps its one fact:
+        # a repair gate may use the host's repair reserve (SH-869).
         exec env -u GIT_OBJECT_DIRECTORY \
             -u STORYHOOK_GATE_RESULT_FILE \
             -u STORYHOOK_STORE_PATH \
@@ -299,6 +301,7 @@ if [ "${1:-}" = "--speculative-run" ]; then
             STORYHOOK_GATE_COST_HEAD="$head" \
             STORYHOOK_GATE_COST_BASE="$base" \
             STORYHOOK_GATE_COST_TREE="$candidate_tree" \
+            STORYHOOK_HOST_WORK="$([ -n "${STORYHOOK_REPAIR_ADMISSION:-}" ] && printf repair || printf test)" \
             "$STORYHOOK_PYTHON" "$script_dir/verifier-owner.py" gate "$common_dir" "$poller_wt" -- "$@"
     ) <&3 &
     child=$!

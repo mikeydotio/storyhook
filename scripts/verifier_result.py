@@ -20,12 +20,31 @@ def execution(path):
     return value
 
 
-def publish_execution(path, status, launched):
-    """Persist the command's observed answer before any cleanup can refuse."""
+def publish_execution(path, status, launched, admission=None):
+    """Persist the command's observed answer before any cleanup can refuse.
+
+    An `admission` cause (SH-869) means host admission refused or withdrew the
+    gate: the state is then `admission`, never a completed gate answer.
+    """
     value = execution(path)
-    value.update(exit_status=status,
-                 state="completed" if launched and status < 128 else "interrupted")
+    if admission is not None:
+        if (not isinstance(admission, dict) or not isinstance(admission.get("cause"), str)
+                or type(admission.get("retryable")) is not bool or not isinstance(admission.get("reason"), str)):
+            raise Refusal("host admission cause must name cause, retryable and reason")
+        value.update(exit_status=status, state="admission", admission=admission)
+    else:
+        value.update(exit_status=status,
+                     state="completed" if launched and status < 128 else "interrupted")
     save(path, value)
+
+
+def admission_verdict(value):
+    """(disposition, detail) of a gate that host admission refused or withdrew."""
+    cause = value.get("admission")
+    if value.get("state") != "admission" or not isinstance(cause, dict) or type(cause.get("retryable")) is not bool:
+        raise Refusal("execution evidence carries no host admission cause")
+    return ("retryable" if cause["retryable"] else "permanent",
+            f"host admission {cause.get('cause')}: {cause.get('reason')}; the gate did not judge the change")
 
 
 def cleanup_failure(common, worktree, phase, detail):
@@ -87,11 +106,14 @@ def main():
         save(path, dict(identity, version=1, attempt=Path(path).name,
                         owner=os.environ["STORYHOOK_VERIFIER_OWNER"], state="pending"))
         return
-    if mode != "read":
+    if mode not in ("read", "admission"):
         raise Refusal(f"unknown execution evidence operation: {mode}")
     value = execution(path)
     if any(value.get(key) != expected for key, expected in identity.items()):
         raise Refusal(f"execution evidence names a different candidate: {path}")
+    if mode == "admission":
+        print("\n".join(admission_verdict(value)))
+        return
     status = value.get("exit_status")
     if value.get("state") != "completed" or type(status) is not int or not 0 <= status < 128:
         raise Refusal(f"gate did not complete normally: {path}")

@@ -431,6 +431,14 @@ run_verification_gate() {
         detail="$(verification_infrastructure_detail "$gate_status" "$completed_status" "$log")"
         disposition=permanent
         [ "$gate_status" -lt 128 ] || disposition=retryable
+        # Host admission refused or withdrew the gate (SH-869): a process
+        # fault that keeps the story Verifying, retryable only for a cause
+        # that can clear without a change -- never the author's failure.
+        if admission="$("$STORYHOOK_PYTHON" "$script_dir/verifier_result.py" admission "$execution_file" \
+            "$gate_tree" "$gate_base" "$gate_head" 2>>"$log")"; then
+            disposition="${admission%%$'\n'*}"
+            detail="${admission#*$'\n'} $(bounded_log_context "$log")"
+        fi
         jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" --arg disposition "$disposition" \
             '{result:"infrastructure-failure", disposition:$disposition, tree:$tree, log:$log, detail:$detail}'
         exit 0
