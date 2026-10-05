@@ -580,3 +580,24 @@ Production stays disabled. Before a measured policy is installed:
   lease guard keeps its capacity quarantined;
 - the Lima guest of `release-linux.sh` is a separate kernel; the host reserves
   it only through the `release` entry's measured workload.
+
+### As built and remaining limits
+
+- `verifier-owner.py` holds the gate root through `host_admission/reservation.py`.
+  A repair gate's class reaches it as `STORYHOOK_HOST_WORK=repair`, which
+  `merge-watch.sh` sets after it scrubs the repair admission itself. The root
+  binds the attempt identity from the journal's `run` record, so the
+  authority's events for it carry that binding. Publishing those bound
+  resource events into the gate journal (SH-868's `Publisher`) is not wired
+  yet; the authority retains them durably for a later publisher.
+- An enabled authority needs Python 3.11 or later. `rustc-slot.py` and
+  `host-admit.py` refuse an older `python3` from PATH by name. Their disabled
+  and inherited fast paths import nothing and run on any Python 3.
+- The Cargo runner recognises a doctest binary by rustdoc's `rust_out` name. A
+  doctest binary of another name, outside any grant, runs as an application.
+- The runner-wiring tests prove the disabled path and skip on a host that has
+  a policy. Before activation, run them on a policy-free host or give them a
+  fixture seam.
+- `verify-pr.sh` maps an `admission` execution state through
+  `verifier_result.py admission`, which has its own tests. A whole
+  `verify-pr.sh` run belongs to the central lifecycle harness.
