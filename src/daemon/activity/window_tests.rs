@@ -148,3 +148,48 @@ fn a_failed_first_attempt_is_retried_without_a_journal_or_another_phase() {
         );
     });
 }
+
+/// The Python process tests run the view through `view_program.program()`,
+/// and no test runs [`VIEW_PROGRAM`] itself. Unless the two are the same
+/// bytes, those tests prove a program the daemon never runs: a module the
+/// view imports could be missing here and every test would still pass
+/// (SH-840, SH-881).
+#[test]
+fn the_process_tests_compose_the_program_the_daemon_runs() {
+    let output = Command::new("python3")
+        .args(["-B", "-c"])
+        .arg(
+            "import sys; sys.path.insert(0, sys.argv[1] + '/plugins/story/lib'); \
+             from view_program import program; \
+             sys.stdout.buffer.write(program(sys.argv[1]).encode('utf-8'))",
+        )
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("running python3 against view_program.py");
+    assert!(
+        output.status.success(),
+        "view_program.py did not compose: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let composed = output.stdout;
+    let expected = VIEW_PROGRAM.as_bytes();
+    if composed != expected {
+        let at = composed
+            .iter()
+            .zip(expected)
+            .position(|(a, b)| a != b)
+            .unwrap_or(composed.len().min(expected.len()));
+        let near = |bytes: &[u8]| {
+            String::from_utf8_lossy(&bytes[at.saturating_sub(40)..(at + 40).min(bytes.len())])
+                .into_owned()
+        };
+        panic!(
+            "view_program.py differs from VIEW_PROGRAM at byte {at} (lengths {} and {}):\n\
+             view_program.py: {:?}\nVIEW_PROGRAM:    {:?}",
+            composed.len(),
+            expected.len(),
+            near(&composed),
+            near(expected)
+        );
+    }
+}

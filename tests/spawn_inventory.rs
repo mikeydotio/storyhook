@@ -134,6 +134,14 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
         "\"sh\"",
         Kind::Waited,
     ),
+    // SH-881 compares `view_program.py`'s composition with VIEW_PROGRAM.
+    // `Reads`: stdout is a pipe, but the child only prints a string from
+    // files it reads and starts nothing that could inherit the pipe.
+    (
+        "src/daemon/activity/window_tests.rs",
+        "\"python3\"",
+        Kind::Reads,
+    ),
     // `block_delivery::process_one` — the agent helper (`story.sh notify`),
     // asked to interrupt or resume a dispatched agent (SH-690). `Waited`: it
     // runs through the shared `run_captured_with_termination`, so stdout and
