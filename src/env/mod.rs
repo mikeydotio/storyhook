@@ -46,6 +46,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::daemon::parent_contract::ParentContract;
 use crate::error::AppError;
 use crate::service::Clock;
 
@@ -108,6 +109,8 @@ pub struct Environment {
     verifier_agent_enabled: bool,
     /// Whether a daemon this environment runs or starts binds the tailnet.
     tailnet: TailnetPolicy,
+    /// The test-harness owner this process was started under, if any.
+    parent: ParentContract,
     /// An explicit CLI fixture floor; default builds reject its declaration.
     test_subprocess_patience: Option<Duration>,
     /// Test builds only: how the lib test that built this environment
@@ -141,6 +144,8 @@ impl Environment {
     ///   `$STORYHOOK_VERIFIER_MIRROR` is exactly `0`; otherwise true.
     /// * `verifier_agent_enabled` — false only when
     ///   `$STORYHOOK_VERIFIER_AGENT` is exactly `0`; otherwise true (SH-822).
+    /// * `parent` — the owner `$STORYHOOK_PARENT_PID` names, pinned to one
+    ///   incarnation (see [`ParentContract`]); unwatched when unset.
     /// * `tailnet` — [`TailnetPolicy::LoopbackOnly`] only when
     ///   `$STORYHOOK_TAILNET` is exactly `0`; any other value but `1` or empty
     ///   is an error, because a mistyped security switch must not fail open.
@@ -207,6 +212,7 @@ impl Environment {
             tailnet: TailnetPolicy::from_variable(
                 std::env::var_os(TailnetPolicy::VARIABLE).as_deref(),
             )?,
+            parent: ParentContract::from_process(),
             #[cfg(test)]
             subprocess_policy: subprocess_policy::SubprocessPolicy::Undeclared,
         })
@@ -237,6 +243,7 @@ impl Environment {
             verifier_mirror_enabled: false,
             verifier_agent_enabled: false,
             tailnet: TailnetPolicy::LoopbackOnly,
+            parent: ParentContract::Unwatched,
             #[cfg(test)]
             subprocess_policy: subprocess_policy::SubprocessPolicy::Undeclared,
         }
@@ -271,6 +278,16 @@ impl Environment {
     #[must_use]
     pub fn tailnet_policy(&self) -> TailnetPolicy {
         self.tailnet
+    }
+
+    /// The test-harness owner this process was started under.
+    ///
+    /// [`Self::from_process`] resolves it once, sampling the owner's start
+    /// token while the owner is alive; [`Self::at`] names none, so nothing an
+    /// in-process environment does is watched or refused.
+    #[must_use]
+    pub fn parent_contract(&self) -> &ParentContract {
+        &self.parent
     }
 
     /// Sets how long a writer waits for another process's write lock.

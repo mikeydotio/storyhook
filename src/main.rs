@@ -229,6 +229,15 @@ fn main() {
             Some(port) => environment.daemon_port(port),
             None => environment,
         };
+        // A daemon whose test-harness owner has already gone would serve a
+        // finished run's fixture and bind its listeners before the parent
+        // watch ever ran. It leaves before it opens, or creates, anything:
+        // no store, no portfile, and no startup-failure record, because each
+        // of those would recreate a directory the run has deleted.
+        if let Err(refusal) = environment.parent_contract().still_here() {
+            eprintln!("storyhook daemon: not starting: {refusal}");
+            process::exit(refusal.exit_code());
+        }
         let owner_flag = foreground_serve_owner(&invocation);
         let result = storyhook::invoke::open_store(&environment)
             .and_then(|store| storyhook::daemon::lifecycle::run(&store, &environment, owner_flag));

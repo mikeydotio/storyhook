@@ -48,6 +48,7 @@ use crate::api::rpc;
 use crate::daemon::bus::{Change, ChangeBus};
 use crate::daemon::http1::{self, Header, Method, Request};
 use crate::daemon::lifecycle::Hello;
+use crate::daemon::parent_contract::ParentContract;
 use crate::daemon::tailnet::{TailnetBind, tailnet_identity};
 use crate::env::Environment;
 use crate::error::AppError;
@@ -1846,15 +1847,14 @@ fn poll_change_token<S: Store>(
 /// from one a real crash left, misleading the crash detector the next daemon
 /// runs at startup (SH-287).
 fn watch_parent(env: &Environment, stop: &AtomicBool) {
-    let Some(parent) = crate::daemon::lifecycle::parent_pid() else {
+    let contract = env.parent_contract();
+    if matches!(contract, ParentContract::Unwatched) {
         return;
-    };
-    let parent_start_time = crate::daemon::lifecycle::parent_start_time();
+    }
     while !stop.load(Ordering::Relaxed) {
         thread::sleep(SHUTDOWN_CHECK);
-        if !crate::daemon::lifecycle::process_identity_is_live(parent, parent_start_time.as_deref())
-        {
-            eprintln!("storyhook daemon: parent process {parent} is gone; exiting");
+        if !contract.is_live() {
+            eprintln!("storyhook daemon: parent process is gone ({contract:?}); exiting");
             crate::daemon::lifecycle::exit_cleanly(env);
         }
     }

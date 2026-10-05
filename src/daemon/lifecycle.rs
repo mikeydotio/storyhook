@@ -1312,7 +1312,13 @@ pub fn run<S: crate::store::Store>(
 /// whether it is still there. Everything else goes through the slow path, which
 /// takes the spawn lock before deciding anything, so two clients racing to start
 /// a daemon produce one daemon.
+///
+/// A process whose test-harness owner has exited is refused first, before
+/// anything is read or created: it is a straggler of a finished run, and a
+/// daemon it started would serve a deleted fixture with nothing to stop it
+/// (see [`super::parent_contract`]).
 pub fn ensure(env: &Environment) -> Result<DaemonInfo, AppError> {
+    env.parent_contract().still_here()?;
     if let Some(info) = usable(env) {
         return Ok(info);
     }
@@ -1327,6 +1333,8 @@ pub fn ensure(env: &Environment) -> Result<DaemonInfo, AppError> {
 /// must wait for and adopt the successor, while an ordinary command admitted
 /// before shutdown may still use [`ensure`]'s lock-free fast path.
 pub fn start(env: &Environment) -> Result<DaemonInfo, AppError> {
+    // Before `inspect_lock`, which creates the state directory.
+    env.parent_contract().still_here()?;
     inspect_lock(env)?;
     let info = spawn_locked(env)?;
     verify_local_info(env, &info)?;
@@ -1355,6 +1363,7 @@ pub struct RestartedDaemon {
 /// is touched (`super::seat_guard`, SH-634): the successor would be that
 /// build, which is the incident this guard exists for.
 pub fn restart(env: &Environment) -> Result<RestartedDaemon, AppError> {
+    env.parent_contract().still_here()?;
     if !inspect_lock(env)? {
         return Err(AppError::Usage(
             "the storyhook daemon is not running — start one with `story daemon start`."
@@ -2187,6 +2196,13 @@ fn spawn_child(env: &Environment, reason: ForkReason) -> Result<std::process::Ch
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log);
+    // The owner's incarnation, as this client pinned it while the owner was
+    // alive. A shell harness declares an empty token, and a daemon that
+    // sampled one only later could pin a process that reused the pid. Every
+    // child the daemon starts inherits the exact token too.
+    if let Some(token) = env.parent_contract().start_time() {
+        command.env("STORYHOOK_PARENT_START_TIME", token);
+    }
     // Its own process group, so the daemon does not die with the terminal that
     // happened to start it — and so a test harness can kill the whole group.
     #[cfg(unix)]
