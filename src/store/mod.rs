@@ -402,6 +402,10 @@ pub trait ReadOps {
     /// All retained closure requests for one project, in story order.
     fn closure_cleanups(&self, project: ProjectId) -> Result<Vec<ClosureCleanup>, StoreError>;
 
+    /// Every card reset that has not finished, across all projects, in
+    /// project and story order: the reset runtime resumes each (SH-886).
+    fn unfinished_story_resets(&self) -> Result<Vec<StoryReset>, StoreError>;
+
     /// Latest card reset operation for this story, including completed receipts.
     fn story_reset(
         &self,

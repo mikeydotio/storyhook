@@ -180,6 +180,8 @@ struct Serving<'a, S: Store> {
     /// handle those `'static` workers require.
     engine: Arc<crate::api::engine::EngineController>,
     reset: Arc<crate::api::reset::ResetController>,
+    /// Drives every reserved reset to completion on this daemon's store.
+    reset_runtime: Arc<crate::daemon::reset::ResetRuntime>,
     /// Every handoff coupon this daemon has armed and not yet spent (SH-251).
     /// An `Arc` for the same reason `dispatch_registry` is one: redemption
     /// needs nothing from the store, so it is answered on the `worker` thread
@@ -271,6 +273,7 @@ where
     let verification_activity =
         crate::daemon::verification::VerificationActivity::new().with_bus(bus.clone());
     let inflight = Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone()));
+    let reset_runtime = Arc::new(crate::daemon::reset::ResetRuntime::new());
     let serving = Serving {
         store,
         env: env.clone(),
@@ -290,9 +293,9 @@ where
         engine: Arc::new(crate::api::engine::EngineController::open(env)?),
         reset: Arc::new(crate::api::reset::ResetController::open(
             env,
-            verification_activity.clone(),
-            Arc::clone(&inflight),
+            Arc::clone(&reset_runtime),
         )?),
+        reset_runtime,
         handoff: Arc::new(crate::api::handoff::HandoffRegistry::new()),
         tokens: Arc::new(crate::api::tokens::TokenRegistry::load(env)),
         cookie_name: crate::api::tokens::cookie_name(env),
@@ -328,6 +331,15 @@ where
     // every server thread exists and `ready()` has fired; restart
     // reconciliation already ran before portfile publication.
     let (engine_start_tx, engine_start_rx) = mpsc::channel::<()>();
+    // Borrowed by the reset runtime's scoped workers for the daemon's life.
+    let reset_daemon = crate::daemon::reset::Daemon {
+        store,
+        env: &serving.env,
+        bus: &serving.bus,
+        dispatch: &serving.dispatch_registry,
+        activity: &serving.verification_activity,
+        inflight: &serving.inflight,
+    };
 
     // Every background thread lives inside this scope, which is what lets the
     // change-token poller and every dispatcher borrow the store rather than
@@ -335,6 +347,15 @@ where
     // so the accept loop signals `stop` before it returns and the joins take
     // one poll interval rather than forever.
     thread::scope(|scope| {
+        // SH-886: every reserved reset runs to completion on this store, and
+        // unfinished ones resume at startup and on each sweep.
+        {
+            let (daemon, runtime, stop) = (&reset_daemon, &*serving.reset_runtime, &*stop);
+            scope.spawn(move || {
+                super::qos::WorkClass::Housekeeping.enter();
+                crate::daemon::reset::run(scope, daemon, runtime, stop);
+            });
+        }
         {
             let (bus, stop) = (bus.clone(), Arc::clone(&stop));
             scope.spawn(move || {
@@ -1375,8 +1396,6 @@ fn worker(
             trusted_hosts,
             token,
             reset,
-            dispatch_registry,
-            &bus,
             tokens,
             cookie_name,
         )
@@ -1631,6 +1650,8 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
                 // this daemon's own answer to the shutdown request can also
                 // see a dequeue racing ahead of this store.
                 serving.draining.store(true, Ordering::Relaxed);
+                // Patient reset waits return; the next daemon resumes them.
+                serving.reset_runtime.shutdown();
                 // Tell every connected browser to reconnect *before*
                 // answering, so a client that is about to lose its stream
                 // knows why.

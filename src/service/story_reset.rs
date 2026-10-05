@@ -114,6 +114,14 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         }
     }
 
+    /// Shares the daemon's stand-down signal: patient waits then return, and
+    /// the next daemon resumes the unfinished reset.
+    #[must_use]
+    pub fn with_shutdown(mut self, shutdown: Shutdown) -> Self {
+        self.shutdown = shutdown;
+        self
+    }
+
     /// Sets how long a reset waits for a held workspace lock before it
     /// proceeds without it. [`WORKSPACE_PATIENCE`] unless changed.
     #[must_use]
