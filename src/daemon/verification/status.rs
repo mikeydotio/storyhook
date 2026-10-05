@@ -61,6 +61,11 @@ pub struct VerifierStatus {
     /// prints from being reported as silent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_silence_seconds: Option<u64>,
+    /// The owned gate's current step when it waits for machine resources:
+    /// host admission, a build slot or a lock (SH-869). Absent while the gate
+    /// works, while it is not observable, and in legacy payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_wait: Option<ResourceWait>,
     /// Diagnostic when progress cannot be inspected.
     pub evidence_error: Option<String>,
     /// One concise actionable unhealthy-queue notice.
@@ -81,6 +86,16 @@ pub struct VerifierStatus {
     /// it (SH-771). Separate from `warning`, which describes queue health.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_warning: Option<String>,
+}
+
+/// A gate step that waits for machine resources rather than working (SH-869).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceWait {
+    /// The producer's activity label, for example
+    /// "waiting for host admission (verifier-gate)".
+    pub label: String,
+    /// Time at which the wait most recently began.
+    pub since: String,
 }
 
 /// A running verification batch as status shows it (SH-832, spec B9).
@@ -198,6 +213,18 @@ pub(crate) fn snapshot(
         .and_then(|output| match output {
             crate::service::gate_output::OutputObservation::Observed(age) => Some(age),
             _ => None,
+        });
+    // A wait for host admission, a build slot or a lock is named as such
+    // (SH-869). A reservation runs no gate, so it has no current step.
+    let resource_wait = evidence
+        .progress
+        .as_ref()
+        .filter(|_| active.is_some() && reservation.is_none())
+        .and_then(crate::service::gate_progress::GateProgress::current_step)
+        .filter(crate::service::gate_progress::CurrentStep::is_resource_wait)
+        .map(|step| ResourceWait {
+            label: step.label,
+            since: step.started_at,
         });
     let incident_is_current = evidence.incident_is_current(&ordered, active, incident.as_ref());
     let statuses = crate::daemon::verification_progress::status_snapshot_with_evidence(
@@ -349,6 +376,7 @@ pub(crate) fn snapshot(
             last_evidence_at,
             silence_seconds,
             output_silence_seconds,
+            resource_wait,
             evidence_error,
             warning,
             batch_preview,
@@ -419,6 +447,13 @@ impl VerifierStatus {
                     crate::local_time::stamp(&active.started_at)
                 ));
             }
+        }
+        if let Some(wait) = &self.resource_wait {
+            text.push_str(&format!(
+                "Waiting for resources: {} since {}\n",
+                wait.label,
+                crate::local_time::stamp(&wait.since)
+            ));
         }
         if let Some(batch) = &self.batch {
             text.push_str(&format!("{}\n", batch.describe()));
