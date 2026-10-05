@@ -1,7 +1,7 @@
 //! Dropped stories release their workspace without discarding committed work.
 use std::fs;
 use storyhook::domain::{
-    CLEANUP_LEASE_MARKER, CLEANUP_LEASE_VERSION, StoryCleanupLease, TmuxCleanupTarget,
+    CLEANUP_LEASE_MARKER, CLEANUP_LEASE_VERSION, StoryCleanupLease, StoryEvent, TmuxCleanupTarget,
 };
 use storyhook::service::{CleanupService, NewStoryInput, StoryService};
 use storyhook::store::{ReadOps, Store, StoryNo, WriteOps};
@@ -284,6 +284,52 @@ fn exact_window_and_worktree_are_removed_while_other_window_survives() {
         again.removed.is_empty() && again.failed.is_empty() && again.skipped.is_empty(),
         "{again:?}"
     );
+}
+
+/// An uncaught helper exception is a traceback that names the helper's own
+/// files. Run from a directory that changed on every attempt, each retry of
+/// the same failure read as a new one and posted another comment: more than
+/// 240 on each of SH-838 and SH-840 (SH-881).
+#[test]
+fn a_helper_crash_is_reported_once_across_retries() {
+    let f = Dropped::new();
+    let _terminal = Terminal::start(&f);
+    let request = |f: &Dropped| {
+        f.fixture
+            .store()
+            .read(|tx| tx.closure_cleanup(f.fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap()
+    };
+    // The helper reads a process journal that is not a record before it
+    // signals anything, and raises a TypeError that it does not catch.
+    let journals = f.fixture.env().daemon_state_dir().join("dropped-cleanup");
+    let token = request(&f).token;
+    fs::create_dir_all(&journals).unwrap();
+    fs::write(journals.join(format!("{token}.json")), "[]").unwrap();
+    for _ in 0..2 {
+        let report = CleanupService::new(&f.fixture.ctx()).run(false).unwrap();
+        assert!(report.removed.is_empty(), "{report:?}");
+        assert!(!journals.join(format!("{token}.bundle")).exists());
+    }
+    let detail = request(&f).detail.unwrap();
+    assert!(
+        detail.contains("TypeError") && detail.contains("dropped-cleanup-pane.py"),
+        "{detail}"
+    );
+    let comments = f
+        .fixture
+        .store()
+        .read(|tx| tx.events_for(f.fixture.project(), StoryNo::new(1)))
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            matches!(event.known(), Some(StoryEvent::StoryCommentAdded { text, .. })
+                if text.starts_with("STORY RESOURCE CLEANUP REQUIRED"))
+        })
+        .count();
+    assert_eq!(comments, 1, "{detail}");
+    assert!(f.workspace.worktree.exists());
 }
 
 #[test]

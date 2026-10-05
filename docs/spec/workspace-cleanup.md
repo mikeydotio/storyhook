@@ -68,6 +68,13 @@ as it does in the installed plugin and in the plugin tests. A hand-kept list of
 five files missed the `tmux_client`, `tmux_target` and `tmux_server_env` imports
 that SH-825 added, and every pane cleanup failed until SH-881.
 
+The copy lives at `dropped-cleanup/<token>.bundle` in the daemon state
+directory, beside the `<token>.json` process journal, with mode `0700`. Each
+attempt replaces a leftover copy, runs the helper and then removes the copy.
+The reservation token does not change between retries, so a helper traceback
+that names these files is the same at each retry and does not post a new
+comment. A random temporary directory made each retry look like a new failure.
+
 ## Scheduling and manual retry
 
 The daemon wakes on project-change notifications and at startup, with a bounded
