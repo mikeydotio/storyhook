@@ -16381,6 +16381,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // Captured identity keeps a delayed reset result scoped to its original project.
   var resetModal = null;
 
+  /** Pause before asking again after contention or a lost poll (SH-886). */
+  var RESET_RETRY_MS = 1000;
+  /** Contention answers a reservation rides out; the daemon waits 60 s each. */
+  var RESET_RESERVE_RETRIES = 10;
+  /** Consecutive failed polls tolerated; the daemon finishes the reset anyway. */
+  var RESET_POLL_FAILURES = 30;
+
   function openResetModal(id, title, invoker) {
     var project = state.repoId;
     var key = project + "/" + id;
@@ -16397,14 +16404,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (invoker) overlayReturnFocus["reset-modal"] = invoker;
   }
 
+  // Cancel stays enabled while a reset runs: closing the dialog only stops
+  // watching it here; the daemon finishes the reset and a toast reports it.
   function setResetBusy(busy) {
     if (resetModal) resetModal.busy = busy;
-    ["reset-modal-submit", "reset-modal-cancel", "reset-confirmation"].forEach(function(id) { $(id).disabled = busy; });
+    ["reset-modal-submit", "reset-confirmation"].forEach(function(id) { $(id).disabled = busy; });
     $("reset-modal").setAttribute("aria-busy", String(busy));
   }
 
   function closeResetModal() {
-    if (!resetModal || resetModal.busy) return;
+    if (!resetModal) return;
     resetModal = null;
     hideBackdrop("reset-modal-backdrop");
     $("reset-modal").classList.remove("open");
@@ -16423,20 +16432,39 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     setResetBusy(true);
     $("reset-modal-error").textContent = "Resetting " + target.id + "…";
     var endpoint = target.base + "/story/" + encodeURIComponent(target.id) + "/reset";
+    function pause() { return new Promise(function(resolve) { setTimeout(resolve, RESET_RETRY_MS); }); }
+    // A reserved reset never fails (SH-886): contention is asked again, and a
+    // lost poll is retried, because the daemon finishes the reset regardless.
+    function reserve(attempt) {
+      return api("POST", endpoint, { confirmation: target.id }).catch(function(error) {
+        if (error && error.status === 409 && attempt < RESET_RESERVE_RETRIES) {
+          return pause().then(function() { return reserve(attempt + 1); });
+        }
+        throw error;
+      });
+    }
+    function poll(handle, failures) {
+      return pause().then(function() {
+        return api("GET", endpoint + "/" + encodeURIComponent(handle), null);
+      }).then(observe, function(error) {
+        if (error && error.status !== 404 && failures < RESET_POLL_FAILURES) return poll(handle, failures + 1);
+        throw error;
+      });
+    }
     function observe(response) {
       var result = response && response.reset;
       if (!result || result.story !== target.id || !result.handle) throw new Error("Invalid reset response for " + target.id);
-      if (result.state === "ok") return;
+      if (result.state === "ok") return result;
       if (result.state === "error") throw new Error(result.detail || "Reset failed; retry to finish cleanup.");
       if (result.state !== "running") throw new Error("Unknown reset state for " + target.id);
-      return new Promise(function(resolve) { setTimeout(resolve, 1000); }).then(function() {
-        return api("GET", endpoint + "/" + encodeURIComponent(result.handle), null);
-      }).then(observe);
+      return poll(result.handle, 0);
     }
-    api("POST", endpoint, { confirmation: target.id }).then(observe).then(function() {
+    reserve(0).then(observe).then(function(result) {
       delete state.resets[target.key];
       if (resetModal === target) { setResetBusy(false); closeResetModal(); }
-      toast(target.id + " reset to todo", "success");
+      var left = (result.residue || []).map(function(entry) { return entry.resource; });
+      if (left.length) toast(target.id + " reset to todo; left in place: " + left.join(", ") + ". Its comment says why.", "warn");
+      else toast(target.id + " reset to todo", "success");
       if (state.repoId === target.project) fetchData();
     }).catch(function(error) {
       delete state.resets[target.key];
