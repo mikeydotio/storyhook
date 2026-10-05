@@ -176,6 +176,7 @@ pub struct Ctx<'a, S: Store> {
     project: ProjectId,
     no_hooks: bool,
     hook_depth: u32,
+    agent_session: bool,
     cwd: PathBuf,
     env: Environment,
     stdin: Option<String>,
@@ -203,6 +204,7 @@ impl<'a, S: Store> Ctx<'a, S> {
             project,
             no_hooks: false,
             hook_depth: 0,
+            agent_session: false,
             cwd: cwd.into(),
             env,
             stdin: None,
@@ -282,6 +284,24 @@ impl<'a, S: Store> Ctx<'a, S> {
     pub fn hook_depth(mut self, hook_depth: u32) -> Self {
         self.hook_depth = hook_depth;
         self
+    }
+
+    /// Marks this invocation as coming from a dispatched agent session.
+    ///
+    /// The CLI reads the marker from its own environment and the request
+    /// carries it, for the reason [`hook_depth`](Self::hook_depth) travels: the
+    /// service never reads the process environment, which tests in one binary
+    /// share. An operator-only service refuses such a caller (SH-849).
+    #[must_use]
+    pub fn agent_session(mut self, agent_session: bool) -> Self {
+        self.agent_session = agent_session;
+        self
+    }
+
+    /// Whether this invocation comes from a dispatched agent session.
+    #[must_use]
+    pub fn is_agent_session(&self) -> bool {
+        self.agent_session
     }
 
     /// Sets the clock this context's timestamps come from.

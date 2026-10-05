@@ -69,6 +69,7 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "pr_check",
         "project",
         "project_recovery",
+        "project_recovery/prerequisite",
         "project_recovery/rearm",
         "project_recovery/refusal",
         "project_recovery/resume",

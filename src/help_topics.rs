@@ -2803,6 +2803,7 @@ story verifier ack <incident-id> [--leave-stopped]
 story verifier gate-config <checkout> <base> <head> <tree> --json
 story verifier repair show <recovery-id> --json
 story verifier repair decide <recovery-id> --input <json-file>
+story verifier repair satisfy <recovery-id> --input <json-file>
 
 Inspect and control this project's centralized verifier.
 
@@ -2827,6 +2828,20 @@ Inspect and control this project's centralized verifier.
   this exception does not change unrelated story priorities. Scope advice
   never grants certification, credentials, or permission overrides.
 
+  repair satisfy records, once, an operator's statement that the
+  prerequisite of an external-scope recovery is restored. The file needs
+  version (1), the current revision from repair show, context, question,
+  decision, rationale, and evidence (what shows the prerequisite is back).
+  A dispatched agent session (STORYHOOK_DISPATCH, STORYHOOK_AUTO or
+  STORYHOOK_FULL_AUTO set) is refused: only an operator can make it.
+  Stale or conflicting input is refused; identical replay returns the
+  recorded result. The statement retires the recovery: the verifier
+  releases the holds the recovery set and resumes the affected agents, and
+  a later fault opens a new recovery that names this one (supersedes). It
+  is an attestation, not a check, and grants no certification: each
+  affected story still needs a fresh generation that passes the gate.
+  Clearing a hold by hand does not satisfy the prerequisite.
+
   gate-config reads committed gate configuration from the exact proposed merge.
   Supply pinned Git object IDs for both parents and the expected tree. This
   local, store-free helper does not change the checkout or certify a tree.
@@ -2845,8 +2860,9 @@ Inspect and control this project's centralized verifier.
   project_recoveries adds fault, affected stories, assessment and repair owner,
   repair PR, phase, completed-attempt budget, and next action. These records
   are distinct from infrastructure halts. Old payloads have no recovery rows.
-  Unresolved and invalid recoveries are listed. A valid landed recovery leaves
-  the list when no affected story is held or still owes a fresh generation.
+  Unresolved and invalid recoveries are listed. A valid landed or satisfied
+  recovery leaves the list when no affected story is held or still owes a
+  fresh generation.
   An invalid row names the record, locus, validation error and repair show
   command. Ownership and attempt counts are unavailable for that row.
   The dashboard reads the same snapshot. Use repair show for full evidence.

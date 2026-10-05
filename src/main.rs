@@ -408,11 +408,16 @@ fn main() {
     // it, because `parse_invocation` is pure and must stay so. Every other
     // invocation passes through untouched.
     let invocation = storyhook::claim_comment::resolve(invocation);
+    // Read here for the reason `$STORYHOOK_ACTOR` is: it belongs to the
+    // caller's shell. An operator-only command refuses a dispatched agent
+    // session (SH-849).
+    let agent_session = storyhook::invoke::is_agent_session(|name| env::var(name).ok());
     let request = InvokeRequest::new(invocation)
         .no_hooks(flags.no_hooks)
         .stdin(piped)
         .project(selector)
-        .actor(actor);
+        .actor(actor)
+        .agent_session(agent_session);
     let depth = storyhook::event_hooks::depth_from_env();
     // **The CLI's only door.** There was a second — `--local`, which built a
     // `StoreInvoker` here and ran the work in this process — and it is gone

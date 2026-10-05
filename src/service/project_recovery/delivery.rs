@@ -135,13 +135,13 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
             .map_err(Into::into)
     }
 
-    /// Avoid housekeeping write transactions when certified landing cannot release a hold.
+    /// Avoid housekeeping write transactions when the release authority cannot release a hold.
     pub fn landing_release_ready(&self, recovery: &str) -> Result<bool, AppError> {
         self.ctx
             .store()
             .read(|tx| {
                 let view = persistence::find(tx, self.ctx.project(), recovery)?;
-                if view.state.landing.is_none() {
+                if super::resolution::release(&view.state).is_none() {
                     return Ok(false);
                 }
                 if let Some(decision) = &view.state.decision {

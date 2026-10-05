@@ -439,6 +439,7 @@ story verifier ack <incident-id> [--leave-stopped]
 story verifier gate-config <checkout> <base> <head> <tree> --json
 story verifier repair show <recovery-id> --json
 story verifier repair decide <recovery-id> --input <json-file>
+story verifier repair satisfy <recovery-id> --input <json-file>
 story resources <id> [--json]
 story cleanup [--dry-run]
 story summary
