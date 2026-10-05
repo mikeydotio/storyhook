@@ -3078,6 +3078,9 @@ pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, App
         return Ok(None);
     }
     let info = read_info(env);
+    // Processes the force path declined, or was refused, to signal. A target
+    // still alive afterwards is a stop that did not happen, and it must fail.
+    let mut unsignalled: Vec<OwnedProcess> = Vec::new();
     let daemon_identity = read_daemon_identity(env).or_else(|| {
         info.as_ref().map(|info| DaemonIdentity {
             pid: info.pid,
@@ -3120,14 +3123,22 @@ pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, App
                         start_time: identity.start_time.clone(),
                         request_id: None,
                     };
-                    report_signal_outcome(&daemon, hard_kill_owned_process(&daemon));
+                    let outcome = hard_kill_owned_process(&daemon);
+                    if outcome.was_refused() {
+                        unsignalled.push(daemon.clone());
+                    }
+                    report_signal_outcome(&daemon, outcome);
                 } else {
                     eprintln!("storyhook: no identity-safe daemon PID was available to signal");
                 }
             }
             let owned = read_owned_processes(env);
             for process in &owned {
-                report_signal_outcome(process, hard_kill_owned_process(process));
+                let outcome = hard_kill_owned_process(process);
+                if outcome.was_refused() {
+                    unsignalled.push(process.clone());
+                }
+                report_signal_outcome(process, outcome);
             }
             if !daemon_drained {
                 ledger_abandoned(
@@ -3149,6 +3160,24 @@ pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, App
     if !is_live(env) {
         let _ = std::fs::remove_file(env.daemon_file());
         let _ = std::fs::remove_file(env.daemon_processes());
+    }
+    // Only a decision fails the stop, never a slow exit: a process that was
+    // signalled may still be on its way out, but one that was never signalled
+    // and is positively the recorded incarnation is still running.
+    let survivors: Vec<String> = unsignalled
+        .iter()
+        .filter(|process| {
+            process.start_time.is_some()
+                && process_identity_is_live(process.pid, process.start_time.as_deref())
+        })
+        .map(|process| format!("{} PID {}", process.role, process.pid))
+        .collect();
+    if !survivors.is_empty() {
+        return Err(AppError::Storage(format!(
+            "`story daemon stop --force` could not signal {}, and each is still running. \
+             Confirm it is this store's daemon (`story daemon status`), then stop it by hand.",
+            survivors.join(", ")
+        )));
     }
     Ok(info)
 }
@@ -3175,6 +3204,14 @@ enum SignalOutcome {
     AlreadyExited,
     IdentityMismatch,
     Refused(i32),
+}
+
+impl SignalOutcome {
+    /// Whether the process was left unsignalled by a decision: its identity
+    /// could not be confirmed safe to signal, or the OS refused.
+    fn was_refused(self) -> bool {
+        matches!(self, Self::IdentityMismatch | Self::Refused(_))
+    }
 }
 
 fn owned_process_is_live(process: &OwnedProcess) -> bool {
@@ -5060,6 +5097,50 @@ mod tests {
                 identity.start_time.as_deref()
             ));
         });
+    }
+
+    /// A force stop that could not signal its target, which is still running,
+    /// fails: `lib.sh` stops each test's daemon before deleting its home, and
+    /// a stop that reported success here left the daemon serving the deleted
+    /// store. The recorded group deliberately does not match the live child's,
+    /// so the force path refuses to signal it and never touches this test's
+    /// own process group.
+    #[cfg(unix)]
+    #[test]
+    fn force_stop_reports_a_daemon_it_could_not_signal() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let mut child = storyhook_test_support::ChildGuard::spawn(&mut command)
+            .expect("spawning the daemon identity fixture");
+        assert_ne!(
+            process_group(child.pid()),
+            Some(child.pid()),
+            "the fixture must not lead its own group, so the recorded one is wrong"
+        );
+        let identity = DaemonIdentity {
+            pid: child.pid(),
+            process_group: child.pid(),
+            start_time: Some(process_start_time(child.pid()).expect("native process identity")),
+        };
+        let held = claim_pidfile(&env).expect("holding the daemon lock");
+        std::fs::write(env.daemon_pidfile(), serde_json::to_vec(&identity).unwrap()).unwrap();
+
+        let refused = stop(&env, StopMode::Force)
+            .expect_err("a daemon the force path could not signal is still running");
+        let message = refused.to_string();
+        assert!(
+            message.contains(&format!("daemon PID {}", child.pid())),
+            "the failure must name the survivor: {message}"
+        );
+        assert!(process_identity_is_live(
+            identity.pid,
+            identity.start_time.as_deref()
+        ));
+
+        drop(held);
+        child.kill_and_reap();
     }
 
     #[test]
