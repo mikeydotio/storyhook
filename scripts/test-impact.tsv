@@ -168,6 +168,7 @@ host_admission	scripts/tests/test_host_admission.py
 host_admission	scripts/tests/test_host_admission_activation.py
 host_admission	scripts/tests/test_host_admission_adapter.py
 host_admission	scripts/tests/test_host_admission_evidence.py
+host_admission	scripts/tests/test_host_admission_runners.py
 host_admission	scripts/tests/test_host_admission_sensors.py
 host_admission	scripts/tests/test_host_admission_system.py
 host_admission	scripts/tests/test_host_admission_usage.py
@@ -237,6 +238,14 @@ remote_identity	:(glob)**/*
 retired_next_claim	:(glob)**/*
 retired_work_verb	:(glob)**/*
 route_authority	:(glob)**/*
+runner_admission_inventory	.cargo/config.toml
+runner_admission_inventory	:(glob)plugins/story/bin/*
+runner_admission_inventory	:(glob)plugins/story/hooks/*
+runner_admission_inventory	:(glob)plugins/story/lib/*
+runner_admission_inventory	:(glob)scripts/**
+runner_admission_inventory	Makefile
+runner_admission_inventory	plugins/story/tests/lib.sh
+runner_admission_inventory	plugins/story/tests/run-tests.sh
 schema_lineage	:(glob)src/store/**
 schema_lineage	src/store/schema/0047_project_recovery.sql
 scope_rubric	:(glob)**/*
