@@ -333,3 +333,12 @@ pub fn assessment_charter(view: &RecoveryView) -> String {
         view.state.assessment.dispatch_identity
     )
 }
+
+/// Whether an active recovery needs this repair to supply an actual certification.
+pub(crate) fn requires_certification(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+    story: crate::store::StoryNo,
+) -> Result<bool, StoreError> {
+    Ok(attempts::owner(tx, project, story)?.is_some())
+}

@@ -11,6 +11,10 @@ import threading
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+
+# Bounds a hung watchdog run only, as a multiple of the idle ceiling the run
+# enforces; a correct run ends at that ceiling (SH-698).
+WATCHDOG_RUN_ALLOWANCE = 30
 sys.path.insert(0, str(SCRIPTS))
 from progress_journal import observe
 
@@ -109,7 +113,7 @@ class ShellTests(unittest.TestCase):
                 out = subprocess.run(["bash", str(SCRIPTS / "machine-lock.sh"), "--max-idle", str(ceiling),
                                       "resource-probe", "--", sys.executable, "-c", code,
                                       str(journal), str(ready), str(poll / 4)], env=env,
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30 * ceiling)
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=WATCHDOG_RUN_ALLOWANCE * ceiling)
             finally:
                 stop.set(); feeder.join()
             self.assertTrue(ready.exists(), out.stderr.decode())

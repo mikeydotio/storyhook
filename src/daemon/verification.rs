@@ -53,7 +53,10 @@ pub use reconcile_hold::{
 use super::bus::{Change, ChangeBus};
 use super::lifecycle::{CurrentRequest, InFlight};
 use crate::api::dispatch::resolve_control_script;
-use crate::domain::landing::{AlreadyLanded, SubmissionOutcome};
+use crate::domain::landing::{
+    AlreadyLanded, LandingAuthority, SkippedPolicy, SkippedSubmission, SubmissionOutcome,
+    VerificationMode,
+};
 use crate::domain::pr_url::parse_pr_url;
 use crate::domain::{
     CLEANUP_LEASE_ENV, CLEANUP_LEASE_VERSION, CleanupReceipt, SubmissionReceipt,
@@ -113,6 +116,9 @@ pub struct ActiveVerification {
     /// Absent for first attempts, replacements, and legacy ownership payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_origin: Option<VerificationRetryOrigin>,
+    /// Gate policy pinned at admission; a later control cannot reclassify it.
+    #[serde(default)]
+    pub mode: VerificationMode,
 }
 
 /// Immutable failure-budget identity that an admitted retry may supersede on display.
@@ -318,6 +324,7 @@ impl VerificationActivity {
             generation: candidate.verifying_generation,
             started_at,
             retry_origin,
+            mode: VerificationMode::Gated,
         };
         let cancellation = Cancellation::default();
         slots.insert(
@@ -397,13 +404,14 @@ impl VerificationGuard {
     ) -> Result<(), AppError> {
         assert_eq!(self.active.project, candidate.project);
         assert_eq!(self.active.story_id, candidate.story_id);
-        let replacement = ActiveVerification {
+        let mut replacement = ActiveVerification {
             attempt_id: uuid::Uuid::new_v4().to_string(),
             project: candidate.project,
             story_id: candidate.story_id.clone(),
             generation: candidate.verifying_generation,
             started_at,
             retry_origin: None,
+            mode: self.active.mode,
         };
         let mut slots = self
             .registry
@@ -426,6 +434,7 @@ impl VerificationGuard {
                 &replacement.started_at,
             )
         })?;
+        replacement.mode = record.mode;
         cost::register(
             &self.registry.costs,
             record,
@@ -516,6 +525,15 @@ pub enum VerificationOutcome {
         /// The gate command that certified the tree, as one line (SH-649) —
         /// what the GREEN comment names, never a literal.
         gate: String,
+    },
+    /// The exact merge was prepared while verification was stopped; no gate ran.
+    Prepared {
+        /// Full submitted head object id.
+        head: String,
+        /// Full proposed merge tree object id.
+        tree: String,
+        /// Preparation evidence, without any certification claim.
+        detail: String,
     },
     /// The PR does not merge into current main.
     Conflict { detail: String },
@@ -699,6 +717,19 @@ pub trait VerificationActuator: Send + Sync {
         candidate: &VerificationCandidate,
         pull_request: &PrLink,
     ) -> VerificationOutcome;
+    /// Prepares one stopped-mode submission without executing a gate.
+    /// Adapters must opt in explicitly; verification is never a fallback.
+    fn prepare_without_verification(
+        &self,
+        _candidate: &VerificationCandidate,
+        _pull_request: &PrLink,
+        _cancellation: &VerificationCancellation,
+    ) -> VerificationOutcome {
+        VerificationOutcome::InfrastructureFailure {
+            detail: "this verifier adapter cannot prepare stopped-mode submissions".into(),
+            disposition: VerificationFailureDisposition::Permanent,
+        }
+    }
     /// Uses durable authority to request one exact merge.
     fn land(
         &self,
@@ -982,8 +1013,8 @@ impl ShellVerificationActuator {
                 .arg("--landing")
                 .arg(if recover { "recover" } else { "attempt" })
                 .arg(intent.landing_pull_request())
-                .arg(&intent.certification.head)
-                .arg(&intent.certification.tree)
+                .arg(intent.certification.head())
+                .arg(intent.certification.tree())
                 .arg(marker)
                 .current_dir(&intent.checkout)
                 .env("STORY_BIN", self.story_binary())
@@ -1000,6 +1031,9 @@ impl ShellVerificationActuator {
                 .env("GIT_TERMINAL_PROMPT", "0")
                 .env("GH_PROMPT_DISABLED", "1")
                 .stdin(Stdio::null());
+            if let LandingAuthority::Skipped(prepared) = &intent.certification {
+                command.arg(&prepared.attempt);
+            }
             let request_id = verification_request_id(candidate);
             let captured = if recover {
                 self.run_control_command(
@@ -1447,6 +1481,7 @@ impl ShellVerificationActuator {
         pull_request: &PrLink,
         cancellation: &VerificationCancellation,
         admission: RepairAdmission,
+        mode: VerificationMode,
     ) -> VerificationOutcome {
         let _log = self.log_scope(candidate);
         if let Some(detail) = checkout_repository_problem(&candidate.checkout, pull_request) {
@@ -1517,7 +1552,11 @@ impl ShellVerificationActuator {
             .arg(&script)
             .arg(&pull_request.url)
             .arg("--")
-            .arg("--project-gate")
+            .arg(if mode == VerificationMode::Gated {
+                "--project-gate"
+            } else {
+                "--prepare-without-verification"
+            })
             .current_dir(&candidate.checkout)
             .envs(self.env.child_vars())
             .env("STORY_BIN", self.story_binary())
@@ -1551,7 +1590,8 @@ impl ShellVerificationActuator {
             .env_remove("STORYHOOK_REPAIR_GENERATION");
         // Legacy ordinary submissions have no generation and cannot own a
         // recovery lineage. Preserve their existing path without inventing one.
-        if admission == RepairAdmission::Owned
+        if mode == VerificationMode::Gated
+            && admission == RepairAdmission::Owned
             && let Some(generation) = owned_attempt.as_ref().and_then(|owned| owned.generation)
         {
             command
@@ -1802,6 +1842,22 @@ impl VerificationActuator for ShellVerificationActuator {
             pull_request,
             cancellation,
             RepairAdmission::Owned,
+            VerificationMode::Gated,
+        )
+    }
+
+    fn prepare_without_verification(
+        &self,
+        candidate: &VerificationCandidate,
+        pull_request: &PrLink,
+        cancellation: &VerificationCancellation,
+    ) -> VerificationOutcome {
+        self.run_verify_pr(
+            candidate,
+            pull_request,
+            cancellation,
+            RepairAdmission::Withheld,
+            VerificationMode::VerificationSkipped,
         )
     }
 
@@ -1922,6 +1978,12 @@ fn checkout_repository_problem(
 #[derive(Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case")]
 enum WireOutcome {
+    Prepared {
+        head: String,
+        tree: String,
+        detail: String,
+        cleanup_failure: Option<VerificationCleanupFailure>,
+    },
     AlreadyLanded {
         evidence: AlreadyLanded,
     },
@@ -1985,6 +2047,34 @@ impl WireOutcome {
             };
         }
         match self {
+            WireOutcome::Prepared {
+                head,
+                tree,
+                detail,
+                cleanup_failure,
+            } => {
+                let evidence = SkippedSubmission {
+                    mode: SkippedPolicy::VerificationSkipped,
+                    head: head.clone(),
+                    tree: tree.clone(),
+                    attempt: "wire-validation".into(),
+                };
+                if let Err(error) = evidence.validate() {
+                    return VerificationOutcome::InfrastructureFailure {
+                        detail: format!("invalid prepared merge evidence: {error}"),
+                        disposition: VerificationFailureDisposition::Permanent,
+                    };
+                }
+                if let Some(cleanup) = cleanup_failure {
+                    return VerificationOutcome::InfrastructureFailure {
+                        detail: format!(
+                            "prepared merge withheld until ownership settles: {cleanup:?}"
+                        ),
+                        disposition: VerificationFailureDisposition::Permanent,
+                    };
+                }
+                VerificationOutcome::Prepared { head, tree, detail }
+            }
             WireOutcome::AlreadyLanded { evidence } => match evidence.validate() {
                 Ok(()) => VerificationOutcome::AlreadyLanded { evidence },
                 Err(error) => VerificationOutcome::InfrastructureFailure {
@@ -2530,21 +2620,28 @@ where
             }
             // After the cancellation check: a stop during the preview reaches
             // the gate exactly as a stop during the gate does (SH-830 D1a).
-            let preview = batch_preview::compute(
-                store,
-                env,
-                actuator,
-                &candidate,
-                published.as_ref(),
-                &active,
-            );
+            let preview = if active.active.mode == VerificationMode::Gated {
+                batch_preview::compute(
+                    store,
+                    env,
+                    actuator,
+                    &candidate,
+                    published.as_ref(),
+                    &active,
+                )
+            } else {
+                None
+            };
             // The batch (SH-831) runs before the head's own gate. A certified
             // batch lands (SH-832); a red one is bisected (SH-833), whose
             // red verdict on the head alone stands in for the head's gate.
             // Otherwise the head is gated alone after it.
             let mut batch_summary = None;
             let mut head_verdict = None;
-            if !batched && let Some(batching) = actuator.batch() {
+            if active.active.mode == VerificationMode::Gated
+                && !batched
+                && let Some(batching) = actuator.batch()
+            {
                 match batch::run(
                     store,
                     env,
@@ -2642,6 +2739,22 @@ where
             // a second gate would only run the suite again (SH-833 D7).
             let (verified, found_by) = match head_verdict {
                 Some((outcome, found_by)) => (Ok(Some(outcome)), Some(found_by)),
+                None if active.active.mode == VerificationMode::VerificationSkipped => (
+                    observation::verify(
+                        store,
+                        bus,
+                        &candidate,
+                        &active.cancellation,
+                        |cancellation| {
+                            actuator.prepare_without_verification(
+                                &candidate,
+                                &pull_request,
+                                cancellation,
+                            )
+                        },
+                    ),
+                    None,
+                ),
                 None => (
                     cost::execute(
                         store,
@@ -2674,6 +2787,9 @@ where
                     None,
                 ),
             };
+            if active.active.mode == VerificationMode::VerificationSkipped {
+                cost::preparation(store, &active, &verified)?;
+            }
             batch_preview::finish(
                 env,
                 &active,
@@ -2716,6 +2832,7 @@ where
                 if matches!(
                     outcome,
                     VerificationOutcome::Certified { .. }
+                        | VerificationOutcome::Prepared { .. }
                         | VerificationOutcome::AlreadyLanded { .. }
                 ) {
                     "INFO"
@@ -2748,6 +2865,29 @@ where
             }) {
                 return Ok(TickResult::Returned);
             }
+            let prepared_authority = match &outcome {
+                VerificationOutcome::Prepared { head, tree, .. } => {
+                    if active.active.mode != VerificationMode::VerificationSkipped {
+                        return Err(AppError::Validation(
+                            "gated attempt returned skipped preparation".into(),
+                        ));
+                    }
+                    Some(LandingAuthority::Skipped(SkippedSubmission {
+                        mode: SkippedPolicy::VerificationSkipped,
+                        head: head.clone(),
+                        tree: tree.clone(),
+                        attempt: active.active.attempt_id.clone(),
+                    }))
+                }
+                VerificationOutcome::Certified { .. }
+                    if active.active.mode != VerificationMode::Gated =>
+                {
+                    return Err(AppError::Validation(
+                        "stopped preparation claimed certification".into(),
+                    ));
+                }
+                _ => None,
+            };
             use crate::service::project_recovery::{ProjectRecoveryService, RepairJudgment};
             let recovery_service = ProjectRecoveryService::new(&ctx);
             let judgment = match &outcome {
@@ -2817,23 +2957,32 @@ where
                         TickResult::Returned
                     });
                 }
-                VerificationOutcome::Certified {
-                    head,
-                    tree,
-                    detail,
-                    gate,
-                } => {
+                outcome @ (VerificationOutcome::Certified { .. }
+                | VerificationOutcome::Prepared { .. }) => {
                     use crate::service::landing::{LandingAdmission, VerifiedSubmission};
-                    let intent = match queue.begin_landing(
-                        &ctx,
-                        &candidate,
-                        &VerifiedSubmission { head, tree, gate },
-                    )? {
-                        LandingAdmission::Admitted(intent) => intent,
-                        LandingAdmission::Held(_) => return Ok(TickResult::Returned),
-                        LandingAdmission::Pending(_) => return Ok(TickResult::RetryLater),
-                        LandingAdmission::Superseded => continue,
+                    let (authority, detail) = match outcome {
+                        VerificationOutcome::Certified {
+                            head,
+                            tree,
+                            gate,
+                            detail,
+                        } => (
+                            LandingAuthority::Certified(VerifiedSubmission { head, tree, gate }),
+                            detail,
+                        ),
+                        VerificationOutcome::Prepared { detail, .. } => (
+                            prepared_authority.expect("prepared authority checked above"),
+                            detail,
+                        ),
+                        _ => unreachable!(),
                     };
+                    let intent =
+                        match queue.begin_authorized_landing(&ctx, &candidate, &authority)? {
+                            LandingAdmission::Admitted(intent) => intent,
+                            LandingAdmission::Held(_) => return Ok(TickResult::Returned),
+                            LandingAdmission::Pending(_) => return Ok(TickResult::RetryLater),
+                            LandingAdmission::Superseded => continue,
+                        };
                     let landing = actuator.land(&candidate, &intent);
                     if !observation::human_permits(store, &candidate)? {
                         return Ok(TickResult::Returned);
@@ -3508,7 +3657,7 @@ fn record_generation_withdrawn<S: Store>(
 /// Rewrites the generation's PROGRESS comment as INTERRUPTED when the owned
 /// attempt is stopped by the operator or by daemon shutdown (SH-692). The
 /// story stays `verifying` and current, so the marked upsert applies; the
-/// attempt restarts from the beginning when the verifier resumes.
+/// next admission prepares the submission under the current gate policy.
 fn record_generation_interrupted<S: Store>(
     queue: &VerificationQueue<'_, S>,
     ctx: &Ctx<'_, S>,
@@ -3542,7 +3691,7 @@ fn withdrawal_comment(url: &str, generation: &str, reason: &str, position: &str)
 
 fn interruption_comment(now: &str, position: &str) -> String {
     format!(
-        "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — INTERRUPTED\nThe verifier was stopped while this attempt ran. The gate judged nothing. The attempt restarts from the beginning when the verifier resumes.\n\nAttempt position:\n{}",
+        "{GATE_PROGRESS_PREFIX} updated {now}\n\nVerification — INTERRUPTED\nThe verifier was stopped while this attempt ran. The gate judged nothing. After owned processes settle, the next eligible attempt follows the current gate policy. Stopped verification skips tests.\n\nAttempt position:\n{}",
         crate::text_lint::quote_evidence(position),
     )
 }
@@ -3922,5 +4071,37 @@ mod comment_tests {
             assert!(body.contains(&crate::text_lint::quote_evidence(evidence)));
             assert!(body.contains("judged nothing"));
         }
+    }
+}
+
+#[cfg(test)]
+mod skipped_preparation_tests {
+    use super::*;
+
+    #[test]
+    fn incomplete_or_unsettled_preparation_never_authorizes_landing() {
+        let valid = serde_json::json!({"result":"prepared", "head":"a".repeat(40), "tree":"b".repeat(40), "detail":"prepared without tests"});
+        let outcome = serde_json::from_value::<WireOutcome>(valid.clone())
+            .unwrap()
+            .into_outcome();
+        assert!(matches!(outcome, VerificationOutcome::Prepared { .. }));
+        for field in ["head", "tree"] {
+            let mut malformed = valid.clone();
+            malformed[field] = serde_json::json!("short");
+            assert!(matches!(
+                serde_json::from_value::<WireOutcome>(malformed)
+                    .unwrap()
+                    .into_outcome(),
+                VerificationOutcome::InfrastructureFailure { .. }
+            ));
+        }
+        let mut unsettled = valid;
+        unsettled["cleanup_failure"] = serde_json::json!({"phase":"cleanup", "detail":"writer remains", "owner":"owner", "worktree":"worktree", "disposition":"permanent"});
+        assert!(matches!(
+            serde_json::from_value::<WireOutcome>(unsettled)
+                .unwrap()
+                .into_outcome(),
+            VerificationOutcome::InfrastructureFailure { .. }
+        ));
     }
 }

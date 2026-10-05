@@ -1,6 +1,7 @@
 import { gracedOperationBudget } from "../load-grace";
 import { test, expect } from "./support";
-import type { APIRequestContext } from "@playwright/test";
+import type { APIRequestContext, Page } from "@playwright/test";
+import { withDrainedRoutes } from "../route-lifetime";
 import {
   activateBehindOverlay,
   cleanUpCreatedStories,
@@ -73,6 +74,27 @@ async function slowData(page: import("@playwright/test").Page): Promise<void> {
   });
 }
 
+/** Holds the pre-data state until the proof releases it, with scoped route cleanup. */
+async function withHeldData(
+  page: Page,
+  body: (release: () => void, requested: Promise<void>) => Promise<void>,
+): Promise<void> {
+  const gate = latch();
+  const requested = latch();
+  await page.route(/\/data(\?|$)/, async route => {
+    requested.release();
+    await gate.held;
+    await route.continue();
+  });
+  await withDrainedRoutes(page, async () => {
+    try {
+      await body(gate.release, requested.held);
+    } finally {
+      gate.release();
+    }
+  });
+}
+
 /** The title of the draft the SH-284 tests below seed. Distinctive on
  * purpose: `cleanUpCreatedStories` sweeps by id, but a failure message
  * naming this string says immediately which spec left it behind. */
@@ -117,25 +139,25 @@ test("the board is visible, and empty, before its data arrives", async ({
   page,
 }) => {
   await seedToken(page);
-  await slowData(page);
-  // Deep-linked rather than clicked, so this test can observe the window
-  // without going through `openProject()` -- the helper whose whole job is
-  // to close it.
-  const slug = await projectSlug(page.request, "Alpha Project");
-  await page.goto(`/?project=${encodeURIComponent(slug)}`);
+  await withHeldData(page, async (release, requested) => {
+    // Deep-linked rather than clicked, so this test can observe the window
+    // without going through `openProject()` -- the helper whose whole job is
+    // to close it.
+    const slug = await projectSlug(page.request, "Alpha Project");
+    await page.goto(`/?project=${encodeURIComponent(slug)}`);
+    await requested;
 
-  await expect(page.locator("#board-view")).toBeVisible();
-  // What "visible but not loaded" actually looks like: no cards, and a
-  // filter count that renderView() leaves empty because `state.data` is
-  // still null. A spec that treated the assertion above as readiness would
-  // be acting on this.
-  await expect(page.locator(".card")).toHaveCount(0);
-  await expect(page.locator("#filter-count")).toHaveText("");
+    await expect(page.locator("#board-view")).toBeVisible();
+    // What "visible but not loaded" actually looks like: no cards, and a
+    // filter count that renderView() leaves empty because `state.data` is
+    // still null. A spec that treated the assertion above as readiness would
+    // be acting on this.
+    await expect(page.locator(".card")).toHaveCount(0);
+    await expect(page.locator("#filter-count")).toHaveText("");
 
-  // And it does resolve on its own -- the window is a window, not a
-  // breakage.
-  await expect(page.locator("#filter-count")).not.toHaveText("", {
-    timeout: DATA_DELAY_MS * 3,
+    // Releasing the real response ends the window without changing app state.
+    release();
+    await expect(page.locator("#filter-count")).not.toHaveText("");
   });
 });
 
@@ -181,52 +203,53 @@ test("the + New button is inert until the project's data arrives", async ({
   page,
 }) => {
   await seedToken(page);
-  await slowData(page);
-  // Deep-linked, same as the first test above, so this can observe the
-  // pre-data window directly rather than going through `openProject()`.
-  const slug = await projectSlug(page.request, "Alpha Project");
-  await page.goto(`/?project=${encodeURIComponent(slug)}`);
+  await withHeldData(page, async (release, requested) => {
+    // Deep-linked, same as the first test above, so this can observe the
+    // pre-data window directly rather than going through `openProject()`.
+    const slug = await projectSlug(page.request, "Alpha Project");
+    await page.goto(`/?project=${encodeURIComponent(slug)}`);
+    await requested;
 
-  await expect(page.locator("#board-view")).toBeVisible();
-  const btn = page.locator("#new-story-btn");
-  await expect(btn).toBeVisible();
-  // SH-265: the button used to stay clickable through this whole window,
-  // opening a modal built from an empty `meta()` that never repopulates.
-  await expect(btn).toBeDisabled();
+    await expect(page.locator("#board-view")).toBeVisible();
+    const btn = page.locator("#new-story-btn");
+    await expect(btn).toBeVisible();
+    // SH-265: the button used to stay clickable through this whole window,
+    // opening a modal built from an empty `meta()` that never repopulates.
+    await expect(btn).toBeDisabled();
 
-  // A disabled button fires no click event at all -- this is a stronger
-  // claim than "Playwright's `.click()` would wait", and it is what proves
-  // the button is actually inert rather than merely slow to become
-  // clickable.
-  await page.evaluate(() => {
-    (document.getElementById("new-story-btn") as HTMLButtonElement).click();
+    // A disabled button fires no click event at all -- this is a stronger
+    // claim than "Playwright's `.click()` would wait", and it is what proves
+    // the button is actually inert rather than merely slow to become
+    // clickable.
+    await page.evaluate(() => {
+      (document.getElementById("new-story-btn") as HTMLButtonElement).click();
+    });
+    await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+
+    // `openCreateModal()`'s own `if (!state.data) return;` guard is the second
+    // line of defense -- exercised here by forcing the one path around the
+    // button's `disabled` attribute a real user cannot take.
+    await page.evaluate(() => {
+      const el = document.getElementById("new-story-btn") as HTMLButtonElement;
+      el.disabled = false;
+      el.click();
+    });
+    await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+
+    // And once the data lands, the button is live and the modal it opens
+    // holds this project's real vocabulary -- not just placeholders.
+    release();
+    await expect(page.locator("#filter-count")).not.toHaveText("");
+    await expect(btn).toBeEnabled();
+    await btn.click();
+    await expect(page.locator("#create-modal")).toHaveClass(/open/);
+    await page.locator("#create-priority").selectOption("critical");
+    await expect(page.locator("#create-priority")).toHaveValue("critical");
+    await expect(page.locator("#create-state")).toContainText("review");
+
+    await page.locator("#create-discard").click();
+    await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
   });
-  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
-
-  // `openCreateModal()`'s own `if (!state.data) return;` guard is the second
-  // line of defense -- exercised here by forcing the one path around the
-  // button's `disabled` attribute a real user cannot take.
-  await page.evaluate(() => {
-    const el = document.getElementById("new-story-btn") as HTMLButtonElement;
-    el.disabled = false;
-    el.click();
-  });
-  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
-
-  // And once the data lands, the button is live and the modal it opens
-  // holds this project's real vocabulary -- not just placeholders.
-  await expect(page.locator("#filter-count")).not.toHaveText("", {
-    timeout: DATA_DELAY_MS * 3,
-  });
-  await expect(btn).toBeEnabled();
-  await btn.click();
-  await expect(page.locator("#create-modal")).toHaveClass(/open/);
-  await page.locator("#create-priority").selectOption("critical");
-  await expect(page.locator("#create-priority")).toHaveValue("critical");
-  await expect(page.locator("#create-state")).toContainText("review");
-
-  await page.locator("#create-discard").click();
-  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
 });
 
 /**
@@ -259,33 +282,48 @@ test("the global Drafts count does not wait for the open board's data", async ({
 }) => {
   await seedDraft(request, "Alpha Project", DRAFT_TITLE);
   await seedToken(page);
-  await slowData(page);
-  // Deep-linked, like the tests above, so the window can be observed rather
-  // than waited out by `openProject()`.
-  const slug = await projectSlug(page.request, "Alpha Project");
-  await page.goto(`/?project=${encodeURIComponent(slug)}`);
+  await withHeldData(page, async (release, requested) => {
+    // Deep-linked, like the tests above, so the window can be observed rather
+    // than waited out by `openProject()`.
+    const slug = await projectSlug(page.request, "Alpha Project");
+    await page.goto(`/?project=${encodeURIComponent(slug)}`);
+    await requested;
 
-  await expect(page.locator("#board-view")).toBeVisible();
-  const btn = page.locator("#drafts-btn");
-  const label = page.locator("#drafts-btn-text");
-  await expect(btn).toBeVisible();
-  // The deliberate divergence from `#new-story-btn`, pinned directly: this
-  // control stays operable, because it has an honest thing to show.
-  await expect(btn).toBeEnabled();
-  // The catalog, not Alpha's held board payload, owns this global count.
-  await expect(label).toHaveText("1 Drafts");
-  await expect(page.locator("#new-story-btn")).toBeDisabled();
+    await expect(page.locator("#board-view")).toBeVisible();
+    const btn = page.locator("#drafts-btn");
+    const label = page.locator("#drafts-btn-text");
+    await expect(btn).toBeVisible();
+    // The deliberate divergence from `#new-story-btn`, pinned directly: this
+    // control stays operable, because it has an honest thing to show.
+    await expect(btn).toBeEnabled();
+    // The catalog, not Alpha's held board payload, owns this global count.
+    await expect(label).toHaveText("1 Drafts");
+    await expect(page.locator("#new-story-btn")).toBeDisabled();
 
-  await btn.click();
-  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
-  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
-  await expect(page.locator("#drafts-list .drafts-row")).toContainText(
-    DRAFT_TITLE,
-  );
-  await expect(page.locator("#drafts-list .drafts-row-project")).toHaveText(
-    "AA · Alpha Project",
-  );
-  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+    // Driver work may outlast the former fixed response delay; data must stay held.
+    await page.evaluate(async (duration) => {
+      const witness = document.createElement("span");
+      document.body.appendChild(witness);
+      try {
+        await witness.animate([{ opacity: 0 }, { opacity: 1 }], { duration }).finished;
+      } finally {
+        witness.remove();
+      }
+    }, DATA_DELAY_MS * 1.5);
+    await expect(page.locator("#new-story-btn")).toBeDisabled();
+
+    await btn.click();
+    await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+    await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
+    await expect(page.locator("#drafts-list .drafts-row")).toContainText(
+      DRAFT_TITLE,
+    );
+    await expect(page.locator("#drafts-list .drafts-row-project")).toHaveText(
+      "AA · Alpha Project",
+    );
+    await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+    release();
+  });
 });
 
 test("a board switch does not re-scope the global draft count or rows", async ({
@@ -322,22 +360,25 @@ test("a board switch does not re-scope the global draft count or rows", async ({
   // and they would be the first thing to fail if a future change reopened
   // the switch. The state SH-292's naming actually exists for is the parked
   // failure below, which is why that test asserts the subject line too.
-  await slowData(page);
-  await activateBehindOverlay(page.locator("#projsel-btn"));
-  await expect(page.locator("#projsel-menu")).toBeVisible();
-  await activateBehindOverlay(
-    page.locator("#projsel-menu .projsel-item", { hasText: "Beta Project" }),
-  );
+  await withHeldData(page, async (release, requested) => {
+    await activateBehindOverlay(page.locator("#projsel-btn"));
+    await expect(page.locator("#projsel-menu")).toBeVisible();
+    await activateBehindOverlay(
+      page.locator("#projsel-menu .projsel-item", { hasText: "Beta Project" }),
+    );
+    await requested;
 
-  // Draft discovery is global: Alpha's draft remains reachable while Beta's
-  // board vocabulary is still loading, with its owner stated on the row.
-  expect(await page.locator("#drafts-btn-text").textContent()).toBe("1 Drafts");
-  await expect(page.locator("#drafts-modal .modal-header")).toHaveText("Drafts");
-  await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
-  await expect(page.locator("#drafts-list .drafts-row-project")).toHaveText(
-    "AA · Alpha Project",
-  );
-  await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+    // Draft discovery is global: Alpha's draft remains reachable while Beta's
+    // board vocabulary is still loading, with its owner stated on the row.
+    expect(await page.locator("#drafts-btn-text").textContent()).toBe("1 Drafts");
+    await expect(page.locator("#drafts-modal .modal-header")).toHaveText("Drafts");
+    await expect(page.locator("#drafts-list .drafts-row")).toHaveCount(1);
+    await expect(page.locator("#drafts-list .drafts-row-project")).toHaveText(
+      "AA · Alpha Project",
+    );
+    await expect(page.locator("#drafts-modal")).toHaveClass(/open/);
+    release();
+  });
 });
 
 test("the Drafts button and popover are available on every dashboard screen", async ({

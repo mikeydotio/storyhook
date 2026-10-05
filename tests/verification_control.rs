@@ -397,7 +397,7 @@ fn linked_candidate(fixture: &ServiceFixture) -> VerificationCandidate {
 }
 
 #[test]
-fn stop_prevents_admission_and_does_not_turn_cancellation_into_an_incident() {
+fn stop_cancellation_does_not_turn_interrupted_work_into_an_incident() {
     let fixture = ServiceFixture::new();
     let candidate = linked_candidate(&fixture);
     let activity = VerificationActivity::new();
@@ -413,25 +413,6 @@ fn stop_prevents_admission_and_does_not_turn_cancellation_into_an_incident() {
             disposition: VerificationFailureDisposition::Permanent,
         },
     };
-    activity
-        .control(fixture.store(), fixture.project(), VerificationAction::Stop)
-        .unwrap();
-    assert_eq!(
-        tick_with_activity(
-            fixture.store(),
-            fixture.env(),
-            &gate,
-            &activity,
-            &inflight,
-            fixture.project()
-        )
-        .unwrap(),
-        TickResult::Stopped
-    );
-    assert!(
-        observed.try_recv().is_err(),
-        "stopped permission must gate actual worker admission"
-    );
     activity
         .control(
             fixture.store(),

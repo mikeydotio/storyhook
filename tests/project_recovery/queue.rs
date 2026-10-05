@@ -702,3 +702,40 @@ fn project_fault_to_managed_repair_landing_and_fresh_verification() {
         );
     }
 }
+
+#[test]
+fn stopped_verification_holds_managed_repairs_until_certification_is_enabled() {
+    let f = fixture();
+    let view = decision::ready(&f);
+    let ctx = f.ctx();
+    ProjectRecoveryService::new(&ctx)
+        .decide(
+            &view.record.id,
+            &decision::input(&view, RepairScope::SameStory),
+        )
+        .unwrap();
+    StoryService::new(&ctx)
+        .set_state("SH-1", "verifying", None, None, None)
+        .unwrap();
+    f.store()
+        .write(|tx| tx.put_verification_enabled(f.project(), false))
+        .unwrap();
+    assert!(
+        VerificationQueue::new(f.store())
+            .ordered_for(f.project())
+            .unwrap()
+            .is_empty()
+    );
+    let status = VerificationActivity::new().status(&ctx).unwrap();
+    assert!(format!("{status:?}").contains("managed repair requires certification"));
+    f.store()
+        .write(|tx| tx.put_verification_enabled(f.project(), true))
+        .unwrap();
+    assert_eq!(
+        VerificationQueue::new(f.store())
+            .ordered_for(f.project())
+            .unwrap()
+            .len(),
+        1
+    );
+}

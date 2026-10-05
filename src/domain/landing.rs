@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+mod authority;
+pub use authority::{LandingAuthority, SkippedPolicy, SkippedSubmission, VerificationMode};
+
 /// Observed Git ancestry, independent of release-gate certification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlreadyLanded {
@@ -77,6 +80,7 @@ impl From<super::SubmittedPullRequest> for SubmissionOutcome {
 
 /// The exact Git objects and gate certified by a verification attempt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerifiedSubmission {
     /// Pull request head that was tested.
     pub head: String,

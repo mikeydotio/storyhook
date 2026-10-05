@@ -31,6 +31,9 @@ pub struct VerifierStatus {
     /// Current causal holds, independent of gate certification and infrastructure state.
     #[serde(default)]
     pub attribution_holds: Vec<crate::service::attribution::AttributionHold>,
+    /// Queue exclusions and their authoritative reasons, independent of gate policy.
+    #[serde(default)]
+    pub held_reasons: Vec<(String, String)>,
     /// Process-local ownership; never inferred from queue rank.
     pub active: Option<ActiveVerification>,
     /// Last durable cost checkpoint for the active admission. It does not renew silence.
@@ -61,6 +64,11 @@ pub struct VerifierStatus {
     /// prints from being reported as silent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_silence_seconds: Option<u64>,
+    /// The owned gate's current step when it waits for machine resources:
+    /// host admission, a build slot or a lock (SH-869). Absent while the gate
+    /// works, while it is not observable, and in legacy payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_wait: Option<ResourceWait>,
     /// Diagnostic when progress cannot be inspected.
     pub evidence_error: Option<String>,
     /// One concise actionable unhealthy-queue notice.
@@ -81,6 +89,16 @@ pub struct VerifierStatus {
     /// it (SH-771). Separate from `warning`, which describes queue health.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_warning: Option<String>,
+}
+
+/// A gate step that waits for machine resources rather than working (SH-869).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceWait {
+    /// The producer's activity label, for example
+    /// "waiting for host admission (verifier-gate)".
+    pub label: String,
+    /// Time at which the wait most recently began.
+    pub since: String,
 }
 
 /// A running verification batch as status shows it (SH-832, spec B9).
@@ -199,6 +217,18 @@ pub(crate) fn snapshot(
             crate::service::gate_output::OutputObservation::Observed(age) => Some(age),
             _ => None,
         });
+    // A wait for host admission, a build slot or a lock is named as such
+    // (SH-869). A reservation runs no gate, so it has no current step.
+    let resource_wait = evidence
+        .progress
+        .as_ref()
+        .filter(|_| active.is_some() && reservation.is_none())
+        .and_then(crate::service::gate_progress::GateProgress::current_step)
+        .filter(crate::service::gate_progress::CurrentStep::is_resource_wait)
+        .map(|step| ResourceWait {
+            label: step.label,
+            since: step.started_at,
+        });
     let incident_is_current = evidence.incident_is_current(&ordered, active, incident.as_ref());
     let statuses = crate::daemon::verification_progress::status_snapshot_with_evidence(
         &ordered,
@@ -209,7 +239,10 @@ pub(crate) fn snapshot(
         incident_is_current,
         batch.as_ref(),
     );
-    let stopped = control != VerificationControlState::Running;
+    let stopped = matches!(
+        control,
+        VerificationControlState::Stopping | VerificationControlState::Draining
+    );
     let held_stories = if stopped || incident_is_current {
         verifying.clone()
     } else {
@@ -334,6 +367,7 @@ pub(crate) fn snapshot(
             verifying,
             held_stories,
             attribution_holds: crate::service::attribution::holds::current(tx, ctx.project())?,
+            held_reasons: crate::service::verification::held_verifying_for(tx, ctx.project())?,
             active: active.cloned(),
             cost,
             reservation,
@@ -346,6 +380,7 @@ pub(crate) fn snapshot(
             last_evidence_at,
             silence_seconds,
             output_silence_seconds,
+            resource_wait,
             evidence_error,
             warning,
             batch_preview,
@@ -375,11 +410,16 @@ impl VerifierStatus {
                     VerificationControlState::Running => "running",
                     VerificationControlState::Draining => "draining",
                     VerificationControlState::Stopping => "stopping",
-                    VerificationControlState::Stopped => "stopped",
+                    VerificationControlState::Stopped => {
+                        "verification stopped; submissions continue without tests"
+                    }
                 }
             },
             self.verifying.len()
         );
+        for (story, reason) in &self.held_reasons {
+            text.push_str(&format!("Held {story}: {reason}\n"));
+        }
         if let Some(i) = &self.incident {
             if self.incident_is_current {
                 text.push_str(&format!("Incident {}: {}; first hit {}; age {}s; {} attempts ({} retries); unacknowledged\n{}\nHeld: {}\n",
@@ -412,6 +452,13 @@ impl VerifierStatus {
                 ));
             }
         }
+        if let Some(wait) = &self.resource_wait {
+            text.push_str(&format!(
+                "Waiting for resources: {} since {}\n",
+                wait.label,
+                crate::local_time::stamp(&wait.since)
+            ));
+        }
         if let Some(batch) = &self.batch {
             text.push_str(&format!("{}\n", batch.describe()));
         }
@@ -433,6 +480,13 @@ impl VerifierStatus {
             text.push_str(&format!("Last gate output: {seconds}s ago\n"));
         }
         for recovery in &self.project_recoveries {
+            if recovery.phase == "invalid" {
+                text.push_str(&format!(
+                    "Project recovery {}: {} at {}; invalid\nNext: {}\n",
+                    recovery.id, recovery.fault, recovery.locus, recovery.next_action
+                ));
+                continue;
+            }
             text.push_str(&format!("Project recovery {}: {} at {}; {}\nAffected: {}; assessor {}; repair {}; completed attempts {}/{}\nNext: {}\nInspect: story verifier repair show {} --json\n",
                 recovery.id, recovery.fault, recovery.locus, recovery.phase,
                 recovery.affected_stories.join(", "), recovery.assessment_owner,

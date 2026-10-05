@@ -1,8 +1,10 @@
 import { gracedOperationBudget } from "../load-grace";
+import { setTimeout as delay } from "node:timers/promises";
 import { test, expect } from "./support";
 import {
   cleanUpCreatedStories,
   expectCardTextWithinTitle,
+  onAFrozenClock,
   openProject,
   projectSlug,
   requiredEnv,
@@ -13,6 +15,8 @@ import {
 
 /** Existing idle patience for board update; SH-804 adds contention grace. */
 const BOARD_UPDATE_BASE_MS = 8_000;
+/** Product dwell plus its documented render tick. Also a slow-reader stimulus. */
+const DWELL_RENDER_MS = 4_050;
 
 /**
  * Exercises SH-203 consumer 2's cleared-blocker dwell: when a blocker
@@ -49,6 +53,7 @@ cleanUpCreatedStories("Alpha Project");
 const DASHBOARD_TOKEN = requiredEnv("DASHBOARD_TOKEN");
 
 test.beforeEach(async ({ page }) => {
+  await page.clock.install();
   await seedToken(page);
   await page.goto("/");
   await openProject(page, "Alpha Project");
@@ -145,56 +150,65 @@ test("a card names its open blocker in the badge; closing the blocker turns the 
   // re-render rather than an optimistic local one -- moveStory()'s own
   // request shape (POST .../move, { state: targetSlug }).
   const slug = await projectSlug(request, "Alpha Project");
-  const resp = await request.post(
-    `/api/repos/${slug}/story/${blockerId}/move`,
-    {
-      headers: {
-        "X-Storyhook": "1",
-        "X-Storyhook-Token": DASHBOARD_TOKEN,
-        "Content-Type": "application/json",
+  await onAFrozenClock(page, async () => {
+    const resp = await request.post(
+      `/api/repos/${slug}/story/${blockerId}/move`,
+      {
+        headers: {
+          "X-Storyhook": "1",
+          "X-Storyhook-Token": DASHBOARD_TOKEN,
+          "Content-Type": "application/json",
+        },
+        data: { state: "done" },
       },
-      data: { state: "done" },
-    },
-  );
-  expect(resp.ok()).toBe(true);
+    );
+    expect(resp.ok()).toBe(true);
 
-  // The handoff SH-309 introduces: the worker has no other cause, so the
-  // instant its last blocker clears it leaves blocked_ids and the badge
-  // disappears entirely. SH-500 now removes the relationship from the new
-  // snapshot too, so recordClearedBlockers has to recover this worker/blocker
-  // pair from the old snapshot. .card-blockers, which exists purely to keep
-  // that removed entry visible for its dwell, appears in the same render
-  // carrying it, still lit and marked cleared. Still lit, still green -- the
-  // dwell's whole point is that the reader sees *this* blocker turn green,
-  // not merely that the badge vanished.
-  await expect(workerCard.locator(".flag-blocked")).toHaveCount(0, {
-    timeout: gracedOperationBudget(BOARD_UPDATE_BASE_MS),
-  });
-  const blockersRow = workerCard.locator(".card-blockers");
-  await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId);
-  await expect(blockersRow.locator(".story-ref.blocker-cleared")).toHaveCount(
-    1,
-  );
-  await expect(blockersRow.locator(".story-light")).toHaveCSS(
-    "background-color",
-    await resolvedTokenColor(page, "--success"),
-  );
-  // SH-763: `.rel-id` inherits its surface's size (SH-451), and this row was
-  // the one card surface that set none -- the dwell chip rendered at the 16px
-  // body size, above the 13px title and the badge it replaces. Sized like the
-  // same card's `.card-id`, and asserted while the row is still on screen so
-  // neither check can pass on a card the dwell has already left.
-  await expectCardTextWithinTitle(workerCard, "cleared-blocker dwell");
-  await expect(blockersRow.locator(".rel-id")).toHaveCSS(
-    "font-size",
-    await workerCard.locator(".card-id").evaluate((id) => getComputedStyle(id).fontSize),
-  );
+    // The handoff SH-309 introduces: the worker has no other cause, so the
+    // instant its last blocker clears it leaves blocked_ids and the badge
+    // disappears entirely. SH-500 now removes the relationship from the new
+    // snapshot too, so recordClearedBlockers has to recover this worker/blocker
+    // pair from the old snapshot. .card-blockers, which exists purely to keep
+    // that removed entry visible for its dwell, appears in the same render
+    // carrying it, still lit and marked cleared. Still lit, still green -- the
+    // dwell's whole point is that the reader sees *this* blocker turn green,
+    // not merely that the badge vanished.
+    // SSE schedules a debounced fetch. Advance only until that real update
+    // arrives, then retain the dwell for arbitrarily slow assertion transport.
+    await expect.poll(async () => {
+      await page.clock.runFor(100);
+      return workerCard.locator(".flag-blocked").count();
+    }, {
+      timeout: gracedOperationBudget(BOARD_UPDATE_BASE_MS),
+    }).toBe(0);
+    const blockersRow = workerCard.locator(".card-blockers");
+    await expect(blockersRow.locator(".rel-id")).toHaveText(blockerId);
+    await delay(DWELL_RENDER_MS);
+    await expect(blockersRow.locator(".story-ref.blocker-cleared")).toHaveCount(
+      1,
+    );
+    await expect(blockersRow.locator(".story-light")).toHaveCSS(
+      "background-color",
+      await resolvedTokenColor(page, "--success"),
+    );
+    // SH-763: `.rel-id` inherits its surface's size (SH-451), and this row was
+    // the one card surface that set none -- the dwell chip rendered at the 16px
+    // body size, above the 13px title and the badge it replaces. Sized like the
+    // same card's `.card-id`, and asserted while the row is still on screen so
+    // neither check can pass on a card the dwell has already left.
+    await expectCardTextWithinTitle(workerCard, "cleared-blocker dwell");
+    await expect(blockersRow.locator(".rel-id")).toHaveCSS(
+      "font-size",
+      await workerCard.locator(".card-id").evaluate((id) => getComputedStyle(id).fontSize),
+    );
 
-  // After the dwell (BLOCKER_CLEARED_DWELL_MS, 4s) the whole blockers row
-  // is gone -- populateCard() only appends .card-blockers at all when
-  // there's still a dwelling entry to show.
-  await expect(workerCard.locator(".card-blockers")).toHaveCount(0, {
-    timeout: gracedOperationBudget(BOARD_UPDATE_BASE_MS),
+    // After the dwell (BLOCKER_CLEARED_DWELL_MS, 4s) the whole blockers row
+    // is gone -- populateCard() only appends .card-blockers at all when
+    // there's still a dwelling entry to show.
+    await page.clock.runFor(DWELL_RENDER_MS);
+    await expect(workerCard.locator(".card-blockers")).toHaveCount(0, {
+      timeout: gracedOperationBudget(BOARD_UPDATE_BASE_MS),
+    });
   });
 
   // The blocker is left CLOSED -- cleanUpCreatedStories' afterEach reopens

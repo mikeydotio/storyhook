@@ -34,6 +34,7 @@ def plan(text, directory, projects):
         raise ValueError("empty isolation selection")
     for row in rows:
         Path(row["list"]).write_text(f'[{row["project"]}] › {row["file"]}\n')
+        Path(row["list"] + ".tsv").write_text(f'{row["project"]}\t{row["file"]}\t{row["count"]}\n')
     (directory / "manifest.json").write_text(json.dumps(rows, indent=2) + "\n")
     return rows
 

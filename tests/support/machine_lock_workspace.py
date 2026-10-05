@@ -1,6 +1,7 @@
 """Prove that a real watchdog timer cannot outlive inherited workspace authority."""
 
 import fcntl
+import math
 import os
 from pathlib import Path
 import signal
@@ -9,10 +10,10 @@ import sys
 import time
 
 
-def processes():
+def processes(patience):
     """Read parentage and execution state without guessing a timer PID."""
     output = subprocess.check_output(
-        ['ps', '-axo', 'pid=,ppid=,stat=,comm='], text=True, timeout=5)
+        ['ps', '-axo', 'pid=,ppid=,stat=,comm='], text=True, timeout=patience)
     result = {}
     for line in output.splitlines():
         fields = line.split(None, 3)
@@ -21,11 +22,11 @@ def processes():
     return result
 
 
-def stop_owned_timer(wrapper):
+def stop_owned_timer(wrapper, patience):
     """Freeze an actual grandchild sleep while its parent watchdog owns it."""
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        table = processes()
+    deadline = time.monotonic() + patience
+    while (remaining := deadline - time.monotonic()) > 0:
+        table = processes(remaining)
         for pid, (parent, state, executable) in table.items():
             owner = table.get(parent)
             if (owner and owner[0] == wrapper.pid and 'Z' not in state
@@ -34,15 +35,28 @@ def stop_owned_timer(wrapper):
                     os.kill(pid, signal.SIGSTOP)
                 except ProcessLookupError:
                     continue
-                stopped = processes().get(pid)
-                if stopped and 'T' in stopped[1]:
-                    return pid
+                confirmed = False
+                try:
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        stopped = processes(remaining).get(pid)
+                        confirmed = bool(stopped and 'T' in stopped[1])
+                        if confirmed:
+                            return pid
+                finally:
+                    # If observation fails, the caller never receives this PID.
+                    # Do not strand its timer in STOP while cleanup waits for it.
+                    if not confirmed:
+                        try:
+                            os.kill(pid, signal.SIGCONT)
+                        except ProcessLookupError:
+                            pass
         assert wrapper.poll() is None, 'wrapper exited before its timer was observed'
         time.sleep(.01)
-    raise AssertionError('real watchdog timer never started')
+    raise AssertionError(f'wrapper {wrapper.pid}: real watchdog timer not observed within {patience}s')
 
 
-def exercise(script, root, mode):
+def exercise(script, root, mode, patience, stopped_hold):
     """Keep a real inherited flock held until normal or signalled cleanup ends."""
     root.mkdir()
     environment = dict(os.environ)
@@ -59,7 +73,8 @@ def exercise(script, root, mode):
         inherited = fcntl.fcntl(owner, fcntl.F_DUPFD, 20)
         try:
             wrapper = subprocess.Popen(
-                ['bash', str(script), '--max-idle', '60', 'fixture', '--',
+                ['bash', str(script), '--max-idle', str(math.ceil(2 * patience + stopped_hold)),
+                 'fixture', '--',
                  'bash', '-c', 'IFS= read -r release'],
                 cwd=root, env=environment, stdin=subprocess.PIPE,
                 stdout=output, stderr=output, pass_fds=(inherited,))
@@ -67,14 +82,14 @@ def exercise(script, root, mode):
             os.close(inherited)
         owner.close()
         try:
-            timer = stop_owned_timer(wrapper)
+            timer = stop_owned_timer(wrapper, patience)
             if mode == 'normal':
                 wrapper.stdin.write(b'release\n')
                 wrapper.stdin.flush()
             else:
                 wrapper.send_signal(signal.SIGTERM)
             try:
-                status = wrapper.wait(timeout=2)
+                status = wrapper.wait(timeout=stopped_hold)
             except subprocess.TimeoutExpired:
                 pass
             else:
@@ -88,11 +103,11 @@ def exercise(script, root, mode):
                 else:
                     raise AssertionError(f'{mode}: live watchdog lost workspace authority')
             os.kill(timer, signal.SIGCONT)
-            status = wrapper.wait(timeout=10)
+            status = wrapper.wait(timeout=patience)
             assert status == (0 if mode == 'normal' else -signal.SIGTERM), (mode, status)
             with workspace.open('a+') as competitor:
                 fcntl.flock(competitor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            remaining = processes().get(timer)
+            remaining = processes(patience).get(timer)
             assert not remaining or 'Z' in remaining[1], (mode, timer, remaining)
             timer = None
             print(f'{mode}: timer reaped before wrapper exit; workspace immediately available')
@@ -102,19 +117,22 @@ def exercise(script, root, mode):
                     os.kill(timer, signal.SIGCONT)
                 except ProcessLookupError:
                     pass
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + patience
                 while True:
-                    remaining = processes().get(timer)
+                    allowance = deadline - time.monotonic()
+                    assert allowance > 0, 'owned timer survived regression cleanup'
+                    remaining = processes(allowance).get(timer)
                     if not remaining or 'Z' in remaining[1]:
                         break
-                    assert time.monotonic() < deadline, 'owned timer survived regression cleanup'
                     time.sleep(.02)
             if wrapper.poll() is None:
                 wrapper.terminate()
-                wrapper.wait(timeout=10)
+                wrapper.wait(timeout=patience)
             wrapper.stdin.close()
 
 
-script, scratch = map(Path, sys.argv[1:3])
-for mode in ('normal', 'signal'):
-    exercise(script, scratch / mode, mode)
+if __name__ == '__main__':
+    script, scratch = map(Path, sys.argv[1:3])
+    patience, stopped_hold = map(float, sys.argv[3:5])
+    for mode in ('normal', 'signal'):
+        exercise(script, scratch / mode, mode, patience, stopped_hold)

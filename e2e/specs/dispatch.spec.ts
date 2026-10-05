@@ -3,7 +3,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { basename, join } from "node:path";
 import { test, expect } from "./support";
-import { dispatchStory, openProject, requiredEnv, seedToken, storyBinary } from "./support";
+import { withDispatchNoticeClock } from "./dispatch-notice-clock";
+import { dispatchStory, keepNotices, openProject, requiredEnv, seedToken, storyBinary } from "./support";
 
 /** Existing idle patience for verifier override; SH-804 adds contention grace. */
 const VERIFIER_OVERRIDE_BASE_MS = 10_000;
@@ -230,6 +231,8 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   // value for an `HttpOnly` cookie, which the browser attaches to every
   // request in this tab automatically -- reads, and the dispatch write
   // below -- so nothing past this point prompts a second time.
+  // Wording and resume identity need a stable reading window.
+  await keepNotices(page);
   await openProject(page, "Alpha Project");
   await page
     .locator(".card-title", { hasText: "Wire up the auth flow" })
@@ -250,7 +253,7 @@ test("a tab authenticates once on load, and dispatch needs no second prompt (AC2
   await expect(dispatchButton).toHaveText("Dispatching…");
   const toast = page.locator("#toast-stack .toast.success");
   await expect(toast).toBeVisible({ timeout: gracedOperationBudget(DISPATCH_COMPLETION_TIMEOUT) });
-  await expect(toast).toHaveText(`${ALPHA_STORY_ID} dispatched`);
+  await expect(toast.locator(".notice-headline")).toHaveText(`${ALPHA_STORY_ID} dispatched`);
 
   // The provider double has exited: SH-850 offers Resume for its lost lane.
   await expect(dispatchButton).toBeEnabled();
@@ -300,67 +303,71 @@ test("Auto mode sends agent=claude&auto=1, plus model/effort/speed when selected
 }) => {
   test.setTimeout(DISPATCH_COMPLETION_TIMEOUT + DISPATCH_SETUP_BASE_MS);
 
-  // Seeded directly rather than driven through the token modal -- that flow
-  // is AC2's own test; this one is scoped to Auto mode's own behavior.
-  await seedToken(page);
-  await page.goto("/");
+  await withDispatchNoticeClock(page, async () => {
+    // Seeded directly rather than driven through the token modal -- that flow
+    // is AC2's own test; this one is scoped to Auto mode's own behavior.
+    await seedToken(page);
+    await page.goto("/");
 
-  await openProject(page, "Delta Project");
-  await page
-    .locator(".card-title", { hasText: "Roll out the new onboarding flow" })
-    .click();
-  await expect(page.locator("#drawer")).toHaveClass(/open/);
+    await openProject(page, "Delta Project");
+    await page
+      .locator(".card-title", { hasText: "Roll out the new onboarding flow" })
+      .click();
+    await expect(page.locator("#drawer")).toHaveClass(/open/);
 
-  // SH-517: a real end-to-end proof that startDispatch's query-string
-  // construction reaches the wire correctly -- the endpoint's own contract
-  // (tests/dispatch_endpoint.rs) and the modal's own state management
-  // (this file's "opens with defaults" test) are each covered on their own,
-  // but neither alone proves the two actually agree on the wire.
-  const dispatchRequest = page.waitForRequest(
-    (req) =>
-      req.method() === "POST" &&
-      req.url().includes("/dispatch?agent=claude&auto=1&model=haiku&effort=max&speed=fast"),
-  );
-  await dispatchStory(page, { auto: true, model: "haiku", effort: "max", speed: "fast" });
-  await dispatchRequest;
+    // SH-517: a real end-to-end proof that startDispatch's query-string
+    // construction reaches the wire correctly -- the endpoint's own contract
+    // (tests/dispatch_endpoint.rs) and the modal's own state management
+    // (this file's "opens with defaults" test) are each covered on their own,
+    // but neither alone proves the two actually agree on the wire.
+    const dispatchRequest = page.waitForRequest(
+      (req) =>
+        req.method() === "POST" &&
+        req.url().includes("/dispatch?agent=claude&auto=1&model=haiku&effort=max&speed=fast"),
+    );
+    await dispatchStory(page, { auto: true, model: "haiku", effort: "max", speed: "fast" });
+    await dispatchRequest;
 
-  await expect(page.locator("#dispatch-btn")).toBeDisabled();
-  await expect(page.locator("#dispatch-btn")).toHaveText("Dispatching…");
+    await expect(page.locator("#dispatch-btn")).toBeDisabled();
+    await expect(page.locator("#dispatch-btn")).toHaveText("Dispatching…");
 
-  // SH-232 sent every --auto result to a durable row; SH-304's council
-  // narrowed that to the outcomes it protects. A SUCCEEDING autonomous
-  // dispatch is corroborated by the story moving on the board and by the
-  // tmux window that now exists, so its notice clears itself like any other
-  // success -- and says `(auto)`, which is this spec's observation that the
-  // daemon forwarded the flag all the way to the script and back.
-  const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible({ timeout: gracedOperationBudget(DISPATCH_COMPLETION_TIMEOUT) });
-  await expect(toast).toHaveText(`${DELTA_STORY_ID} dispatched (auto)`);
-  // story.sh's own paragraph -- the ~90 words SH-304 was filed about -- no
-  // longer reaches the UI at all on the success path.
-  await expect(toast).not.toContainText(/utonomous/);
-  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
+    // SH-232 sent every --auto result to a durable row; SH-304's council
+    // narrowed that to the outcomes it protects. A SUCCEEDING autonomous
+    // dispatch is corroborated by the story moving on the board and by the
+    // tmux window that now exists, so its notice clears itself like any other
+    // success -- and says `(auto)`, which is this spec's observation that the
+    // daemon forwarded the flag all the way to the script and back.
+    const toast = page.locator("#toast-stack .toast.success");
+    await expect(toast).toBeVisible({ timeout: gracedOperationBudget(DISPATCH_COMPLETION_TIMEOUT) });
+    await expect(toast).toHaveText(`${DELTA_STORY_ID} dispatched (auto)`);
+    // story.sh's own paragraph -- the ~90 words SH-304 was filed about -- no
+    // longer reaches the UI at all on the success path.
+    await expect(toast).not.toContainText(/utonomous/);
+    await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
 
-  await expect(page.locator("#dispatch-btn")).toBeEnabled();
-  await expect(page.locator("#dispatch-btn")).toHaveText("Resume");
+    await expect(page.locator("#dispatch-btn")).toBeEnabled();
+    await expect(page.locator("#dispatch-btn")).toHaveText("Resume");
 
-  const worktreePath = join(
-    DELTA_CHECKOUT,
-    ".claude/worktrees",
-    DELTA_STORY_ID,
-  );
-  expect(
-    existsSync(worktreePath),
-    `expected a real worktree at ${worktreePath}`,
-  ).toBe(true);
+    const worktreePath = join(
+      DELTA_CHECKOUT,
+      ".claude/worktrees",
+      DELTA_STORY_ID,
+    );
+    expect(
+      existsSync(worktreePath),
+      `expected a real worktree at ${worktreePath}`,
+    ).toBe(true);
 
-  // And it clears itself, unprompted -- SH-304's second ask, on the exact
-  // surface its screenshot showed. The durable half of SH-232 lives on for
-  // the outcomes that need it: `notification-contract.spec.ts` drives a
-  // refused --auto dispatch (which a real story.sh cannot be asked for on
-  // demand) and holds its row to the same 5.5s probe this used to.
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(0, {
-    timeout: gracedOperationBudget(VERIFIER_OVERRIDE_BASE_MS),
+    // And it clears itself, unprompted -- SH-304's second ask, on the exact
+    // surface its screenshot showed. The durable half of SH-232 lives on for
+    // the outcomes that need it: `notification-contract.spec.ts` drives a
+    // refused --auto dispatch (which a real story.sh cannot be asked for on
+    // demand) and holds its row to the same 5.5s probe this used to.
+    // Cross the complete production lifetime only after all wording checks.
+    await page.clock.runFor(3000);
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(0, {
+      timeout: gracedOperationBudget(VERIFIER_OVERRIDE_BASE_MS),
+    });
   });
 });
 

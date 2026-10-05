@@ -57,6 +57,7 @@ pub(super) fn update(
     let mut same_revision = record.clone();
     same_revision.revision = old.revision;
     let immutable_changed = (old.finished_at.is_some() && old != same_revision)
+        || old.mode != record.mode
         || old.submission != record.submission
         || old.admitted_at != record.admitted_at
         || old.control_revision != record.control_revision

@@ -683,7 +683,9 @@ while IFS="$TAB" read -r kind target package exe; do
   samples=""
   run=1
   while [ "$run" -le "$TIMING_RUNS" ]; do
-    run_timed "$WORK/bin.log" "$exe" || {
+    # Through the host admission adapter, as Cargo's runner runs every test
+    # binary (SH-869), so a timed run is admitted and measured like `cargo test`.
+    run_timed "$WORK/bin.log" "$REPO_ROOT/scripts/host-admit.py" --entry cargo-test-binary -- "$exe" || {
       echo "capture-baseline: $target failed during the timing pass:" >&2
       tail -40 "$WORK/bin.log" >&2
       exit 1

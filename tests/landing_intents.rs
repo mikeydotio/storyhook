@@ -541,7 +541,12 @@ fn stale_identity_cannot_resolve_an_intent_and_admin_authority_changes_roll_back
     let id = submitted(&f);
     let intent = admit(&f);
     let mut stale = intent.clone();
-    stale.certification.head = "c".repeat(40);
+    let storyhook::domain::landing::LandingAuthority::Certified(certified) =
+        &mut stale.certification
+    else {
+        panic!("certified fixture")
+    };
+    certified.head = "c".repeat(40);
     assert!(
         !VerificationQueue::new(f.store())
             .complete_landing(&f.ctx(), &stale, "stale")

@@ -87,6 +87,9 @@ pub fn returned_for_repair(
 /// Durable comment prefix proving the centralized release gate landed a PR.
 pub const VERIFICATION_GREEN_PREFIX: &str = "CENTRAL VERIFICATION GREEN —";
 
+/// A confirmed merge whose admitted policy explicitly skipped verification.
+pub const VERIFICATION_SKIPPED_PREFIX: &str = "CENTRAL VERIFICATION SKIPPED —";
+
 /// Completion proved by ancestry, without claiming a central gate passed.
 pub const VERIFICATION_ALREADY_LANDED_PREFIX: &str = "CENTRAL VERIFICATION ALREADY LANDED —";
 
@@ -164,6 +167,7 @@ pub(crate) fn refuse_uncertified_completion(
     }
     let carries_verdict = |text: &str| {
         text.starts_with(VERIFICATION_GREEN_PREFIX)
+            || text.starts_with(VERIFICATION_SKIPPED_PREFIX)
             || text.starts_with(VERIFICATION_ALREADY_LANDED_PREFIX)
             || text.starts_with(VERIFICATION_OVERRIDDEN_PREFIX)
     };
@@ -1371,6 +1375,9 @@ pub(crate) fn held_verifying_for(
                     .unwrap_or("no reason given")
             ),
             Some(QueueHold::Reset) => "a reset of the story is pending".to_string(),
+            Some(QueueHold::StoppedRepair) => {
+                "verification stopped: managed repair requires certification".to_string()
+            }
             Some(QueueHold::ProjectRecovery) => {
                 "project recovery owns this verification generation".to_string()
             }
@@ -1501,6 +1508,8 @@ pub(crate) enum QueueHold {
     ProjectRecovery,
     /// Retained causal evidence has not released this submission.
     Attribution,
+    /// A managed repair must certify its fix before resolving its recovery.
+    StoppedRepair,
 }
 
 /// Why the queue leaves out `row`, a story in `verifying`, or `None` when it
@@ -1529,6 +1538,14 @@ fn queue_hold(
         Some(QueueHold::ProjectRecovery)
     } else if super::attribution::holds::held(tx, project, &row.snapshot.id, generation)? {
         Some(QueueHold::Attribution)
+    } else if !tx.verification_enabled(project)?
+        && !tx
+            .landing_intents()?
+            .iter()
+            .any(|intent| intent.project == project && intent.story == row.story_no)
+        && super::project_recovery::requires_certification(tx, project, row.story_no)?
+    {
+        Some(QueueHold::StoppedRepair)
     } else {
         None
     })
@@ -1616,6 +1633,7 @@ pub fn latest_generation(events: &[StoredEvent]) -> Option<VerificationGeneratio
             continue;
         }
         if text.starts_with(VERIFICATION_GREEN_PREFIX)
+            || text.starts_with(VERIFICATION_SKIPPED_PREFIX)
             || text.starts_with(VERIFICATION_ALREADY_LANDED_PREFIX)
         {
             landed = true;

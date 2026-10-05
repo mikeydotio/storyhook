@@ -1,5 +1,7 @@
 import { test, expect } from "./support";
 import type { Page } from "@playwright/test";
+import { observeNativeNotice } from "./native-notice";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   cleanUpCreatedStories,
   deleteStory,
@@ -134,11 +136,9 @@ const SUCCESS_VISIBLE_MS = NOTICE_LIFETIME_MS - FADE_MS;
 /** Generous enough that a loaded machine's timer jitter cannot fail a test
  * whose subject is "this eventually goes away".
  *
- * Used only by the two real-clock canaries now, and reachable in both: each
- * begins its wait ~2.7s in, leaving 12.3s of the budget for a 7s ceiling. It
- * was NOT reachable in the two tests this story fixed, which is the defect
- * described in this file's header — a clocked test needs no ceiling at all,
- * because `runFor` returns with the DOM already settled. */
+ * Only the two native canaries need this ceiling. Their pre-dispatch observer
+ * retains appearance and natural removal across delayed driver reads. Clocked
+ * tests instead return from `runFor` with the DOM already settled. */
 const GONE_TIMEOUT = NOTICE_LIFETIME_MS + 4000;
 
 /** How far a frozen clock is advanced to prove a notice has no timer at all.
@@ -290,6 +290,19 @@ async function runOutTheClock(page: Page, owed: number): Promise<void> {
   await expect(toast).toHaveCount(0);
 }
 
+test("the native notice observer cannot count an absent notice as a completed lifecycle", async ({ page }) => {
+  await openClocked(page);
+  await openProject(page, "Alpha Project");
+  const observation = await observeNativeNotice(page);
+  try {
+    expect(await observation.evaluate((observer) => observer.stop())).toEqual({
+      appearance: null, leaving: null, animations: [], removed: false, maxHistoryRows: 0,
+    });
+  } finally {
+    await observation.dispose();
+  }
+});
+
 test("a successful attended dispatch is a short toast that fades on its own", async ({
   page,
 }) => {
@@ -300,23 +313,27 @@ test("a successful attended dispatch is a short toast that fades on its own", as
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, false, "ok");
 
-  await dispatchStory(page);
-
-  const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible();
-  // The headline is composed here from typed fields, never relayed from
-  // `story.sh`'s `display` — which is authored for its Claude skill consumer
-  // and is the ~90-word paragraph SH-304 was filed about.
-  await expect(toast).toHaveText(`${id} dispatched`);
-  await expect(toast).not.toContainText("worktree");
-  // No durable row for a success, whatever else is true.
-  await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
-
-  // Real elapsed seconds, in a real browser, on the real `setTimeout`. This is
-  // the assertion the whole clocked apparatus below is checked against.
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(0, {
-    timeout: GONE_TIMEOUT,
-  });
+  const observation = await observeNativeNotice(page);
+  try {
+    await dispatchStory(page);
+    // Regression stimulus: no driver reads until the ordinary lifetime passes.
+    await delay(NOTICE_LIFETIME_MS + 1000);
+    await expect.poll(() => observation.evaluate(({ state }) => state.removed), {
+      timeout: GONE_TIMEOUT,
+    }).toBe(true);
+    const facts = await observation.evaluate((observer) => observer.stop());
+    // The headline comes from typed fields, never story.sh's worktree prose.
+    expect(facts.appearance).toMatchObject({ visible: true, text: `${id} dispatched` });
+    expect(facts.appearance!.text).not.toContain("worktree");
+    expect(facts.leaving).toMatchObject({ animation: "toast-out" });
+    expect(facts.animations).toContain("toast-out");
+    expect(facts.maxHistoryRows).toBe(0);
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+    await expect(page.locator("#dispatch-history .dispatch-history-row")).toHaveCount(0);
+  } finally {
+    await observation.evaluate((observer) => observer.stop());
+    await observation.dispose();
+  }
 
   await cleanUp(page, title);
 });
@@ -624,23 +641,25 @@ test("a fading notice still clears under prefers-reduced-motion, without animati
   const id = await openFreshStory(page, title);
   await stubDispatch(page, id, false, "ok");
 
-  await dispatchStory(page);
-  const toast = page.locator("#toast-stack .toast.success");
-  await expect(toast).toBeVisible();
-
-  // The guard drops the ANIMATION, never the dismissal -- a user who asked
-  // for less motion did not ask for notices that pile up forever. `.card`
-  // has drawn this distinction since SH-203 ("information stays under
-  // reduced motion, decoration drops"); the toast rules simply sat outside
-  // the media query until this story moved them inside it.
-  const animation = await toast.evaluate(
-    (node) => getComputedStyle(node).animationName,
-  );
-  expect(animation).toBe("none");
-
-  await expect(page.locator("#toast-stack .toast")).toHaveCount(0, {
-    timeout: GONE_TIMEOUT,
-  });
+  const observation = await observeNativeNotice(page);
+  try {
+    await dispatchStory(page);
+    await delay(NOTICE_LIFETIME_MS + 1000);
+    await expect.poll(() => observation.evaluate(({ state }) => state.removed), {
+      timeout: GONE_TIMEOUT,
+    }).toBe(true);
+    const facts = await observation.evaluate((observer) => observer.stop());
+    expect(facts.appearance).toMatchObject({ visible: true, text: `${id} dispatched`, animation: "none" });
+    // Reduced motion removes decoration at both entry and departure, while
+    // native dismissal still runs without an animationend event.
+    expect(facts.leaving).toMatchObject({ animation: "none" });
+    expect(facts.animations).toEqual([]);
+    expect(facts.maxHistoryRows).toBe(0);
+    await expect(page.locator("#toast-stack .toast")).toHaveCount(0);
+  } finally {
+    await observation.evaluate((observer) => observer.stop());
+    await observation.dispose();
+  }
 
   await cleanUp(page, title);
 });

@@ -431,6 +431,14 @@ run_verification_gate() {
         detail="$(verification_infrastructure_detail "$gate_status" "$completed_status" "$log")"
         disposition=permanent
         [ "$gate_status" -lt 128 ] || disposition=retryable
+        # Host admission refused or withdrew the gate (SH-869): a process
+        # fault that keeps the story Verifying, retryable only for a cause
+        # that can clear without a change -- never the author's failure.
+        if admission="$("$STORYHOOK_PYTHON" "$script_dir/verifier_result.py" admission "$execution_file" \
+            "$gate_tree" "$gate_base" "$gate_head" 2>>"$log")"; then
+            disposition="${admission%%$'\n'*}"
+            detail="${admission#*$'\n'} $(bounded_log_context "$log")"
+        fi
         jq -n --arg tree "$gate_tree" --arg log "$log" --arg detail "$detail" --arg disposition "$disposition" \
             '{result:"infrastructure-failure", disposition:$disposition, tree:$tree, log:$log, detail:$detail}'
         exit 0
@@ -862,6 +870,8 @@ submitted_pr="$1"
 shift 2
 gate_command=("$@")
 gate_display="$*"
+prepare_only=0
+if [ "$#" -eq 1 ] && [ "$1" = --prepare-without-verification ]; then prepare_only=1; fi
 project_gate=0
 if [ "$#" -eq 1 ] && [ "$1" = --project-gate ]; then project_gate=1; fi
 github_begin || die_json "cannot establish GitHub origin: ${GITHUB_ACCESS_ERROR:-origin unavailable}"
@@ -945,10 +955,32 @@ verification_phase="merge preflight"
 verifier_window_banner "PR #$pr — merge preflight running (computing the exact merge tree)"
 gate_progress_emit_item "merge preflight" running
 _preflight_start=$(date +%s)
-preflight="$(activity_run "merge-preflight.sh" bash "$script_dir/merge-preflight.sh" "$base_commit" "$head_commit" 2>&1)"
+preflight_args=()
+if [ "$prepare_only" -eq 1 ]; then preflight_args+=(--prepare-only); fi
+preflight="$(activity_run "merge-preflight.sh" bash "$script_dir/merge-preflight.sh" "${preflight_args[@]}" "$base_commit" "$head_commit" 2>&1)"
 preflight_status=$?
 tree="$(printf '%s\n' "$preflight" | head -n1)"
 _preflight_seconds=$(( $(date +%s) - _preflight_start ))
+if [ "$prepare_only" -eq 1 ]; then
+    case "$preflight_status" in
+    0)
+        confirm_judged_head "$pr" "$base" "$head" unjudged "Verification is stopped; no gate ran."
+        gate_progress_emit_item "merge preflight" passed "seconds=$_preflight_seconds"
+        gate_progress_emit_item "release gate" skipped
+        disarm_verification_signal_trap
+        jq -n --arg head "$reported_head" --arg tree "$tree" \
+            --arg detail "Prepared exact merge while verification was stopped; no gate ran." \
+            '{result:"prepared",head:$head,tree:$tree,detail:$detail}'
+        exit 0
+        ;;
+    2)
+        confirm_judged_head "$pr" "$base" "$head" conflict
+        jq -n --arg detail "$preflight" '{result:"conflict",detail:$detail}'
+        exit 0
+        ;;
+    *) die_json "stopped-mode merge preparation failed: $preflight" ;;
+    esac
+fi
 # The daemon callback owns only admission. No gate or configuration inspection
 # may run for a refused repair, including an already certified merge-tree retry.
 if [ -n "${STORYHOOK_REPAIR_ADMISSION:-}" ] && { [ "$preflight_status" -eq 0 ] || [ "$preflight_status" -eq 1 ]; }; then

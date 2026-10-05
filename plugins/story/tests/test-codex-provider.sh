@@ -35,7 +35,6 @@ run_codex() {
 
 # Happy dispatch: Codex has its own launch, worktree, Plan key and submit key.
 fresh_tmux
-codex_dispatch_tmux_state="$FAKE_TMUX_STATE"
 repo=$(mk_story_repo CDX)
 id=$(new_story "$repo" "Codex dispatch happy path")
 out=$(run_codex "$repo" dispatch "$id")
@@ -70,6 +69,43 @@ assert_contains "$(cat "$FAKE_TMUX_STATE/submitted")" \
 [ ! -e "$FAKE_TMUX_STATE/run_shell.log" ] \
   || fail_test "dispatch: attended Codex armed the autonomous plan watcher"
 
+# Safe reap uses the provider's path and removes only the closed, merged leaf.
+# Closure also wakes native cleanup. Own the workspace through our manual reap,
+# as the verifier does, and finish this fixture before changing fake servers.
+common=$(cd "$repo" && git rev-parse --path-format=absolute --git-common-dir)
+mkdir -p "$common/storyhook/workspace-locks"
+exec 8>>"$common/storyhook/workspace-locks/$id.lock"
+python3 -c 'import fcntl; fcntl.flock(8, fcntl.LOCK_EX | fcntl.LOCK_NB)' || exit 1
+python3 - "$common/storyhook/workspace-locks/$id.lock" <<'PY' || exit 1
+import fcntl, sys
+with open(sys.argv[1], 'a') as competitor:
+    try:
+        fcntl.flock(competitor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        pass
+    else:
+        raise AssertionError('manual reap fixture does not own its workspace')
+PY
+(cd "$repo" && story move "$id" "done" >/dev/null)
+# Provoke the competing worker instead of hoping the helper wins its race.
+cleanup=$(cd "$repo" && story cleanup --json)
+# The scheduled worker can still own the short controller lock while it
+# observes our workspace owner. Either caller must preserve the same resources.
+assert_eq "$(jqf "$cleanup" '.cleanup | (.skipped + .failed) | any(.reason == "workspace-busy" or .reason == "cleanup-busy")')" \
+  "true" "reap fixture excludes native cleanup; $cleanup"
+assert_eq "$(jqf "$cleanup" '.cleanup.removed | length')" "0" \
+  "native cleanup removes no owned resource; $cleanup"
+[ -d "$repo/.codex/worktrees/$id" ] || fail_test "native cleanup stole the reap fixture"
+export FAKE_TMUX_PANES
+FAKE_TMUX_PANES=$(printf '%s\t1\t%%1' "$id")
+out=$(run_codex "$repo" reap "$id")
+exec 8>&-
+assert_ok "$out" "true" "reap: ok"
+assert_eq "$(jqf "$out" .removed.worktree)" "true" "reap: removed Codex worktree; $out"
+assert_eq "$(jqf "$out" .removed.branch)" "true" "reap: removed merged branch"
+[ ! -d "$repo/.codex/worktrees/$id" ] || fail_test "reap: Codex worktree survived"
+unset FAKE_TMUX_PANES
+
 # Codex renders its prompt before the model is ready. A Shift+Tab sent during
 # that loading footer is silently ignored, so dispatch must wait for the footer
 # to clear rather than sending the mode key as soon as the input glyph appears.
@@ -94,17 +130,6 @@ assert_ok "$out" "true" "dropped Plan key: bounded retry succeeds"
 assert_eq "$(jqf "$out" .plan_mode_confirmed)" "true" "dropped Plan key: Plan confirmed"
 assert_contains "$(cat "$FAKE_TMUX_STATE/plan_key_ignored.log")" "late TUI startup" \
   "dropped Plan key: fixture exercised the retry"
-
-# Safe reap uses the provider's path and removes only the closed, merged leaf.
-(cd "$repo" && story move "$id" "done" >/dev/null)
-export FAKE_TMUX_STATE="$codex_dispatch_tmux_state"
-export FAKE_TMUX_PANES
-FAKE_TMUX_PANES=$(printf '%s\t1\t%%1' "$id")
-out=$(run_codex "$repo" reap "$id")
-assert_ok "$out" "true" "reap: ok"
-assert_eq "$(jqf "$out" .removed.worktree)" "true" "reap: removed Codex worktree"
-assert_eq "$(jqf "$out" .removed.branch)" "true" "reap: removed merged branch"
-[ ! -d "$repo/.codex/worktrees/$id" ] || fail_test "reap: Codex worktree survived"
 
 # A launch that never becomes Codex refuses before typing and rolls everything back.
 fresh_tmux

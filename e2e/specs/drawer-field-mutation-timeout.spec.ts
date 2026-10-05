@@ -40,6 +40,51 @@ test.beforeEach(async ({ page }) => {
   await seedToken(page);
 });
 
+/** Supplies a short native deadline only to the mutation being tested. */
+async function shortenMutationDeadline(
+  page: import("@playwright/test").Page,
+  action: "priority" | "comment",
+  milliseconds: number,
+): Promise<void> {
+  await page.addInitScript(({ action, milliseconds }) => {
+    const requests = new WeakMap<XMLHttpRequest, { method: string; path: string }>();
+    const nativeOpen = XMLHttpRequest.prototype.open;
+    const nativeSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method: string, url: string | URL, async: boolean = true, username?: string | null, password?: string | null) {
+      requests.set(this, { method: method.toUpperCase(), path: new URL(url, location.href).pathname });
+      return nativeOpen.call(this, method, url, async, username, password);
+    };
+    XMLHttpRequest.prototype.send = function (body) {
+      const request = requests.get(this);
+      if (request?.method === "POST" && new RegExp(`/story/[^/]+/${action}$`).test(request.path))
+        this.timeout = milliseconds;
+      return nativeSend.call(this, body);
+    };
+  }, { action, milliseconds });
+}
+
+test("the timeout stimulus leaves unrelated native request deadlines intact", async ({ page }) => {
+  await shortenMutationDeadline(page, "priority", 300);
+  await page.route("**/sh812-deadline-probe/**", (route) => route.fulfill({ status: 204 }));
+  await page.goto("/");
+  const deadlines = await page.evaluate(async () => {
+    const inputs = [
+      ["POST", "/story/AA-1/priority"],
+      ["PATCH", "/preferences"],
+      ["POST", "/story/AA-1/comment"],
+      ["GET", "/story/AA-1/priority"],
+    ];
+    return Promise.all(inputs.map(([method, path]) => new Promise<number>((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open(method, "/sh812-deadline-probe" + path);
+      xhr.timeout = 75_000;
+      xhr.onloadend = () => resolve(xhr.timeout);
+      xhr.send();
+    })));
+  });
+  expect(deadlines).toEqual([300, 75_000, 75_000, 75_000]);
+});
+
 async function createStory(
   page: import("@playwright/test").Page,
   title: string,
@@ -93,7 +138,7 @@ test("a slow but successful drawer field edit is reported honestly, not as a fai
       return;
     }
     // Real request, real daemon, real commit -- delayed comfortably past
-    // the page's own (shrunk, via the query override) mutation deadline so
+    // the named request's shrunk native mutation deadline so
     // `ontimeout` fires on the client before this reply is delivered.
     const response = await route.fetch();
     await new Promise((resolve) => setTimeout(resolve, shrunkTimeoutMs + 500));
@@ -107,7 +152,8 @@ test("a slow but successful drawer field edit is reported honestly, not as a fai
     }
   });
 
-  await page.goto(`/?mutationTimeoutMs=${shrunkTimeoutMs}`);
+  await shortenMutationDeadline(page, "priority", shrunkTimeoutMs);
+  await page.goto("/");
   await openProject(page, "Alpha Project");
 
   const card = await createStory(page, title);
@@ -205,7 +251,8 @@ test("a slow but successful comment is reported honestly, not as a failure", asy
     }
   });
 
-  await page.goto(`/?mutationTimeoutMs=${shrunkTimeoutMs}`);
+  await shortenMutationDeadline(page, "comment", shrunkTimeoutMs);
+  await page.goto("/");
   await openProject(page, "Alpha Project");
 
   // Dispatch specs earlier in this same project consume the seeded todo

@@ -769,11 +769,16 @@ release_fast_forward "$STORYHOOK_STABLE_BRANCH"
 
 artifact_dir="$repo_root/target/release-assets/$next_version"
 step "Building and verifying all release assets locally"
+# The release builds run as one release-class host admission entry (SH-869).
+# Only the builds: `make test-full` above takes the gate lock, and a grant
+# holder must never wait on a lock, so its legs admit themselves.
 if [ "$dry_run" = 1 ]; then
-  run github_without_credentials scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir" --build-number "$build_number"
+  run github_without_credentials scripts/host-admit.py --entry release -- \
+    scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir" --build-number "$build_number"
   run scripts/render-release-body.sh --version "$next_version" --repo "$RELEASE_SOURCE"
 else
-  github_without_credentials scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir" --build-number "$build_number"
+  github_without_credentials scripts/host-admit.py --entry release -- \
+    scripts/build-release-assets.sh --version "$next_version" --output-dir "$artifact_dir" --build-number "$build_number"
   scripts/render-release-body.sh --version "$next_version" --repo "$RELEASE_SOURCE" \
     > "$artifact_dir/release-body.md"
   [ -s "$artifact_dir/release-body.md" ] || die "the rendered release body is empty"

@@ -314,6 +314,533 @@ entirely would still land at about 5.3-6.4 minutes on this machine. The levers
 left are SH-812 (duration-weighted packing; per-file times run 0.1-94 s while
 slices are packed by count) and less fixed setup per slice (6-15 s each).
 
+### Duration history and one discovery per planned slice (SH-812)
+
+The planner accepts an optional fourth input column of seconds, keeping its
+four-column output and test counts unchanged. Recorded time controls allocation
+between projects, whole-file longest-first packing and slice admission. Ties
+retain configuration/listing order. Missing history or a changed test count uses
+the count as its weight; the default remains eight jobs and two slices per job.
+
+Playwright's `--list`, `--test-list` and reporter receipts all use file names
+relative to `config.rootDir` (currently `e2e/specs`). Canonicalizing the root and
+file first handles macOS `/tmp`/`/private/tmp` aliases. The old dispatch post-check
+expected a `specs/` prefix absent from real listings; exact root-relative matches
+now select `dispatch.spec.ts` and `engine.spec.ts`, excluding stubbed namesakes.
+
+Each slice writes a completed JSON receipt beside its artifacts. It contains
+the discovered project/file counts, completed/pass/skip/retry counts and summed
+Playwright test durations in seconds. The shell independently requires a
+successful receipt matching its manifest: Playwright swallows exceptions thrown
+by reporters, so reporter presence alone is insufficient evidence. This also
+refuses a caller's reporter override if it suppresses the required receipt.
+The receipt's `passed` count includes non-skipped outcomes that match
+Playwright's declared `expectedStatus`, including intentional `test.fail()`
+proofs. Unexpected passes and failures are not successful observations.
+
+Planner-owned slices reuse the outer selection and omit the second Playwright
+listing. Caller-supplied shards/test-lists retain their per-project listing.
+Five-project seeding, the launch probe, per-run baseline and isolation are
+unchanged. Timing artifacts separate preparation, seeding, daemon readiness,
+listing, Playwright execution and cleanup using Bash's one-second clock;
+individual test durations retain Playwright's millisecond precision.
+
+`<git-common-dir>/storyhook/e2e-durations.tsv` is disposable scheduling history;
+`STORYHOOK_E2E_DURATIONS` can select a separate file for experiments. Rows are
+`version<TAB>project<TAB>file<TAB>count<TAB>seconds<TAB>observed-unix-seconds`,
+currently version 1. Only complete successful files from a successful unfiltered,
+planner-owned ordinary harness run train it. Diagnostic file-isolation runs and
+their serial reruns retain local evidence without training history. Failed,
+retried, interrupted and skipped files retain previous history. A newer
+observation wins; an invalid row is diagnosed and
+ignored. The parent reloads under a nonblocking advisory lock and atomically
+replaces the file. A busy/unwritable cache is reported without changing the test
+verdict. No shared store or seeded template is copied.
+
+Measurement protocol: identical source/spec/dependency snapshots and the same
+prebuilt binary; compilation excluded explicitly in both benchmark copies.
+One optimized warm-up trains history, followed by baseline/optimized twice, at
+eight jobs and sixteen slices. Sample machine load once per second; pairs whose
+mean load differs by more than 20% are inconclusive. Retain outcomes and coverage
+counts alongside wall time, setup time and longest-slice time. Compare the paired
+result separately from SH-792's historical 625 seconds at mean load 52.
+
+**2026-10-02 measurement: acceptance not established.** The first optimized
+warm-up was stopped through normal pool cleanup after it exposed stale dispatch
+assertions that active SH-804 owns. No baseline/optimized comparison pair ran,
+and no timing history was promoted. The interrupted wall time below is a
+diagnostic duration, not a completed-leg performance result.
+
+| Measurement | Result |
+|---|---|
+| Selection | 1,477 tests, 129 files, 16 slices, 8 jobs |
+| Interrupted warm-up | 1,575.7 s, including cleanup; exit by TERM |
+| Sampled one-minute load | Mean 173.36; maximum 335.01 |
+| Complete receipts | 8 slices; 933 results: 913 passed, 14 skipped, 6 failed |
+| Longest completed slice | 1,537 s; incomplete slices excluded |
+| Completed-slice seeding | Median 7 s; range 7–8 s |
+| Completed-slice daemon readiness | Median 1 s; range 0–1 s |
+| Completed-slice redundant listing | 0 s; planned manifests reused |
+
+Two failures require `Dispatch` after a successful launch although the product
+now shows `Resume` (`dispatch.spec.ts:247,323`). SH-804 owns that contract repair.
+The other four failures were retained for diagnosis: an `entering` class disappeared
+(`card-transient-classes.spec.ts:71`); Save Draft became enabled and restoring the
+project left submit disabled (`create-story-project.spec.ts:343,370`); and a
+frozen-clock footer did not change (`settings-version.spec.ts:58`). SH-813 owns
+dynamic assertion patience, but this run does not prove the cause of those
+four failures. Residual diagnosis stays in SH-812 after those independent fixes.
+
+Raw local evidence is retained in
+`.storyhook/logs/sh812-performance/`: `warmup.json` contains load samples;
+`warmup.log`, `interrupted-pool/` and `warmup-artifacts/` contain logs, selection
+manifests, receipts, phase timings and browser traces. The same initial evidence
+is at `/tmp/sh812-bench/`. The benchmark driver is preserved beside the evidence;
+refresh its optimized snapshot from the final implementation before reuse.
+Its earlier snapshot predates the final whole-harness-success cache guard and
+tiny-weight serialization correction; neither was exercised as a successful
+history update in this interrupted run.
+
+The shared machine's load is not comparable to SH-792's mean 52. Do not infer a
+speedup or regression from these wall times. Resume with the independently owned
+test repairs, account for remaining failures, then run a successful warm-up and
+the two interleaved pairs before accepting this story's performance claim.
+
+**Resumed repairs, 2026-10-03 UTC.** SH-804's completed changes are integrated.
+SH-813's completed assertion-grace, exit-animation and route-lifetime changes
+are reused with source attribution. Three separate SH-812 regression commits
+repair the retained timing assumptions without changing dashboard behavior:
+
+| Proof | Controlled precondition and retained assertion | RED → GREEN |
+|---|---|---|
+| Immediate create actions | Install the clock before navigation; hold the 150 ms vocabulary debounce across a native animation witness lasting twice that interval. Retain no-POST, disabled-control and restored-project checks. | Two WebKit failures → four Chromium/WebKit passes |
+| Unrelated render preserves classes | Pause the target card's CSS animations and JavaScript cleanup timers. Drive the real modal's opening frame explicitly; retain every transient class after a wall-time animation witness and real create/render. | Two lifecycle-control failures → two desktop passes |
+| Footer timer preserves version | Observe native DOM mutation records while advancing the clock. A one-second tick can correctly retain `Updated just now`; retain navigation, layout, version and three-second age-format checks. | Two repeated-label failures → six desktop passes |
+
+The combined card/footer run passed eight cases in 26 seconds. Strict
+TypeScript checking of the three changed specs and their imports passed.
+The combined SH-804/SH-813 timeout audit exposed a separate integration gap.
+Its repaired exception table classifies the assertion adapter's sampled and
+delegated budgets and the explicit-deadline precedence proofs. The new
+classification regression was RED before that repair; all 16 load-grace and
+10 text-assertion source checks now pass. Classifications remain path-,
+expression- and count-specific and reject unreviewed paths and changed values.
+Raw regression evidence is in `.storyhook/logs/sh812-resumed/`.
+
+The refreshed warm-up selected 1,507 tests in 16 slices, but was interrupted
+after a new Drafts readiness failure and a failure in the card animation-control
+witness. It ran 308.88 seconds including cleanup, at mean/max load
+136.20/190.95; no history was promoted and no comparison arm ran.
+`board-readiness.spec.ts:280` observed a closed Drafts modal for 65,347 ms
+after the real click, despite the preceding exact global count check passing.
+Its trace placed the delayed data response inside the click operation. A
+deterministic witness lasting longer than the old two-second delay reproduced
+the lost loading precondition on both engines: New became enabled before the
+test finished its pre-data assertions. Four related cases now hold data with
+an explicit latch, release it in `finally` and drain their routes. The existing
+timed `openProject` lower-bound proof remains unchanged. All ten affected
+desktop cases pass, including real global-count and Drafts-modal assertions.
+Post-release readiness uses the graced default; its two obsolete fixed-delay
+audit exceptions are removed. The card witness now
+distinguishes CSS class animations from the other timelines `getAnimations()`
+returns. A deterministic competing native Web Animation reproduced its overly
+broad check on both engines: CSSAnimation was paused while Animation was
+running. Filtering the controlled owner passed both cases in a 15-second pool;
+strict TypeScript checking passed. Neither failure is attributed to load
+without further evidence.
+
+This preparation also copied Cargo's mutable artifact twice while a targeted
+test build was replacing it. The optimized run used SHA-256 `dc4e2297…330a053`;
+the baseline copy had `2d3ae503…56a84a`. They were not a matched binary pair.
+Future preparation must pin one copy first, hash it, copy both arms from that
+file and require both hashes to match the manifest before every arm. This
+attempt supplies diagnostic evidence only, retained in `/tmp/sh812-v2-bench/`
+and `.storyhook/logs/sh812-performance-v2/` with the driver and manifest.
+
+**Third warm-up, 2026-10-03 UTC: diagnostic only.** Both snapshots used one
+pinned binary with SHA-256
+`408f7486a30d37b325772b7e2681c58eb0ac185eedcb7096aefc6dc5f49f63ab`.
+The driver checked binary and spec hashes before execution. The complete
+optimized leg exited 1; it produced no history and started no comparison arm.
+
+| Measurement | Result |
+|---|---|
+| Selection and completion | 1,507 results, 16 slices, 8 jobs |
+| Playwright outcomes | 1,491 accepted, including one declared failure; 15 skipped; one unexpected failure |
+| Wall time, including planning and cleanup | 1,487.20 s |
+| Sampled one-minute load | Mean 117.47; maximum 167.74 |
+| Longest slice | 1,123 s |
+| Slice seeding | Median 5 s; range 3–7 s |
+| Slice daemon readiness | Median 0 s; range 0–1 s |
+| Slice selection bookkeeping | Median 0 s; range 0–1 s; no redundant Playwright listing |
+
+The Node slice accepted all 51 tests, but the original receipt incorrectly
+rejected SH-813's intentional `test.fail()` proof. The reporter now counts
+outcomes against `expectedStatus` and returns its final status override through
+the documented asynchronous API. Both new expected-failure/unexpected-pass
+regressions were RED; all nine real-runner receipt scenarios, two focused Node
+harness cases and strict TypeScript checking then passed.
+
+The remaining failure is `verification-layout.spec.ts:116` on mobile WebKit,
+at the 375px short-status sample. After `page.clock.runFor(1000)`, the chip
+remained at `2m 24s total` / `18s`, rather than `2m 25s total` / `19s`, for
+49,445 ms. Initial text and containment assertions passed. Diagnosis and a
+separate regression repair are adopted into SH-812; this trace alone does not
+establish a product defect. Preserve elapsed-label and geometry coverage.
+
+That trace also records a fresh `/data` response during the clock advance.
+The fixture returned the same 144/18-second snapshot on every response,
+resetting the product's elapsed baseline. A deterministic real-navigation
+refresh reproduced the lost second on all four projects. Each sample's fixture
+now advances its elapsed data with the browser clock. The exact one-second
+proof holds its wall-time target while real timer callbacks run, separating
+that target from the footer interval's phase. Real refreshes must retain the
+advanced label, accessible name and containment. Both layout cases passed on
+all four projects (eight cases, 71-second pool); strict TypeScript passed.
+Response handlers drain before teardown, and fixed wall time is restored in
+`finally`. No product code changed. Regression logs are retained under
+`.storyhook/logs/sh812-resumed/sh812-layout-*`.
+
+The full logs, sixteen receipts, phase timings, load samples, manifest, scripts
+and failing trace are retained in `/tmp/sh812-v3-bench/` and
+`.storyhook/logs/sh812-performance-v3/`. A fresh successful warm-up and two
+matched pairs remain required. No performance improvement is established.
+
+**Fourth measurement attempt, 2026-10-03 UTC.** The final reporter and layout
+repairs reached a successful unfiltered warm-up at source `2c95d90f`:
+
+| Measurement | Result |
+|---|---|
+| Completed selection | 1,507 tests, 261 project/file groups, 16 slices, 8 jobs |
+| Outcomes | 1,492 accepted, including one declared failure; 15 configured skips; no failures or retries |
+| Warm-up wall time | 1,593.42 s |
+| Sampled one-minute load | Mean 104.19; maximum 146.70 |
+| Eligible timing history | 252 complete-file records |
+| Pinned binary SHA-256 | `09320d1486160b253ab03d5334e964d42cc212a74898e25ec0e3d500c00cbf59` |
+
+The first count-based baseline then exposed a different prerequisite on
+Chromium: `stale-repo-list.spec.ts:324` called `settledBoundingBox`, and
+`support.ts:1933` failed in `scrollIntoViewIfNeeded` because the target
+detached while waiting for stability. This happened during preparation of
+`a Settings project press survives catalog failure`, before the mouse press.
+The same WebKit case passed. The failure is adopted into SH-812 for
+deterministic diagnosis and a separate regression repair; no product cause
+is inferred from the trace alone.
+
+The failed baseline was stopped through normal TERM cleanup. Its interrupted
+727.74 seconds at mean/max load 141.87/212.79 is diagnostic only. The driver
+started no optimized comparison arm and preserved the successful warm-up's
+history unchanged. No completed comparison pair or speedup is established.
+The accepted load-comparison rule is symmetric and conservative:
+`abs(baseline_mean - optimized_mean) / min(baseline_mean, optimized_mean)`
+must be at most 20%. Compare individual test identities and outcomes too.
+
+Evidence is retained in `/tmp/sh812-v4-bench/` and
+`.storyhook/logs/sh812-performance-v4/`: complete warm-up logs/receipts,
+phase timings, load samples, history snapshots, interrupted baseline artifacts,
+and `catalog-failure/trace.zip`. The baseline pool's temporary per-slice logs
+were removed by TERM cleanup; its failure trace and partial parent log remain.
+Refresh matched snapshots after the adopted repair, then complete the approved
+warm-up and interleaved comparisons before submission.
+
+**Catalog preparation repair and fifth measurement, 2026-10-03 UTC.**
+The Settings trace proved that its navigation started a catalog read before
+the test installed interception. That response rebuilt the target table during
+coordinate preparation. Commit `40aa68d4` installs the holds before selecting
+the surface and keeps the no-refresh control pending through the press.
+A regression requires no catalog reply to complete before `mouse.down`.
+It failed on both desktop engines before the repair; all eighteen affected
+gesture cases passed afterward (13-second pool), with strict TypeScript clean.
+The shared geometry helper, real coordinate input and press-gate assertions
+are unchanged.
+
+Fresh matched snapshots from `40aa68d4` produced another successful warm-up:
+
+| Measurement | Result |
+|---|---|
+| Selection and outcomes | 1,507 results; 1,491 passes, one declared failure, 15 configured skips; no retries |
+| Warm-up wall time | 1,585.37 s |
+| Sampled one-minute load | Mean 84.18; maximum 178.98 |
+| Eligible timing history | 252 complete-file records |
+| Pinned binary SHA-256 | `fa7373332817b56e0784699d44fef020afbd4b7ad31c5b31df91a5a24cbfec7f` |
+
+Baseline 1 exposed a new WebKit prerequisite in `list-wrapping.spec.ts:70`.
+The label input was filled and Enter pressed, but the `layout-gamma` drawer
+chip stayed absent for the full 63,535 ms assertion budget. The test failed
+before its wrapping assertions. The cause is not established. Diagnosis,
+deterministic regression and a separate repair are adopted into SH-812;
+preserve the label and geometry checks rather than extending patience.
+
+The failed baseline was stopped through normal TERM cleanup at 430.57 seconds,
+mean/max load 123.03/168.88. Those interrupted numbers are diagnostic only.
+No optimized comparison arm ran, and the successful history stayed byte-for-byte
+unchanged. No completed pair or performance improvement is established.
+Unlike the previous attempt, the live per-slice logs were copied before cleanup.
+Evidence is in `/tmp/sh812-v5-bench/` and
+`.storyhook/logs/sh812-performance-v5/`, including
+`baseline1-live-diagnostics/list-wrapping-only-titles--dc857-bel-chips-wrap-in-list-rows-webkit/trace.zip`.
+Complete the adopted repair and refresh matched snapshots before resuming the
+approved warm-up and two comparisons.
+
+**Label write repair and sixth measurement, 2026-10-03 UTC.** The retained
+trace established a product race: the beta write was still pending when the
+editable input accepted gamma, but `addLabel` silently refused its Enter.
+Commit `d26c6f1c` makes the existing serialized-write contract explicit.
+The input becomes read-only while preserving focus, removal buttons become
+disabled, suggestions close, and a visible status plus `aria-busy` identify
+the pending write. Success and refusal restore editing; failure retains the
+existing rollback and explicit retry. The local create editor stays editable.
+
+The held-write regression failed on both browsers before the repair. All eight
+new add/remove success/failure cases passed afterward, including focus, native
+read-only behavior, rollback text and persistence of a subsequent label.
+The existing label-editor and wrapping cases passed too: sixteen cases in a
+26-second pool. Ten impacted keyboard repeat/composition cases passed in a
+12-second pool. Strict TypeScript, the production build and diff checks passed.
+
+Fresh snapshots from `d26c6f1c` selected 1,515 tests in sixteen slices. The
+warm-up exposed a new WebKit prerequisite: `toolbar-containment.spec.ts:45`
+failed exact header-geometry equality after board scrolling at 1280px and
+200% text. Initial containment passed, but the later header bottom was 632
+instead of 631.84375 pixels; other control positions changed slightly too.
+The cause is not established. Diagnosis and a regression repair are adopted;
+preserve exact scroll invariance and containment rather than widen tolerances.
+
+The warm-up was stopped through normal TERM cleanup at 921.78 seconds,
+mean/max load 86.39/209.63. Its pinned binary SHA-256 was
+`3e382763e6bc43e09df4b8cad8649af13cf9f4598bfdbbeaf8cf41f6c2456ada`.
+This interrupted result is diagnostic only: no history was promoted and no
+comparison arm ran. Logs, live per-slice diagnostics, trace, load samples,
+manifest and scripts are in `/tmp/sh812-v6-bench/` and
+`.storyhook/logs/sh812-performance-v6/`. The trace is under
+`warmup-live-diagnostics/toolbar-containment-deskto-c65da-its-at-1280px-with-200-text-webkit/`.
+No completed comparison pair or performance improvement is established.
+
+**Toolbar settling repair, 2026-10-03 UTC.** A production-CSS probe reproduced
+WebKit reporting transitions as `finished` at 150 ms while computed font sizes
+still held 13.08444 px or 25.904247 px, instead of the final 13 px or 26 px.
+Two of 25 text-size changes exposed that discrepancy; this is mechanism
+evidence, not a failure-rate estimate. Sampling on a render frame removed the
+discrepancy in the corresponding probe. `awaitSettled` now makes its existing
+subtree animation check from `requestAnimationFrame`, so a between-frame
+animation state cannot release a stale geometry read.
+
+Three controlled scheduler regressions failed before the repair and pass
+afterward. They cover finished state before layout, a paused intermediate
+frame, continuing motion, and exclusion of unrelated document animations.
+All 34 directly impacted browser cases passed, including the unchanged toolbar
+matrix, exact scroll invariance and coordinate-press checks. The complete
+focused pool was 37 cases in 72 seconds. Strict TypeScript, the Rust subtree
+contract and diff checks passed. No product motion or geometry assertion changed.
+Logs: `.storyhook/logs/sh812-resumed/sh812-settle-*`; diagnostic probes are
+retained there too. Fresh matched measurements are still required.
+
+**Seventh measurement, 2026-10-03 UTC.** Source `2fa059c0` used the same
+1,518 selected tests and sixteen slices in both snapshots. Both binaries had
+SHA-256 `2e0f0209a99da04980c9477f36a6c5a5014e50cb86a9cf52bb77e17f6f320d3e`.
+
+| Observation | Wall seconds | Mean / maximum load | Result |
+|---|---:|---:|---|
+| Optimized warm-up | 1,750.140 | 100.560 / 141.907 | Passed; 253 duration records promoted |
+| Baseline 1 | 1,079.404 | 72.557 / 133.440 | Passed |
+| Optimized 1 | 467.205 before interruption | 72.826 / 105.889 | Dispatch-notice assertion failed; parent stopped with TERM |
+
+Warm-up and baseline each reported 1,502 passes, one declared expected failure
+and 15 configured skips, without retries. All 1,518 individual identities and
+outcomes match after excluding Playwright's trailing display duration.
+The scratch analyzer now strips only a final numeric duration in `ms`, `s`,
+`m`, `h` or `d`, matching the installed formatter. Parser checks cover every
+unit and retain meaningful title parentheses. Raw logs remain unchanged.
+Baseline discovery cost 41 aggregate seconds (median one, maximum seven per
+slice); its longest slice was 816 seconds. These observations do not establish
+a speedup: no successful optimized comparison arm completed.
+
+The new WebKit failure is in `dispatch.spec.ts:341`, within the real autonomous
+dispatch case declared at line 298. Visibility and the exact success-text
+assertion passed, then `not.toContainText(/utonomous/)` found no success toast
+for its full 41,140 ms budget. The negative assertion started about 2.64 seconds
+after the exact-text assertion began. Diagnose the notice's lifetime and
+observation boundary before changing the test. Preserve real dispatch, exact
+wording, provider parameters and owned-resource checks; absence must not become
+proof of correct wording. This prerequisite is adopted and remains assigned.
+
+Live slice `3.log` and the failure trace were copied before normal TERM cleanup.
+Both baseline and interrupted optimized execution left successful history
+unchanged. The driver stopped before the second pair, and no benchmark process
+remains. Evidence, load samples, manifests, histories and scripts are retained
+in `/tmp/sh812-v7-bench/` and `.storyhook/logs/sh812-performance-v7/`. The trace
+is under `optimized1-live-diagnostics/dispatch-Auto-mode-sends-a-80371-ous-dispatch-SH-208-SH-517--webkit/`.
+After the regression repair, refresh both snapshots and finish the approved
+successful warm-up and two comparable pairs. Performance acceptance remains open.
+
+**Dispatch-notice observation repair, 2026-10-03 UTC.** The trace shows the
+success notice arrived and passed its exact wording check. The later negative
+check began after another 2.64 seconds of assertion and transport work, racing
+its normal three-second expiry. The autonomous dispatch test now forwards real
+poll responses while timers run, then pauses the installed browser clock before
+publishing the actual terminal response. All wording and side-effect assertions
+run inside that reading window. An explicit 3,000 ms advance still proves
+automatic dismissal. Cleanup resumes the clock even when an assertion fails.
+The attended/resume wording case uses the existing Keep notices control.
+
+Two controlled protocol regressions failed against the stub and pass with the
+helper. They cover running replies, unchanged terminal response forwarding,
+continued ownership during reading, and cleanup after success or failure.
+The native failure trace remains the evidence of the original expiry race.
+All 24 selected dispatch browser cases and both new protocol cases passed
+in a 295-second pool. Strict TypeScript, the exact tracked-timeout inventory
+and diff checks passed. The real-time notification canary continues to cover native timer behavior; production
+notices, dispatch polling and provider execution are unchanged. Focused logs
+are retained under `.storyhook/logs/sh812-resumed/sh812-dispatch-clock-*`.
+
+**Eighth measurement, 2026-10-03 UTC.** Source `ba8065c2` includes the
+completed dispatch-notice repair. Both fresh snapshots use binary SHA-256
+`9498da8bb7b212f4e6f06170b82063331d817b7971cb44e2d3bfa24d738294a2`.
+Discovery selected 1,520 cases, sixteen slices and eight concurrent jobs.
+The warm-up was stopped through normal parent TERM cleanup after failures.
+Interrupted wall time was 1,157.781 seconds; mean/max load was 360.265/503.567.
+No duration history was created and no comparison arm started.
+
+The retained observations are assigned prerequisites, not established causes:
+
+| Case | Engine | Observed error |
+|---|---|---|
+| Drawer field mutation timeout | Chromium | `drawer-field-mutation-timeout.spec.ts:128`: two error notices violate the strict locator; the extra notice names `preferences` |
+| Continuation attention | WebKit | Route handler reports `created fixture story is missing from project data`; only an error context, no completed ZIP trace, is available |
+| Browser context churn | WebKit | Whole-test budget of 448,004 ms expired at `browser.newContext`; no browser crash is proved |
+| Card exit reclaim | WebKit | `support.ts:1003`: `clock.pauseAt` rejects a target in the past |
+| Card blockers | Chromium | `.card-blockers .rel-id` is absent during the 13px CSS assertion (211,555 ms) |
+| Card blockers | WebKit | `.story-ref.blocker-cleared` stays absent during the expected count of one (205,356 ms) |
+
+The blocker assertions precede final cleanup in their trace chronology; retain
+that chronology when distinguishing them from cancellation-only artifacts.
+Other cases report channel/page closure from our TERM and are not independent
+repair assignments. High load alone does not establish any failure's cause.
+The scope rubric requires the newly adopted extra diagnoses to continue in a
+fresh context; SH-812 remains open and unblocked. Preserve other sessions'
+ownership of host admission and verifier causal evidence.
+
+Live pool logs were copied before cancellation. A concurrent copy of the live
+result tree could not retain every temporary recording because Playwright
+removed files during teardown. Stable final error contexts and completed ZIP
+traces are preserved separately under `.storyhook/logs/sh812-performance-v8/`.
+Complete final artifacts, including any loose recordings, remain in
+`/tmp/sh812-v8-bench/warmup-artifacts/`. Scripts, source manifest, samples and
+interrupted results are retained in both locations. All owned benchmark
+processes have exited. Performance acceptance remains open: diagnose and repair
+the adopted causes with regressions, then refresh both snapshots and complete
+the successful warm-up and two comparable pairs.
+
+**V8 prerequisite repairs, 2026-10-04 UTC.** All six retained observations
+have reproduced causes and focused repairs:
+
+| Origin | Repair and evidence |
+|---|---|
+| Shared clock acquisition | The two-second lead could expire during transport. Public `setFixedTime`, `pauseAt`, then `setSystemTime` acquire the pause without a future-time race. Cleanup resumes after acquisition or body failure. Three latency/failure controls were RED; all 39 selected clock/card/dispatch cases pass. |
+| Continuation fixture routes | Routes survived deletion of their subject and rejected the cleanup-triggered data read. Both engines reproduced that boundary. A `finally` now drains/removes routes before deletion; board readiness precedes the resolved-chip absence check. Both engines pass deletion plus reload. |
+| Mutation timeout stimulus | A global 300 ms deadline also timed out preferences. Only the named native XHR POST now gets that stimulus; the real write, response delay, native timeout and refetch proof remain. Both new deadline controls reproduced the stub failure. Four cases pass; the two existing measured WebKit skips remain. |
+| Blocker dwell observation | Both trace failures precede cancellation. The test now controls the dwell clock around the real close and SSE update. Both engines fail when a reader delay exceeds the unowned lifetime, then pass with clock ownership and explicit expiry. Color, count and 13px size assertions remain. |
+| Whole-test grace | Logs show the watchdog granted 448004 ms at elapsed 451996 ms. Playwright counts elapsed time against a total timeout, so the remaining-time grant expired near half the 900-second cap. Total grants now include elapsed time; an independent owner timer enforces the cap across fixture slots. The exact arithmetic and native-slot controls were RED. All 12 controls, both 128-context sweeps and all 16 Rust audits pass. |
+
+Strict TypeScript, scoped warning-denied Clippy, formatting and diff checks
+pass. The formatter's two tuple-access spacing changes in the existing browser
+coverage target are a separate format-only commit. No product lifetime or
+coverage rule changed. The original clock validation attempt suffered an
+owned output-directory collision and is excluded; the clean repeat is
+`/tmp/sh812-freeze-green2.log`. Other focused evidence uses
+`/tmp/sh812-{continuation,mutation,dwell,budget}-*.log`. All five behavior fixes
+have separate commits. Performance acceptance still requires the matched
+successful comparison; these focused results are not timing evidence.
+
+**Ninth measurement, 2026-10-04 UTC.** Source `d109221f` includes all five
+v8 repairs. Both snapshots use ordinary binary SHA-256
+`f5864518f629df4547eb02bcd323f20c030d08c20c7babffad73d25bd0c9f3ef`.
+Discovery selected 1,526 cases, sixteen slices and eight jobs. The warm-up
+failed on WebKit's real-timer notification canary and was stopped through normal
+parent TERM cleanup at 02:47:55.070Z. Interrupted wall time was 1,102.543 seconds;
+mean/max load was 146.421/170.320. No duration history was created and no
+baseline/optimized comparison arm started.
+
+`notification-contract.spec.ts:293` passed the success toast's visibility check,
+then found no element for the exact `AA-67 dispatched` headline at line 310.
+The trace starts visibility at 741746.190, starts the text assertion at
+742738.180 and ends that failed assertion at 823057.680. The assertion's
+80,183 ms patience cannot recover an expired node. The observed failure is
+independent of the later cancellation; channel/page closure and revoked-token
+cleanup errors after TERM remain cancellation diagnostics.
+
+This new prerequisite is adopted into SH-812. Preserve the canary's native
+timers, real fade, exact wording, absence of a durable success row and cleanup.
+Investigate browser-side observation installed before dispatch, so retained
+appearance/departure facts survive a delayed driver. Reproduce with a delayed
+reader; absence alone cannot pass. Do not freeze the clock, force the lifetime,
+enable Keep notices or mock timer callbacks. Review the second real-time
+reduced-motion canary for the same observation boundary. The scope rubric
+requires the new extra work to continue in fresh context; it becomes assigned
+work there. No new blocker story is needed.
+
+Stable trace/context, screenshot, live pool logs, source manifest, cancellation
+identity and samples are retained in `.storyhook/logs/sh812-performance-v9/`.
+The driver retains complete final artifacts in `/tmp/sh812-v9-bench/`.
+All earlier failed cohorts remain. Performance acceptance is still open; after
+the new regression repair, refresh both snapshots and complete the approved
+successful warm-up and two comparable pairs.
+
+**Native canary repair, 2026-10-04 UTC.** A deliberate four-second reader
+delay reproduces the missing headline in both desktop engines. The reduced-motion
+locator read was interrupted after those conclusive failures, so it is not a
+completed RED verdict. Both canaries now install a DOM observer before dispatch.
+It retains visible text, leaving style, native animation-start events, history
+row count and removal of the same node. It changes no timer, focus or lifetime.
+The normal case requires the actual `toast-out` event; the reduced-motion case
+requires no animation at either boundary. Both retain the delayed-reader
+stimulus. A negative control proves that no appearance means no completed
+lifecycle. All six selected browser cases pass, and strict TypeScript and
+whitespace checks pass. Evidence: `/tmp/sh812-native-{red,green}.log` and the
+corresponding isolated results directories. These focused passes do not replace
+the pending matched performance comparison.
+
+**Verification ownership correction, 2026-10-04 UTC.** The user directed the
+implementer to run only tests it authored and leave other tests to the verifier.
+This supersedes the earlier permission for implementer-run full-leg comparisons.
+V10's warm-up was stopped through normal TERM cleanup; no comparison arm started
+and no timing history was promoted. Its source was `25786736`, with binary
+SHA-256 `29e174c8f09db097ae03f1956e6505be3b7562e854799e510b8c7cdc8bda15c0`.
+Interrupted wall time was 1,937.663 seconds, mean load 160.887 and maximum load
+235.063. Those partial values are diagnostics, not performance acceptance.
+Both WebKit native canaries passed before cancellation. The soft-assertion
+control's intentional expected failure is not an unexpected test failure;
+post-TERM errors are cancellation evidence.
+
+The implementation and authored regressions are submitted for verification.
+Full-leg coverage and the successful warm-up plus two comparable baseline/optimized
+pairs remain verifier-owned acceptance work. Preserve identical specs, dependencies,
+binary bytes, eight jobs and sixteen slices; require matching outcomes and at most
+20% difference in paired mean load before claiming improvement. No successful
+matched pair or measured improvement is claimed here. Complete V10 artifacts are
+in `/tmp/sh812-v10-bench/`; compact evidence is retained under
+`.storyhook/logs/sh812-performance-v10/`. The stopped driver has exited, and all
+owned test descendants have ended.
+
+**Integration repair, 2026-10-04 UTC.** The verifier returned PR 931 because
+published head `a9e9d0cc` conflicted with `dev` at `b4bb0a76`. A normal merge
+preserves both histories. The joined runner retains SH-814's single-file planner,
+serial diagnosis and refusal to overwrite a caller-owned results directory.
+Isolation lists now have the same expected-count TSVs as ordinary slices, and
+each initial or rerun root gets its own duration-receipt and timing directories.
+The duration reporter and conditional isolation JSON reporter both run.
+Isolation records Playwright's original exit before independent receipt validation
+can change the harness verdict. Diagnostic reruns cannot promote timing history.
+
+The five named SH-812 Rust cases pass, including 15 owned Python planner, cache
+and wrapper controls. The new real-Playwright fixture confirms both production
+reporters publish their receipts; it runs only its authored fixture test.
+Shell syntax, strict TypeScript, scoped Clippy with warnings denied and formatting
+checks for changed Rust files pass.
+Evidence is retained in `.storyhook/logs/sh812-reconciliation/`. No existing
+browser suite, full gate or benchmark ran for this reconciliation. The remaining
+coverage and performance acceptance above still belongs to the verifier.
+
 ### What slicing exposed
 
 - **Order-dependent specs.** Slices change which files run before a spec. The

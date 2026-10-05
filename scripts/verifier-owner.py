@@ -10,6 +10,7 @@ Every gate session starts at the verifier's scheduling class (SH-785).
 import fcntl
 import json
 import os
+import select
 import signal
 import shutil
 import subprocess
@@ -193,22 +194,87 @@ def supervisor_gone(record_path, session):
         return True
 
 
-def execute(command, record_path, record, field, cancellation, budget, output=None, gate_prefix=None):
+def gate_binding():
+    """The attempt identity the verifier wrote as the journal's first record, if any."""
+    try:
+        with open(os.environ["STORYHOOK_GATE_PROGRESS"], encoding="utf-8") as journal:
+            first = json.loads(journal.readline())
+        if first.get("kind") == "run":
+            binding = {k: first[k] for k in ("attempt_id", "execution_id", "generation")}
+            if type(binding["generation"]) is int:
+                return binding
+    except (KeyError, OSError, ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def gate_reservation(common):
+    """The verifier gate's host admission root; None while the authority is disabled (SH-869).
+
+    The gate's own session is the root's supervised execution: this process
+    attaches it, so no extra session sits between the verifier's census and
+    the gate (decision D3). A repair gate may use the host's repair reserve.
+    """
+    from host_admission.adapter import disabled
+    if disabled():
+        return None
+    from host_admission.reservation import Reservation
+    work = "repair" if os.environ.get("STORYHOOK_HOST_WORK") == "repair" else None
+    return Reservation("verifier-gate", project=str(common), work=work, binding=gate_binding())
+
+
+def admission_cause(error):
+    """The publishable form of a host admission refusal or withdrawal."""
+    return dict(cause=error.cause, retryable=error.retryable, reason=error.reason)
+
+
+def execute(command, record_path, record, field, cancellation, budget, output=None, gate_prefix=None,
+            reservation_factory=None):
     """Admit a new session only after its identity is durably recorded.
 
     With gate_prefix, the leader execs the class tools, which exec the launcher
     in this file, which execs the command: one pid throughout, so the recorded
     session is the gate's, and the launch report still speaks for the command.
+
+    With reservation_factory (the gate only), the session runs inside a host
+    admission root that this process holds and attaches before the go byte,
+    watches for withdrawal, and releases only after its own census and reap.
     """
+    execution_path = os.environ.get(EXECUTION_FILE) if field == "gate_session" else None
+    reservation = reporter = withdrawn = None
+    if reservation_factory is not None:
+        from host_admission.adapter import Reporter
+        from host_admission.reservation import Admission
+        try:
+            reservation = reservation_factory()
+            if reservation is not None:
+                reporter = Reporter("verifier-gate", reservation.id)
+                if reservation.acquire(reporter.waiting, lambda: cancellation.signum is not None) is None:
+                    # Cancelled while queued: nothing ran and nothing is held.
+                    if execution_path:
+                        publish_execution(execution_path, 125, False)
+                    return 125
+                reporter.granted()
+                reservation.open_guard()
+        except Admission as refused:
+            (reporter or Reporter("verifier-gate", "refused")).failed(refused)
+            if execution_path:
+                publish_execution(execution_path, 125, False, admission=admission_cause(refused))
+            return 125
     receive, release = os.pipe()
     exec_error, exec_report = os.pipe()
-    execution_path = os.environ.get(EXECUTION_FILE) if field == "gate_session" else None
+    ready_read, ready_write = os.pipe() if reservation is not None else (None, None)
     child = os.fork()
     if child == 0:
         os.close(release)
         os.close(exec_error)
         try:
             os.setsid()
+            if ready_write is not None:
+                # The supervisor attaches this session before releasing it.
+                os.close(ready_read)
+                os.write(ready_write, b"R")
+                os.close(ready_write)
             if os.read(receive, 1) != b"1":
                 os._exit(125)
             os.close(receive)
@@ -219,6 +285,10 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
             environment = dict(os.environ)
             if field == "gate_session":
                 environment.pop(EXECUTION_FILE, None)
+            if reservation is not None:
+                os.set_inheritable(reservation.guard, True)
+                environment.update(reservation.child_env())
+                environment["STORYHOOK_HOST_ENTRY"] = f"verifier-gate:{os.getppid()}"
             if gate_prefix is not None:
                 # Open across the class tools' execs; the launcher closes it at
                 # the gate's own exec, so the gate never holds the report.
@@ -234,8 +304,21 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
     os.close(exec_report)
     record[field] = child
     save(record_path, record)
+    attached = False
+    if reservation is not None:
+        os.close(ready_write)
+        try:
+            ready = select.select([ready_read], [], [], reservation.policy.value["lease_ms"] / 1000)[0]
+            if not ready or os.read(ready_read, 1) != b"R":
+                raise Refusal("gate session did not establish readiness for host admission")
+            reservation.attach(child)
+            attached = True
+        except (Admission, Refusal, OSError) as error:
+            print(f"verifier-owner: host admission could not attach the gate session: {error}", file=sys.stderr)
+        finally:
+            os.close(ready_read)
     # Cancellation before admission closes the handshake without executing.
-    admitted = cancellation.signum is None
+    admitted = cancellation.signum is None and (reservation is None or attached)
     if admitted:
         os.write(release, b"1")
     os.close(release)
@@ -243,10 +326,24 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
     deadline = None
     killed_at = None
     code = None
+    next_admission_check = time.monotonic()
     try:
         while True:
             # Everything this pass observes is at least as recent as this.
             observed_at = time.monotonic()
+            if attached and withdrawn is None and code is None and observed_at >= next_admission_check:
+                # Polled at the policy's own sample interval, never per pass.
+                next_admission_check = observed_at + reservation.policy.value["sample_ms"] / 1000
+                try:
+                    cause = reservation.drained()
+                    withdrawn = Admission(*cause) if cause else None
+                except (Admission, Refusal) as lost:
+                    # A broker that cannot answer drains its own work first (SH-868).
+                    withdrawn = lost if isinstance(lost, Admission) else Admission("refused", False, str(lost))
+                if withdrawn is not None and deadline is None:
+                    reporter.failed(withdrawn)
+                    deadline = time.monotonic() + grace
+                    signal_session(child, signal.SIGTERM)
             if cancellation.signum is not None and deadline is None:
                 deadline = time.monotonic() + grace
                 if field == "gate_session":
@@ -325,6 +422,18 @@ def execute(command, record_path, record, field, cancellation, budget, output=No
             time.sleep(.05)
         if PINNED:
             os.waitpid(child, 0)
+        if reservation is not None:
+            # Only after the census proved the session empty and the leader is
+            # reaped; capacity is never released from an error alone.
+            try:
+                if attached:
+                    reservation.release()
+                else:
+                    reservation.abandon()
+            except Admission as error:
+                raise Refusal(f"host admission release unproved: {error}") from error
+            if withdrawn is not None and execution_path:
+                publish_execution(execution_path, code, True, admission=admission_cause(withdrawn))
         return code
     except (Refusal, OSError, ValueError, subprocess.SubprocessError) as error:
         if code is not None:
@@ -351,7 +460,8 @@ def run(mode, common, worktree, key, command, cancellation, output=None):
         owner["gate_supervisor"] = os.getpid()
         owner["gate_leader_exit"] = None
         save(owner_path, owner)
-        status = execute(command, owner_path, owner, "gate_session", cancellation, budget, gate_prefix=prefix)
+        status = execute(command, owner_path, owner, "gate_session", cancellation, budget, gate_prefix=prefix,
+                         reservation_factory=lambda: gate_reservation(common))
         owner = read(owner_path)
         owner["gate_started"] = False
         owner["gate_session"] = None

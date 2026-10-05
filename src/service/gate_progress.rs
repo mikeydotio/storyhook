@@ -351,6 +351,12 @@ pub struct GateRun {
     pub attempt_id: Option<String>,
 }
 
+/// Label prefix shared by every producer of a resource-wait activity:
+/// `scripts/rustc-slot.py` (build slots), `scripts/machine-lock.sh` (named
+/// locks) and `scripts/host_admission/adapter.py` (host admission, SH-869).
+/// A step with this label is waiting for machine resources, not working.
+pub const RESOURCE_WAIT_PREFIX: &str = "waiting for ";
+
 /// The deepest explicit checklist item currently running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurrentStep {
@@ -361,6 +367,15 @@ pub struct CurrentStep {
     /// Exact completed/planned tests for this step alone. Non-test activities
     /// and test suites that have not finished discovery carry no counts.
     pub tests: Option<(u32, u32)>,
+}
+
+impl CurrentStep {
+    /// Whether this step is a wait for host admission, a build slot or a lock
+    /// rather than gate work (SH-869).
+    #[must_use]
+    pub fn is_resource_wait(&self) -> bool {
+        self.label.starts_with(RESOURCE_WAIT_PREFIX)
+    }
 }
 
 impl GateProgress {

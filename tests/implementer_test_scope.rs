@@ -334,3 +334,38 @@ fn every_exemption_names_a_scanned_file_and_a_reason() {
         );
     }
 }
+
+/// Stopped policy changes the central gate, never the implementer permission.
+#[test]
+fn stopped_verification_guidance_preserves_the_implementer_test_contract() {
+    let sentence = "When verification is stopped, eligible submissions still publish and merge without tests. Release gates provide fallback coverage.";
+    let legacy_root = storyhook_test_support::scratch_dir();
+    storyhook::storage::init_project(legacy_root.path(), None).unwrap();
+    for text in [
+        templates::agents_md("SH", "done"),
+        templates::cursor_rules(),
+        read("AGENTS.md"),
+        get_help_topic("agent-guide").unwrap().to_owned(),
+        std::fs::read_to_string(legacy_root.path().join(".storyhook/CLAUDE.md")).unwrap(),
+    ] {
+        assert!(squash(&text).contains(sentence), "{text}");
+        assert!(squash(&text).contains(IMPLEMENTER_TEST_SCOPE), "{text}");
+    }
+    let script = read("plugins/story/bin/story.sh");
+    assert_eq!(
+        charter_assignment(&script, "TEST_SCOPE_CLAUSE"),
+        format!("TEST_SCOPE_CLAUSE=\"{IMPLEMENTER_TEST_SCOPE}\"")
+    );
+    assert_eq!(
+        charter_assignment(&script, "STOPPED_VERIFICATION_CLAUSE"),
+        format!("STOPPED_VERIFICATION_CLAUSE=\"{sentence}\"")
+    );
+    for name in ["PROMPT_TPL", "AUTO_PROMPT_TAIL"] {
+        assert_eq!(
+            charter_assignment(&script, name)
+                .matches("$STOPPED_VERIFICATION_CLAUSE")
+                .count(),
+            1
+        );
+    }
+}

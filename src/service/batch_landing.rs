@@ -139,7 +139,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                     generation,
                     pull_request,
                     checkout: candidate.checkout.clone(),
-                    certification: certification.clone(),
+                    certification: certification.clone().into(),
                     created_at: now.clone(),
                     batch: Some(batch.clone()),
                 });
@@ -159,7 +159,7 @@ impl<S: Store> VerificationQueue<'_, S> {
             Ok(BatchLandingAdmission::Admitted {
                 intent: Box::new(BatchLandingIntent {
                     batch,
-                    certification: certification.clone(),
+                    certification: certification.clone().into(),
                     rows,
                 }),
                 record: Box::new(next),
@@ -289,8 +289,11 @@ fn green_comment(record: &VerificationBatch, row: &LandingIntent, detail: &str) 
     format!(
         "{} merge tree `{}` passed `{}` in verification batch {} with {}, and batch pull request {} landed; this story's pull request {} merged with it.{}\n\n{}",
         super::VERIFICATION_GREEN_PREFIX,
-        row.certification.tree,
-        row.certification.gate,
+        row.certification.tree(),
+        row.certification
+            .certified()
+            .expect("validated certified batch")
+            .gate,
         record.id,
         others.join(", "),
         row.landing_pull_request(),
