@@ -109,6 +109,36 @@ fn an_unidentifiable_workspace_is_left_whole_and_holds_the_story() {
 }
 
 #[test]
+fn an_ambiguous_identity_names_every_candidate_it_leaves() {
+    let workspace = Workspace::new(true);
+    let other = workspace.repo.join(".codex/worktrees/SH-1");
+    let reset = workspace.reserve_pinned_with(|resources| {
+        // Two registrations claim the story, so none is selected.
+        let mut second = resources.candidates[0].clone();
+        second.worktree = Some(other.clone());
+        resources.candidates.push(second);
+        resources.status = "ambiguous".into();
+        resources.worktree = None;
+        resources.diagnostics =
+            vec!["multiple resources claim this story; none was selected".into()];
+    });
+    let done = workspace.execute(&reset);
+    // The record names everything left, so a person knows what collides.
+    for resource in [
+        worktree_resource(&workspace),
+        format!("worktree {}", other.display()),
+        "local branch worktree-SH-1".into(),
+    ] {
+        let left = entry(&done.residue, &resource);
+        assert!(left.reason.contains("none was selected"), "{left:?}");
+        assert!(left.blocks_dispatch, "{left:?}");
+    }
+    assert!(workspace.worktree.exists());
+    assert!(workspace.branch_exists("worktree-SH-1"));
+    assert_released(&workspace, true);
+}
+
+#[test]
 fn a_branch_that_is_origins_cached_default_survives_while_the_worktree_goes() {
     let workspace = Workspace::new(true);
     git(&workspace.worktree, &["push", "origin", "worktree-SH-1"]);

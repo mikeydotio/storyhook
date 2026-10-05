@@ -110,14 +110,26 @@ fn block_git(report: &ResourceReport, residue: &mut Residue, reason: &str) {
     }
 }
 
+/// Every Git resource the report names: the selected worktree and branch, and
+/// each candidate an unresolved identity left unselected, once each.
 fn git_resources(report: &ResourceReport) -> Vec<String> {
-    report
+    let worktrees = report
         .worktree
-        .as_deref()
-        .map(worktree_resource)
-        .into_iter()
-        .chain(report.branch.as_deref().map(branch_resource))
-        .collect()
+        .iter()
+        .chain(report.candidates.iter().filter_map(|c| c.worktree.as_ref()))
+        .map(|path| worktree_resource(path));
+    let branches = report
+        .branch
+        .iter()
+        .chain(report.candidates.iter().map(|c| &c.branch))
+        .map(|name| branch_resource(name));
+    let mut named = Vec::new();
+    for resource in worktrees.chain(branches) {
+        if !named.contains(&resource) {
+            named.push(resource);
+        }
+    }
+    named
 }
 
 /// Repeats one removal a few times, so a transient failure does not leave
