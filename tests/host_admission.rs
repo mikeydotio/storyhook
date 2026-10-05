@@ -35,6 +35,11 @@ fn host_admission_runner_adapter_contract() {
     run("test_host_admission_adapter.py");
 }
 
+#[test]
+fn host_admission_compiler_wrapper_contract() {
+    run("test_rustc_slot_admission.py");
+}
+
 /// These suites drive their own fixture authorities. A grant inherited from
 /// the production runner that admitted this test binary (SH-869) would make
 /// the client refuse every fixture root, so the bearer capability is removed;

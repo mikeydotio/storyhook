@@ -33,6 +33,7 @@ build_number	src/api/wire.rs
 build_number	src/daemon/lifecycle.rs
 build_number	src/version.rs
 build_slots	.cargo/config.toml
+build_slots	scripts/host-admit.py
 build_slots	scripts/machine-lock.sh
 build_slots	scripts/rustc-slot.py
 cargo_diagnostics	:(glob)scripts/*
@@ -153,6 +154,7 @@ hooks	:(glob)**/*
 host_admission	:(glob)scripts/host_admission/**
 host_admission	scripts/host-admission.py
 host_admission	scripts/host-admit.py
+host_admission	scripts/rustc-slot.py
 host_admission	scripts/tests/host_admit_fixture.py
 host_admission	scripts/tests/test_host_admission.py
 host_admission	scripts/tests/test_host_admission_activation.py
@@ -161,6 +163,7 @@ host_admission	scripts/tests/test_host_admission_evidence.py
 host_admission	scripts/tests/test_host_admission_sensors.py
 host_admission	scripts/tests/test_host_admission_system.py
 host_admission	scripts/tests/test_host_admission_usage.py
+host_admission	scripts/tests/test_rustc_slot_admission.py
 host_admission_evidence	:(glob)scripts/host_admission/**
 host_admission_evidence	:(glob)src/service/gate_cost/**
 host_admission_evidence	scripts/tests/test_host_admission.py

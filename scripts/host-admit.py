@@ -37,6 +37,18 @@ def run(command, env):
         sys.exit(127 if isinstance(error, FileNotFoundError) else 126)
 
 
+def application_run(entry, command):
+    """Cargo's runner also wraps `cargo run` and examples; only test binaries are runners.
+
+    Test binaries live in `target/<profile>/deps/`; rustdoc names a doctest
+    binary `rust_out`. Anything else Cargo hands its runner is an application.
+    """
+    if entry != "cargo-test-binary":
+        return False
+    path = command[0]
+    return os.path.basename(os.path.dirname(path)) != "deps" and os.path.basename(path) != "rust_out"
+
+
 def fast(argv):
     """Exec without importing the authority when no admission decision is needed."""
     if len(argv) < 4 or argv[0] != "--entry" or "--" not in argv:
@@ -48,6 +60,8 @@ def fast(argv):
     if options and not (argv[3].isdecimal() and int(argv[3]) > 0):
         return
     env = dict(os.environ, STORYHOOK_HOST_ENTRY=f"{entry}:{os.getpid()}")
+    if application_run(entry, command):
+        run(command, dict(os.environ))
     try:
         os.lstat(POLICY)
     except FileNotFoundError:
@@ -60,6 +74,12 @@ def fast(argv):
 
 if __name__ == "__main__":
     fast(sys.argv[1:])
+    if sys.version_info < (3, 11):
+        # Cargo can reach this file through an older `python3` on PATH; only
+        # the fast paths above are written for it (scripts/python-runtime.sh).
+        print(f"host-admit: host admission requires Python >= 3.11, not {sys.version.split()[0]};"
+              " set STORYHOOK_PYTHON", file=sys.stderr)
+        sys.exit(125)
     from host_admission.adapter import main
 
     sys.exit(main())

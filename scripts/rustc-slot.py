@@ -61,6 +61,16 @@ said nothing would be SH-306's.  The one failure this file cannot soften is
 a missing `python3`, which stops cargo before any of this runs -- so the
 release preflight refuses by name on a host or guest without it.
 
+HOST ADMISSION (SH-869).  With no host policy (the authority is disabled,
+`docs/spec/verification-throughput-and-recovery.md`, "SH-869 runner
+adoption") nothing above changes.  Inside a granted root -- a verifier gate,
+a test pool, any admitted runner -- the compile runs in that grant and still
+takes a slot.  With an enabled authority and no enclosing grant, the compile
+is its own root: this file execs `host-admit.py --entry rustc` and takes no
+slot, so no slot holder ever waits for a grant and no grant holder waits on
+a slot held by such a waiter (decision D7).  That root fails closed: an
+enabled authority that cannot admit is a refusal, never an unbounded rustc.
+
     rustc-slot.py --plan          print root, K and its derivation as JSON
     rustc-slot.py <rustc> args…   what cargo runs
 
@@ -91,6 +101,12 @@ WAIT_REPORT_SECS = 36
 
 SLOT_DIR = "build-slots"
 PROGRAM = "rustc-slot"
+
+# host_admission.namespace.ROOT's policy, repeated so a disabled authority costs
+# one lstat and no import; scripts/tests/test_rustc_slot_admission.py pins it.
+HOST_POLICY = "/var/tmp/storyhook-host-admission-v1/policy.json"
+HERE = os.path.dirname(os.path.abspath(__file__))
+ADMISSION_REFUSED = 125
 
 
 def note(message):
@@ -289,6 +305,34 @@ def finish(fds, held, root, crate, waited):
     return fds[held]
 
 
+def admitted_as_root():
+    """True when an enabled host authority must admit this compile as its own root.
+
+    Disabled (no policy) and inherited (a granted ancestor) both keep the
+    slot path. An inconsistent inheritance is a refusal, never a guess.
+    """
+    try:
+        os.lstat(HOST_POLICY)
+    except FileNotFoundError:
+        return False
+    if os.environ.get("STORYHOOK_HOST_GRANT") and os.environ.get("STORYHOOK_HOST_REQUEST"):
+        return False
+    if sys.version_info < (3, 11):
+        # A bare cargo can reach this file through an older `python3` on PATH;
+        # the authority needs the validated runtime (scripts/python-runtime.sh).
+        note(f"host admission requires Python >= 3.11, not {sys.version.split()[0]}; set STORYHOOK_PYTHON")
+        sys.exit(ADMISSION_REFUSED)
+    sys.path.insert(0, HERE)
+    from host_admission.adapter import inherited
+    from host_admission.namespace import ROOT
+    from host_admission.policy import Refusal
+    try:
+        return not inherited(ROOT, os.environ)
+    except Refusal as error:
+        note(f"host admission refused this compile: {error}")
+        sys.exit(ADMISSION_REFUSED)
+
+
 def main():
     argv = sys.argv[1:]
     if argv == ["--plan"]:
@@ -300,6 +344,9 @@ def main():
     crate = crate_name(argv[1:])
     if crate is None:
         exec_rustc(argv)
+    if admitted_as_root():
+        os.execv(sys.executable, [sys.executable, "-B", os.path.join(HERE, "host-admit.py"),
+                                  "--entry", "rustc", "--", *argv])
 
     root = slot_root()
     try:

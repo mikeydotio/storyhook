@@ -137,6 +137,36 @@ class Modes(unittest.TestCase):
                               timeout=PROCESS_ALLOWANCE_S)
         self.assertEqual(done.returncode, 99, "an unknown entry is left to the validating parser")
 
+    def test_cargo_runner_admits_test_binaries_and_passes_applications_through(self):
+        cli = load_entrypoint()
+        for path, application in (("target/debug/deps/build_slots-46fa5c3d", False),
+                                  ("/tmp/rustdoctestXyz/rust_out", False),
+                                  ("target/debug/story", True),
+                                  ("target/debug/examples/demo", True)):
+            self.assertEqual(cli.application_run("cargo-test-binary", [path]), application, path)
+        self.assertFalse(cli.application_run("rustc", ["target/debug/story"]),
+                         "only Cargo's runner entry classifies applications")
+        app = Path(self.tmp.name) / "target" / "debug" / "story"
+        app.parent.mkdir(parents=True)
+        app.write_text("#!/bin/sh\necho \"entry=${STORYHOOK_HOST_ENTRY:-none}\"\nexit 5\n")
+        app.chmod(0o755)
+        (self.root / "policy.json").write_text("{}")
+        boot = ("import importlib.util,sys;"
+                f"s=importlib.util.spec_from_file_location('c',{str(SCRIPTS / 'host-admit.py')!r});"
+                "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
+                f"m.POLICY={str(self.root / 'policy.json')!r};m.fast(sys.argv[1:]);sys.exit(99)")
+        done = subprocess.run([sys.executable, "-c", boot, "--entry", "cargo-test-binary", "--", str(app)],
+                              capture_output=True, text=True, timeout=PROCESS_ALLOWANCE_S)
+        self.assertEqual((done.returncode, done.stdout.strip()), (5, "entry=none"),
+                         "an application runs unchanged even with an enabled authority")
+        test_binary = Path(self.tmp.name) / "target" / "debug" / "deps" / "unit-0"
+        test_binary.parent.mkdir(parents=True)
+        test_binary.write_text("#!/bin/sh\nexit 0\n")
+        test_binary.chmod(0o755)
+        done = subprocess.run([sys.executable, "-c", boot, "--entry", "cargo-test-binary", "--",
+                               str(test_binary)], capture_output=True, timeout=PROCESS_ALLOWANCE_S)
+        self.assertEqual(done.returncode, 99, "an enabled test binary is left to the adapter")
+
     def test_a_present_policy_never_falls_back_to_unbounded(self):
         (self.root / "policy.json").write_text("{}")
         refuse = lambda *_: (_ for _ in ()).throw(Refusal("incomplete or unsupported host policy"))
