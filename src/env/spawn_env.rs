@@ -429,7 +429,8 @@ mod tests {
     /// production port, listening wherever production listens.
     #[test]
     fn every_allowlist_that_admits_home_carries_daemon_containment() {
-        let lists: [(&str, fn(&str) -> bool); 4] = [
+        type Permits = fn(&str) -> bool;
+        let lists: [(&str, Permits); 4] = [
             ("dispatch", dispatch_permits),
             ("plugin management", plugin_cli_permits),
             ("verification", verification_permits),
