@@ -215,5 +215,35 @@ class VerifierWorkers(unittest.TestCase):
         self.assertIn("selected=1 completed=1 failed=0 jobs=3", done.stdout)
 
 
+
+class ReleasePaths(unittest.TestCase):
+    """The release observer's preflight runs as a release-observer entry."""
+
+    def test_the_observer_preflight_is_admitted(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("release_observer", CHECKOUT / "scripts" / "release-observer.py")
+        observer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(observer)
+        self.assertEqual(observer.preflight_command(),
+                         [sys.executable, "-B", str(CHECKOUT / "scripts" / "host-admit.py"), "--entry",
+                          "release-observer", "--", "bash", "scripts/build-release-assets.sh", "--check"])
+
+    @unittest.skipIf(POLICY.exists(), "this case proves the disabled host; this host has a policy")
+    def test_a_disabled_host_leaves_the_observer_locks_grace_alone(self):
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="rlw-") as tmp:
+            scripts = Path(tmp) / "scripts"
+            scripts.mkdir()
+            for name in ("release-watch.sh", "host-admit.py"):
+                (scripts / name).symlink_to(CHECKOUT / "scripts" / name)
+            fake = scripts / "machine-lock.sh"
+            fake.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n')
+            fake.chmod(0o755)
+            done = subprocess.run(["bash", str(scripts / "release-watch.sh")], capture_output=True, text=True,
+                                  env=runner_env(Path(tmp)), stdin=subprocess.DEVNULL,
+                                  timeout=PROCESS_ALLOWANCE_S)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.splitlines()[:3], ["release-observer", "--", "python3"])
+
+
 if __name__ == "__main__":
     unittest.main()

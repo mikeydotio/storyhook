@@ -156,6 +156,8 @@ host_admission	plugins/story/tests/lib.sh
 host_admission	plugins/story/tests/run-tests.sh
 host_admission	scripts/host-admission.py
 host_admission	scripts/host-admit.py
+host_admission	scripts/release-observer.py
+host_admission	scripts/release-watch.sh
 host_admission	scripts/run-e2e.sh
 host_admission	scripts/run-tests.sh
 host_admission	scripts/rustc-slot.py
