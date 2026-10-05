@@ -148,5 +148,34 @@ class PluginRunner(unittest.TestCase):
         self.assertEqual(len(self.log.read_text().splitlines()), 1)
 
 
+
+@unittest.skipIf(POLICY.exists(), "these cases prove the disabled host; this host has a policy")
+class BrowserSuite(unittest.TestCase):
+    """The tracked browser runner, stopped at its first build by a failing cargo."""
+
+    def test_the_browser_suite_is_admitted_once_before_its_first_build(self):
+        with tempfile.TemporaryDirectory(dir="/tmp", prefix="btw-") as tmp:
+            fixture = Path(tmp)
+            (fixture / "scripts").mkdir()
+            (fixture / "bin").mkdir()
+            for path in (CHECKOUT / "scripts").iterdir():
+                (fixture / "scripts" / path.name).symlink_to(path)
+            # The runner reads its project list from the tracked config first.
+            (fixture / "e2e").symlink_to(CHECKOUT / "e2e")
+            cargo = fixture / "bin" / "cargo"
+            cargo.write_text(FAKE_CARGO.replace("exit 0", "exit 1"))
+            cargo.chmod(0o755)
+            subprocess.run(["git", "init", "-q"], cwd=fixture, check=True)
+            done = subprocess.run(["bash", "scripts/run-e2e.sh"], cwd=fixture,
+                                  env=runner_env(fixture, STORYHOOK_E2E_JOBS="3"), capture_output=True,
+                                  text=True, stdin=subprocess.DEVNULL, timeout=PROCESS_ALLOWANCE_S * 4)
+            calls = (fixture / "cargo.log").read_text().splitlines()
+        self.assertNotEqual(done.returncode, 0, "the failing build stops the suite")
+        self.assertEqual(len(calls), 1, f"one build, so one admitted pass: {calls}")
+        _, entry, _, units = calls[0].split("|")
+        self.assertRegex(entry, r"^entry=browser-pool:\d+$")
+        self.assertEqual(units, "units=", "the unit count is consumed before any slice")
+
+
 if __name__ == "__main__":
     unittest.main()
