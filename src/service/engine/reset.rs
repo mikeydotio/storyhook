@@ -5,6 +5,7 @@ use crate::domain::{StoryEvent, active_state};
 use crate::service::StoryService;
 use crate::service::executor_lock::ExecutorLock;
 use crate::service::workspace_lock::WorkspaceLock;
+use crate::store::patience::{Shutdown, patiently};
 use crate::store::{EngineReset, ExpectedSeq, ProjectId, StoryNo};
 use std::os::fd::{AsRawFd, BorrowedFd};
 
@@ -183,45 +184,67 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     StopTarget::Unclaim(request) => return self.unclaim_reserved(lane, *request),
                     StopTarget::Reset(reset) => *reset,
                 };
+                // A story reset may supersede this reservation at any point
+                // (SH-886): the lane then defers to it, exactly like a lane
+                // another owner already held, and nothing is recreated.
                 let result = (|| {
-                    let workspace = WorkspaceLock::acquire(
+                    let workspace = match WorkspaceLock::acquire(
                         &reset.lease.repository_path,
                         &reset.lease.story_id,
-                    )?;
-                    self.ctx.store().write(|tx| {
-                        let current =
-                            tx.engine_reset(reset.project, reset.story)?
-                                .ok_or_else(|| {
-                                    StoreError::Invariant(
-                                        "reset reservation disappeared before workspace admission"
-                                            .into(),
-                                    )
-                                })?;
-                        if current.token != reset.token || current.lease != reset.lease {
-                            return Err(StoreError::Invariant(
-                                "reset ownership changed before workspace admission".into(),
-                            ));
-                        }
-                        crate::service::block_delivery::supersede_pending(
-                            tx,
-                            reset.project,
-                            reset.story,
-                            "engine reset owns workspace replacement",
-                        )?;
-                        Ok(())
+                    ) {
+                        Ok(workspace) => workspace,
+                        Err(_) if self.superseded(&reset)? => return Ok(false),
+                        Err(error) => return Err(error),
+                    };
+                    let admitted = patiently(&Shutdown::new(), None, || {
+                        self.ctx.store().write(|tx| {
+                            if !owns(tx, &reset)? {
+                                return Ok(false);
+                            }
+                            crate::service::block_delivery::supersede_pending(
+                                tx,
+                                reset.project,
+                                reset.story,
+                                "engine reset owns workspace replacement",
+                            )?;
+                            Ok(true)
+                        })
                     })?;
+                    if !admitted {
+                        return Ok(false);
+                    }
                     let outcome = self
                         .dispatcher
                         .reset(reset.clone(), workspace.descriptor())?;
                     validate_receipt(&reset, &outcome)?;
                     self.finish_reset(&reset, &outcome.payload, workspace)
                 })();
-                if let Err(error) = &result {
-                    let mut failed = reset;
-                    failed.failure = Some(error.to_string());
-                    self.ctx.store().write(|tx| tx.put_engine_reset(&failed))?;
+                match result {
+                    Ok(true) => Ok(()),
+                    Ok(false) => {
+                        deferred.push(format!(
+                            "lane {} story `{}`: a story reset superseded its Stop Now reset",
+                            lane.lane_index,
+                            lane.story_id.as_deref().unwrap_or("unknown")
+                        ));
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let mut failed = reset;
+                        failed.failure = Some(error.to_string());
+                        // Only the reservation's own owner records its failure;
+                        // a superseded row is never recreated.
+                        patiently(&Shutdown::new(), None, || {
+                            self.ctx.store().write(|tx| {
+                                if owns(tx, &failed)? {
+                                    tx.put_engine_reset(&failed)?;
+                                }
+                                Ok(())
+                            })
+                        })?;
+                        Err(error)
+                    }
                 }
-                result
             });
             if let Err(error) = attempt {
                 let detail = format!(
@@ -229,16 +252,20 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
                     lane.lane_index,
                     lane.story_id.as_deref().unwrap_or("unknown")
                 );
-                self.ctx.store().write(|tx| {
-                    if let Some(mut current) = tx
-                        .engine_lanes(run_id)?
-                        .into_iter()
-                        .find(|l| l.lane_index == lane.lane_index && l.story_id == lane.story_id)
-                    {
-                        current.outcome_detail = Some(detail.clone());
-                        tx.put_engine_lane(&current)?;
-                    }
-                    Ok(())
+                patiently(&Shutdown::new(), None, || {
+                    self.ctx.store().write(|tx| {
+                        // A story reset that took the story over owns the lane.
+                        if lane_story_owned_elsewhere(tx, self.ctx.project(), lane)? {
+                            return Ok(());
+                        }
+                        if let Some(mut current) = tx.engine_lanes(run_id)?.into_iter().find(|l| {
+                            l.lane_index == lane.lane_index && l.story_id == lane.story_id
+                        }) {
+                            current.outcome_detail = Some(detail.clone());
+                            tx.put_engine_lane(&current)?;
+                        }
+                        Ok(())
+                    })
                 })?;
                 failures.push(detail);
             }
@@ -465,18 +492,25 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
         Ok(())
     }
 
+    /// Whether a story reset took this reservation over (SH-886).
+    fn superseded(&self, reset: &EngineReset) -> Result<bool, AppError> {
+        Ok(!self.ctx.store().read(|tx| owns(tx, reset))?)
+    }
+
+    /// Completes the lane's reset; `false` when a story reset superseded it,
+    /// in which case that reset releases the story and the lane.
     fn finish_reset(
         &self,
         reset: &EngineReset,
         receipt: &serde_json::Value,
         workspace: WorkspaceLock,
-    ) -> Result<(), AppError> {
+    ) -> Result<bool, AppError> {
         let now = self.ctx.now();
-        let (before, snapshot) = self.ctx.write_stories(|tx| {
-            let current = tx.engine_reset(reset.project, reset.story)?
-                .ok_or_else(|| StoreError::Invariant("reset reservation disappeared".into()))?;
-            if current.token != reset.token || current.lease != reset.lease {
-                return Err(StoreError::Invariant("reset reservation changed".into()));
+        // Cleanup already happened: contention is waited out, never reported.
+        let finished = patiently(&Shutdown::new(), None, || {
+            self.ctx.write_stories(|tx| {
+            if !owns(tx, reset)? {
+                return Ok(None);
             }
             let prefix = project_prefix(tx, reset.project)?;
             let (_, row) = resolve_story(tx, reset.project, &prefix, &reset.lease.story_id)?;
@@ -516,8 +550,12 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             idle.outcome = Some(OPERATOR_STOPPED_NOW.into());
             idle.outcome_detail = Some(receipt.to_string());
             put_or_retire_idle_lane(tx, &idle)?;
-            Ok((row.snapshot, snapshot))
+            Ok(Some((row.snapshot, snapshot)))
+        })
         })?;
+        let Some((before, snapshot)) = finished else {
+            return Ok(false);
+        };
         drop(workspace);
         StoryService::new(self.ctx).fire_transition_hooks(
             &before.id,
@@ -527,8 +565,31 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             &snapshot,
             &now,
         );
-        Ok(())
+        Ok(true)
     }
+}
+
+/// Whether `reset` still owns its story: a story reset may supersede it.
+fn owns(tx: &impl ReadOps, reset: &EngineReset) -> Result<bool, StoreError> {
+    Ok(tx
+        .engine_reset(reset.project, reset.story)?
+        .is_some_and(|current| current.token == reset.token && current.lease == reset.lease))
+}
+
+/// Whether a cleanup operation other than Stop Now owns `lane`'s story.
+fn lane_story_owned_elsewhere(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    lane: &EngineLaneRecord,
+) -> Result<bool, StoreError> {
+    let Some(id) = &lane.story_id else {
+        return Ok(false);
+    };
+    let prefix = project_prefix(tx, project)?;
+    let Ok(story) = StoryNo::parse_id(&prefix, id) else {
+        return Ok(false);
+    };
+    Ok(crate::service::story_reset::foreign_owner(tx, project, story)?.is_some())
 }
 
 /// Opens one of a run's controller lock files, next to the store.

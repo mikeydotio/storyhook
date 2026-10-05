@@ -67,6 +67,7 @@ mod linux_scheduling;
 pub mod project_recovery;
 pub(crate) mod qos;
 pub mod repair_publication;
+pub mod reset;
 pub mod seat_guard;
 pub mod serve;
 pub mod subscribe;

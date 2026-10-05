@@ -728,12 +728,6 @@ fn git_text(cwd: &Path, args: &[&str]) -> Result<String, String> {
 /// at exit 0), is an error naming why — absence is not an answer (SH-372).
 /// The plugin's `default_branch` and the verifier bundle's
 /// `origin-default-branch.sh` are this derivation's shell copies.
-pub(crate) fn origin_default_branch(repository: &Path) -> Result<String, String> {
-    let observation = crate::github_access::OriginObservation::resolve(repository)
-        .map_err(|error| format!("origin did not answer: {error}"))?;
-    observed_default_branch(&observation)
-}
-
 fn observed_default_branch(
     observation: &crate::github_access::OriginObservation,
 ) -> Result<String, String> {

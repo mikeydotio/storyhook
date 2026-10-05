@@ -182,7 +182,7 @@ fn orphaned_dispatch_does_not_stall_http_card_reset() {
 }
 
 #[test]
-fn unavailable_dispatch_lock_fails_reset_without_releasing_ownership() {
+fn an_unprobeable_dispatch_lock_is_reported_and_never_strands_the_reset() {
     let fixture = ServiceFixture::new();
     let story = active_story(&fixture);
     let run = run(&fixture);
@@ -191,22 +191,34 @@ fn unavailable_dispatch_lock_fails_reset_without_releasing_ownership() {
     std::fs::create_dir(&path).unwrap();
     let reset = HttpReset::start(&fixture, &story);
     let body = reset.finished();
-    assert_eq!(body["reset"]["state"], "error", "{body}");
-    let detail = body["reset"]["detail"].as_str().unwrap();
-    assert!(
-        detail.contains("dispatch lock") && detail.contains(path.to_str().unwrap()),
-        "{body}"
-    );
+    assert_eq!(body["reset"]["state"], "ok", "{body}");
     let receipt = fixture
         .store()
         .read(|tx| tx.story_reset(fixture.project(), StoryNo::new(1)))
         .unwrap()
         .unwrap();
-    assert!(!receipt.completed);
-    assert!(receipt.resources.is_none());
+    assert!(receipt.completed);
+    let note = receipt
+        .residue
+        .iter()
+        .find(|entry| entry.resource == "running work")
+        .unwrap_or_else(|| panic!("{:?}", receipt.residue));
+    assert!(
+        note.reason.contains("dispatch lock") && note.reason.contains(path.to_str().unwrap()),
+        "{note:?}"
+    );
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| tx.story(fixture.project(), StoryNo::new(1)))
+            .unwrap()
+            .unwrap()
+            .state,
+        "todo"
+    );
     assert_eq!(
         fixture.store().read(|tx| tx.engine_lanes(&run)).unwrap()[0].state,
-        EngineLaneState::Dispatching
+        EngineLaneState::Idle
     );
 }
 

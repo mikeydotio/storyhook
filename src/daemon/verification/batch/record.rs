@@ -117,6 +117,7 @@ impl<S: Store> Attempt<'_, S> {
             pull_request: None,
             phase: BatchPhase::Assembled,
             members,
+            withdrawn: Vec::new(),
             excluded,
             gate: None,
             detail: None,

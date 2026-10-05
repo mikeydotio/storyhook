@@ -704,8 +704,13 @@ fn dispatch_inner<S: Store>(
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
         Invocation::Reset { id, force, caller } => {
-            crate::service::reset::reset_story(ctx, &id, force, &caller)?;
-            ctx.story_view(&id)
+            let reset = crate::service::reset::reset_story(ctx, &id, force, &caller)?;
+            let mut response = ctx.story_view(&id)?;
+            // The reset this command ran, finished or not, with what it removed.
+            if let crate::output::Response::Story(view) = &mut response {
+                view.reset = Some(crate::service::story_reset::view(&reset));
+            }
+            Ok(response)
         }
         Invocation::SupersedeBlockDeliveries { id } => {
             let receipt = ctx.store().write(|tx| {
@@ -3972,6 +3977,7 @@ pub struct StoreInvoker<'a, S: Store> {
     env: Environment,
     hook_depth: u32,
     verification_activity: Option<&'a crate::daemon::verification::VerificationActivity>,
+    reset_runtime: Option<&'a crate::daemon::reset::ResetRuntime>,
 }
 
 impl<'a, S: Store> StoreInvoker<'a, S> {
@@ -3983,7 +3989,15 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
             env,
             hook_depth: 0,
             verification_activity: None,
+            reset_runtime: None,
         }
+    }
+
+    /// Supplies the daemon's reset runtime to `story reset`.
+    #[must_use]
+    pub fn reset_runtime(mut self, runtime: &'a crate::daemon::reset::ResetRuntime) -> Self {
+        self.reset_runtime = Some(runtime);
+        self
     }
 
     /// Sets how deep inside an event hook this invocation is running.
@@ -4535,7 +4549,8 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             .agent_session(request.agent_session)
             .with_stdin(request.stdin)
             .with_provenance(provenance)
-            .with_verification_activity(self.verification_activity);
+            .with_verification_activity(self.verification_activity)
+            .with_reset_runtime(self.reset_runtime);
         dispatch(&ctx, request.invocation)
     }
 }

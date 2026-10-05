@@ -392,6 +392,44 @@ fn reset_and_landing_reservations_exclude_each_other_in_both_orders() {
 }
 
 #[test]
+fn a_story_reset_supersedes_a_pending_landing_that_then_never_completes() {
+    let f = ServiceFixture::new();
+    let id = submitted(&f);
+    let intent = admit(&f);
+    let reset = storyhook::service::story_reset::StoryResetService::new(&f.ctx())
+        .reserve(&id, &id)
+        .expect("the final lever outranks a pending landing (SH-886)");
+    assert!(!reset.completed);
+    assert!(
+        f.store()
+            .read(|tx| tx.landing_intents())
+            .unwrap()
+            .is_empty()
+    );
+    let row = f
+        .store()
+        .read(|tx| tx.story(f.project(), intent.story))
+        .unwrap()
+        .unwrap();
+    let note = &row.snapshot.comments.last().unwrap().text;
+    assert!(note.contains("superseded") && note.contains(PR), "{note}");
+    // The verifier lost its authority: a late completion changes nothing.
+    assert!(
+        !VerificationQueue::new(f.store())
+            .complete_landing(&f.ctx(), &intent, "late merge")
+            .unwrap()
+    );
+    assert_eq!(
+        f.store()
+            .read(|tx| tx.story(f.project(), intent.story))
+            .unwrap()
+            .unwrap()
+            .state,
+        "verifying"
+    );
+}
+
+#[test]
 fn intent_survives_a_second_connection_and_cannot_be_replaced() {
     let f = ServiceFixture::new();
     submitted(&f);

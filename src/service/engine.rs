@@ -12,7 +12,7 @@ pub mod reset;
 mod restoration;
 pub(crate) use restoration::reconcile_manual as reconcile_restored_dispatches;
 
-pub(crate) use dispatch_quiescence::card_reset_dispatching;
+pub(crate) use dispatch_quiescence::{await_card_reset_dispatch, card_reset_dispatching};
 
 #[cfg(test)]
 mod restart_probe_tests;
@@ -3968,28 +3968,6 @@ fn is_executable(path: &Path) -> bool {
     {
         true
     }
-}
-
-/// Retires the exact lanes whose story reset just completed.
-pub(crate) fn release_reset_lanes(
-    tx: &mut impl WriteOps,
-    slug: &str,
-    id: &str,
-    now: &str,
-) -> Result<(), StoreError> {
-    for run in tx.live_engine_runs()? {
-        if run.project_slug != slug {
-            continue;
-        }
-        for lane in tx.engine_lanes(&run.id)? {
-            if lane.story_id.as_deref() == Some(id) {
-                let mut idle = idle_lane(&lane.run_id, lane.lane_index, now);
-                idle.outcome = Some("story-reset".into());
-                put_or_retire_idle_lane(tx, &idle)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

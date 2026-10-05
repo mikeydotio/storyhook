@@ -183,6 +183,7 @@ pub struct Ctx<'a, S: Store> {
     stdin: Option<String>,
     provenance: Provenance,
     verification_activity: Option<&'a crate::daemon::verification::VerificationActivity>,
+    reset_runtime: Option<&'a crate::daemon::reset::ResetRuntime>,
 }
 
 impl<'a, S: Store> Ctx<'a, S> {
@@ -211,7 +212,25 @@ impl<'a, S: Store> Ctx<'a, S> {
             stdin: None,
             provenance: Provenance::unrecorded(),
             verification_activity: None,
+            reset_runtime: None,
         }
+    }
+
+    /// Supplies the daemon's reset runtime, which drives a reserved reset to
+    /// completion; without it a reset runs inline in this invocation.
+    #[must_use]
+    pub fn with_reset_runtime(
+        mut self,
+        runtime: Option<&'a crate::daemon::reset::ResetRuntime>,
+    ) -> Self {
+        self.reset_runtime = runtime;
+        self
+    }
+
+    /// The daemon's reset runtime, when this invocation is served by one.
+    #[must_use]
+    pub fn reset_runtime(&self) -> Option<&'a crate::daemon::reset::ResetRuntime> {
+        self.reset_runtime
     }
 
     /// Supplies the daemon's shared verifier ownership registry.
@@ -568,6 +587,33 @@ pub(crate) fn append_restored_and_fold(
         &tx.states(project)?,
         &index,
     )?;
+    append_and_fold_maintenance(
+        tx, project, story, prefix, states, expected, events, provenance,
+    )
+}
+
+/// Appends a reset's own events (SH-886, decision D3).
+///
+/// A reset is the final lever: blocker ordering, which refuses a blocked
+/// story's advance through the catalog, never refuses its return to todo.
+/// Every other admission applies exactly as for [`append_and_fold`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_reset_and_fold(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    story: StoryNo,
+    prefix: &str,
+    states: &BTreeMap<String, StateDef>,
+    expected: ExpectedSeq,
+    events: &[StoryEvent],
+    provenance: &Provenance,
+) -> Result<StorySnapshot, AppError> {
+    if events
+        .iter()
+        .any(|event| matches!(event, StoryEvent::StoryStateChanged { .. }))
+    {
+        story_reset::refuse_reserved(tx, project, story)?;
+    }
     append_and_fold_maintenance(
         tx, project, story, prefix, states, expected, events, provenance,
     )

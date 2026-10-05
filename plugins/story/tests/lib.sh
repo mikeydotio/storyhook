@@ -626,6 +626,30 @@ assert_ok() {
   fi
 }
 
+# residue_reasons <answer> <resource-prefix> — the reasons a reset answer gives
+# for what it left in place, for each resource that starts with the prefix,
+# joined with "|". Empty when the reset left no such resource (SH-886).
+residue_reasons() {
+  printf '%s' "$1" | jq -r --arg prefix "$2" \
+    '[(.residue // [])[] | select(.resource | startswith($prefix)) | .reason] | join("|")'
+}
+
+# assert_held_out_of_dispatch <repo> <id> <label> — a reset that left residue
+# the next dispatch would collide with released the story, held it with an
+# awaiting reason, and so no dispatch is offered it (SH-886 decision D7). This
+# is what a refused reset's kept claim protected under the old contract.
+assert_held_out_of_dispatch() {
+  local repo="$1" id="$2" label="$3" shown ready
+  shown=$(cd "$repo" && story show "$id" --json) || :
+  assert_eq "$(jqf "$shown" .story.story.state)" todo "$label: reset released the story"
+  assert_contains "$(jqf "$shown" '.story.story.awaiting // ""')" "next dispatch would collide with" \
+    "$label: the residue holds the story out of dispatch"
+  ready=",$(cd "$repo" && story list --ready --json | jq -r '[.stories[]?.story.id] | join(",")'),"
+  case "$ready" in
+  *",$id,"*) fail_test "$label: the held story is still offered for dispatch" ;;
+  esac
+}
+
 # router_verbs <story.sh> — derive the helper's accepted verb vocabulary from
 # its top-level router. Keep every structural inventory on this one parser so
 # a new arm cannot require several hand-list edits to remain covered.

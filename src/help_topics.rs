@@ -794,24 +794,31 @@ Related:
             "reset",
             r#"story reset <id> [--force]
 
-Release an open ordinary story's claim, close its owned tmux window, remove
-its owned worktree, and return it to Todo. Branches, commits, story content,
-and relationships are preserved. Closed stories and epics cannot be reset.
+The final lever for a wedged story, like git reset --hard. Close the story's
+tmux window, DISCARD its worktree (uncommitted, untracked and locked work
+included) and its local branch, clear its awaiting reason, and return it to
+todo. Remote branches, pull requests, story content and relationships are
+kept. --force is accepted and changes nothing. Closed stories and epics
+cannot be reset. Run reset only when the user asks; use 'story unclaim' to
+release a story and keep its work.
 
-Dirty or locked worktrees are refused unless --force is explicit. Force can
-permanently discard uncommitted files. It never overrides ownership checks,
-removes the primary or caller's checkout, or interrupts an active verifier.
-Run reset from outside the target worktree and its tmux window.
+Once reserved, a reset never fails. Whatever it cannot prove the story owns
+(your own worktree or tmux window, a protected branch, a replaced directory)
+is left in place and named in the story's completion comment. That comment
+also records the deleted branch's tip and the 'git branch <name> <sha>'
+command that restores it. If something left would collide with the next
+dispatch, the story waits with an awaiting reason that names it.
 
-Absent resources are already clean. If cleanup fails partway, story show
-reports the retained reset reservation and diagnostics. Retry story reset
-<id> after resolving that error; repeat --force only if you still authorize
-losing worktree changes. Dispatch and lifecycle changes remain unavailable
-until the reservation finishes. Comments remain available during recovery.
+The daemon finishes the reset: it waits out store contention, waits for a
+running dispatch or verifier and then proceeds, and resumes an interrupted
+reset by itself. This command waits up to 90 seconds; until the reset ends,
+story show reports it under reset. Comments remain available meanwhile.
+With --json, the reset field reports the reset this command ran: whether it
+finished, what it removed, what it left in place and why, and the recovery
+record.
 
 Examples:
   story reset SH-42
-  story reset SH-42 --force
 "#,
         );
 

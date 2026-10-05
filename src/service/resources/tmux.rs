@@ -88,7 +88,9 @@ fn inventory(
     crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
     target.apply(&mut command, Some(socket));
     // ASCII locales make tmux replace tabs with underscores unless UTF-8 is explicit.
-    command.args(["-u", "list-panes", "-a", "-F", "#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-agent}\t#{pane_active}\t#{pane_current_path}"]);
+    // A dead pane has no current path, so it is identified by where it started
+    // (SH-886: reading the empty path made every dead story window unremovable).
+    command.args(["-u", "list-panes", "-a", "-F", "#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{@storyhook-agent}\t#{pane_active}\t#{?pane_dead,#{pane_start_path},#{pane_current_path}}"]);
     let output = run_captured(command, tmux_target::remaining(deadline)?)
         .map_err(|e| AppError::Validation(format!("tmux {}: {}", socket.display(), e.detail())))?;
     if !output.status.success() {
@@ -373,6 +375,38 @@ mod tests {
 
     fn probe(rows: &[&str]) -> WindowProbe {
         story_panes_probe(&rows.join("\n"), &names(), Path::new(SOCKET), by_command)
+    }
+
+    #[test]
+    fn a_dead_pane_is_identified_by_its_start_directory() {
+        let mut fixture = crate::service::tmux_target::tests::Fixture::new();
+        let endpoint = fixture.endpoint.clone();
+        fixture.start(&endpoint, "SH-1");
+        let tmux = |args: &[&str]| {
+            let mut command = Command::new("tmux");
+            command.args(["-N", "-S"]).arg(&endpoint).args(args);
+            let output =
+                crate::process::run_captured(command, fixture.env.subprocess_bound(TMUX_TIMEOUT))
+                    .unwrap_or_else(|error| panic!("{}", error.detail()));
+            assert!(
+                output.status.success(),
+                "tmux {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        tmux(&["set-option", "-w", "-t", "SH-1", "remain-on-exit", "on"]);
+        tmux(&["respawn-pane", "-k", "-t", "SH-1:0", "true"]);
+        let mut patience =
+            storyhook_test_support::load_grace::Patience::new(std::time::Duration::from_secs(5));
+        while tmux(&["display-message", "-p", "-t", "SH-1:0", "#{pane_dead}"]) != "1" {
+            assert!(!patience.expired(), "{patience}; the pane never died");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let panes = panes(&fixture.env, &endpoint, &names()).unwrap();
+        assert_eq!(panes.len(), 1, "{panes:?}");
+        assert!(panes[0].dead);
+        assert_eq!(panes[0].cwd, fixture.env.home().canonicalize().unwrap());
     }
 
     #[test]

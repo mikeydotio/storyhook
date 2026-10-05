@@ -519,15 +519,24 @@ Global flags — `--json`, `--quiet`, `--no-hooks`, `--store-path <file>`, `--pr
 `--deadline <secs>` — precede the verb and work on any command; see
 [Automation and scripting](#automation-and-scripting).
 
-### Native story reset
+### Story reset
 
-`story reset <id>` stops the story's active work and returns it to `todo`.
-It preserves local branches and any request for human input. A locked worktree
-or uncommitted changes require `--force` to remove the worktree. A retry must
-supply `--force` again when that consent is required.
+`story reset <id>` is the final lever for a wedged story, like
+`git reset --hard`. It closes the story's tmux window, **discards its worktree
+and local branch** (including uncommitted, untracked, locked and unpushed
+work), clears its awaiting reason and returns it to `todo`. Remote branches,
+pull requests and the story's content are kept. `--force` is accepted and
+changes nothing. To release a story and keep its work, use `story unclaim`.
 
-The dashboard's reset action has a separate contract: it requires the exact
-story ID, deletes the owned worktree and branch, and clears awaiting input.
+Once reserved, a reset never fails. Whatever it cannot prove the story owns
+(your own worktree or tmux window, a protected branch, a replaced directory)
+is left in place and named in the story's completion comment. That comment
+also records the deleted branch's tip and the `git branch <name> <sha>`
+command that restores it. If something left behind would collide with the
+next dispatch, the story waits with an awaiting reason that says what to
+remove. The daemon finishes an interrupted reset by itself; `story show`
+reports it under `reset` until then. The dashboard's Reset action follows the
+same contract and asks you to type the story ID first.
 
 ### Workspace cleanup
 
@@ -740,7 +749,8 @@ deliberately:
 - Release the claim and close its window while keeping the worktree and branch
   with `/story unclaim <story-id>`.
 - Discard the preserved workspace only when it has no value with
-  `/story reset <story-id>`; this deletes the worktree and branch.
+  `/story reset <story-id>`; this deletes the worktree and local branch,
+  uncommitted work included, and records how to restore the branch.
 
 `story engine stop` is graceful: occupied lanes finish and no new story is
 claimed. `story engine stop --now` closes lane windows and returns their claims
