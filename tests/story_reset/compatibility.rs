@@ -195,7 +195,7 @@ fn card_receipts_refuse_payload_identity_that_disagrees_with_the_storage_key() {
 }
 
 #[test]
-fn native_reset_derives_interrupts_and_never_resumes_the_todo_story() {
+fn native_reset_never_resumes_the_todo_story_and_leaves_no_pending_delivery() {
     for (state, awaiting) in [
         ("todo", None),
         ("in-progress", None),
@@ -225,36 +225,30 @@ fn native_reset_derives_interrupts_and_never_resumes_the_todo_story() {
         if let Some(reason) = awaiting {
             stories.set_awaiting(&story.id, reason).unwrap();
         }
-        let initial = fixture
-            .store()
-            .read(|tx| tx.block_deliveries(fixture.project()))
-            .unwrap()
-            .len();
-        let mut expected = initial;
         for attempt in 0..2 {
-            if awaiting.is_none() && (state != "blocked" || attempt > 0) {
-                expected += 1;
-            }
             reset_story(&ctx, &story.id, false, &ResetCaller::default()).unwrap();
             fixture
                 .store()
                 .read(|tx| {
-                    let deliveries = tx.block_deliveries(fixture.project())?;
-                    assert_eq!(
-                        deliveries.len(),
-                        expected,
-                        "state={state}, awaiting={awaiting:?}, attempt={attempt}"
-                    );
-                    assert!(
-                        deliveries
-                            .iter()
-                            .all(|delivery| delivery.story == StoryNo::new(1)
-                                && delivery.action == BlockAction::Interrupt)
-                    );
+                    let case = format!("state={state}, awaiting={awaiting:?}, attempt={attempt}");
+                    for delivery in tx.block_deliveries(fixture.project())? {
+                        assert_ne!(delivery.action, BlockAction::Resume, "{case}: {delivery:?}");
+                        assert_ne!(
+                            delivery.status,
+                            storyhook::store::DeliveryStatus::Pending,
+                            "{case}: {delivery:?}"
+                        );
+                    }
                     let row = tx.story(fixture.project(), StoryNo::new(1))?.unwrap();
-                    assert_eq!(row.state, "todo");
-                    assert_eq!(row.awaiting.as_deref(), awaiting);
-                    assert!(tx.story_resets(fixture.project())?.is_empty());
+                    assert_eq!(row.state, "todo", "{case}");
+                    // Every reset clears the awaiting reason (council C1).
+                    assert_eq!(row.awaiting, None, "{case}");
+                    assert!(
+                        tx.story_reset(fixture.project(), StoryNo::new(1))?
+                            .unwrap()
+                            .completed,
+                        "{case}"
+                    );
                     Ok(())
                 })
                 .unwrap();

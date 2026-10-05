@@ -198,7 +198,7 @@ fn workspace(project: &Project<'_>, id: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn clean_cleanup_preserves_branch_commits_and_story_content() {
+fn reset_discards_the_worktree_and_local_branch_and_records_how_to_recover_them() {
     let project = TestEnv::shared().project().git().build();
     let id = project.new_story("Keep lesson history");
     json(&project, &["comment", &id, "Keep this comment"]);
@@ -207,18 +207,35 @@ fn clean_cleanup_preserves_branch_commits_and_story_content() {
     let commit = git_at(&path, &["rev-parse", "HEAD"]);
     json(&project, &["reset", &id]);
     assert!(!path.exists());
-    assert_eq!(
-        git_at(project.path(), &["rev-parse", &format!("reset-{id}")]),
-        commit
+    assert!(
+        !std::process::Command::new("git")
+            .current_dir(project.path())
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/reset-{id}")
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "every reset deletes the local branch (council C1)"
     );
     let after = json(&project, &["show", &id]);
     assert_eq!(after["story"]["story"]["title"], "Keep lesson history");
-    assert_eq!(after["story"]["story"]["awaiting"], "Wait for human review");
+    assert!(after["story"]["story"]["awaiting"].is_null());
     assert!(after.to_string().contains("Keep this comment"));
+    let comments = after["story"]["story"]["comments"].as_array().unwrap();
+    let completion = comments.last().unwrap()["text"].as_str().unwrap();
+    assert!(
+        completion.contains(&format!("git branch reset-{id} {commit}")),
+        "{completion}"
+    );
 }
 
 #[test]
-fn dirty_and_locked_worktrees_require_force_without_changing_state() {
+fn dirty_and_locked_worktrees_are_discarded_without_force() {
     for kind in ["tracked", "untracked", "locked"] {
         let project = TestEnv::shared().project().git().build();
         let id = project.new_story(kind);
@@ -242,7 +259,7 @@ fn dirty_and_locked_worktrees_require_force_without_changing_state() {
                 );
                 std::fs::write(path.join("tracked"), "after").unwrap();
             }
-            "untracked" => std::fs::write(path.join("unfinished"), "keep").unwrap(),
+            "untracked" => std::fs::write(path.join("unfinished"), "discard").unwrap(),
             _ => {
                 git_at(
                     project.path(),
@@ -250,58 +267,52 @@ fn dirty_and_locked_worktrees_require_force_without_changing_state() {
                 );
             }
         }
-        assert!(
-            !project
-                .story()
-                .args(["reset", &id])
-                .output()
-                .unwrap()
-                .status
-                .success()
-        );
-        assert!(path.exists());
+        // Every reset discards local work; no `--force` is needed (council C1).
+        json(&project, &["reset", &id]);
+        assert!(!path.exists(), "{kind}");
         assert_eq!(
             json(&project, &["show", &id])["story"]["story"]["state"],
-            "in-progress"
+            "todo"
         );
-        json(&project, &["reset", &id, "--force"]);
-        assert!(!path.exists());
     }
 }
 
 #[test]
-fn unowned_and_callers_worktrees_are_preserved_even_with_force() {
+fn the_callers_worktree_is_left_while_the_story_is_released() {
     let project = TestEnv::shared().project().git().build();
     let id = project.new_story("Ownership guard");
+    json(&project, &["claim", &id, "--no-comment"]);
     let path = workspace(&project, &id);
-    assert!(
-        !project
-            .story()
-            .current_dir(&path)
-            .args(["reset", &id, "--force"])
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
-    assert!(path.exists());
-    let git_dir = git_at(&path, &["rev-parse", "--absolute-git-dir"]);
-    std::fs::remove_file(std::path::Path::new(&git_dir).join("storyhook-cleanup-lease-v1.json"))
+    let output = project
+        .story()
+        .current_dir(&path)
+        .args(["reset", &id, "--force", "--json"])
+        .output()
         .unwrap();
     assert!(
-        !project
-            .story()
-            .args(["reset", &id, "--force"])
-            .output()
-            .unwrap()
-            .status
-            .success()
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
     );
-    assert!(path.exists());
+    assert!(path.exists(), "the caller's own worktree is never removed");
+    let shown = json(&project, &["show", &id]);
+    assert_eq!(shown["story"]["story"]["state"], "todo");
+    let completion = shown["story"]["story"]["comments"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(completion.contains("caller"), "{completion}");
+    // From elsewhere, the next reset removes what was left.
+    json(&project, &["reset", &id]);
+    assert!(!path.exists());
 }
 
 #[test]
-fn durable_reservation_survives_restart_blocks_lifecycle_and_requires_explicit_force() {
+fn a_reservation_from_before_the_upgrade_is_superseded_by_a_new_reset() {
     use storyhook::store::{ReadOps, Store, StoryNo, WriteOps};
     let project = TestEnv::shared().project().git().build();
     let id = project.new_story("Recover journal");
@@ -317,7 +328,7 @@ fn durable_reservation_survives_restart_blocks_lifecycle_and_requires_explicit_f
             Ok(StoryNo::parse_id(&prefix, &id).unwrap())
         })
         .unwrap();
-    let reservation = serde_json::json!({"operation": "interrupted-reset", "lease": lease, "force": true, "previous_awaiting": null, "detail": "Injected crash after reservation"});
+    let reservation = serde_json::json!({"operation": "interrupted-reset", "lease": lease, "force": false, "previous_awaiting": null, "detail": "Injected crash after reservation"});
     store
         .write(|tx| tx.put_legacy_story_reset(project_id, number, Some(&reservation.to_string())))
         .unwrap();
@@ -340,24 +351,18 @@ fn durable_reservation_survives_restart_blocks_lifecycle_and_requires_explicit_f
         );
     }
     json(&project, &["comment", &id, "Recovery remains diagnosable"]);
-    std::fs::write(path.join("new-work"), "must not infer old Force").unwrap();
-    assert!(
-        !project
-            .story()
-            .args(["reset", &id])
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
-    assert!(path.exists());
-    json(&project, &["reset", &id, "--force"]);
-    assert!(json(&project, &["show", &id])["story"]["reset"].is_null());
+    std::fs::write(path.join("new-work"), "a new request discards it").unwrap();
+    // A new request carries its own, full authority and supersedes the old one.
+    json(&project, &["reset", &id]);
+    let after = json(&project, &["show", &id]);
+    assert!(after["story"]["reset"].is_null());
+    assert_eq!(after["story"]["story"]["state"], "todo");
+    assert!(after.to_string().contains("interrupted-reset"));
     assert!(!path.exists());
 }
 
 #[test]
-fn active_workspace_owner_excludes_reset_without_mutation() {
+fn a_held_workspace_lock_delays_reset_until_its_owner_lets_go() {
     use fs4::FileExt;
     let project = TestEnv::shared().project().git().build();
     let id = project.new_story("Exclusive owner");
@@ -370,18 +375,18 @@ fn active_workspace_owner_excludes_reset_without_mutation() {
     std::fs::create_dir_all(&directory).unwrap();
     let lock = std::fs::File::create(directory.join(format!("{id}.lock"))).unwrap();
     lock.lock_exclusive().unwrap();
-    let output = project
-        .story()
-        .args(["reset", &id, "--force"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert_eq!(
-        json(&project, &["show", &id])["story"]["story"]["state"],
-        "in-progress"
-    );
-    drop(lock);
+    let owner = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        drop(lock);
+    });
     json(&project, &["reset", &id]);
+    owner.join().unwrap();
+    let shown = json(&project, &["show", &id]);
+    assert_eq!(shown["story"]["story"]["state"], "todo");
+    assert!(
+        !shown.to_string().contains("without exclusion"),
+        "the reset waited for the owner: {shown}"
+    );
 }
 
 struct Tmux(std::path::PathBuf);
@@ -412,7 +417,7 @@ impl Drop for Tmux {
 }
 
 #[test]
-fn closes_only_owned_tmux_window_and_refuses_callers_window() {
+fn the_callers_own_window_is_left_while_the_reset_completes() {
     let project = TestEnv::shared().project().git().build();
     let id = project.new_story("Owned tmux");
     let path = workspace(&project, &id);
@@ -452,35 +457,48 @@ fn closes_only_owned_tmux_window_and_refuses_callers_window() {
     ]);
     let alias = project.path().join("socket-alias");
     std::os::unix::fs::symlink(project.path(), &alias).unwrap();
-    for socket in [&tmux.0, &alias.join("absent-tmux-socket")] {
+    for (attempt, socket) in [&tmux.0, &alias.join("absent-tmux-socket")]
+        .into_iter()
+        .enumerate()
+    {
         let output = project
             .story()
             .env("TMUX", format!("{},1,0", socket.display()))
             .env("TMUX_PANE", &pane)
-            .args(["reset", &id, "--force", "--json"])
+            .args(["reset", &id, "--json"])
             .output()
             .unwrap();
-        assert!(!output.status.success());
-        let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(
-            response["error"]
-                .as_str()
-                .unwrap()
-                .contains("caller's own tmux window"),
-            "{response}"
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
         );
-        assert!(path.exists());
+        assert!(
+            tmux.run(&["list-windows", "-a", "-F", "#{window_name}"])
+                .lines()
+                .any(|name| name == id),
+            "the caller's own window is never closed"
+        );
+        let shown = json(&project, &["show", &id]);
+        assert_eq!(shown["story"]["story"]["state"], "todo");
+        if attempt == 0 {
+            assert!(
+                shown.to_string().contains("caller's own tmux window"),
+                "{shown}"
+            );
+            // The caller stands outside the worktree, so it is removed.
+            assert!(!path.exists());
+        }
     }
-    json(&project, &["reset", &id]);
-    assert_eq!(
-        tmux.run(&["list-windows", "-a", "-F", "#{window_name}"]),
-        "unrelated"
+    assert!(
+        tmux.run(&["list-windows", "-a", "-F", "#{window_name}"])
+            .lines()
+            .any(|name| name == "unrelated")
     );
-    assert!(!path.exists());
 }
 
 #[test]
-fn unrelated_pane_in_matching_window_prevents_any_cleanup() {
+fn an_unproven_window_named_for_the_story_is_left_and_reported() {
     let project = TestEnv::shared().project().git().build();
     let id = project.new_story("Foreign pane");
     let path = workspace(&project, &id);
@@ -491,6 +509,7 @@ fn unrelated_pane_in_matching_window_prevents_any_cleanup() {
             .unwrap()
             .join("absent-tmux-socket"),
     );
+    // Named for the story but working outside its worktree: not proven its.
     tmux.run(&[
         "-f",
         "/dev/null",
@@ -504,19 +523,24 @@ fn unrelated_pane_in_matching_window_prevents_any_cleanup() {
         project.path().to_str().unwrap(),
         "sleep 600",
     ]);
-    assert!(
-        !project
-            .story()
-            .args(["reset", &id, "--force"])
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
-    assert!(path.exists());
+    json(&project, &["reset", &id]);
     assert_eq!(
         tmux.run(&["list-windows", "-a", "-F", "#{window_name}"]),
-        id
+        id,
+        "an unproven window is never closed"
+    );
+    assert!(
+        path.exists(),
+        "nothing is removed while identity is in doubt"
+    );
+    let shown = json(&project, &["show", &id]);
+    assert_eq!(shown["story"]["story"]["state"], "todo");
+    assert!(shown.to_string().contains("Left in place"), "{shown}");
+    assert!(
+        shown["story"]["story"]["awaiting"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("collide")),
+        "{shown}"
     );
 }
 
@@ -581,60 +605,41 @@ fn last_owned_window_and_dead_pane_are_idempotently_removed() {
         "1"
     );
     json(&project, &["reset", &id]);
-    assert!(!path.exists());
+    assert!(!path.exists(), "{}", json(&project, &["show", &id]));
     json(&project, &["reset", &id]);
 }
 
 #[test]
-fn git_removal_failure_retains_authority_and_retry_finishes_after_resource_disappears() {
+fn a_worktree_git_cannot_remove_is_reported_and_a_later_reset_finishes() {
+    use std::os::unix::fs::PermissionsExt;
     let project = TestEnv::shared().project().git().build();
-    let id = project.new_story("Submodule cleanup recovery");
+    let id = project.new_story("Unremovable worktree");
     let path = workspace(&project, &id);
-    git_at(
-        &path,
-        &[
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            project.path().to_str().unwrap(),
-            "lesson",
-        ],
-    );
-    git_at(
-        &path,
-        &[
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-am",
-            "fixture submodule",
-        ],
-    );
-    assert!(git_at(&path, &["status", "--porcelain"]).is_empty());
-    let output = project
-        .story()
-        .args(["reset", &id, "--json"])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
+    let sealed = path.join("sealed");
+    std::fs::create_dir(&sealed).unwrap();
+    std::fs::write(sealed.join("kept"), "cannot be deleted").unwrap();
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Nothing can delete the sealed directory; the reset still finishes and
+    // says why the worktree is left.
+    json(&project, &["reset", &id]);
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
     let first = json(&project, &["show", &id]);
+    assert!(first["story"]["reset"].is_null());
+    assert_eq!(first["story"]["story"]["state"], "todo");
+    assert!(first.to_string().contains("ermission denied"), "{first}");
     assert!(
-        first["story"]["reset"]["detail"]
+        first["story"]["story"]["awaiting"]
             .as_str()
-            .unwrap()
-            .contains("Reset incomplete")
+            .is_some_and(|reason| reason.contains("collide")),
+        "{first}"
     );
     assert!(path.exists());
-    // Model external completion after a crash removed the private marker.
-    git_at(
-        project.path(),
-        &["worktree", "remove", "--force", path.to_str().unwrap()],
-    );
+    // A person removes what was left; the next reset clears the hold.
+    std::fs::remove_dir_all(&path).unwrap();
     json(&project, &["reset", &id]);
-    assert!(json(&project, &["show", &id])["story"]["reset"].is_null());
+    let second = json(&project, &["show", &id]);
+    assert_eq!(second["story"]["story"]["state"], "todo");
+    assert!(second["story"]["story"]["awaiting"].is_null(), "{second}");
 }
 
 #[test]

@@ -84,11 +84,21 @@ pub struct ContinuationAlert {
     pub next_step: String,
 }
 
+/// An unfinished reset, as `story show` reports it (SH-886). Plugin dispatch
+/// refuses while it is present; the daemon finishes the reset by itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResetView {
+    /// The reset operation's identity.
+    pub operation: String,
+    /// Its progress, or the last obstacle it is waiting out.
+    pub detail: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoryView {
-    /// Incomplete reset authority and diagnostics, absent in ordinary operation.
+    /// An unfinished reset and its progress, absent in ordinary operation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reset: Option<crate::service::reset::ResetReservation>,
+    pub reset: Option<ResetView>,
     pub story: StorySnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub derived_relationships: Vec<StoryRelation>,

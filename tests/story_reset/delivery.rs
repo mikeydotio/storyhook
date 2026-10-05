@@ -86,53 +86,19 @@ printf '{"ok":true,"target":"original-session","display":"original session stopp
             });
             let release = Release(fixture.cwd().join("released"));
             wait_for(&fixture.cwd().join("entered"));
-            if card {
-                // A card reset waits for the attempting helper, then finishes.
-                let releaser = std::thread::spawn({
-                    let path = fixture.cwd().join("released");
-                    move || {
-                        std::thread::sleep(Duration::from_millis(200));
-                        std::fs::write(path, "release").unwrap();
-                    }
-                });
-                reset(&fixture, card).unwrap();
-                releaser.join().unwrap();
-                drop(release);
-                assert!(worker.join().unwrap().unwrap());
-                return;
-            }
-            let error = reset(&fixture, card).unwrap_err();
-            assert!(
-                error.to_string().contains("workspace is busy"),
-                "card={card}: {error}"
-            );
-            fixture
-                .store()
-                .read(|tx| {
-                    assert_eq!(
-                        tx.story(fixture.project(), StoryNo::new(1))?.unwrap().state,
-                        "in-progress"
-                    );
-                    assert_eq!(
-                        tx.block_deliveries(fixture.project())?[0].status,
-                        DeliveryStatus::Attempting
-                    );
-                    if card {
-                        assert!(
-                            !tx.story_reset(fixture.project(), StoryNo::new(1))?
-                                .unwrap()
-                                .completed
-                        );
-                    }
-                    Ok(())
-                })
-                .unwrap();
+            // Both resets wait for the attempting helper, then finish.
+            let releaser = std::thread::spawn({
+                let path = fixture.cwd().join("released");
+                move || {
+                    std::thread::sleep(Duration::from_millis(200));
+                    std::fs::write(path, "release").unwrap();
+                }
+            });
+            reset(&fixture, card).unwrap();
+            releaser.join().unwrap();
             drop(release);
             assert!(worker.join().unwrap().unwrap());
         });
-        if !card {
-            reset(&fixture, card).unwrap();
-        }
         fixture
             .store()
             .read(|tx| {

@@ -161,6 +161,7 @@ pub(crate) fn run<'scope, 'env, S: Store>(
     let mut swept: Option<Instant> = None;
     while !stop.load(Ordering::Relaxed) && !runtime.shutdown.requested() {
         if swept.is_none_or(|at| at.elapsed() >= SWEEP_INTERVAL) {
+            adopt_legacy(daemon, runtime);
             resume_unfinished(daemon.store, runtime);
             swept = Some(Instant::now());
         }
@@ -171,6 +172,54 @@ pub(crate) fn run<'scope, 'env, S: Store>(
             });
         }
         runtime.idle();
+    }
+}
+
+/// Adopts each reservation `story reset` left before this upgrade, so that
+/// request also finishes without anyone retrying it (council C1).
+fn adopt_legacy<S: Store>(daemon: &Daemon<'_, S>, runtime: &ResetRuntime) {
+    let legacy = daemon.store.read(|tx| {
+        let mut found = Vec::new();
+        for project in tx.projects()? {
+            for (story, encoded) in tx.story_resets(project.id)? {
+                found.push((project.id, story.to_id(&project.prefix), encoded));
+            }
+        }
+        Ok(found)
+    });
+    let legacy = match legacy {
+        Ok(legacy) => legacy,
+        Err(error) => {
+            return crate::daemon::activity::emit(
+                "ERROR",
+                "reset",
+                "event",
+                "runtime",
+                &format!("listing pre-upgrade story resets to adopt: {error}"),
+            );
+        }
+    };
+    for (project, id, encoded) in legacy {
+        // A record that cannot say it was forced is treated as not forced.
+        let force = serde_json::from_str::<crate::service::reset::ResetReservation>(&encoded)
+            .is_ok_and(|reservation| reservation.force);
+        let ctx = Ctx::new(
+            daemon.store,
+            project,
+            daemon.env.home().to_path_buf(),
+            daemon.env.clone(),
+        )
+        .no_hooks(true);
+        match StoryResetService::new(&ctx).adopt_legacy(&id, force) {
+            Ok(reset) => runtime.request(&reset),
+            Err(error) => crate::daemon::activity::emit(
+                "ERROR",
+                "reset",
+                "event",
+                &id,
+                &format!("adopting its pre-upgrade story reset: {error}"),
+            ),
+        }
     }
 }
 
@@ -240,15 +289,25 @@ fn attempt<S: Store>(
         served_deadline_secs: 600,
         cwd: daemon.env.home().to_path_buf(),
     });
+    let receipt = daemon
+        .store
+        .read(|tx| tx.story_reset(job.project, job.story))?
+        .filter(|receipt| receipt.token == job.token)
+        .ok_or_else(|| AppError::NotFound(format!("reset {} for {}", job.token, job.story_id)))?;
+    // The request's own directory and hook policy apply, however late it runs.
+    let origin = &receipt.origin;
     let ctx = Ctx::new(
         daemon.store,
         job.project,
-        daemon.env.home().to_path_buf(),
+        origin
+            .cwd
+            .clone()
+            .unwrap_or_else(|| daemon.env.home().to_path_buf()),
         daemon.env.clone(),
     )
-    .no_hooks(true);
+    .no_hooks(!origin.fire_hooks)
+    .hook_depth(origin.hook_depth);
     let service = StoryResetService::new(&ctx).with_shutdown(runtime.shutdown.clone());
-    let receipt = service.get(&job.story_id, &job.token)?;
     service.execute(&job.story_id, &job.token, || {
         quiesce(&ctx, daemon, &receipt)
     })

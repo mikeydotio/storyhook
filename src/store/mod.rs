@@ -73,7 +73,9 @@ mod closure_cleanup;
 pub use closure_cleanup::ClosureCleanup;
 pub(crate) use closure_cleanup::effective_states;
 mod story_reset;
-pub use story_reset::{ResetLane, ResetPathIdentity, ResetRecovery, ResetResidue, StoryReset};
+pub use story_reset::{
+    ResetLane, ResetOrigin, ResetPathIdentity, ResetRecovery, ResetResidue, StoryReset,
+};
 mod engine_reset;
 pub use engine_reset::EngineReset;
 pub mod error;

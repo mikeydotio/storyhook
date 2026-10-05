@@ -89,9 +89,20 @@ fn an_unidentifiable_workspace_is_left_whole_and_holds_the_story() {
         resources.diagnostics = vec!["two worktrees claim SH-1".into()];
     });
     let done = workspace.execute(&reset);
-    let left = entry(&done.residue, "worktree and branch");
-    assert!(left.reason.contains("two worktrees claim SH-1"), "{left:?}");
-    assert!(left.blocks_dispatch);
+    // Each named resource is reported, so nothing claims a removal.
+    for resource in [
+        worktree_resource(&workspace),
+        "local branch worktree-SH-1".into(),
+    ] {
+        let left = entry(&done.residue, &resource);
+        assert!(left.reason.contains("two worktrees claim SH-1"), "{left:?}");
+        assert!(left.blocks_dispatch, "{left:?}");
+    }
+    assert!(
+        !workspace.last_comment().contains("Removed"),
+        "{}",
+        workspace.last_comment()
+    );
     assert!(workspace.worktree.exists());
     assert!(workspace.branch_exists("worktree-SH-1"));
     assert_released(&workspace, true);

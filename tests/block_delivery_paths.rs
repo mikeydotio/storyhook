@@ -76,7 +76,6 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "project_recovery/resume",
         "project_recovery/test_return",
         "relation",
-        "reset",
         "story",
         "story_reset",
         "transfer",

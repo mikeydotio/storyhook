@@ -13,7 +13,7 @@ use crate::domain::{StoryEvent, StorySnapshot, SuperState};
 use crate::error::AppError;
 use crate::store::patience::{Shutdown, patiently};
 use crate::store::{
-    ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryReset, WriteOps,
+    ExpectedSeq, ProjectId, ReadOps, ResetOrigin, Store, StoreError, StoryNo, StoryReset, WriteOps,
 };
 use std::time::{Duration, Instant};
 
@@ -230,6 +230,28 @@ impl<'a, S: Store> StoryResetService<'a, S> {
 
     /// Reserves one ordinary open story after exact typed-ID confirmation.
     pub fn reserve(&self, id: &str, confirmation: &str) -> Result<StoryReset, AppError> {
+        self.reserve_from(id, confirmation, &ResetOrigin::default())
+    }
+
+    /// Adopts a reservation `story reset` left before this upgrade (SH-886):
+    /// the reset runs with that request's authority and no more.
+    pub(crate) fn adopt_legacy(&self, id: &str, force: bool) -> Result<StoryReset, AppError> {
+        let origin = ResetOrigin {
+            legacy_force: Some(force),
+            ..ResetOrigin::default()
+        };
+        self.reserve_from(id, id, &origin)
+    }
+
+    /// Reserves as [`Self::reserve`] does and records who asked: their
+    /// caller protections and hook policy apply whenever the reset runs. A
+    /// request that joins an unfinished reset adds nothing to it.
+    pub fn reserve_from(
+        &self,
+        id: &str,
+        confirmation: &str,
+        origin: &ResetOrigin,
+    ) -> Result<StoryReset, AppError> {
         let deadline = Instant::now() + RESERVE_PATIENCE;
         Ok(patiently(&self.shutdown, Some(deadline), || {
             self.ctx.store().write(|tx| {
@@ -293,6 +315,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                     failure: None,
                     residue: Vec::new(),
                     recovery: None,
+                    origin: origin.clone(),
                 };
                 tx.put_story_reset(&reset)?;
                 if !superseded.is_empty() {
@@ -429,6 +452,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
             let authority = cleanup::authorize(
                 &report,
                 &reset.paths,
+                &reset.origin,
                 self.ctx.cwd(),
                 self.ctx.env(),
                 &mut residue,
@@ -443,6 +467,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                 &report,
                 &reset.paths,
                 &authority,
+                &reset.origin.caller,
                 self.ctx.env(),
                 workspace.as_ref(),
                 &mut residue,

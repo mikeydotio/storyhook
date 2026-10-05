@@ -339,3 +339,54 @@ fn a_finish_that_keeps_failing_degrades_instead_of_stranding_the_story() {
         "the completed receipt no longer reserves the story"
     );
 }
+
+#[test]
+fn an_adopted_pre_upgrade_reservation_keeps_its_branch_and_only_forced_dirty_work_goes() {
+    for force in [false, true] {
+        let fixture = ServiceFixture::new();
+        let (store, project, repo) = repository_story(&fixture);
+        let env = crate::env::Environment::at(fixture.env().home()).with_subprocess_patience();
+        let ctx = Ctx::new(&store, project, fixture.env().home(), env).no_hooks(true);
+        let story = StoryService::new(&ctx)
+            .create(&NewStoryInput {
+                title: "Adopted reservation".into(),
+                state: Some("in-progress".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let worktree = repo.join(".codex/worktrees").join(&story.id);
+        let added = crate::env::git_env::command(&repo)
+            .args(["worktree", "add", "-b", "worktree-SH-1"])
+            .arg(&worktree)
+            .output()
+            .unwrap();
+        assert!(added.status.success(), "{added:?}");
+        std::fs::write(worktree.join("unfinished.txt"), "uncommitted").unwrap();
+        let service = StoryResetService::new(&ctx);
+        let reset = service.adopt_legacy(&story.id, force).unwrap();
+        let done = service.execute(&story.id, &reset.token, || Ok(())).unwrap();
+        assert!(done.completed);
+        let left = |resource: &str| {
+            done.residue.iter().any(|entry| {
+                entry.resource == resource && entry.reason.contains("before this upgrade")
+            })
+        };
+        assert!(
+            left("local branch worktree-SH-1"),
+            "force={force}: {:?}",
+            done.residue
+        );
+        let branch = crate::service::resources::git::branch_exists(&repo, "worktree-SH-1").unwrap();
+        assert!(
+            branch,
+            "the pre-upgrade request promised to keep its branch"
+        );
+        assert_eq!(
+            left(&format!("worktree {}", worktree.display())),
+            !force,
+            "force={force}: {:?}",
+            done.residue
+        );
+        assert_eq!(worktree.exists(), !force, "force={force}");
+    }
+}

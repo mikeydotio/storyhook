@@ -33,6 +33,31 @@ pub struct StoryReset {
     /// What the reset discarded that can still be found, recorded before removal.
     #[serde(default)]
     pub recovery: Option<ResetRecovery>,
+    /// Who asked for the reset, replayed whenever the daemon resumes it.
+    #[serde(default)]
+    pub origin: ResetOrigin,
+}
+
+/// Who asked for a reset and what that request protects (SH-886).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResetOrigin {
+    /// The requester's tmux pane and socket: reset never closes that window.
+    #[serde(default)]
+    pub caller: crate::service::reset::ResetCaller,
+    /// The requester's working directory: never removed; hooks run from it.
+    #[serde(default)]
+    pub cwd: Option<std::path::PathBuf>,
+    /// Whether state-change hooks fire when the reset finishes.
+    #[serde(default)]
+    pub fire_hooks: bool,
+    /// The requester's hook nesting depth.
+    #[serde(default)]
+    pub hook_depth: u32,
+    /// Set when the reset adopted a reservation made by `story reset` before
+    /// this upgrade: that request's `--force`. Its branch is kept, and a dirty
+    /// or locked worktree is removed only when this is true (council C1).
+    #[serde(default)]
+    pub legacy_force: Option<bool>,
 }
 
 /// One resource a reset did not remove, and why.

@@ -181,6 +181,7 @@ pub struct Ctx<'a, S: Store> {
     stdin: Option<String>,
     provenance: Provenance,
     verification_activity: Option<&'a crate::daemon::verification::VerificationActivity>,
+    reset_runtime: Option<&'a crate::daemon::reset::ResetRuntime>,
 }
 
 impl<'a, S: Store> Ctx<'a, S> {
@@ -208,7 +209,25 @@ impl<'a, S: Store> Ctx<'a, S> {
             stdin: None,
             provenance: Provenance::unrecorded(),
             verification_activity: None,
+            reset_runtime: None,
         }
+    }
+
+    /// Supplies the daemon's reset runtime, which drives a reserved reset to
+    /// completion; without it a reset runs inline in this invocation.
+    #[must_use]
+    pub fn with_reset_runtime(
+        mut self,
+        runtime: Option<&'a crate::daemon::reset::ResetRuntime>,
+    ) -> Self {
+        self.reset_runtime = runtime;
+        self
+    }
+
+    /// The daemon's reset runtime, when this invocation is served by one.
+    #[must_use]
+    pub fn reset_runtime(&self) -> Option<&'a crate::daemon::reset::ResetRuntime> {
+        self.reset_runtime
     }
 
     /// Supplies the daemon's shared verifier ownership registry.

@@ -5,9 +5,10 @@
 //! left and why, and never stops the reset from finishing (SH-886). Removal
 //! still never reaches a resource the story cannot be shown to own.
 use crate::error::AppError;
+use crate::service::reset::ResetCaller;
 use crate::service::resources::{ResourceReport, git, tmux};
 use crate::service::workspace_lock::{self, WorkspaceLock};
-use crate::store::{ResetPathIdentity, ResetRecovery, ResetResidue};
+use crate::store::{ResetOrigin, ResetPathIdentity, ResetRecovery, ResetResidue};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -85,6 +86,40 @@ fn branch_resource(branch: &str) -> String {
     format!("local branch {branch}")
 }
 
+/// Leaves every Git resource the report names, so the completion record never
+/// claims a removal that did not happen; a report naming none still records why.
+fn leave_git(report: &ResourceReport, residue: &mut Residue, reason: impl Into<String>) {
+    let reason = reason.into();
+    let named = git_resources(report);
+    if named.is_empty() {
+        residue.leave("worktree and branch", reason.clone());
+    }
+    for resource in named {
+        residue.leave(resource, reason.clone());
+    }
+}
+
+/// Marks every Git resource the report names as colliding with the next dispatch.
+fn block_git(report: &ResourceReport, residue: &mut Residue, reason: &str) {
+    let named = git_resources(report);
+    if named.is_empty() {
+        residue.blocks_dispatch("worktree and branch", reason);
+    }
+    for resource in named {
+        residue.blocks_dispatch(resource, reason);
+    }
+}
+
+fn git_resources(report: &ResourceReport) -> Vec<String> {
+    report
+        .worktree
+        .as_deref()
+        .map(worktree_resource)
+        .into_iter()
+        .chain(report.branch.as_deref().map(branch_resource))
+        .collect()
+}
+
 /// Repeats one removal a few times, so a transient failure does not leave
 /// residue; the last error becomes the reason when every attempt fails.
 fn attempt<T>(mut step: impl FnMut() -> Result<T, AppError>) -> Result<T, AppError> {
@@ -104,14 +139,16 @@ fn attempt<T>(mut step: impl FnMut() -> Result<T, AppError>) -> Result<T, AppErr
 pub(super) fn authorize(
     report: &ResourceReport,
     paths: &[ResetPathIdentity],
+    origin: &ResetOrigin,
     caller: &Path,
     env: &crate::env::Environment,
     residue: &mut Residue,
 ) -> Authority {
     let mut authority = Authority::default();
     if !matches!(report.status.as_str(), "resolved" | "absent") {
-        residue.leave(
-            "worktree and branch",
+        leave_git(
+            report,
+            residue,
             format!(
                 "resource identity is {}: {}",
                 report.status,
@@ -122,10 +159,7 @@ pub(super) fn authorize(
     }
     let Some(repository) = &report.repository else {
         if report.worktree.is_some() || !report.candidates.is_empty() {
-            residue.leave(
-                "worktree and branch",
-                "resources were found without a repository",
-            );
+            leave_git(report, residue, "resources were found without a repository");
         }
         return authority;
     };
@@ -138,7 +172,7 @@ pub(super) fn authorize(
             worktree = false;
             branch = false;
         } else {
-            residue.leave("worktree and branch", reason.clone());
+            leave_git(report, residue, reason);
             return authority;
         }
         if let Some(target) = &report.worktree {
@@ -151,7 +185,7 @@ pub(super) fn authorize(
     ) {
         Ok(common) => common,
         Err(error) => {
-            residue.leave("worktree and branch", error.to_string());
+            leave_git(report, residue, error.to_string());
             return authority;
         }
     };
@@ -167,15 +201,16 @@ pub(super) fn authorize(
     let records = match git::inventory(repository) {
         Ok(records) => records,
         Err(error) => {
-            residue.leave("worktree and branch", error.to_string());
+            leave_git(report, residue, error.to_string());
             return authority;
         }
     };
     match git::canonical(&records[0].path) {
         Ok(actual) if &actual == repository => {}
         _ => {
-            residue.leave(
-                "worktree and branch",
+            leave_git(
+                report,
+                residue,
                 "the repository's identity changed after reset began",
             );
             return authority;
@@ -226,9 +261,49 @@ pub(super) fn authorize(
             branch = false;
         }
     }
+    if let Some(force) = origin.legacy_force {
+        legacy_authority(report, &records, force, &mut worktree, &mut branch, residue);
+    }
     authority.worktree = worktree;
     authority.branch = branch;
     authority
+}
+
+/// Narrows authority to what a reservation made before this upgrade
+/// authorized: its branch is kept, and a dirty or locked worktree is
+/// discarded only when that request was forced (council C1, guardrail 2).
+fn legacy_authority(
+    report: &ResourceReport,
+    records: &[git::WorktreeRecord],
+    force: bool,
+    worktree: &mut bool,
+    branch: &mut bool,
+    residue: &mut Residue,
+) {
+    const PROMISE: &str = "a story reset requested before this upgrade promised to keep it; \
+                           run story reset again to discard it";
+    if let Some(name) = &report.branch
+        && *branch
+    {
+        residue.leave(branch_resource(name), PROMISE);
+        *branch = false;
+    }
+    let Some(target) = &report.worktree else {
+        return;
+    };
+    if force || !*worktree || !matches!(target.try_exists(), Ok(true)) {
+        return;
+    }
+    let locked = records
+        .iter()
+        .any(|record| &record.path == target && record.locked);
+    // Unreadable status counts as dirty: authority is never inferred.
+    let dirty = git::text(target, &["status", "--porcelain", "--untracked-files=all"])
+        .map_or(true, |status| !status.trim().is_empty());
+    if locked || dirty {
+        residue.leave(worktree_resource(target), PROMISE);
+        *worktree = false;
+    }
 }
 
 enum WorktreeAuthority {
@@ -443,11 +518,12 @@ pub(super) fn remove(
     report: &ResourceReport,
     paths: &[ResetPathIdentity],
     authority: &Authority,
+    caller: &ResetCaller,
     env: &crate::env::Environment,
     workspace: Option<&WorkspaceLock>,
     residue: &mut Residue,
 ) {
-    close_window(report, env, workspace, residue);
+    close_window(report, caller, env, workspace, residue);
     let Some(repository) = &authority.repository else {
         return;
     };
@@ -455,7 +531,13 @@ pub(super) fn remove(
     let unchanged = || super::identity::replaced(paths).is_empty();
     if let Some(worktree) = &report.worktree {
         let path = worktree.to_string_lossy().to_string();
-        if authority.worktree && unchanged() {
+        if (authority.worktree || authority.orphan_directory) && unchanged() {
+            // The directory itself goes only while it keeps its pinned
+            // identity: a registration Git dropped, or files a failed
+            // `git worktree remove` left, are still this story's.
+            let pinned = paths
+                .iter()
+                .any(|identity| &identity.path == worktree && identity.removable);
             let removed = attempt(|| {
                 let registered = git::inventory(repository)?
                     .iter()
@@ -467,20 +549,21 @@ pub(super) fn remove(
                         workspace,
                     )?;
                 }
+                if std::fs::symlink_metadata(worktree).is_ok() {
+                    if !pinned || !unchanged() {
+                        return Err(AppError::Validation(
+                            "the directory remains and its identity is not proven".into(),
+                        ));
+                    }
+                    std::fs::remove_dir_all(worktree).map_err(|error| {
+                        AppError::Validation(format!("removing {}: {error}", worktree.display()))
+                    })?;
+                }
                 Ok(())
             });
             if let Err(error) = removed {
                 residue.leave(worktree_resource(worktree), error.to_string());
             }
-        }
-        if authority.orphan_directory
-            && unchanged()
-            && let Err(error) = attempt(|| std::fs::remove_dir_all(worktree).map_err(Into::into))
-        {
-            residue.leave(
-                worktree_resource(worktree),
-                format!("removing the unregistered directory: {error}"),
-            );
         }
     }
     if let (true, Some(branch)) = (authority.branch, &report.branch)
@@ -501,11 +584,26 @@ pub(super) fn remove(
 /// Closes the exact pinned window; any doubt about its identity leaves it.
 fn close_window(
     report: &ResourceReport,
+    caller: &ResetCaller,
     env: &crate::env::Environment,
     workspace: Option<&WorkspaceLock>,
     residue: &mut Residue,
 ) {
     let resource = window_resource(report);
+    // The window is only as proven as the identity it was resolved with.
+    if !matches!(report.status.as_str(), "resolved" | "absent") {
+        if report.socket_path.is_some() || report.pane.is_some() {
+            residue.leave(
+                resource,
+                format!(
+                    "resource identity is {}: {}",
+                    report.status,
+                    report.diagnostics.join("; ")
+                ),
+            );
+        }
+        return;
+    }
     let Some(socket) = &report.socket_path else {
         if report.pane.is_some() {
             residue.leave(resource, "the tmux window has no recorded socket");
@@ -538,6 +636,17 @@ fn close_window(
             resource,
             "the tmux window's identity changed after reset began",
         );
+    }
+    if caller.pane.as_deref() == Some(expected.pane_id.as_str())
+        && caller.socket.as_ref().is_some_and(|own| {
+            own == &target.endpoint
+                || (target.protected && own == &target.socket)
+                || own
+                    .canonicalize()
+                    .is_ok_and(|own| target.endpoint.canonicalize().is_ok_and(|end| own == end))
+        })
+    {
+        return residue.leave(resource, "it is the reset caller's own tmux window");
     }
     let closed = attempt(|| {
         let mut command = std::process::Command::new("tmux");
@@ -599,8 +708,9 @@ pub(super) fn dispatch_overlap(
             || report.worktree.is_some()
             || !report.candidates.is_empty()
         {
-            residue.blocks_dispatch(
-                "worktree and branch",
+            block_git(
+                report,
+                residue,
                 "reset could not identify the story's Git resources",
             );
         }

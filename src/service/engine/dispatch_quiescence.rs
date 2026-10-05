@@ -48,3 +48,21 @@ pub(crate) fn card_reset_dispatching<S: Store>(
     }
     Ok(false)
 }
+
+/// Waits, within the dispatch deadline, for engine dispatches of the reset's
+/// story to settle; an expired wait is reported, and the reset proceeds.
+pub(crate) fn await_card_reset_dispatch<S: Store>(
+    ctx: &Ctx<'_, S>,
+    reset: &StoryReset,
+) -> Result<(), AppError> {
+    let deadline = std::time::Instant::now() + super::DISPATCH_TIMEOUT;
+    while card_reset_dispatching(ctx, reset)? {
+        if std::time::Instant::now() >= deadline {
+            return Err(AppError::Validation(
+                "an engine dispatch did not settle within the dispatch deadline".into(),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Ok(())
+}

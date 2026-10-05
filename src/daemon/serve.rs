@@ -1622,6 +1622,7 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
     let surface = rpc::Surface {
         store: serving.store,
         verification_activity: &serving.verification_activity,
+        reset_runtime: &serving.reset_runtime,
         env: &serving.env,
         token: &serving.token,
         hello: &serving.hello,

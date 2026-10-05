@@ -118,15 +118,18 @@ therefore defaults to the safe solo charter; `STORY_COUNCIL=on` is the explicit 
 ## Release (`unclaim <id>`, `reset <id>`)
 
 Reached as `$story unclaim <id>` and `$story reset <id>`. Run
-`bash "<story-helper>" unclaim <id>` or `bash "<story-helper>" reset <id>`, adding `--force`
-(reset only) and `--comment <text>` / `--no-comment` only when the user asked for them. Show
-`display` and stop. Both close the story's tmux window, which is why they are documented per
-host rather than only in the shared router.
+`bash "<story-helper>" unclaim <id>` or `bash "<story-helper>" reset <id>`, adding
+`--comment <text>` / `--no-comment` only when the user asked for them. Show `display` and
+stop. Both close the story's tmux window, which is why they are documented per host rather
+than only in the shared router.
 
-- `unclaim` leaves the `.codex/worktrees/<id>` worktree and its branch exactly as found;
-  `reset` deletes both.
+- Run `reset` only on the user's explicit request. `unclaim` leaves the
+  `.codex/worktrees/<id>` worktree and its branch exactly as found; `reset` discards both,
+  uncommitted work included, and never refuses once the story is reserved. `--force` changes
+  nothing.
 - From the story's own window, `unclaim` still releases the claim and reports that it left the
-  window open, while `reset` refuses with `self-window` and `--force` does not override it.
+  window open; `reset` leaves that window in place and names it in the story's comment, with the
+  `git branch <name> <sha>` command that restores the deleted branch.
 
 ## Hooks and trust
 

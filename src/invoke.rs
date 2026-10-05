@@ -3931,6 +3931,7 @@ pub struct StoreInvoker<'a, S: Store> {
     env: Environment,
     hook_depth: u32,
     verification_activity: Option<&'a crate::daemon::verification::VerificationActivity>,
+    reset_runtime: Option<&'a crate::daemon::reset::ResetRuntime>,
 }
 
 impl<'a, S: Store> StoreInvoker<'a, S> {
@@ -3942,7 +3943,15 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
             env,
             hook_depth: 0,
             verification_activity: None,
+            reset_runtime: None,
         }
+    }
+
+    /// Supplies the daemon's reset runtime to `story reset`.
+    #[must_use]
+    pub fn reset_runtime(mut self, runtime: &'a crate::daemon::reset::ResetRuntime) -> Self {
+        self.reset_runtime = Some(runtime);
+        self
     }
 
     /// Sets how deep inside an event hook this invocation is running.
@@ -4493,7 +4502,8 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             .hook_depth(self.hook_depth)
             .with_stdin(request.stdin)
             .with_provenance(provenance)
-            .with_verification_activity(self.verification_activity);
+            .with_verification_activity(self.verification_activity)
+            .with_reset_runtime(self.reset_runtime);
         dispatch(&ctx, request.invocation)
     }
 }
