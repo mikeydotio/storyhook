@@ -1236,6 +1236,9 @@ pub fn run<S: crate::store::Store>(
     enter_stable_working_directory(env)?;
     let _pidfile = claim_pidfile(env)?;
     let _activity = crate::daemon::activity::start(env);
+    // From here on, before the slow startup work: a daemon whose store is
+    // deleted serves nobody, and nothing else would ever stop it.
+    retire_when_abandoned(env);
     // Before the portfile: once this daemon is discoverable, any journal
     // hygiene findings a status reader sees are its own (SH-771).
     if let Err(error) = crate::daemon::activity::hygiene::reset(env) {
@@ -3261,6 +3264,55 @@ fn wait_forever(env: &Environment, info: &DaemonInfo) {
 /// Removes a portfile left by a stopped daemon, best-effort.
 pub fn clear_info(env: &Environment) {
     let _ = std::fs::remove_file(env.daemon_file());
+}
+
+/// How often a running daemon checks that its store still exists.
+///
+/// The parent watch's own cadence: both decide whether anybody is still
+/// served, and neither has a reason to wait longer than the other.
+pub const ABANDONED_STORE_CHECK: Duration = super::serve::SHUTDOWN_CHECK;
+
+/// Whether this daemon's store file is gone.
+///
+/// Only a definite absence counts. Production never deletes or renames a live
+/// store (the documented restore stops the daemon first), so a missing file
+/// means the tree it lived in was deleted: by a test that ended, or by a
+/// person. Any other error, a permission or an I/O failure, says nothing
+/// about abandonment and is not acted on.
+pub(crate) fn store_vanished(env: &Environment) -> bool {
+    matches!(
+        std::fs::symlink_metadata(env.store_path()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+/// Stops this daemon, as an orderly shutdown, once its store file is gone.
+///
+/// A daemon serving a deleted store answers every request from an unlinked
+/// file and outlives whoever deleted it. `scripts/check-no-orphan-servers.sh`
+/// reaps exactly these at the end of `make test`, but only there; a test run
+/// any other way, or a store deleted by hand, left them listening for good.
+/// The check lives in the daemon, so it holds however the daemon started.
+fn retire_when_abandoned(env: &Environment) {
+    let env = env.clone();
+    let watch = std::thread::Builder::new()
+        .name("storyhook-abandonment".to_string())
+        .spawn(move || {
+            super::qos::WorkClass::Housekeeping.enter();
+            loop {
+                std::thread::sleep(ABANDONED_STORE_CHECK);
+                if store_vanished(&env) {
+                    eprintln!(
+                        "storyhook daemon: the store {} no longer exists; exiting",
+                        env.store_path().display()
+                    );
+                    exit_cleanly(&env);
+                }
+            }
+        });
+    if let Err(error) = watch {
+        eprintln!("warning: storyhook daemon cannot watch whether its store still exists: {error}");
+    }
 }
 
 /// Removes this daemon's portfile and terminates an orderly shutdown.
