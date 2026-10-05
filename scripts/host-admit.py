@@ -51,6 +51,13 @@ def application_run(entry, command):
 
 def fast(argv):
     """Exec without importing the authority when no admission decision is needed."""
+    if argv == ["--drain-seconds"]:
+        try:
+            os.lstat(POLICY)
+        except FileNotFoundError:
+            print(0)  # disabled: nothing drains, an enclosing lock keeps its grace
+            sys.exit(0)
+        return
     if len(argv) < 4 or argv[0] != "--entry" or "--" not in argv:
         return
     entry, separator = argv[1], argv.index("--")

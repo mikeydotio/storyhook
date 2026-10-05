@@ -154,6 +154,7 @@ hooks	:(glob)**/*
 host_admission	:(glob)scripts/host_admission/**
 host_admission	scripts/host-admission.py
 host_admission	scripts/host-admit.py
+host_admission	scripts/run-tests.sh
 host_admission	scripts/rustc-slot.py
 host_admission	scripts/tests/host_admit_fixture.py
 host_admission	scripts/tests/test_host_admission.py
@@ -163,6 +164,7 @@ host_admission	scripts/tests/test_host_admission_evidence.py
 host_admission	scripts/tests/test_host_admission_sensors.py
 host_admission	scripts/tests/test_host_admission_system.py
 host_admission	scripts/tests/test_host_admission_usage.py
+host_admission	scripts/tests/test_runner_admission_wiring.py
 host_admission	scripts/tests/test_rustc_slot_admission.py
 host_admission_evidence	:(glob)scripts/host_admission/**
 host_admission_evidence	:(glob)src/service/gate_cost/**
