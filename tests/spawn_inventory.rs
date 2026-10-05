@@ -110,6 +110,13 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/github_access/command.rs", "\"gh\"", Kind::Waited),
     // Reset uses bounded, file-backed process capture.
     ("src/service/reset/resources.rs", "\"tmux\"", Kind::Waited),
+    // SH-825 revivify fixtures use workspace_lock::capture, the same bounded
+    // file-backed capture.
+    (
+        "src/service/reset/resources_revivify_tests.rs",
+        "\"tmux\"",
+        Kind::Waited,
+    ),
     // Isolated unit probes use ChildGuard's bounded concurrent pipe drains;
     // recording tools never create persistent terminal readers.
     (
@@ -180,6 +187,14 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/service/engine.rs", "\"bash\"", Kind::Waited),
     // Explicit reset uses the same bounded file-backed capture and child environment.
     ("src/service/engine/reset.rs", "\"bash\"", Kind::Waited),
+    // Restoration proof (SH-825) runs its helper through run_captured_with_input:
+    // staged stdin, file-backed output, its own process group, and the shared
+    // tmux ownership deadline.
+    (
+        "src/service/engine/restoration.rs",
+        "\"python3\"",
+        Kind::Waited,
+    ),
     // The shared installed-artifact guard also uses bounded file-backed capture.
     (
         "src/service/story_reset/cleanup.rs",
@@ -192,6 +207,13 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
         "\"tmux\"",
         Kind::Waited,
     ),
+    // SH-825 revivify fixtures list windows through run_captured at the
+    // per-call tmux bound.
+    (
+        "src/service/story_reset/cleanup_revivify_tests.rs",
+        "\"tmux\"",
+        Kind::Waited,
+    ),
     ("src/service/engine.rs", "&self.tmux_program", Kind::Waited),
     // Adoption injects the tmux executable (SH-809). Capture still uses files
     // and kills the whole process group at the per-call tmux bound
@@ -201,6 +223,13 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // Cleanup's tmux probe uses shared file-backed, process-group-bounded
     // capture, so neither a server nor a descendant can retain an output pipe.
     ("src/service/resources/tmux.rs", "\"tmux\"", Kind::Waited),
+    // tmux ownership inspection (SH-825) runs its embedded program through
+    // run_captured_cancellable: file-backed output and a process group killed
+    // at the operation deadline or on cancellation.
+    ("src/service/tmux_target.rs", "\"python3\"", Kind::Waited),
+    // Its fixtures start and stop servers through run_captured; the other
+    // commands there only build argv for `Target::apply` and never start.
+    ("src/service/tmux_target_tests.rs", "\"tmux\"", Kind::Waited),
     // Dropped cleanup captures identities, checks installed artifacts, and
     // stops its exact pane through bounded, file-backed capture. Helpers have
     // their own process groups; no descendant can hold an output-pipe EOF.
