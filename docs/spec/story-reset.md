@@ -101,8 +101,12 @@ queues; it returns `202` with `reset.handle`. `GET .../reset/{handle}` reports
 is refused for capacity.
 
 `story reset` hands its reservation to the runtime and waits up to 90 s, below
-the served deadline (decision D11). It then prints the story, which shows an
-unfinished reset under `reset` until the daemon finishes it. Without a daemon
+the served deadline (decision D11). It then prints the story with the reset it
+ran under `reset`: `completed`, `removed` (window, worktree, branch),
+`residue` and `recovery`, from the same derivation as the completion comment.
+`story show` reports an unfinished reset there until the daemon finishes it.
+The plugin's `/story reset` maps it to `removed.worktree`, `removed.branch`,
+`closed_window`, `residue` and `recovery`. Without a daemon
 (the TUI), the reset runs inline. The receipt records the requester's tmux
 pane, working directory and hook policy, so a resumed reset keeps those
 protections and fires state-change hooks from the requester's checkout.

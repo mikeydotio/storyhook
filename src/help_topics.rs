@@ -813,6 +813,9 @@ The daemon finishes the reset: it waits out store contention, waits for a
 running dispatch or verifier and then proceeds, and resumes an interrupted
 reset by itself. This command waits up to 90 seconds; until the reset ends,
 story show reports it under reset. Comments remain available meanwhile.
+With --json, the reset field reports the reset this command ran: whether it
+finished, what it removed, what it left in place and why, and the recovery
+record.
 
 Examples:
   story reset SH-42
