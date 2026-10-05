@@ -1,109 +1,127 @@
-# Native and card reset — SH-664, SH-717, SH-718
+# Story reset — SH-664, SH-717, SH-886
 
-StoryHook retains two deliberate reset contracts. Both apply only to open
-ordinary stories, return to `todo` after proven cleanup, and preserve story
-metadata, relationships, discussion, remote branches, and pull requests.
-Epics and closed stories are ineligible.
+A reset is the final lever for a wedged story, the equivalent of
+`git reset --hard` on the story. **Once a reset is reserved it never fails.**
+It applies only to open ordinary stories; epics and closed stories are
+ineligible, and a request for one is refused before anything is reserved.
 
-| Entry point | Local work | Awaiting reason | Confirmation |
-|---|---|---|---|
-| `story reset <id> [--force]` | Preserves local branches and commits. Dirty or locked worktrees require explicit `--force`. | Restores the previous reason. | Each invocation supplies its own force authorization. |
-| Dashboard card Reset | Removes the local worktree and branch, including dirty, locked, and unpushed work. | Clears awaiting. | Requires the exact canonical story ID. |
+## One contract for every entry point
 
-The native command continues through the ordinary CLI/RPC invocation. Its
-recoverable journal retains the exact cleanup lease and failure diagnostics
-across daemon restart. `story show` exposes incomplete native reset details.
-A retry never infers Force from an earlier invocation. Missing owned resources
-are idempotent success; ownership mismatch, primary checkout, caller worktree,
-caller tmux window, and active workspace operations remain protected.
+| Entry point | Confirmation |
+|---|---|
+| Dashboard card Reset | The exact canonical story ID, typed |
+| `story reset <id> [--force]` | The positional story ID |
+| Plugin `/story reset <id> [--force]` | Delegates to `story reset` |
 
-The shared card menu opens a typed-ID confirmation dialog. Cancel has initial
-focus. No mutation occurs before confirmation. The dashboard captures the
-project and story for the operation, prevents repeat submission, polls its
-handle, and displays failures without reporting optimistic success. The menu
-scrolls within the viewport when its actions exceed the available height.
+Every entry point does the same thing (council C1 on SH-886):
 
-## Card operation lifecycle
+- closes the story's tmux window;
+- discards its worktree, including dirty, untracked and locked work;
+- deletes its local branch;
+- clears its awaiting reason and returns it to `todo`;
+- preserves remote branches, pull requests, story content, relationships
+  and discussion.
 
-`POST /api/repos/{project}/story/{id}/reset` accepts JSON with `confirmation`
-equal to the canonical story ID. Normal API authentication and mutation
-guards apply. It returns 202 with `reset.handle`, `reset.story`, `reset.state`,
-and `reset.detail`. `GET .../reset/{handle}` is authenticated and scoped to the
-same project and story. States are `running`, `ok`, and `error`. The endpoint
-requires typed confirmation; the native command's `force` payload is not a
-card reset request.
+`--force` is accepted and changes nothing. Agents run reset only on an
+explicit user request; `story unclaim` releases a story and keeps its work.
 
-The daemon persists the reset before external cleanup and handles it outside
-the fixed store dispatcher pool. A per-operation file lock serializes retries
-across processes. Existing dispatch must settle before discovery; only the
-selected verifier is cancelled and joined. After quiescence, the reset takes
-the repository/story WorkspaceLock shared with dispatch, verification, and
-native reset. Pinned identities are checked under that lock. Destructive
-Git/tmux subprocesses inherit it, so an orphaned cleanup child retains ownership
-until it exits. The lock remains held through the final store transaction and
-is released before state-change hooks run.
+Before anything is removed, the reset records a **recovery record** on its
+receipt and in its completion comment: the deleted branch's tip SHA with the
+`git branch <name> <sha>` command that restores it, the number of commits on
+no other branch, tag or remote, the counts of discarded changed and untracked
+paths, and the awaiting reason it cleared. Branch deletion and worktree
+removal also delete their reflogs, so without the record unpushed commits
+would be recoverable but undetectable.
 
-An engine lane's `dispatching` state alone does not prove a live dispatch
-(SH-791). Card reset probes the run's existing dispatch controller lock and
-refreshes its exact lane/story identity. Contention waits within the existing
-dispatch deadline; successful acquisition identifies a remaining dispatching
-lane as orphaned. Lock errors fail the reset with context. The durable card
-reservation prevents new claims while the probe releases its lock. Normal
-resource discovery, cleanup and completion still own the orphan's resources
-and lane release; HTTP dispatch and verifier quiescence are unchanged.
+## A convergent operation
 
-ResourceService pins exact resource identities. Device/inode observations pin
-the common Git directory, worktree directory, and private Git directory, so a
-retry refuses a replacement even when its path and branch are unchanged. Cleanup
-shares native Git/tmux observations, lease validation, bounded process capture,
-and the installed artifact guard with existing lifecycle operations. Destructive
-confirmation waives only local work preservation: protected branches, ambiguous
-resources, replaced windows, invalid leases, installed artifacts, and the caller's
-own worktree remain protected. A project with no checkout and no durable resource
-evidence has no local cleanup to perform. Local-only repositories need no remote;
-when an origin exists its authoritative default branch remains protected.
+A reservation is durable intent. Its only mandatory effect is the **finish
+transaction**: the story returns to `todo`, its engine lanes go idle, its
+verifier incident and pending block deliveries are retired, and the receipt
+completes. Everything before it is best effort.
 
-Only proven resource absence permits one transaction to return the story to
-`todo`, release its selected engine lane, clear a verifier incident belonging
-to that story, and record completion. Unrelated lanes and project verifier
-permission remain unchanged. Failed operations retain ownership and diagnosis;
-an explicit retry reuses their token and pinned identity. After daemon restart,
-polling an unfinished operation reports interruption and offers retry.
+**Teardown never refuses (D1).** Each identity check withholds authority over
+only the resource it protects; the resource is left in place as **residue**
+with its reason, and the reset still finishes. Reset never destroys what it
+cannot prove the story owns: the primary checkout, a protected branch (`main`,
+`master`, the primary checkout branch, or the cached `origin/HEAD` target), a
+worktree holding installed StoryHook artifacts, the caller's own worktree or
+tmux window, a window whose pane identity changed, and any path whose pinned
+device and inode changed. Transient failures get three attempts before they
+become residue. An unregistered worktree directory whose pinned identity still
+matches is removed; a registration whose directory is gone is removed through
+`git worktree remove`.
 
-Full Auto defers a quarantined lane while an unfinished card reset, native
-reset reservation, or unreleased dropped cleanup owns its story (SH-791).
-The ownership check and lane clearing share one transaction. Reconciliation
-continues for other lanes, preserving the deferred lane and its diagnosis
-even when cleanup has failed. A draining run remains unfinished until the
-owner releases the lane or releases ownership so normal clearing can resume.
+**No new wedge (D7).** When residue overlaps what the next dispatch uses — the
+window, the worktree path, the local branch, or an `origin/<branch>` that the
+default branch does not contain (a fresh branch's push would be rejected) —
+finish sets an awaiting reason naming the residue and the remedy, so Full Auto
+does not claim the story into a quarantine.
 
-## Shared ownership and upgrades
+**Contention is waited out (D2).** Every reset write retries
+`StoreError::Busy` with capped backoff (`store::patience`). The dashboard's
+reservation waits up to 60 s, below its 75 s mutation deadline, and the
+dashboard retries a `409`.
 
-Native reset, active card reset, Stop Now engine reset, and durable landing
-intent are mutually exclusive owners of one story. The store validates this
-invariant at the transaction boundary, including imports, repairs, and deletion.
-An unresolved landing intent prevents reset even after daemon restart; an
-uncertain merge outcome must be reconciled before resource authority changes.
+**Locks and running work never refuse (D5).** Dispatch and verifier quiescence
+keep their deadline; on expiry the reset proceeds and records it. The story's
+workspace lock is waited for (`WORKSPACE_PATIENCE`, 60 s) and then ignored, and
+the reset records that it ran without exclusion. A second request, or a second
+executor, joins the unfinished reset.
 
-Reservations prevent conflicting lifecycle changes, claims, dispatch and
-verification admission, engine lane reassignment, and changes or deletion of
-the owning project identity. Ready lists, dashboard ordering, and continuation
-eligibility exclude reserved stories.
+**Competing owners are superseded (D4).** In its reserve transaction a reset
+releases a Stop Now engine reset, a pre-upgrade native reservation and a
+pending landing intent through their explicit release operations, and names
+them in a comment. A batch member whose batch is landing is recorded as
+withdrawn, so the batch stays valid and lands its other members. Stop Now
+treats a superseded lane as deferred and never recreates its reservation (D6).
 
-The 3.0.0 schema bridge preserves published native reset journals in
-`story_reset_reservations`; card receipts use `story_resets`, and Stop Now keeps
-`engine_resets`. The bridge preserves unresolved authority and validates the
-historical schema lineage before mutation. Completed card receipts remain
-pollable until the story is reset again or deleted.
+**Finish degrades instead of refusing (D3).** The return to `todo` ignores
+blocker ordering. A catalog without an open `todo` state keeps the story's
+state and records why. A finish that fails three times completes the receipt,
+idles the lanes and leaves the story editable, with the error in its comment.
+
+## The reset runtime
+
+The daemon's reset runtime (`daemon::reset`) drives every reserved reset to
+completion **on the daemon's own store**, so its writes queue on the store's
+in-process mutex instead of competing through SQLite's busy timeout. It
+resumes every unfinished receipt at startup and on a 30 s sweep, adopts
+reservations that `story reset` recorded before this contract (with no more
+authority than they recorded: the branch is kept, and dirty or locked work is
+discarded only if that request was forced), drives at most four resets at once
+and queues the rest. A worker panic releases its slot for the next sweep. The
+daemon's stand-down stops the runtime's patient waits; the next daemon resumes
+the work.
+
+The dashboard's `POST /api/repos/{project}/story/{id}/reset` reserves and
+queues; it returns `202` with `reset.handle`. `GET .../reset/{handle}` reports
+`running` (with the last obstacle in `detail`) or `ok` (with `residue` and
+`recovery`). It never reports `error` for an unfinished reset, and no request
+is refused for capacity.
+
+`story reset` hands its reservation to the runtime and waits up to 90 s, below
+the served deadline (decision D11). It then prints the story, which shows an
+unfinished reset under `reset` until the daemon finishes it. Without a daemon
+(the TUI), the reset runs inline. The receipt records the requester's tmux
+pane, working directory and hook policy, so a resumed reset keeps those
+protections and fires state-change hooks from the requester's checkout.
 
 ## Verification
 
-Native CLI regressions cover safe and forced cleanup, retained branches/commits,
-caller protection, unrelated panes, failed cleanup, durable recovery, and hooks.
-Card service and API regressions cover typed confirmation, scoped receipts,
-local-only and no-checkout resets, pinned identity, cleanup failure/retry,
-selected-lane isolation, and reservation exclusion. Shared-lock regressions cover
-quiescence ordering and retry after the former owner exits; inherited-child
-exclusion remains covered by the workspace-lock suite. Browser tests exercise
-the shared menu, confirmation, cancellation, failure, concurrent story closure,
-and the real endpoint. Full-suite certification belongs to the release verifier.
+Regression suites: `tests/story_reset/` (busy, residue, card, compatibility,
+delivery, orphan, quiescent and the native CLI), the runtime unit tests in
+`src/daemon/reset/tests.rs`, the controller unit tests in `src/api/reset.rs`,
+`tests/api_reset.rs`, the Stop Now supersession cases in
+`tests/engine_reset.rs`, the landing and batch supersession cases in
+`tests/landing_intents.rs` and `tests/batch_landing.rs`, the plugin's
+`test-reset.sh`, and the dashboard's reset browser specs.
+
+## As built (SH-886)
+
+The SH-801 incident: a card reset removed its window, worktree and branch,
+then lost its final write to SQLite's busy timeout and stayed reserved, so it
+blocked every later lifecycle change. Origin: the reset controller opened its
+own store, no reset write retried contention, and every refusal or transient
+error aborted the reset. See `docs/rca/sh-886-reset-never-fails.md`. The
+decisions D1–D11 and council C1 are recorded on SH-886.
