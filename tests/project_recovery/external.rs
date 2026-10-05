@@ -215,6 +215,15 @@ fn an_unsatisfied_external_recovery_asks_the_operator_and_releases_nothing() {
     ] {
         assert!(row.next_action.contains(words), "{words}: {row:?}");
     }
+    // The decided External card names its scope, never an undecided repair.
+    assert_eq!(row.scope, Some(RepairScope::External));
+    assert_eq!(row.repair_story, None);
+    let rendered = VerificationActivity::new()
+        .status(&f.ctx())
+        .unwrap()
+        .render_human();
+    assert!(rendered.contains("repair none (external)"), "{rendered}");
+    assert!(!rendered.contains("undecided"), "{rendered}");
     let held = awaiting(&f, 1).expect("the prerequisite hold");
     let activity = VerificationActivity::new();
     let stop = AtomicBool::new(false);

@@ -195,13 +195,13 @@ For existing incidents, automatically convert only those whose retained structur
 
 ## Interfaces, diagnostics, and tests
 
-Expose additive recovery status in the shared CLI/dashboard snapshot: fault, affected stories, assessment/repair owner, repair link, phase, attempt budget, and next action. Distinguish repair dependency from infrastructure halt. Existing payloads deserialize with no recovery records. The snapshot lists unresolved recoveries (see Resolution) and invalid diagnostic rows (see below).
+Expose additive recovery status in the shared CLI/dashboard snapshot: fault, affected stories, assessment/repair owner, accepted scope, repair link, phase, attempt budget, and next action. A decided External row names its scope (`none (external)`) instead of calling its repair undecided (SH-849). Distinguish repair dependency from infrastructure halt. Existing payloads deserialize with no recovery records. The snapshot lists unresolved recoveries (see Resolution) and invalid diagnostic rows (see below).
 
 ### Invalid recovery diagnostics (SH-851)
 
 Status validates each recovery separately. A `StoreError::Corrupt` from that record's `read_view` becomes a row with phase `invalid`; status continues with the remaining records. It does not treat other errors as corruption. Failures to read project metadata, enumerate recoveries, or perform a storage query still fail the request.
 
-An invalid row uses only the durable envelope: recovery ID, fault code, and locus. Its `next_action` includes the recovery ID, the complete validation detail, and `story verifier repair show <id> --json`. No field from partially decoded state supplies authority. Existing wire fields remain present: affected stories and assessment owner are empty, repair ownership and link are absent, and both attempt counters are zero. These placeholders mean unavailable, not an empty workload or an exhausted budget. They have no diagnostic meaning when phase is `invalid`.
+An invalid row uses only the durable envelope: recovery ID, fault code, and locus. Its `next_action` includes the recovery ID, the complete validation detail, and `story verifier repair show <id> --json`. No field from partially decoded state supplies authority. Existing wire fields remain present: affected stories and assessment owner are empty, repair ownership, scope and link are absent, and both attempt counters are zero. These placeholders mean unavailable, not an empty workload or an exhausted budget. They have no diagnostic meaning when phase is `invalid`.
 
 CLI and dashboard render the identity, locus, diagnostic, and inspection command. They suppress ownership and attempt summaries for invalid rows. Dashboard diagnostic text remains literal through text nodes. Invalid records stay visible even when inactive: failed validation cannot establish resolution. Healthy resolved records remain omitted under SH-775.
 

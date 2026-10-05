@@ -5373,7 +5373,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         details.push(el("div", {}, ["Recovery ", item.id, "; ", item.locus]));
       } else {
         details.push(
-          el("div", {}, ["Affected: ", (item.affected_stories || []).join(", "), "; assessor ", item.assessment_owner, "; repair ", item.repair_story || "undecided"]),
+          el("div", {}, ["Affected: ", (item.affected_stories || []).join(", "), "; assessor ", item.assessment_owner, "; repair ", item.repair_story || (item.scope === "external" ? "none (external)" : "undecided")]),
           el("div", {}, ["Completed repair attempts: ", String(item.completed_attempts), "/", String(item.attempt_limit), "; ", item.locus])
         );
       }

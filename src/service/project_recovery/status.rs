@@ -24,6 +24,11 @@ pub struct RecoveryStatus {
     pub assessment_owner: String,
     /// Accepted repair owner, if scope has been decided.
     pub repair_story: Option<String>,
+    /// Accepted scope, absent until decided. External scope has no repair
+    /// story, so renderers name the scope rather than call the repair
+    /// undecided. Absent in older payloads.
+    #[serde(default)]
+    pub scope: Option<RepairScope>,
     /// Current repair pull request, when linked.
     pub repair_link: Option<String>,
     /// Current coordination phase, or `invalid` when record validation fails.
@@ -65,6 +70,7 @@ pub(crate) fn snapshot(
                     affected_stories: Vec::new(),
                     assessment_owner: String::new(),
                     repair_story: None,
+                    scope: None,
                     repair_link: None,
                     completed_attempts: 0,
                     attempt_limit: 0,
@@ -102,6 +108,7 @@ pub(crate) fn snapshot(
                 .collect(),
             assessment_owner: view.state.assessment.story.to_id(&metadata.prefix),
             repair_story,
+            scope: view.state.decision.as_ref().map(|d| d.input.scope),
             repair_link,
             phase: phase.into(),
             next_action,
