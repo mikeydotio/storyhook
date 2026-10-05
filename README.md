@@ -902,7 +902,7 @@ The dashboard is a single background daemon shared by every project — not one 
 The dashboard is reachable from **localhost and your tailnet only — never the public internet, never a plain LAN address**:
 
 - It always binds `127.0.0.1`. This is hardcoded and not configurable.
-- If the `tailscale` CLI is installed and reports an IP, it *also* binds that tailnet IP, so other devices on your tailnet can reach it directly — no reverse proxy needed. This is best-effort: if the bind fails for any reason, the dashboard keeps serving on localhost and logs a warning. The bind itself happens on a background thread, after the dashboard is already serving loopback — a wedged or slow `tailscale` CLI delays only the tailnet interface's own availability, never the dashboard's.
+- If the `tailscale` CLI is installed and reports an IP, it *also* binds that tailnet IP, so other devices on your tailnet can reach it directly — no reverse proxy needed. Set `STORYHOOK_TAILNET=0` to keep a daemon on localhost only: it then never asks `tailscale` and never binds a second address. Every test environment sets it (`story help test-environment`). The switch only narrows; no value widens the bind, and any value other than `0` or `1` is refused. This is best-effort: if the bind fails for any reason, the dashboard keeps serving on localhost and logs a warning. The bind itself happens on a background thread, after the dashboard is already serving loopback — a wedged or slow `tailscale` CLI delays only the tailnet interface's own availability, never the dashboard's.
 - It never binds `0.0.0.0` or any other wildcard/public-facing address, and it never binds a generic LAN IP — enforced, not merely never attempted: the daemon refuses to serve a socket bound anywhere else.
 - Every connection is checked again as it arrives, against the interface it arrived on: the loopback listener admits only a loopback peer, and the tailnet listener admits loopback plus Tailscale's own address ranges. A peer outside those ranges is refused before a single byte of its request is read — no `tailscale` process is ever consulted to decide this, so a wedged or missing `tailscale` CLI cannot affect it either way.
 
@@ -1069,9 +1069,12 @@ so a spawned daemon behaves:
 ```bash
 export STORYHOOK_DAEMON_ADDR=127.0.0.1:0   # a kernel-assigned port, not 3456
 export STORYHOOK_PARENT_PID=$$             # the daemon dies with this run
+export STORYHOOK_TAILNET=0                 # loopback only, never your tailnet
 ```
 
-Those three are the minimum. **`story help test-environment` lists the whole
+Those four are the minimum. Once the process `STORYHOOK_PARENT_PID` names has
+exited, `story` refuses to start a daemon for it at all: a leftover helper of a
+finished run would otherwise bring the deleted fixture back. **`story help test-environment` lists the whole
 set** — every variable, what each one protects, and a shell block that
 applies all of them to a throwaway root. It is the same set storyhook's own test
 suite runs under, and it ships in the binary rather than living here, so a suite

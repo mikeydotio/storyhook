@@ -128,6 +128,17 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(pairs["XDG_STATE_HOME"], "", "an absent selector is carried empty")
         self.assertNotIn("PATH", pairs)
 
+    def test_pane_overrides_carry_daemon_containment(self):
+        contained = {name: "contained-" + name for name in policy.DAEMON_CONTAINMENT}
+        pairs = dict(flag.split("=", 1) for flag in policy.pane_overrides(contained)[1::2])
+        for name, value in contained.items():
+            self.assertEqual(pairs[name], value, name)
+        absent = dict(flag.split("=", 1) for flag in policy.pane_overrides({})[1::2])
+        for name in policy.DAEMON_CONTAINMENT:
+            self.assertEqual(absent[name], "", "an absent contract is carried empty: " + name)
+        self.assertEqual(set(policy.DAEMON_CONTAINMENT) & policy.SERVER_MAY_SEE, set(),
+                         "the contract rides the pane, never the server")
+
     def test_parse_environment_reads_set_values_and_skips_removals(self):
         listing = "A=b\n-REMOVED\nD=x=y\n\nEMPTY=\n"
         self.assertEqual(policy.parse_environment(listing), {"A": "b", "D": "x=y", "EMPTY": ""})

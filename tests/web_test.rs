@@ -25,7 +25,7 @@ use storyhook::cli::parse_invocation;
 use storyhook::daemon::lifecycle::CONTROL_DEADLINE;
 use storyhook::daemon::serve::BoundAddress;
 use storyhook::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
-use storyhook::env::Environment;
+use storyhook::env::{Environment, TailnetPolicy};
 use storyhook::invoke::{dispatch, dispatch_unscoped};
 use storyhook::service::Ctx;
 use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store, StoryNo};
@@ -205,12 +205,23 @@ fn token_agent(token: &str) -> ureq::Agent {
 }
 
 /// An isolated environment with one initialized project, served on an
-/// OS-assigned loopback port.
+/// OS-assigned loopback port. Loopback only, like every test environment.
 fn served() -> Served {
+    served_under(TailnetPolicy::LoopbackOnly)
+}
+
+/// [`served`], with the server also binding this machine's real tailnet
+/// address when it has one. Only for the tests that ask about that bind on
+/// purpose: every other fixture's dashboard stays off the tailnet.
+fn served_with_tailnet() -> Served {
+    served_under(TailnetPolicy::Bind)
+}
+
+fn served_under(tailnet: TailnetPolicy) -> Served {
     let env = TestEnv::isolated();
     let dir = scratch_dir();
     let store = Arc::new(env.open_store());
-    let environment = env.environment();
+    let environment = env.environment().with_tailnet(tailnet);
 
     dispatch_unscoped(
         &*store,
@@ -668,7 +679,10 @@ fn web_start_status_address_advertise_the_host_the_daemon_bound() {
     let dir = scratch_dir();
     let _daemon = DaemonGuard::new(&env, dir.path());
 
+    // The daemon binds the tailnet on purpose here: the advertised host must
+    // be the one it bound, which a loopback-only daemon cannot distinguish.
     env.story(dir.path())
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value())
         .args(["web", "start"])
         .assert()
         .success();
@@ -762,8 +776,10 @@ fn web_start_settles_on_loopback_when_there_is_never_a_tailnet() {
     let path = std::env::join_paths(entries).expect("joining PATH");
 
     let started = Instant::now();
+    // Opted in: a loopback-only daemon never runs the failing probe at all.
     env.story(dir.path())
         .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value())
         .args(["web", "start"])
         .assert()
         .success();
@@ -8284,7 +8300,7 @@ fn skip_no_tailnet_listener() {
 
 #[test]
 fn web_serve_binds_tailnet_ip_when_available() {
-    let fixture = served();
+    let fixture = served_with_tailnet();
     let Some(bind) = fixture.bound.tailnet.clone() else {
         return skip_no_tailnet_listener();
     };
@@ -8326,7 +8342,7 @@ fn web_serve_binds_tailnet_ip_when_available() {
 /// `Host` never was, and still is not, a substitute for a credential.
 #[test]
 fn web_serve_tailnet_read_without_a_token_is_401() {
-    let fixture = served();
+    let fixture = served_with_tailnet();
     let Some(bind) = fixture.bound.tailnet.clone() else {
         return skip_no_tailnet_listener();
     };
@@ -8350,7 +8366,7 @@ fn web_serve_tailnet_read_without_a_token_is_401() {
 
 #[test]
 fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
-    let fixture = served();
+    let fixture = served_with_tailnet();
     let Some(bind) = fixture.bound.tailnet.clone() else {
         return skip_no_tailnet_listener();
     };
@@ -8421,7 +8437,7 @@ fn web_serve_trusts_magic_dns_fqdn_for_mutations() {
     // opposite direction — so it needs no real cross-machine network access,
     // only that the tailnet listener actually bound (which is what populates
     // `trusted_hosts` with the FQDN in the first place).
-    let fixture = served();
+    let fixture = served_with_tailnet();
     let Some(bind) = fixture.bound.tailnet.clone() else {
         return skip_no_tailnet_listener();
     };
@@ -8454,7 +8470,7 @@ fn web_serve_rejects_bare_magic_dns_short_label_for_mutations() {
     // must not be: unlike the FQDN, a single-label host can resolve through
     // a DNS search domain that isn't the tailnet's, so trusting it would
     // reopen a DNS-rebinding path. Locks in that deliberate boundary.
-    let fixture = served();
+    let fixture = served_with_tailnet();
     let Some(bind) = fixture.bound.tailnet.clone() else {
         return skip_no_tailnet_listener();
     };
@@ -8488,7 +8504,7 @@ fn web_serve_rejects_foreign_ts_net_host_for_mutations() {
     // Proves the allowlist trusts THIS machine's FQDN specifically, not any
     // `ts.net` name under the same tailnet — another host's MagicDNS name
     // must still be rejected.
-    let fixture = served();
+    let fixture = served_with_tailnet();
     let Some(bind) = fixture.bound.tailnet.clone() else {
         return skip_no_tailnet_listener();
     };
@@ -8527,7 +8543,7 @@ fn web_serve_never_binds_wildcard_address() {
     // specific tailnet IP — never 0.0.0.0, ::, or `*` (a wildcard bind would
     // make the dashboard reachable from any interface, including a public
     // one). Skips gracefully if `lsof` isn't available.
-    let fixture = served();
+    let fixture = served_with_tailnet();
 
     let port = fixture.port;
     std::thread::sleep(Duration::from_millis(200));

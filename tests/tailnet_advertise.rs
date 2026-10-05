@@ -36,6 +36,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use storyhook::env::TailnetPolicy;
 use storyhook_test_support::{DaemonGuard, TestEnv, reserve_port, scratch_dir, wait_for_server};
 
 /// An IPv4 in the CGNAT range Tailscale itself uses, which is *not* configured
@@ -105,6 +106,7 @@ fn web_status_advertises_only_the_tailnet_the_daemon_bound() {
 
     env.story(dir.path())
         .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value())
         .args(["web", "start", "--port", &port.to_string()])
         .assert()
         .success();
@@ -113,6 +115,7 @@ fn web_status_advertises_only_the_tailnet_the_daemon_bound() {
     let status = env
         .story(dir.path())
         .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value())
         .args(["web", "status"])
         .output()
         .expect("running `story web status`");
@@ -144,6 +147,7 @@ fn web_address_copies_only_the_tailnet_the_daemon_bound() {
 
     env.story(dir.path())
         .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value())
         .args(["web", "start", "--port", &port.to_string()])
         .assert()
         .success();
@@ -154,6 +158,7 @@ fn web_address_copies_only_the_tailnet_the_daemon_bound() {
     let copied = env
         .story(dir.path())
         .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value())
         .env("STORYHOOK_CLIPBOARD_CMD", "cat")
         .args(["web", "address"])
         .output()
