@@ -28,6 +28,9 @@ enum Coverage {
     Legs,
     /// Text that names a runner without launching one.
     Prose(&'static str),
+    /// Deliberate artifact inspection: it reads a built binary and runs no
+    /// test, so it is not admitted.
+    Inspection(&'static str),
     /// Deliberately outside this host's admission, with the reason.
     External(&'static str),
 }
@@ -43,6 +46,8 @@ fn signatures() -> Vec<(&'static str, Regex)> {
             .unwrap(),
         ),
         ("playwright", Regex::new(r"playwright\s+test\b").unwrap()),
+        // A test binary executed directly to list its cases, outside Cargo.
+        ("test-listing", Regex::new(r#"\[\s*\w+,\s*"--list""#).unwrap()),
         (
             "make-gate",
             Regex::new(r"\bmake\s+(-\S+\s+)*test(-full|-changed)?\b").unwrap(),
@@ -99,6 +104,11 @@ const SITES: &[(&str, &str, Coverage)] = &[
         Coverage::Cargo,
     ),
     ("scripts/test_discovery.py", "cargo", Coverage::Cargo),
+    (
+        "scripts/test_discovery.py",
+        "test-listing",
+        Coverage::Inspection("lists a built test binary's cases with --list; runs no test"),
+    ),
     (
         "plugins/story/bin/story.sh",
         "make-gate",
@@ -307,7 +317,9 @@ fn every_runner_launch_is_admitted_or_an_explicit_exception() {
                 "{path} launches {kind} but does not enter the {entry} admission entry"
             );
         }
-        if let Coverage::Prose(reason) | Coverage::External(reason) = coverage {
+        if let Coverage::Prose(reason) | Coverage::External(reason) | Coverage::Inspection(reason) =
+            coverage
+        {
             assert!(
                 !reason.trim().is_empty(),
                 "{path}: an exception needs a reason"
@@ -435,4 +447,11 @@ def f():
         "Reservation(\"verifier-gate\", project=p)",
         "verifier-gate"
     ));
+    let listing = "output = self.run([executable, \"--list\", *args], \"listing tests\")\n";
+    let found = found_sites(&[("scripts/y.py".to_string(), listing.to_string())]);
+    assert_eq!(
+        found.iter().map(|(_, kind)| *kind).collect::<Vec<_>>(),
+        ["test-listing"],
+        "a direct test-binary listing is a site that needs a decision"
+    );
 }
