@@ -70,6 +70,7 @@ Add shared CLI/RPC operations:
 
 - `story verifier repair show <recovery-id> --json`
 - `story verifier repair decide <recovery-id> --input <json-file>`
+- `story verifier repair satisfy <recovery-id> --input <json-file>` (operator only; see External prerequisite satisfaction)
 
 The versioned decision input contains recovery revision, originating generation, dispatch identity, scope (`same-story`, `separate-story`, or `external`), owning project, evidence references, and nonempty Context/Question/Decision/Rationale. Separate-work decisions also supply a repair description and acceptance criteria.
 
@@ -79,7 +80,7 @@ The assessment charter requires the scope rubric, source inspection, and a decis
 
 - **Same story:** return it with diagnosis and instructions to repair, run new/impacted tests, commit, and resubmit.
 - **Separate story:** create or reuse one critical bug in the proven owning project and attach real `blocked-by` relationships to affected stories. Dispatch through existing managed dispatch and lease machinery.
-- **External:** retain a contextual hold naming the actual prerequisite.
+- **External:** retain a contextual hold naming the actual prerequisite. The recovery owns that hold by its exact event, as it owns a repair dependency. Only an operator's prerequisite statement releases it (SH-849).
 
 Document critical priority as this recovery path’s explicit policy exception. Do not reprioritize unrelated stories.
 
@@ -137,7 +138,10 @@ response expiry, exhausted budget, or terminal disposition never becomes fresh
 delivery merely because policy clears. This also applies when the stored policy
 hold masks the earlier transport result. Status directs inspection through
 `story verifier repair show <recovery-id> --json` when ownership reconciliation
-is required. There is no blanket retry or unblock command.
+is required. There is no blanket retry or unblock command. `repair satisfy`
+(SH-849) is not one: it applies only to an external-scope decision, records an
+operator's versioned statement with its provenance, refuses a dispatched agent
+session, and releases only the exact holds that the recovery wrote.
 
 Repeated checks of an unchanged hold append no events and revise no record.
 Previously observed generations stay excluded from the verifier queue; recovery
@@ -145,33 +149,47 @@ requires a scope decision and later fresh submission, never replay of the old ga
 
 ### Resolution: when a recovery leaves current status (SH-775)
 
-A certified landing retires the record (`active = false`), but it does not end the work. Affected stories still owe a fresh verification generation. The status projection (`story verifier status`, the dashboard banner, and `verifier.project_recoveries` in load-context, next, and summary JSON) shows a valid recovery until it owes nothing, and then leaves it out. If retained state later fails validation, the invalid-row contract below applies. The durable record stays: coordination, resume ownership, and `story verifier repair show <id> --json` read it permanently. The recovery ID is also in the story comments of each affected story and in the repair story description.
+A certified landing, or for External scope an accepted prerequisite statement (see below), retires the record (`active = false`), but it does not end the work. A record is active exactly when it has no such release authority; `read_view` refuses a record where the two disagree. Affected stories still owe a fresh verification generation. The status projection (`story verifier status`, the dashboard banner, and `verifier.project_recoveries` in load-context, next, and summary JSON) shows a valid recovery until it owes nothing, and then leaves it out. If retained state later fails validation, the invalid-row contract below applies. The durable record stays: coordination, resume ownership, and `story verifier repair show <id> --json` read it permanently. The recovery ID is also in the story comments of each affected story and in the repair story description.
 
-After landing, the recovery computes two story sets:
+After release, the recovery computes two story sets:
 
 - **Held:** open stories whose current awaiting is still one that this recovery wrote. The awaiting must match the exact recorded event, not only the text. The owned awaitings are the dependency holds, the assessment holds, and the disposition hold of each delivery effect. An awaiting on a closed story blocks nothing and is ignored.
 - **Owed:** affected submissions (`state.subjects`) whose story is not held and not discharged. A subject is **discharged** when its story no longer exists, or when the story event log, after the retained generation, has one of these: a state change into verifying (a fresh generation), a state change into a closed-superstate state, `StoryClosedAndArchived`, or `StoryDeleted`.
 
 The recovery is **resolved** when all of these are true:
 
-1. A landing receipt is recorded.
+1. A release authority is recorded: a certified landing receipt, or an accepted prerequisite statement.
 2. No resume effect is in flight. An outstanding external call always shows.
 3. The held set is empty.
 4. The owed set is empty.
 
-A pending or held resume effect keeps the row only while its story is held or owed. After that, the effect is moot. The phases after landing are:
+A pending or held resume effect keeps the row only while its story is held or owed. After that, the effect is moot. The phases after release, with the one External phase that precedes it, are:
 
 | Phase | Condition | Next action |
 |---|---|---|
+| `external-prerequisite` | An External decision with no prerequisite statement (before release) | The prerequisite, and the exact `repair satisfy` command addressed to an operator |
 | `held` | A held resume effect on a held or owed story, or a live effect whose delivery current authority does not permit | The diagnosis |
 | `resume-pending` | A permitted pending effect on a held or owed story, or a permitted in-flight effect | Wait for the retained delivery receipt |
 | `resume-held` | The held set is not empty | Reconcile the named holds; owed stories are also named |
-| `landed` | Only the owed set is not empty | The named stories refresh and resubmit |
+| `landed` / `prerequisite-satisfied` | Only the owed set is not empty (the name follows the release cause) | The named stories refresh and resubmit |
 | (no row) | Resolved | — |
 
 A fresh submission discharges a subject, not the landing of that submission. A retired record accepts no new subjects, so a repeat fault on the fresh generation opens a new recovery. A failed fresh generation goes to ordinary remediation. If the row stayed until the fresh generation landed, it would tell the agent to resubmit work that it had already resubmitted. The event log is append-only, so a discharge is permanent. A reopened story cannot bring a resolved recovery back.
 
 The next action names only the stories that still owe work. It never tells an agent to do work that no story owes.
+
+### External prerequisite satisfaction (SH-849)
+
+An External decision has no repair to land, so no certified landing can release it. Before SH-849 such a record stayed active forever: its card never left, and a later fault with the same code and locus joined it and received the old prerequisite hold. Council decision D1 on SH-849 chose an explicit operator statement over automatic proof (a certified landing of an affected story) and over implicit retirement: the held submissions cannot land until something releases them, a manual unblock is not proof, and absence is not evidence.
+
+- **Owned holds.** The decision records each prerequisite awaiting in `dependency_holds` with its exact event. A joining fault gets its own owned hold. `owns_coordination` ignores these holds: a prerequisite waits on a person for an unbounded time and must not keep a Full Auto lane.
+- **The statement.** `story verifier repair satisfy <recovery-id> --input <json-file>` takes strict version-1 JSON: `revision` (from `repair show`), `context`, `question`, `decision`, `rationale` and a nonempty `evidence` list of what shows the prerequisite is restored. One transaction checks External scope, an active record and the exact revision (a story that joined after the read changes it), writes a comment on the assessment story, records the receipt (input, time, story, comment event, caller provenance) and sets `active = false`. Identical replay returns the recorded result; different input is refused. Refusals say what happened, why, and the fix.
+- **Operator only.** The CLI reads the dispatch markers (`STORYHOOK_DISPATCH`, `STORYHOOK_AUTO`, `STORYHOOK_FULL_AUTO`) from the caller's environment, the request carries the answer to `Ctx`, and the service refuses a dispatched agent session through either the CLI or the RPC door. This guards against an agent running the command its card shows; it is not authentication.
+- **Release.** The receipt's comment event is the release anchor. The recovery worker releases each eligible owned hold through the same path a certified landing uses (`landing_release_ready`, `reconcile_landing`, managed resume); each release event must follow the anchor. A hold whose story changed authority (a reservation, an operator's replacement awaiting) is not cleared and stays named.
+- **Attestation, not a check.** The statement grants no certification. Each affected story still needs a fresh generation that passes central verification. If it faults again, the retired record accepts no new subject: a new recovery opens with a fresh assessment.
+- **Recurrence.** A new recovery records `supersedes: <id>` of the latest retired recovery with the same code and locus, and its assessment charter names it, so a repeat after a false or premature statement is visible and countable.
+- **Status.** Until the statement, the row shows `external-prerequisite` with the operator action. After it, the release phases above apply, with `prerequisite-satisfied` in place of `landed`.
+- **Older records.** No External recovery existed in the live store when this shipped. A record decided before SH-849 has no owned hold; after a statement its subjects show as owed while their old awaiting stays until an operator clears it. No text match is attempted.
 
 For existing incidents, automatically convert only those whose retained structured execution, receipt, generation, and cleanup evidence proves a supported project fault. Preserve the old incident as historical evidence. Never clear an ambiguous legacy incident by matching its diagnostic text.
 
