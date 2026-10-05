@@ -161,6 +161,7 @@ EOF
 _storyhook_isolate_args() {
     _sti_home=0
     _sti_pid="$$"
+    _sti_pid_given=0
     _sti_root=""
     _sti_uninstalled=0
 
@@ -180,6 +181,7 @@ _storyhook_isolate_args() {
                 exit 2
             fi
             _sti_pid="$2"
+            _sti_pid_given=1
             shift 2
             ;;
         --)
@@ -288,6 +290,13 @@ EOF
 # another. Values are single-quoted (with embedded quotes escaped) because a
 # fixture root is a path and paths contain spaces on machines whose owners have
 # spaces in their names.
+#
+# THE OWNER IS THE SHELL THAT ADOPTS THE OUTPUT. Without --parent-pid the pid is
+# printed as an unexpanded "$$", so the shell that evaluates it names itself.
+# The printing process is the wrong owner whenever it is a process of its own
+# (`eval "$(bash scripts/scratch-env.sh --print)"`): it exits at once, so a
+# daemon started from the evaluating shell had already lost its owner, and a
+# `story` there is refused for belonging to a run that is over.
 storyhook_isolate_print() {
     _storyhook_isolate_args "$@"
 
@@ -298,6 +307,11 @@ storyhook_isolate_print() {
         fi
         if [ "$_kind" = "clear" ]; then
             printf 'unset %s\n' "$_name"
+            continue
+        fi
+        if [ "$_kind" = "ownpid" ] && [ "$_sti_pid_given" -ne 1 ]; then
+            # shellcheck disable=SC2016 # expanded by the shell that evaluates it
+            printf 'export %s="$$"\n' "$_name"
             continue
         fi
         _value="$(_storyhook_isolate_value "$_sti_root" "$_kind" "$_arg" "$_sti_pid")"
