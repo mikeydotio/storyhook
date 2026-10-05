@@ -286,6 +286,16 @@ shell_negated_status	:(glob)**/*
 spawn_inventory	:(glob)**/*
 spawned_child_environment	:(glob)src/**/*.rs
 state_set_funnel	:(glob)**/*
+stopped_landing_shell	scripts/gate-progress.sh
+stopped_landing_shell	scripts/github-access.sh
+stopped_landing_shell	scripts/land-pr.sh
+stopped_landing_shell	scripts/machine-lock.sh
+stopped_landing_shell	scripts/merge-preflight.sh
+stopped_landing_shell	scripts/progress_journal.py
+stopped_landing_shell	scripts/python-bin/python3
+stopped_landing_shell	scripts/python-runtime.sh
+stopped_landing_shell	scripts/test-env.sh
+stopped_landing_shell	scripts/tests/test_stopped_landing.py
 store_isolation	:(glob)**/*
 store_isolation	:(glob)crates/storyhook-test-support/src/**/*.rs
 store_isolation	:(glob)scripts/**/*.sh
