@@ -205,7 +205,10 @@ fn reset_discards_the_worktree_and_local_branch_and_records_how_to_recover_them(
     json(&project, &["block", &id, "Wait for human review"]);
     let path = workspace(&project, &id);
     let commit = git_at(&path, &["rev-parse", "HEAD"]);
-    json(&project, &["reset", &id]);
+    let recover = format!("git branch reset-{id} {commit}");
+    let reset = json(&project, &["reset", &id]);
+    // Council C1 guardrail 1: the reset's own output carries the record.
+    assert!(reset.to_string().contains(&recover), "{reset}");
     assert!(!path.exists());
     assert!(
         !std::process::Command::new("git")
@@ -228,10 +231,7 @@ fn reset_discards_the_worktree_and_local_branch_and_records_how_to_recover_them(
     assert!(after.to_string().contains("Keep this comment"));
     let comments = after["story"]["story"]["comments"].as_array().unwrap();
     let completion = comments.last().unwrap()["text"].as_str().unwrap();
-    assert!(
-        completion.contains(&format!("git branch reset-{id} {commit}")),
-        "{completion}"
-    );
+    assert!(completion.contains(&recover), "{completion}");
 }
 
 #[test]
