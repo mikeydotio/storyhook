@@ -86,7 +86,7 @@ impl Drop for ForkBarrier {
 }
 
 #[test]
-fn refusal_and_unwind_allow_immediate_card_retry_while_an_unrelated_fork_survives() {
+fn a_stuck_worker_or_an_unwind_never_strands_the_card_while_an_unrelated_fork_survives() {
     for unwind in [false, true] {
         let fixture = ServiceFixture::new();
         let store = SqliteStore::open(fixture.env().store_path()).unwrap();
@@ -100,58 +100,61 @@ fn refusal_and_unwind_allow_immediate_card_retry_while_an_unrelated_fork_survive
         let ctx = Ctx::new(&store, project, fixture.cwd(), env).no_hooks(true);
         let story = StoryService::new(&ctx)
             .create(&NewStoryInput {
-                title: "Retry the refused reset".into(),
+                title: "Retry the interrupted reset".into(),
                 ..Default::default()
             })
             .unwrap();
         let service = StoryResetService::new(&ctx);
         let reset = service.reserve(&story.id, &story.id).unwrap();
         let mut fork = None;
-        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             service.execute(&story.id, &reset.token, || {
                 fork = Some(ForkBarrier::enter());
+                // A concurrent controller joins without entering cleanup.
                 let concurrent = service
                     .execute(&story.id, &reset.token, || {
                         panic!("concurrent controller must stay excluded")
                     })
-                    .unwrap_err();
-                assert!(
-                    concurrent.to_string().contains("already running"),
-                    "{concurrent}"
-                );
+                    .unwrap();
+                assert!(!concurrent.completed);
                 if unwind {
                     panic!("controller stopped before cleanup");
                 }
-                Err(AppError::Validation("caller worktree refused".into()))
+                Err(AppError::Validation("worker did not stop".into()))
             })
         }));
-        if unwind {
-            assert!(refused.is_err());
-        } else {
-            let error = refused.unwrap().unwrap_err();
-            assert!(
-                error.to_string().contains("caller worktree refused"),
-                "{error}"
-            );
-        }
         let mut fork = fork.unwrap();
         assert!(
             !fork.spawn.as_ref().unwrap().is_finished(),
             "incidental fork must still own the copied descriptor"
         );
-        assert!(
-            service
-                .execute(&story.id, &reset.token, || Ok(()))
-                .expect("controller retry must not wait for an unrelated fork to exec")
-                .completed
-        );
+        if unwind {
+            assert!(outcome.is_err());
+            assert!(
+                service
+                    .execute(&story.id, &reset.token, || Ok(()))
+                    .expect("controller retry must not wait for an unrelated fork to exec")
+                    .completed
+            );
+        } else {
+            let done = outcome.unwrap().unwrap();
+            assert!(done.completed);
+            assert!(
+                done.residue
+                    .iter()
+                    .any(|entry| entry.reason.contains("worker did not stop")),
+                "{:?}",
+                done.residue
+            );
+        }
         fork.release();
     }
 }
 
-#[test]
-fn controller_refusal_allows_retry_but_live_effect_retains_workspace_and_reservation() {
-    let fixture = ServiceFixture::new();
+/// A repository whose reset runs the real artifact guard, and its story.
+fn repository_story(
+    fixture: &ServiceFixture,
+) -> (SqliteStore, crate::store::ProjectId, std::path::PathBuf) {
     let repo = fixture.cwd().canonicalize().unwrap();
     let init = crate::env::git_env::command(&repo)
         .args(["init", "--initial-branch=main"])
@@ -178,6 +181,23 @@ fn controller_refusal_allows_retry_but_live_effect_retains_workspace_and_reserva
     store
         .write(|tx| tx.set_checkout_path(project, Some(&repo)))
         .unwrap();
+    (store, project, repo)
+}
+
+/// Starts `script` holding the story's workspace lock, as a surviving
+/// dispatch or verification child does.
+fn effect(repo: &std::path::Path, id: &str, script: &str) -> ChildGuard {
+    let workspace = WorkspaceLock::acquire(repo, id).unwrap();
+    let mut command = Command::new("sh");
+    command.args(["-c", script]).stdin(Stdio::piped());
+    workspace.command(&mut command);
+    ChildGuard::spawn(&mut command).unwrap()
+}
+
+#[test]
+fn reset_waits_for_a_live_workspace_owner_then_takes_exclusion() {
+    let fixture = ServiceFixture::new();
+    let (store, project, repo) = repository_story(&fixture);
     // The reset runs the real python3 artifact guard, which must answer.
     let env = crate::env::Environment::at(fixture.env().home()).with_subprocess_patience();
     let ctx = Ctx::new(&store, project, fixture.env().home(), env).no_hooks(true);
@@ -190,53 +210,75 @@ fn controller_refusal_allows_retry_but_live_effect_retains_workspace_and_reserva
         .unwrap();
     let service = StoryResetService::new(&ctx);
     let reset = service.reserve(&story.id, &story.id).unwrap();
-    let mut effect = None;
-    let error = service
+    let mut owner = None;
+    let done = service
         .execute(&story.id, &reset.token, || {
-            let workspace = WorkspaceLock::acquire(&repo, &story.id)?;
-            let mut command = Command::new("sh");
-            command.args(["-c", "read answer"]).stdin(Stdio::piped());
-            workspace.command(&mut command);
-            effect = Some(ChildGuard::spawn(&mut command)?);
-            Err(AppError::Storage("owned effect is still settling".into()))
-        })
-        .unwrap_err();
-    assert!(error.to_string().contains("still settling"), "{error}");
-    let mut effect = effect.unwrap();
-    assert!(effect.try_wait().is_none());
-    let mut retried = false;
-    let error = service
-        .execute(&story.id, &reset.token, || {
-            retried = true;
+            // Exits by itself well inside the reset's workspace patience.
+            owner = Some(effect(&repo, &story.id, "sleep 0.3"));
             Ok(())
         })
-        .unwrap_err();
-    assert!(retried, "controller exclusion must already be released");
-    assert!(error.to_string().contains("workspace is busy"), "{error}");
-    assert!(!service.get(&story.id, &reset.token).unwrap().completed);
+        .unwrap();
+    assert!(done.completed);
+    assert!(
+        !done
+            .residue
+            .iter()
+            .any(|entry| entry.resource == "workspace lock"),
+        "the reset must have waited for exclusion: {:?}",
+        done.residue
+    );
+    assert!(
+        owner
+            .unwrap()
+            .wait_within(Duration::from_secs(5), || "owner did not exit".into())
+            .success()
+    );
+}
+
+#[test]
+fn reset_proceeds_without_exclusion_once_its_patience_is_spent() {
+    let fixture = ServiceFixture::new();
+    let (store, project, repo) = repository_story(&fixture);
+    let env = crate::env::Environment::at(fixture.env().home()).with_subprocess_patience();
+    let ctx = Ctx::new(&store, project, fixture.env().home(), env).no_hooks(true);
+    let story = StoryService::new(&ctx)
+        .create(&NewStoryInput {
+            title: "Ignore a wedged workspace owner".into(),
+            state: Some("in-progress".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let service = StoryResetService::new(&ctx).with_workspace_patience(Duration::ZERO);
+    let reset = service.reserve(&story.id, &story.id).unwrap();
+    let mut owner = None;
+    let done = service
+        .execute(&story.id, &reset.token, || {
+            owner = Some(effect(&repo, &story.id, "read answer"));
+            Ok(())
+        })
+        .unwrap();
+    assert!(done.completed);
+    let held = done
+        .residue
+        .iter()
+        .find(|entry| entry.resource == "workspace lock")
+        .unwrap_or_else(|| panic!("{:?}", done.residue));
+    assert!(held.reason.contains("without exclusion"), "{held:?}");
     assert_eq!(
         store
             .read(|tx| Ok(tx.story(project, StoryNo::new(1))?.unwrap().state))
             .unwrap(),
-        "in-progress"
+        "todo"
     );
+    let mut owner = owner.unwrap();
     assert!(
-        store
-            .write(|tx| tx.set_checkout_path(project, Some(&repo.join("retargeted"))))
-            .is_err()
+        owner.try_wait().is_none(),
+        "reset never kills a foreign owner"
     );
-    writeln!(effect.stdin().unwrap(), "finish").unwrap();
+    writeln!(owner.stdin().unwrap(), "finish").unwrap();
     assert!(
-        effect
-            .wait_within(Duration::from_secs(5), || {
-                "owned effect did not exit after release".into()
-            })
+        owner
+            .wait_within(Duration::from_secs(5), || "owner did not exit".into())
             .success()
-    );
-    assert!(
-        service
-            .execute(&story.id, &reset.token, || Ok(()))
-            .unwrap()
-            .completed
     );
 }

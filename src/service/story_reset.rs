@@ -20,6 +20,13 @@ use std::time::{Duration, Instant};
 /// request still answers before its client gives up.
 pub(crate) const RESERVE_PATIENCE: Duration = Duration::from_secs(60);
 
+/// How long a reset waits for another process to release the story's
+/// workspace lock before it proceeds without that exclusion (SH-886).
+pub const WORKSPACE_PATIENCE: Duration = Duration::from_secs(60);
+
+/// Pause between workspace lock attempts.
+const WORKSPACE_POLL: Duration = Duration::from_millis(100);
+
 /// Attempts to identify a story's resources before reset pins them for good.
 const RESOLVE_ATTEMPTS: u32 = 5;
 
@@ -85,6 +92,7 @@ pub(crate) fn foreign_owner(
 pub struct StoryResetService<'a, S: Store> {
     ctx: &'a Ctx<'a, S>,
     shutdown: Shutdown,
+    workspace_patience: Duration,
 }
 
 impl<'a, S: Store> StoryResetService<'a, S> {
@@ -93,6 +101,66 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         Self {
             ctx,
             shutdown: Shutdown::new(),
+            workspace_patience: WORKSPACE_PATIENCE,
+        }
+    }
+
+    /// Sets how long a reset waits for a held workspace lock before it
+    /// proceeds without it. [`WORKSPACE_PATIENCE`] unless changed.
+    #[must_use]
+    pub fn with_workspace_patience(mut self, patience: Duration) -> Self {
+        self.workspace_patience = patience;
+        self
+    }
+
+    /// Waits for the story's workspace lock, which dispatch, verification and
+    /// their surviving children hold. A reset ignores locks in the end: after
+    /// the patience it proceeds without exclusion and records that it did.
+    fn workspace(
+        &self,
+        repository: &std::path::Path,
+        story_id: &str,
+        residue: &mut cleanup::Residue,
+    ) -> Option<WorkspaceLock> {
+        let common = match super::resources::git::text(
+            repository,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ) {
+            Ok(common) => std::path::PathBuf::from(common.trim()),
+            Err(error) => {
+                residue.leave(
+                    "workspace lock",
+                    format!("cannot locate it ({error}); reset proceeded without exclusion"),
+                );
+                return None;
+            }
+        };
+        let deadline = Instant::now() + self.workspace_patience;
+        loop {
+            match WorkspaceLock::try_acquire_proven(&common, story_id) {
+                Ok(Some(lock)) => return Some(lock),
+                Ok(None) if Instant::now() < deadline && !self.shutdown.requested() => {
+                    std::thread::sleep(WORKSPACE_POLL);
+                }
+                Ok(None) => {
+                    residue.leave(
+                        "workspace lock",
+                        format!(
+                            "another process still held it after {} s; reset proceeded \
+                             without exclusion",
+                            self.workspace_patience.as_secs_f32()
+                        ),
+                    );
+                    return None;
+                }
+                Err(error) => {
+                    residue.leave(
+                        "workspace lock",
+                        format!("cannot take it ({error}); reset proceeded without exclusion"),
+                    );
+                    return None;
+                }
+            }
         }
     }
 
@@ -232,8 +300,11 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         })?)
     }
 
-    /// Resumes an operation under a cross-process lock, then commits its receipt.
-    /// `quiesce` must join dispatch and the selected verifier before cleanup.
+    /// Drives a reserved reset to completion and returns its receipt.
+    ///
+    /// `quiesce` should join dispatch and the selected verifier; its failure
+    /// is recorded and never stops the reset. The receipt is unfinished only
+    /// when another executor already runs this same reset, which it joins.
     pub fn execute(
         &self,
         id: &str,
@@ -258,12 +329,20 @@ impl<'a, S: Store> StoryResetService<'a, S> {
             .map_err(|e| {
                 AppError::Storage(format!("opening reset lock {}: {e}", lock_path.display()))
             })?;
-        let _executor = ExecutorLock::acquire(&lock, &lock_path).map_err(|e| {
-            AppError::Validation(format!(
-                "reset {} already running or lock unavailable: {e}",
-                reset.token
-            ))
-        })?;
+        // Another executor is already finishing this same reset: join it.
+        let _executor = match ExecutorLock::acquire(&lock, &lock_path) {
+            Ok(guard) => guard,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                return self.get(id, token);
+            }
+            Err(error) => {
+                return Err(AppError::Storage(format!(
+                    "locking reset {} at {}: {error}",
+                    reset.token,
+                    lock_path.display()
+                )));
+            }
+        };
         reset = self.get(id, token)?;
         if reset.completed {
             return Ok(reset);
@@ -271,7 +350,14 @@ impl<'a, S: Store> StoryResetService<'a, S> {
         reset.failure = None;
         self.write(|tx| tx.put_story_reset(&reset))?;
         let result = (|| {
-            quiesce()?;
+            let mut residue = cleanup::Residue::default();
+            // Waiting for work to stop is courtesy, not a precondition.
+            if let Err(error) = quiesce() {
+                residue.leave(
+                    "running work",
+                    format!("it did not stop in time ({error}); reset proceeded"),
+                );
+            }
             let report = match &reset.resources {
                 Some(report) => report.clone(),
                 None => self.identify(id),
@@ -281,8 +367,7 @@ impl<'a, S: Store> StoryResetService<'a, S> {
             let workspace = report
                 .repository
                 .as_ref()
-                .map(|repository| WorkspaceLock::acquire(repository, &reset.story_id))
-                .transpose()?;
+                .and_then(|repository| self.workspace(repository, &reset.story_id, &mut residue));
             if reset.resources.is_none() {
                 // Pinned once, even when identification failed: teardown then
                 // withholds removal and reports why, and the reset still ends.
@@ -309,7 +394,6 @@ impl<'a, S: Store> StoryResetService<'a, S> {
                 Ok(())
             })?;
             let report = reset.resources.clone().expect("pinned resources");
-            let mut residue = cleanup::Residue::default();
             let authority = cleanup::authorize(
                 &report,
                 &reset.paths,

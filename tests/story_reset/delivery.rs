@@ -86,6 +86,21 @@ printf '{"ok":true,"target":"original-session","display":"original session stopp
             });
             let release = Release(fixture.cwd().join("released"));
             wait_for(&fixture.cwd().join("entered"));
+            if card {
+                // A card reset waits for the attempting helper, then finishes.
+                let releaser = std::thread::spawn({
+                    let path = fixture.cwd().join("released");
+                    move || {
+                        std::thread::sleep(Duration::from_millis(200));
+                        std::fs::write(path, "release").unwrap();
+                    }
+                });
+                reset(&fixture, card).unwrap();
+                releaser.join().unwrap();
+                drop(release);
+                assert!(worker.join().unwrap().unwrap());
+                return;
+            }
             let error = reset(&fixture, card).unwrap_err();
             assert!(
                 error.to_string().contains("workspace is busy"),
@@ -115,7 +130,9 @@ printf '{"ok":true,"target":"original-session","display":"original session stopp
             drop(release);
             assert!(worker.join().unwrap().unwrap());
         });
-        reset(&fixture, card).unwrap();
+        if !card {
+            reset(&fixture, card).unwrap();
+        }
         fixture
             .store()
             .read(|tx| {

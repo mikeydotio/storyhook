@@ -85,7 +85,7 @@ fn confirmation_and_closed_or_epic_targets_are_rejected_without_reserving() {
 }
 
 #[test]
-fn no_checkout_reset_clears_awaiting_preserves_metadata_and_can_be_repeated() {
+fn no_checkout_reset_clears_awaiting_preserves_metadata_and_never_waits_on_a_stuck_worker() {
     let fixture = ServiceFixture::new();
     fixture
         .store()
@@ -104,29 +104,27 @@ fn no_checkout_reset_clears_awaiting_preserves_metadata_and_can_be_repeated() {
     stories.set_awaiting(&before.id, "human").unwrap();
     let service = StoryResetService::new(&ctx);
     let reset = service.reserve(&before.id, &before.id).unwrap();
-    assert!(
-        service
-            .execute(&before.id, &reset.token, || Err(
-                storyhook::error::AppError::Validation("worker did not stop".into())
-            ))
-            .is_err()
-    );
-    assert!(
-        service
-            .get(&before.id, &reset.token)
-            .unwrap()
-            .failure
-            .unwrap()
-            .contains("worker did not stop")
-    );
     assert_eq!(
         service.reserve(&before.id, &before.id).unwrap().token,
         reset.token
     );
+    // A worker that does not stop is reported; it never refuses the reset.
     let done = service
-        .execute(&before.id, &reset.token, || Ok(()))
+        .execute(&before.id, &reset.token, || {
+            Err(storyhook::error::AppError::Validation(
+                "worker did not stop".into(),
+            ))
+        })
         .unwrap();
     assert!(done.completed);
+    assert!(
+        done.residue
+            .iter()
+            .any(|entry| entry.resource == "running work"
+                && entry.reason.contains("worker did not stop")),
+        "{:?}",
+        done.residue
+    );
     service
         .execute(&before.id, &reset.token, || {
             panic!("completed cleanup must not run twice")
@@ -312,7 +310,7 @@ fn installed_artifact_worktree_is_left_in_place() {
 }
 
 #[test]
-fn concurrent_execution_cannot_enter_the_same_cleanup_operation() {
+fn a_concurrent_execution_joins_the_running_cleanup_operation() {
     let fixture = ServiceFixture::new();
     fixture
         .store()
@@ -352,12 +350,13 @@ fn concurrent_execution_cannot_enter_the_same_cleanup_operation() {
                 std::time::Duration::from_secs(5),
             ))
             .unwrap();
+        // The second caller joins: it sees the unfinished receipt and never
+        // enters the cleanup the first executor owns.
         assert!(
-            service
+            !service
                 .execute(id, token, || panic!("duplicate cleanup entered"))
-                .unwrap_err()
-                .to_string()
-                .contains("already running")
+                .unwrap()
+                .completed
         );
         release_tx.send(()).unwrap();
     });

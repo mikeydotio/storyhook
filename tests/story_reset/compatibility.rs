@@ -108,36 +108,32 @@ fn card_reset_waits_for_quiescence_then_acquires_the_shared_workspace_lock() {
     let service = StoryResetService::new(&ctx);
     let reset = service.reserve(&story.id, &story.id).unwrap();
     let mut quiesced = false;
-    let error = service
+    let mut releaser = None;
+    let done = service
         .execute(&story.id, &reset.token, || {
             quiesced = true;
+            // The owner lets go only after the reset has started waiting.
+            releaser = Some(std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                drop(owner);
+            }));
             Ok(())
         })
-        .unwrap_err();
+        .unwrap();
+    releaser.unwrap().join().unwrap();
     assert!(
         quiesced,
         "workspace admission must follow dispatch/verifier quiescence"
     );
-    assert!(error.to_string().contains("workspace is busy"), "{error}");
-    assert!(!service.get(&story.id, &reset.token).unwrap().completed);
-    assert_eq!(
-        fixture
-            .store()
-            .read(|tx| Ok(tx.story(fixture.project(), StoryNo::new(1))?.unwrap().state))
-            .unwrap(),
-        "in-progress"
-    );
-    assert_eq!(
-        service.reserve(&story.id, &story.id).unwrap().token,
-        reset.token
-    );
-    let done = service
-        .execute(&story.id, &reset.token, || {
-            drop(owner);
-            Ok(())
-        })
-        .unwrap();
     assert!(done.completed);
+    assert!(
+        !done
+            .residue
+            .iter()
+            .any(|entry| entry.resource == "workspace lock"),
+        "the reset must wait for and take the shared lock: {:?}",
+        done.residue
+    );
 }
 
 #[test]

@@ -41,7 +41,8 @@ pub(super) struct Authority {
 pub(super) struct Residue(Vec<ResetResidue>);
 
 impl Residue {
-    fn leave(&mut self, resource: impl Into<String>, reason: impl Into<String>) {
+    /// Records a resource the reset left, once; later reasons are dropped.
+    pub(super) fn leave(&mut self, resource: impl Into<String>, reason: impl Into<String>) {
         let resource = resource.into();
         if !self.0.iter().any(|entry| entry.resource == resource) {
             self.0.push(ResetResidue {
