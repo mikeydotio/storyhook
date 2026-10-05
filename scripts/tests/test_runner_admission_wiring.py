@@ -86,5 +86,67 @@ class RustBattery(unittest.TestCase):
         self.assertEqual(stderr.count("WITHOUT this repository's 'gate' lock"), 1, stderr)
 
 
+
+@unittest.skipIf(POLICY.exists(), "these cases prove the disabled host; this host has a policy")
+class PluginRunner(unittest.TestCase):
+    """The tracked plugin runner and lib.sh in a scratch plugin tree."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir="/tmp", prefix="ptw-")
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.tests = root / "plugins" / "story" / "tests"
+        self.tests.mkdir(parents=True)
+        (root / "scripts").mkdir()
+        for path in (CHECKOUT / "scripts").iterdir():
+            (root / "scripts" / path.name).symlink_to(path)
+        for name in ("run-tests.sh", "lib.sh"):
+            (self.tests / name).symlink_to(CHECKOUT / "plugins" / "story" / "tests" / name)
+        self.log = root / "seen.log"
+
+    def script(self, name, body):
+        path = self.tests / name
+        path.write_text("#!/usr/bin/env bash\n" + body)
+        path.chmod(0o755)
+        return path
+
+    def run_bash(self, *argv, **extra):
+        env = runner_env(Path(self.tmp.name), SEEN=str(self.log), **extra)
+        return subprocess.run(["bash", *argv], cwd=self.tmp.name, env=env, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=PROCESS_ALLOWANCE_S * 4)
+
+    def test_the_pool_is_admitted_once_and_runs_its_requested_jobs(self):
+        record = 'printf "%s|%s|%s\\n" "$(basename "$0")" "${STORYHOOK_HOST_ENTRY:-}" "${STORYHOOK_HOST_UNITS:-}" >> "$SEEN"\n'
+        for name in ("test-alpha.sh", "test-beta.sh", "test-gamma.sh"):
+            self.script(name, record)
+        done = self.run_bash(str(self.tests / "run-tests.sh"), STORYHOOK_PLUGIN_JOBS="2")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        seen = sorted(self.log.read_text().splitlines())
+        self.assertEqual([line.split("|")[0] for line in seen], ["test-alpha.sh", "test-beta.sh", "test-gamma.sh"],
+                         "each script ran exactly once")
+        for line in seen:
+            _, entry, units = line.split("|")
+            self.assertRegex(entry, r"^plugin-pool:\d+$", "scripts run inside the pool's admission")
+            self.assertEqual(units, "", "the unit count is consumed by the pool")
+        self.assertIn("slowest (jobs=2)", done.stdout + done.stderr, "a disabled host keeps the requested jobs")
+
+    def test_a_test_script_run_on_its_own_admits_itself_through_lib_sh(self):
+        record = 'printf "%s\\n" "${STORYHOOK_HOST_ENTRY:-}" >> "$SEEN"\nsource "$(dirname "$0")/lib.sh"\n'
+        direct = self.script("test-direct.sh", record + 'echo "after lib.sh"\n')
+        self.run_bash(str(direct))
+        first, second = self.log.read_text().splitlines()[:2]
+        self.assertEqual(first, "", "the first pass ran unadmitted")
+        self.assertRegex(second, r"^plugin-script:\d+$", "lib.sh re-executed the script through the adapter")
+        self.log.unlink()
+        helper = self.script("helper.sh", record)
+        self.run_bash(str(helper))
+        self.assertEqual(self.log.read_text().splitlines(), [""], "only test-*.sh scripts admit themselves")
+        self.log.unlink()
+        self.run_bash(str(direct), STORYHOOK_HOST_ENTRY="plugin-pool:1")
+        self.assertEqual(self.log.read_text().splitlines()[0], "plugin-pool:1",
+                         "inside an admitted entry the script runs in place")
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

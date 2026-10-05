@@ -9,6 +9,23 @@
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# HOST ADMISSION (SH-869). A test script run on its own is a `plugin-script`
+# entry. Only a top-level `test-*.sh` that sources this file itself is
+# re-executed through the adapter, before anything below runs: a fixture that
+# sources it from `bash -c`, a helper, or the fake tmux is not. Under the
+# plugin runner, or any other admitted entry, the script already runs inside
+# that grant, where the adapter would run it in place.
+if [ "${BASH_SOURCE[1]:-}" = "$0" ] && [ -z "${STORYHOOK_HOST_ENTRY:-}" ]; then
+  case "$(basename -- "$0")" in
+  (test-*.sh)
+    . "$TESTS_DIR/../../../scripts/python-runtime.sh" || exit 2
+    storyhook_python_init || { printf '%s\n' "$STORYHOOK_PYTHON_ERROR" >&2; exit 2; }
+    exec "$STORYHOOK_PYTHON" -B "$TESTS_DIR/../../../scripts/host-admit.py" \
+      --entry plugin-script -- bash "$0" "$@"
+    ;;
+  esac
+fi
 PLUGIN_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 SCRIPT="$PLUGIN_ROOT/bin/story.sh"
 

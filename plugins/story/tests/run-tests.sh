@@ -44,6 +44,19 @@ case "$JOBS" in
   ;;
 esac
 
+# HOST ADMISSION (SH-869). The pool is one `plugin-pool` entry whose units are
+# concurrent scripts, and it runs the admitted count: the request itself
+# unless an enabled host authority granted fewer. The adapter's marker ends
+# the re-exec -- `$$` when it ran this script in place, `$PPID` when it
+# supervises it. The count is consumed, never inherited by a script.
+case "${STORYHOOK_HOST_ENTRY:-}" in
+("plugin-pool:$$" | "plugin-pool:$PPID") ;;
+(*) exec "$STORYHOOK_PYTHON" -B "$TESTS_DIR/../../../scripts/host-admit.py" \
+  --entry plugin-pool --units "$JOBS" -- bash "$0" "$@" ;;
+esac
+JOBS="${STORYHOOK_HOST_UNITS:-$JOBS}"
+unset STORYHOOK_HOST_UNITS
+
 # shellcheck source=../../../scripts/gate-progress.sh
 . "$TESTS_DIR/../../../scripts/gate-progress.sh"
 
