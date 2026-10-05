@@ -168,6 +168,7 @@ hooks	:(glob)**/*
 host_admission	:(glob)scripts/host_admission/**
 host_admission	plugins/story/tests/lib.sh
 host_admission	plugins/story/tests/run-tests.sh
+host_admission	scripts/attribution-rust.py
 host_admission	scripts/host-admission.py
 host_admission	scripts/host-admit.py
 host_admission	scripts/merge-watch.sh
@@ -178,6 +179,7 @@ host_admission	scripts/run-tests.sh
 host_admission	scripts/rustc-slot.py
 host_admission	scripts/tests/host_admit_fixture.py
 host_admission	scripts/tests/run_verifier_tests.py
+host_admission	scripts/tests/test_attribution_admission.py
 host_admission	scripts/tests/test_host_admission.py
 host_admission	scripts/tests/test_host_admission_activation.py
 host_admission	scripts/tests/test_host_admission_adapter.py

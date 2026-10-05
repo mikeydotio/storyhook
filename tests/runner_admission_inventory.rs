@@ -45,6 +45,11 @@ fn signatures() -> Vec<(&'static str, Regex)> {
             )
             .unwrap(),
         ),
+        (
+            "cargo",
+            Regex::new(r#"\bcargo\s*\+\s*\[\s*["'](test|build|clippy|check|run|bench|nextest)["']"#)
+                .unwrap(),
+        ),
         ("playwright", Regex::new(r"playwright\s+test\b").unwrap()),
         // A test binary executed directly to list its cases, outside Cargo.
         ("test-listing", Regex::new(r#"\[\s*\w+,\s*"--list""#).unwrap()),
@@ -58,6 +63,11 @@ fn signatures() -> Vec<(&'static str, Regex)> {
 /// Every (file, kind) with a runner launch, and how it is accounted for.
 const SITES: &[(&str, &str, Coverage)] = &[
     ("Makefile", "cargo", Coverage::Cargo),
+    (
+        "scripts/attribution-rust.py",
+        "cargo",
+        Coverage::Entry("causal-rust"),
+    ),
     ("scripts/build-release-assets.sh", "cargo", Coverage::Cargo),
     ("scripts/capture-baseline.sh", "cargo", Coverage::Cargo),
     ("scripts/capture-baseline.sh", "make-gate", Coverage::Legs),
@@ -119,6 +129,7 @@ const SITES: &[(&str, &str, Coverage)] = &[
 /// Files that enter an admission entry, whether or not a signature finds a
 /// launch in them: the pools, the supervisors and the wrappers.
 const ENTRY_FILES: &[(&str, &str)] = &[
+    ("scripts/host_admission/diagnosis.py", "causal-rust"),
     (".cargo/config.toml", "cargo-test-binary"),
     ("scripts/capture-baseline.sh", "cargo-test-binary"),
     ("scripts/rustc-slot.py", "rustc"),
@@ -427,6 +438,7 @@ def f():
     for python in [
         "subprocess.run([\"cargo\", \"test\", \"--no-run\"])\n",
         "subprocess.Popen(['cargo', 'build'])\n",
+        "self.successful('build', cargo + ['test', '--no-run'])\n",
     ] {
         let found = found_sites(&[("scripts/x.py".to_string(), python.to_string())]);
         assert_eq!(

@@ -207,6 +207,7 @@ fn write_embedded_marketplace() -> io::Result<()> {
 const VERIFIER_SCRIPTS: &[&str] = &[
     "activity-log.sh",
     "activity-run.py",
+    "attribution-rust.py",
     "cargo_diagnostics.py",
     "gate-progress-writer.py",
     "gate-progress.sh",
@@ -221,6 +222,7 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "host_admission/broker.py",
     "host_admission/client.py",
     "host_admission/command.py",
+    "host_admission/diagnosis.py",
     "host_admission/entries.py",
     "host_admission/evidence.py",
     "host_admission/launcher.py",
@@ -242,6 +244,7 @@ const VERIFIER_SCRIPTS: &[&str] = &[
     "progress_journal.py",
     "python-bin/python3",
     "python-runtime.sh",
+    "rustc-slot.py",
     "test_output.py",
     "tracked-tree.sh",
     "tree-receipt.sh",

@@ -24,7 +24,7 @@ POLICY = "/var/tmp/storyhook-host-admission-v1/policy.json"
 # Entries that are never pools run in place inside a grant; pools take a unit
 # count. The adapter's inventory is the source; the same test pins both sets.
 LEAVES = frozenset({"rustc", "cargo-test-binary", "plugin-script", "verifier-gate",
-                    "release", "release-observer"})
+                    "release", "release-observer", "causal-rust"})
 POOLS = frozenset({"rust-pool", "plugin-pool", "browser-pool", "verifier-python-workers"})
 
 

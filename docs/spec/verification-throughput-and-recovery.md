@@ -406,6 +406,25 @@ its completed lower bound retained. Purpose and cost remain observations only.
 SH-868 and SH-869 retain resource authority and runner integration; missing
 supported resource evidence cannot be replaced by matching worker counts.
 
+The strict diagnostic admission adapter requires the measured `causal-rust`
+repair workload. It has no disabled passthrough. Bind the real broker lease to
+the attempt, physical execution and generation; retain resource events without
+bearer capabilities. A passing or failing child has separate resource evidence.
+Support requires one unchanged authority, boot and policy, healthy observed
+pressure, known usage within the grant, and retained grant, attach, usage,
+cleanup and release events. Cancellation, withdrawal or exhausted active time
+invalidates support. The supervisor must settle its session before release.
+This resource observation alone does not construct causal return authority.
+The bundled Rust worker retains Cargo metadata, JSON build output, an exact
+native listing and one selected execution in separate files. It uses pinned
+Cargo/compiler files, an empty Cargo home, owned outputs and the shared compiler
+wrapper, and refuses ambient ancestor Cargo configuration. Recheck executable
+and tool fingerprints after execution. Worker completion is separate from test
+success; the Rust parent still validates the native artifact and result grammar.
+Cross-language deadline requests name `CLOCK_MONOTONIC` explicitly. Both sides
+read that POSIX clock; Python's default macOS clock has a different origin.
+The owner also retains its independent monotonic elapsed and cancellation checks.
+
 The final state transaction validates the proof and current generation, head,
 attempt, operator controls, labels, blockers and landing authority. It commits
 the evidence references with the return. Apply that boundary to ordinary gates,
