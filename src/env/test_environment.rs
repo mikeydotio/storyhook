@@ -363,6 +363,15 @@ pub const TEST_ENVIRONMENT: &[Parameter] = &[
                  a paid, network-bound process no fixture may own unless it \
                  opts in with a fake provider on PATH",
     },
+    Parameter {
+        name: "STORYHOOK_TAILNET",
+        disposition: Disposition::Literal("0"),
+        scope: Scope::Anywhere,
+        reason: "every interface a daemon listens on besides loopback; on a \
+                 machine with a tailnet, a fixture's dashboard and API are \
+                 otherwise reachable from every device on it, for as long as \
+                 the daemon lives",
+    },
 ];
 
 impl Parameter {
@@ -846,6 +855,7 @@ mod tests {
                 "STORYHOOK_PARENT_START_TIME",
                 "STORYHOOK_VERIFIER_MIRROR",
                 "STORYHOOK_VERIFIER_AGENT",
+                "STORYHOOK_TAILNET",
             ]
         );
         for name in &names {
@@ -855,6 +865,30 @@ mod tests {
         assert!(!is_daemon_containment("STORYHOOK_STORE_PATH"));
         assert!(!is_daemon_containment("GH_TOKEN"));
         assert!(!is_daemon_containment("HOME"));
+    }
+
+    /// Every isolated run keeps its daemons on loopback, and the value is the
+    /// one the daemon itself reads as loopback-only, so the table and the
+    /// switch cannot mean two different things.
+    #[test]
+    fn test_daemons_are_kept_off_the_tailnet() {
+        let parameter = TEST_ENVIRONMENT
+            .iter()
+            .find(|parameter| parameter.name == crate::env::TailnetPolicy::VARIABLE)
+            .expect("the test environment names the tailnet switch");
+        assert_eq!(parameter.scope, Scope::Anywhere);
+        let Disposition::Literal(value) = parameter.disposition else {
+            panic!(
+                "the tailnet switch is a fixed value, not {:?}",
+                parameter.disposition
+            );
+        };
+        assert_eq!(
+            crate::env::TailnetPolicy::from_variable(Some(std::ffi::OsStr::new(value)))
+                .expect("the table's value parses"),
+            crate::env::TailnetPolicy::LoopbackOnly
+        );
+        assert!(is_daemon_containment(parameter.name));
     }
 
     #[test]

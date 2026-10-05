@@ -2176,6 +2176,14 @@ fn spawn_child(env: &Environment, reason: ForkReason) -> Result<std::process::Ch
         .arg("--store-path")
         .arg(&store)
         .args(["daemon", "--serve", "--port", &port, "--owner", owner])
+        // The tailnet policy travels explicitly for the reason the port does: an
+        // in-process test environment is loopback-only without any variable
+        // saying so, and the child would otherwise read none and bind the
+        // tailnet.
+        .env(
+            crate::env::TailnetPolicy::VARIABLE,
+            env.tailnet_policy().as_env_value(),
+        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log);

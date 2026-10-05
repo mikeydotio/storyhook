@@ -9,6 +9,10 @@
 //! third-party reverse proxy. Nothing is ever bound to `0.0.0.0`, to any other
 //! wildcard, or to a plain LAN address.
 //!
+//! A daemon whose [`crate::env::TailnetPolicy`] is loopback-only
+//! (`STORYHOOK_TAILNET=0`, which every test environment sets) never probes
+//! `tailscale` and never binds a second listener. The switch only narrows.
+//!
 //! Binding the tailnet interface is also what *grants* trust to its names: the
 //! mutation guard's allowlist gains the tailnet IP and the MagicDNS FQDN only
 //! when the interface they would arrive on is actually being served. Trust
@@ -449,7 +453,12 @@ where
                 crate::daemon::cleanup::poll_cleanup(store, &env, &bus, &stop)
             });
         }
-        if !has_tailnet && let Some(loopback_addr) = loopback_addr {
+        // A loopback-only daemon never asks `tailscale` at all: an answer it
+        // will not act on is a subprocess, and a wedged one, for nothing.
+        if !has_tailnet
+            && env.tailnet_policy().binds()
+            && let Some(loopback_addr) = loopback_addr
+        {
             let stop = Arc::clone(&stop);
             let serving = &serving;
             let on_late_tailnet_bind = &on_late_tailnet_bind;
@@ -588,7 +597,9 @@ where
     F: FnOnce(BoundAddress, String),
 {
     let (mut listeners, mut bound) = bind_listeners(port)?;
-    if let Some((listener, bind)) = probe_and_bind_tailnet(bound.port()) {
+    if env.tailnet_policy().binds()
+        && let Some((listener, bind)) = probe_and_bind_tailnet(bound.port())
+    {
         bound.tailnet = Some(bind);
         listeners.push(listener);
     }

@@ -66,6 +66,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use storyhook::daemon::tailnet::TAILNET_PROBE_TIMEOUT;
+use storyhook::env::TailnetPolicy;
 use storyhook_test_support::{
     ChildGuard, TestEnv, http_status_line, port_of, reserve_port, scratch_dir,
 };
@@ -196,7 +197,8 @@ fn a_wedged_tailscale_cli_leaves_no_accepting_but_silent_window() {
     let mut command = env.raw_story(std::env::temp_dir());
     command
         .args(["web", "--serve", "--port", &port.to_string()])
-        .env("PATH", &path);
+        .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value());
     let guard = ChildGuard::spawn(&mut command).expect("spawning the dashboard");
 
     let mut patience = storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
@@ -253,7 +255,10 @@ fn publication_does_not_wait_on_the_tailnet_probe() {
     let path = path_with_shim(&env, held.path());
 
     let mut command = env.raw_story(std::env::temp_dir());
-    command.args(["web", "--serve"]).env("PATH", &path);
+    command
+        .args(["web", "--serve"])
+        .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value());
     let guard = ChildGuard::spawn(&mut command).expect("spawning the dashboard");
 
     let _port = port_of(&env, guard.pid());
@@ -282,6 +287,7 @@ fn an_ordinary_command_autostarts_fast_under_a_wedged_tailscale() {
 
     env.story(dir.path())
         .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value())
         .args(["project", "list"])
         .assert()
         .success();
@@ -316,6 +322,7 @@ fn web_start_returns_fast_under_a_wedged_tailscale_and_never_overclaims() {
     let output = env
         .story(dir.path())
         .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value())
         .args(["web", "start"])
         .output()
         .expect("running `story web start`");

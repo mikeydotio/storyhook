@@ -29,6 +29,7 @@ mod store_location;
 mod subprocess_patience;
 #[cfg(test)]
 mod subprocess_policy;
+mod tailnet_policy;
 
 /// What a storyhook **test environment** is: the environment variables that
 /// stop a run reaching the developer's own store, daemon and credentials,
@@ -50,6 +51,7 @@ use crate::service::Clock;
 
 pub(crate) use store_location::KEY_HEX;
 pub use store_location::{StoreLocation, StoreOrigin, StoreVars, canonical_ish};
+pub use tailnet_policy::TailnetPolicy;
 
 /// The file names inside a store's [`Environment::daemon_state_dir`], stated
 /// once so the accessors below and `story daemon gc` — which reads a
@@ -104,6 +106,8 @@ pub struct Environment {
     busy_timeout: Duration,
     verifier_mirror_enabled: bool,
     verifier_agent_enabled: bool,
+    /// Whether a daemon this environment runs or starts binds the tailnet.
+    tailnet: TailnetPolicy,
     /// An explicit CLI fixture floor; default builds reject its declaration.
     test_subprocess_patience: Option<Duration>,
     /// Test builds only: how the lib test that built this environment
@@ -137,6 +141,9 @@ impl Environment {
     ///   `$STORYHOOK_VERIFIER_MIRROR` is exactly `0`; otherwise true.
     /// * `verifier_agent_enabled` — false only when
     ///   `$STORYHOOK_VERIFIER_AGENT` is exactly `0`; otherwise true (SH-822).
+    /// * `tailnet` — [`TailnetPolicy::LoopbackOnly`] only when
+    ///   `$STORYHOOK_TAILNET` is exactly `0`; any other value but `1` or empty
+    ///   is an error, because a mistyped security switch must not fail open.
     ///
     /// `store_flag` is `None` everywhere except `main`, and that is correct
     /// rather than an oversight: `main` publishes the flag it was given into
@@ -197,6 +204,9 @@ impl Environment {
                 != Some(OsStr::new("0")),
             verifier_agent_enabled: std::env::var_os("STORYHOOK_VERIFIER_AGENT").as_deref()
                 != Some(OsStr::new("0")),
+            tailnet: TailnetPolicy::from_variable(
+                std::env::var_os(TailnetPolicy::VARIABLE).as_deref(),
+            )?,
             #[cfg(test)]
             subprocess_policy: subprocess_policy::SubprocessPolicy::Undeclared,
         })
@@ -210,7 +220,9 @@ impl Environment {
     /// loopback port 0 — never [`DEFAULT_DAEMON_PORT`], which the developer's
     /// own dashboard is probably holding. Terminal mirrors are disabled,
     /// regardless of ambient settings, so fixtures cannot open persistent
-    /// readers in the developer's tmux session.
+    /// readers in the developer's tmux session. Daemons stay on loopback
+    /// ([`TailnetPolicy::LoopbackOnly`]), so a fixture's dashboard is never
+    /// reachable from the tailnet; [`Self::with_tailnet`] opts a test in.
     pub fn at(home: impl Into<PathBuf>) -> Self {
         let home = home.into();
         Environment {
@@ -224,6 +236,7 @@ impl Environment {
             test_subprocess_patience: None,
             verifier_mirror_enabled: false,
             verifier_agent_enabled: false,
+            tailnet: TailnetPolicy::LoopbackOnly,
             #[cfg(test)]
             subprocess_policy: subprocess_policy::SubprocessPolicy::Undeclared,
         }
@@ -241,6 +254,23 @@ impl Environment {
     pub fn daemon_port(mut self, port: u16) -> Self {
         self.preferred_port = port;
         self
+    }
+
+    /// Sets whether a daemon this environment runs or starts binds the tailnet.
+    ///
+    /// Public because the tests that exercise the tailnet bind on purpose are
+    /// integration tests: everything [`Self::at`] builds stays on loopback
+    /// unless one of them asks otherwise.
+    #[must_use]
+    pub fn with_tailnet(mut self, policy: TailnetPolicy) -> Self {
+        self.tailnet = policy;
+        self
+    }
+
+    /// Whether a daemon this environment runs or starts binds the tailnet.
+    #[must_use]
+    pub fn tailnet_policy(&self) -> TailnetPolicy {
+        self.tailnet
     }
 
     /// Sets how long a writer waits for another process's write lock.
@@ -369,6 +399,11 @@ impl Environment {
     /// readers in the developer's tmux session. Values are OS strings because
     /// the contract includes both filesystem paths and a Boolean `0`/`1`.
     ///
+    /// The tailnet policy travels too. A `story` in the child reaches this
+    /// environment's store and can start its daemon, and that daemon must
+    /// listen where this environment's would: an in-process test environment
+    /// keeps its daemons on loopback, and its children must not undo that.
+    ///
     /// `XDG_STATE_HOME` is the parent of [`Self::state_home`] rather than a
     /// stored field because both constructors build the state home as
     /// `<XDG_STATE_HOME>/storyhook` — [`Self::from_process`] from the
@@ -417,6 +452,7 @@ impl Environment {
                 }
                 .into(),
             ),
+            (TailnetPolicy::VARIABLE, self.tailnet.as_env_value().into()),
         ];
         if let Some(patience) = self.test_subprocess_patience {
             vars.push((
@@ -1172,7 +1208,8 @@ mod tests {
                 "STORYHOOK_STORE_PATH",
                 "XDG_STATE_HOME",
                 "STORYHOOK_VERIFIER_MIRROR",
-                "STORYHOOK_VERIFIER_AGENT"
+                "STORYHOOK_VERIFIER_AGENT",
+                "STORYHOOK_TAILNET"
             ]
         );
         assert!(!env.verifier_mirror_enabled());
@@ -1318,6 +1355,25 @@ mod tests {
     fn a_constructed_environment_never_prefers_the_production_port() {
         let env = Environment::at("/tmp/storyhook-env-test");
         assert_eq!(env.preferred_port(), 0);
+    }
+
+    /// A fixture's daemon on the tailnet serves a throwaway store to every
+    /// peer for as long as it runs, so a constructed environment stays on
+    /// loopback, tells its children so, and binds the tailnet only when a
+    /// test asks for it.
+    #[test]
+    fn a_constructed_environment_keeps_daemons_off_the_tailnet() {
+        let env = Environment::at("/tmp/storyhook-env-test");
+        assert_eq!(env.tailnet_policy(), TailnetPolicy::LoopbackOnly);
+        let told: Vec<_> = env
+            .child_vars()
+            .into_iter()
+            .filter(|(name, _)| *name == TailnetPolicy::VARIABLE)
+            .map(|(_, value)| value)
+            .collect();
+        assert_eq!(told, [OsString::from("0")]);
+        let opted_in = env.with_tailnet(TailnetPolicy::Bind);
+        assert_eq!(opted_in.tailnet_policy(), TailnetPolicy::Bind);
     }
 
     #[test]
