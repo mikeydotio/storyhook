@@ -177,5 +177,43 @@ class BrowserSuite(unittest.TestCase):
         self.assertEqual(units, "units=", "the unit count is consumed before any slice")
 
 
+
+class VerifierWorkers(unittest.TestCase):
+    """The nested Python case pool runs as its own admission entry."""
+
+    def test_the_case_pool_re_executes_through_the_adapter_once(self):
+        import run_verifier_tests as runner
+        from unittest import mock
+
+        def capture(program, argv):
+            raise SystemExit(("exec", program, argv))
+
+        env = {k: v for k, v in os.environ.items() if k != "STORYHOOK_HOST_ENTRY"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch("os.execv", capture), \
+                mock.patch.object(sys, "argv", ["run_verifier_tests.py", "--jobs", "3", "lifecycle"]), \
+                self.assertRaises(SystemExit) as replaced:
+            runner.admitted_jobs(3)
+        _, program, argv = replaced.exception.code
+        self.assertEqual(program, sys.executable)
+        self.assertEqual(argv[1:8], ["-B", str(CHECKOUT / "scripts" / "host-admit.py"), "--entry",
+                                     "verifier-python-workers", "--units", "3", "--"])
+        self.assertEqual(argv[8:], [sys.executable, "-B", str(Path(runner.__file__).resolve()),
+                                    "--jobs", "3", "lifecycle"])
+        admitted = {"STORYHOOK_HOST_ENTRY": f"verifier-python-workers:{os.getpid()}", "STORYHOOK_HOST_UNITS": "2"}
+        with mock.patch.dict(os.environ, admitted), mock.patch("os.execv", capture):
+            self.assertEqual(runner.admitted_jobs(3), 2, "inside its admission the pool runs the admitted count")
+            self.assertNotIn("STORYHOOK_HOST_UNITS", os.environ, "the count is consumed")
+
+    @unittest.skipIf(POLICY.exists(), "this case proves the disabled host; this host has a policy")
+    def test_a_disabled_host_keeps_the_requested_jobs(self):
+        case = "ContentionGrace.test_multiplier_is_exactly_one_without_contention"
+        env = {k: v for k, v in os.environ.items() if not k.startswith("STORYHOOK_HOST_")}
+        done = subprocess.run([sys.executable, "-B", str(Path(__file__).resolve().parent / "run_verifier_tests.py"),
+                               "--jobs", "3", "lifecycle", case], env=env, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL, timeout=PROCESS_ALLOWANCE_S * 4)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("selected=1 completed=1 failed=0 jobs=3", done.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

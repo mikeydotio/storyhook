@@ -160,6 +160,7 @@ host_admission	scripts/run-e2e.sh
 host_admission	scripts/run-tests.sh
 host_admission	scripts/rustc-slot.py
 host_admission	scripts/tests/host_admit_fixture.py
+host_admission	scripts/tests/run_verifier_tests.py
 host_admission	scripts/tests/test_host_admission.py
 host_admission	scripts/tests/test_host_admission_activation.py
 host_admission	scripts/tests/test_host_admission_adapter.py
