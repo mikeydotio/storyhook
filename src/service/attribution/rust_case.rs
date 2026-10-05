@@ -29,7 +29,7 @@ pub enum RustTarget {
 pub struct RustCase {
     pub(super) package: String,
     pub(super) target: RustTarget,
-    name: String,
+    pub(super) name: String,
 }
 
 /// Interpreted execution evidence; environment and cleanup require separate proof.

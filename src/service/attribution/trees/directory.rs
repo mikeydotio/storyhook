@@ -31,6 +31,49 @@ impl PreparedDirectory {
         self.directory.path()
     }
 
+    /// Immutable native inventory for closed-input comparison; directories carry no bytes.
+    pub(in crate::service::attribution) fn fingerprints(
+        &self,
+    ) -> BTreeMap<PathBuf, (u32, Vec<u8>)> {
+        self.inputs
+            .iter()
+            .filter_map(|(path, input)| match input {
+                Input::Directory => None,
+                Input::File { mode, digest } => Some((path.clone(), (*mode, digest.clone()))),
+            })
+            .collect()
+    }
+
+    /// Read a bounded source from the retained inventory without following a replaced leaf.
+    pub(in crate::service::attribution) fn source(&self, name: &str) -> Result<String, AppError> {
+        self.check()?;
+        let Some(Input::File { digest, .. }) = self.inputs.get(Path::new(name)) else {
+            return Err(invalid("required source is not a retained file"));
+        };
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(self.path().join(name))
+            .map_err(|e| invalid(&format!("open source {name}: {e}")))?;
+        // Syntax diagnosis is deliberately bounded independently of Git's larger blob allowance.
+        const SOURCE_LIMIT: u64 = 64 * 1024;
+        let info = file
+            .metadata()
+            .map_err(|e| invalid(&format!("source metadata: {e}")))?;
+        if !info.is_file() || info.len() > SOURCE_LIMIT {
+            return Err(invalid("source is not a bounded regular file"));
+        }
+        let mut bytes = Vec::new();
+        file.take(SOURCE_LIMIT + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| invalid(&format!("read source {name}: {e}")))?;
+        self.check()?;
+        if bytes.len() as u64 > SOURCE_LIMIT || Sha256::digest(&bytes).as_slice() != digest {
+            return Err(invalid("source changed after native materialization"));
+        }
+        String::from_utf8(bytes).map_err(|e| invalid(&format!("source {name} is not UTF-8: {e}")))
+    }
+
     /// Recheck the complete path set, contents and modes after owned children have settled.
     pub fn verify_unchanged(&self) -> Result<(), AppError> {
         let mut observed = BTreeMap::new();

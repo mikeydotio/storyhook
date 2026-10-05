@@ -368,6 +368,19 @@ its device, inode, mode, length and digest before and after execution.
 These target and artifact observations do not establish detector closure or
 causal authority; the supervised executor must establish their provenance.
 
+The first closed Rust input adapter accepts a standalone dependency-free library
+and one exact integration test with one unconditional built-in `assert_eq!`.
+Parse the entire library, including unused functions and inactive branches.
+Accept only deterministic primitive expressions and a finite function DAG.
+Reject extensible types, custom macros, environment access, build scripts,
+dependencies, attributes and other unsupported inputs. Keep the test, manifest
+and lockfile byte-identical. Candidate-only tests require the native transplant
+before this check. An accepted comparison changes either library behavior alone
+or literal `include_str!` fixtures alone, with production and assertion fixed.
+Validate every fixture path and byte, and the complete native file inventory.
+This syntax and input evidence does not establish execution, resource support,
+the original failure, or return authority. Broader programs remain unknown.
+
 Reserve each physical probe durably before launch. Allow at most eight starts
 and 300000 milliseconds of active diagnosis per submission, across admissions
 and daemon restarts. Interrupted work is not refunded. This limit is independent

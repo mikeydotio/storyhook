@@ -5,6 +5,7 @@ activity_log	:(glob)**/*
 activity_script	:(glob)**/*
 attribution_cargo	:(glob)src/service/attribution/**
 attribution_cargo	scripts/rustc-slot.py
+attribution_inputs	:(glob)src/service/attribution/**
 attribution_preparation	:(glob)src/service/attribution/**
 attribution_preparation	:(glob)src/store/**
 attribution_rust	:(glob)src/service/attribution/**

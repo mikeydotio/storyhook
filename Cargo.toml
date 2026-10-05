@@ -103,6 +103,8 @@ regex = "1.12.3"
 sha2 = { version = "0.10", default-features = false, features = ["std"] }
 thiserror = "2.0.17"
 toml = "0.8.23"
+# Parse the closed Rust diagnosis subset; token/text heuristics cannot prove input closure.
+syn = { version = "2.0.117", features = ["full"] }
 # The portable identity of a project, minted by `story init` and carried in the
 # repository's committed pointer file. It has to survive being copied to
 # another machine, so it cannot be derived from a path or a counter.
