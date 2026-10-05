@@ -52,7 +52,9 @@ impl WorkspaceLock {
         Self::try_at(directory, id)?.ok_or_else(|| busy(id))
     }
 
-    fn try_at(directory: &Path, id: &str) -> Result<Option<Self>, AppError> {
+    /// Acquire a named lock in an explicitly selected ownership family.
+    /// Publication uses a separate directory so an agent can retain its workspace.
+    pub(crate) fn try_at(directory: &Path, id: &str) -> Result<Option<Self>, AppError> {
         if id.is_empty()
             || !id
                 .bytes()

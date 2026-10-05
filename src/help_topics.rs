@@ -1268,6 +1268,11 @@ Related:
             "commit-sync",
             r#"story commit-sync [--since <duration>]
 
+In a dispatched worktree with an open closing PR, this also queues the current
+commit for immediate daemon publication. Publication does not wait for the
+verifier queue. Dirty working files are not published. Failures remain on the
+story and retry; overrides remain allowed and unpublished branches are kept.
+
 Scan recent git commits for story ID references and record them in
 each story's "referenced by" field. A commit that CLAIMS a story also
 moves it into the active state.

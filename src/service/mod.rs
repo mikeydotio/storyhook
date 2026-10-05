@@ -71,6 +71,7 @@ pub mod project_recovery;
 pub mod query;
 pub mod questionnaire;
 pub mod relation;
+pub(crate) mod repair_publication;
 pub mod reset;
 pub mod resources;
 pub mod session;

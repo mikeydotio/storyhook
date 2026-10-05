@@ -331,6 +331,7 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
         let cutoff =
             (chrono::Utc::now() - duration).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let commits = read_log(self.ctx.cwd(), &cutoff)?;
+        super::repair_publication::enqueue(self.ctx)?;
 
         let project = self.ctx.project();
         // The receipt (SH-316), written before anything is decided about what

@@ -5109,6 +5109,26 @@ cmd_reap_leased() {
     || refuse "protected-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is protected."
   [ "$branch_status" != unmerged ] \
     || refuse "unmerged-branch" "story.sh reap: $canonical_id's leased branch ($leased_branch) is not merged into \`$default\`.${refresh_note:+ $refresh_note}"
+  if [ "$branch_status" = deletable ]; then
+    local merged_links merged_url merged_view merged_head
+    merged_links=$(printf '%s' "$LEASE_SHOW_JSON" | jq -c '[.story.referenced_by.prs[]? | select(.close_on_merge == true and .status == "merged")]')
+    if [ "$(printf '%s' "$merged_links" | jq length)" -gt 0 ]; then
+      [ "$(printf '%s' "$merged_links" | jq length)" -eq 1 ] \
+        || refuse "merged-pr-unverifiable" "Multiple merged PRs name $canonical_id; preserve $leased_branch."
+      merged_url=$(printf '%s' "$merged_links" | jq -r '.[0].url')
+      export STORYHOOK_GITHUB_AUTHORITY="${STORYHOOK_GITHUB_AUTHORITY:-$LEASED_REPO}"
+      github_begin || refuse "merged-pr-unverifiable" "Cannot establish origin for $merged_url."
+      merged_view=$(github_exec pr view "$merged_url" --json url,state,headRefOid,headRefName,isCrossRepository 2>&1) \
+        || refuse "merged-pr-unverifiable" "Cannot inspect $merged_url: $merged_view"
+      merged_head=$(printf '%s' "$merged_view" | jq -er --arg url "$merged_url" --arg branch "$leased_branch" \
+        'select(.url == $url and .state == "MERGED" and .headRefName == $branch and .isCrossRepository == false) | .headRefOid | select(test("^([0-9a-f]{40}|[0-9a-f]{64})$"))') \
+        || refuse "merged-pr-unverifiable" "Invalid merged head for $merged_url; preserve $leased_branch."
+      submission_git -C "$LEASED_REPO" fetch --quiet --no-write-fetch-head origin "$merged_head" \
+        || refuse "merged-pr-unverifiable" "Cannot fetch merged PR head $merged_head."
+      git merge-base --is-ancestor "refs/heads/$leased_branch" "$merged_head" \
+        || refuse "unpublished-repair" "$leased_branch has commits absent from merged PR $merged_url at $merged_head; preserve the branch."
+    fi
+  fi
   leased_story_windows "$lease" "$canonical_id" \
     || refuse "cleanup-lease-tmux-unverifiable" "story.sh reap: the leased tmux server exists but its story windows cannot be enumerated."
   local initial_tmux_windows="$LEASE_TMUX_WINDOWS"
@@ -5199,8 +5219,8 @@ leased_submit_receipt() {
 # `git push` of an already-pushed tip is a no-op, and adoption finds what a
 # crashed earlier run created, so a daemon restart at any point re-runs the
 # whole verb and converges. Runs on EVERY generation a leased story enters
-# verifying, linked PR or not — after a RED return the agent only commits, so
-# this is the one place the fix reaches the remote.
+# verifying, linked PR or not. Commit notifications also use this transport
+# to publish repairs before verifier admission.
 #
 # The base is `default_branch()` — origin's own advertised default, asked of
 # the remote at submission time (SH-691: the local origin/HEAD cache went
@@ -5217,11 +5237,24 @@ leased_submit_receipt() {
 # record; the daemon writes the link and the comment under its generation
 # guard, so a submission recorded against a story that has since moved on is
 # a write that never happens rather than one that has to be retracted.
+# Validate the publication destination before any remote mutation and again
+# before a receipt. The daemon supplies the linked PR, never a branch-name guess.
+publication_open_pr() {
+  local url="$1" branch="$2" default="$3" observed
+  [ -n "$url" ] || submit_refuse repair "publication-pr-unavailable" "Publication requires an existing PR."
+  observed=$(github_exec pr view "$url" --json url,state,headRefName,baseRefName,isCrossRepository 2>&1) \
+    || submit_refuse infrastructure "publication-pr-unreadable" "Cannot inspect publication PR $url: $observed"
+  printf '%s' "$observed" | jq -e --arg url "$url" --arg branch "$branch" --arg base "$default" \
+    '.url == $url and .state == "OPEN" and .headRefName == $branch and .baseRefName == $base and .isCrossRepository == false' >/dev/null \
+    || submit_refuse repair "publication-pr-unavailable" "Publication PR $url is closed or no longer matches $branch against $default; preserve the local work."
+}
+
 cmd_submit_leased() {
   local typed_id="$1" lease="$2"
   validate_cleanup_lease submit "$typed_id" "$lease"
   local canonical_id="$LEASE_CANONICAL_ID" worktree="$LEASED_WORKTREE" branch="$LEASED_BRANCH"
-  [ "$LEASE_STATE" = verifying ] \
+  local publication_head="${STORYHOOK_PUBLICATION_HEAD:-}" publication_pr="${STORYHOOK_PUBLICATION_PR:-}"
+  [ -n "$publication_head" ] || [ "$LEASE_STATE" = verifying ] \
     || submit_refuse repair "not-verifying" "story.sh submit: $canonical_id is in state \`$LEASE_STATE\`, not \`verifying\`; only a story submitted for verification is pushed."
   registered_worktree_branch "$worktree" >/dev/null 2>&1 \
     || submit_refuse repair "cleanup-lease-worktree-missing" "story.sh submit: leased worktree \`$worktree\` is not a registered worktree; nothing to push."
@@ -5236,11 +5269,24 @@ cmd_submit_leased() {
   local dirty dirty_json
   dirty=$(git -C "$worktree" status --porcelain 2>/dev/null) \
     || submit_refuse infrastructure "worktree-unverifiable" "story.sh submit: git status failed in \`$worktree\`."
-  if [ -n "$dirty" ]; then
+  if [ -z "$publication_head" ] && [ -n "$dirty" ]; then
     dirty_json=$(printf '%s\n' "$dirty" | sed 's/^...//' | jq -R . | jq -s .)
     submit_refuse repair "dirty-worktree" \
       "story.sh submit: $canonical_id's worktree ($worktree) has uncommitted changes; commit or discard them, then run \`story move $canonical_id verifying\` again. Dirty: $(printf '%s' "$dirty_json" | jq -r 'join(", ")')." \
       "$(jq -n --argjson f "$dirty_json" '{dirty_files:$f}')"
+  fi
+
+  # Commit publication adopts only the exact existing PR. A closed or
+  # replaced PR never grants permission to create a new remote branch/PR.
+  if [ -n "$publication_head" ]; then
+    case "$LEASE_STATE" in
+      in-progress|verifying|done) ;;
+      *) submit_refuse repair "publication-state" "Cannot publish $canonical_id from state $LEASE_STATE." ;;
+    esac
+    [[ "$publication_head" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] \
+      || submit_refuse repair "publication-head-invalid" "Publication requires a full commit ID."
+    git -C "$worktree" merge-base --is-ancestor "$publication_head" "refs/heads/$branch" \
+      || submit_refuse repair "publication-head-changed" "Commit $publication_head no longer belongs to $branch."
   fi
 
   local head_oid fetch_out
@@ -5250,6 +5296,7 @@ cmd_submit_leased() {
     || submit_refuse infrastructure "base-fetch-failed" "story.sh submit: fetching origin/$default for $canonical_id failed: $fetch_out"
   head_oid=$(git -C "$worktree" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
     || submit_refuse infrastructure "worktree-unverifiable" "story.sh submit: cannot resolve HEAD in \`$worktree\`."
+  [ -z "$publication_head" ] || head_oid="$publication_head"
   local base_oid base_tree ancestry_out ancestry_rc=0
   base_oid=$(git -C "$worktree" rev-parse --verify "refs/remotes/origin/$default^{commit}" 2>/dev/null) \
     || submit_refuse infrastructure "base-unverifiable" "story.sh submit: cannot resolve fetched origin/$default."
@@ -5279,6 +5326,8 @@ cmd_submit_leased() {
     *) submit_refuse infrastructure "ancestry-unverifiable" "story.sh submit: ancestry check failed for $head_oid and $base_oid (exit $ancestry_rc): $ancestry_out" ;;
   esac
 
+  [ -z "$publication_head" ] || publication_open_pr "$publication_pr" "$branch" "$default"
+
   local remote_before remote_after push_out push_rc=0 pushed=false
   remote_before=$(submission_remote_head "$worktree" "$branch" 2>&1) \
     || submit_refuse infrastructure "remote-read-failed" "story.sh submit: reading origin/$branch before pushing $canonical_id failed: $remote_before"
@@ -5286,7 +5335,7 @@ cmd_submit_leased() {
     # Reads and writes share one credential boundary: a successful anonymous
     # read says nothing about whether the subsequent push can authenticate.
     push_out=$(submission_git -C "$worktree" \
-      push origin "refs/heads/$branch:refs/heads/$branch" 2>&1) || push_rc=$?
+      push origin "$head_oid:refs/heads/$branch" 2>&1) || push_rc=$?
     if [ "$push_rc" -ne 0 ]; then
       case "$push_out" in
         *rejected*|*non-fast-forward*|*"fetch first"*|*"stale info"*|*"hook declined"*|*"pre-push hook"*)
@@ -5328,6 +5377,7 @@ cmd_submit_leased() {
   count=$(printf '%s' "$open" | jq 'length')
   case "$count" in
     0)
+      [ -z "$publication_head" ] || submit_refuse repair "publication-pr-unavailable" "Publication PR $publication_pr closed during the push; preserve $branch."
       title="$canonical_id: $(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.title // ""')"
       body="Story $canonical_id — $(printf '%s' "$LEASE_SHOW_JSON" | jq -r '.story.story.title // ""')
 
@@ -5344,6 +5394,11 @@ Submitted by the storyhook verifier from branch \`$branch\`. Verification, merge
     1) pr=$(printf '%s' "$open" | jq -c '.[0]'); adopted=true ;;
     *) submit_refuse repair "multiple-pull-requests" "story.sh submit: more than one open pull request targets \`$default\` from \`$branch\`: $(printf '%s' "$open" | jq -r 'map(.url) | join(", ")'). Close all but one, then run \`story move $canonical_id verifying\` again." ;;
   esac
+  if [ -n "$publication_head" ]; then
+    [ "$(printf '%s' "$pr" | jq -r .url)" = "$publication_pr" ] \
+      || submit_refuse repair "publication-pr-unavailable" "Publication PR changed; preserve $branch."
+    publication_open_pr "$publication_pr" "$branch" "$default"
+  fi
   local pull_request display
   # PR metadata can lag a successful push; the receipt names the head already
   # verified against the origin branch, independently of GitHub's API view.

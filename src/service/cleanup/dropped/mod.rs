@@ -219,6 +219,7 @@ pub(super) fn run<S: Store>(
             safety::same_pane(ctx.env(), lease, &record.resources).map_err(refuse)?;
         }
         if delete_branch {
+            crate::service::repair_publication::guard_merged_pr(ctx, lease).map_err(refuse)?;
             let preview = super::clean_candidate_owned(ctx.env(), repository, lease, true, None)?;
             removal.removed_local_branch = preview.removed_local_branch;
             removal.retained_local_branch = false;
@@ -334,6 +335,7 @@ fn execute<S: Store>(
         ));
     }
     if delete_branch {
+        crate::service::repair_publication::guard_merged_pr(ctx, &lease)?;
         if record.phase == Phase::Quiescent {
             super::clean_candidate_owned(
                 ctx.env(),
