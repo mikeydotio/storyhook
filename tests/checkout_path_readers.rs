@@ -43,6 +43,10 @@ use std::path::Path;
 /// implements it, so naming the column is its job.
 const ALLOWED: &[(&str, &str)] = &[
     (
+        "src/service/automations.rs",
+        "the selected project's manual-mode boundary refreshes only its already-installed managed Git hooks; the path never resolves project identity",
+    ),
+    (
         "src/daemon/activity/context.rs",
         "project-error logging chooses the journal directory after selecting the project by durable id; it does not resolve project identity",
     ),

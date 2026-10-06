@@ -53,3 +53,5 @@ reconciliation, GitHub polling, continuation intake/recovery/delivery, block
 delivery, cleanup and closure retries, repair publication, project recovery,
 reset adoption/retry, and project journal hygiene. Global database backup,
 HTTP serving, authentication and dashboard refresh remain operational.
+Retained-dispatch restoration is also project-gated. After re-enabling, an old
+dispatch needs a fresh story state generation; comments do not reactivate it.

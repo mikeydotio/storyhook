@@ -188,7 +188,7 @@ const POST_COMMIT_HOOK: &str = concat!(
     "#!/bin/sh\n",
     "# storyhook managed hook -- do not edit this line\n",
     "command -v story >/dev/null 2>&1 || exit 0\n",
-    "story --deadline 2 --json project settings get automations.enabled 2>/dev/null | grep -Eq '\"value\"[[:space:]]*:[[:space:]]*\"true\"' || exit 0\n",
+    "story --deadline 10 --json project settings get automations.enabled 2>/dev/null | grep -Eq '\"value\"[[:space:]]*:[[:space:]]*\"true\"' || exit 0\n",
     merge_arrival_fn!(),
     r#"if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then
   BASE="$(git rev-parse HEAD^1 2>/dev/null)" || exit 0
@@ -212,7 +212,7 @@ const POST_MERGE_HOOK: &str = concat!(
     "#!/bin/sh\n",
     "# storyhook managed hook -- do not edit this line\n",
     "command -v story >/dev/null 2>&1 || exit 0\n",
-    "story --deadline 2 --json project settings get automations.enabled 2>/dev/null | grep -Eq '\"value\"[[:space:]]*:[[:space:]]*\"true\"' || exit 0\n",
+    "story --deadline 10 --json project settings get automations.enabled 2>/dev/null | grep -Eq '\"value\"[[:space:]]*:[[:space:]]*\"true\"' || exit 0\n",
     merge_arrival_fn!(),
     r#"ORIG_HEAD="$(git rev-parse ORIG_HEAD 2>/dev/null)" || exit 0
 storyhook_merge_arrival "$ORIG_HEAD" 5
@@ -248,8 +248,8 @@ exit 0
 /// section pins this; `tests/hooks.rs` fences the class across all three hooks.
 const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # storyhook managed hook -- do not edit this line
-story --deadline 2 --json project settings get automations.enabled 2>/dev/null | grep -Eq '"value"[[:space:]]*:[[:space:]]*"true"' || exit 0
 case "$2" in message|merge|squash) exit 0 ;; esac
+story --deadline 10 --json project settings get automations.enabled 2>/dev/null | grep -Eq '"value"[[:space:]]*:[[:space:]]*"true"' || exit 0
 NEXT="$(story --deadline 10 next --count 1 --json 2>/dev/null)" || exit 0
 STORY_ID="$(echo "$NEXT" | grep -o '"id": *"[^"]*"' | head -1 | cut -d'"' -f4)"
 if [ -n "$STORY_ID" ]; then

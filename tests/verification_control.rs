@@ -869,20 +869,28 @@ fn disabling_automations_drains_a_late_green_without_landing() {
                 fixture.project(),
             )
         });
-        observed.recv_timeout(Duration::from_secs(10)).unwrap();
+        observed
+            .recv_timeout(storyhook_test_support::load_grace::graced_now(
+                Duration::from_secs(10),
+            ))
+            .unwrap();
         let setter = scope.spawn(|| {
             let ctx = fixture.ctx().with_verification_activity(Some(&activity));
             storyhook::service::SettingsService::new(&ctx)
                 .set("automations.enabled", "false")
                 .unwrap();
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut patience =
+            storyhook_test_support::load_grace::Patience::new(Duration::from_secs(10));
         while fixture
             .store()
             .read(|tx| tx.automations_enabled(fixture.project()))
             .unwrap()
         {
-            assert!(std::time::Instant::now() < deadline);
+            assert!(
+                !patience.expired(),
+                "{patience}: disabling was not persisted"
+            );
             std::thread::yield_now();
         }
         release.send(()).unwrap();

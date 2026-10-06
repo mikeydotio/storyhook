@@ -243,16 +243,29 @@ impl<S: Store, D: Dispatcher> EngineService<'_, S, D> {
 /// Reconcile retained manual/Auto dispatches that no engine lane owns.
 /// This runs only in the background, after the daemon can answer provider hooks.
 pub(crate) fn reconcile_manual<S: Store>(store: &S, env: &Environment) -> Result<(), AppError> {
+    reconcile_manual_with(store, env, |checkout| {
+        super::super::workspace_lock::git(
+            checkout,
+            &["worktree", "list", "--porcelain", "-z"],
+            None,
+        )
+    })
+}
+
+fn reconcile_manual_with<S: Store>(
+    store: &S,
+    env: &Environment,
+    mut inventory: impl FnMut(&Path) -> Result<String, AppError>,
+) -> Result<(), AppError> {
     let projects = store.read(|tx| tx.projects())?;
     for project in projects {
+        let Some(_automation) = super::super::automations::enter(store, env, project.id)? else {
+            continue;
+        };
         let Some(checkout) = store.read(|tx| tx.checkout_path(project.id))? else {
             continue;
         };
-        let inventory = match super::super::workspace_lock::git(
-            &checkout,
-            &["worktree", "list", "--porcelain", "-z"],
-            None,
-        ) {
+        let inventory = match inventory(&checkout) {
             Ok(inventory) => inventory,
             Err(error) => {
                 crate::daemon::activity::emit(
@@ -292,10 +305,14 @@ pub(crate) fn reconcile_manual<S: Store>(store: &S, env: &Environment) -> Result
                     if engine_owned(tx, &project.slug, &lease.story_id)? {
                         return Ok(None);
                     }
-                    Ok(
-                        optional_lane_story(tx, project.id, &prefix, &lease.story_id)?
-                            .filter(|row| row.superstate != SuperState::Closed),
-                    )
+                    let row = optional_lane_story(tx, project.id, &prefix, &lease.story_id)?
+                        .filter(|row| row.superstate != SuperState::Closed);
+                    if let Some(row) = &row
+                        && !restoration_permitted(tx, project.id, row.story_no)?
+                    {
+                        return Ok(None);
+                    }
+                    Ok(row)
                 })?;
                 let Some(row) = fact else { return Ok(()) };
                 // The helper detects the source provider independently. Plugin roots
@@ -420,6 +437,26 @@ pub(crate) fn reconcile_manual<S: Store>(store: &S, env: &Environment) -> Result
     Ok(())
 }
 
+/// Comments or field edits cannot reactivate dispatch authority from before a toggle.
+fn restoration_permitted(
+    tx: &impl ReadOps,
+    project: crate::store::ProjectId,
+    story: crate::store::StoryNo,
+) -> Result<bool, StoreError> {
+    let events = tx.events_for(project, story)?;
+    let generation = events.iter().rev().find_map(|event| {
+        matches!(
+            event.known(),
+            Some(
+                crate::domain::StoryEvent::StoryCreated { .. }
+                    | crate::domain::StoryEvent::StoryStateChanged { .. }
+            )
+        )
+        .then_some(event.global_seq)
+    });
+    super::super::automations::permits_generation(tx, project, generation)
+}
+
 fn engine_owned(tx: &impl ReadOps, project: &str, story: &str) -> Result<bool, StoreError> {
     for run in tx.engine_runs(project)? {
         if tx
@@ -436,6 +473,83 @@ fn engine_owned(tx: &impl ReadOps, project: &str, story: &str) -> Result<bool, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_project_retained_dispatches_are_not_even_inventoried() {
+        let fixture = storyhook_test_support::ServiceFixture::new();
+        fixture.add_project("enabled", "EN");
+        let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+        let ctx = crate::service::Ctx::new(
+            &store,
+            crate::store::ProjectId::new(fixture.project().get()),
+            fixture.cwd(),
+            Environment::at(fixture.cwd()),
+        )
+        .no_hooks(true);
+        let settings = crate::service::SettingsService::new(&ctx);
+        settings.set("automations.enabled", "false").unwrap();
+        let mut observed = Vec::new();
+        reconcile_manual_with(&store, ctx.env(), |path| {
+            observed.push(path.to_path_buf());
+            Ok(String::new())
+        })
+        .unwrap();
+        assert_eq!(observed, [PathBuf::from("/checkouts/enabled")]);
+        settings.set("automations.enabled", "true").unwrap();
+        observed.clear();
+        reconcile_manual_with(&store, ctx.env(), |path| {
+            observed.push(path.to_path_buf());
+            Ok(String::new())
+        })
+        .unwrap();
+        observed.sort();
+        assert_eq!(
+            observed,
+            [
+                PathBuf::from("/checkouts/enabled"),
+                PathBuf::from("/checkouts/fixture")
+            ]
+        );
+    }
+
+    #[test]
+    fn retained_dispatch_needs_a_fresh_state_generation_after_reenabling() {
+        let fixture = storyhook_test_support::ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+        let ctx = crate::service::Ctx::new(
+            &store,
+            crate::store::ProjectId::new(fixture.project().get()),
+            fixture.cwd(),
+            Environment::at(fixture.cwd()),
+        )
+        .no_hooks(true);
+        let stories = crate::service::StoryService::new(&ctx);
+        let story = stories
+            .create(&crate::service::NewStoryInput {
+                title: "Retained dispatch".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let permitted = || {
+            store
+                .read(|tx| restoration_permitted(tx, ctx.project(), crate::store::StoryNo::new(1)))
+                .unwrap()
+        };
+        assert!(permitted());
+        let settings = crate::service::SettingsService::new(&ctx);
+        settings.set("automations.enabled", "false").unwrap();
+        settings.set("automations.enabled", "true").unwrap();
+        assert!(!permitted());
+        stories
+            .comment(&story.id, "Manual note, not dispatch authority")
+            .unwrap();
+        assert!(!permitted());
+        stories
+            .set_state(&story.id, "in-progress", None, None, None)
+            .unwrap();
+        assert!(permitted());
+    }
+
     #[test]
     fn expired_restoration_budget_never_starts_readiness_or_publication() {
         let fixture = super::super::super::tmux_target::tests::Fixture::new();

@@ -5335,7 +5335,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * card statuses are one consistent store snapshot. */
   function renderVerificationBanner() {
     var mount = $("verification-banner-region");
-    if (!automationsEnabled()) { mount.replaceChildren(); mount.hidden = true; delete mount.dataset.fingerprint; return; }
+    if (!automationsEnabled()) { clear(mount); mount.hidden = true; delete mount.dataset.fingerprint; return; }
     var incident = state.data && state.data.verification_incident;
     var halted = !!(incident && incident.halted);
     var verifier = state.data && state.data.verifier;
