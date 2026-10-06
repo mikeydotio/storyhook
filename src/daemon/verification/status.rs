@@ -151,7 +151,7 @@ pub(crate) fn snapshot(
     let project = tx
         .project(ctx.project())?
         .ok_or_else(|| AppError::NotFound(format!("project {}", ctx.project())))?;
-    let ordered = crate::service::verification::ordered_candidates_for(tx, ctx.project())?;
+    let ordered = crate::service::verification::ordered_candidates_for_status(tx, ctx.project())?;
     let incident = tx.verification_incident(ctx.project())?;
     let recovery = tx.verification_recovery(ctx.project())?;
     let first_hit_story = incident.as_ref().map(|i| i.story.to_id(&project.prefix));
@@ -336,7 +336,10 @@ pub(crate) fn snapshot(
             retry_count,
             verifying,
             held_stories,
-            held_reasons: crate::service::verification::held_verifying_for(tx, ctx.project())?,
+            held_reasons: crate::service::verification::held_verifying_for_status(
+                tx,
+                ctx.project(),
+            )?,
             active: active.cloned(),
             cost,
             reservation,

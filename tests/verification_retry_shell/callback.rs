@@ -95,8 +95,8 @@ raise SystemExit(0 if reply['ok'] else 1)
                     ["--project", "fixture", "verifier", "repair-admit"]
                 );
                 assert_eq!(args.last().unwrap(), "--json");
-                let invocation =
-                    storyhook::cli::parse_invocation(&args[2..args.len() - 1]).unwrap();
+                let invocation = storyhook::cli::parse_invocation(&args[2..args.len() - 1])
+                    .unwrap_or_else(|error| panic!("repair admission arguments {args:?}: {error}"));
                 let ctx = Ctx::new(&store, project, cwd.clone(), env.clone())
                     .with_verification_activity(Some(&activity));
                 let answer = match storyhook::invoke::dispatch(&ctx, invocation) {
