@@ -55,3 +55,8 @@ reset adoption/retry, and project journal hygiene. Global database backup,
 HTTP serving, authentication and dashboard refresh remain operational.
 Retained-dispatch restoration is also project-gated. After re-enabling, an old
 dispatch needs a fresh story state generation; comments do not reactivate it.
+
+Projects without a linked checkout can toggle automations and use store-only
+manual board actions. Their catalog entry is editable while automations are
+disabled. Git, dispatch and resource operations still require a checkout, and
+enabled projects retain the existing checkout guard for board writes.
