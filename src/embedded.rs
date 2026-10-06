@@ -1,8 +1,10 @@
 //! Files compiled into the binary and projected onto disk in lockstep with it.
 //!
 //! `build.rs` generates one `&[EmbeddedFile]` table per payload — the provider
-//! plugin marketplace (SH-538, consumed by [`crate::plugin`]) and the verifier
-//! script family (SH-654, consumed by [`crate::daemon::verifier_bundle`]).
+//! plugin marketplace (SH-538, consumed by [`crate::plugin`], whose
+//! `plugins/story/lib` slice [`crate::plugin::library`] also writes out for
+//! helpers the binary runs itself, SH-881) and the verifier script family
+//! (SH-654, consumed by [`crate::daemon::verifier_bundle`]).
 //! Both are projected with the same three operations so there is one opinion
 //! about what "the on-disk copy matches this binary" means: [`matches`] is the
 //! comparison, [`write`] is the projection, and [`materialize`] is the
