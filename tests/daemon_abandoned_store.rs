@@ -71,12 +71,15 @@ fn start_daemon(env: &TestEnv, cwd: &Path, extra: &[(&str, String)]) -> Daemon {
     }
 }
 
-/// Deletes `home` the way a finished test does. One retry covers a directory
-/// a daemon thread created in the instant between listing and removal.
+/// Atomically removes the home from the daemon's namespace, then deletes its
+/// retired contents. Recursive removal of a live home races directory creation
+/// before the store disappears. Never retry removal at the original path: that
+/// could erase the unwanted recreation these tests must detect.
 fn delete_tree(home: &Path) {
-    if std::fs::remove_dir_all(home).is_err() {
-        std::fs::remove_dir_all(home).expect("deleting the fixture home");
-    }
+    let removed = scratch_dir();
+    let retired = removed.path().join("home");
+    std::fs::rename(home, &retired).expect("detaching the fixture home");
+    std::fs::remove_dir_all(retired).expect("deleting the retired fixture home");
 }
 
 /// The daemon's owner is this live test, so its parent watch never fires: only

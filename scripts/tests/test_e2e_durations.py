@@ -182,6 +182,24 @@ class CacheTests(Fixture):
         self.assertEqual(self.cache.read_text(), before)
         self.assertEqual(len(before.splitlines()), 2)
 
+    def test_older_and_equal_reports_leave_history_untouched(self):
+        """Rejected observations cannot normalize or republish existing evidence."""
+        original = "1\tchromium\tspecs/a.spec.ts\t2\t12.5\t100\n"
+        self.cache.write_text(original)
+        identity = self.cache.stat().st_ino
+        for observed in [50, 100]:
+            report = self.report(observed=observed)
+            value = json.loads(report.read_text())
+            value["files"][0]["seconds"] = 999
+            report.write_text(json.dumps(value))
+            out = self.helper("merge", self.cache, report)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(self.cache.read_text(), original)
+            self.assertEqual(self.cache.stat().st_ino, identity)
+        out = self.helper("merge", self.cache, self.report(observed=200))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(float(self.cache.read_text().split("\t")[-1]), 200)
+
     def test_missing_and_invalid_receipts_fail_loudly(self):
         """Shell validation closes Playwright's swallowed-reporter-error path."""
         expected = self.root / "expected.tsv"
