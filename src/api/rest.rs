@@ -446,12 +446,9 @@ pub fn route_with_activity<S: Store>(
             Changed::Catalog,
         ),
         Route::Project { id, route } => match resolve_repo(store, id) {
-            // One door for the whole per-project surface. A project with no
-            // checkout on this machine is served read-only: reads need no
-            // working directory, and every write does — that is where the
-            // project's event hooks and its git repository are. Refusing here
-            // rather than in each handler means a route added later cannot
-            // miss it.
+            // Checkout-dependent mutations are refused at one door. Manual
+            // boards can edit stored data without Git or event hooks; the
+            // automation switch itself must remain reachable in either mode.
             Ok(Some(Repo {
                 project,
                 uuid,
@@ -463,8 +460,17 @@ pub fn route_with_activity<S: Store>(
                     });
                     return Routed::changing(method, reply, Changed::Catalog);
                 }
-                if mutating(method) && checkout.is_none() {
-                    return Routed::quiet(error_reply(&pathless_refusal(id)));
+                if mutating(method)
+                    && checkout.is_none()
+                    && !matches!(route, ProjectRoute::Automations)
+                {
+                    let manual = match store.read(|tx| tx.automations_enabled(project)) {
+                        Ok(enabled) => !enabled,
+                        Err(error) => return Routed::quiet(error_reply(&error.into())),
+                    };
+                    if !manual || !checkout_free_manual_mutation(&route) {
+                        return Routed::quiet(error_reply(&pathless_refusal(id)));
+                    }
                 }
                 let hookless = checkout.is_none();
                 let root = checkout.unwrap_or_else(|| no_checkout_placeholder(id));
@@ -739,6 +745,39 @@ struct Repo {
     checkout: Option<PathBuf>,
 }
 
+/// Explicit store-only operations. New routes must opt in; resource operations
+/// keep the checkout requirement and every admitted handler keeps its guards.
+fn checkout_free_manual_mutation(route: &ProjectRoute<'_>) -> bool {
+    matches!(
+        route,
+        ProjectRoute::StoryCreate
+            | ProjectRoute::StoryPatch { .. }
+            | ProjectRoute::StoryDelete { .. }
+            | ProjectRoute::StoryAttachmentUpload { .. }
+            | ProjectRoute::StoryAction {
+                action: StoryAction::Move
+                    | StoryAction::Comment
+                    | StoryAction::Priority
+                    | StoryAction::Labels
+                    | StoryAction::Block
+                    | StoryAction::Unblock
+                    | StoryAction::Reopen
+                    | StoryAction::Archive
+                    | StoryAction::Unarchive
+                    | StoryAction::Publish
+                    | StoryAction::UnlinkPr,
+                ..
+            }
+            | ProjectRoute::StateCreate
+            | ProjectRoute::StatesReorder
+            | ProjectRoute::StatePatch { .. }
+            | ProjectRoute::StateDelete { .. }
+            | ProjectRoute::StateArchive { .. }
+            | ProjectRoute::Relate
+            | ProjectRoute::Unrelate
+    )
+}
+
 /// Why a write against a checkout-less project is refused, and what to do.
 fn pathless_refusal(slug: &str) -> AppError {
     AppError::Validation(format!(
@@ -878,13 +917,18 @@ fn repos_json<S: Store>(
         .into_iter()
         .map(|entry| {
             let summary = store
-                .read(|tx| Ok(QueryService::new(tx, entry.project, &now).report_data()))
+                .read(|tx| {
+                    let automated = tx.automations_enabled(entry.project)?;
+                    Ok(QueryService::new(tx, entry.project, &now)
+                        .report_data()
+                        .map(|data| (data, automated)))
+                })
                 .map_err(AppError::from)
                 .and_then(|inner| inner);
-            let read_only = entry.path.is_none();
             let visible = !hidden.contains(&entry.uuid);
             match summary {
-                Ok(data) => {
+                Ok((data, automated)) => {
+                    let read_only = entry.path.is_none() && automated;
                     let drafts = dashboard_drafts_json(&data);
                     serde_json::json!({
                         "id": entry.id,

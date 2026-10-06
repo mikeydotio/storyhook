@@ -1062,22 +1062,11 @@ fn pathless_manual_board_can_toggle_edit_and_reenable_without_losing_guards() {
             "",
             &TrustedHosts::default(),
         );
-        serde_json::from_slice::<serde_json::Value>(&result.reply.body).unwrap()
+        serde_json::from_slice::<serde_json::Value>(result.reply.body()).unwrap()
     };
     assert_eq!(catalog()[0]["read_only"], false);
     assert_eq!(catalog()[0]["available"], true);
     assert!(catalog()[0]["reason"].is_null());
-    for state in ["verifying", "done"] {
-        let body = format!(r#"{{"state":"{state}"}}"#);
-        let moved = request(Method::Post, "story/SH-1/move", Sent::Dashboard, &body);
-        assert_eq!(
-            moved.reply.status,
-            200,
-            "{}",
-            String::from_utf8_lossy(&moved.reply.body)
-        );
-        assert_eq!(moved.changed, Some(Changed::Project(fixture.repo.clone())));
-    }
     for (sent, expected) in [(Sent::NoCsrfHeader, 403), (Sent::NoContentType, 415)] {
         assert_eq!(
             request(Method::Patch, "story/SH-1", sent, r#"{"title":"Updated"}"#)
@@ -1108,6 +1097,17 @@ fn pathless_manual_board_can_toggle_edit_and_reenable_without_losing_guards() {
         .status,
         422
     );
+    for state in ["verifying", "done"] {
+        let body = format!(r#"{{"state":"{state}"}}"#);
+        let moved = request(Method::Post, "story/SH-1/move", Sent::Dashboard, &body);
+        assert_eq!(
+            moved.reply.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(moved.reply.body())
+        );
+        assert_eq!(moved.changed, Some(Changed::Project(fixture.repo.clone())));
+    }
     // Resource operations still require a checkout, even in manual mode.
     for suffix in ["story/SH-1/dispatch", "story/SH-1/reset", "engine"] {
         assert_eq!(
