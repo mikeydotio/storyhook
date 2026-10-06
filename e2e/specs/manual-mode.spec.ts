@@ -73,9 +73,11 @@ test("manual board completion skips verifier approval and stays project scoped",
   await expect(state).toHaveValue("done");
   await expect(page.locator("#verify-override-modal")).not.toHaveClass(/open/);
   await page.goto("/");
+  await page.getByRole("button", { name: "Home", exact: true }).click();
   await openProject(page, "Beta Project");
   await expect(toggle).toBeChecked();
   await page.goto("/");
+  await page.getByRole("button", { name: "Home", exact: true }).click();
   await openProject(page, "Alpha Project");
   await expect(toggle).not.toBeChecked();
   await toggle.check();
