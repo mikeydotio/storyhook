@@ -199,7 +199,7 @@ fn manual_mode_preserves_pending_landing_and_reenable_does_not_replay_it() {
         );
         assert_eq!(
             f.store().read(|tx| tx.landing_intents()).unwrap(),
-            [intent.clone()]
+            std::slice::from_ref(&intent)
         );
         assert!(actuator.landed.lock().unwrap().is_empty());
     }
