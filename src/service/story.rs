@@ -1106,10 +1106,8 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             if plan.events.is_empty() {
                 return Err(AppError::Usage("no fields to update".to_string()).into());
             }
-            if plan.moved_to.is_some() {
-                if tx.automations_enabled(project)? {
-                    refuse_epic_state_change(&row.snapshot)?;
-                }
+            if plan.moved_to.is_some() && tx.automations_enabled(project)? {
+                refuse_epic_state_change(&row.snapshot)?;
             }
             let mut snapshot = append_and_fold(
                 tx,
