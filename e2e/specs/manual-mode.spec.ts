@@ -1,4 +1,6 @@
-import { test, expect, openProject, seedToken, projectSlug } from "./support";
+import { test, expect, openProject, seedToken, projectSlug, createStory, cleanUpCreatedStories } from "./support";
+
+cleanUpCreatedStories("Alpha Project");
 
 test.beforeEach(async ({ page }) => {
   await seedToken(page);
@@ -55,4 +57,27 @@ test("pending toggle excludes duplicate requests", async ({ page, request }) => 
   release();
   await expect(toggle).toBeEnabled();
   await expect(toggle).toBeChecked();
+});
+
+
+test("manual board completion skips verifier approval and stays project scoped", async ({ page }) => {
+  const toggle = page.getByRole("checkbox", { name: "enable automations", exact: true });
+  await toggle.uncheck();
+  await expect(toggle).toBeEnabled();
+  const id = await createStory(page, "Manual completion fixture");
+  await page.locator(`.card[data-id="${id}"]`).click();
+  const state = page.locator("#drawer-body select").first();
+  await state.selectOption("verifying");
+  await expect(state).toHaveValue("verifying");
+  await state.selectOption("done");
+  await expect(state).toHaveValue("done");
+  await expect(page.locator("#verify-override-modal")).not.toHaveClass(/open/);
+  await page.goto("/");
+  await openProject(page, "Beta Project");
+  await expect(toggle).toBeChecked();
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await expect(toggle).toBeEnabled();
 });

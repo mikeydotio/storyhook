@@ -5294,7 +5294,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function renderEngineAlert() {
     if (pressDefer("engine-alert", renderEngineAlert)) return;
     var modal = $("engine-alert-modal");
-    var runs = state.screen === "repo" && state.repoId ? unacknowledgedEngineRuns() : [];
+    var runs = automationsEnabled() && state.screen === "repo" && state.repoId ? unacknowledgedEngineRuns() : [];
     var run = runs[0] || null;
     if (!run) {
       delete modal.dataset.runId;
@@ -5335,7 +5335,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * card statuses are one consistent store snapshot. */
   function renderVerificationBanner() {
     var mount = $("verification-banner-region");
-    if (!automationsEnabled()) { mount.replaceChildren(); delete mount.dataset.fingerprint; return; }
+    if (!automationsEnabled()) { mount.replaceChildren(); mount.hidden = true; delete mount.dataset.fingerprint; return; }
     var incident = state.data && state.data.verification_incident;
     var halted = !!(incident && incident.halted);
     var verifier = state.data && state.data.verifier;
@@ -6055,7 +6055,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         action.disabledReason = "Storyhook cannot tell whether this story's agent still runs: " + agent.detail;
       }
     }
-    if (v.is_blocked && !action.disabled) {
+    if (automationsEnabled() && v.is_blocked && !action.disabled) {
       action.disabled = true;
       action.disabledReason = "Blocked"
         + (st.awaiting ? " (awaiting: " + st.awaiting + ")" : " by an open blocker")
