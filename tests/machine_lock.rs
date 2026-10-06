@@ -1600,7 +1600,18 @@ fn max_wait_elapsing_refuses_without_running_or_stealing() {
 fn a_signal_releases_the_lock_and_takes_the_command_with_it() {
     let fixture = Fixture::new();
 
-    let mut wrapper = fixture.spawn(&["gate", "--", "sleep", "60"]);
+    let ready = fixture.path().join("wrapped-command.pid");
+    let mut wrapper = fixture.spawn(&[
+        "gate",
+        "--",
+        "sh",
+        "-c",
+        r#"printf '%s\n' "$$" > "$1.tmp"; mv "$1.tmp" "$1"; exec sleep 60"#,
+        "signal-fixture",
+        ready.to_str().unwrap(),
+    ]);
+    // Lock publication precedes command spawn; wait for the actual child.
+    wait_for(&ready);
     wait_for(&fixture.lock("gate").join("pid"));
 
     let held = std::fs::read_to_string(fixture.lock("gate").join("pid")).expect("reading the pid");
@@ -1610,16 +1621,21 @@ fn a_signal_releases_the_lock_and_takes_the_command_with_it() {
         "the lock must record the wrapper's own pid"
     );
 
-    let children = Command::new("pgrep")
-        .args(["-P", &wrapper.pid().to_string()])
-        .output()
-        .expect("running pgrep");
-    let command_pid: u32 = String::from_utf8_lossy(&children.stdout)
-        .split_whitespace()
-        .next()
-        .expect("the wrapped command must be a child of the wrapper")
+    let command_pid: u32 = std::fs::read_to_string(&ready)
+        .expect("reading the wrapped command's published PID")
+        .trim()
         .parse()
         .expect("a pid");
+    let parent = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &command_pid.to_string()])
+        .output()
+        .expect("reading the wrapped command's parent");
+    assert!(parent.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&parent.stdout).trim(),
+        wrapper.pid().to_string(),
+        "the published command must be the wrapper's own child"
+    );
 
     Command::new("kill")
         .args(["-TERM", &wrapper.pid().to_string()])

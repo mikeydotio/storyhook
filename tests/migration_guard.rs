@@ -256,8 +256,10 @@ fn a_binary_that_is_not_the_one_on_path_refuses_to_migrate_the_default_store() {
         "the fixture must start at v1"
     );
 
-    let out = env
-        .raw_story(cwd.path())
+    let mut command = env.raw_story(cwd.path());
+    let running = std::fs::canonicalize(command.get_program())
+        .expect("canonicalizing the exact leased executable");
+    let out = command
         .env("PATH", &hostile_path)
         .args(["project", "list"])
         .output()
@@ -265,9 +267,7 @@ fn a_binary_that_is_not_the_one_on_path_refuses_to_migrate_the_default_store() {
 
     let stderr = assert_refused(&env, &out);
     assert!(
-        stderr.contains(&story_binary().display().to_string())
-            || stderr.contains("target/debug/story")
-            || stderr.contains("target/debug/deps"),
+        stderr.contains(&running.display().to_string()),
         "the binary actually running: {stderr}"
     );
 }

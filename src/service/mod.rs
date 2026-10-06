@@ -31,6 +31,7 @@
 
 pub mod agents;
 pub mod attachment;
+pub mod automations;
 pub mod batch_assembly;
 pub mod batch_landing;
 pub mod batch_preview;
@@ -394,6 +395,10 @@ impl<'a, S: Store> Ctx<'a, S> {
         if !self.hooks_enabled() {
             return;
         }
+        let Ok(Some(_automation)) = automations::enter(self.store(), self.env(), self.project())
+        else {
+            return;
+        };
         let Some(config) = event_hooks::load_hooks_config(&self.cwd) else {
             return;
         };
@@ -580,13 +585,15 @@ pub(crate) fn append_restored_and_fold(
     let stored = tx.events_for(project, story)?;
     let (known, _) = partition_known(story, &stored);
     let index = query::story_map(tx, project)?;
-    crate::domain::transition::validate_append(
-        &story.to_id(prefix),
-        &known,
-        events,
-        &tx.states(project)?,
-        &index,
-    )?;
+    if tx.automations_enabled(project)? {
+        crate::domain::transition::validate_append(
+            &story.to_id(prefix),
+            &known,
+            events,
+            &tx.states(project)?,
+            &index,
+        )?;
+    }
     append_and_fold_maintenance(
         tx, project, story, prefix, states, expected, events, provenance,
     )

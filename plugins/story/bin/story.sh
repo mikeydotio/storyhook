@@ -2291,7 +2291,9 @@ cmd_dispatch() {
       _load_ready_stories
       ready_json="$_READY_JSON"
       is_ready_flag=$(printf '%s' "$ready_json" | jq --arg id "$id" '([.stories[]?.story.id // empty] | index($id)) != null' 2>/dev/null || printf 'false')
-      if [ "$is_ready_flag" != "true" ]; then
+      local automations_enabled
+      automations_enabled=$(story_cli project settings get automations.enabled --json | jq -r '.settings[0].value // "true"')
+      if [ "$is_ready_flag" != "true" ] && [ "$automations_enabled" != "false" ]; then
         local reason
         reason=$(ready_gate_reason "$show_json" "$id")
         fail "story $id is not ready to work on ($reason) — run \`story show $id\` for details."

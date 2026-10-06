@@ -142,6 +142,26 @@ impl<'ctx, S: Store> CleanupService<'ctx, S> {
                 .store()
                 .read(|tx| tx.events_for(project.id, row.story_no))?;
             let generation = latest_generation(&events);
+            if automatic
+                && !self.ctx.store().read(|tx| {
+                    super::automations::permits_generation(
+                        tx,
+                        project.id,
+                        events
+                            .iter()
+                            .rev()
+                            .find(|e| {
+                                matches!(
+                                    e.known(),
+                                    Some(crate::domain::StoryEvent::StoryStateChanged { .. })
+                                )
+                            })
+                            .map(|e| e.global_seq),
+                    )
+                })?
+            {
+                continue;
+            }
             let expected = row.story_no.to_id(&project.prefix);
             let request = self
                 .ctx
@@ -826,7 +846,7 @@ mod tests {
         }
 
         fn env(&self) -> crate::env::Environment {
-            crate::env::Environment::at(self.root())
+            crate::env::Environment::at(self.root()).with_subprocess_patience()
         }
     }
 

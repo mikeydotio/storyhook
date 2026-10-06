@@ -278,6 +278,7 @@ pub(crate) fn mutating(method: &Method) -> bool {
 /// arm a route added later could silently fall into.
 fn route_provenance(route: &ProjectRoute<'_>) -> Provenance {
     let verb = match route {
+        ProjectRoute::Automations => "automations",
         ProjectRoute::DispatchPolicy | ProjectRoute::PolicyResolve { .. } => "dispatch-policy",
         ProjectRoute::Data => "data",
         ProjectRoute::Visibility => "visibility",
@@ -549,6 +550,35 @@ fn route_project<S: Store>(
         }
     };
     match route {
+        ProjectRoute::Automations => {
+            let show = || -> Result<Reply, AppError> {
+                let enabled = ctx
+                    .store()
+                    .read(|tx| tx.automations_enabled(ctx.project()))?;
+                Ok(json_reply(200, serde_json::json!({"enabled": enabled}).to_string()).no_cache())
+            };
+            if method == &Method::Get {
+                show().unwrap_or_else(|e| error_reply(&e))
+            } else {
+                guarded(headers, trusted_hosts, body, |b| {
+                    (|| -> Result<Reply, AppError> {
+                        let obj = parse_json_object(b)?;
+                        let enabled =
+                            obj.get("enabled")
+                                .and_then(|v| v.as_bool())
+                                .ok_or_else(|| {
+                                    AppError::Validation("enabled must be a boolean".into())
+                                })?;
+                        crate::service::SettingsService::new(ctx).set(
+                            "automations.enabled",
+                            if enabled { "true" } else { "false" },
+                        )?;
+                        show()
+                    })()
+                    .unwrap_or_else(|e| error_reply(&e))
+                })
+            }
+        }
         ProjectRoute::DispatchPolicy => {
             if method == &Method::Get {
                 super::dispatch_policy::show(ctx.store(), Some(ctx.project()), None)
@@ -1070,6 +1100,7 @@ fn project_data_json<S: Store>(
                     .or_insert_with(Vec::new)
                     .push(link);
             }
+            let automated = tx.automations_enabled(project)?;
             let (verifier, verification) =
                 crate::daemon::verification::status::snapshot(tx, ctx, owner, control)?;
             let incident = verifier.incident.as_ref();
@@ -1103,10 +1134,11 @@ fn project_data_json<S: Store>(
                                 serde_json::to_value(open_prs).unwrap_or(serde_json::Value::Null),
                             );
                         }
-                        if let Some((_, _, status)) =
-                            verification.iter().find(|(status_project, status_id, _)| {
-                                *status_project == project && status_id == &view.story.id
-                            })
+                        if automated
+                            && let Some((_, _, status)) =
+                                verification.iter().find(|(status_project, status_id, _)| {
+                                    *status_project == project && status_id == &view.story.id
+                                })
                         {
                             map.insert(
                                 "verification".to_string(),
@@ -1151,6 +1183,7 @@ fn project_data_json<S: Store>(
                 "highest_story_number": highest_story_number,
                 "meta": meta_json(tx, project, &data)?,
                 "verification_incident": incident_json,
+                "automations_enabled": tx.automations_enabled(project)?,
                 "verification_control": {"state": control},
                 "verifier": verifier,
             });

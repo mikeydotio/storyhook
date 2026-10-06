@@ -8,6 +8,8 @@ import shlex
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True
+
 import agent_identity
 import probe_budget
 from process_identity import process_identity

@@ -331,6 +331,16 @@ story project settings get <key>
 story project settings set <key> <value>
 story project settings unset <key>
 
+Manual mode:
+  story project settings set automations.enabled false
+
+The dashboard checkbox "enable automations" controls the same persistent
+project setting. It defaults to true. When disabled, board and CLI state
+changes need no workflow receipts, blocker ordering or verifier verdict.
+Automatic workers and hooks stop; existing provider sessions are preserved.
+Re-enable to permit fresh work. Resubmit old verifying stories explicitly,
+and explicitly resume any Full Auto run paused by disabling automations.
+
 This project's settings: the per-project values that change how
 storyhook treats it. They live in storyhook's store, alongside the
 project itself, and travel with it rather than with a checkout.

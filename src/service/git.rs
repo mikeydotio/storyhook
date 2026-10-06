@@ -323,6 +323,11 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
     /// over a week of history would otherwise fire a burst of `comment` and
     /// `state_change` hooks for work that happened days ago.
     pub fn commit_sync(&self, since: Option<&str>) -> Result<String, AppError> {
+        let Some(_automation) =
+            super::automations::enter(self.ctx.store(), self.ctx.env(), self.ctx.project())?
+        else {
+            return Ok("Project automations disabled".into());
+        };
         require_git_repository(self.ctx.cwd())?;
         let window = since.unwrap_or(DEFAULT_WINDOW);
         let duration = parse_duration(window).ok_or_else(|| {
@@ -612,6 +617,9 @@ pub fn commit_scan_notice<S: Store>(
     root: &std::path::Path,
     now: &str,
 ) -> Result<Option<String>, AppError> {
+    if !store.read(|tx| tx.automations_enabled(project))? {
+        return Ok(None);
+    }
     let Some(scanned_at) = store.read(|tx| tx.commit_scan_at(project))? else {
         store.write(|tx| tx.arm_commit_scan(project, now))?;
         return Ok(None);

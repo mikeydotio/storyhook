@@ -123,6 +123,8 @@ impl EngineAction {
 /// such project) rather than the 405 its shape suggests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectRoute<'a> {
+    /// GET/PATCH the persistent project automation switch.
+    Automations,
     /// GET/PATCH automatic dispatch settings.
     DispatchPolicy,
     /// GET one story/provider policy preview.
@@ -324,6 +326,10 @@ pub fn classify<'a>(segments: &[&'a str], method: &Method) -> Route<'a> {
 /// Which per-project route `rest` names — the path *after* `/api/repos/{id}`.
 fn classify_project<'a>(rest: &[&'a str], method: &Method) -> ProjectRoute<'a> {
     match rest {
+        ["automations"] => match method {
+            Method::Get | Method::Patch => ProjectRoute::Automations,
+            _ => ProjectRoute::MethodNotAllowed,
+        },
         ["dispatch-policy"] => match method {
             Method::Get | Method::Patch => ProjectRoute::DispatchPolicy,
             _ => ProjectRoute::MethodNotAllowed,
@@ -468,6 +474,7 @@ impl ProjectRoute<'_> {
     /// This route's variant name, as declared. See [`Route::name`].
     pub fn name(&self) -> &'static str {
         match self {
+            ProjectRoute::Automations => "Automations",
             ProjectRoute::DispatchPolicy => "DispatchPolicy",
             ProjectRoute::PolicyResolve { .. } => "PolicyResolve",
             ProjectRoute::Data => "Data",

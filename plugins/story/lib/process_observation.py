@@ -7,6 +7,8 @@ from pathlib import Path
 import struct
 import sys
 
+sys.dont_write_bytecode = True
+
 from process_identity import BsdInfo, process_identity
 
 MAX_ARGUMENT_BYTES = 4 * 1024 * 1024

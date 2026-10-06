@@ -15,6 +15,9 @@ use crate::store::{ReadOps, Store, StoryNo};
 pub(crate) struct Request {
     /// Spool protocol version.
     pub version: u32,
+    /// Project authority at enqueue; old spools cannot survive a manual-mode boundary.
+    #[serde(default)]
+    pub automation_generation: Option<i64>,
     /// Exact dispatch resources that produced the commit.
     pub lease: StoryCleanupLease,
     /// Full commit ID captured by the notification.
@@ -112,6 +115,10 @@ pub(crate) fn directory(env: &Environment) -> PathBuf {
 
 /// Capture the caller's committed HEAD even when its message names no story.
 pub(crate) fn enqueue<S: Store>(ctx: &Ctx<'_, S>) -> Result<(), AppError> {
+    let Some(_automation) = super::automations::enter(ctx.store(), ctx.env(), ctx.project())?
+    else {
+        return Ok(());
+    };
     let Some(lease) = cleanup_lease::marker_at_registered(ctx.cwd())? else {
         return Ok(());
     };
@@ -143,6 +150,9 @@ pub(crate) fn enqueue<S: Store>(ctx: &Ctx<'_, S>) -> Result<(), AppError> {
         .to_owned();
     let request = Request {
         version: 1,
+        automation_generation: ctx
+            .store()
+            .read(|tx| Ok(tx.settings(ctx.project())?.automations_after))?,
         lease,
         head,
         pull_request: links[0].url.clone(),

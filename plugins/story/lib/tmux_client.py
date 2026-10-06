@@ -4,6 +4,10 @@ import contextlib
 import contextvars
 import os
 
+import sys
+
+sys.dont_write_bytecode = True
+
 import probe_budget
 from tmux_server_env import client_environment
 from tmux_target import logical_socket, resolve_target, target_arguments

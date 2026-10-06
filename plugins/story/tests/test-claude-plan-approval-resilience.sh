@@ -4,6 +4,8 @@
 source "$(dirname "$0")/lib.sh"
 
 HOOK="$TESTS_DIR/../hooks/full-auto.sh"
+approval_project=$(mk_story_repo APPROVAL)
+cd "$approval_project" || exit 1
 TMUX_FIXTURE="$(mktemp -d /tmp/story-test-claude-plan-resilience.XXXXXX)"
 _TMP_REPOS+=("$TMUX_FIXTURE")
 export WATCH_PID=$$

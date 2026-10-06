@@ -9243,6 +9243,7 @@ fn a_late_tailnet_bind_does_not_block_shutdown_behind_an_open_sse_connection() {
     // backoff (see `LATE_BIND_DEADLINE`).
     env.story(dir.path())
         .env("PATH", &path)
+        .env("STORYHOOK_TAILNET", "1")
         .env("STORYHOOK_TAILNET_REPROBE_INITIAL_MS", "50")
         .env("STORYHOOK_TAILNET_REPROBE_CAP_MS", "200")
         .args(["web", "start"])

@@ -3539,6 +3539,8 @@ macro_rules! store_conformance_suite {
                     doctor_stale_threshold: Some("14d".into()),
                     cleanup_auto: Some(false),
                     cleanup_interval: Some("6h".into()),
+                    automations_enabled: Some(false),
+                    automations_after: Some(0),
                 };
                 f.store()
                     .write(|tx| tx.put_settings(project, &full))
@@ -4320,6 +4322,8 @@ macro_rules! store_conformance_suite {
                     doctor_stale_threshold: Some("14d".into()),
                     cleanup_auto: Some(false),
                     cleanup_interval: Some("6h".into()),
+                    automations_enabled: Some(false),
+                    automations_after: Some(0),
                 };
                 f.store()
                     .write(|tx| tx.put_settings(project, &settings))
