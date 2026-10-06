@@ -222,3 +222,37 @@ fn already_started_legacy_merge_hook_cannot_close_a_manual_story() {
         "done"
     );
 }
+
+#[test]
+fn manual_board_displays_the_stored_state_despite_blockers() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let blocker = service
+        .create(&NewStoryInput {
+            title: "Blocker".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let story = service
+        .create(&NewStoryInput {
+            title: "Keep my state".into(),
+            blocked_by: vec![blocker.id],
+            ..Default::default()
+        })
+        .unwrap();
+    SettingsService::new(&ctx)
+        .set("automations.enabled", "false")
+        .unwrap();
+    let view = fixture
+        .store()
+        .read(|tx| {
+            Ok(
+                storyhook::service::QueryService::new(tx, ctx.project(), &ctx.now())
+                    .show(&story.id)?,
+            )
+        })
+        .unwrap();
+    assert_eq!(view.story.state, "todo");
+    assert_eq!(view.display_state, None);
+}

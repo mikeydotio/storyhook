@@ -299,7 +299,7 @@ impl HookRepo {
         let shim = shim_dir.join("story");
         std::fs::write(
             &shim,
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STORY_CALL_LOG\"\ncase \" $* \" in\n  *' move '*) exit \"$STORY_MOVE_EXIT\" ;;\nesac\nexit 0\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$STORY_CALL_LOG\"\ncase \" $* \" in\n  *' project settings get automations.enabled '*) printf '%s\\n' '{\"settings\":[{\"value\":\"true\"}]}'; exit 0 ;;\n  *' move '*) exit \"$STORY_MOVE_EXIT\" ;;\nesac\nexit 0\n",
         )
         .expect("writing the story shim");
         std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))

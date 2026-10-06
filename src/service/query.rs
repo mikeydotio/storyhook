@@ -1127,12 +1127,16 @@ pub fn story_views(
         .filter_map(|story| compute_progress(story, &stories).map(|p| (story.id.clone(), p)))
         .collect();
 
-    let display_state: BTreeMap<String, String> = stories
-        .values()
-        .filter_map(|story| {
-            compute_display_state(story, &stories, &states).map(|s| (story.id.clone(), s))
-        })
-        .collect();
+    let display_state: BTreeMap<String, String> = if tx.automations_enabled(project)? {
+        stories
+            .values()
+            .filter_map(|story| {
+                compute_display_state(story, &stories, &states).map(|s| (story.id.clone(), s))
+            })
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
 
     // Gated on `include_derived`, same as `derived_relationships` above and
     // for the same reason: `list`/`next`/`summary` and the rest of the

@@ -284,6 +284,20 @@ fn drive<S: Store>(daemon: &Daemon<'_, S>, runtime: &ResetRuntime, job: Job) {
     } else {
         None
     };
+    if job.automatic
+        && !daemon
+            .store
+            .read(|tx| {
+                let current = tx.story_reset(job.project, job.story)?;
+                let generation = tx.settings(job.project)?.automations_after;
+                Ok(current.is_some_and(|reset| {
+                    reset.token == job.token && reset.origin.automation_generation == generation
+                }))
+            })
+            .unwrap_or(false)
+    {
+        return;
+    }
     let outcome = guarded(|| attempt(daemon, runtime, &job));
     if let Err(error) = outcome {
         crate::daemon::activity::emit(

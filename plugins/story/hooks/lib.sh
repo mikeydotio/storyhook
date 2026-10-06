@@ -118,7 +118,14 @@ hook_is_enabled() {
 # Query each time: an already-open provider must observe a dashboard toggle.
 # No authority can be inferred from a failed lookup, so leave the session alone.
 project_automations_enabled() {
-  local answer
+  local answer pointer
+  # Outside a registered project there is no project switch to override the
+  # hook's existing global behavior (for example the installed-file guard).
+  pointer=$(storyhook_pointer) || pointer=""
+  if [ -z "$pointer" ] || ! grep -Eq '^[[:space:]]*uuid[[:space:]]*=' "$pointer"; then
+    # A registered clone can resolve by origin without a committed pointer.
+    git rev-parse --git-dir >/dev/null 2>&1 || return 0
+  fi
   command -v story >/dev/null 2>&1 || return 1
   answer=$(story --deadline 2 --json project settings get automations.enabled 2>/dev/null) || return 1
   printf '%s' "$answer" | grep -Eq '"value"[[:space:]]*:[[:space:]]*"true"'

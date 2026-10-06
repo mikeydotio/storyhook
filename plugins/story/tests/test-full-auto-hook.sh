@@ -25,6 +25,7 @@ LANE_STORY="SH-460"
 
 repo=$(mktemp -d /tmp/story-test-fullauto-hook.XXXXXX)
 _TMP_REPOS+=("$repo")
+cd "$repo" || exit 1
 
 hook_command() {
   manifest_hook "$1" "$2" full-auto.sh "$MANIFEST" | jq -r '.command'

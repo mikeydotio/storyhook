@@ -167,7 +167,7 @@ pub fn run_check<S: Store>(
                 // Only when the link asked for it, and only while there is
                 // still something to close — a story a person already closed
                 // by hand is not reopened-and-reclosed by this.
-                if tx.automations_enabled(project)? && link.close_on_merge && !row.archived && !has_children(&row.snapshot) {
+                if super::automations::permits_generation(tx, project, Some(row.head_global_seq))? && link.close_on_merge && !row.archived && !has_children(&row.snapshot) {
                     if row.state == VERIFYING_STATE_SLUG {
                         // Polling records the remote merge, but does not prove
                         // head ancestry in the current default branch. The
