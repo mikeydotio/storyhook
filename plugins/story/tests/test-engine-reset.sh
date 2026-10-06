@@ -102,6 +102,9 @@ active_wt=$(make_owned "$active")
 verify_wt=$(make_owned "$verify")
 unrelated_wt=$(make_owned "$unrelated")
 (cd "$repo" && story claim "$active" >/dev/null && story claim "$unrelated" >/dev/null) || exit 1
+# Stopped verification still processes submissions without tests. Hold this
+# handoff for a person so verifier recovery cannot race the engine reset.
+(cd "$repo" && story label "$verify" human-only >/dev/null) || exit 1
 (cd "$verify_wt" && story move "$verify" verifying >/dev/null) || exit 1
 printf 'untracked work\n' > "$active_wt/untracked.txt"
 printf 'committed work\n' > "$active_wt/work.txt"
