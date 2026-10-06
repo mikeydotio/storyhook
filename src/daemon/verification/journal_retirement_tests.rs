@@ -11,7 +11,6 @@
 use super::*;
 use crate::daemon::activity::context::{LogContext, enter};
 use crate::service::NewStoryInput;
-use crate::service::verification_control::VerificationAction;
 use crate::store::SqliteStore;
 use storyhook_test_support::{ServiceFixture, scratch_dir};
 
@@ -151,15 +150,22 @@ fn a_refused_admission_keeps_the_last_evidence() {
     let path = board.earlier_journal(&candidate);
     let before = std::fs::read_to_string(&path).unwrap();
     let activity = VerificationActivity::new();
-    activity
-        .control(&board.store, board.project, VerificationAction::Stop)
+    let ctx = Ctx::new(
+        &board.store,
+        board.project,
+        board.env.home().to_path_buf(),
+        board.env.clone(),
+    )
+    .with_verification_activity(Some(&activity));
+    crate::service::SettingsService::new(&ctx)
+        .set("automations.enabled", "false")
         .unwrap();
 
     let admitted = activity
         .try_acquire(&board.store, &board.env, &candidate, board.env.now())
         .unwrap();
 
-    assert!(admitted.is_none(), "a stopped queue admits nothing");
+    assert!(admitted.is_none(), "manual mode admits no automatic work");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
 }
 

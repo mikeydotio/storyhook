@@ -846,7 +846,7 @@ mod tests {
         }
 
         fn env(&self) -> crate::env::Environment {
-            crate::env::Environment::at(self.root())
+            crate::env::Environment::at(self.root()).with_subprocess_patience()
         }
     }
 

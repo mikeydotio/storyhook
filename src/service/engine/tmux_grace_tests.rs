@@ -80,7 +80,7 @@ fn a_slow_adopted_identity_answer_is_waited_for_only_under_patience() {
     // Only the identity query is slow; the activity query answers at once.
     let answering = |dead| {
         format!(
-            "if [ \"$3\" = list-panes ]; then\n{}\nelse printf '1789066115\\n'; fi",
+            "if [ \"$4\" = list-panes ]; then\n{}\nelse printf '1789066115\\n'; fi",
             late(&adopted_row(root.path(), dead))
         )
     };

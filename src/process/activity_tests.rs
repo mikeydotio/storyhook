@@ -70,6 +70,7 @@ fn both_deadline_modes_record_output_and_timeouts() {
 
     let root = scratch_dir();
     let env = crate::env::Environment::at(root.path());
+    std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
     let _activity = crate::daemon::activity::start(&env);
     let progress = root.path().join("progress.jsonl");
     std::fs::write(&progress, "").unwrap();

@@ -170,7 +170,43 @@ fn external_landing_evidence_cannot_prevent_recording_the_outcome() {
 }
 
 #[test]
-fn pending_landing_recovery_respects_project_and_stop_permission() {
+fn manual_mode_preserves_pending_landing_and_reenable_does_not_replay_it() {
+    let f = ServiceFixture::new();
+    submitted(&f);
+    let queue = VerificationQueue::new(f.store());
+    let candidate = queue.next().unwrap().unwrap();
+    let LandingAdmission::Admitted(intent) = queue
+        .begin_landing(&f.ctx(), &candidate, &certification())
+        .unwrap()
+    else {
+        panic!("expected admission");
+    };
+    let actuator = RacingActuator {
+        fixture: &f,
+        blocker: None,
+        replacement: false,
+        uncertain: false,
+        recovered: true,
+        landed: Mutex::new(Vec::new()),
+    };
+    for enabled in ["false", "true"] {
+        storyhook::service::SettingsService::new(&f.ctx())
+            .set("automations.enabled", enabled)
+            .unwrap();
+        assert_eq!(
+            tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
+            TickResult::Idle
+        );
+        assert_eq!(
+            f.store().read(|tx| tx.landing_intents()).unwrap(),
+            [intent.clone()]
+        );
+        assert!(actuator.landed.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn pending_landing_recovery_respects_project_and_continues_while_verification_is_stopped() {
     use storyhook::daemon::verification::VerificationActivity;
     use storyhook::service::verification_control::VerificationAction;
     let f = ServiceFixture::new();
@@ -206,15 +242,20 @@ fn pending_landing_recovery_respects_project_and_stop_permission() {
         .unwrap();
     assert_eq!(
         tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
-        TickResult::Stopped
+        TickResult::Completed
     );
-    assert_eq!(f.store().read(|tx| tx.landing_intents()).unwrap(), [intent]);
+    assert!(
+        f.store()
+            .read(|tx| tx.landing_intents())
+            .unwrap()
+            .is_empty()
+    );
     activity
         .control(f.store(), f.project(), VerificationAction::Start)
         .unwrap();
     assert_eq!(
         tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
-        TickResult::Completed
+        TickResult::Idle
     );
     assert!(
         f.store()

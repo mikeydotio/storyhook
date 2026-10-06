@@ -729,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_stop_and_admission_never_leave_an_uncancelled_owner() {
+    fn concurrent_stop_and_admission_never_leave_an_uncancelled_gated_owner() {
         let fixture = ServiceFixture::new();
         // Unit tests link a second crate instance through test-support. Reopen
         // its seeded database with this crate's types instead of duplicating the seed.
@@ -758,11 +758,51 @@ mod tests {
                 });
                 let owner = admission.join().unwrap();
                 stopping.join().unwrap();
-                assert!(owner.as_ref().is_none_or(VerificationGuard::is_cancelled));
+                assert!(owner.as_ref().is_none_or(|guard| {
+                    guard.is_cancelled()
+                        || guard.active.mode == VerificationMode::VerificationSkipped
+                }));
                 assert!(!store.read(|tx| tx.verification_enabled(project)).unwrap());
             });
         }
     }
+    #[test]
+    fn concurrent_manual_mode_and_admission_never_leave_an_uncancelled_owner() {
+        let fixture = ServiceFixture::new();
+        let store = crate::store::SqliteStore::open(fixture.store().path()).unwrap();
+        let project = ProjectId::new(fixture.project().get());
+        let env = Environment::at(fixture.cwd());
+        let activity = VerificationActivity::new();
+        let ctx = crate::service::Ctx::new(&store, project, fixture.cwd(), env.clone())
+            .with_verification_activity(Some(&activity));
+        for _ in 0..20 {
+            crate::service::SettingsService::new(&ctx)
+                .set("automations.enabled", "true")
+                .unwrap();
+            // Re-submit after each boundary: only fresh work may be admitted.
+            let candidate = candidate(&store, &env, project);
+            let barrier = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                let admission = scope.spawn(|| {
+                    barrier.wait();
+                    activity
+                        .try_acquire(&store, &env, &candidate, env.now())
+                        .unwrap()
+                });
+                let disabling = scope.spawn(|| {
+                    barrier.wait();
+                    crate::service::SettingsService::new(&ctx)
+                        .set("automations.enabled", "false")
+                        .unwrap()
+                });
+                let owner = admission.join().unwrap();
+                disabling.join().unwrap();
+                assert!(owner.as_ref().is_none_or(VerificationGuard::is_cancelled));
+                assert!(!store.read(|tx| tx.automations_enabled(project)).unwrap());
+            });
+        }
+    }
+
     #[test]
     fn stale_tick_cannot_settle_new_intent_or_emit_endless_idle_wakes() {
         let fixture = ServiceFixture::new();
