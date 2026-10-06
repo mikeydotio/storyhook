@@ -242,6 +242,7 @@ shell_negated_status	:(glob)**/*
 spawn_inventory	:(glob)**/*
 spawned_child_environment	:(glob)src/**/*.rs
 state_set_funnel	:(glob)**/*
+stopped_landing_shell	:(glob)**/*
 store_isolation	:(glob)**/*
 store_isolation	:(glob)crates/storyhook-test-support/src/**/*.rs
 store_isolation	:(glob)scripts/**/*.sh

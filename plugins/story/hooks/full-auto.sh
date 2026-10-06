@@ -110,7 +110,7 @@ approve_claude_plan() {
     if ! [[ "$screen" == *"Ready to code?"* \
         && "$screen" == *"❯ 1. Yes, and use auto mode"* \
         && "$screen" == *"2. Yes, manually approve edits"* ]]; then
-      [ "$awaiting_transition" -eq 0 ] || { approval_watch_complete; return $?; }
+      [ "$awaiting_transition" -eq 0 ] || { approval_watch_complete; return; }
       observation_failures=0
       poll_attempt=$((poll_attempt + 1))
       [ "$limit" -eq 0 ] || [ "$poll_attempt" -lt "$limit" ] || return 0
@@ -180,7 +180,7 @@ approve_codex_plan() {
         && "$screen" == *"› 1. Yes, implement this plan"* \
         && "$screen" == *"2. Yes, clear context and implement"* \
         && "$screen" == *"3. No, stay in Plan mode"* ]]; then
-      [ "$awaiting_transition" -eq 0 ] || { approval_watch_complete; return $?; }
+      [ "$awaiting_transition" -eq 0 ] || { approval_watch_complete; return; }
       observation_failures=0
       poll_attempt=$((poll_attempt + 1))
       [ "$limit" -eq 0 ] || [ "$poll_attempt" -lt "$limit" ] || return 0

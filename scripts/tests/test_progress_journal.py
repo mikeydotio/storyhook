@@ -85,6 +85,8 @@ class ShellTests(unittest.TestCase):
         source = (SCRIPTS / "machine-lock.sh").read_text()
         poll = int(re.search(r"readonly LOCK_POLL_SECS=(\d+)", source)[1])
         ceiling = 2 * poll
+        # Outer harness allowance: thirty watchdog windows cover startup and teardown.
+        process_observation_windows = 30
         with tempfile.TemporaryDirectory(dir="/tmp", prefix="progress-shell-") as root:
             root = Path(root)
             journal, ready = root / "journal", root / "ready"
@@ -109,7 +111,7 @@ class ShellTests(unittest.TestCase):
                 out = subprocess.run(["bash", str(SCRIPTS / "machine-lock.sh"), "--max-idle", str(ceiling),
                                       "resource-probe", "--", sys.executable, "-c", code,
                                       str(journal), str(ready), str(poll / 4)], env=env,
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30 * ceiling)
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=process_observation_windows * ceiling)
             finally:
                 stop.set(); feeder.join()
             self.assertTrue(ready.exists(), out.stderr.decode())

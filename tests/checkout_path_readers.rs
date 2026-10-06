@@ -43,6 +43,14 @@ use std::path::Path;
 /// implements it, so naming the column is its job.
 const ALLOWED: &[(&str, &str)] = &[
     (
+        "src/daemon/reset/tests.rs",
+        "reset fixtures clear a selected project's checkout to exercise missing-checkout handling; paths do not select identity",
+    ),
+    (
+        "src/service/engine/restoration.rs",
+        "background restoration inventories the checkout of each already-selected project, with project automation admission held; the checkout never resolves identity",
+    ),
+    (
         "src/service/automations.rs",
         "the selected project's manual-mode boundary refreshes only its already-installed managed Git hooks; the path never resolves project identity",
     ),
@@ -91,10 +99,6 @@ const ALLOWED: &[(&str, &str)] = &[
         "the engine HTTP controller chooses a working directory only after resolving the project by slug",
     ),
     (
-        "src/api/reset.rs",
-        "the reset response regression clears the selected fixture project's checkout to isolate receipt ordering from repository cleanup; production code does not read it",
-    ),
-    (
         "src/service/catalog.rs",
         "doctor's orphan audit, the catalog listing, and the unregistered-origin probe",
     ),
@@ -138,14 +142,6 @@ const ALLOWED: &[(&str, &str)] = &[
     (
         "src/service/resources/mod.rs",
         "resource discovery chooses a repository inventory directory after selecting the project; pointer UUIDs and registered origins independently verify association",
-    ),
-    (
-        "src/service/reset.rs",
-        "native reset uses the selected project's checkout for resource cleanup and rejects preflight retargeting",
-    ),
-    (
-        "src/service/reset/tests.rs",
-        "the preflight regression seeds and changes the selected project's checkout to prove retargeting is refused",
     ),
     (
         "src/service/story_reset/executor_tests.rs",
