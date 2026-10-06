@@ -1073,7 +1073,9 @@ pub(crate) fn story_map(
         .into_iter()
         .map(|(id, row)| (id, row.snapshot))
         .collect();
-    domain::apply_computed_epic_states(&mut stories, &tx.states(project)?);
+    if tx.automations_enabled(project)? {
+        domain::apply_computed_epic_states(&mut stories, &tx.states(project)?);
+    }
     Ok(stories)
 }
 
@@ -1105,7 +1107,9 @@ pub fn story_views(
         .map(|(id, row)| (id, row.snapshot))
         .collect();
     let states = tx.states(project)?;
-    domain::apply_computed_epic_states(&mut stories, &states);
+    if tx.automations_enabled(project)? {
+        domain::apply_computed_epic_states(&mut stories, &states);
+    }
     // SH-286's rule reaches here too, and for the same reason it reaches the
     // doctor: absence from this map is not absence from the project, and a
     // `StoryView` that says otherwise is `story show` printing a dangling

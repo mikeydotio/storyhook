@@ -139,6 +139,14 @@ fn process<S: Store>(
                 requested.lease.project_slug
             ))
         })?;
+    let Some(_automation) = crate::service::automations::enter(store, env, project.id)? else {
+        return Ok(());
+    };
+    if store.read(|tx| Ok(tx.settings(project.id)?.automations_after))?
+        != requested.automation_generation
+    {
+        return Ok(());
+    }
     // A separate controller lock protects request acknowledgement and retry
     // evidence. Transport also locks against ordinary verifier submission.
     let start = Instant::now();

@@ -25,6 +25,16 @@ impl<S: Store> ContinuationService<'_, S> {
         id: &str,
         input: Value,
     ) -> Result<(Continuation, bool), AppError> {
+        let _automation = crate::service::automations::enter(
+            self.ctx.store(),
+            self.ctx.env(),
+            self.ctx.project(),
+        )?
+        .ok_or_else(|| {
+            AppError::Validation(
+                "Project automations disabled; no automatic continuation requested".into(),
+            )
+        })?;
         validate_request(id, &input)?;
         let answer = self.runtime.call("capture", &input)?;
         let capture = answer

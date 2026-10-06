@@ -36,6 +36,7 @@ struct Job {
     story: StoryNo,
     story_id: String,
     token: String,
+    automatic: bool,
 }
 
 #[derive(Debug, Default)]
@@ -69,6 +70,10 @@ impl ResetRuntime {
     /// Queues `reset` to be driven to completion; a reset already waiting or
     /// running is not queued twice.
     pub fn request(&self, reset: &StoryReset) {
+        self.enqueue(reset, false);
+    }
+
+    fn enqueue(&self, reset: &StoryReset, automatic: bool) {
         if reset.completed {
             return;
         }
@@ -79,6 +84,7 @@ impl ResetRuntime {
                 story: reset.story,
                 story_id: reset.story_id.clone(),
                 token: reset.token.clone(),
+                automatic,
             });
             self.wake.notify_all();
         }
@@ -181,6 +187,9 @@ fn adopt_legacy<S: Store>(daemon: &Daemon<'_, S>, runtime: &ResetRuntime) {
     let legacy = daemon.store.read(|tx| {
         let mut found = Vec::new();
         for project in tx.projects()? {
+            if !tx.automations_enabled(project.id)? {
+                continue;
+            }
             for (story, encoded) in tx.story_resets(project.id)? {
                 found.push((project.id, story.to_id(&project.prefix), encoded));
             }
@@ -200,6 +209,18 @@ fn adopt_legacy<S: Store>(daemon: &Daemon<'_, S>, runtime: &ResetRuntime) {
         }
     };
     for (project, id, encoded) in legacy {
+        let Ok(Some(_automation)) =
+            crate::service::automations::enter(daemon.store, daemon.env, project)
+        else {
+            continue;
+        };
+        if daemon
+            .store
+            .read(|tx| Ok(tx.settings(project)?.automations_after.is_some()))
+            .unwrap_or(true)
+        {
+            continue;
+        }
         // A record that cannot say it was forced is treated as not forced.
         let force = serde_json::from_str::<crate::service::reset::ResetReservation>(&encoded)
             .is_ok_and(|reservation| reservation.force);
@@ -211,7 +232,7 @@ fn adopt_legacy<S: Store>(daemon: &Daemon<'_, S>, runtime: &ResetRuntime) {
         )
         .no_hooks(true);
         match StoryResetService::new(&ctx).adopt_legacy(&id, force) {
-            Ok(reset) => runtime.request(&reset),
+            Ok(reset) => runtime.enqueue(&reset, true),
             Err(error) => crate::daemon::activity::emit(
                 "ERROR",
                 "reset",
@@ -225,8 +246,19 @@ fn adopt_legacy<S: Store>(daemon: &Daemon<'_, S>, runtime: &ResetRuntime) {
 
 /// Queues every unfinished reset the store holds.
 fn resume_unfinished<S: Store>(store: &S, runtime: &ResetRuntime) {
-    match store.read(|tx| tx.unfinished_story_resets()) {
-        Ok(resets) => resets.iter().for_each(|reset| runtime.request(reset)),
+    match store.read(|tx| {
+        let mut resets = Vec::new();
+        for reset in tx.unfinished_story_resets()? {
+            if tx.automations_enabled(reset.project)?
+                && reset.origin.automation_generation
+                    == tx.settings(reset.project)?.automations_after
+            {
+                resets.push(reset);
+            }
+        }
+        Ok(resets)
+    }) {
+        Ok(resets) => resets.iter().for_each(|reset| runtime.enqueue(reset, true)),
         Err(error) => crate::daemon::activity::emit(
             "ERROR",
             "reset",
@@ -243,6 +275,14 @@ fn drive<S: Store>(daemon: &Daemon<'_, S>, runtime: &ResetRuntime, job: Job) {
     let slot = Slot {
         runtime,
         token: job.token.clone(),
+    };
+    let _automation = if job.automatic {
+        match crate::service::automations::enter(daemon.store, daemon.env, job.project) {
+            Ok(Some(permit)) => Some(permit),
+            _ => return,
+        }
+    } else {
+        None
     };
     let outcome = guarded(|| attempt(daemon, runtime, &job));
     if let Err(error) = outcome {

@@ -1246,6 +1246,15 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 
     /// Starts one run and all of its idle lanes in a single transaction.
     pub fn start(&self, request: StartRequest) -> Result<EngineRunRecord, AppError> {
+        if !self
+            .ctx
+            .store()
+            .read(|tx| tx.automations_enabled(self.ctx.project()))?
+        {
+            return Err(AppError::Validation(
+                "Enable project automations before starting Full Auto".into(),
+            ));
+        }
         validate_configuration(request.lanes, &request.model, &request.effort)?;
 
         let project = self.ctx.project();
@@ -1489,9 +1498,22 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     }
 
     pub fn resume(&self, run_id: &RunId) -> Result<RunView, AppError> {
+        if !self
+            .ctx
+            .store()
+            .read(|tx| tx.automations_enabled(self.ctx.project()))?
+        {
+            return Err(AppError::Validation(
+                "Enable project automations before resuming Full Auto".into(),
+            ));
+        }
         self.transition(run_id, |run, _lanes| {
             require_state(run, "resume", &[EngineRunState::Paused])?;
             run.state = EngineRunState::Running;
+            if run.stop_reason.as_deref() == Some("Project automations disabled; resume explicitly")
+            {
+                run.stop_reason = None;
+            }
             Ok(())
         })
     }
@@ -1575,6 +1597,22 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             stop_reason: None,
         };
 
+        let Some(_automation) =
+            super::automations::enter(self.ctx.store(), self.ctx.env(), self.ctx.project())?
+        else {
+            let view = self.one_view(run_id)?;
+            report.run_state = view.run.state;
+            report.stop_reason = view.run.stop_reason;
+            return Ok(report);
+        };
+        if self.one_view(run_id)?.run.stop_reason.as_deref()
+            == Some("Project automations disabled; resume explicitly")
+        {
+            let view = self.one_view(run_id)?;
+            report.run_state = view.run.state;
+            report.stop_reason = view.run.stop_reason;
+            return Ok(report);
+        }
         if self.halt_if_scope_unavailable(run_id)? {
             let view = self.one_view(run_id)?;
             report.run_state = view.run.state;

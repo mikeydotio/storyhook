@@ -1200,6 +1200,26 @@ fn is_nested_invoke(path: &str, body: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// Automation controls may drain workers that call back into the store pool.
+fn is_automation_control(path: &str, method: &Method, body: &str) -> bool {
+    use crate::api::routes::{ProjectRoute, Route};
+    use crate::cli::{Invocation, ProjectAction, SettingsAction};
+    if matches!(
+        crate::api::routes::classify(&path_segments(path), method),
+        Route::Project {
+            route: ProjectRoute::Automations,
+            ..
+        }
+    ) {
+        return true;
+    }
+    if path != "/api/v1/invoke" {
+        return false;
+    }
+    matches!(serde_json::from_str::<crate::api::wire::WireRequest>(body).map(|r| r.invocation),
+        Ok(Invocation::Project { action: ProjectAction::Settings(SettingsAction::Set { key, .. } | SettingsAction::Unset { key }) }) if key == "automations.enabled")
+}
+
 /// Handles one accepted connection's request — everything that touches the
 /// network — on its own detached thread, so a peer that stalls mid-head or
 /// mid-body blocks only this thread and the one file descriptor it owns.
@@ -1472,7 +1492,7 @@ fn worker(
     // other. `hook_depth` caps nesting at one, so this lane can never
     // recurse — structurally deadlock-free, the same move `GET /api/events`
     // and the dispatch-endpoint intercept above already make (SH-173).
-    let nested = matches!(&body, RequestBody::Text(text) if is_nested_invoke(&path, text));
+    let nested = matches!(&body, RequestBody::Text(text) if is_nested_invoke(&path, text) || is_automation_control(&path, &method, text));
 
     let (reply_tx, reply_rx) = mpsc::channel::<Verdict>();
     let job = Job {

@@ -138,6 +138,9 @@ pub(crate) fn sweep(
     })?;
     let mut tracked = Vec::new();
     for (project_id, project, checkout) in checkouts {
+        let Some(_automation) = crate::service::automations::enter(store, env, project_id)? else {
+            continue;
+        };
         let directory = super::project_journal(&checkout);
         if !checkout.is_absolute() || !directory.is_dir() {
             continue;

@@ -152,6 +152,9 @@ pub(crate) fn refuse_uncertified_completion(
     story: StoryNo,
     events: &[StoryEvent],
 ) -> Result<(), AppError> {
+    if !tx.automations_enabled(project)? {
+        return Ok(());
+    }
     let completes = events.iter().any(|event| {
         matches!(event, StoryEvent::StoryStateChanged { state, .. } if state == COMPLETION_STATE_SLUG)
     });
@@ -1015,6 +1018,9 @@ fn cleanup_candidates_for(
     project: ProjectId,
 ) -> Result<Vec<VerificationCandidate>, StoreError> {
     let mut candidates = Vec::new();
+    if !tx.automations_enabled(project)? {
+        return Ok(candidates);
+    }
     if let Some(project) = tx.project(project)? {
         let checkout = tx.checkout_path(project.id)?.unwrap_or_default();
         let links = tx.pr_links(project.id)?;
@@ -1026,6 +1032,7 @@ fn cleanup_candidates_for(
                 continue;
             }
             let events = tx.events_for(project.id, row.story_no)?;
+            if !super::automations::permits_generation(tx, project.id, events.iter().rev().find(|e| matches!(e.known(), Some(StoryEvent::StoryStateChanged { state, .. }) if state == VERIFYING_STATE)).map(|e| e.global_seq))? { continue; }
             let Some(generation) = latest_generation(&events) else {
                 continue;
             };
@@ -1441,6 +1448,9 @@ fn ordered_candidates_in(
     index: &std::collections::BTreeMap<String, crate::domain::StorySnapshot>,
 ) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
     let mut candidates = Vec::new();
+    if !tx.automations_enabled(project.id)? {
+        return Ok(candidates);
+    }
     let intents = tx.landing_intents()?;
     let floors = crate::domain::BlockerFloors::compute(index);
     let checkout = tx.checkout_path(project.id)?;
@@ -1450,6 +1460,9 @@ fn ordered_candidates_in(
     for row in rows {
         let entry = verifying_entry(tx, project.id, row.story_no)?;
         let generation = entry.as_ref().map(|(_, generation)| *generation);
+        if !super::automations::permits_generation(tx, project.id, generation)? {
+            continue;
+        }
         if queue_hold(tx, project.id, &row, &resets, &observed, generation)?.is_some() {
             continue;
         }

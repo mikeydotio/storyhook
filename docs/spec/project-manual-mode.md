@@ -24,3 +24,30 @@ backup, inspect startup effects, and ensure the StoryHook project is disabled
 before the replacement daemon can schedule it. Preserve other projects and
 provider sessions. Verify the installed build, plugin, dashboard and persisted
 setting after restart.
+
+## Implemented behavior
+
+`automations.enabled` is stored per project; unset means `true`. The dashboard
+and CLI use the same control operation. A disable closes admission, cancels only
+that project's verifier processes, and waits for admitted daemon work before
+returning. It supersedes pending continuation/delivery intent and pauses Full
+Auto runs without terminating their provider sessions. Previously installed
+StoryHook Git hooks are refreshed in place; other hooks are untouched.
+
+A generation watermark excludes old verifier submissions and cleanup work after
+re-enabling. Pending reset retries and repair publications retain their original
+boundary. Re-submit a story to verification and explicitly resume a paused Full
+Auto run when automation should work on it again. Existing verifier stop/incident
+controls remain in force when the project is re-enabled.
+
+Manual state changes, including completion from verifying, bulk edits, blocked
+creation and epic states do not require automated workflow approval or generate
+new delivery/cleanup intent. Input validation, graph integrity, resource ownership
+and authentication remain enforced. Explicit user-requested reset/cleanup is
+still available; resource deletion continues to require ownership evidence.
+
+Daemon audit covers verifier startup/ticks/progress, engine startup/steady
+reconciliation, GitHub polling, continuation intake/recovery/delivery, block
+delivery, cleanup and closure retries, repair publication, project recovery,
+reset adoption/retry, and project journal hygiene. Global database backup,
+HTTP serving, authentication and dashboard refresh remain operational.

@@ -50,7 +50,9 @@ impl<R: ReadOps> QueryService<'_, R> {
                 "session eligibility: project has no unambiguous active state role".into(),
             )
         })?;
-        let reason = if story.superstate != SuperState::Open {
+        let reason = if !self.tx.automations_enabled(self.project)? {
+            EligibilityReason::Eligible
+        } else if story.superstate != SuperState::Open {
             EligibilityReason::Closed
         } else if self.reset_ids()?.contains(id) {
             EligibilityReason::Resetting

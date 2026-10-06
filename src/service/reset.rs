@@ -10,7 +10,7 @@ use super::story_reset::StoryResetService;
 use super::{Ctx, project_prefix, resolve_open_story};
 use crate::domain::StoryCleanupLease;
 use crate::error::AppError;
-use crate::store::{ResetOrigin, Store, StoryReset};
+use crate::store::{ReadOps, ResetOrigin, Store, StoryReset};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
@@ -75,6 +75,9 @@ pub fn reset_story<S: Store>(
         Ok(row.snapshot.id)
     })?;
     let origin = ResetOrigin {
+        automation_generation: ctx
+            .store()
+            .read(|tx| Ok(tx.settings(ctx.project())?.automations_after))?,
         caller: caller.clone(),
         cwd: Some(ctx.cwd().to_path_buf()),
         fire_hooks: ctx.hooks_enabled(),

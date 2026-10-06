@@ -377,6 +377,11 @@ pub trait ReadOps {
     /// Whether this project permits new verifier admissions; defaults to true.
     fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError>;
 
+    /// Whether automatic work and workflow policy apply to this project.
+    fn automations_enabled(&self, project: ProjectId) -> Result<bool, StoreError> {
+        Ok(self.settings(project)?.automations_enabled.unwrap_or(true))
+    }
+
     /// Durable unfinished reset operations, keyed by story number.
     fn story_resets(
         &self,

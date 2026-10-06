@@ -59,6 +59,7 @@
 # that cannot tell which tool it is must not decide. Detected and reported, not
 # silent, which is the bar.
 set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # Only dispatch or restoration can supply this process-bound watcher authority.
 # The hook's ordinary tool-event path remains interpreter-free when attended.
@@ -90,6 +91,7 @@ approve_claude_plan() {
   [ -n "${STORY_APPROVAL_BINDING:-}" ] || return 0
 
   while :; do
+    project_automations_enabled || return 0
     if ! identity=$(tmux display-message -p -t "$pane" \
       '#{pane_pid}:#{pane_dead}' 2>/dev/null); then
       observation_failures=$((observation_failures + 1))
@@ -129,6 +131,7 @@ approve_claude_plan() {
     [ "$identity" = "$expected_pid:0" ] || return 0
     observation_failures=0
 
+    project_automations_enabled || return 0
     send_attempts=$((send_attempts + 1))
     tmux send-keys -t "$pane" Enter >/dev/null 2>&1 || true
     awaiting_transition=1
@@ -157,6 +160,7 @@ approve_codex_plan() {
   [ -n "${STORY_APPROVAL_BINDING:-}" ] || return 0
 
   while :; do
+    project_automations_enabled || return 0
     if ! identity=$(tmux display-message -p -t "$pane" \
       '#{pane_pid}:#{pane_dead}' 2>/dev/null); then
       observation_failures=$((observation_failures + 1))
@@ -197,6 +201,7 @@ approve_codex_plan() {
     [ "$identity" = "$expected_pid:0" ] || return 0
     observation_failures=0
 
+    project_automations_enabled || return 0
     send_attempts=$((send_attempts + 1))
     tmux send-keys -t "$pane" Enter >/dev/null 2>&1 || true
     awaiting_transition=1
@@ -324,6 +329,7 @@ if tool in QUESTION_TOOLS:
 emit("{}")
 PY
 
+project_automations_enabled || { printf '{}'; exit 0; }
 decision=$(FULL_AUTO_PAYLOAD="$stdin_json" python3 -c "$FULL_AUTO_PY" 2>/dev/null) || decision=""
 
 # Anything that is not an object is not a decision. A python3 that is missing,

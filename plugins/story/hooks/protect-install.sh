@@ -69,6 +69,8 @@ while IFS= read -r prefix; do
   case "$payload" in *"$prefix"*) hit="$prefix"; break ;; esac
 done < "$manifest"
 [ -n "$hit" ] || emit_inert
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+project_automations_enabled || emit_inert
 
 # Only now is it worth parsing. The prefilter said a managed path appears
 # SOMEWHERE in the payload; this decides whether it is actually the target.

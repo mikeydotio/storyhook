@@ -51,6 +51,7 @@ use super::Ctx;
 /// could one day share a kind, but no two ever share a column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingField {
+    AutomationsEnabled,
     SyncAutoTransition,
     DoctorStaleThreshold,
     CleanupAuto,
@@ -105,7 +106,16 @@ impl SettingSpec {
 /// Dotted names rather than column names, matching what `story migrate`'s
 /// report already prints. Column names would freeze the schema as public
 /// contract; these can outlive a rename.
-static REGISTRY: [SettingSpec; 4] = [
+static REGISTRY: [SettingSpec; 5] = [
+    SettingSpec {
+        key: "automations.enabled",
+        field: SettingField::AutomationsEnabled,
+        kind: SettingKind::Boolean,
+        description: "Enable project automations and automated workflow policy.",
+        default: Some("true"),
+        managed_by: None,
+        note: None,
+    },
     SettingSpec {
         key: "sync.auto_transition",
         field: SettingField::SyncAutoTransition,
@@ -223,6 +233,10 @@ impl<'ctx, S: Store> SettingsService<'ctx, S> {
     /// would let a concurrent `story github-sync` land between the two.
     fn mutate(&self, spec: &SettingSpec, value: Option<String>) -> Result<SettingView, AppError> {
         let project = self.ctx.project();
+        if spec.field == SettingField::AutomationsEnabled {
+            super::automations::set(self.ctx, value.as_deref().map(|value| value == "true"))?;
+            return Ok(view(spec, &self.row()?));
+        }
         let row = self.ctx.store().write(|tx| {
             let mut settings = tx.settings(project)?;
             apply(spec.field, &mut settings, value.as_deref());
@@ -303,6 +317,9 @@ fn parse(spec: &SettingSpec, raw: &str) -> Result<String, AppError> {
 /// compiler error here until it is handled rather than a silent no-op.
 fn apply(field: SettingField, settings: &mut ProjectSettings, value: Option<&str>) {
     match field {
+        SettingField::AutomationsEnabled => {
+            settings.automations_enabled = value.map(|v| v == "true")
+        }
         SettingField::SyncAutoTransition => {
             // Total because `parse` canonicalizes a boolean to exactly `true`
             // or `false` before it gets here — the one coupling between the two
@@ -325,6 +342,7 @@ fn apply(field: SettingField, settings: &mut ProjectSettings, value: Option<&str
 /// What the column currently holds, in the string form the surface reports.
 fn stored(field: SettingField, settings: &ProjectSettings) -> Option<String> {
     match field {
+        SettingField::AutomationsEnabled => settings.automations_enabled.map(|on| on.to_string()),
         SettingField::SyncAutoTransition => settings.sync_auto_transition.map(|on| on.to_string()),
         SettingField::DoctorStaleThreshold => settings.doctor_stale_threshold.clone(),
         SettingField::CleanupAuto => settings.cleanup_auto.map(|on| on.to_string()),

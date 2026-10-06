@@ -41,6 +41,9 @@ pub struct StoryReset {
 /// Who asked for a reset and what that request protects (SH-886).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResetOrigin {
+    /// Automation boundary at reservation; stale background retries require a manual request.
+    #[serde(default)]
+    pub automation_generation: Option<i64>,
     /// The requester's tmux pane and socket: reset never closes that window.
     #[serde(default)]
     pub caller: crate::service::reset::ResetCaller,

@@ -838,3 +838,81 @@ fn worker_restart_settles_pending_and_preserves_interrupted_admission_evidence()
         assert!(activity.active_for(fixture.project()).is_none());
     }
 }
+
+#[test]
+fn disabling_automations_drains_a_late_green_without_landing() {
+    let fixture = ServiceFixture::new();
+    let candidate = linked_candidate(&fixture);
+    let activity = VerificationActivity::new();
+    let inflight = InFlight::new(fixture.env().clone());
+    let (entered, observed) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let gate = Gate {
+        entered,
+        release: Mutex::new(released),
+        wait_at_landing: false,
+        outcome: VerificationOutcome::Certified {
+            head: "a".repeat(40),
+            tree: "b".repeat(40),
+            detail: "late green".into(),
+            gate: "gate".into(),
+        },
+    };
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            tick_with_activity(
+                fixture.store(),
+                fixture.env(),
+                &gate,
+                &activity,
+                &inflight,
+                fixture.project(),
+            )
+        });
+        observed.recv_timeout(Duration::from_secs(10)).unwrap();
+        let setter = scope.spawn(|| {
+            let ctx = fixture.ctx().with_verification_activity(Some(&activity));
+            storyhook::service::SettingsService::new(&ctx)
+                .set("automations.enabled", "false")
+                .unwrap();
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while fixture
+            .store()
+            .read(|tx| tx.automations_enabled(fixture.project()))
+            .unwrap()
+        {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        setter.join().unwrap();
+    });
+    assert_eq!(
+        fixture
+            .store()
+            .read(|tx| Ok(
+                tx.stories(fixture.project(), &storyhook::store::StoryQuery::all())?[0]
+                    .state
+                    .clone()
+            ))
+            .unwrap(),
+        "verifying"
+    );
+    assert!(
+        VerificationQueue::new(fixture.store())
+            .ordered_for(candidate.project)
+            .unwrap()
+            .is_empty()
+    );
+    storyhook::service::SettingsService::new(&fixture.ctx())
+        .set("automations.enabled", "true")
+        .unwrap();
+    assert!(
+        VerificationQueue::new(fixture.store())
+            .ordered_for(candidate.project)
+            .unwrap()
+            .is_empty()
+    );
+}

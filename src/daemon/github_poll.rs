@@ -41,6 +41,10 @@ pub fn tick<S: Store>(store: &S, env: &Environment, factory: &dyn GithubApiFacto
         }
     };
     for project in projects {
+        let Ok(Some(_automation)) = crate::service::automations::enter(store, env, project.id)
+        else {
+            continue;
+        };
         let ctx = Ctx::new(store, project.id, env.home(), env.clone());
         let result = (|| {
             if store.read(|tx| tx.open_pr_links(project.id))?.is_empty() {

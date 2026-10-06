@@ -27,7 +27,8 @@ use storyhook_test_support::ServiceFixture;
 ///
 /// Written out rather than derived from the registry so that *deleting* a key
 /// is a failing test rather than a silently smaller loop.
-const KEYS: [&str; 4] = [
+const KEYS: [&str; 5] = [
+    "automations.enabled",
     "sync.auto_transition",
     "doctor.stale_threshold",
     "cleanup.auto",

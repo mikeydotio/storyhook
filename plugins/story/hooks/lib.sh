@@ -112,5 +112,14 @@ read_plugin_config() {
 # The switch is `enabled = false` in the pointer file's `[plugin]` table.
 # Anything else, including an absent table and an unreadable file, means on.
 hook_is_enabled() {
-  [ "$(read_plugin_config enabled true)" != "false" ]
+  [ "$(read_plugin_config enabled true)" != "false" ] && project_automations_enabled
+}
+
+# Query each time: an already-open provider must observe a dashboard toggle.
+# No authority can be inferred from a failed lookup, so leave the session alone.
+project_automations_enabled() {
+  local answer
+  command -v story >/dev/null 2>&1 || return 1
+  answer=$(story --deadline 2 --json project settings get automations.enabled 2>/dev/null) || return 1
+  printf '%s' "$answer" | grep -Eq '"value"[[:space:]]*:[[:space:]]*"true"'
 }

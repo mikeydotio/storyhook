@@ -537,7 +537,33 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         awaiting: Option<&str>,
     ) -> Result<StorySnapshot, AppError> {
         let project = self.ctx.project();
-        if state == COMPLETION_STATE_SLUG && comment.is_some_and(|text| !text.trim().is_empty()) {
+        // Older installed Git hooks issue this exact automatic move. Admit it
+        // here as well, so a process already in flight cannot cross disable.
+        let _automatic_merge = if comment == Some("auto-closed by merge") {
+            let Some(permit) =
+                super::automations::enter(self.ctx.store(), self.ctx.env(), project)?
+            else {
+                return self
+                    .ctx
+                    .store()
+                    .read(|tx| {
+                        let prefix = project_prefix(tx, project)?;
+                        Ok(resolve_story(tx, project, &prefix, id)?.1.snapshot)
+                    })
+                    .map_err(Into::into);
+            };
+            Some(permit)
+        } else {
+            None
+        };
+        let automated = self
+            .ctx
+            .store()
+            .read(|tx| tx.automations_enabled(project))?;
+        if automated
+            && state == COMPLETION_STATE_SLUG
+            && comment.is_some_and(|text| !text.trim().is_empty())
+        {
             let overriding = self.ctx.store().read(|tx| {
                 let prefix = project_prefix(tx, project)?;
                 let number = StoryNo::parse_id(&prefix, id)?;
@@ -554,7 +580,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             }
         }
         let now = self.ctx.now();
-        let cleanup_lease = if state == VERIFYING_STATE_SLUG {
+        let cleanup_lease = if automated && state == VERIFYING_STATE_SLUG {
             super::cleanup_lease::marker_at(self.ctx.cwd())?
         } else {
             None
@@ -605,7 +631,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                     )));
                 }
             }
-            refuse_epic_state_change(&row.snapshot)?;
+            if tx.automations_enabled(project)? { refuse_epic_state_change(&row.snapshot)?; }
             let target = states
                 .get(state)
                 .cloned()
@@ -625,7 +651,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             // A story already certified for this stay — the verifier's own
             // GREEN is on it — is not being overridden, and completes as any
             // other story does.
-            let overriding = row.state == VERIFYING_STATE_SLUG
+            let overriding = tx.automations_enabled(project)? && row.state == VERIFYING_STATE_SLUG
                 && target.slug == COMPLETION_STATE_SLUG
                 && !certified_for_current_stay(&*tx, project, story_no, &row)?;
             let comment: Option<String> = if overriding {
@@ -1081,7 +1107,9 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 return Err(AppError::Usage("no fields to update".to_string()).into());
             }
             if plan.moved_to.is_some() {
-                refuse_epic_state_change(&row.snapshot)?;
+                if tx.automations_enabled(project)? {
+                    refuse_epic_state_change(&row.snapshot)?;
+                }
             }
             let mut snapshot = append_and_fold(
                 tx,
@@ -1274,7 +1302,9 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             let ordered = tx.states(project)?;
             let states = state_map(&ordered);
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
-            refuse_epic_state_change(&row.snapshot)?;
+            if tx.automations_enabled(project)? {
+                refuse_epic_state_change(&row.snapshot)?;
+            }
             if !row.archived {
                 return Err(AppError::Validation(format!("story `{id}` is already open")).into());
             }
@@ -1700,6 +1730,9 @@ fn admit_blocked_creation(
     events: &[StoryEvent],
     blockers: &[relation::ResolvedBlocker],
 ) -> Result<(), AppError> {
+    if !tx.automations_enabled(project)? {
+        return Ok(());
+    }
     let Some(StoryEvent::StoryCreated { state, .. }) = events.first() else {
         return Err(AppError::Storage(
             "internal: a creation batch must open with StoryCreated".to_string(),

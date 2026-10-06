@@ -114,6 +114,11 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
 
     /// Loads context and independently publishes the actual outcome as hook evidence.
     pub fn start(&self) -> Result<String, AppError> {
+        let Some(_automation) =
+            super::automations::enter(self.ctx.store(), self.ctx.env(), self.ctx.project())?
+        else {
+            return Ok(SILENT.to_string());
+        };
         let (message, status) = self.load_context()?;
         if let Some(status) = status {
             publish(
@@ -152,7 +157,9 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
                 .map(|row| (row.snapshot.id.clone(), row.snapshot))
                 .collect::<BTreeMap<String, StorySnapshot>>();
             let states = tx.states(project)?;
-            apply_computed_epic_states(&mut stories, &states);
+            if tx.automations_enabled(project)? {
+                apply_computed_epic_states(&mut stories, &states);
+            }
             Ok((stories, states))
         });
         let (stories, states) = match loaded {
