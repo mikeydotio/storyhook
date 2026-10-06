@@ -39,6 +39,8 @@ re-enabling. Pending reset retries and repair publications retain their original
 boundary. Re-submit a story to verification and explicitly resume a paused Full
 Auto run when automation should work on it again. Existing verifier stop/incident
 controls remain in force when the project is re-enabled.
+Re-enabling retires stale intent and changes the durable switch in one
+transaction, so interruption or retirement failure leaves automations disabled.
 
 Manual state changes, including completion from verifying, bulk edits, blocked
 creation and epic states do not require automated workflow approval or generate

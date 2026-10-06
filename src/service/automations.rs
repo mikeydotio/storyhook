@@ -88,6 +88,23 @@ impl Drop for ControlReset {
     }
 }
 
+fn persist_setting(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    enabled: Option<bool>,
+) -> Result<(), crate::store::StoreError> {
+    let mut settings = tx.settings(project)?;
+    let changed = settings.automations_enabled.unwrap_or(true) != enabled.unwrap_or(true);
+    settings.automations_enabled = enabled;
+    if changed {
+        let project = tx
+            .project(project)?
+            .ok_or_else(|| crate::store::StoreError::NotFound("project disappeared".into()))?;
+        settings.automations_after = Some(project.next_global_seq - 1);
+    }
+    tx.put_settings(project, &settings)
+}
+
 /// Persist a toggle, serializing repeated requests and draining admitted work.
 pub(crate) fn set(ctx: &Ctx<'_, impl Store>, enabled: Option<bool>) -> Result<(), AppError> {
     let boundary = boundary(ctx.env(), ctx.project());
@@ -115,25 +132,9 @@ pub(crate) fn set(ctx: &Ctx<'_, impl Store>, enabled: Option<bool>) -> Result<()
     {
         crate::hooks::refresh_existing(&checkout)?;
     }
-    let write = ctx.store().write(|tx| {
-        let mut settings = tx.settings(ctx.project())?;
-        let changed = settings.automations_enabled.unwrap_or(true) != effective;
-        settings.automations_enabled = enabled;
-        if changed {
-            let project = tx
-                .project(ctx.project())?
-                .ok_or_else(|| crate::store::StoreError::NotFound("project disappeared".into()))?;
-            settings.automations_after = Some(project.next_global_seq - 1);
-        }
-        tx.put_settings(ctx.project(), &settings)
-    });
-    if let Err(error) = write {
-        boundary
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .disabling = false;
-        return Err(error.into());
+    if !effective || was_enabled {
+        ctx.store()
+            .write(|tx| persist_setting(tx, ctx.project(), enabled))?;
     }
     if !effective || !was_enabled {
         if let Some(activity) = ctx.verification_activity() {
@@ -186,6 +187,12 @@ pub(crate) fn set(ctx: &Ctx<'_, impl Store>, enabled: Option<bool>) -> Result<()
                         Some("Project automations disabled; resume explicitly".into());
                     tx.update_engine_run(&run)?;
                 }
+            }
+            // A restart must never observe enabled automation alongside stale
+            // intent left by an interrupted disable. Retire and enable in the
+            // same transaction; a failure leaves the durable switch off.
+            if effective {
+                persist_setting(tx, ctx.project(), enabled)?;
             }
             Ok(())
         })?;
