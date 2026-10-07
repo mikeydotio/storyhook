@@ -21,6 +21,8 @@ struct Landing<'a> {
     prepare_hook: Option<Box<dyn Fn() + Send + Sync + 'a>>,
     preparations: Mutex<usize>,
     recoveries: Mutex<usize>,
+    recovery_uncertain: bool,
+    expected_recovery: Option<LandingIntent>,
     uncertain: bool,
     publish: bool,
     gated: bool,
@@ -85,8 +87,16 @@ impl VerificationActuator for Landing<'_> {
             }
         }
     }
-    fn recover_landing(&self, _: &VerificationCandidate, _: &LandingIntent) -> LandingOutcome {
+    fn recover_landing(&self, _: &VerificationCandidate, intent: &LandingIntent) -> LandingOutcome {
         *self.recoveries.lock().unwrap() += 1;
+        if let Some(expected) = &self.expected_recovery {
+            assert_eq!(intent, expected, "recovery must use the original authority");
+        }
+        if self.recovery_uncertain {
+            return LandingOutcome::Uncertain {
+                detail: "OPEN does not exclude an earlier merge still in flight".into(),
+            };
+        }
         LandingOutcome::Merged {
             detail: "observed earlier exact merge".into(),
         }
@@ -201,6 +211,153 @@ fn uncertain_skipped_landing_survives_restart_and_start_without_repeating_the_me
             == storyhook::domain::landing::VerificationMode::VerificationSkipped)
     );
     assert_eq!(actuator.landed.lock().unwrap().len(), 1);
+}
+
+// SH-892: recover existing authority; Stop does not revoke it or recertify it.
+fn pending_submission(f: &ServiceFixture, certified: bool) -> LandingIntent {
+    submission(f);
+    f.store()
+        .write(|tx| tx.put_verification_enabled(f.project(), certified))
+        .unwrap();
+    let actuator = Landing {
+        gated: certified,
+        uncertain: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
+        TickResult::RetryLater
+    );
+    let pending = f.store().read(|tx| tx.landing_intents()).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].certification.certified().is_some(), certified);
+    assert_eq!(*actuator.gates.lock().unwrap(), usize::from(certified));
+    assert_eq!(
+        *actuator.preparations.lock().unwrap(),
+        usize::from(!certified)
+    );
+    assert_eq!(actuator.landed.lock().unwrap().as_slice(), pending);
+    pending.into_iter().next().unwrap()
+}
+
+#[test]
+fn stopped_pending_recovery_preserves_original_authority_and_observes_once() {
+    use storyhook::daemon::verification::VerificationActivity;
+    use storyhook::service::verification_control::VerificationAction;
+
+    for certified in [true, false] {
+        let f = ServiceFixture::new();
+        let intent = pending_submission(&f, certified);
+        VerificationActivity::new()
+            .control(f.store(), f.project(), VerificationAction::Stop)
+            .unwrap();
+        let reopened = storyhook::store::SqliteStore::open(f.store().path()).unwrap();
+        let mut actuator = Landing {
+            recovery_uncertain: true,
+            expected_recovery: Some(intent.clone()),
+            ..Default::default()
+        };
+        let other = f.add_project("other", "OT");
+        assert_eq!(
+            tick_with(&reopened, f.env(), &actuator, other).unwrap(),
+            TickResult::Idle
+        );
+        assert_eq!(*actuator.recoveries.lock().unwrap(), 0);
+
+        // No fresh submission is runnable after an inconclusive observation.
+        assert_eq!(
+            tick_with(&reopened, f.env(), &actuator, f.project()).unwrap(),
+            TickResult::Idle
+        );
+        assert_eq!(
+            reopened.read(|tx| tx.landing_intents()).unwrap(),
+            std::slice::from_ref(&intent)
+        );
+        assert_eq!(
+            reopened
+                .read(|tx| Ok(tx.story(f.project(), intent.story)?.unwrap().state))
+                .unwrap(),
+            "verifying"
+        );
+        assert_eq!(*actuator.recoveries.lock().unwrap(), 1);
+
+        actuator.recovery_uncertain = false;
+        assert_eq!(
+            tick_with(&reopened, f.env(), &actuator, f.project()).unwrap(),
+            TickResult::Completed
+        );
+        assert!(reopened.read(|tx| tx.landing_intents()).unwrap().is_empty());
+        let completed = reopened
+            .read(|tx| Ok(tx.story(f.project(), intent.story)?.unwrap()))
+            .unwrap();
+        assert_eq!(completed.state, "done");
+        for (prefix, expected) in [
+            ("CENTRAL VERIFICATION GREEN —", usize::from(certified)),
+            ("CENTRAL VERIFICATION SKIPPED —", usize::from(!certified)),
+        ] {
+            assert_eq!(
+                completed
+                    .snapshot
+                    .comments
+                    .iter()
+                    .filter(|comment| comment.text.starts_with(prefix))
+                    .count(),
+                expected
+            );
+        }
+        assert_eq!(
+            tick_with(&reopened, f.env(), &actuator, f.project()).unwrap(),
+            TickResult::Idle
+        );
+        let after = reopened
+            .read(|tx| Ok(tx.story(f.project(), intent.story)?.unwrap()))
+            .unwrap();
+        assert_eq!(after.snapshot.comments, completed.snapshot.comments);
+        assert_eq!(*actuator.recoveries.lock().unwrap(), 2);
+        assert_eq!(*actuator.gates.lock().unwrap(), 0);
+        assert_eq!(*actuator.preparations.lock().unwrap(), 0);
+        assert_eq!(*actuator.submissions.lock().unwrap(), 0);
+        assert!(actuator.landed.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn manual_mode_blocks_stopped_pending_recovery_after_reenable() {
+    use storyhook::daemon::verification::VerificationActivity;
+    use storyhook::service::verification_control::VerificationAction;
+
+    for certified in [true, false] {
+        let f = ServiceFixture::new();
+        let intent = pending_submission(&f, certified);
+        VerificationActivity::new()
+            .control(f.store(), f.project(), VerificationAction::Stop)
+            .unwrap();
+        let actuator = Landing::default();
+        for enabled in ["false", "true"] {
+            storyhook::service::SettingsService::new(&f.ctx())
+                .set("automations.enabled", enabled)
+                .unwrap();
+            assert_eq!(
+                tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
+                TickResult::Idle
+            );
+            assert_eq!(
+                f.store().read(|tx| tx.landing_intents()).unwrap(),
+                std::slice::from_ref(&intent)
+            );
+            assert_eq!(
+                f.store()
+                    .read(|tx| Ok(tx.story(f.project(), intent.story)?.unwrap().state))
+                    .unwrap(),
+                "verifying"
+            );
+        }
+        assert_eq!(*actuator.recoveries.lock().unwrap(), 0);
+        assert_eq!(*actuator.gates.lock().unwrap(), 0);
+        assert_eq!(*actuator.preparations.lock().unwrap(), 0);
+        assert_eq!(*actuator.submissions.lock().unwrap(), 0);
+        assert!(actuator.landed.lock().unwrap().is_empty());
+    }
 }
 
 #[test]
