@@ -246,16 +246,18 @@ test("loaded drawer errors remain visible, recover on Retry and preserve dirty e
     const field = node as HTMLTextAreaElement;
     const events: KeyboardEvent[] = [];
     let downstreamEnters = 0;
+    const downstreamAllowed: string[] = [];
     const capture = (event: KeyboardEvent) => {
       if (event.target === field && ["enter", "arrowleft", "c"].includes(event.key.toLowerCase())) events.push(event);
     };
     const downstreamSubmit = (event: KeyboardEvent) => {
       if (event.key === "Enter") downstreamEnters++;
+      if (["c", "arrowleft"].includes(event.key.toLowerCase())) downstreamAllowed.push(event.key.toLowerCase());
     };
     document.addEventListener("keydown", capture, true);
     field.addEventListener("keydown", downstreamSubmit);
     return {
-      snapshot: () => ({ downstreamEnters, events: events.map(event => ({
+      snapshot: () => ({ downstreamEnters, downstreamAllowed: downstreamAllowed.slice(), events: events.map(event => ({
         key: event.key.toLowerCase(), repeat: event.repeat, trusted: event.isTrusted,
         prevented: event.defaultPrevented, copyModifier: event.ctrlKey || event.metaKey,
       })) }),
@@ -263,6 +265,7 @@ test("loaded drawer errors remain visible, recover on Retry and preserve dirty e
         document.removeEventListener("keydown", capture, true);
         field.removeEventListener("keydown", downstreamSubmit);
         events.length = 0;
+        downstreamAllowed.length = 0;
       },
     };
   });
@@ -286,19 +289,32 @@ test("loaded drawer errors remain visible, recover on Retry and preserve dirty e
     expect(enters.downstreamEnters).toBe(0);
     await expect(comment).toHaveValue("Keep these unsent words for copying.");
 
-    // Copy remains available without depending on clipboard permissions or
-    // contents. ArrowLeft proves native caret movement still works, too.
+    // Observe copy/navigation delivery and cancellation directly, including
+    // when a read-only textarea does not collapse its selection on ArrowLeft.
+    // Copy still retains its selected text without reading the clipboard.
+    await expect(comment).toBeFocused();
     await comment.evaluate(node => (node as HTMLTextAreaElement).setSelectionRange(5, 9));
     await page.keyboard.press("ControlOrMeta+c");
+    await expect(comment).toBeFocused();
     expect(await comment.evaluate(node => [(node as HTMLTextAreaElement).selectionStart, (node as HTMLTextAreaElement).selectionEnd])).toEqual([5, 9]);
     await page.keyboard.press("ArrowLeft");
-    expect(await comment.evaluate(node => [(node as HTMLTextAreaElement).selectionStart, (node as HTMLTextAreaElement).selectionEnd])).toEqual([5, 5]);
+    await expect(comment).toBeFocused();
     const allowed = await keys.evaluate(witness => witness.snapshot());
     expect(allowed.events.slice(3)).toEqual([
       { key: "c", repeat: false, trusted: true, prevented: false, copyModifier: true },
       { key: "arrowleft", repeat: false, trusted: true, prevented: false, copyModifier: false },
     ]);
     expect(allowed.downstreamEnters).toBe(0);
+    expect(allowed.downstreamAllowed).toEqual(["c", "arrowleft"]);
+
+    // Keep a native navigation behavior check as well: the relationship-ID
+    // text input precedes Comments, with its intervening Add button disabled.
+    // Read-only text inputs remain keyboard-focusable in both browser engines.
+    const precedingInput = page.locator('#drawer-body input[data-field="relationship-id"]');
+    await expect(precedingInput).toBeEnabled();
+    await expect(precedingInput).not.toBeEditable();
+    await page.keyboard.press("Shift+Tab");
+    await expect(precedingInput).toBeFocused();
     expect(clientMutations).toBe(0);
   } finally {
     page.off("request", observeMutation);
