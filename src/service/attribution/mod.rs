@@ -4,6 +4,8 @@ mod contrast;
 pub(crate) mod holds;
 mod model;
 mod native;
+#[cfg(test)]
+pub(crate) use native::tests::Fixture as NativeFixture;
 mod preparation;
 mod rust_cargo;
 mod rust_case;

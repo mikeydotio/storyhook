@@ -12,14 +12,14 @@ pub(super) const FIXTURE: &str = concat!(
 const TEST: &str = "#[test] fn answer() { assert_eq!(subject::answer(), 42); }\n";
 const PATIENCE: Duration = Duration::from_millis(MAX_DIAGNOSIS_MS);
 
-struct Fixture {
-    directory: tempfile::TempDir,
+pub(crate) struct Fixture {
+    pub(crate) directory: tempfile::TempDir,
     broker: storyhook_test_support::ChildGuard,
-    config: std::path::PathBuf,
-    base: String,
+    pub(crate) config: std::path::PathBuf,
+    pub(crate) base: String,
 }
 impl Fixture {
-    fn new(fixture: bool) -> Self {
+    pub(crate) fn new(fixture: bool) -> Self {
         let directory = tempfile::tempdir_in("/tmp").unwrap();
         let config = directory.path().join("authority.json");
         let mut broker = storyhook_test_support::ChildGuard::spawn(
@@ -97,7 +97,7 @@ impl Fixture {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, data).unwrap();
     }
-    fn git(&self, args: &[&str]) -> String {
+    pub(crate) fn git(&self, args: &[&str]) -> String {
         let result = crate::env::git_env::command(self.directory.path())
             .args(args)
             .output()
@@ -109,7 +109,7 @@ impl Fixture {
         );
         String::from_utf8(result.stdout).unwrap().trim().into()
     }
-    fn comparison(&self) -> NativeRustComparison {
+    pub(crate) fn comparison(&self) -> NativeRustComparison {
         let mut native = NativeRustComparison::prepare(
             self.directory.path(),
             &crate::store::GateInputs {

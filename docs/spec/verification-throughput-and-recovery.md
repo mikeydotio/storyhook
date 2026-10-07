@@ -297,6 +297,31 @@ plans and completed results immutable. Later assessments append evidence;
 they do not replace the original failure or an earlier uncertain diagnosis.
 Record updates use a transaction and compare-and-swap revision.
 
+The daemon diagnostic coordinator binds a proposed native case to the latest
+completed failed gate of its current admission. It retains every named failure
+and each failed leg with no named case. Unsupported original output stays held
+without a diagnostic launch. Opening original output must not follow a symlink
+or wait for a FIFO writer; require a regular file and a bounded read.
+
+Before native preparation and each of the four probes, persist the attribution
+reservation and a separate physical cost execution. Archive the exact plan and
+intervention patch. Complete physical cost accounting before saving a probe
+result. Charge elapsed time through explicit native settlement, including
+store and resource waits. Earlier retired records still consume the submission
+allowance; unfinished work or unproved cleanup prevents a new launch. An
+existing record, including revision zero after a crash, is never an automatic
+retry permission.
+
+During diagnosis, observe the same attempt, generation, submission, control
+epoch, reset and policy authority used by the proof boundary. The ordinary
+queue excludes the coordinator's own hold, so queue membership cannot serve
+as this observer's authority predicate. A scoped observer cancels native work
+and joins before the coordinator returns. Settle native ownership on every
+exit after preparation. Only then may matching committed cost and attribution
+evidence produce a causal return capability. The capability still needs
+transactional validation at the state change; diagnosis alone changes no
+story state or certification result.
+
 Associate retained evidence by project key, canonical story number and
 verification generation. A project prefix rename changes the current display
 ID, not a hold, allowance or cost history. Keep the original IDs in immutable

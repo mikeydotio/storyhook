@@ -42,6 +42,21 @@ pub struct RustCaseObservation {
 }
 
 impl RustCase {
+    /// Stable exact case identity for durable failure components.
+    pub(crate) fn check_identity(&self) -> Option<String> {
+        let RustTarget::Integration(target) = &self.target else {
+            return None;
+        };
+        Some(format!("rust:{}:{target}:{}", self.package, self.name))
+    }
+
+    /// Match the selected literal target and case against an original gate observation.
+    pub(crate) fn matches_failure(&self, failure: &crate::store::GateFailedCase) -> bool {
+        matches!(&self.target, RustTarget::Integration(target) if failure.target.as_ref() == Some(target))
+            && failure.name.as_ref() == Some(&self.name)
+            && !failure.path.trim().is_empty()
+    }
+
     /// Bind an original gate log to one exact Cargo frame and native assertion failure.
     /// Unsupported or ambiguous framing is unknown, never a guessed reproduction.
     pub fn original_failure(&self, log: &[u8]) -> Result<String, String> {

@@ -189,6 +189,16 @@ impl SettledRustComparison {
 }
 
 impl CausalReturnEvidence {
+    /// Reuse the same authority fence while the owner's own attribution hold is active.
+    pub(crate) fn permits_diagnosis(
+        tx: &impl ReadOps,
+        candidate: &VerificationCandidate,
+        attempt: &str,
+        control: i64,
+    ) -> Result<bool, StoreError> {
+        retained::authority(tx, candidate, attempt, control)
+    }
+
     /// Retire only this proved component in the transaction that validates and returns it.
     pub(in crate::service) fn retire(
         &self,

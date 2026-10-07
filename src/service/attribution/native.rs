@@ -4,7 +4,7 @@ mod pipeline;
 mod proof;
 pub use proof::{CausalReturnEvidence, SettledRustComparison};
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use super::*;
 use crate::{env::Environment, error::AppError, process::Cancellation};
@@ -54,6 +54,10 @@ pub struct NativeProbeBinding<'a> {
 }
 
 impl NativeRustComparison {
+    #[cfg(test)]
+    pub(crate) fn set_fixture(&mut self, fixture: Option<std::path::PathBuf>) {
+        self.fixture = fixture;
+    }
     /// Recompute pinned trees and validate the complete closed detector input set.
     pub fn prepare(
         checkout: &Path,

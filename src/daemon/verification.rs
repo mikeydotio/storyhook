@@ -15,6 +15,8 @@ mod batch_preview;
 mod cleanup;
 mod control;
 mod cost;
+mod diagnosis;
+pub use diagnosis::{RustDiagnosisRequest, RustDiagnosisResult};
 pub(crate) mod evidence;
 #[cfg(test)]
 mod journal_retirement_tests;
