@@ -163,3 +163,67 @@ fn output_that_cannot_be_bound_to_this_attempt_never_quiets_the_warning() {
         );
     }
 }
+
+/// SH-869: a gate waiting for host admission, a build slot or a lock is shown
+/// as a resource wait, and gate work is not. The journal's newest running
+/// activity decides; the wire field round-trips and is absent otherwise.
+#[test]
+fn a_gate_waiting_for_resources_is_shown_as_a_resource_wait() {
+    let waits = [
+        "waiting for host admission (verifier-gate)",
+        "waiting for a build slot (libsqlite3_sys)",
+        "waiting for gate lock",
+    ];
+    for label in waits {
+        let run = OutputFixture::new();
+        let mut rows = run.records();
+        rows.push(serde_json::json!({
+            "kind":"activity", "path":"release gate", "label":label,
+            "status":"running", "at":RECENT
+        }));
+        run.write_journal(rows);
+        let status = status_at(&run, NOW);
+        let wait = status.resource_wait.clone().unwrap_or_else(|| {
+            panic!("{label}: no resource wait in {status:?}");
+        });
+        assert_eq!(wait.label, label);
+        assert_eq!(wait.since, RECENT);
+        let human = status.render_human();
+        assert!(
+            human.contains(&format!("Waiting for resources: {label} since ")),
+            "{human}"
+        );
+        let wire = serde_json::to_value(&status).unwrap();
+        assert_eq!(wire["resource_wait"]["label"], label);
+        let decoded: VerifierStatus = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.resource_wait, Some(wait));
+    }
+
+    // Granted: the wait activity ends and later work is the current step.
+    let run = OutputFixture::new();
+    let mut rows = run.records();
+    rows.push(serde_json::json!({
+        "kind":"activity", "path":"release gate",
+        "label":"waiting for host admission (verifier-gate)", "status":"running", "at":START
+    }));
+    rows.push(serde_json::json!({
+        "kind":"activity", "path":"release gate",
+        "label":"waiting for host admission (verifier-gate)", "status":"passed", "at":RECENT
+    }));
+    run.write_journal(rows);
+    let status = status_at(&run, NOW);
+    assert_eq!(status.resource_wait, None, "{status:?}");
+    assert!(!status.render_human().contains("Waiting for resources"));
+    let wire = serde_json::to_value(&status).unwrap();
+    assert!(wire.get("resource_wait").is_none(), "absent field: {wire}");
+
+    // Ordinary gate work is never a resource wait.
+    let run = OutputFixture::new();
+    let mut rows = run.records();
+    rows.push(serde_json::json!({
+        "kind":"activity", "path":"release gate", "label":"cargo test (core)",
+        "status":"running", "at":RECENT
+    }));
+    run.write_journal(rows);
+    assert_eq!(status_at(&run, NOW).resource_wait, None);
+}

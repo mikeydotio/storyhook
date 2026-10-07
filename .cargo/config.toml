@@ -14,3 +14,13 @@
 # full cold rebuild.
 [build]
 rustc-wrapper = "scripts/rustc-slot.py"
+
+# Every test binary Cargo runs -- `make test`, a bare `cargo test --test foo`,
+# a doctest -- goes through the host admission adapter (SH-869). Without a
+# host policy the adapter execs the binary unchanged; inside a granted root it
+# runs in that grant; otherwise it is admitted as its own root. `cargo run`
+# and example binaries are application runs and always pass straight through.
+# `tests/build_slots.rs` refuses tracked overrides of this key, and
+# `tests/runner_admission_inventory.rs` pins it.
+[target.'cfg(all())']
+runner = ["scripts/host-admit.py", "--entry", "cargo-test-binary", "--"]

@@ -3,6 +3,7 @@
 
 import argparse
 import importlib
+import os
 from pathlib import Path
 import signal
 import subprocess
@@ -14,6 +15,9 @@ import unittest
 sys.dont_write_bytecode = True
 
 SUITES = {'lifecycle': 'test_verifier_lifecycle', 'verdict': 'test_verifier_verdict'}
+# The host admission entry this case pool runs as (SH-869); its units are cases.
+ENTRY = "verifier-python-workers"
+ADMIT = Path(__file__).resolve().parents[1] / 'host-admit.py'
 POLL_INTERVAL = 0.01
 
 
@@ -137,7 +141,22 @@ def main(argv=None):
     if args.list:
         print('\n'.join(cases))
         return 0
-    return run_cases(Path(module.__file__).resolve(), cases, args.jobs)
+    jobs = admitted_jobs(args.jobs) if argv is None else args.jobs
+    return run_cases(Path(module.__file__).resolve(), cases, jobs)
+
+
+def admitted_jobs(requested):
+    """Run as the case pool's host admission entry; return its admitted case count (SH-869).
+
+    The adapter's marker ends the re-exec: this pid when it ran the pool in
+    place, the parent's when it supervises it. A nested pool's count comes
+    from its inherited share, so it cannot multiply the grant it runs in.
+    """
+    marker = os.environ.get('STORYHOOK_HOST_ENTRY', '')
+    if marker not in (f'{ENTRY}:{os.getpid()}', f'{ENTRY}:{os.getppid()}'):
+        os.execv(sys.executable, [sys.executable, '-B', str(ADMIT), '--entry', ENTRY, '--units', str(requested),
+                                  '--', sys.executable, '-B', str(Path(__file__).resolve()), *sys.argv[1:]])
+    return int(os.environ.pop('STORYHOOK_HOST_UNITS', requested))
 
 
 if __name__ == "__main__":

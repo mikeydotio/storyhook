@@ -580,6 +580,37 @@ fn no_tracked_file_overrides_the_wrapper_through_the_environment() {
     assert!("export RUSTC_WRAPPER=sccache".contains("RUSTC_WRAPPER="));
 }
 
+/// Cargo runs every test binary through the host admission adapter
+/// (SH-869): the runner key must stay executable, and no tracked file may set
+/// the environment or command-line overrides that replace it.
+#[test]
+fn no_tracked_file_overrides_the_test_runner() {
+    let entry = tracked_files()
+        .into_iter()
+        .find(|l| l.ends_with("\tscripts/host-admit.py"))
+        .expect("scripts/host-admit.py is tracked");
+    assert!(
+        entry.starts_with("100755 "),
+        "cargo can only run an executable runner; git records {entry}"
+    );
+    let runner_override =
+        regex::Regex::new(r"CARGO_TARGET_[A-Z0-9_]+_RUNNER=|--config[= ]\S*runner").unwrap();
+    let this = "tests/build_slots.rs";
+    let offenders: Vec<String> = tracked_files()
+        .into_iter()
+        .filter_map(|l| l.split('\t').nth(1).map(str::to_string))
+        .filter(|p| p != this && !p.ends_with(".md"))
+        .filter(|p| {
+            fs::read_to_string(checkout().join(p)).is_ok_and(|s| runner_override.is_match(&s))
+        })
+        .collect();
+    assert!(offenders.is_empty(), "{offenders:?}");
+    // Positive controls: the scanner sees both override shapes.
+    assert!(runner_override.is_match("export CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER=x"));
+    assert!(runner_override.is_match("cargo test --config target.'cfg(all())'.runner=[]"));
+    assert!(!runner_override.is_match("runner = [\"scripts/host-admit.py\"]"));
+}
+
 /// The two cadences the wrapper shares with `machine-lock.sh` are one number
 /// each, on both sides, or this says so (SH-136).
 #[test]

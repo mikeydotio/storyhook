@@ -183,6 +183,19 @@ case "$e2e_jobs" in
     ;;
 esac
 
+# HOST ADMISSION (SH-869). The browser suite is one `browser-pool` entry whose
+# units are concurrent slice jobs, and it runs the admitted count: the request
+# itself unless an enabled host authority granted fewer. The adapter's marker
+# ends the re-exec -- `$$` when it ran this script in place, `$PPID` when it
+# supervises it -- and the count is consumed before any slice starts.
+case "${STORYHOOK_HOST_ENTRY:-}" in
+  "browser-pool:$$" | "browser-pool:$PPID") ;;
+  *) exec "$STORYHOOK_PYTHON" -B "$(dirname "${BASH_SOURCE[0]}")/host-admit.py" \
+       --entry browser-pool --units "$e2e_jobs" -- bash "$0" "$@" ;;
+esac
+e2e_jobs="${STORYHOOK_HOST_UNITS:-$e2e_jobs}"
+unset STORYHOOK_HOST_UNITS
+
 # --- WebKit's Tab order, measured once, never assumed (SH-335). ---------
 #
 # `AppleKeyboardUIMode` is a macOS SYSTEM preference, not a property of the

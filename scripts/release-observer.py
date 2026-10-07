@@ -11,6 +11,17 @@ import tempfile
 import time
 
 SCRIPTS = Path(__file__).resolve().parent
+
+
+def preflight_command():
+    """The observed checkout's release preflight, admitted as one release-observer entry (SH-869).
+
+    Its link probes and Linux guest check load the host like a release build,
+    so they run inside a release-class grant; with no host policy the adapter
+    runs them unchanged.
+    """
+    return [sys.executable, "-B", str(SCRIPTS / "host-admit.py"), "--entry", "release-observer", "--",
+            "bash", "scripts/build-release-assets.sh", "--check"]
 INTERVAL_SECONDS = 60 * 60
 STALE_SECONDS = 2 * INTERVAL_SECONDS
 TAG_PREFIX = "refs/release-observer/tags/"
@@ -140,7 +151,7 @@ def watch(root):
                          "STORYHOOK_GITHUB_AUTHORITY", "STORYHOOK_GITHUB_EXPECTED"):
                 preflight_env.pop(name, None)
             record["preflight"] = subprocess.run(
-                ["bash", "scripts/build-release-assets.sh", "--check"],
+                preflight_command(),
                 cwd=checkout, stdout=log, stderr=log, env=preflight_env,
             ).returncode
             if git(checkout, "status", "--porcelain", "--untracked-files=no"):

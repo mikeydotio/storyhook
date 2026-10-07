@@ -136,6 +136,20 @@ esac
 # The re-exec sits ABOVE everything this script would otherwise have to clean
 # up -- a queued run holds no temp data root and no EXIT trap it has not yet
 # installed.
+#
+# HOST ADMISSION (SH-869).  The whole battery is one `rust-pool` entry whose
+# units are libtest threads: the thread budget, or libtest's own default for
+# a serial run.  It is admitted INSIDE the lock, never before it (decision
+# D7: a grant holder never waits on a lock), by putting the adapter in the
+# lock's own exec line, so this script's second pass needs no check of its
+# own.  An enabled authority's drain allowance becomes the lock's termination
+# grace, so the lock's KILL never lands on a supervisor still draining.
+if [ "$thread_budget" -gt 0 ]; then
+    requested_threads="$thread_budget"
+else
+    requested_threads="$(getconf _NPROCESSORS_ONLN)"
+fi
+admit=("$STORYHOOK_PYTHON" -B "$script_dir/host-admit.py" --entry rust-pool --units "$requested_threads" --)
 if [ -n "${STORYHOOK_GATE_LOCK_TAKEN:-}" ]; then
     # This run took the lock a moment ago, in the `else` branch below. The
     # handshake is between those two adjacent processes and nobody else, so it
@@ -145,7 +159,15 @@ if [ -n "${STORYHOOK_GATE_LOCK_TAKEN:-}" ]; then
     # one.
     unset STORYHOOK_GATE_LOCK_TAKEN STORYHOOK_GATE_LOCK_DEPTH
 elif [ "${STORYHOOK_GATE_LOCK:-1}" = "0" ]; then
-    echo "run-tests.sh: STORYHOOK_GATE_LOCK=0 -- running WITHOUT this repository's 'gate' lock; a concurrent suite will contend with this one" >&2
+    # Without the lock, the adapter's own marker ends the re-exec: `$$` when
+    # it ran this script in place, `$PPID` when it supervises it.
+    case "${STORYHOOK_HOST_ENTRY:-}" in
+    ("rust-pool:$$" | "rust-pool:$PPID") ;;
+    (*)
+        echo "run-tests.sh: STORYHOOK_GATE_LOCK=0 -- running WITHOUT this repository's 'gate' lock; a concurrent suite will contend with this one" >&2
+        exec "${admit[@]}" bash "$self" "$@"
+        ;;
+    esac
 else
     # THE DEPTH GUARD, AND WHY IT IS NOT THE SAME CHECK TWICE.  Arriving here
     # a second time means the handshake above did not land -- and the failure
@@ -165,10 +187,24 @@ else
         echo "run-tests.sh: reached the 'gate' lock take $depth times over, which means the re-exec handshake is not landing -- refusing rather than forking a process per cycle" >&2
         exit 2
     fi
+    grace=()
+    drain="$("${admit[@]:0:3}" --drain-seconds)" || exit 2
+    [ "$drain" -gt 0 ] && grace=(--termination-grace "$drain")
     STORYHOOK_GATE_PROGRESS_ACTIVITY_PATH="$gate_progress_case_path" \
         STORYHOOK_GATE_LOCK_TAKEN=1 STORYHOOK_GATE_LOCK_DEPTH="$depth" \
-        exec bash scripts/machine-lock.sh gate -- bash "$self" "$@"
+        exec bash scripts/machine-lock.sh "${grace[@]+"${grace[@]}"}" gate -- "${admit[@]}" bash "$self" "$@"
 fi
+
+# The admitted thread count: the request itself unless an enabled authority
+# granted fewer. A serial run caps libtest only then, so a disabled host runs
+# exactly as before. Consumed, like the budget below.
+admitted_threads="${STORYHOOK_HOST_UNITS:-$requested_threads}"
+if [ "$thread_budget" -gt 0 ]; then
+    thread_budget="$admitted_threads"
+elif [ "$admitted_threads" -lt "$requested_threads" ]; then
+    export RUST_TEST_THREADS="$admitted_threads"
+fi
+unset STORYHOOK_HOST_UNITS
 
 # Consumed, not inherited: a test binary that drives this script as a fixture
 # must take the path its own case chose, not the outer battery's.

@@ -15,12 +15,28 @@ from .namespace import open_private
 from .policy import Refusal
 
 
+def inherited_descriptors():
+    """The caller's open descriptors that a child would inherit across exec."""
+    found = set()
+    for name in os.listdir("/dev/fd"):
+        fd = int(name)
+        if fd > 2:
+            try:
+                if os.get_inheritable(fd):
+                    found.add(fd)
+            except OSError:
+                continue  # the directory listing's own descriptor, now closed
+    return found
+
+
 class ManagedProcess:
     """A blocked-launch supervisor; SH-869 adapters own preserving its child contract."""
 
-    def __init__(self, client, lease, command, *, publisher=None):
+    def __init__(self, client, lease, command, *, publisher=None, env=None):
         self.client, self.lease, self.child, self.guard = client, lease, None, None
         self.publisher = publisher
+        # The authority's reason for withdrawing this grant, once observed.
+        self.drain_reason = None
         self.finished = False
         self.result, self.failure = None, None
         self.execution_id = uuid.uuid4().hex
@@ -38,12 +54,17 @@ class ManagedProcess:
         read_ready, write_ready = os.pipe()
         read_exec, write_exec = os.pipe()
         try:
-            env = dict(os.environ, STORYHOOK_HOST_GRANT=lease["token"],
+            env = dict(os.environ if env is None else env, STORYHOOK_HOST_GRANT=lease["token"],
                        STORYHOOK_HOST_REQUEST=lease["id"], STORYHOOK_HOST_LEASE_FD=str(self.guard))
+            # pass_fds forces close_fds; the caller's inheritable descriptors
+            # (a Cargo jobserver, a lock holder's stdin) must still reach the
+            # command, so they are passed explicitly beside the handshake.
+            handshake = (read_go, write_ready, self.guard, write_exec)
             self.child = subprocess.Popen(
                 [sys.executable, "-B", str(Path(__file__).with_name("launcher.py")),
                  str(read_go), str(write_ready), str(self.guard), str(write_exec), *command],
-                start_new_session=True, pass_fds=(read_go, write_ready, self.guard, write_exec), env=env)
+                start_new_session=True, pass_fds=tuple(sorted(set(handshake) | inherited_descriptors())),
+                env=env)
             os.close(read_go); read_go = None
             os.close(write_ready); write_ready = None
             os.close(write_exec); write_exec = None
@@ -83,17 +104,25 @@ class ManagedProcess:
         return os.waitid(os.P_PID, self.child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
 
     def _members(self):
+        # The session is the ownership boundary. Process groups inside it are
+        # ordinary: captured children, `set -m` and fixtures create them.
         members = []
         for pid in native.session_members(self.child.pid):
             try:
-                fact = native.process(pid, self.boot)
-                if fact["live"]:
-                    if os.getpgid(pid) != self.child.pid:
-                        raise Refusal("managed descendant left its owned process group; cleanup is unknown")
+                if native.process(pid, self.boot)["live"]:
                     members.append(pid)
             except ProcessLookupError:
                 continue
         return members
+
+    def _signal(self, members, signum):
+        """Signal confirmed members of the pinned session; never a pid that left it."""
+        for pid in members:
+            try:
+                if os.getsid(pid) == self.child.pid:
+                    os.kill(pid, signum)
+            except ProcessLookupError:
+                continue
 
     def wait(self, *, force_cancel=False):
         """Observe broker cancellation and drain only this pinned managed process group."""
@@ -103,6 +132,10 @@ class ManagedProcess:
             return self.result
         requested, sent_term, sent_kill = force_cancel, None, False
         draining, failure = force_cancel, None
+        # TERM reaches each member once, so a handler that forks is not
+        # re-triggered; after escalation every census member gets KILL,
+        # including one forked after an earlier census.
+        terminated = set()
         prior = {}
         def cancel(_signal, _frame):
             nonlocal requested
@@ -117,7 +150,9 @@ class ManagedProcess:
                             draining = True
                             self.call("cancel"); requested = False
                         row = self.call("inspect")
-                        draining = draining or row["state"] in {"draining", "quarantined"}
+                        if row["state"] in {"draining", "quarantined"}:
+                            draining = True
+                            self.drain_reason = self.drain_reason or row.get("reason")
                         if self.publisher:
                             self.publisher.publish()
                     except (Refusal, OSError) as error:
@@ -129,16 +164,17 @@ class ManagedProcess:
                 if draining or exited:
                     now = time.monotonic_ns() // 1_000_000
                     if sent_term is None:
-                        if members:
-                            os.killpg(self.child.pid, signal.SIGTERM)
                         sent_term = now
                     elif now - sent_term >= self.timing["cleanup_ms"]:
                         if sent_kill:
                             raise Refusal("managed descendants did not settle after the cleanup allowance")
-                        if members:
-                            os.killpg(self.child.pid, signal.SIGKILL)
                         sent_kill = True
                         sent_term = now
+                    if sent_kill:
+                        self._signal(members, signal.SIGKILL)
+                    else:
+                        self._signal([pid for pid in members if pid not in terminated], signal.SIGTERM)
+                        terminated.update(members)
                 # This is the policy observation cadence, not a guessed workload delay.
                 select.select([], [], [], self.timing["sample_ms"] / 1000)
             result = self.child.wait()
