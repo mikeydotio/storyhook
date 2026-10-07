@@ -80,7 +80,9 @@ pub struct DecisionReceipt {
     pub delivery_identity: Option<String>,
     /// Subjects whose blocked-by edge was created by this recovery.
     pub owned_edges: Vec<StoryNo>,
-    /// Exact awaiting holds that survive ordinary dependency closure.
+    /// Exact awaiting holds this decision wrote on affected stories: a wait for
+    /// the repair (they survive ordinary dependency closure), or an external
+    /// prerequisite. Only this recovery's release clears them.
     #[serde(default)]
     pub dependency_holds: Vec<super::OwnedDependencyHold>,
     /// Joined subjects whose changed authority prevented mutation.

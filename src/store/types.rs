@@ -807,6 +807,10 @@ pub struct RelationEdge {
 /// memory did not know about.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProjectSettings {
+    /// `automations.enabled` — absent preserves the automated workflow.
+    pub automations_enabled: Option<bool>,
+    /// Last manual-mode boundary; older submissions have no automation authority.
+    pub automations_after: Option<i64>,
     /// `sync.auto_transition` — whether commit-sync moves stories automatically.
     pub sync_auto_transition: Option<bool>,
     /// `doctor.stale_threshold` — a duration string such as `14d`.

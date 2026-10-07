@@ -513,6 +513,14 @@ for _f in "$faketmux_env"/FAKE_TMUX_*; do
   export "\$_name=\$(cat "\$_f")"
 done
 
+# The production allowlist intentionally removes tmux selectors. Restore a
+# run-owned caller here, where the fixture owns it, before resource discovery
+# can fall back to the host default server (SH-888). Publish the fake endpoint
+# for native inventory too; FAKE_TMUX_* alone cannot cross that boundary.
+export TMUX="\$(cd "\$FAKE_TMUX_STATE" && pwd -P)/tmux.sock,0,0"
+unset TMUX_PANE
+tmux display-message -p '#{socket_path}' >/dev/null || exit 1
+
 # Identify the helper verb without mistaking a separated --project value for
 # it. This wrapper receives both --project <slug> dispatch and --project
 # <slug> unclaim; the latter is stop-now's deliberate inverse while the

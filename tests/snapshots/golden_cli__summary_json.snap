@@ -221,6 +221,7 @@ source: tests/golden_cli.rs
         "control": "running",
         "evidence_error": null,
         "first_hit_story": null,
+        "held_reasons": [],
         "held_stories": [],
         "incident": null,
         "incident_age_seconds": null,

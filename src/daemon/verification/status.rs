@@ -169,7 +169,7 @@ pub(crate) fn snapshot(
     let project = tx
         .project(ctx.project())?
         .ok_or_else(|| AppError::NotFound(format!("project {}", ctx.project())))?;
-    let ordered = crate::service::verification::ordered_candidates_for(tx, ctx.project())?;
+    let ordered = crate::service::verification::ordered_candidates_for_status(tx, ctx.project())?;
     let incident = tx.verification_incident(ctx.project())?;
     let recovery = tx.verification_recovery(ctx.project())?;
     let first_hit_story = incident.as_ref().map(|i| i.story.to_id(&project.prefix));
@@ -367,7 +367,10 @@ pub(crate) fn snapshot(
             verifying,
             held_stories,
             attribution_holds: crate::service::attribution::holds::current(tx, ctx.project())?,
-            held_reasons: crate::service::verification::held_verifying_for(tx, ctx.project())?,
+            held_reasons: crate::service::verification::held_verifying_for_status(
+                tx,
+                ctx.project(),
+            )?,
             active: active.cloned(),
             cost,
             reservation,
@@ -490,7 +493,7 @@ impl VerifierStatus {
             text.push_str(&format!("Project recovery {}: {} at {}; {}\nAffected: {}; assessor {}; repair {}; completed attempts {}/{}\nNext: {}\nInspect: story verifier repair show {} --json\n",
                 recovery.id, recovery.fault, recovery.locus, recovery.phase,
                 recovery.affected_stories.join(", "), recovery.assessment_owner,
-                recovery.repair_story.as_deref().unwrap_or("undecided"), recovery.completed_attempts, recovery.attempt_limit,
+                recovery.repair_story.as_deref().unwrap_or(if recovery.scope == Some(crate::service::project_recovery::RepairScope::External) { "none (external)" } else { "undecided" }), recovery.completed_attempts, recovery.attempt_limit,
                 recovery.next_action, recovery.id));
             if let Some(link) = &recovery.repair_link {
                 text.push_str(&format!("Repair PR: {link}\n"));

@@ -1,6 +1,9 @@
 //! This machine's Tailscale identity — the second interface the daemon binds,
 //! and the only non-loopback `Host` values it will trust for a mutation.
 //!
+//! A daemon whose `crate::env::TailnetPolicy` is loopback-only never runs the
+//! probe here at all; every test environment is.
+//!
 //! Every rule in [`TailnetBind::trusted_hosts`] is a decision about what an
 //! attacker can and cannot forge an origin for, and the reasoning is in the doc
 //! comments rather than in a commit message for exactly that reason.

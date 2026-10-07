@@ -107,6 +107,34 @@ pub struct InvokeRequest {
     /// control-character-free by the time anything can store or render it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<ActorLabel>,
+    /// Whether the caller runs in a dispatched agent session (SH-849).
+    ///
+    /// Read by the CLI from its own environment ([`is_agent_session`]) for the
+    /// reason [`actor`](Self::actor) is: the daemon cannot see the caller's
+    /// shell. A service that only an operator may perform refuses it. It is a
+    /// guard against an agent running a command it was shown, not
+    /// authentication: a caller that clears its environment is not refused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_session: bool,
+}
+
+/// The variables that mark a dispatched agent session: every dispatch sets
+/// the first, and an autonomous lane also sets one of the others
+/// (`story help test-environment`).
+pub const AGENT_SESSION_VARS: [&str; 3] = [
+    "STORYHOOK_DISPATCH",
+    "STORYHOOK_AUTO",
+    "STORYHOOK_FULL_AUTO",
+];
+
+/// Whether an environment, read through `var`, is a dispatched agent session.
+///
+/// An empty or blank value is no marker, as for every other storyhook
+/// variable: an `export` unset the careless way leaves an empty string behind.
+pub fn is_agent_session(var: impl Fn(&str) -> Option<String>) -> bool {
+    AGENT_SESSION_VARS
+        .iter()
+        .any(|name| var(name).is_some_and(|value| !value.trim().is_empty()))
 }
 
 impl InvokeRequest {
@@ -118,7 +146,15 @@ impl InvokeRequest {
             stdin: None,
             project: None,
             actor: None,
+            agent_session: false,
         }
+    }
+
+    /// Marks the caller as a dispatched agent session (SH-849).
+    #[must_use]
+    pub fn agent_session(mut self, agent_session: bool) -> Self {
+        self.agent_session = agent_session;
+        self
     }
 
     /// Supplies who the caller says it is (SH-246).
@@ -668,8 +704,13 @@ fn dispatch_inner<S: Store>(
             dry_run,
         } => dispatch_unclaim(ctx, &id, &comment, dry_run),
         Invocation::Reset { id, force, caller } => {
-            crate::service::reset::reset_story(ctx, &id, force, &caller)?;
-            ctx.story_view(&id)
+            let reset = crate::service::reset::reset_story(ctx, &id, force, &caller)?;
+            let mut response = ctx.story_view(&id)?;
+            // The reset this command ran, finished or not, with what it removed.
+            if let crate::output::Response::Story(view) = &mut response {
+                view.reset = Some(crate::service::story_reset::view(&reset));
+            }
+            Ok(response)
         }
         Invocation::SupersedeBlockDeliveries { id } => {
             let receipt = ctx.store().write(|tx| {
@@ -1097,6 +1138,15 @@ fn dispatch_verifier<S: Store>(
                 .decide(recovery_id, &decision)
                 .map(|view| Response::ProjectRecovery(Box::new(view)));
         }
+        VerifierAction::RepairSatisfy { recovery_id, input } => {
+            let raw = read_input(ctx.cwd(), None, Some(input))?;
+            let statement = serde_json::from_str(&raw).map_err(|error| {
+                AppError::Validation(format!("invalid prerequisite statement JSON: {error}"))
+            })?;
+            return recovery
+                .satisfy(recovery_id, &statement)
+                .map(|view| Response::ProjectRecovery(Box::new(view)));
+        }
         _ => {}
     }
     let activity = ctx.verification_activity().ok_or_else(|| {
@@ -1116,7 +1166,8 @@ fn dispatch_verifier<S: Store>(
         }
         VerifierAction::Evidence { .. }
         | VerifierAction::RepairShow { .. }
-        | VerifierAction::RepairDecide { .. } => {
+        | VerifierAction::RepairDecide { .. }
+        | VerifierAction::RepairSatisfy { .. } => {
             unreachable!("recovery operations returned above")
         }
         VerifierAction::GateConfig { .. } => {
@@ -3831,12 +3882,7 @@ impl From<ureq::Error> for Transport {
 
 impl Invoker for HttpInvoker {
     fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError> {
-        let wire = crate::api::wire::WireRequest::new(request.invocation, &self.cwd)
-            .no_hooks(request.no_hooks)
-            .hook_depth(self.hook_depth)
-            .stdin(request.stdin)
-            .project(request.project)
-            .actor(request.actor);
+        let wire = crate::api::wire::WireRequest::carrying(request, &self.cwd, self.hook_depth);
 
         // Always `None` in production: `bound` exists only as a test seam
         // (`send`'s own docstring) since SH-174 deleted its sole production
@@ -3939,6 +3985,7 @@ pub struct StoreInvoker<'a, S: Store> {
     env: Environment,
     hook_depth: u32,
     verification_activity: Option<&'a crate::daemon::verification::VerificationActivity>,
+    reset_runtime: Option<&'a crate::daemon::reset::ResetRuntime>,
 }
 
 impl<'a, S: Store> StoreInvoker<'a, S> {
@@ -3950,7 +3997,15 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
             env,
             hook_depth: 0,
             verification_activity: None,
+            reset_runtime: None,
         }
+    }
+
+    /// Supplies the daemon's reset runtime to `story reset`.
+    #[must_use]
+    pub fn reset_runtime(mut self, runtime: &'a crate::daemon::reset::ResetRuntime) -> Self {
+        self.reset_runtime = Some(runtime);
+        self
     }
 
     /// Sets how deep inside an event hook this invocation is running.
@@ -4499,9 +4554,11 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
         let ctx = Ctx::new(self.store, project, &self.cwd, self.env.clone())
             .no_hooks(request.no_hooks)
             .hook_depth(self.hook_depth)
+            .agent_session(request.agent_session)
             .with_stdin(request.stdin)
             .with_provenance(provenance)
-            .with_verification_activity(self.verification_activity);
+            .with_verification_activity(self.verification_activity)
+            .with_reset_runtime(self.reset_runtime);
         dispatch(&ctx, request.invocation)
     }
 }

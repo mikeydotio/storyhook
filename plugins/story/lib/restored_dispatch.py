@@ -7,6 +7,10 @@ import re
 from pathlib import Path
 import shlex
 
+import sys
+
+sys.dont_write_bytecode = True
+
 from process_observation import descendants, observe_process
 
 IDENTITY = '@storyhook-identity-v1'

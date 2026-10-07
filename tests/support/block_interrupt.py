@@ -40,11 +40,12 @@ bindir.mkdir()
 wrapper = bindir / "tmux"
 wrapper.write_text(f"#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do case \"$1\" in -u) shift ;; -S) shift 2 ;; *) break ;; esac; done\nif [ -f {shlex.quote(str(scratch / 'refuse-native'))} ] && [ \"$1\" = send-keys ]; then echo 'native delivery refused by fixture' >&2; exit 42; fi\nexec {shlex.quote(tmux)} -u -S {shlex.quote(str(socket))} \"$@\"\n")
 wrapper.chmod(0o755)
-env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
+env = dict(os.environ, TMUX=f"{socket},0,0", PATH=f"{bindir}:{os.environ['PATH']}",
            STORYHOOK_LOCK_DIR=str(scratch / "locks"),
            STORY_READY_PROCESS_PATTERN="[Pp]ython", STORY_PASTE_SETTLE_DELAY="0")
 env.pop("STORYHOOK_MACHINE_LOCKS", None)
 env.pop("STORY_AGENT", None)
+env.pop("TMUX_PANE", None)
 gate = repo / "scripts/machine-lock.sh"
 helper = repo / "plugins/story/bin/story.sh"
 provider = scratch / "provider.py"

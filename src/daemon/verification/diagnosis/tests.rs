@@ -131,7 +131,15 @@ fn unsupported_original_is_held_durably_without_diagnostic_launch() {
 
 #[test]
 fn cancelled_or_changed_authority_does_not_start_or_write_diagnosis() {
-    for change in ["cancel", "stop", "stop-start", "resubmit", "human-only"] {
+    for change in [
+        "cancel",
+        "stop",
+        "stop-start",
+        "resubmit",
+        "human-only",
+        "manual-mode",
+        "automation-reenabled",
+    ] {
         let b = Board::new();
         let owner = b.owner();
         let request = b.fail(&owner);
@@ -145,6 +153,17 @@ fn cancelled_or_changed_authority_does_not_start_or_write_diagnosis() {
                         tx.put_verification_enabled(b.candidate.project, true)?;
                     }
                     Ok(())
+                })
+                .unwrap(),
+            "manual-mode" | "automation-reenabled" => b
+                .store
+                .write(|tx| {
+                    let project = b.candidate.project;
+                    let mut settings = tx.settings(project)?;
+                    settings.automations_enabled = Some(change == "automation-reenabled");
+                    settings.automations_after =
+                        Some(tx.project(project)?.unwrap().next_global_seq - 1);
+                    tx.put_settings(project, &settings)
                 })
                 .unwrap(),
             "resubmit" => {

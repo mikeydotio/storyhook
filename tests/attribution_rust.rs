@@ -270,3 +270,21 @@ fn rust_selection_and_listing_reject_broad_or_forged_identities() {
             .is_err()
     );
 }
+
+#[test]
+fn diagnosis_head_refresh_uses_only_metadata_endpoint() {
+    let output = Command::new("python3")
+        .arg("-B")
+        .arg(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("scripts/tests/test_attribution_head.py"),
+        )
+        .output()
+        .expect("run metadata-only shell regression");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

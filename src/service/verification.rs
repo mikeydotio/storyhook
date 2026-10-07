@@ -188,6 +188,9 @@ pub(crate) fn refuse_uncertified_completion(
     story: StoryNo,
     events: &[StoryEvent],
 ) -> Result<(), AppError> {
+    if !tx.automations_enabled(project)? {
+        return Ok(());
+    }
     let completes = events.iter().any(|event| {
         matches!(event, StoryEvent::StoryStateChanged { state, .. } if state == COMPLETION_STATE_SLUG)
     });
@@ -473,7 +476,7 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                 return Ok(HoldView::default());
             };
             let index = super::query::story_map(tx, project.id)?;
-            let generation = ordered_candidates_in(tx, &project, &index)?
+            let generation = ordered_candidates_in(tx, &project, &index, QueuePurpose::Authority)?
                 .into_iter()
                 .find(|current| current.story_id == reserved.story_id)
                 .and_then(|current| current.verifying_generation);
@@ -1010,6 +1013,9 @@ fn cleanup_candidates_for(
     project: ProjectId,
 ) -> Result<Vec<VerificationCandidate>, StoreError> {
     let mut candidates = Vec::new();
+    if !tx.automations_enabled(project)? {
+        return Ok(candidates);
+    }
     if let Some(project) = tx.project(project)? {
         let checkout = tx.checkout_path(project.id)?.unwrap_or_default();
         let links = tx.pr_links(project.id)?;
@@ -1021,6 +1027,7 @@ fn cleanup_candidates_for(
                 continue;
             }
             let events = tx.events_for(project.id, row.story_no)?;
+            if !super::automations::permits_generation(tx, project.id, events.iter().rev().find(|e| matches!(e.known(), Some(StoryEvent::StoryStateChanged { state, .. }) if state == VERIFYING_STATE)).map(|e| e.global_seq))? { continue; }
             let Some(generation) = latest_generation(&events) else {
                 continue;
             };
@@ -1333,10 +1340,33 @@ pub(crate) fn ordered_candidates_for(
     tx: &impl ReadOps,
     project: ProjectId,
 ) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
+    ordered_candidates_for_purpose(tx, project, QueuePurpose::Authority)
+}
+
+/// Diagnostic projection only; malformed recovery records are reported separately.
+/// This must never authorize a verifier operation.
+pub(crate) fn ordered_candidates_for_status(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
+    ordered_candidates_for_purpose(tx, project, QueuePurpose::Status)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueuePurpose {
+    Authority,
+    Status,
+}
+
+fn ordered_candidates_for_purpose(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    purpose: QueuePurpose,
+) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
     match tx.project(project)? {
         Some(project) => {
             let index = super::query::story_map(tx, project.id)?;
-            ordered_candidates_in(tx, &project, &index)
+            ordered_candidates_in(tx, &project, &index, purpose)
         }
         None => Ok(Vec::new()),
     }
@@ -1349,6 +1379,21 @@ pub(crate) fn held_verifying_for(
     tx: &impl ReadOps,
     project: ProjectId,
 ) -> Result<Vec<(String, String)>, crate::store::StoreError> {
+    held_verifying_for_purpose(tx, project, QueuePurpose::Authority)
+}
+
+pub(crate) fn held_verifying_for_status(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<Vec<(String, String)>, crate::store::StoreError> {
+    held_verifying_for_purpose(tx, project, QueuePurpose::Status)
+}
+
+fn held_verifying_for_purpose(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    purpose: QueuePurpose,
+) -> Result<Vec<(String, String)>, crate::store::StoreError> {
     let Some(project) = tx.project(project)? else {
         return Ok(Vec::new());
     };
@@ -1358,7 +1403,9 @@ pub(crate) fn held_verifying_for(
     for row in tx.stories(project.id, &StoryQuery::all().state(VERIFYING_STATE))? {
         let generation =
             verifying_entry(tx, project.id, row.story_no)?.map(|(_, generation)| generation);
-        let why = match queue_hold(tx, project.id, &row, &resets, &observed, generation)? {
+        let why = match queue_hold(
+            tx, project.id, &row, &resets, &observed, generation, purpose,
+        )? {
             None => continue,
             Some(QueueHold::HumanOnly) => "human-only: reserved for a person".to_string(),
             Some(QueueHold::Awaiting) => format!(
@@ -1438,8 +1485,12 @@ fn ordered_candidates_in(
     tx: &impl ReadOps,
     project: &crate::store::ProjectRecord,
     index: &std::collections::BTreeMap<String, crate::domain::StorySnapshot>,
+    purpose: QueuePurpose,
 ) -> Result<Vec<VerificationCandidate>, crate::store::StoreError> {
     let mut candidates = Vec::new();
+    if !tx.automations_enabled(project.id)? {
+        return Ok(candidates);
+    }
     let intents = tx.landing_intents()?;
     let floors = crate::domain::BlockerFloors::compute(index);
     let checkout = tx.checkout_path(project.id)?;
@@ -1449,7 +1500,14 @@ fn ordered_candidates_in(
     for row in rows {
         let entry = verifying_entry(tx, project.id, row.story_no)?;
         let generation = entry.as_ref().map(|(_, generation)| *generation);
-        if queue_hold(tx, project.id, &row, &resets, &observed, generation)?.is_some() {
+        if !super::automations::permits_generation(tx, project.id, generation)? {
+            continue;
+        }
+        if queue_hold(
+            tx, project.id, &row, &resets, &observed, generation, purpose,
+        )?
+        .is_some()
+        {
             continue;
         }
         let lease = latest_cleanup_lease(tx, project.id, row.story_no)?;
@@ -1516,6 +1574,7 @@ fn queue_hold(
     resets: &std::collections::BTreeMap<StoryNo, String>,
     observed: &std::collections::BTreeSet<(StoryNo, GlobalSeq)>,
     generation: Option<GlobalSeq>,
+    purpose: QueuePurpose,
 ) -> Result<Option<QueueHold>, crate::store::StoreError> {
     Ok(if crate::domain::is_human_only(&row.snapshot) {
         Some(QueueHold::HumanOnly)
@@ -1537,7 +1596,13 @@ fn queue_hold(
             .landing_intents()?
             .iter()
             .any(|intent| intent.project == project && intent.story == row.story_no)
-        && super::project_recovery::requires_certification(tx, project, row.story_no)?
+        && match super::project_recovery::requires_certification(tx, project, row.story_no) {
+            // Status displays the invalid recovery diagnostic without losing
+            // unrelated queue/incident/control evidence. Execution retains the
+            // strict read below: a corrupt record never grants authority.
+            Err(StoreError::Corrupt(_)) if purpose == QueuePurpose::Status => false,
+            result => result?,
+        }
     {
         Some(QueueHold::StoppedRepair)
     } else {

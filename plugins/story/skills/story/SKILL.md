@@ -44,7 +44,7 @@ authority, so do not guess a displayed name or re-derive the workflow from memor
 | `doctor` | Run **Provider dispatch** below in doctor mode. |
 | `claim <id>` or `claim --next` | Run **Claim** below. One of the two is required; a bare `claim` is refused rather than resolved to `--next`. |
 | `unclaim <id>` | Run **Release** below. Hands the claim back and closes the story's tmux window. Nothing on disk is touched. |
-| `reset <id> [--force]` | Run **Release** below. Everything `unclaim` does, then deletes the worktree and the branch. |
+| `reset <id> [--force]` | Run **Release** below. Only on the user's explicit request: closes the window, discards the worktree (uncommitted work included) and the local branch, and returns the story to todo. |
 | `context [--full] [--story <id>]` | Load `<plugin-root>/skills/story-context/SKILL.md` and pass the flag through. |
 | `setup` | Load `<plugin-root>/skills/story-setup/SKILL.md`. |
 | `sync [--since <duration>]` | Load `<plugin-root>/skills/story-sync/SKILL.md` and pass the flag through. |
@@ -120,23 +120,25 @@ write, tmux, and (for `reset`) git, so there is something to orchestrate.
 | Verb | Does | For |
 |---|---|---|
 | `bash "<story-helper>" unclaim <id>` | releases the claim, comments, closes the story's tmux window. **Nothing on disk is touched.** | handing work back with the worktree intact |
-| `bash "<story-helper>" reset <id> [--force]` | the same, then deletes the worktree **and** the branch | a story abandoned by a crash or a reboot, where restarting beats inheriting |
+| `bash "<story-helper>" reset <id> [--force]` | runs `story reset`: closes the window, **discards** the worktree (uncommitted work included) and the local branch, clears awaiting, returns the story to todo | a wedged or abandoned story, where restarting beats inheriting — only on the user's explicit request |
 
 Pass `--comment <text>` or `--no-comment` through to either when the user asked for one; the
 default records where the story went and whether that was where it came from. `STORY_DRY_RUN=1`
 previews both without writing.
 
-- `ok:false`: show `display` and stop. `reason` names the guard: `unclaim-conflict` (the story
-  is not claimed — this is an answer, not a transient error to retry), or, for `reset`,
-  `dirty-worktree`, `unpushed-commits`, `locked-worktree`, `protected-branch`, `self-window`,
-  `current-worktree`.
-- `reset --force` overrides the first three, which all ask one question: *is this recoverable
-  anywhere else?* It does **not** override `protected-branch`, `self-window`, or
-  `current-worktree`, and offering it for those would be wrong rather than merely refused.
+- `ok:false`: show `display` and stop. For `unclaim`, `reason` names the guard:
+  `unclaim-conflict` (the story is not claimed — this is an answer, not a transient error to
+  retry). `reset` refuses only a request that is not a reset of an open ordinary story (an
+  unknown, closed or epic story).
+- `reset` never refuses once the story is reserved, and `--force` changes nothing. What it cannot
+  prove the story owns — the caller's own worktree or tmux window, a protected branch, a
+  replaced directory — is left in place and named in the story's completion comment, which also
+  gives the deleted branch's tip and the `git branch <name> <sha>` command that restores it.
+  Relay that comment to the user. Use `unclaim` when the user wants to keep the work.
 - `unclaim` never refuses because the caller is in the story's own tmux window. It does the
   release and leaves that window open, saying so in `display` — closing it would destroy the
-  answer. `reset` refuses that case outright, because it cannot leave a live shell standing in
-  a directory it just deleted.
+  answer. `reset` leaves the caller's own window and worktree in place for the same reason and
+  says so in its comment.
 - On success `unclaim` reports `unclaimed_from` and `restored_to`. When those differ from where
   the story was actually claimed from, `restore_fallback` names why; show it, because it is a
   statement about where the work came from.

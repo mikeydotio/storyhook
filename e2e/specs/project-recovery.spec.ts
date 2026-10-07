@@ -64,3 +64,26 @@ test("invalid project recovery shows literal diagnostics without ownership or co
   await expect(recovery.getByRole("link", { name: "Repair PR" })).toHaveCount(0);
   await expect(recovery.locator("code")).toHaveText("story verifier repair show invalid-fixture --json");
 });
+
+test("external-scope recovery names its scope instead of an undecided repair", async ({ page, request }) => {
+  await seedToken(page);
+  const slug = await projectSlug(request, "Alpha Project");
+  await page.route((url) => url.pathname === `/api/repos/${encodeURIComponent(slug)}/data`, async route => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.verifier = { ...data.verifier, warning: null, project_recoveries: [{
+      id: "external-fixture", fault: "missing-certification", locus: ".storyhook.toml#verify.gate",
+      affected_stories: ["SH-1"], assessment_owner: "SH-1", repair_story: null, repair_link: null,
+      phase: "external-prerequisite", scope: "external", completed_attempts: 0, attempt_limit: 3,
+      next_action: "The owner must restore access to the signing service. An operator, not an agent, must restore it.",
+    }] };
+    await route.fulfill({ response, json: data });
+  });
+  await page.goto("/");
+  await openProject(page, "Alpha Project");
+  const recovery = page.locator(".project-recovery-banner");
+  await expect(recovery).toBeVisible();
+  await expect(recovery).toContainText("external-prerequisite");
+  await expect(recovery).toContainText("repair none (external)");
+  await expect(recovery).not.toContainText("undecided");
+});

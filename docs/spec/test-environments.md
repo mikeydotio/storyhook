@@ -374,6 +374,63 @@ released the pidfile lock, under two concurrent plugin suites and a night of
 daemon churn — did not reproduce and is deliberately not claimed fixed; what is
 fixed is its blast radius, and any recurrence now names one test.
 
+## A finished test leaves no daemon, and no test daemon is on the tailnet (SH-879)
+
+The ordering above was not enough. In a 4-way parallel plugin run under heavy
+load, about ten `story daemon --serve` processes survived their tests in twenty
+minutes. Their homes were deleted, every test passed, and every trap's stop
+succeeded, so the survivors were not the daemons the traps stopped. Each also
+listened on the machine's Tailscale address, so a leaked fixture daemon was
+reachable from the whole tailnet. The survivors were gone before anyone could
+read their environment, so the mechanism is inferred; these layers close every
+path the investigation found, whichever one fired.
+
+- **A straggler starts nothing.** A helper or hook still running when its test
+  ended ran `story`. That started a fresh daemon, which recreated the deleted
+  home and bound its listeners before its parent watch ran. The owner named by
+  `STORYHOOK_PARENT_PID` is now resolved once per process
+  (`daemon::parent_contract`). When it has exited, `ensure`, `start` and
+  `restart` refuse before they read or create anything, and `daemon --serve`
+  exits before it opens the store.
+- **The watch pins one incarnation.** A shell harness exports an empty start
+  token, so its daemons were watched by pid alone and could follow a process
+  that reused the pid. The client that starts a daemon now samples the live
+  owner's token and passes it on, so the daemon and every child it starts watch
+  that exact process.
+- **The contract travels wherever the store does.** `HOME` alone resolves the
+  store, so every child allowlist that admits it (plugin management,
+  verification, git, the tmux pane overrides) also admits the
+  `test_environment::daemon_containment_parameters`: the owner, its token, the
+  port, the verifier switches and the tailnet switch.
+- **An abandoned daemon retires.** A daemon whose store file is gone exits
+  within one `SHUTDOWN_CHECK` (`lifecycle::ABANDONED_STORE_CHECK`). This is the
+  same definition `check-no-orphan-servers.sh` reaps by, which ran only under
+  `make test`. The daemon's own journal is anchored to its state directory, so
+  no record it writes, on the way out or before, recreates a deleted home. That
+  was the SH-631 resurrection, which the ordering above only avoided.
+- **Test daemons bind loopback only.** `STORYHOOK_TAILNET=0` is a row of the
+  table. A daemon under it never asks `tailscale` and binds no second address.
+  `Environment::at` is loopback-only too, so in-process test servers are as
+  well. Tests that exercise the tailnet bind on purpose opt in explicitly
+  (`STORYHOOK_TAILNET=1` beside their `tailscale` shim, or
+  `Environment::with_tailnet`).
+- **`stop --force` reports what it could not stop.** A target it declined, or
+  was refused, to signal, and that is still alive, now fails the stop. That
+  makes `lib.sh`'s "failed to stop the test daemon" branch reachable. A slow
+  exit after a signal does not fail it, so load cannot cause a flake.
+
+`eval "$(bash scripts/scratch-env.sh --print)"` named the printing script as
+the owner. That process exits at once, so the first layer would have refused
+every command in such a shell. The printer now emits the owner as an unexpanded
+`"$$"`, so the shell that evaluates it names itself.
+
+Still open, deliberately: a straggler whose own sample lands on a pid that has
+already been reused (the complete answer is a native token from `lib.sh`, which
+needs a helper in the binary); a straggler that falls through `PATH` to an older
+installed `story` once the test's lease is gone; and daemon-owned helper process
+groups that outlive `daemon stop`, which is by design for dispatch.
+`plugins/story/tests/test-daemon-straggler.sh` replays the incident end to end.
+
 ## As built — the seat guard (SH-634)
 
 The hazard this document opens with — `./target/debug/story list`, typed in a

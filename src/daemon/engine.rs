@@ -46,7 +46,19 @@ fn reconcile_tick_interval() -> Duration {
 /// tick" rather than propagated: a poller has no caller to hand an error
 /// back to, and the next wake tries again.
 fn reconcilable_runs<S: Store>(store: &S) -> Vec<EngineRunRecord> {
-    match store.read(|tx| tx.reconcilable_engine_runs()) {
+    match store.read(|tx| {
+        let mut runs = Vec::new();
+        for run in tx.reconcilable_engine_runs()? {
+            if let Some(project) = tx.project_by_slug(&run.project_slug)?
+                && tx.automations_enabled(project.id)?
+                && run.stop_reason.as_deref()
+                    != Some("Project automations disabled; resume explicitly")
+            {
+                runs.push(run);
+            }
+        }
+        Ok(runs)
+    }) {
         Ok(runs) => runs,
         Err(error) => {
             eprintln!("storyhook: could not list engine runs requiring reconciliation: {error}");

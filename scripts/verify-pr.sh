@@ -962,11 +962,16 @@ verification_phase="merge preflight"
 verifier_window_banner "PR #$pr — merge preflight running (computing the exact merge tree)"
 gate_progress_emit_item "merge preflight" running
 _preflight_start=$(date +%s)
-preflight_args=()
-if [ "$prepare_only" -eq 1 ]; then preflight_args+=(--prepare-only); fi
-preflight="$(activity_run "merge-preflight.sh" bash "$script_dir/merge-preflight.sh" "${preflight_args[@]}" "$base_commit" "$head_commit" 2>&1)"
+# Bash 3.2 treats an empty array as unset under nounset. Keep the required
+# commits in the array so ordinary gated verification reaches preflight too.
+preflight_args=("$base_commit" "$head_commit")
+if [ "$prepare_only" -eq 1 ]; then preflight_args=(--prepare-only "${preflight_args[@]}"); fi
+preflight="$(activity_run "merge-preflight.sh" bash "$script_dir/merge-preflight.sh" "${preflight_args[@]}" 2>&1)"
 preflight_status=$?
 tree="$(printf '%s\n' "$preflight" | head -n1)"
+if { [ "$preflight_status" -eq 0 ] || [ "$preflight_status" -eq 1 ]; } && [ -z "$tree" ]; then
+    die_json "merge preflight returned status $preflight_status without a tree: $preflight"
+fi
 _preflight_seconds=$(( $(date +%s) - _preflight_start ))
 if [ "$prepare_only" -eq 1 ]; then
     case "$preflight_status" in

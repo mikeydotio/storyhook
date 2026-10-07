@@ -100,9 +100,11 @@ pub(super) fn read_view(
     if let Some(decision) = &state.decision {
         let mut subjects = std::collections::BTreeSet::new();
         for hold in &decision.dependency_holds {
+            // A hold needs a repair to wait for, or an external prerequisite.
             if !subjects.insert((hold.story, hold.generation))
                 || Some(hold.story) == decision.repair_story
-                || decision.repair_story.is_none()
+                || (decision.repair_story.is_none()
+                    && decision.input.scope != super::RepairScope::External)
                 || !state.subjects.iter().any(|subject| subject.returned && subject.story == hold.story
                     && subject.candidate.verifying_generation == Some(hold.generation))
                 || !tx.events_for(record.project, hold.story)?.iter().any(|event| event.global_seq == hold.event
@@ -133,6 +135,29 @@ pub(super) fn read_view(
     super::work::validate(&state)?;
     super::attempts_validation::validate(&state, record.project)?;
     super::landing::validate(tx, &state, record.project)?;
+    super::prerequisite::validate(tx, &record, &state)?;
+    // A record retires exactly when a release authority is recorded, so a
+    // retired record without one, or an active one with one, is damage.
+    if record.active == super::resolution::release(&state).is_some() {
+        return Err(StoreError::Corrupt(format!(
+            "project recovery {} active flag disagrees with its release authority",
+            record.id
+        )));
+    }
+    if let Some(prior) = &state.supersedes
+        && !tx.project_recoveries(record.project)?.iter().any(|other| {
+            &other.id == prior
+                && other.id != record.id
+                && !other.active
+                && other.code == record.code
+                && other.locus == record.locus
+        })
+    {
+        return Err(StoreError::Corrupt(format!(
+            "project recovery {} supersedes no retired recovery with its fault and locus",
+            record.id
+        )));
+    }
     super::refusal::validate(tx, &state, record.project)?;
     for observation in &observations {
         let evidence: FaultObservation = serde_json::from_value(observation.evidence.clone())

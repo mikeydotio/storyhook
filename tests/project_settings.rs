@@ -288,16 +288,21 @@ fn json_reports_the_source_as_a_field_a_script_can_read() {
     let settings = listing["settings"]
         .as_array()
         .expect("`--json` must carry a settings array");
-    assert_eq!(settings.len(), 4);
+    assert_eq!(settings.len(), 5);
 
-    let sync = &settings[0];
+    assert_eq!(settings[0]["key"], "automations.enabled");
+    assert_eq!(settings[0]["kind"], "boolean");
+    assert_eq!(settings[0]["source"], "default");
+    assert_eq!(settings[0]["value"], "true");
+    assert_eq!(settings[0]["settable"], true);
+    let sync = &settings[1];
     assert_eq!(sync["key"], "sync.auto_transition");
     assert_eq!(sync["kind"], "boolean");
     assert_eq!(sync["source"], "default");
     assert_eq!(sync["value"], "true");
     assert_eq!(sync["settable"], true);
 
-    let doctor = &settings[1];
+    let doctor = &settings[2];
     assert_eq!(doctor["source"], "unset");
     assert_eq!(doctor["value"], serde_json::Value::Null);
     assert!(
@@ -307,12 +312,12 @@ fn json_reports_the_source_as_a_field_a_script_can_read() {
             .contains("no command reads this yet")
     );
 
-    assert_eq!(settings[2]["key"], "cleanup.auto");
-    assert_eq!(settings[2]["source"], "default");
-    assert_eq!(settings[2]["value"], "true");
-    assert_eq!(settings[3]["key"], "cleanup.interval");
+    assert_eq!(settings[3]["key"], "cleanup.auto");
     assert_eq!(settings[3]["source"], "default");
-    assert_eq!(settings[3]["value"], "1d");
+    assert_eq!(settings[3]["value"], "true");
+    assert_eq!(settings[4]["key"], "cleanup.interval");
+    assert_eq!(settings[4]["source"], "default");
+    assert_eq!(settings[4]["value"], "1d");
 }
 
 /// A write answers with the value it wrote, so the user sees what took effect

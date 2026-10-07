@@ -36,7 +36,14 @@ GITHUB_ROUTING = ("STORYHOOK_GITHUB_AUTHORITY", "STORYHOOK_GITHUB_EXPECTED")
 # Environment.child_vars() names, pinned equal by the same Rust unit test:
 # what a `story` run in a pane needs to reach its caller's store and daemon.
 PANE_SELECTORS = ("STORYHOOK_STORE_PATH", "XDG_STATE_HOME", "STORYHOOK_VERIFIER_MIRROR",
-                  "STORYHOOK_VERIFIER_AGENT")
+                  "STORYHOOK_VERIFIER_AGENT", "STORYHOOK_TAILNET")
+# test_environment::daemon_containment_parameters(), pinned equal by the same
+# Rust unit test: a `story` in a pane that reaches its caller's store can start
+# a daemon for it, and that daemon must take the caller's port, die with the
+# caller's owner and listen where the caller's would. Production sets none of
+# them, and an empty value means the same as an absent one for each.
+DAEMON_CONTAINMENT = ("STORYHOOK_DAEMON_ADDR", "STORYHOOK_PARENT_PID", "STORYHOOK_PARENT_START_TIME",
+                      "STORYHOOK_VERIFIER_MIRROR", "STORYHOOK_VERIFIER_AGENT", "STORYHOOK_TAILNET")
 
 # Hook-scoped roots both provider hosts export to a plugin's hooks.
 PLUGIN_ROOTS = ("PLUGIN_ROOT", "PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA")
@@ -122,11 +129,13 @@ def pane_overrides(environ):
     An existing server ignores its client's environment for new panes, so a
     pane's own values must travel on the pane command. Each GitHub credential
     and routing name is blanked, so a pane never inherits a parent operation's
-    GitHub authority. `STORY_BIN` and the store selectors carry the caller's
-    value; empty keeps each reader's own fallback (`${STORY_BIN:-story}`).
+    GitHub authority. `STORY_BIN`, the store selectors and the daemon
+    containment names carry the caller's value; empty keeps each reader's own
+    fallback (`${STORY_BIN:-story}`) and overrides a stale value a retained
+    server holds.
     """
     values = {name: "" for name in GITHUB_CREDENTIALS + GITHUB_ROUTING}
-    for name in ("STORY_BIN",) + PANE_SELECTORS:
+    for name in ("STORY_BIN",) + PANE_SELECTORS + DAEMON_CONTAINMENT:
         values[name] = environ.get(name, "")
     return [part for name, value in values.items() for part in ("-e", name + "=" + value)]
 

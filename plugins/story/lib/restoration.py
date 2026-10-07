@@ -11,6 +11,8 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+sys.dont_write_bytecode = True
+
 import probe_budget
 
 import agent_identity

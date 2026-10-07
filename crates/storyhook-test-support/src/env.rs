@@ -346,17 +346,7 @@ pub fn daemon_containment() -> Vec<(&'static str, String)> {
     let unused_root = Path::new("/dev/null/no-root-is-needed-here");
     test_environment::resolve(unused_root, std::process::id(), Scope::Anywhere)
         .into_iter()
-        .filter(|setting| {
-            test_environment::TEST_ENVIRONMENT.iter().any(|parameter| {
-                parameter.name == setting.name
-                    && matches!(
-                        parameter.disposition,
-                        Disposition::Literal(_)
-                            | Disposition::OwnPid
-                            | Disposition::OwnProcessStartTime
-                    )
-            })
-        })
+        .filter(|setting| test_environment::is_daemon_containment(setting.name))
         .map(|setting| {
             let value = setting
                 .value

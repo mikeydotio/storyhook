@@ -12,12 +12,13 @@ use crate::{
 };
 
 impl<S: Store> ProjectRecoveryService<'_, S> {
-    /// Reconcile certified repair completion and retain managed resume intents.
+    /// Reconcile the release authority and retain managed resume intents.
     pub fn reconcile_landing(&self, id: &str) -> Result<RecoveryView, AppError> {
         let now = self.ctx.now();
         self.ctx.write_stories(|tx| {
             let mut view = persistence::find(tx, self.ctx.project(), id)?;
-            if view.state.landing.is_none() { return Ok(view); }
+            let Some(release) = super::resolution::release(&view.state) else { return Ok(view); };
+            let cause = release.cause.clause();
             let holds = view.state.decision.as_ref().map(|d| d.dependency_holds.clone()).unwrap_or_default();
             let mut changed = false;
             for hold in holds {
@@ -28,7 +29,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                 append_and_fold(tx, project, hold.story, &project_prefix(tx, project)?, &tx.state_map(project)?,
                     ExpectedSeq::Exact(row.head_seq), &[
                         StoryEvent::StoryAwaitingCleared { at: now.clone() },
-                        StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("PROJECT RECOVERY {} — certified repair landed. Managed resume {} is pending. Refresh source and gate configuration from the current base, and reconcile the existing worktree. {IMPLEMENTER_TEST_SCOPE} Commit, and resubmit for a fresh central verification generation. The original submission remains unjudged.", view.record.id, effect) },
+                        StoryEvent::StoryCommentAdded { at: now.clone(), text: format!("PROJECT RECOVERY {} — {cause}. Managed resume {} is pending. Refresh source and gate configuration from the current base, and reconcile the existing worktree. {IMPLEMENTER_TEST_SCOPE} Commit, and resubmit for a fresh central verification generation. The original submission remains unjudged.", view.record.id, effect) },
                     ], self.ctx.provenance())?;
                 let release_event = awaiting_revision(tx, project, hold.story)?.ok_or_else(|| StoreError::Corrupt("recovery release event missing".into()))?;
                 view.state.work.push(WorkDelivery {
@@ -37,7 +38,7 @@ impl<S: Store> ProjectRecoveryService<'_, S> {
                     label_revision: authority::label_revision(tx, project, hold.story)?,
                     blocking_revision: authority::blocking_revision(tx, view.record.project, hold.story)?, managed_lease: None, release_event: Some(release_event), status: WorkStatus::Pending, hold: None, disposition: None,
                     epoch: 0, failures: 0, started_at: None, delivered_at: None, last_result: None,
-                    detail: "certified repair landed; managed affected-agent resume pending".into(),
+                    detail: format!("{cause}; managed affected-agent resume pending"),
                 });
                 changed = true;
             }
@@ -150,11 +151,13 @@ pub(super) fn validate(tx: &impl ReadOps, view: &RecoveryView) -> Result<(), Sto
                 .iter()
                 .find(|h| h.story == work.story && work.id == identity(&view.record.id, h.event))
         });
-        let valid = if let (Some(hold), Some(release), Some(landing)) =
-            (hold, work.release_event, &view.state.landing)
-        {
+        let valid = if let (Some(hold), Some(release), Some(authority)) = (
+            hold,
+            work.release_event,
+            super::resolution::release(&view.state),
+        ) {
             release > hold.event
-                && release > landing.event
+                && release > authority.anchor
                 && view.state.subjects.iter().any(|subject| {
                     subject.story == hold.story
                         && subject.candidate.verifying_generation == Some(hold.generation)

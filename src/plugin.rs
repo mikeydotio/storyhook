@@ -32,6 +32,7 @@ use crate::embedded::EmbeddedFile;
 include!(concat!(env!("OUT_DIR"), "/embedded_marketplace.rs"));
 
 pub mod guard;
+pub(crate) mod library;
 pub(crate) mod operation;
 pub(crate) mod provider_cli;
 pub mod receipt;

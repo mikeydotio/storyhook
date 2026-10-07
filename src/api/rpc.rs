@@ -25,7 +25,7 @@ use crate::api::wire::{WireRequest, WireResponse};
 use crate::daemon::lifecycle::{self, Entry, Hello, PROTOCOL};
 use crate::env::Environment;
 use crate::error::AppError;
-use crate::invoke::{InvokeRequest, Invoker, StoreInvoker};
+use crate::invoke::{Invoker, StoreInvoker};
 use crate::store::Store;
 
 /// The header carrying the daemon's bearer token.
@@ -50,6 +50,8 @@ pub struct Surface<'a, S: Store> {
     pub store: &'a S,
     /// Shared verifier ownership, never a request-local registry.
     pub verification_activity: &'a crate::daemon::verification::VerificationActivity,
+    /// The daemon's reset runtime, which `story reset` hands its reset to.
+    pub reset_runtime: &'a crate::daemon::reset::ResetRuntime,
     /// The environment they run under.
     pub env: &'a Environment,
     /// The bearer token this daemon requires.
@@ -127,6 +129,7 @@ pub fn route<S: Store>(
             surface.env,
             surface.entry,
             surface.verification_activity,
+            Some(surface.reset_runtime),
             body,
         )),
         (["hello"] | ["shutdown"] | ["invoke"], _) => {
@@ -170,6 +173,7 @@ fn invoke<S: Store>(
     env: &Environment,
     entry: &Entry<'_>,
     activity: &crate::daemon::verification::VerificationActivity,
+    reset_runtime: Option<&crate::daemon::reset::ResetRuntime>,
     body: &str,
 ) -> Reply {
     let request: WireRequest = match serde_json::from_str(body) {
@@ -227,16 +231,14 @@ fn invoke<S: Store>(
     });
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        StoreInvoker::new(store, &request.cwd, env.clone())
+        let invoker = StoreInvoker::new(store, &request.cwd, env.clone())
             .verification_activity(activity)
-            .hook_depth(request.hook_depth)
-            .invoke(
-                InvokeRequest::new(request.invocation.clone())
-                    .no_hooks(request.no_hooks)
-                    .stdin(request.stdin.clone())
-                    .project(request.project.clone())
-                    .actor(request.actor.clone()),
-            )
+            .hook_depth(request.hook_depth);
+        match reset_runtime {
+            Some(runtime) => invoker.reset_runtime(runtime),
+            None => invoker,
+        }
+        .invoke(request.invoke_request())
     }))
     .unwrap_or_else(|_| {
         Err(AppError::Storage(
@@ -459,6 +461,7 @@ mod tests {
             hello: &hello,
             entry: &entry,
             verification_activity: &Default::default(),
+            reset_runtime: &Default::default(),
         };
         route(&surface, segments, method, headers, "", loopback)
     }
@@ -597,7 +600,14 @@ mod tests {
         let env = Environment::at(dir.path());
         let inflight = lifecycle::InFlight::new(env.clone());
         let entry = inflight.enter();
-        let reply = invoke(&store, &env, &entry, &Default::default(), "{ not json");
+        let reply = invoke(
+            &store,
+            &env,
+            &entry,
+            &Default::default(),
+            None,
+            "{ not json",
+        );
         assert_eq!(reply.status, 400);
     }
 
@@ -618,6 +628,7 @@ mod tests {
             &env,
             &entry,
             &Default::default(),
+            None,
             &serde_json::to_string(&request).unwrap(),
         );
         assert_eq!(

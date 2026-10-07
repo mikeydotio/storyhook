@@ -173,8 +173,15 @@ fn validate_batch(tx: &impl ReadOps, batch: &BatchLandingIntent) -> Result<(), S
             )));
         }
     }
+    // A story reset may withdraw members while the batch lands (SH-886);
+    // every other member keeps its row until the merge is confirmed.
+    let resolved = batch.rows.len() + record.withdrawn.len();
+    let withdrawn_row = batch
+        .rows
+        .iter()
+        .any(|row| record.withdrawn.contains(&row.story));
     match record.phase {
-        BatchPhase::Landing if batch.rows.len() == record.members.len() => Ok(()),
+        BatchPhase::Landing if resolved == record.members.len() && !withdrawn_row => Ok(()),
         BatchPhase::Landing => Err(refuse(
             "a member's intent was resolved before the batch merge was confirmed",
         )),

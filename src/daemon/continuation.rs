@@ -17,6 +17,9 @@ fn outstanding(store: &impl Store) -> Result<Vec<Continuation>, AppError> {
     Ok(store.read(|tx| {
         let mut requests = Vec::new();
         for project in tx.projects()? {
+            if !tx.automations_enabled(project.id)? {
+                continue;
+            }
             requests.extend(tx.continuations(project.id)?.into_iter().filter(|r| {
                 matches!(
                     r.status,
@@ -35,6 +38,10 @@ pub fn recover(store: &impl Store, env: &Environment) -> Result<(), AppError> {
         .into_iter()
         .filter(|r| r.status == ContinuationStatus::Attempting)
     {
+        let Some(_automation) = crate::service::automations::enter(store, env, record.project_id)?
+        else {
+            continue;
+        };
         record.status = ContinuationStatus::NeedsAttention;
         record.detail="daemon stopped during continuation delivery; no automatic replay; matching receipt or acknowledgement can resolve this uncertainty".into();
         persist(store, env, &mut record)?;
@@ -71,6 +78,10 @@ pub fn process_one(
     let requests = outstanding(store)?;
     let mut changed = false;
     for mut record in requests {
+        let Some(_automation) = crate::service::automations::enter(store, env, record.project_id)?
+        else {
+            continue;
+        };
         if record.status == ContinuationStatus::Attempting {
             continue;
         }

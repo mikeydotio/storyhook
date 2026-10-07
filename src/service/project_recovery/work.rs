@@ -262,7 +262,7 @@ pub(super) fn validate(state: &super::RecoveryState) -> Result<(), StoreError> {
         if !(owned
             || super::repair_return::owns(state, work)
             || (work.kind == WorkKind::Resume
-                && state.landing.is_some()
+                && super::resolution::release(state).is_some()
                 && work.release_event.is_some()))
             || (work.kind != WorkKind::Resume && work.release_event.is_some())
             || work.id.trim().is_empty()

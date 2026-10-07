@@ -1073,7 +1073,9 @@ pub(crate) fn story_map(
         .into_iter()
         .map(|(id, row)| (id, row.snapshot))
         .collect();
-    domain::apply_computed_epic_states(&mut stories, &tx.states(project)?);
+    if tx.automations_enabled(project)? {
+        domain::apply_computed_epic_states(&mut stories, &tx.states(project)?);
+    }
     Ok(stories)
 }
 
@@ -1105,7 +1107,9 @@ pub fn story_views(
         .map(|(id, row)| (id, row.snapshot))
         .collect();
     let states = tx.states(project)?;
-    domain::apply_computed_epic_states(&mut stories, &states);
+    if tx.automations_enabled(project)? {
+        domain::apply_computed_epic_states(&mut stories, &states);
+    }
     // SH-286's rule reaches here too, and for the same reason it reaches the
     // doctor: absence from this map is not absence from the project, and a
     // `StoryView` that says otherwise is `story show` printing a dangling
@@ -1123,12 +1127,16 @@ pub fn story_views(
         .filter_map(|story| compute_progress(story, &stories).map(|p| (story.id.clone(), p)))
         .collect();
 
-    let display_state: BTreeMap<String, String> = stories
-        .values()
-        .filter_map(|story| {
-            compute_display_state(story, &stories, &states).map(|s| (story.id.clone(), s))
-        })
-        .collect();
+    let display_state: BTreeMap<String, String> = if tx.automations_enabled(project)? {
+        stories
+            .values()
+            .filter_map(|story| {
+                compute_display_state(story, &stories, &states).map(|s| (story.id.clone(), s))
+            })
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
 
     // Gated on `include_derived`, same as `derived_relationships` above and
     // for the same reason: `list`/`next`/`summary` and the rest of the
@@ -1159,6 +1167,12 @@ pub fn story_views(
     }
 
     let resets = tx.story_resets(project)?;
+    let unfinished: BTreeMap<StoryNo, crate::store::StoryReset> = tx
+        .unfinished_story_resets()?
+        .into_iter()
+        .filter(|reset| reset.project == project)
+        .map(|reset| (reset.story, reset))
+        .collect();
     let reset_prefix = project_prefix(tx, project)?;
     let floors = BlockerFloors::compute(&stories);
     let mut views = Vec::with_capacity(stories.len());
@@ -1189,11 +1203,27 @@ pub fn story_views(
             comment_mentions: comment_mentions_by_id.remove(&id).unwrap_or_default(),
         };
 
-        views.push(StoryView {
-            reset: resets
-                .get(&StoryNo::parse_id(&reset_prefix, &id)?)
-                .map(|encoded| serde_json::from_str(encoded))
+        let story_no = StoryNo::parse_id(&reset_prefix, &id)?;
+        let reset = match unfinished.get(&story_no) {
+            Some(card) => Some(crate::service::story_reset::view(card)),
+            None => resets
+                .get(&story_no)
+                .map(|encoded| {
+                    serde_json::from_str::<crate::service::reset::ResetReservation>(encoded).map(
+                        |legacy| crate::output::ResetView {
+                            operation: legacy.operation,
+                            detail: legacy.detail,
+                            completed: false,
+                            removed: crate::output::ResetRemoved::default(),
+                            residue: Vec::new(),
+                            recovery: None,
+                        },
+                    )
+                })
                 .transpose()?,
+        };
+        views.push(StoryView {
+            reset,
             story,
             derived_relationships: derived_relationships.get(&id).cloned().unwrap_or_default(),
             referenced_by,

@@ -127,7 +127,7 @@ test("Reset removes a real dispatched worktree with uncommitted content", async 
 });
 
 
-test("an outstanding reset cannot be submitted twice or dismissed before its result", async ({ page }) => {
+test("an outstanding reset cannot be submitted twice, and closing its dialog leaves it running", async ({ page }) => {
   const card = await create(page, "SH-717 pending reset");
   const id = (await card.getAttribute("data-id"))!;
   let release!: () => void;
@@ -145,17 +145,70 @@ test("an outstanding reset cannot be submitted twice or dismissed before its res
   await page.locator("#reset-modal-submit").click();
   try {
     await expect.poll(() => attempts).toBe(1);
-    await expect(page.locator("#reset-modal-cancel")).toBeDisabled();
     await expect(page.locator("#reset-modal-submit")).toBeDisabled();
     await page.keyboard.press("Enter");
-    await page.keyboard.press("Escape");
-    await expect(page.locator("#reset-modal")).toHaveClass(/open/);
-    await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toHaveCount(0);
     expect(attempts).toBe(1);
+    // SH-886: closing only stops watching here; the daemon finishes the reset.
+    await expect(page.locator("#reset-modal-cancel")).toBeEnabled();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#reset-modal")).not.toHaveClass(/open/);
+    await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toHaveCount(0);
   } finally {
     release();
   }
   await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toBeVisible({ timeout: gracedOperationBudget(RESET_COMPLETION_BASE_MS) });
+});
+
+test("a contended reservation is asked again until the reset runs", async ({ page }) => {
+  const card = await create(page, "SH-886 contended reservation");
+  const id = (await card.getAttribute("data-id"))!;
+  let attempts = 0;
+  await page.route("**/story/*/reset", async route => {
+    attempts++;
+    if (attempts === 1) {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ result: "error", error: "timed out waiting for the project write lock (beginning a write)" }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await card.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Reset…", exact: true }).click();
+  await page.locator("#reset-confirmation").fill(id);
+  await page.locator("#reset-modal-submit").click();
+  await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toBeVisible({ timeout: gracedOperationBudget(RESET_COMPLETION_BASE_MS) });
+  expect(attempts).toBe(2);
+  await expect(page.locator("#reset-modal-error")).not.toContainText("write lock");
+});
+
+test("a lost poll is retried while the daemon finishes the reset", async ({ page }) => {
+  const card = await create(page, "SH-886 lost poll");
+  const id = (await card.getAttribute("data-id"))!;
+  // The reservation answers running, so the dashboard must poll for the result.
+  await page.route("**/story/*/reset", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.reset.state = "running";
+    await route.fulfill({ response, json: body });
+  });
+  let polls = 0;
+  await page.route("**/story/*/reset/*", async route => {
+    polls++;
+    if (polls === 1) {
+      await route.fulfill({ status: 503, contentType: "text/plain", body: "daemon busy" });
+      return;
+    }
+    await route.continue();
+  });
+  await card.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Reset…", exact: true }).click();
+  await page.locator("#reset-confirmation").fill(id);
+  await page.locator("#reset-modal-submit").click();
+  await expect(page.locator("#toast-stack .toast.success").filter({ hasText: `${id} reset` })).toBeVisible({ timeout: gracedOperationBudget(RESET_COMPLETION_BASE_MS) });
+  expect(polls).toBeGreaterThanOrEqual(2);
 });
 
 test("a story closed by another client remains an actionable reset error", async ({ page }) => {

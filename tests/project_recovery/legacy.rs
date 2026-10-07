@@ -38,7 +38,8 @@ pub(super) fn retain(
         ),
         RepairScope::External => None,
     };
-    let request = decision::input(&view, scope);
+    let mut request = decision::input(&view, scope);
+    request.evidence[0] = format!("attempt:{}", view.observations[0].attempt_id);
     let mut receipt = DecisionReceipt {
         input: request,
         accepted_at: ctx.now(),
@@ -85,9 +86,30 @@ pub(super) fn retain(
                 event,
             });
         } else if scope == RepairScope::External {
-            stories
-                .set_awaiting(&id, receipt.input.prerequisite.as_deref().unwrap())
+            let awaiting = format!(
+                "Project recovery {}: {}",
+                view.record.id,
+                receipt.input.prerequisite.as_deref().unwrap()
+            );
+            stories.set_awaiting(&id, &awaiting).unwrap();
+            let event = f
+                .store()
+                .read(|tx| {
+                    Ok(tx
+                        .events_for(f.project(), subject.story)?
+                        .into_iter()
+                        .rev()
+                        .find(|e| matches!(e.known(), Some(StoryEvent::StoryAwaitingSet { .. })))
+                        .unwrap()
+                        .global_seq)
+                })
                 .unwrap();
+            receipt.dependency_holds.push(OwnedDependencyHold {
+                story: subject.story,
+                generation: subject.candidate.verifying_generation.unwrap(),
+                awaiting,
+                event,
+            });
         }
     }
     view.state.assessment.status = AssessmentStatus::Decided;

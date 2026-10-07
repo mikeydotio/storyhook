@@ -32,6 +32,7 @@
 pub mod agents;
 pub mod attachment;
 pub mod attribution;
+pub mod automations;
 pub mod batch_assembly;
 pub mod batch_landing;
 pub mod batch_preview;
@@ -72,6 +73,7 @@ pub mod project_recovery;
 pub mod query;
 pub mod questionnaire;
 pub mod relation;
+pub(crate) mod repair_publication;
 pub mod reset;
 pub mod resources;
 pub mod session;
@@ -177,11 +179,13 @@ pub struct Ctx<'a, S: Store> {
     project: ProjectId,
     no_hooks: bool,
     hook_depth: u32,
+    agent_session: bool,
     cwd: PathBuf,
     env: Environment,
     stdin: Option<String>,
     provenance: Provenance,
     verification_activity: Option<&'a crate::daemon::verification::VerificationActivity>,
+    reset_runtime: Option<&'a crate::daemon::reset::ResetRuntime>,
 }
 
 impl<'a, S: Store> Ctx<'a, S> {
@@ -204,12 +208,31 @@ impl<'a, S: Store> Ctx<'a, S> {
             project,
             no_hooks: false,
             hook_depth: 0,
+            agent_session: false,
             cwd: cwd.into(),
             env,
             stdin: None,
             provenance: Provenance::unrecorded(),
             verification_activity: None,
+            reset_runtime: None,
         }
+    }
+
+    /// Supplies the daemon's reset runtime, which drives a reserved reset to
+    /// completion; without it a reset runs inline in this invocation.
+    #[must_use]
+    pub fn with_reset_runtime(
+        mut self,
+        runtime: Option<&'a crate::daemon::reset::ResetRuntime>,
+    ) -> Self {
+        self.reset_runtime = runtime;
+        self
+    }
+
+    /// The daemon's reset runtime, when this invocation is served by one.
+    #[must_use]
+    pub fn reset_runtime(&self) -> Option<&'a crate::daemon::reset::ResetRuntime> {
+        self.reset_runtime
     }
 
     /// Supplies the daemon's shared verifier ownership registry.
@@ -285,6 +308,24 @@ impl<'a, S: Store> Ctx<'a, S> {
         self
     }
 
+    /// Marks this invocation as coming from a dispatched agent session.
+    ///
+    /// The CLI reads the marker from its own environment and the request
+    /// carries it, for the reason [`hook_depth`](Self::hook_depth) travels: the
+    /// service never reads the process environment, which tests in one binary
+    /// share. An operator-only service refuses such a caller (SH-849).
+    #[must_use]
+    pub fn agent_session(mut self, agent_session: bool) -> Self {
+        self.agent_session = agent_session;
+        self
+    }
+
+    /// Whether this invocation comes from a dispatched agent session.
+    #[must_use]
+    pub fn is_agent_session(&self) -> bool {
+        self.agent_session
+    }
+
     /// Sets the clock this context's timestamps come from.
     #[must_use]
     pub fn clock(mut self, clock: Clock) -> Self {
@@ -355,6 +396,10 @@ impl<'a, S: Store> Ctx<'a, S> {
         if !self.hooks_enabled() {
             return;
         }
+        let Ok(Some(_automation)) = automations::enter(self.store(), self.env(), self.project())
+        else {
+            return;
+        };
         let Some(config) = event_hooks::load_hooks_config(&self.cwd) else {
             return;
         };
@@ -541,13 +586,42 @@ pub(crate) fn append_restored_and_fold(
     let stored = tx.events_for(project, story)?;
     let (known, _) = partition_known(story, &stored);
     let index = query::story_map(tx, project)?;
-    crate::domain::transition::validate_append(
-        &story.to_id(prefix),
-        &known,
-        events,
-        &tx.states(project)?,
-        &index,
-    )?;
+    if tx.automations_enabled(project)? {
+        crate::domain::transition::validate_append(
+            &story.to_id(prefix),
+            &known,
+            events,
+            &tx.states(project)?,
+            &index,
+        )?;
+    }
+    append_and_fold_maintenance(
+        tx, project, story, prefix, states, expected, events, provenance,
+    )
+}
+
+/// Appends a reset's own events (SH-886, decision D3).
+///
+/// A reset is the final lever: blocker ordering, which refuses a blocked
+/// story's advance through the catalog, never refuses its return to todo.
+/// Every other admission applies exactly as for [`append_and_fold`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_reset_and_fold(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    story: StoryNo,
+    prefix: &str,
+    states: &BTreeMap<String, StateDef>,
+    expected: ExpectedSeq,
+    events: &[StoryEvent],
+    provenance: &Provenance,
+) -> Result<StorySnapshot, AppError> {
+    if events
+        .iter()
+        .any(|event| matches!(event, StoryEvent::StoryStateChanged { .. }))
+    {
+        story_reset::refuse_reserved(tx, project, story)?;
+    }
     append_and_fold_maintenance(
         tx, project, story, prefix, states, expected, events, provenance,
     )

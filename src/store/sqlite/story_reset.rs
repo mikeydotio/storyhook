@@ -37,6 +37,37 @@ pub(super) fn read(
         .transpose()
 }
 
+/// Every unfinished card reset, in project and story order.
+pub(super) fn unfinished(conn: &Connection) -> Result<Vec<StoryReset>, StoreError> {
+    // Historical migration fixtures legitimately predate standalone reservations.
+    if !crate::store::migrate::has_columns(
+        conn,
+        "story_resets",
+        &["project_id", "story_no", "token", "record_json"],
+    )? {
+        return Ok(Vec::new());
+    }
+    let mut statement = conn
+        .prepare(
+            "SELECT project_id, story_no FROM story_resets
+             WHERE COALESCE(json_extract(record_json, '$.completed'), 0) != 1
+             ORDER BY project_id, story_no",
+        )
+        .map_err(|e| StoreError::from_sqlite(e, "listing unfinished story resets"))?;
+    let keys = statement
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+        .map_err(|e| StoreError::from_sqlite(e, "listing unfinished story resets"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| StoreError::from_sqlite(e, "listing unfinished story resets"))?;
+    let mut resets = Vec::with_capacity(keys.len());
+    for (project, story) in keys {
+        if let Some(reset) = read(conn, ProjectId::new(project), StoryNo::new(story))? {
+            resets.push(reset);
+        }
+    }
+    Ok(resets)
+}
+
 pub(super) fn put(conn: &Connection, reset: &StoryReset) -> Result<(), StoreError> {
     if let Some(current) = read(conn, reset.project, reset.story)?
         && !current.completed

@@ -123,14 +123,6 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // GitHub calls use private file-backed capture and process-group deadlines.
     ("src/github_access/command.rs", "\"gh\"", Kind::Waited),
     // Reset uses bounded, file-backed process capture.
-    ("src/service/reset/resources.rs", "\"tmux\"", Kind::Waited),
-    // SH-825 revivify fixtures use workspace_lock::capture, the same bounded
-    // file-backed capture.
-    (
-        "src/service/reset/resources_revivify_tests.rs",
-        "\"tmux\"",
-        Kind::Waited,
-    ),
     // Isolated unit probes use ChildGuard's bounded concurrent pipe drains;
     // recording tools never create persistent terminal readers.
     (
@@ -147,6 +139,14 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
         "src/daemon/activity/window_tests.rs",
         "\"sh\"",
         Kind::Waited,
+    ),
+    // SH-881 compares `view_program.py`'s composition with VIEW_PROGRAM.
+    // `Reads`: stdout is a pipe, but the child only prints a string from
+    // files it reads and starts nothing that could inherit the pipe.
+    (
+        "src/daemon/activity/window_tests.rs",
+        "\"python3\"",
+        Kind::Reads,
     ),
     // `block_delivery::process_one` — the agent helper (`story.sh notify`),
     // asked to interrupt or resume a dispatched agent (SH-690). `Waited`: it

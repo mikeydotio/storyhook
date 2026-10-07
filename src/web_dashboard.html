@@ -1750,6 +1750,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         <div class="fdd-panel projsel-panel" id="projsel-menu" role="menu" aria-label="Switch project" hidden></div>
       </div>
       <span class="subtitle" id="subtitle">Loading…</span>
+      <label id="automations-label" hidden><input type="checkbox" id="enable-automations"> enable automations</label>
+      <span id="automations-status" role="status" aria-live="polite"></span>
     </div>
     <div class="search-wrap" id="search-wrap">
       <span class="emoji-icon" data-emoji="search" aria-hidden="true">🔍</span>
@@ -5292,7 +5294,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function renderEngineAlert() {
     if (pressDefer("engine-alert", renderEngineAlert)) return;
     var modal = $("engine-alert-modal");
-    var runs = state.screen === "repo" && state.repoId ? unacknowledgedEngineRuns() : [];
+    var runs = automationsEnabled() && state.screen === "repo" && state.repoId ? unacknowledgedEngineRuns() : [];
     var run = runs[0] || null;
     if (!run) {
       delete modal.dataset.runId;
@@ -5333,6 +5335,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * card statuses are one consistent store snapshot. */
   function renderVerificationBanner() {
     var mount = $("verification-banner-region");
+    if (!automationsEnabled()) { clear(mount); mount.hidden = true; delete mount.dataset.fingerprint; return; }
     var incident = state.data && state.data.verification_incident;
     var halted = !!(incident && incident.halted);
     var verifier = state.data && state.data.verifier;
@@ -5373,7 +5376,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         details.push(el("div", {}, ["Recovery ", item.id, "; ", item.locus]));
       } else {
         details.push(
-          el("div", {}, ["Affected: ", (item.affected_stories || []).join(", "), "; assessor ", item.assessment_owner, "; repair ", item.repair_story || "undecided"]),
+          el("div", {}, ["Affected: ", (item.affected_stories || []).join(", "), "; assessor ", item.assessment_owner, "; repair ", item.repair_story || (item.scope === "external" ? "none (external)" : "undecided")]),
           el("div", {}, ["Completed repair attempts: ", String(item.completed_attempts), "/", String(item.attempt_limit), "; ", item.locus])
         );
       }
@@ -5484,6 +5487,9 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (!column) return;
     var button = column.querySelector(".verification-control-btn");
     if (!button) return;
+    button.hidden = !automationsEnabled();
+    var status = column.querySelector(".verification-control-status");
+    if (!automationsEnabled()) { if (status) status.hidden = true; return; }
     var mode = verifierControlState();
     var pending = state.verificationRequests[state.repoId];
     var canStop = mode === "running" || mode === "draining";
@@ -5762,7 +5768,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function renderEngineControl() {
     if (pressDefer("engine", renderEngineControl)) return;
     var mount = $("engine-control");
-    var visible = state.screen === "repo" && !!state.repoId && currentRepoHasCheckout();
+    var visible = automationsEnabled() && state.screen === "repo" && !!state.repoId && currentRepoHasCheckout();
     mount.hidden = !visible;
     if (!visible) {
       if (mount.firstChild) clear(mount);
@@ -6049,7 +6055,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         action.disabledReason = "Storyhook cannot tell whether this story's agent still runs: " + agent.detail;
       }
     }
-    if (v.is_blocked && !action.disabled) {
+    if (automationsEnabled() && v.is_blocked && !action.disabled) {
       action.disabled = true;
       action.disabledReason = "Blocked"
         + (st.awaiting ? " (awaiting: " + st.awaiting + ")" : " by an open blocker")
@@ -8584,9 +8590,41 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     };
   }
 
+  var automationRequests = Object.create(null);
+  function automationsEnabled() { return !state.data || state.data.automations_enabled !== false; }
+  function renderAutomations() {
+    var visible = !!state.repoId && !!state.data && state.screen === "repo";
+    $("automations-label").hidden = !visible;
+    $("enable-automations").checked = automationRequests[state.repoId] ? automationRequests[state.repoId].enabled : automationsEnabled();
+    $("enable-automations").disabled = !visible || !!automationRequests[state.repoId];
+    $("automations-status").textContent = visible && automationRequests[state.repoId] ? "Applying…" : "";
+  }
+  $("enable-automations").addEventListener("change", function() {
+    var project = state.repoId;
+    if (!project || automationRequests[project]) return;
+    var enabled = this.checked;
+    automationRequests[project] = { enabled: enabled };
+    renderAutomations();
+    api("PATCH", apiBase() + "/automations", { enabled: enabled }).then(function(response) {
+      delete automationRequests[project];
+      if (state.repoId !== project) return;
+      boardFetchFloor = boardFetchTicket;
+      if (state.data) state.data.automations_enabled = response.enabled;
+      renderAll();
+      fetchData();
+    }).catch(function(error) {
+      delete automationRequests[project];
+      toastError(error);
+      if (state.repoId !== project) return;
+      renderAutomations();
+      fetchData();
+    });
+  });
+
   function renderAll() {
     if (pressDefer("all", renderAll)) return;
     if (!state.data) return;
+    renderAutomations();
     renderFilterOptions();
     renderView();
     renderEngineControl();
@@ -8743,6 +8781,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * sense while a repo is selected, and the three mutually-exclusive
    * content areas (home cards, board/list, settings). */
   function renderScreen() {
+    renderAutomations();
     var isRepo = state.screen === "repo";
     var isHome = state.screen === "home";
     var isSettings = state.screen === "settings";
@@ -10480,7 +10519,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       // it on Done is an override, which needs the operator's reason — the
       // service refuses the bare move — so the drop defers to a prompt that,
       // unlike Blocked's, is NOT skippable: no reason, no move.
-      if (currentSlug === "verifying" && targetSlug === "done") {
+      if (automationsEnabled() && currentSlug === "verifying" && targetSlug === "done") {
         openVerifyOverrideModal(id);
         return;
       }
@@ -10566,7 +10605,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     var originSlug = story.story.state;
     // Every caller, including Set Status, must collect the override before
     // changing the card or sending a request. Modal submission supplies it.
-    if (originSlug === "verifying" && targetSlug === "done" && !(comment || "").trim()) {
+    if (automationsEnabled() && originSlug === "verifying" && targetSlug === "done" && !(comment || "").trim()) {
       openVerifyOverrideModal(id);
       return;
     }
@@ -12695,7 +12734,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     stateSelect.addEventListener("change", function() {
       // SH-692: the same override prompt the board drop uses; the select
       // shows `verifying` again until the reason is submitted.
-      if (st.state === "verifying" && stateSelect.value === "done") {
+      if (automationsEnabled() && st.state === "verifying" && stateSelect.value === "done") {
         stateSelect.value = st.state;
         openVerifyOverrideModal(st.id);
         return;
@@ -13261,7 +13300,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     // retain SH-50's Dispatch action unchanged. Both require a checkout and
     // neither competes with Reopen, since a closed story renders neither.
     if (!isClosed && currentRepoHasCheckout()) {
-      if (st.story_type === "epic") {
+      if (st.story_type === "epic" && automationsEnabled()) {
         var enginePending = currentEngineStartPending();
         var engineLabel = enginePending
           ? "Starting Full Auto…"
@@ -13277,7 +13316,7 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
           disabled: engineStartBlocked(), title: engineReadinessTitle(),
           onClick: function(e) { openEngineModal(st.id, e.currentTarget); }
         }, [engineLabel]));
-      } else {
+      } else if (st.story_type !== "epic") {
         var launchButton = dispatchButton(st);
         if (launchButton) next.appendChild(launchButton);
       }
@@ -16381,6 +16420,13 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   // Captured identity keeps a delayed reset result scoped to its original project.
   var resetModal = null;
 
+  /** Pause before asking again after contention or a lost poll (SH-886). */
+  var RESET_RETRY_MS = 1000;
+  /** Contention answers a reservation rides out; the daemon waits 60 s each. */
+  var RESET_RESERVE_RETRIES = 10;
+  /** Consecutive failed polls tolerated; the daemon finishes the reset anyway. */
+  var RESET_POLL_FAILURES = 30;
+
   function openResetModal(id, title, invoker) {
     var project = state.repoId;
     var key = project + "/" + id;
@@ -16397,14 +16443,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     if (invoker) overlayReturnFocus["reset-modal"] = invoker;
   }
 
+  // Cancel stays enabled while a reset runs: closing the dialog only stops
+  // watching it here; the daemon finishes the reset and a toast reports it.
   function setResetBusy(busy) {
     if (resetModal) resetModal.busy = busy;
-    ["reset-modal-submit", "reset-modal-cancel", "reset-confirmation"].forEach(function(id) { $(id).disabled = busy; });
+    ["reset-modal-submit", "reset-confirmation"].forEach(function(id) { $(id).disabled = busy; });
     $("reset-modal").setAttribute("aria-busy", String(busy));
   }
 
   function closeResetModal() {
-    if (!resetModal || resetModal.busy) return;
+    if (!resetModal) return;
     resetModal = null;
     hideBackdrop("reset-modal-backdrop");
     $("reset-modal").classList.remove("open");
@@ -16423,20 +16471,39 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
     setResetBusy(true);
     $("reset-modal-error").textContent = "Resetting " + target.id + "…";
     var endpoint = target.base + "/story/" + encodeURIComponent(target.id) + "/reset";
+    function pause() { return new Promise(function(resolve) { setTimeout(resolve, RESET_RETRY_MS); }); }
+    // A reserved reset never fails (SH-886): contention is asked again, and a
+    // lost poll is retried, because the daemon finishes the reset regardless.
+    function reserve(attempt) {
+      return api("POST", endpoint, { confirmation: target.id }).catch(function(error) {
+        if (error && error.status === 409 && attempt < RESET_RESERVE_RETRIES) {
+          return pause().then(function() { return reserve(attempt + 1); });
+        }
+        throw error;
+      });
+    }
+    function poll(handle, failures) {
+      return pause().then(function() {
+        return api("GET", endpoint + "/" + encodeURIComponent(handle), null);
+      }).then(observe, function(error) {
+        if (error && error.status !== 404 && failures < RESET_POLL_FAILURES) return poll(handle, failures + 1);
+        throw error;
+      });
+    }
     function observe(response) {
       var result = response && response.reset;
       if (!result || result.story !== target.id || !result.handle) throw new Error("Invalid reset response for " + target.id);
-      if (result.state === "ok") return;
+      if (result.state === "ok") return result;
       if (result.state === "error") throw new Error(result.detail || "Reset failed; retry to finish cleanup.");
       if (result.state !== "running") throw new Error("Unknown reset state for " + target.id);
-      return new Promise(function(resolve) { setTimeout(resolve, 1000); }).then(function() {
-        return api("GET", endpoint + "/" + encodeURIComponent(result.handle), null);
-      }).then(observe);
+      return poll(result.handle, 0);
     }
-    api("POST", endpoint, { confirmation: target.id }).then(observe).then(function() {
+    reserve(0).then(observe).then(function(result) {
       delete state.resets[target.key];
       if (resetModal === target) { setResetBusy(false); closeResetModal(); }
-      toast(target.id + " reset to todo", "success");
+      var left = (result.residue || []).map(function(entry) { return entry.resource; });
+      if (left.length) toast(target.id + " reset to todo; left in place: " + left.join(", ") + ". Its comment says why.", "warn");
+      else toast(target.id + " reset to todo", "success");
       if (state.repoId === target.project) fetchData();
     }).catch(function(error) {
       delete state.resets[target.key];

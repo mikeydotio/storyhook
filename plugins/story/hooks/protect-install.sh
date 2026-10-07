@@ -26,8 +26,8 @@
 # discipline `full-auto.sh` already states: this reads stdin once and, if the
 # raw payload does not mention a managed prefix as a plain substring, prints
 # `{}` and exits in shell. Only a substring hit pays for python3. The substring
-# test is a superset of true hits, so it errs safe. Nothing here runs `story`
-# (the binary may be mid-replacement) or talks to the daemon.
+# test is a superset of true hits, so it errs safe. A managed-prefix hit checks the project automation setting with a bounded
+# CLI request before inspecting the proposed edit.
 #
 # Both Claude Code and Codex run this on structured editors and shell commands.
 # SH-550 is the direct Codex measurement: two read-only shell commands reached
@@ -69,6 +69,8 @@ while IFS= read -r prefix; do
   case "$payload" in *"$prefix"*) hit="$prefix"; break ;; esac
 done < "$manifest"
 [ -n "$hit" ] || emit_inert
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+project_automations_enabled || emit_inert
 
 # Only now is it worth parsing. The prefilter said a managed path appears
 # SOMEWHERE in the payload; this decides whether it is actually the target.

@@ -130,7 +130,7 @@ fn sh870_restart_preserves_accepted_recovery_work_and_dependencies() {
 
 #[test]
 fn sh870_unproved_fault_is_not_an_engine_repair_exemption() {
-    for change in ["awaiting", "state", "label", "terminal", "stop"] {
+    for change in ["awaiting", "state", "label", "terminal", "stop", "external"] {
         let f = fixture();
         let candidate = submitted(&f, "revoked recovery lane");
         let ctx = f.ctx();
@@ -159,6 +159,11 @@ fn sh870_unproved_fault_is_not_an_engine_repair_exemption() {
                 f.store()
                     .write(|tx| tx.put_verification_enabled(f.project(), false))
                     .unwrap();
+            }
+            // An external prerequisite waits on a person for an unbounded
+            // time; its owned hold must not keep a Full Auto lane (SH-849).
+            "external" => {
+                legacy::retain(&f, view.clone(), RepairScope::External);
             }
             _ => {
                 assert!(

@@ -512,3 +512,50 @@ fn control_epoch_migration_preserves_permission_and_overflow_refuses_the_whole_w
         i64::MAX
     );
 }
+
+#[test]
+fn sh870_attribution_upgrade_preserves_released_automation_history() {
+    use storyhook::store::migrate;
+    let root = storyhook_test_support::scratch_dir();
+    let store = SqliteStore::open(root.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..55]).unwrap();
+    let project = seed_project(&store, "upgrade", "CA");
+    store
+        .write(|tx| {
+            let mut settings = tx.settings(project)?;
+            settings.automations_enabled = Some(false);
+            settings.automations_after = Some(7);
+            tx.put_settings(project, &settings)
+        })
+        .unwrap();
+    let conn = rusqlite::Connection::open(store.path()).unwrap();
+    let name: String = conn
+        .query_row(
+            "SELECT name FROM schema_migrations WHERE version=55",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(name, "project_automations");
+    let report = store.migrate().unwrap();
+    assert_eq!(report.from_version, 55);
+    assert_eq!(report.to_version, migrate::current_schema_version());
+    let settings = store.read(|tx| tx.settings(project)).unwrap();
+    assert_eq!(settings.automations_enabled, Some(false));
+    assert_eq!(settings.automations_after, Some(7));
+    assert_eq!(
+        store
+            .read(|tx| tx.verification_control_revision(project))
+            .unwrap(),
+        0
+    );
+    let evidence = record(project);
+    store.write(|tx| tx.insert_attribution(&evidence)).unwrap();
+    drop(store);
+    let reopened = SqliteStore::open(root.path().join("store.db")).unwrap();
+    assert!(reopened.migrate().unwrap().applied.is_empty());
+    assert_eq!(
+        reopened.read(|tx| tx.attributions(project)).unwrap(),
+        vec![evidence]
+    );
+}

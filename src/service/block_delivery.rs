@@ -97,6 +97,12 @@ pub(crate) fn derive_block_edges<W: WriteOps, T>(
                 .into(),
         ));
     }
+    if !tx.automations_enabled(project)? {
+        tx.set_block_edge_derivation(true);
+        let result = f(tx);
+        tx.set_block_edge_derivation(false);
+        return result;
+    }
     let before = snapshot(tx, project)?;
     tx.set_block_edge_derivation(true);
     let result = f(tx)?;
@@ -157,9 +163,10 @@ impl<S: Store> Ctx<'_, S> {
         &self,
         f: impl FnOnce(&mut S::WriteTx<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
-        let has_continuations = self
-            .store()
-            .read(|tx| Ok(!tx.continuations(self.project())?.is_empty()))?;
+        let has_continuations = self.store().read(|tx| {
+            Ok(tx.automations_enabled(self.project())?
+                && !tx.continuations(self.project())?.is_empty())
+        })?;
         // Read external Git evidence before acquiring the write transaction. A
         // failure matters only if this mutation actually submits managed work.
         let submission_head = has_continuations

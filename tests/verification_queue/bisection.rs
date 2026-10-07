@@ -726,6 +726,7 @@ fn gating_batch(board: &Board) -> VerificationBatch {
         }),
         phase: BatchPhase::Gating,
         members,
+        withdrawn: Vec::new(),
         excluded: Vec::new(),
         gate: None,
         detail: None,

@@ -6,7 +6,8 @@
 
 use super::{
     AffectedSubmission, Assessment, DecisionReceipt, OwnedAssessmentHold, OwnedDependencyHold,
-    RecoveryState, RepairAttempt, RepairLanding, RepairRefusalRecord, WorkDelivery, persistence,
+    PrerequisiteReceipt, RecoveryState, RepairAttempt, RepairLanding, RepairRefusalRecord,
+    WorkDelivery, persistence,
 };
 use crate::store::{ProjectId, ProjectRecovery, ReadOps, StoreError, StoryNo};
 use std::collections::BTreeSet;
@@ -33,6 +34,9 @@ pub(super) fn stories(state: &RecoveryState) -> BTreeSet<StoryNo> {
         refusals,
         landing,
         legacy_incidents,
+        prerequisite,
+        // Names a recovery, not a story.
+        supersedes: _,
     } = state;
     let mut named = BTreeSet::new();
     for AffectedSubmission {
@@ -156,6 +160,16 @@ pub(super) fn stories(state: &RecoveryState) -> BTreeSet<StoryNo> {
         named.insert(intent.story);
     }
     named.extend(legacy_incidents.iter().map(|incident| incident.story));
+    if let Some(PrerequisiteReceipt {
+        input: _,
+        accepted_at: _,
+        story,
+        event: _,
+        provenance: _,
+    }) = prerequisite
+    {
+        named.insert(*story);
+    }
     named
 }
 

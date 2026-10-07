@@ -1038,6 +1038,10 @@ macro_rules! impl_read_ops {
                 closure_cleanup::list(&self.conn, project)
             }
 
+            fn unfinished_story_resets(&self) -> Result<Vec<StoryReset>, StoreError> {
+                story_reset::unfinished(&self.conn)
+            }
+
             fn story_reset(
                 &self,
                 project: ProjectId,

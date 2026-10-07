@@ -126,7 +126,7 @@ fn classify(conn: &Connection) -> Result<bool, StoreError> {
             "revision",
             "payload",
         ],
-        version >= 55,
+        version >= 56,
     )?;
     expect_table(
         conn,
@@ -335,9 +335,9 @@ fn validate_definition(conn: &Connection, table: &str) -> Result<(), StoreError>
     if table == "verification_control" {
         let reference = Connection::open_in_memory()?;
         reference.execute_batch(include_str!("../schema/0037_verification_control.sql"))?;
-        if schema_version(conn)? >= 56 {
+        if schema_version(conn)? >= 57 {
             reference.execute_batch(include_str!(
-                "../schema/0056_verification_control_revision.sql"
+                "../schema/0057_verification_control_revision.sql"
             ))?;
         }
         let definition =
@@ -360,7 +360,7 @@ fn validate_definition(conn: &Connection, table: &str) -> Result<(), StoreError>
         "dropped_cleanups" => include_str!("../schema/0045_dropped_cleanup.sql"),
         "closure_cleanups" => include_str!("../schema/0053_closure_cleanup.sql"),
         "gate_attempts" => include_str!("../schema/0054_gate_evidence.sql"),
-        "verification_attributions" => include_str!("../schema/0055_verification_attribution.sql"),
+        "verification_attributions" => include_str!("../schema/0056_verification_attribution.sql"),
         "landing_intents" => include_str!("../schema/0038_landing_intents.sql"),
         "story_reset_reservations" => include_str!("../schema/0044_launch_compatibility.sql"),
         "story_resets" => {

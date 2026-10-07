@@ -232,7 +232,7 @@
     "production run_captured_with_input(super::super::tmux_target::remaining(deadline)?": {
       "count": 1,
       "kind": "delegated",
-      "reason": "The caller-owned absolute deadline also covers tmux ownership discovery. remaining(deadline) subtracts elapsed time and refuses exhaustion; helper execution does not renew the operation budget."
+      "reason": "The restoration proof consumes the remaining caller-owned tmux deadline. It shares that budget with target selection and never renews it for the helper."
     }
   },
   "src/service/isolated_merge.rs": {

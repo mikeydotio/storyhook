@@ -58,6 +58,23 @@ closure. Reports distinguish safety refusals (`skipped`) from operational
 failures (`failed`); requests retain the latest diagnosis and retry time.
 A changed failure produces one story comment, not a comment on every retry.
 
+## Pane termination helper
+
+The binary stops a captured pane with `plugins/story/lib/dropped-cleanup-pane.py`.
+It does not use the installed plugin, which can be a different version. It
+writes the whole `plugins/story/lib` directory that it embeds, never a list of
+files, and runs the helper from that copy. The helper then resolves its imports
+as it does in the installed plugin and in the plugin tests. A hand-kept list of
+five files missed the `tmux_client`, `tmux_target` and `tmux_server_env` imports
+that SH-825 added, and every pane cleanup failed until SH-881.
+
+The copy lives at `dropped-cleanup/<token>.bundle` in the daemon state
+directory, beside the `<token>.json` process journal, with mode `0700`. Each
+attempt replaces a leftover copy, runs the helper and then removes the copy.
+The reservation token does not change between retries, so a helper traceback
+that names these files is the same at each retry and does not post a new
+comment. A random temporary directory made each retry look like a new failure.
+
 ## Scheduling and manual retry
 
 The daemon wakes on project-change notifications and at startup, with a bounded
@@ -75,6 +92,11 @@ The periodic reconciliation sweep remains configurable:
 These settings do not disable cleanup triggered by closure. The verifier no
 longer reaps story workspaces itself; it commits completion and releases its
 locks. Batch scratch-resource retirement remains part of verification.
+
+A failed request posts a `STORY RESOURCE CLEANUP REQUIRED` comment when its
+diagnostic is news. A retry that changes only numbers, such as an elapsed time,
+a load average or a process id, is not news: the request stores the latest
+detail but adds no comment (SH-881).
 
 `story cleanup` runs the same controller and can retry before the automatic
 backoff expires. `story cleanup --dry-run` performs discovery and preflight without

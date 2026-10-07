@@ -14,5 +14,7 @@ if ! command -v python3 >/dev/null 2>&1; then
   printf '{"systemMessage":"StoryHook prose plan approval unavailable: python3 is missing. No approval was sent."}'
   exit 0
 fi
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+if ! project_automations_enabled; then cat >/dev/null; printf '{}'; exit 0; fi
 export PYTHONDONTWRITEBYTECODE=1
 exec python3 "$(dirname "${BASH_SOURCE[0]}")/codex_stop.py"

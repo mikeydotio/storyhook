@@ -295,6 +295,8 @@ fn revocations(
     for change in [
         "stop",
         "stop-start",
+        "manual-mode",
+        "automation-reenabled",
         "finished",
         "new-attempt",
         "revision",
@@ -315,6 +317,13 @@ fn revocations(
                     if change == "stop-start" {
                         tx.put_verification_enabled(project, true)?;
                     }
+                }
+                "manual-mode" | "automation-reenabled" => {
+                    let mut settings = tx.settings(project)?;
+                    settings.automations_enabled = Some(change == "automation-reenabled");
+                    settings.automations_after =
+                        Some(tx.project(project)?.unwrap().next_global_seq - 1);
+                    tx.put_settings(project, &settings)?;
                 }
                 "checkout" => {
                     tx.set_checkout_path(project, Some(Path::new("/foreign-checkout")))?

@@ -134,6 +134,15 @@ fn unsettled_preparation_prevents_a_causal_finding_even_with_contrasting_probes(
         .as_mut()
         .unwrap()
         .cleanup_complete = true;
+    assert_eq!(cause(&record), FailureCause::Unknown);
+    record.settlement = Some(DiagnosticSettlement {
+        completed_at: AT.into(),
+        milliseconds: record.diagnosis_ms,
+        cleanup_complete: false,
+        detail: "comparison cleanup was uncertain".into(),
+    });
+    assert_eq!(cause(&record), FailureCause::Unknown);
+    record.settlement.as_mut().unwrap().cleanup_complete = true;
     assert_eq!(cause(&record), FailureCause::CandidateCaused);
 }
 

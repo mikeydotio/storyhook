@@ -40,6 +40,11 @@ _TMP_REPOS+=("$FAKE_DIR")
 export STORY_FAKE_LOG="$FAKE_DIR/reached"
 cat >"$FAKE_DIR/story" <<'FAKE'
 #!/usr/bin/env bash
+# A read-only project switch lookup is not commit synchronization.
+if [ "$*" = "--deadline 2 --json project settings get automations.enabled" ]; then
+  printf '%s\n' '{"setting":{"value":"true"}}'
+  exit 0
+fi
 printf '%s\n' "$*" >>"$STORY_FAKE_LOG"
 printf 'the fake story CLI ran\n'
 FAKE
@@ -81,7 +86,7 @@ print(json.dumps({"tool_input": {"command": os.environ["COMMAND"]}}))')
   (cd "$1" && printf '%s' "$payload" | bash "$HOOKS_DIR/post-git.sh" 2>/dev/null)
 }
 
-# reached — did the hook get as far as running `story`?
+# reached — did the hook reach synchronization, beyond the settings lookup?
 reached() { [ -s "$STORY_FAKE_LOG" ] && printf 'yes' || printf 'no'; }
 
 # --- the control: a commit IS covered by post-commit, so it still skips ------

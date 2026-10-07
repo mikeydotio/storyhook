@@ -54,7 +54,11 @@ pub(super) fn permits_row(
     row: &StoryRow,
     candidate: &VerificationCandidate,
 ) -> Result<bool, StoreError> {
-    Ok(!crate::domain::is_human_only(&row.snapshot)
+    Ok(super::super::automations::permits_generation(
+        tx,
+        candidate.project,
+        candidate.verifying_generation,
+    )? && !crate::domain::is_human_only(&row.snapshot)
         && revision(tx, candidate.project, row.story_no)? == candidate.human_only_revision)
 }
 
