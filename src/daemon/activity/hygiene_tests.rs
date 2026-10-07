@@ -30,6 +30,8 @@ impl Registry {
         std::fs::create_dir_all(env.store_path().parent().unwrap()).unwrap();
         let store = SqliteStore::open(env.store_path()).unwrap();
         store.migrate().unwrap();
+        // Production claims its pidfile before starting the hygiene worker.
+        std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
         Self { root, env, store }
     }
 
@@ -355,6 +357,60 @@ fn reset_removes_a_previous_daemons_findings() {
     assert!(!registry.env.journal_hygiene_file().exists());
     assert!(warnings(&registry.env).is_empty());
     reset(&registry.env).unwrap();
+}
+
+#[test]
+fn findings_publication_does_not_recreate_a_detached_home() {
+    let registry = Registry::new();
+    assert!(registry.sweep().is_empty());
+    assert!(registry.env.journal_hygiene_file().is_file());
+    let journal = super::super::Journal::anchored(
+        registry.env.daemon_state_dir().join("activity"),
+        registry.env.daemon_state_dir(),
+    );
+
+    // Keep the store connection open, just as a sweep still finishing after
+    // the daemon's HOME was detached. Never clean the original path again:
+    // that would erase the recreation this regression must detect.
+    std::fs::rename(registry.env.home(), registry.path("retired-home")).unwrap();
+    assert!(publish(&registry.env, &Findings::default()).is_err());
+    assert!(!registry.env.home().exists(), "findings recreated HOME");
+    assert!(
+        journal
+            .append(
+                chrono::Utc::now(),
+                "INFO",
+                "daemon",
+                "event",
+                "",
+                "daemon stopped"
+            )
+            .is_err(),
+        "failed findings publication must not revive the journal's anchor"
+    );
+    assert!(
+        !registry.env.home().exists(),
+        "shutdown logging recreated HOME"
+    );
+}
+
+#[test]
+fn findings_publication_requires_the_existing_daemon_state_directory() {
+    let registry = Registry::new();
+    assert!(registry.sweep().is_empty());
+    let directory = registry.env.daemon_state_dir();
+    std::fs::rename(&directory, registry.path("retired-daemon-state")).unwrap();
+
+    assert!(
+        registry.env.home().is_dir(),
+        "only the daemon anchor was removed"
+    );
+    assert!(publish(&registry.env, &Findings::default()).is_err());
+    assert!(
+        !directory.exists(),
+        "findings recreated their removed anchor"
+    );
+    assert!(!registry.env.journal_hygiene_file().exists());
 }
 
 #[test]
