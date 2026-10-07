@@ -1017,3 +1017,127 @@ fn policy_routes_preserve_mutation_guards_and_validate_input() {
         ),
     ]);
 }
+
+#[test]
+fn pathless_manual_board_can_toggle_edit_and_reenable_without_losing_guards() {
+    let fixture = Fixture::new();
+    fixture.forget_checkout();
+    let request = |method, suffix: &str, sent: Sent, body: &str| {
+        route(
+            &*fixture.store,
+            &fixture.environment,
+            &method,
+            &format!("/api/repos/{}/{}", fixture.repo, suffix),
+            &sent.headers(),
+            body,
+            &TrustedHosts::default(),
+        )
+    };
+    for (sent, expected) in [(Sent::NoCsrfHeader, 403), (Sent::NoContentType, 415)] {
+        assert_eq!(
+            request(Method::Patch, "automations", sent, r#"{"enabled":false}"#)
+                .reply
+                .status,
+            expected
+        );
+    }
+    assert_eq!(
+        request(
+            Method::Patch,
+            "automations",
+            Sent::Dashboard,
+            r#"{"enabled":false}"#
+        )
+        .reply
+        .status,
+        200
+    );
+    let catalog = || {
+        let result = route(
+            &*fixture.store,
+            &fixture.environment,
+            &Method::Get,
+            "/api/repos",
+            &Sent::Dashboard.headers(),
+            "",
+            &TrustedHosts::default(),
+        );
+        serde_json::from_slice::<serde_json::Value>(result.reply.body()).unwrap()
+    };
+    assert_eq!(catalog()[0]["read_only"], false);
+    assert_eq!(catalog()[0]["available"], true);
+    assert!(catalog()[0]["reason"].is_null());
+    for (sent, expected) in [(Sent::NoCsrfHeader, 403), (Sent::NoContentType, 415)] {
+        assert_eq!(
+            request(Method::Patch, "story/SH-1", sent, r#"{"title":"Updated"}"#)
+                .reply
+                .status,
+            expected
+        );
+    }
+    assert_eq!(
+        request(
+            Method::Patch,
+            "story/SH-1",
+            Sent::Dashboard,
+            r#"{"title":"Updated"}"#
+        )
+        .reply
+        .status,
+        200
+    );
+    assert_eq!(
+        request(
+            Method::Post,
+            "story/SH-1/move",
+            Sent::Dashboard,
+            r#"{"state":"invalid-state"}"#
+        )
+        .reply
+        .status,
+        422
+    );
+    for state in ["verifying", "done"] {
+        let body = format!(r#"{{"state":"{state}"}}"#);
+        let moved = request(Method::Post, "story/SH-1/move", Sent::Dashboard, &body);
+        assert_eq!(
+            moved.reply.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(moved.reply.body())
+        );
+        assert_eq!(moved.changed, Some(Changed::Project(fixture.repo.clone())));
+    }
+    // Resource operations still require a checkout, even in manual mode.
+    for suffix in ["story/SH-1/dispatch", "story/SH-1/reset", "engine"] {
+        assert_eq!(
+            request(Method::Post, suffix, Sent::Dashboard, "{}")
+                .reply
+                .status,
+            422
+        );
+    }
+    assert_eq!(
+        request(
+            Method::Patch,
+            "automations",
+            Sent::Dashboard,
+            r#"{"enabled":true}"#
+        )
+        .reply
+        .status,
+        200
+    );
+    assert_eq!(catalog()[0]["read_only"], true);
+    assert_eq!(
+        request(
+            Method::Patch,
+            "story/SH-1",
+            Sent::Dashboard,
+            r#"{"title":"Refused"}"#
+        )
+        .reply
+        .status,
+        422
+    );
+}

@@ -116,6 +116,8 @@ pub(crate) fn finish(
             return Ok(());
         }
         let changed_diagnostic = current.detail != detail;
+        let news =
+            current.detail.as_deref().map(fingerprint) != detail.as_deref().map(fingerprint);
         let completed = current.completed || issue.is_none();
         if !changed_diagnostic && current.completed == completed && current.retry_at == retry_at {
             return Ok(());
@@ -126,7 +128,7 @@ pub(crate) fn finish(
         if !tx.update_closure_cleanup(&current)? {
             return Ok(());
         }
-        if changed_diagnostic && let Some(detail) = &detail {
+        if news && let Some(detail) = &detail {
             let row = tx.story(ctx.project(), request.story)?
                 .ok_or_else(|| AppError::Storage("cleanup story disappeared".into()))?;
             let prefix = crate::service::project_prefix(tx, ctx.project())?;
@@ -150,4 +152,112 @@ pub(crate) fn finish(
         Ok(())
     })?;
     Ok(())
+}
+
+/// What a retry must change for its diagnostic to be news: the detail with
+/// each run of digits collapsed to `#`. A retry measures elapsed time, load
+/// and process ids afresh, and posting each new reading of the same failure
+/// added a comment at every retry (SH-881). The exact latest detail is still
+/// stored; only the comment depends on this.
+fn fingerprint(detail: &str) -> String {
+    let mut out = String::with_capacity(detail.len());
+    let mut digits = false;
+    for c in detail.chars() {
+        if c.is_ascii_digit() {
+            if !digits {
+                out.push('#');
+            }
+            digits = true;
+        } else {
+            out.push(c);
+            digits = false;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::env::Environment;
+    use crate::service::{NewStoryInput, StoryService};
+    use crate::store::{SqliteStore, StoryNo};
+
+    #[test]
+    fn a_fingerprint_drops_each_reading_and_keeps_the_message() {
+        assert_eq!(
+            fingerprint("probe exceeded 30s after 31.2s (load 4.51); pid 812 alive"),
+            fingerprint("probe exceeded 30s after 33.07s (load 12.5); pid 9 alive"),
+        );
+        assert_eq!(fingerprint("a1b22c333"), "a#b#c#");
+        assert_eq!(fingerprint(""), "");
+        assert_ne!(
+            fingerprint("cleanup pane identity changed"),
+            fingerprint("story window remains after cleanup"),
+        );
+    }
+
+    /// A retry measures elapsed time, load and process ids afresh. Taken as
+    /// news, each reading posted another comment on the story (SH-881).
+    #[test]
+    fn a_retry_that_only_measures_again_posts_no_comment() {
+        let fixture = storyhook_test_support::ServiceFixture::new();
+        let store = SqliteStore::open(fixture.env().store_path()).unwrap();
+        let project = store
+            .read(|tx| Ok(tx.project_by_slug("fixture")?.unwrap().id))
+            .unwrap();
+        let ctx = Ctx::new(
+            &store,
+            project,
+            fixture.cwd(),
+            Environment::at(fixture.env().home()),
+        )
+        .no_hooks(true);
+        let stories = StoryService::new(&ctx);
+        let id = stories
+            .create(&NewStoryInput {
+                title: "Retried cleanup".into(),
+                ..Default::default()
+            })
+            .unwrap()
+            .id;
+        stories.set_state(&id, "done", None, None, None).unwrap();
+        let story = StoryNo::parse_id("SH", &id).unwrap();
+        let fail = |detail: &str| {
+            let request = store
+                .read(|tx| tx.closure_cleanup(project, story))
+                .unwrap()
+                .unwrap();
+            let issue = CleanupSkip {
+                story_id: id.clone(),
+                reason: "dropped-cleanup-failed".into(),
+                detail: detail.into(),
+            };
+            finish(&ctx, &request, Some(&issue)).unwrap();
+            let comments = store
+                .read(|tx| tx.events_for(project, story))
+                .unwrap()
+                .into_iter()
+                .filter(|event| {
+                    matches!(event.known(), Some(StoryEvent::StoryCommentAdded { text, .. })
+                        if text.starts_with("STORY RESOURCE CLEANUP REQUIRED"))
+                })
+                .count();
+            let stored = store
+                .read(|tx| tx.closure_cleanup(project, story))
+                .unwrap()
+                .unwrap()
+                .detail;
+            (comments, stored)
+        };
+        assert_eq!(fail("probe timed out after 31.2s (load 4.51)").0, 1);
+        let (comments, stored) = fail("probe timed out after 33.0s (load 12.07)");
+        assert_eq!(comments, 1);
+        // The comment is not repeated, but the latest reading is kept.
+        assert_eq!(
+            stored.as_deref(),
+            Some("dropped-cleanup-failed: probe timed out after 33.0s (load 12.07)")
+        );
+        assert_eq!(fail("story window remains after cleanup").0, 2);
+    }
 }

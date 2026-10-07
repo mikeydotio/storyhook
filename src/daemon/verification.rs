@@ -171,6 +171,17 @@ struct BatchSlot {
 }
 
 impl VerificationActivity {
+    /// Cancel this project's owned verifier children without touching provider sessions.
+    pub(crate) fn cancel_automations(&self, project: ProjectId) {
+        let slots = self.active.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(slot) = slots.get(&project) {
+            slot.cancellation.cancel();
+            if let Some(batch) = &slot.batch {
+                batch.cancellation.cancel();
+            }
+        }
+    }
+
     /// Publish only while the complete ownership snapshot still holds. Match
     /// the existing verifier control lock order: registry, then store.
     pub(crate) fn if_current<T>(
@@ -1345,6 +1356,15 @@ impl ShellVerificationActuator {
         candidate: &VerificationCandidate,
         owner: ControlOwner<'_>,
     ) -> Result<SubmissionOutcome, SubmissionFailure> {
+        self.submit_with_publication_owned(candidate, owner, None)
+    }
+
+    fn submit_with_publication_owned(
+        &self,
+        candidate: &VerificationCandidate,
+        owner: ControlOwner<'_>,
+        publication: Option<(&str, &str)>,
+    ) -> Result<SubmissionOutcome, SubmissionFailure> {
         let _log = self.log_scope(candidate);
         let infrastructure = |detail: String| SubmissionFailure::Infrastructure { detail };
         let lease = candidate.cleanup_lease.as_ref().ok_or_else(|| {
@@ -1353,6 +1373,25 @@ impl ShellVerificationActuator {
                 candidate.story_id
             ))
         })?;
+        // Publication must not wait on the agent's workspace lock. Both
+        // publication and ordinary submission share this narrower exclusion.
+        let started = Instant::now();
+        let publication_lock = loop {
+            if owner.cancellation.is_cancelled() || started.elapsed() >= self.control_timeout {
+                return Err(infrastructure(
+                    "publication lock wait cancelled or timed out".into(),
+                ));
+            }
+            if let Some(lock) = crate::service::workspace_lock::WorkspaceLock::try_at(
+                &self.env.daemon_state_dir().join("publication-locks"),
+                &format!("{}-{}", candidate.project.get(), candidate.story_id),
+            )
+            .map_err(|e| infrastructure(e.to_string()))?
+            {
+                break lock;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
         let encoded = serde_json::to_string(lease)
             .map_err(|error| infrastructure(format!("could not encode cleanup lease: {error}")))?;
         let mut command = Command::new("bash");
@@ -1375,6 +1414,12 @@ impl ShellVerificationActuator {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GH_PROMPT_DISABLED", "1")
             .stdin(Stdio::null());
+        publication_lock.command(&mut command);
+        if let Some((head, url)) = publication {
+            command
+                .env("STORYHOOK_PUBLICATION_HEAD", head)
+                .env("STORYHOOK_PUBLICATION_PR", url);
+        }
         let output = self
             .run_control_owned(
                 command,
@@ -1469,7 +1514,32 @@ impl ShellVerificationActuator {
                 pull_request.url, pull_request.number
             )));
         }
+        if let Some((head, url)) = publication
+            && (pull_request.head_oid != head || pull_request.url != url || !pull_request.adopted)
+        {
+            return Err(infrastructure(
+                "publication receipt does not match the requested commit and PR".into(),
+            ));
+        }
         Ok(SubmissionOutcome::PullRequest(pull_request))
+    }
+
+    /// Publish an exact committed repair without admitting a verification attempt.
+    pub(crate) fn publish_repair(
+        &self,
+        candidate: &VerificationCandidate,
+        head: &str,
+        url: &str,
+        cancellation: &Cancellation,
+    ) -> Result<SubmissionOutcome, SubmissionFailure> {
+        self.submit_with_publication_owned(
+            candidate,
+            ControlOwner {
+                workspace: None,
+                cancellation,
+            },
+            Some((head, url)),
+        )
     }
 
     /// Runs `verify-pr.sh` on `pull_request` under `candidate`'s owned attempt:
@@ -2312,6 +2382,9 @@ where
     A: VerificationActuator,
     W: FnMut(&VerificationCandidate) -> Result<ReconcileWait, AppError>,
 {
+    let Some(_automation) = crate::service::automations::enter(store, env, project)? else {
+        return Ok(TickResult::Idle);
+    };
     cost::observe(store, env, activity, project, || {
         tick_cycle(
             store,
@@ -3873,51 +3946,56 @@ fn poll_project_verification(
     actuator: &impl VerificationActuator,
 ) {
     let subscription = bus.subscribe();
-    // A process restart cannot retain ownership. Pending intent is still actionable.
-    let restart = store.read(|tx| tx.verification_recovery(project));
-    match restart {
-        Ok(recovery) => {
-            if let Some(request) = recovery.request
-                && request.outcome == crate::store::VerificationRecoveryOutcome::Admitted
-                && let Err(error) = activity.settle_request(
-                    store,
-                    project,
-                    Some(&request.id),
-                    "interrupted",
-                    "Daemon restarted after admission; ownership must be reacquired",
-                )
-            {
+    let startup = crate::service::automations::enter(store, env, project);
+    if let Ok(Some(_automation)) = startup {
+        // A process restart cannot retain ownership. Pending intent is still actionable.
+        let restart = store.read(|tx| tx.verification_recovery(project));
+        match restart {
+            Ok(recovery) => {
+                if let Some(request) = recovery.request
+                    && request.outcome == crate::store::VerificationRecoveryOutcome::Admitted
+                    && let Err(error) = activity.settle_request(
+                        store,
+                        project,
+                        Some(&request.id),
+                        "interrupted",
+                        "Daemon restarted after admission; ownership must be reacquired",
+                    )
+                {
+                    super::activity::context::project_error(
+                        store,
+                        project,
+                        "verifier",
+                        &format!("storyhook: project {project} recovery restart failed: {error}"),
+                    );
+                    eprintln!("storyhook: project {project} recovery restart failed: {error}");
+                }
+            }
+            Err(error) => {
                 super::activity::context::project_error(
                     store,
                     project,
                     "verifier",
-                    &format!("storyhook: project {project} recovery restart failed: {error}"),
+                    &format!("storyhook: project {project} recovery startup read failed: {error}"),
                 );
-                eprintln!("storyhook: project {project} recovery restart failed: {error}");
+                eprintln!("storyhook: project {project} recovery startup read failed: {error}")
             }
         }
-        Err(error) => {
+        // A batch lives only inside one tick of this worker, so one still live
+        // now was left by a verifier that stopped (SH-831, B10).
+        if let Err(error) = abandon_interrupted_batches(store, env, project) {
             super::activity::context::project_error(
                 store,
                 project,
                 "verifier",
-                &format!("storyhook: project {project} recovery startup read failed: {error}"),
+                &format!(
+                    "storyhook: project {project} interrupted batches were not abandoned: {error}"
+                ),
             );
-            eprintln!("storyhook: project {project} recovery startup read failed: {error}")
-        }
-    }
-    // A batch lives only inside one tick of this worker, so one still live
-    // now was left by a verifier that stopped (SH-831, B10).
-    if let Err(error) = abandon_interrupted_batches(store, env, project) {
-        super::activity::context::project_error(
-            store,
-            project,
-            "verifier",
-            &format!(
+            eprintln!(
                 "storyhook: project {project} interrupted batches were not abandoned: {error}"
-            ),
-        );
-        eprintln!("storyhook: project {project} interrupted batches were not abandoned: {error}");
+            );
+        }
     }
     while !stop.load(Ordering::Relaxed) {
         let mut request_id = match store.read(|tx| tx.verification_recovery(project)) {
@@ -3987,8 +4065,9 @@ fn poll_project_verification(
             },
             ToString::to_string,
         );
-        if let Err(error) =
-            activity.settle_request(store, project, request_id.as_deref(), reason, &detail)
+        if let Ok(Some(_automation)) = crate::service::automations::enter(store, env, project)
+            && let Err(error) =
+                activity.settle_request(store, project, request_id.as_deref(), reason, &detail)
         {
             super::activity::context::project_error(
                 store,

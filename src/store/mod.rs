@@ -73,7 +73,9 @@ mod closure_cleanup;
 pub use closure_cleanup::ClosureCleanup;
 pub(crate) use closure_cleanup::effective_states;
 mod story_reset;
-pub use story_reset::{ResetLane, ResetPathIdentity, StoryReset};
+pub use story_reset::{
+    ResetLane, ResetOrigin, ResetPathIdentity, ResetRecovery, ResetResidue, StoryReset,
+};
 mod engine_reset;
 pub use engine_reset::EngineReset;
 pub mod error;
@@ -83,6 +85,7 @@ pub(crate) mod gate_resources;
 pub mod ids;
 pub mod landing;
 pub mod migrate;
+pub mod patience;
 pub mod rebuild;
 pub mod sqlite;
 #[cfg(feature = "fault-injection")]
@@ -374,6 +377,11 @@ pub trait ReadOps {
     /// Whether this project permits new verifier admissions; defaults to true.
     fn verification_enabled(&self, project: ProjectId) -> Result<bool, StoreError>;
 
+    /// Whether automatic work and workflow policy apply to this project.
+    fn automations_enabled(&self, project: ProjectId) -> Result<bool, StoreError> {
+        Ok(self.settings(project)?.automations_enabled.unwrap_or(true))
+    }
+
     /// Durable unfinished reset operations, keyed by story number.
     fn story_resets(
         &self,
@@ -400,6 +408,10 @@ pub trait ReadOps {
 
     /// All retained closure requests for one project, in story order.
     fn closure_cleanups(&self, project: ProjectId) -> Result<Vec<ClosureCleanup>, StoreError>;
+
+    /// Every card reset that has not finished, across all projects, in
+    /// project and story order: the reset runtime resumes each (SH-886).
+    fn unfinished_story_resets(&self) -> Result<Vec<StoryReset>, StoreError>;
 
     /// Latest card reset operation for this story, including completed receipts.
     fn story_reset(

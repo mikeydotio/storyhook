@@ -27,10 +27,8 @@ from host_admission.command import main
 from test_host_admission import policy_value
 
 
-# A spawned broker, interpreter or supervised child must start or settle within
-# this allowance on a loaded gate host. It bounds failure detection only and
-# never paces a passing test (SH-698).
-PROCESS_ALLOWANCE_S = 30
+# Observation allowance for fixture process startup, state convergence and exit.
+PROCESS_OBSERVATION_SECONDS = 30
 
 
 def fixture_policy():
@@ -79,12 +77,12 @@ class BrokerTests(unittest.TestCase):
         receive, send = ctx.Pipe(duplex=False)
         self.process = ctx.Process(target=serve, args=(self.root, send))
         self.process.start(); send.close()
-        self.assertTrue(receive.poll(30), "broker did not report startup")
+        self.assertTrue(receive.poll(PROCESS_OBSERVATION_SECONDS), "broker did not report startup")
         self.assertEqual(receive.recv(), "ready"); receive.close()
 
     def eventually(self, predicate):
         """Await a real state change within the fixture's process-test allowance."""
-        deadline = time.monotonic() + PROCESS_ALLOWANCE_S
+        deadline = time.monotonic() + PROCESS_OBSERVATION_SECONDS
         while time.monotonic() < deadline:
             if predicate():
                 return
@@ -94,7 +92,7 @@ class BrokerTests(unittest.TestCase):
     def stop(self):
         if self.process.is_alive():
             self.process.terminate()
-        self.process.join(30)
+        self.process.join(PROCESS_OBSERVATION_SECONDS)
         if self.process.is_alive():
             self.process.kill(); self.process.join()
 
@@ -192,7 +190,7 @@ class BrokerTests(unittest.TestCase):
             self.assertIsNotNone(managed.child.returncode, "broker loss left owned work alive")
         finally:
             if managed.child.returncode is None:
-                managed.child.kill(); managed.child.wait(timeout=PROCESS_ALLOWANCE_S)
+                managed.child.kill(); managed.child.wait(timeout=PROCESS_OBSERVATION_SECONDS)
             if managed.guard is not None:
                 os.close(managed.guard); managed.guard = None
 
@@ -248,7 +246,7 @@ class BrokerTests(unittest.TestCase):
         try:
             self.assertTrue(select.select([worker.stdout], [], [], 30)[0])
             row = json.loads(worker.stdout.readline())
-            worker.kill(); worker.wait(timeout=PROCESS_ALLOWANCE_S)
+            worker.kill(); worker.wait(timeout=PROCESS_OBSERVATION_SECONDS)
             self.eventually(lambda: self.client.call("inspect", id=row["id"], token=row["token"])["state"] == "quarantined")
             self.assertEqual(self.client.call("status")["allocated"]["cpu"], 6000)
             self.stop(); self.start()
@@ -258,7 +256,7 @@ class BrokerTests(unittest.TestCase):
         finally:
             worker.stdin.close(); worker.stdout.close()
             if worker.poll() is None:
-                worker.kill(); worker.wait(timeout=PROCESS_ALLOWANCE_S)
+                worker.kill(); worker.wait(timeout=PROCESS_OBSERVATION_SECONDS)
 
     def test_evidence_failure_drains_owned_work_and_remains_an_error(self):
         class FailedPublisher:
@@ -382,12 +380,12 @@ class BrokerTests(unittest.TestCase):
         try:
             self.eventually(lambda: any(r["id"] == "interrupt" for r in self.client.call("status")["leases"]))
             worker.send_signal(signal.SIGTERM)
-            self.assertEqual(worker.wait(timeout=PROCESS_ALLOWANCE_S), 143)
+            self.assertEqual(worker.wait(timeout=PROCESS_OBSERVATION_SECONDS), 143)
             row = next(r for r in self.client.call("status")["leases"] if r["id"] == "interrupt")
             self.assertEqual(row["state"], "cancelled")
         finally:
             if worker.poll() is None:
-                worker.kill(); worker.wait(timeout=PROCESS_ALLOWANCE_S)
+                worker.kill(); worker.wait(timeout=PROCESS_OBSERVATION_SECONDS)
 
     # SH-869 decision D4: production runners create process groups inside
     # their session (captured children, `set -m`, fixtures) and inherit

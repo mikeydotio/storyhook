@@ -2,6 +2,8 @@
 use crate::error::AppError;
 use crate::service::{Ctx, resources::ResourceReport, workspace_lock::WorkspaceLock};
 use crate::store::{DroppedCleanup, Store};
+use std::os::unix::fs::DirBuilderExt;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -66,46 +68,40 @@ pub(super) fn stop<S: Store>(
         .process_start
         .as_ref()
         .ok_or_else(|| AppError::Validation("cleanup has no captured pane incarnation".into()))?;
-    let bundle = tempfile::Builder::new()
-        .prefix("story-dropped-cleanup-")
-        .tempdir_in("/tmp")?;
-    for (name, source) in [
-        (
-            "dropped-cleanup-pane.py",
-            include_str!("../../../../plugins/story/lib/dropped-cleanup-pane.py"),
-        ),
-        (
-            "stop-dispatch-pane.py",
-            include_str!("../../../../plugins/story/lib/stop-dispatch-pane.py"),
-        ),
-        (
-            "process_identity.py",
-            include_str!("../../../../plugins/story/lib/process_identity.py"),
-        ),
-        (
-            "workspace_ownership.py",
-            include_str!("../../../../plugins/story/lib/workspace_ownership.py"),
-        ),
-        (
-            "probe_budget.py",
-            include_str!("../../../../plugins/story/lib/probe_budget.py"),
-        ),
-    ] {
-        std::fs::write(bundle.path().join(name), source)?;
-    }
     let directory = ctx.env().daemon_state_dir().join("dropped-cleanup");
     std::fs::create_dir_all(&directory)?;
     let journal = directory.join(format!("{}.json", record.token));
+    // Named by the reservation, not the attempt: a traceback names the
+    // helper's files, and a path that changed on every retry made each one
+    // read as a new failure that posted another comment (SH-881).
+    let bundle = directory.join(format!("{}.bundle", record.token));
+    prepare_bundle(&bundle)?;
     let target = serde_json::json!({"socket": record.lease.tmux.socket_path, "window": pane.window_id,
         "name": record.lease.story_id, "pane": pane.pane_id, "pid": pane.pid, "start": start});
     let mut command = Command::new("python3");
     crate::env::spawn_env::apply_dispatch_allowlist(&mut command);
     command
         .envs(ctx.env().child_vars())
-        .arg(bundle.path().join("dropped-cleanup-pane.py"))
+        .arg(bundle.join("dropped-cleanup-pane.py"))
         .arg(target.to_string())
         .arg(journal);
     workspace.dispatch_command(&mut command);
+    let result = run_helper(command, &target);
+    match (result, std::fs::remove_dir_all(&bundle)) {
+        (result, Ok(())) => result,
+        (Ok(()), Err(error)) => Err(AppError::Storage(format!(
+            "dropped pane cleanup could not remove its helper bundle {}: {error}",
+            bundle.display()
+        ))),
+        (Err(failure), Err(error)) => Err(failure.with_context(&format!(
+            "the helper bundle {} could not be removed after this failure: {error}",
+            bundle.display()
+        ))),
+    }
+}
+
+/// Runs the helper and requires a receipt for exactly `target`.
+fn run_helper(command: Command, target: &serde_json::Value) -> Result<(), AppError> {
     let output = crate::process::run_captured_quiescent(
         command,
         CLEANUP_HELPER_TIMEOUT,
@@ -128,9 +124,65 @@ pub(super) fn stop<S: Store>(
     Ok(())
 }
 
+/// Writes the helper and everything it can import to `bundle`, a private
+/// directory: the whole plugin library this binary embeds, never a list of
+/// the files it is thought to need (SH-881).
+///
+/// Whatever an interrupted attempt left there is replaced. Only this
+/// reservation's attempt uses the path, under the story's executor and
+/// workspace locks, and a helper that outlived its attempt still holds the
+/// inherited workspace lock, so nothing can be running from a leftover.
+fn prepare_bundle(bundle: &Path) -> Result<(), AppError> {
+    match std::fs::remove_dir_all(bundle) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(AppError::Storage(format!(
+                "cannot replace the dropped-pane helper bundle {}: {error}",
+                bundle.display()
+            )));
+        }
+        _ => {}
+    }
+    std::fs::DirBuilder::new().mode(0o700).create(bundle)?;
+    crate::plugin::library::project(bundle)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::CLEANUP_HELPER_TIMEOUT;
+    use super::{CLEANUP_HELPER_TIMEOUT, prepare_bundle};
+    use std::process::Command;
+
+    /// The helper runs from the bundle exactly as `stop` starts it, so its
+    /// whole import graph loads before it reads its arguments. Missing
+    /// arguments are its own reported error; a missing module is a traceback
+    /// that never reaches that handler (SH-881). `-E` keeps an inherited
+    /// `PYTHONPATH` from supplying what the bundle lacks; `-I` cannot be used
+    /// because it also drops the script's directory from `sys.path`.
+    #[test]
+    fn the_helper_bundle_resolves_every_module_the_helper_imports() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = storyhook_test_support::scratch_dir();
+        let bundle = scratch.path().join("bundle");
+        // What an interrupted attempt left behind must not survive.
+        std::fs::create_dir(&bundle).unwrap();
+        std::fs::write(bundle.join("json.py"), "raise SystemExit('stale')").unwrap();
+        prepare_bundle(&bundle).unwrap();
+        let output = Command::new("python3")
+            .args(["-E", "-s", "-B"])
+            .arg(bundle.join("dropped-cleanup-pane.py"))
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+        assert!(stderr.is_empty(), "the helper did not load: {stderr}");
+        let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(answer["ok"], false, "{answer}");
+        assert!(
+            crate::embedded::matches(&crate::plugin::library::files(), &bundle),
+            "the bundle must be exactly the embedded plugin library"
+        );
+        let mode = std::fs::metadata(&bundle).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+    }
 
     /// The cleanup helper's probe budget leaves a third of its kill bound for
     /// interpreter start and exit under load, so its own cleanup resumes any

@@ -11,9 +11,12 @@ for container in .claude/worktrees .codex/worktrees 'custom lane'; do
   printf sentinel >"$path/protected/file"
   printf '%s\n' "$path/protected" >"$manifest"
   out=$(cd "$repo" && STORY_AGENT=unsupported bash "$SCRIPT" reset "$id" --force)
-  assert_eq "$(jqf "$out" .reason)" installed-artifact-resource "$container: protect resolved removal target"
+  # SH-886 (council C2): reset never refuses; the protected target is residue.
+  assert_ok "$out" true "$container: reset completes"
+  assert_contains "$(residue_reasons "$out" worktree)" "overlaps installed artifacts registered at" \
+    "$container: protect resolved removal target"
   assert_eq "$(cat "$path/protected/file")" sentinel "$container: artifact survives"
-  assert_eq "$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')" in-progress "$container: claim survives"
+  assert_held_out_of_dispatch "$repo" "$id" "$container"
 done
 # No worktree means no recursive removal; Git writes still require validation.
 printf '%s\n' "$HOME/unrelated-installed" >"$manifest"

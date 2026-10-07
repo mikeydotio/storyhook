@@ -63,6 +63,7 @@ use std::net::{IpAddr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use storyhook::env::TailnetPolicy;
 use storyhook_test_support::{DaemonGuard, TestEnv, reserve_port, slug_at};
 
 /// A real, bindable, non-loopback IP on this machine — the same
@@ -197,6 +198,7 @@ fn a_daemon_never_probes_the_tailnet_more_than_once_across_a_port_fallback() {
 
     env.story(project.path())
         .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value())
         .args(["web", "start", "--port", &occupied.to_string()])
         .assert()
         .success();

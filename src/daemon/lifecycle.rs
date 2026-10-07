@@ -1236,6 +1236,9 @@ pub fn run<S: crate::store::Store>(
     enter_stable_working_directory(env)?;
     let _pidfile = claim_pidfile(env)?;
     let _activity = crate::daemon::activity::start(env);
+    // From here on, before the slow startup work: a daemon whose store is
+    // deleted serves nobody, and nothing else would ever stop it.
+    retire_when_abandoned(env);
     // Before the portfile: once this daemon is discoverable, any journal
     // hygiene findings a status reader sees are its own (SH-771).
     if let Err(error) = crate::daemon::activity::hygiene::reset(env) {
@@ -1312,7 +1315,13 @@ pub fn run<S: crate::store::Store>(
 /// whether it is still there. Everything else goes through the slow path, which
 /// takes the spawn lock before deciding anything, so two clients racing to start
 /// a daemon produce one daemon.
+///
+/// A process whose test-harness owner has exited is refused first, before
+/// anything is read or created: it is a straggler of a finished run, and a
+/// daemon it started would serve a deleted fixture with nothing to stop it
+/// (see [`super::parent_contract`]).
 pub fn ensure(env: &Environment) -> Result<DaemonInfo, AppError> {
+    env.parent_contract().still_here()?;
     if let Some(info) = usable(env) {
         return Ok(info);
     }
@@ -1327,6 +1336,8 @@ pub fn ensure(env: &Environment) -> Result<DaemonInfo, AppError> {
 /// must wait for and adopt the successor, while an ordinary command admitted
 /// before shutdown may still use [`ensure`]'s lock-free fast path.
 pub fn start(env: &Environment) -> Result<DaemonInfo, AppError> {
+    // Before `inspect_lock`, which creates the state directory.
+    env.parent_contract().still_here()?;
     inspect_lock(env)?;
     let info = spawn_locked(env)?;
     verify_local_info(env, &info)?;
@@ -1355,6 +1366,7 @@ pub struct RestartedDaemon {
 /// is touched (`super::seat_guard`, SH-634): the successor would be that
 /// build, which is the incident this guard exists for.
 pub fn restart(env: &Environment) -> Result<RestartedDaemon, AppError> {
+    env.parent_contract().still_here()?;
     if !inspect_lock(env)? {
         return Err(AppError::Usage(
             "the storyhook daemon is not running — start one with `story daemon start`."
@@ -2176,9 +2188,24 @@ fn spawn_child(env: &Environment, reason: ForkReason) -> Result<std::process::Ch
         .arg("--store-path")
         .arg(&store)
         .args(["daemon", "--serve", "--port", &port, "--owner", owner])
+        // The tailnet policy travels explicitly for the reason the port does: an
+        // in-process test environment is loopback-only without any variable
+        // saying so, and the child would otherwise read none and bind the
+        // tailnet.
+        .env(
+            crate::env::TailnetPolicy::VARIABLE,
+            env.tailnet_policy().as_env_value(),
+        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log);
+    // The owner's incarnation, as this client pinned it while the owner was
+    // alive. A shell harness declares an empty token, and a daemon that
+    // sampled one only later could pin a process that reused the pid. Every
+    // child the daemon starts inherits the exact token too.
+    if let Some(token) = env.parent_contract().start_time() {
+        command.env("STORYHOOK_PARENT_START_TIME", token);
+    }
     // Its own process group, so the daemon does not die with the terminal that
     // happened to start it — and so a test harness can kill the whole group.
     #[cfg(unix)]
@@ -3051,6 +3078,9 @@ pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, App
         return Ok(None);
     }
     let info = read_info(env);
+    // Processes the force path declined, or was refused, to signal. A target
+    // still alive afterwards is a stop that did not happen, and it must fail.
+    let mut unsignalled: Vec<OwnedProcess> = Vec::new();
     let daemon_identity = read_daemon_identity(env).or_else(|| {
         info.as_ref().map(|info| DaemonIdentity {
             pid: info.pid,
@@ -3093,14 +3123,22 @@ pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, App
                         start_time: identity.start_time.clone(),
                         request_id: None,
                     };
-                    report_signal_outcome(&daemon, hard_kill_owned_process(&daemon));
+                    let outcome = hard_kill_owned_process(&daemon);
+                    if outcome.was_refused() {
+                        unsignalled.push(daemon.clone());
+                    }
+                    report_signal_outcome(&daemon, outcome);
                 } else {
                     eprintln!("storyhook: no identity-safe daemon PID was available to signal");
                 }
             }
             let owned = read_owned_processes(env);
             for process in &owned {
-                report_signal_outcome(process, hard_kill_owned_process(process));
+                let outcome = hard_kill_owned_process(process);
+                if outcome.was_refused() {
+                    unsignalled.push(process.clone());
+                }
+                report_signal_outcome(process, outcome);
             }
             if !daemon_drained {
                 ledger_abandoned(
@@ -3122,6 +3160,24 @@ pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, App
     if !is_live(env) {
         let _ = std::fs::remove_file(env.daemon_file());
         let _ = std::fs::remove_file(env.daemon_processes());
+    }
+    // Only a decision fails the stop, never a slow exit: a process that was
+    // signalled may still be on its way out, but one that was never signalled
+    // and is positively the recorded incarnation is still running.
+    let survivors: Vec<String> = unsignalled
+        .iter()
+        .filter(|process| {
+            process.start_time.is_some()
+                && process_identity_is_live(process.pid, process.start_time.as_deref())
+        })
+        .map(|process| format!("{} PID {}", process.role, process.pid))
+        .collect();
+    if !survivors.is_empty() {
+        return Err(AppError::Storage(format!(
+            "`story daemon stop --force` could not signal {}, and each is still running. \
+             Confirm it is this store's daemon (`story daemon status`), then stop it by hand.",
+            survivors.join(", ")
+        )));
     }
     Ok(info)
 }
@@ -3148,6 +3204,14 @@ enum SignalOutcome {
     AlreadyExited,
     IdentityMismatch,
     Refused(i32),
+}
+
+impl SignalOutcome {
+    /// Whether the process was left unsignalled by a decision: its identity
+    /// could not be confirmed safe to signal, or the OS refused.
+    fn was_refused(self) -> bool {
+        matches!(self, Self::IdentityMismatch | Self::Refused(_))
+    }
 }
 
 fn owned_process_is_live(process: &OwnedProcess) -> bool {
@@ -3237,6 +3301,55 @@ fn wait_forever(env: &Environment, info: &DaemonInfo) {
 /// Removes a portfile left by a stopped daemon, best-effort.
 pub fn clear_info(env: &Environment) {
     let _ = std::fs::remove_file(env.daemon_file());
+}
+
+/// How often a running daemon checks that its store still exists.
+///
+/// The parent watch's own cadence: both decide whether anybody is still
+/// served, and neither has a reason to wait longer than the other.
+pub const ABANDONED_STORE_CHECK: Duration = super::serve::SHUTDOWN_CHECK;
+
+/// Whether this daemon's store file is gone.
+///
+/// Only a definite absence counts. Production never deletes or renames a live
+/// store (the documented restore stops the daemon first), so a missing file
+/// means the tree it lived in was deleted: by a test that ended, or by a
+/// person. Any other error, a permission or an I/O failure, says nothing
+/// about abandonment and is not acted on.
+pub(crate) fn store_vanished(env: &Environment) -> bool {
+    matches!(
+        std::fs::symlink_metadata(env.store_path()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+/// Stops this daemon, as an orderly shutdown, once its store file is gone.
+///
+/// A daemon serving a deleted store answers every request from an unlinked
+/// file and outlives whoever deleted it. `scripts/check-no-orphan-servers.sh`
+/// reaps exactly these at the end of `make test`, but only there; a test run
+/// any other way, or a store deleted by hand, left them listening for good.
+/// The check lives in the daemon, so it holds however the daemon started.
+fn retire_when_abandoned(env: &Environment) {
+    let env = env.clone();
+    let watch = std::thread::Builder::new()
+        .name("storyhook-abandonment".to_string())
+        .spawn(move || {
+            super::qos::WorkClass::Housekeeping.enter();
+            loop {
+                std::thread::sleep(ABANDONED_STORE_CHECK);
+                if store_vanished(&env) {
+                    eprintln!(
+                        "storyhook daemon: the store {} no longer exists; exiting",
+                        env.store_path().display()
+                    );
+                    exit_cleanly(&env);
+                }
+            }
+        });
+    if let Err(error) = watch {
+        eprintln!("warning: storyhook daemon cannot watch whether its store still exists: {error}");
+    }
 }
 
 /// Removes this daemon's portfile and terminates an orderly shutdown.
@@ -4984,6 +5097,50 @@ mod tests {
                 identity.start_time.as_deref()
             ));
         });
+    }
+
+    /// A force stop that could not signal its target, which is still running,
+    /// fails: `lib.sh` stops each test's daemon before deleting its home, and
+    /// a stop that reported success here left the daemon serving the deleted
+    /// store. The recorded group deliberately does not match the live child's,
+    /// so the force path refuses to signal it and never touches this test's
+    /// own process group.
+    #[cfg(unix)]
+    #[test]
+    fn force_stop_reports_a_daemon_it_could_not_signal() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let mut child = storyhook_test_support::ChildGuard::spawn(&mut command)
+            .expect("spawning the daemon identity fixture");
+        assert_ne!(
+            process_group(child.pid()),
+            Some(child.pid()),
+            "the fixture must not lead its own group, so the recorded one is wrong"
+        );
+        let identity = DaemonIdentity {
+            pid: child.pid(),
+            process_group: child.pid(),
+            start_time: Some(process_start_time(child.pid()).expect("native process identity")),
+        };
+        let held = claim_pidfile(&env).expect("holding the daemon lock");
+        std::fs::write(env.daemon_pidfile(), serde_json::to_vec(&identity).unwrap()).unwrap();
+
+        let refused = stop(&env, StopMode::Force)
+            .expect_err("a daemon the force path could not signal is still running");
+        let message = refused.to_string();
+        assert!(
+            message.contains(&format!("daemon PID {}", child.pid())),
+            "the failure must name the survivor: {message}"
+        );
+        assert!(process_identity_is_live(
+            identity.pid,
+            identity.start_time.as_deref()
+        ));
+
+        drop(held);
+        child.kill_and_reap();
     }
 
     #[test]

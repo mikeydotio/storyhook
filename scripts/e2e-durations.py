@@ -147,9 +147,13 @@ def merge(path, reports):
         with open(f"{path}.lock", "a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             current = read_history(path)
+            changed = False
             for key, value in updates.items():
                 if key not in current or value[2] > current[key][2]:
                     current[key] = value
+                    changed = True
+            if not changed:
+                return
             with tempfile.NamedTemporaryFile(mode="w", dir=Path(path).parent,
                                              prefix="e2e-durations-", delete=False) as output:
                 temporary = output.name

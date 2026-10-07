@@ -25,6 +25,7 @@ use std::net::{IpAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use storyhook::env::TailnetPolicy;
 use storyhook::event_hooks::HOOK_TIMEOUT_CEILING_SECS;
 use storyhook_test_support::{TestEnv, reserve_port, slug_at, wait_for_addr, wait_for_server};
 
@@ -111,6 +112,7 @@ fn a_daemon_that_missed_its_tailnet_bind_self_heals_without_a_restart() {
 
     env.story(project.path())
         .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value())
         .env("STORYHOOK_TAILNET_REPROBE_INITIAL_MS", "50")
         .env("STORYHOOK_TAILNET_REPROBE_CAP_MS", "200")
         .args(["web", "start", "--port", &port.to_string()])
@@ -254,6 +256,7 @@ fn a_late_tailnet_bind_is_not_held_up_by_a_dashboard_request_in_progress() {
 
     env.story(project.path())
         .env("PATH", &path)
+        .env(TailnetPolicy::VARIABLE, TailnetPolicy::Bind.as_env_value())
         .env("STORYHOOK_TAILNET_REPROBE_INITIAL_MS", "50")
         .env("STORYHOOK_TAILNET_REPROBE_CAP_MS", "200")
         .args(["web", "start", "--port", &port.to_string()])

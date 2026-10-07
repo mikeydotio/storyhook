@@ -650,7 +650,7 @@ fn engine_probe_case(name: &str, forced: u32, floor: Option<f64>) {
     std::fs::write(
         &adapter,
         format!(
-            "#!/bin/sh\nset -eu\nexport TMUX_TMPDIR='{root}'\nif [ \"$1\" = display-message ]; then\n  held=$(cat '{counter}' 2>/dev/null || echo 0)\n  if [ \"$held\" -lt {forced} ]; then\n    echo $((held + 1)) > '{counter}'\n    sleep {delay}\n  fi\nfi\nexec '{real}' \"$@\"\n",
+            "#!/bin/sh\nset -eu\nexport TMUX_TMPDIR='{root}'\ntmux_verb() {{ while [ \"$#\" -gt 0 ]; do case \"$1\" in -S|-L) shift 2 ;; -u|-N|-v) shift ;; *) break ;; esac; done; printf '%s' \"${{1:-}}\"; }}\nif [ \"$(tmux_verb \"$@\")\" = display-message ]; then\n  held=$(cat '{counter}' 2>/dev/null || echo 0)\n  if [ \"$held\" -lt {forced} ]; then\n    echo $((held + 1)) > '{counter}'\n    sleep {delay}\n  fi\nfi\nexec '{real}' \"$@\"\n",
             root = tmux_root.display(),
             counter = scratch.path().join("probes-delayed").display(),
             delay = TMUX_TIMEOUT.as_secs() + 1,
@@ -897,7 +897,19 @@ fn verification_callback_delivers_only_to_the_default_server_agent() {
     .expect("namespace adapter");
     std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755))
         .expect("executable adapter");
-    let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/bin/story.sh");
+    let real_helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/story/bin/story.sh");
+    // Resolver discovery happens before executing tmux. Bind the private default
+    // namespace at the helper boundary, not only inside the tmux adapter.
+    let helper = scratch.path().join("current-environment.sh");
+    std::fs::write(
+        &helper,
+        format!(
+            "export TMUX_TMPDIR='{}'\nexec bash '{}' \"$@\"\n",
+            tmux_root.display(),
+            real_helper.display()
+        ),
+    )
+    .expect("private helper namespace");
     // Reintroduce the old inherited environment only in a fixture wrapper;
     // both cases still execute production notify and real tmux operations.
     let legacy_helper = scratch.path().join("legacy-environment.sh");

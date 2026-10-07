@@ -144,20 +144,34 @@ printf '%s\n' "$repo/.claude/worktrees/$wname/protected" >> "$manifest"
 mkdir -p "$repo/.claude/worktrees/$wname/protected"
 printf sentinel > "$repo/.claude/worktrees/$wname/protected/file"
 out=$(bash "$1" reset "$id" --force)
-assert_eq "$(jqf "$out" .reason)" installed-artifact-resource 'ancestor removal refused even with force'
-assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" in-progress 'refusal precedes release'
+# SH-886 (council C2): reset never refuses; the installed artifact's worktree
+# is residue, and the residue holds the released story out of dispatch.
+assert_ok "$out" true 'ancestor reset completes'
+assert_contains "$(residue_reasons "$out" worktree)" "overlaps installed artifacts registered at" \
+  'ancestor removal is left as residue even with force'
+assert_held_out_of_dispatch "$repo" "$id" 'ancestor'
 assert_eq "$(cat "$repo/.claude/worktrees/$wname/protected/file")" sentinel 'artifact survived'
 cp "$repo/manifest.backup" "$manifest"
 ln -s "$HOME/.codex" "$repo/redirect"
+codex_digest() { (cd "$HOME/.codex" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum); }
+codex_before=$(codex_digest)
 # A slow native observation must reach the artifact guard. The delay is a
 # deliberate stimulus beyond the production probe bound, not readiness polling.
+# Native reset never reads the configured worktree root, so a root redirected
+# into the installed domain cannot steer it: each iteration re-arms the
+# story's own worktree and claim, and reset removes exactly those (C2).
 for container in redirect/storyhook "../$(basename "$repo")/redirect/storyhook"; do
+  [ -d ".claude/worktrees/$wname" ] \
+    || git worktree add -q --no-track -b "worktree-$wname" ".claude/worktrees/$wname" HEAD || exit 1
+  story unblock "$id" >/dev/null || fail_test 'redirect: clear the hold'
+  story claim "$id" --no-comment >/dev/null || fail_test 'redirect: claim'
   printf '%s\n' "$SH803_RESOURCE_DELAY" > "$FAKE_TMUX_STATE/resource_delay"
   out=$(STORY_WORKTREE_IGNORE_PATH="$container" bash "$1" reset "$id" --force)
-  assert_eq "$(jqf "$out" .reason)" installed-artifact-resource "redirected configuration refused: $out"
-  assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" in-progress 'redirect refusal precedes release'
-  assert_eq "$(cat "$repo/.claude/worktrees/$wname/protected/file")" sentinel 'redirect refusal preserves worktree'
-  git show-ref --verify --quiet "refs/heads/worktree-$wname" || fail_test 'redirect refusal preserves branch'
+  assert_ok "$out" true "redirected configuration reset completes: $out"
+  assert_eq "$(story show "$id" --json | jq -r '.story.story.state')" todo 'redirect: reset releases the story'
+  [ ! -d "$repo/.claude/worktrees/$wname" ] || fail_test "redirect: the story's own worktree survived"
+  git show-ref --verify --quiet "refs/heads/worktree-$wname" && fail_test "redirect: the story's own branch survived"
+  assert_eq "$(codex_digest)" "$codex_before" 'redirect: the installed domain is unchanged'
   rm "$FAKE_TMUX_STATE/resource_delay"
 done
 out=$(bash "$1" reset "$id" --force --no-comment)

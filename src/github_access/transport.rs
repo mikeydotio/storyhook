@@ -43,10 +43,10 @@ impl Repository {
         } else {
             FLAGS
         };
-        if arguments[1..remote]
-            .iter()
-            .any(|arg| !allowed_flags.contains(&arg.as_str()))
-        {
+        if arguments[1..remote].iter().any(|arg| {
+            !allowed_flags.contains(&arg.as_str())
+                && !(operation == "fetch" && arg == "--no-write-fetch-head")
+        }) {
             return Err(refuse("unsupported transport option"));
         }
         let operands = &arguments[remote + 1..];

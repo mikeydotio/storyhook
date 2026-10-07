@@ -211,6 +211,18 @@ fn invalid_status_preserves_queue_attempt_incident_and_control() {
         .unwrap();
     let before = serde_json::to_value(activity.status(&f.ctx()).unwrap()).unwrap();
     let record = insert_invalid(&f, "invalid", json!({}), true);
+    // Diagnostic resilience must not turn malformed ownership into executable
+    // queue authority or relax the strict repair reader.
+    assert!(
+        VerificationQueue::new(f.store())
+            .ordered_for(f.project())
+            .is_err()
+    );
+    assert!(
+        ProjectRecoveryService::new(&f.ctx())
+            .show(&record.id)
+            .is_err()
+    );
     let mut after = serde_json::to_value(activity.status(&f.ctx()).unwrap()).unwrap();
     assert_eq!(after["project_recoveries"][0]["id"], record.id);
     after["project_recoveries"] = json!([]);

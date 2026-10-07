@@ -300,6 +300,44 @@ fn print_reports_the_shared_isolation_and_the_binary() {
     );
 }
 
+/// The shell that evaluates `--print` owns the daemons started from it.
+///
+/// The script runs as a process of its own and exits as soon as it has
+/// printed, so naming its own pid handed every daemon started from the
+/// evaluating shell an owner that was already gone. Such a daemon exited as
+/// soon as it served, and a `story` that sees its owner gone starts none.
+#[test]
+fn a_printed_environment_belongs_to_the_shell_that_evaluates_it() {
+    let env = TestEnv::isolated();
+    let (_fixture, home) = decoy_home(&env, "owner");
+    let name = format!("owner-{}", std::process::id());
+    let script = format!(
+        "eval \"$(bash '{}' --name '{name}' --binary '{}' --print)\" || exit 1\n\
+         printf '%s %s\\n' \"$STORYHOOK_PARENT_PID\" \"$$\"\n",
+        repo_root().join("scripts/scratch-env.sh").display(),
+        story_binary().display(),
+    );
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg("-c").arg(&script).current_dir(repo_root());
+    cmd.env("HOME", &home);
+    cmd.env_remove("STORYHOOK_STORE_PATH");
+    cmd.env_remove("STORYHOOK_DATA_DIR");
+    cmd.env_remove("XDG_DATA_HOME");
+    cmd.env_remove("XDG_STATE_HOME");
+    let out = cmd.output().expect("evaluating scratch-env.sh --print");
+    assert!(out.status.success(), "{}", combined(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let (owner, shell) = stdout
+        .trim()
+        .split_once(' ')
+        .unwrap_or_else(|| panic!("the shell printed its owner and itself: {stdout:?}"));
+    assert_eq!(
+        owner, shell,
+        "the evaluated environment names {owner} as its owner, not the shell \
+         ({shell}) that adopted it"
+    );
+}
+
 /// `--print` without `--isolate-home` leaves `$HOME` alone, and with it does not.
 ///
 /// The asymmetry the whole parameter set turns on, checked where a person meets

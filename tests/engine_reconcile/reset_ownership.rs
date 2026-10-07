@@ -20,14 +20,14 @@ fn reserve(fixture: &ServiceFixture, owner: Owner) {
             let service = StoryResetService::new(&ctx);
             let receipt = service.reserve("SH-1", "SH-1").unwrap();
             if matches!(owner, Owner::FailedCard) {
-                let error = service
-                    .execute("SH-1", &receipt.token, || {
-                        Err(storyhook::error::AppError::Validation(
-                            "controlled cleanup failure".into(),
-                        ))
-                    })
-                    .unwrap_err();
-                assert!(error.to_string().contains("controlled cleanup failure"));
+                // An interrupted attempt leaves its last obstacle on the
+                // unfinished receipt; a reset never records a terminal failure.
+                let mut interrupted = receipt;
+                interrupted.failure = Some("controlled cleanup failure".into());
+                fixture
+                    .store()
+                    .write(|tx| tx.put_story_reset(&interrupted))
+                    .unwrap();
             }
         }
         Owner::Native => {

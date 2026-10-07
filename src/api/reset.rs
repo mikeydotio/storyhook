@@ -1,39 +1,35 @@
-//! Authenticated asynchronous reset operations, off the store dispatcher pool.
+//! Authenticated reset requests: reserve here, execute in the reset runtime.
+//!
+//! The controller only reserves a reset and hands it to the daemon's reset
+//! runtime, which drives it to completion on the daemon's own store and
+//! resumes it after a restart (SH-886). A poll therefore never reports an
+//! unfinished reset as an error: it is running until it completes.
 use crate::api::http::{
     Reply, TrustedHosts, content_type_is_json, error_reply, json_reply, text_reply,
 };
 use crate::daemon::http1::{Header, Method};
-use crate::daemon::verification::VerificationActivity;
+use crate::daemon::reset::ResetRuntime;
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::service::{Ctx, story_reset::StoryResetService};
 use crate::store::{ReadOps, SqliteStore, Store, StoryReset};
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Instant;
 
-/// Owns active reset workers; durable reservations survive this controller.
+/// Reserves resets on the connection thread and queues them on the runtime.
 pub(crate) struct ResetController {
     store: SqliteStore,
     env: Environment,
-    activity: VerificationActivity,
-    inflight: Arc<crate::daemon::lifecycle::InFlight>,
-    running: Mutex<HashSet<String>>,
+    runtime: Arc<ResetRuntime>,
 }
 
 impl ResetController {
-    /// Shares verifier ownership and shutdown supervision with the daemon.
-    pub(crate) fn open(
-        env: &Environment,
-        activity: VerificationActivity,
-        inflight: Arc<crate::daemon::lifecycle::InFlight>,
-    ) -> Result<Self, AppError> {
+    /// Shares the daemon's reset runtime.
+    pub(crate) fn open(env: &Environment, runtime: Arc<ResetRuntime>) -> Result<Self, AppError> {
         Ok(Self {
             store: crate::invoke::open_store(env)?,
             env: env.clone(),
-            activity,
-            inflight,
-            running: Mutex::new(HashSet::new()),
+            runtime,
         })
     }
 
@@ -51,11 +47,10 @@ impl ResetController {
         .no_hooks(true))
     }
 
+    /// The poll answer: `ok` once finished, otherwise `running` with the last
+    /// obstacle the reset is waiting out. Never `error`: the runtime resumes
+    /// every unfinished reset.
     fn envelope(&self, reset: &StoryReset) -> Result<serde_json::Value, AppError> {
-        let registry = self.running.lock().expect("reset registry");
-        // A worker commits its receipt before removing its registry entry.
-        // Refresh under this lock so an old receipt cannot report interruption
-        // after the worker has completed or persisted its failure diagnostic.
         let reset = self.store.read(|tx| {
             tx.story_reset(reset.project, reset.story)?
                 .filter(|current| current.token == reset.token)
@@ -66,22 +61,21 @@ impl ResetController {
                     ))
                 })
         })?;
-        let running = registry.contains(&reset.token);
+        if !reset.completed {
+            // A receipt nothing drives yet is resumed now, not at the sweep.
+            self.runtime.request(&reset);
+        }
         Ok(serde_json::json!({"result":"ok", "reset": {
-            "handle":reset.token, "story":reset.story_id,
-            "state":if reset.completed { "ok" } else if running { "running" } else { "error" },
-            "detail":reset.failure.clone().or_else(|| (!reset.completed && !running).then(|| "Reset was interrupted. Retry Reset to finish the same cleanup operation.".into()))
+            "handle": reset.token,
+            "story": reset.story_id,
+            "state": if reset.completed { "ok" } else { "running" },
+            "detail": reset.failure,
+            "residue": reset.residue,
+            "recovery": reset.recovery,
         }}))
     }
 
-    fn start(
-        self: &Arc<Self>,
-        project: &str,
-        id: &str,
-        body: &str,
-        dispatch: &Arc<super::dispatch::DispatchRegistry>,
-        bus: &crate::daemon::bus::ChangeBus,
-    ) -> Result<Reply, AppError> {
+    fn start(&self, project: &str, id: &str, body: &str) -> Result<Reply, AppError> {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Request {
@@ -90,66 +84,8 @@ impl ResetController {
         let request: Request = serde_json::from_str(body)
             .map_err(|e| AppError::Validation(format!("invalid reset request: {e}")))?;
         let ctx = self.context(project)?;
-        let mut running = self.running.lock().expect("reset registry");
-        if running.len() >= super::dispatch::MAX_RUNNING {
-            let duplicate = self.store.read(|tx| {
-                let prefix = crate::service::project_prefix(tx, ctx.project())?;
-                let no = crate::store::StoryNo::parse_id(&prefix, id)
-                    .map_err(|_| crate::store::StoreError::NotFound(format!("story {id}")))?;
-                Ok(tx
-                    .story_reset(ctx.project(), no)?
-                    .is_some_and(|reset| !reset.completed && running.contains(&reset.token)))
-            })?;
-            if !duplicate {
-                return Ok(text_reply(
-                    429,
-                    "Too many resets are running; retry when one finishes",
-                ));
-            }
-        }
         let reset = StoryResetService::new(&ctx).reserve(id, &request.confirmation)?;
-        let start = running.insert(reset.token.clone());
-        drop(running);
-        if start {
-            let controller = Arc::clone(self);
-            let dispatch = Arc::clone(dispatch);
-            let project = project.to_string();
-            let target = reset.clone();
-            let bus = bus.clone();
-            let name = format!("reset-{}", reset.token);
-            if let Err(error) = std::thread::Builder::new().name(name).spawn(move || {
-                // Spawned from an already-`Serving` per-connection thread
-                // (`reset::intercept` runs on it), but a reset itself can run
-                // long and is background-shaped work, not the request/
-                // response itself, so it must not inherit the elevated class
-                // (SH-784).
-                crate::daemon::qos::WorkClass::Housekeeping.enter();
-                let entry = controller.inflight.enter();
-                entry.name(crate::daemon::lifecycle::CurrentRequest {
-                    request_id: target.token.clone(), command: "story-reset".into(), project: Some(project.clone()), pid: std::process::id(), started_at: controller.env.now(), served_deadline_secs: 600, cwd: controller.env.home().to_path_buf(),
-                });
-                let result = (|| {
-                    let ctx = controller.context(&project)?;
-                    let service = StoryResetService::new(&ctx);
-                    service.execute(&target.story_id, &target.token, || {
-                        let deadline = Instant::now() + crate::service::engine::DISPATCH_TIMEOUT;
-                        loop {
-                            let engine_dispatching = crate::service::engine::card_reset_dispatching(&ctx, &target)?;
-                            if dispatch.running_handle(&target.story_id).is_none() && !engine_dispatching { break; }
-                            if Instant::now() >= deadline { return Err(AppError::Validation("Reset is waiting for an existing dispatch to finish; retry reset".into())); }
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                        controller.activity.cancel_story_and_wait(target.project, &target.story_id, deadline)
-                    })
-                })();
-                if let Err(error) = result { crate::daemon::activity::emit("ERROR", "reset", "event", &target.story_id, &error.to_string()); }
-                controller.running.lock().expect("reset registry").remove(&target.token);
-                bus.publish(crate::daemon::bus::Change::Project(project));
-            }) {
-                self.running.lock().expect("reset registry").remove(&reset.token);
-                return Err(AppError::Storage(format!("starting reset worker: {error}")));
-            }
-        }
+        self.runtime.request(&reset);
         Ok(json_reply(202, self.envelope(&reset)?.to_string()).no_cache())
     }
 }
@@ -164,8 +100,6 @@ pub(crate) fn intercept(
     trusted_hosts: &TrustedHosts,
     token: &str,
     controller: &Arc<ResetController>,
-    dispatch: &Arc<super::dispatch::DispatchRegistry>,
-    bus: &crate::daemon::bus::ChangeBus,
     tokens: &super::tokens::TokenRegistry,
     cookie_name: &str,
 ) -> Option<Reply> {
@@ -193,7 +127,7 @@ pub(crate) fn intercept(
             if !content_type_is_json(headers) {
                 return Some(text_reply(415, "Content-Type must be application/json"));
             }
-            controller.start(project, id, body, dispatch, bus)
+            controller.start(project, id, body)
         }
         (Method::Get, ["api", "repos", project, "story", id, "reset", handle]) => (|| {
             let ctx = controller.context(project)?;
@@ -209,147 +143,59 @@ pub(crate) fn intercept(
 mod tests {
     use super::*;
 
-    #[test]
-    fn response_refreshes_the_receipt_after_the_worker_releases_ownership() {
-        use crate::store::WriteOps;
-
-        for failure in [false, true] {
-            let fixture = storyhook_test_support::ServiceFixture::new();
-            let env = Environment::at(fixture.env().home());
-            let controller = ResetController::open(
-                &env,
-                VerificationActivity::default(),
-                Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
-            )
-            .unwrap();
-            let ctx = controller.context("fixture").unwrap();
-            controller
-                .store
-                .write(|tx| tx.set_checkout_path(ctx.project(), None))
-                .unwrap();
-            let story = crate::service::StoryService::new(&ctx)
-                .create(&crate::service::NewStoryInput {
-                    title: "Reset response race".into(),
-                    state: Some("in-progress".into()),
-                    ..Default::default()
-                })
-                .unwrap();
-            let service = StoryResetService::new(&ctx);
-            // Both POST and GET can hold this snapshot when the worker finishes.
-            let pending = service.reserve(&story.id, &story.id).unwrap();
-            controller
-                .running
-                .lock()
-                .unwrap()
-                .insert(pending.token.clone());
-            let result = service.execute(&story.id, &pending.token, || {
-                if failure {
-                    Err(AppError::Validation("controlled cleanup failure".into()))
-                } else {
-                    Ok(())
-                }
-            });
-            assert_eq!(result.is_err(), failure);
-            controller.running.lock().unwrap().remove(&pending.token);
-            assert!(!pending.completed);
-            assert!(pending.failure.is_none());
-            let body = controller.envelope(&pending).unwrap();
-            if failure {
-                assert_eq!(body["reset"]["state"], "error");
-                assert!(
-                    body["reset"]["detail"]
-                        .as_str()
-                        .unwrap()
-                        .contains("controlled cleanup failure")
-                );
-            } else {
-                assert_eq!(body["reset"]["state"], "ok", "{body}");
-                assert!(body["reset"]["detail"].is_null());
-            }
-        }
+    fn controller(env: &Environment) -> ResetController {
+        ResetController::open(env, Arc::new(ResetRuntime::new())).unwrap()
     }
 
     #[test]
-    fn full_capacity_duplicates_reuse_the_handle_and_restart_reports_interruption() {
+    fn an_unfinished_reset_polls_as_running_and_is_queued_never_as_an_error() {
         let fixture = storyhook_test_support::ServiceFixture::new();
         let env = Environment::at(fixture.env().home());
-        let controller = Arc::new(
-            ResetController::open(
-                &env,
-                VerificationActivity::default(),
-                Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
-            )
-            .unwrap(),
-        );
+        let controller = controller(&env);
         let ctx = controller.context("fixture").unwrap();
         let story = crate::service::StoryService::new(&ctx)
             .create(&crate::service::NewStoryInput {
-                title: "Duplicate reset".into(),
+                title: "Interrupted reset".into(),
                 ..Default::default()
             })
             .unwrap();
         let reset = StoryResetService::new(&ctx)
             .reserve(&story.id, &story.id)
             .unwrap();
-        assert_eq!(
-            controller.envelope(&reset).unwrap()["reset"]["state"],
-            "error"
-        );
-        assert!(
-            controller.envelope(&reset).unwrap()["reset"]["detail"]
-                .as_str()
-                .unwrap()
-                .contains("interrupted")
-        );
-        {
-            let mut running = controller.running.lock().unwrap();
-            running.insert(reset.token.clone());
-            for index in 1..super::super::dispatch::MAX_RUNNING {
-                running.insert(format!("other-{index}"));
-            }
+        // As after a restart: nothing drives the receipt yet.
+        assert!(!controller.runtime.is_active(&reset.token));
+        let body = controller.envelope(&reset).unwrap();
+        assert_eq!(body["reset"]["state"], "running", "{body}");
+        assert!(controller.runtime.is_active(&reset.token));
+    }
+
+    #[test]
+    fn requests_beyond_any_worker_count_are_reserved_and_duplicates_reuse_the_handle() {
+        let fixture = storyhook_test_support::ServiceFixture::new();
+        let env = Environment::at(fixture.env().home());
+        let controller = controller(&env);
+        let ctx = controller.context("fixture").unwrap();
+        let mut handles = Vec::new();
+        for index in 0..6 {
+            let story = crate::service::StoryService::new(&ctx)
+                .create(&crate::service::NewStoryInput {
+                    title: format!("Reset {index}"),
+                    ..Default::default()
+                })
+                .unwrap();
+            let body = serde_json::json!({ "confirmation": story.id }).to_string();
+            let reply = controller.start("fixture", &story.id, &body).unwrap();
+            assert_eq!(reply.status, 202, "no request is refused for capacity");
+            let first: serde_json::Value = serde_json::from_slice(reply.body()).unwrap();
+            let again = controller.start("fixture", &story.id, &body).unwrap();
+            let second: serde_json::Value = serde_json::from_slice(again.body()).unwrap();
+            assert_eq!(first["reset"]["handle"], second["reset"]["handle"]);
+            handles.push(first["reset"]["handle"].as_str().unwrap().to_string());
         }
-        let reply = controller
-            .start(
-                "fixture",
-                &story.id,
-                &serde_json::json!({"confirmation":story.id}).to_string(),
-                &Arc::new(super::super::dispatch::DispatchRegistry::new()),
-                &crate::daemon::bus::ChangeBus::new(),
-            )
-            .unwrap();
-        assert_eq!(reply.status, 202);
-        let body: serde_json::Value = serde_json::from_slice(reply.body()).unwrap();
-        assert_eq!(body["reset"]["handle"], reset.token);
-        assert_eq!(body["reset"]["state"], "running");
-        let other = crate::service::StoryService::new(&ctx)
-            .create(&crate::service::NewStoryInput {
-                title: "Over capacity".into(),
-                ..Default::default()
-            })
-            .unwrap();
-        let denied = controller
-            .start(
-                "fixture",
-                &other.id,
-                &serde_json::json!({"confirmation":other.id}).to_string(),
-                &Arc::new(super::super::dispatch::DispatchRegistry::new()),
-                &crate::daemon::bus::ChangeBus::new(),
-            )
-            .unwrap();
-        assert_eq!(denied.status, 429);
         assert!(
-            controller
-                .store
-                .read(|tx| tx.story_reset(ctx.project(), crate::store::StoryNo::new(2)))
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            StoryResetService::new(&ctx)
-                .get(&story.id, &reset.token)
-                .unwrap()
-                .token,
-            reset.token
+            handles
+                .iter()
+                .all(|handle| controller.runtime.is_active(handle))
         );
     }
 }

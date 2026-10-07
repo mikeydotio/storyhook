@@ -732,7 +732,7 @@ pub(super) fn settings(
     let row = one(
         conn,
         "SELECT sync_auto_transition, doctor_stale_threshold, cleanup_auto, \
-                cleanup_interval \
+                cleanup_interval, automations_enabled, automations_after \
          FROM project_settings WHERE project_id = ?1",
         params![project.get()],
         |row| {
@@ -741,17 +741,28 @@ pub(super) fn settings(
                 row.get::<_, Option<String>>(1)?,
                 row.get::<_, Option<bool>>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<bool>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
             ))
         },
         "reading settings",
     )?;
     // A project with no settings row has no settings — not an error. What a
     // default means belongs to the caller, which is the layer that has one.
-    let Some((sync_auto_transition, doctor_stale_threshold, cleanup_auto, cleanup_interval)) = row
+    let Some((
+        sync_auto_transition,
+        doctor_stale_threshold,
+        cleanup_auto,
+        cleanup_interval,
+        automations_enabled,
+        automations_after,
+    )) = row
     else {
         return Ok(ProjectSettings::default());
     };
     Ok(ProjectSettings {
+        automations_enabled,
+        automations_after,
         sync_auto_transition,
         doctor_stale_threshold,
         cleanup_auto,

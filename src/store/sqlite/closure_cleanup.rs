@@ -174,6 +174,14 @@ impl Changes {
             .map(|project| Ok((*project, effective(conn, *project)?)))
             .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
         for (&(project, story), (was_closed, prior)) in &self.stories {
+            if crate::store::migrate::has_columns(
+                conn,
+                "project_settings",
+                &["automations_enabled"],
+            )? && super::read::settings(conn, project)?.automations_enabled == Some(false)
+            {
+                continue;
+            }
             let row = super::read::story(conn, project, story)?;
             let Some(row) = row.filter(|_| {
                 states

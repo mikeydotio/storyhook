@@ -130,6 +130,10 @@ pub fn process_one(
     })?;
     let mut errors = Vec::new();
     for (record, checkout) in records {
+        let Some(_automation) = crate::service::automations::enter(store, env, record.project)?
+        else {
+            continue;
+        };
         if stop.load(Ordering::Acquire) {
             return Ok(false);
         }
@@ -163,6 +167,16 @@ fn process_record(
     id: &str,
 ) -> Result<bool, AppError> {
     let service = ProjectRecoveryService::new(ctx);
+    let initial = service.show(id)?;
+    if !ctx.store().read(|tx| {
+        crate::service::automations::permits_generation(
+            tx,
+            ctx.project(),
+            Some(initial.state.assessment.generation),
+        )
+    })? {
+        return Ok(false);
+    }
     if service.landing_release_ready(id)? {
         service.reconcile_landing(id)?;
         return Ok(true);

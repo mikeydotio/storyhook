@@ -2,10 +2,11 @@
 //! as its own evidence (SH-776).
 //!
 //! The journal is one file per story, and an attempt writes its `run` line
-//! only when its gate starts. Each test here lets a first attempt journal the
+//! when its execution is durably admitted. Each test here lets a first attempt journal the
 //! way `run_verify_pr` does, then starts a second attempt through the
 //! production tick and reads status the way `story verifier status` does,
-//! before the second attempt writes anything.
+//! before the second actuator writes anything. Its daemon-owned header must
+//! already identify the new execution, never the earlier attempt.
 
 use super::*;
 use storyhook::daemon::verification::status::VerifierStatus;
@@ -16,8 +17,9 @@ use storyhook::daemon::verification::{ActiveVerification, LandingOutcome};
 #[derive(Debug)]
 struct Probe {
     call: &'static str,
-    /// Whether the story's journal file existed when status was read.
-    journal: bool,
+    /// The first journal record and durable execution identity observed at the call.
+    journal: Option<serde_json::Value>,
+    execution_id: Option<String>,
     status: VerifierStatus,
 }
 
@@ -28,9 +30,9 @@ struct JournalingGate<'a> {
     activity: &'a VerificationActivity,
     outcomes: Mutex<VecDeque<VerificationOutcome>>,
     landings: Mutex<VecDeque<LandingOutcome>>,
-    /// When set, the gate also rewrites its journal as the earliest attempt
+    /// When set, the gate also appends a run line from the earliest attempt
     /// it saw, the way a foreign writer would, and reads status again.
-    foreign_rewrite: bool,
+    foreign_append: bool,
     /// Every attempt that wrote a `run` line, in order.
     journaled: Mutex<Vec<ActiveVerification>>,
     probes: Mutex<Vec<Probe>>,
@@ -47,7 +49,7 @@ impl<'a> JournalingGate<'a> {
             activity,
             outcomes: Mutex::new(outcomes.into_iter().collect()),
             landings: Mutex::new(VecDeque::new()),
-            foreign_rewrite: false,
+            foreign_append: false,
             journaled: Mutex::new(Vec::new()),
             probes: Mutex::new(Vec::new()),
         }
@@ -59,10 +61,32 @@ impl<'a> JournalingGate<'a> {
             .ctx()
             .clock(Clock::Fixed(self.fixture.env().now()));
         let status = self.activity.status(&ctx).unwrap();
-        let journal = journal_path(self.fixture.env(), candidate).exists();
+        let journal = std::fs::read_to_string(journal_path(self.fixture.env(), candidate))
+            .ok()
+            .map(|text| {
+                serde_json::from_str(text.lines().next().expect("journal header")).unwrap()
+            });
+        let owner = self.activity.active_for(candidate.project).unwrap();
+        let execution_id = self
+            .fixture
+            .store()
+            .read(|tx| {
+                Ok(tx
+                    .gate_attempts(candidate.project)?
+                    .into_iter()
+                    .find(|attempt| attempt.id == owner.attempt_id)
+                    .and_then(|attempt| {
+                        attempt
+                            .executions
+                            .last()
+                            .map(|execution| execution.id.clone())
+                    }))
+            })
+            .unwrap();
         self.probes.lock().unwrap().push(Probe {
             call,
             journal,
+            execution_id,
             status,
         });
     }
@@ -70,13 +94,38 @@ impl<'a> JournalingGate<'a> {
     fn journal(&self, candidate: &VerificationCandidate, attempt: &ActiveVerification) {
         let path = journal_path(self.fixture.env(), candidate);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let execution = self
+            .fixture
+            .store()
+            .read(|tx| {
+                Ok(tx
+                    .gate_attempts(candidate.project)?
+                    .into_iter()
+                    .find(|record| record.id == attempt.attempt_id)
+                    .and_then(|record| {
+                        record
+                            .executions
+                            .last()
+                            .map(|execution| execution.id.clone())
+                    }))
+            })
+            .unwrap()
+            .expect("run belongs to a durable execution");
         let run = serde_json::json!({
             "kind": "run",
+            "execution_id": execution,
             "generation": attempt.generation.unwrap().get(),
             "attempt_id": attempt.attempt_id,
             "at": self.fixture.env().now(),
         });
-        std::fs::write(&path, format!("{run}\n")).unwrap();
+        use std::io::Write;
+        // Production progress is append-only; do not truncate the daemon's
+        // header beneath its independently running cost observer.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "{run}").unwrap();
     }
 
     /// The first attempt that journaled: the one a later attempt must not read.
@@ -110,7 +159,7 @@ impl VerificationActuator for JournalingGate<'_> {
         self.journal(candidate, &owner);
         self.journaled.lock().unwrap().push(owner.clone());
         self.probe("after run line", candidate);
-        if self.foreign_rewrite {
+        if self.foreign_append {
             self.journal(candidate, &self.first_attempt());
             self.probe("foreign run line", candidate);
             self.journal(candidate, &owner);
@@ -183,21 +232,38 @@ fn tick(fixture: &ServiceFixture, gate: &JournalingGate<'_>) -> TickResult {
 }
 
 /// Asserts that `probe` saw a new attempt exactly as a first attempt looks
-/// before its gate: no journal, no evidence error, no warning.
+/// before its actuator: a fresh owned header (or none for landing recovery),
+/// no evidence error, and no warning.
 fn assert_first_attempt_state(probe: &Probe, earlier: &ActiveVerification) {
     let call = probe.call;
     let status = &probe.status;
     assert_eq!(status.evidence_error, None, "{call}: {status:?}");
     assert_eq!(status.warning, None, "{call}: {status:?}");
-    assert!(
-        !probe.journal,
-        "{call}: the earlier attempt's journal is still in place"
-    );
     let active = status
         .active
         .as_ref()
         .unwrap_or_else(|| panic!("{call}: no owner in {status:?}"));
     assert_ne!(active.attempt_id, earlier.attempt_id, "{call}");
+    if call == "recover landing" {
+        assert!(
+            probe.journal.is_none(),
+            "recovery must not reuse gate evidence"
+        );
+    } else {
+        let header = probe
+            .journal
+            .as_ref()
+            .expect("daemon publishes an execution header");
+        assert_eq!(header["kind"], "run");
+        assert_eq!(header["attempt_id"], active.attempt_id);
+        assert_eq!(header["generation"], active.generation.unwrap().get());
+        let execution = probe
+            .execution_id
+            .as_ref()
+            .expect("durably admitted execution");
+        assert!(!execution.is_empty());
+        assert_eq!(header["execution_id"], *execution);
+    }
 }
 
 fn only<'p>(probes: &'p [Probe], call: &str) -> &'p Probe {
@@ -242,13 +308,13 @@ fn a_resubmission_reads_as_a_first_attempt_until_its_own_run_line() {
         .set_state(&id, "verifying", None, Some("in-progress"), None)
         .unwrap();
 
-    gate.foreign_rewrite = true;
+    gate.foreign_append = true;
     assert_eq!(tick(&fixture, &gate), TickResult::Completed);
 
     let probes = gate.take_probes();
     assert_first_attempt_state(only(&probes, "before run line"), &earlier);
     let after = only(&probes, "after run line");
-    assert!(after.journal);
+    assert!(after.journal.is_some());
     assert_eq!(after.status.evidence_error, None, "{:?}", after.status);
     assert_eq!(after.status.warning, None, "{:?}", after.status);
     // The detector stays: once the attempt has its own run line, a journal

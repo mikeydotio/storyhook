@@ -12,6 +12,8 @@ if ! command -v python3 >/dev/null 2>&1; then
   printf '{}'
   exit 0
 fi
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+if ! project_automations_enabled; then cat >/dev/null; printf '{}'; exit 0; fi
 export PYTHONDONTWRITEBYTECODE=1
 case "${1:-}" in
   stop) exec python3 "$(dirname "${BASH_SOURCE[0]}")/session_handoff.py" ;;

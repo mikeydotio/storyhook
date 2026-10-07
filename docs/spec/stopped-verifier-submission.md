@@ -63,6 +63,34 @@ The principal changes belong in the verifier admission/orchestration, durable la
 - Show “Verification stopped — submissions continue without tests,” alongside active publication or landing progress. Do not label skipped tests passed or reused.
 - Preserve release gates and their receipt requirements.
 
+### Pending landing recovery (SH-892)
+
+Stop cancels active owned work and disables future gates; it does not revoke an
+existing landing intent. After cancellation settles, recovery may observe that
+intent in its own project, including after a daemon restart. Recovery must not
+publish again, prepare a new merge, execute a gate, or send another merge request.
+An uncertain observation (including an open PR) retains the exact intent and
+leaves the story verifying. A confirmed merge completes it once and resolves the
+intent atomically. Later ticks do not repeat recovery or completion.
+
+The intent's original authority determines the completion evidence. A certified
+intent retains its original certification even when recovery occurs under Stop.
+A verification-skipped intent retains its admitted attempt identity and skipped
+marker; recovery cannot turn it into a passing gate receipt.
+
+Project manual mode is a separate, stronger boundary. With `automations.enabled`
+false, no automatic landing observation or completion runs, even when verification
+is stopped. Re-enabling automations does not replay pending authority from before
+the disable boundary. See [Per-project manual mode](project-manual-mode.md).
+Human reservations, reset fences, project identity and other authority checks
+remain in force; Stop grants no exception to them.
+
+The old `pending_landing_recovery_respects_project_and_stop_permission` assertion
+expected Stop to hold recovery. That expectation predated SH-882. Commit
+`921bd2bf` corrected it to require completion while retaining project isolation
+and the prohibition on a second merge. SH-892 adds uncertain-to-confirmed recovery
+coverage for both authority types and covers their interaction with manual mode.
+
 ## Validation
 
 Use isolated stores, real local Git repositories, production orchestration, and mocked external endpoints where necessary.

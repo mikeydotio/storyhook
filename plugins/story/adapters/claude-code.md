@@ -66,18 +66,20 @@ marker alone cannot certify dispatch. Report any retained probe path after faile
 ## Release (`unclaim <id>`, `reset <id>`)
 
 Reached as `/story unclaim <id>` and `/story reset <id>`. Run
-`bash "<story-helper>" unclaim <id>` or `bash "<story-helper>" reset <id>`, adding `--force`
-(reset only) and `--comment <text>` / `--no-comment` only when the user asked for them. Show
-`display` and stop. These are here rather than in the shared router because both close the
-story's tmux window, which is terminal behavior this host owns.
+`bash "<story-helper>" unclaim <id>` or `bash "<story-helper>" reset <id>`, adding
+`--comment <text>` / `--no-comment` only when the user asked for them. Show `display` and
+stop. These are here rather than in the shared router because both close the story's tmux
+window, which is terminal behavior this host owns.
 
-- `unclaim` leaves the worktree and branch exactly as it found them; `reset` deletes both.
-- Neither is safe to run from the story's own window in the same way. `unclaim` does the
-  release and reports that it left that window open; `reset` refuses with `self-window`, and
-  `--force` does not override it. Tell the user to run `reset` from another window.
-- Claude-created worktrees may be locked. `reset` refuses a locked worktree by default and
-  never unlocks one; `--force` removes it lock and all, which is an explicit choice the user
-  has to make.
+- Run `reset` only on the user's explicit request. `unclaim` leaves the worktree and branch
+  exactly as it found them; `reset` discards both, uncommitted and locked work included, and
+  never refuses once the story is reserved. `--force` changes nothing.
+- From the story's own window, `unclaim` does the release and reports that it left that
+  window open; `reset` leaves that window (and a worktree it is standing in) in place and
+  names it in the story's comment. Tell the user to run `reset` again from another window to
+  remove it.
+- The reset comment gives the deleted branch's tip and the `git branch <name> <sha>` command
+  that restores it; relay it to the user.
 
 ## Completion and setup notes
 

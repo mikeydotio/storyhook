@@ -493,6 +493,12 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0054_gate_evidence.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 55,
+        name: "project_automations",
+        sql: include_str!("schema/0055_project_automations.sql"),
+        foreign_keys_off: false,
+    },
 ];
 
 mod lineage;

@@ -110,6 +110,9 @@ fn deliveries_in(
     Ok(store.read(|tx| {
         let mut found = Vec::new();
         for project in tx.projects()? {
+            if !tx.automations_enabled(project.id)? {
+                continue;
+            }
             found.extend(
                 tx.block_deliveries(project.id)?
                     .into_iter()
@@ -146,6 +149,10 @@ fn recover_one(
     env: &Environment,
     delivery: &BlockDelivery,
 ) -> Result<(), AppError> {
+    let Some(_automation) = crate::service::automations::enter(store, env, delivery.project)?
+    else {
+        return Ok(());
+    };
     let (project, checkout) = store.read(|tx| {
         let project = tx
             .project(delivery.project)?
@@ -233,6 +240,10 @@ fn process_candidate(
         let checkout = tx.checkout_path(project.id)?;
         Ok(Some((project, checkout)))
     })?
+    else {
+        return Ok(false);
+    };
+    let Some(_automation) = crate::service::automations::enter(store, env, observed_project.id)?
     else {
         return Ok(false);
     };

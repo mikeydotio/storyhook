@@ -188,6 +188,7 @@ const POST_COMMIT_HOOK: &str = concat!(
     "#!/bin/sh\n",
     "# storyhook managed hook -- do not edit this line\n",
     "command -v story >/dev/null 2>&1 || exit 0\n",
+    "story --deadline 10 --json project settings get automations.enabled 2>/dev/null | grep -Eq '\"value\"[[:space:]]*:[[:space:]]*\"true\"' || exit 0\n",
     merge_arrival_fn!(),
     r#"if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then
   BASE="$(git rev-parse HEAD^1 2>/dev/null)" || exit 0
@@ -211,6 +212,7 @@ const POST_MERGE_HOOK: &str = concat!(
     "#!/bin/sh\n",
     "# storyhook managed hook -- do not edit this line\n",
     "command -v story >/dev/null 2>&1 || exit 0\n",
+    "story --deadline 10 --json project settings get automations.enabled 2>/dev/null | grep -Eq '\"value\"[[:space:]]*:[[:space:]]*\"true\"' || exit 0\n",
     merge_arrival_fn!(),
     r#"ORIG_HEAD="$(git rev-parse ORIG_HEAD 2>/dev/null)" || exit 0
 storyhook_merge_arrival "$ORIG_HEAD" 5
@@ -246,8 +248,8 @@ exit 0
 /// section pins this; `tests/hooks.rs` fences the class across all three hooks.
 const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # storyhook managed hook -- do not edit this line
-command -v story >/dev/null 2>&1 || exit 0
 case "$2" in message|merge|squash) exit 0 ;; esac
+story --deadline 10 --json project settings get automations.enabled 2>/dev/null | grep -Eq '"value"[[:space:]]*:[[:space:]]*"true"' || exit 0
 NEXT="$(story --deadline 10 next --count 1 --json 2>/dev/null)" || exit 0
 STORY_ID="$(echo "$NEXT" | grep -o '"id": *"[^"]*"' | head -1 | cut -d'"' -f4)"
 if [ -n "$STORY_ID" ]; then
@@ -591,6 +593,28 @@ fn is_ours_or_free(path: &Path) -> bool {
 fn write_hook(path: &Path, content: &str) -> Result<(), AppError> {
     fs::write(path, content)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+/// Refresh only StoryHook-owned hooks already installed in this repository.
+/// Other hooks and repositories without installed hooks remain untouched.
+pub(crate) fn refresh_existing(root: &Path) -> Result<(), AppError> {
+    let dirs = HookDirs::resolve(root)?;
+    for directory in [dirs.effective(), dirs.managed()] {
+        for (name, content) in HOOKS {
+            let path = directory.join(name);
+            if is_storyhook_hook(&path) && fs::read_to_string(&path)? != *content {
+                use std::io::Write;
+                let mut staged = tempfile::NamedTempFile::new_in(directory)?;
+                staged.write_all(content.as_bytes())?;
+                staged
+                    .as_file()
+                    .set_permissions(fs::Permissions::from_mode(0o755))?;
+                staged.as_file().sync_all()?;
+                staged.persist(&path).map_err(|e| e.error)?;
+            }
+        }
+    }
     Ok(())
 }
 

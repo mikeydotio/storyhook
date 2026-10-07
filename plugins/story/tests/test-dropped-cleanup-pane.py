@@ -175,5 +175,14 @@ class CleanupTest(unittest.TestCase):
         except OSError:
             pass  # Already gone.
 
+class LibraryTest(unittest.TestCase):
+    def test_no_library_module_shadows_the_standard_library(self):
+        """The binary runs this helper from a copy of the whole library, and the
+        installed plugin runs it from lib/ itself. Either way the library is first
+        on sys.path, so a module named like a standard one replaces it (SH-881)."""
+        names = {path.stem for path in LIB.glob("*.py")}
+        self.assertEqual(names & sys.stdlib_module_names, set())
+
+
 if __name__ == "__main__":
     unittest.main()

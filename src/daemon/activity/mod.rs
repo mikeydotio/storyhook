@@ -59,13 +59,33 @@ struct Record {
 /// Rust daemon threads and verifier script processes share one framing rule.
 pub(crate) struct Journal {
     directory: PathBuf,
+    /// A directory that must still exist for this journal to write at all.
+    anchor: Option<PathBuf>,
 }
 
 impl Journal {
     /// Selects a destination; the first append creates its private,
     /// self-ignoring directory.
     pub(crate) fn new(directory: PathBuf) -> Self {
-        Self { directory }
+        Self {
+            directory,
+            anchor: None,
+        }
+    }
+
+    /// A journal that writes only while `anchor` exists and never recreates
+    /// it: its own directory beneath the anchor is still created on demand.
+    ///
+    /// The daemon's own journal is anchored to its state directory. Every
+    /// directory above that is created when the daemon starts, so finding one
+    /// gone means somebody deleted the tree on purpose. A test does exactly
+    /// that when it ends, and a record written afterwards, the daemon's own
+    /// "daemon stopped" among them, used to bring the whole deleted home back.
+    pub(crate) fn anchored(directory: PathBuf, anchor: PathBuf) -> Self {
+        Self {
+            directory,
+            anchor: Some(anchor),
+        }
     }
 
     fn append(
@@ -77,6 +97,17 @@ impl Journal {
         context: &str,
         message: &str,
     ) -> io::Result<()> {
+        if let Some(anchor) = &self.anchor
+            && !anchor.is_dir()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "{} no longer exists, and a journal does not recreate a deleted tree",
+                    anchor.display()
+                ),
+            ));
+        }
         // Before the day file is opened: a journal file never exists in a
         // directory git can see (SH-771).
         ignore::prepare(&self.directory)?;
@@ -221,7 +252,10 @@ pub(crate) fn stop() {
 /// Installs one sink after the daemon owns its lifetime lock. The tmux work
 /// runs separately so a terminal server can never delay daemon readiness.
 pub(crate) fn start(env: &Environment) -> ActivityGuard {
-    let _ = ACTIVE.set(Journal::new(env.daemon_state_dir().join("activity")));
+    let _ = ACTIVE.set(Journal::anchored(
+        env.daemon_state_dir().join("activity"),
+        env.daemon_state_dir(),
+    ));
     emit(
         "INFO",
         "daemon",
@@ -363,5 +397,35 @@ mod tests {
                 .is_err()
         );
         assert!(!day_path(&directory, at).exists());
+    }
+
+    /// An anchored journal writes beneath its anchor, creating its own
+    /// directory on demand, and once the anchor is deleted it writes nothing
+    /// and creates nothing: a daemon's late record cannot bring back the
+    /// home a test deleted.
+    #[test]
+    fn an_anchored_journal_never_recreates_a_deleted_tree() {
+        let root = storyhook_test_support::scratch_dir();
+        let home = root.path().join("home");
+        let anchor = home.join(".local/state/storyhook/daemons/key");
+        let directory = anchor.join("activity");
+        std::fs::create_dir_all(&anchor).unwrap();
+        let journal = Journal::anchored(directory.clone(), anchor.clone());
+        let at = Utc::now();
+        journal
+            .append(at, "INFO", "daemon", "event", "", "started")
+            .expect("a journal writes while its anchor exists");
+        assert!(day_path(&directory, at).is_file());
+
+        std::fs::remove_dir_all(&home).unwrap();
+        let refused = journal
+            .append(at, "INFO", "daemon", "event", "", "daemon stopped")
+            .expect_err("a journal whose anchor is gone refuses the record");
+        assert_eq!(refused.kind(), io::ErrorKind::NotFound);
+        assert!(
+            !home.exists(),
+            "a record written after the tree was deleted recreated {}",
+            home.display()
+        );
     }
 }

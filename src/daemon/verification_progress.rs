@@ -496,6 +496,9 @@ fn publish_project(
     activity: &VerificationActivity,
     project: crate::store::ProjectId,
 ) -> Result<bool, AppError> {
+    let Some(_automation) = crate::service::automations::enter(store, env, project)? else {
+        return Ok(false);
+    };
     let (ordered, active, incident, batch, costs) =
         activity.read_project(store, project, |tx, owner, _| {
             Ok((

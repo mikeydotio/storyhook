@@ -58,6 +58,10 @@ pub fn tick<S: Store>(store: &S, env: &Environment) {
         return;
     };
     for project in projects {
+        let Ok(Some(_automation)) = crate::service::automations::enter(store, env, project.id)
+        else {
+            continue;
+        };
         let Ok((settings, checkout)) =
             store.read(|tx| Ok((tx.settings(project.id)?, tx.checkout_path(project.id)?)))
         else {
@@ -76,7 +80,7 @@ pub fn tick<S: Store>(store: &S, env: &Environment) {
         };
         let ctx = Ctx::new(store, project.id, checkout, env.clone()).no_hooks(true);
         let context = format!("project={}", project.slug);
-        match CleanupService::new(&ctx).run(false) {
+        match CleanupService::new(&ctx).run_pending() {
             Ok(report) => super::activity::emit(
                 if report.failed.is_empty() {
                     "INFO"
@@ -109,7 +113,23 @@ pub fn tick_closures<S: Store>(store: &S, env: &Environment) -> Result<(), AppEr
     let projects = store.read(|tx| tx.projects())?;
     let mut failures = Vec::new();
     for project in projects {
-        let pending = store.read(|tx| tx.closure_cleanups(project.id))?;
+        let Ok(Some(_automation)) = crate::service::automations::enter(store, env, project.id)
+        else {
+            continue;
+        };
+        let pending = store.read(|tx| {
+            let mut pending = Vec::new();
+            for request in tx.closure_cleanups(project.id)? {
+                if crate::service::automations::permits_generation(
+                    tx,
+                    project.id,
+                    Some(request.generation),
+                )? {
+                    pending.push(request);
+                }
+            }
+            Ok(pending)
+        })?;
         let pending: Vec<_> = pending
             .into_iter()
             .filter(|r| requests::due(r, &env.now()))

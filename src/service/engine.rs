@@ -12,7 +12,7 @@ pub mod reset;
 mod restoration;
 pub(crate) use restoration::reconcile_manual as reconcile_restored_dispatches;
 
-pub(crate) use dispatch_quiescence::card_reset_dispatching;
+pub(crate) use dispatch_quiescence::{await_card_reset_dispatch, card_reset_dispatching};
 
 #[cfg(test)]
 mod restart_probe_tests;
@@ -1246,6 +1246,15 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
 
     /// Starts one run and all of its idle lanes in a single transaction.
     pub fn start(&self, request: StartRequest) -> Result<EngineRunRecord, AppError> {
+        if !self
+            .ctx
+            .store()
+            .read(|tx| tx.automations_enabled(self.ctx.project()))?
+        {
+            return Err(AppError::Validation(
+                "Enable project automations before starting Full Auto".into(),
+            ));
+        }
         validate_configuration(request.lanes, &request.model, &request.effort)?;
 
         let project = self.ctx.project();
@@ -1489,9 +1498,22 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
     }
 
     pub fn resume(&self, run_id: &RunId) -> Result<RunView, AppError> {
+        if !self
+            .ctx
+            .store()
+            .read(|tx| tx.automations_enabled(self.ctx.project()))?
+        {
+            return Err(AppError::Validation(
+                "Enable project automations before resuming Full Auto".into(),
+            ));
+        }
         self.transition(run_id, |run, _lanes| {
             require_state(run, "resume", &[EngineRunState::Paused])?;
             run.state = EngineRunState::Running;
+            if run.stop_reason.as_deref() == Some("Project automations disabled; resume explicitly")
+            {
+                run.stop_reason = None;
+            }
             Ok(())
         })
     }
@@ -1575,6 +1597,22 @@ impl<'ctx, S: Store, D: Dispatcher> EngineService<'ctx, S, D> {
             stop_reason: None,
         };
 
+        let Some(_automation) =
+            super::automations::enter(self.ctx.store(), self.ctx.env(), self.ctx.project())?
+        else {
+            let view = self.one_view(run_id)?;
+            report.run_state = view.run.state;
+            report.stop_reason = view.run.stop_reason;
+            return Ok(report);
+        };
+        if self.one_view(run_id)?.run.stop_reason.as_deref()
+            == Some("Project automations disabled; resume explicitly")
+        {
+            let view = self.one_view(run_id)?;
+            report.run_state = view.run.state;
+            report.stop_reason = view.run.stop_reason;
+            return Ok(report);
+        }
         if self.halt_if_scope_unavailable(run_id)? {
             let view = self.one_view(run_id)?;
             report.run_state = view.run.state;
@@ -3968,28 +4006,6 @@ fn is_executable(path: &Path) -> bool {
     {
         true
     }
-}
-
-/// Retires the exact lanes whose story reset just completed.
-pub(crate) fn release_reset_lanes(
-    tx: &mut impl WriteOps,
-    slug: &str,
-    id: &str,
-    now: &str,
-) -> Result<(), StoreError> {
-    for run in tx.live_engine_runs()? {
-        if run.project_slug != slug {
-            continue;
-        }
-        for lane in tx.engine_lanes(&run.id)? {
-            if lane.story_id.as_deref() == Some(id) {
-                let mut idle = idle_lane(&lane.run_id, lane.lane_index, now);
-                idle.outcome = Some("story-reset".into());
-                put_or_retire_idle_lane(tx, &idle)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

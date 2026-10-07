@@ -199,6 +199,7 @@ fn ask_with_path(data_home: &std::path::Path, payload: &str, path: Option<&str>)
     let mut command = Command::new("bash");
     command
         .arg(hook())
+        .current_dir(data_home.parent().unwrap_or(data_home))
         .env("STORYHOOK_DATA_DIR", data_home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

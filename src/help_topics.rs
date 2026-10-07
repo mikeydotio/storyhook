@@ -331,6 +331,16 @@ story project settings get <key>
 story project settings set <key> <value>
 story project settings unset <key>
 
+Manual mode:
+  story project settings set automations.enabled false
+
+The dashboard checkbox "enable automations" controls the same persistent
+project setting. It defaults to true. When disabled, board and CLI state
+changes need no workflow receipts, blocker ordering or verifier verdict.
+Automatic workers and hooks stop; existing provider sessions are preserved.
+Re-enable to permit fresh work. Resubmit old verifying stories explicitly,
+and explicitly resume any Full Auto run paused by disabling automations.
+
 This project's settings: the per-project values that change how
 storyhook treats it. They live in storyhook's store, alongside the
 project itself, and travel with it rather than with a checkout.
@@ -794,24 +804,31 @@ Related:
             "reset",
             r#"story reset <id> [--force]
 
-Release an open ordinary story's claim, close its owned tmux window, remove
-its owned worktree, and return it to Todo. Branches, commits, story content,
-and relationships are preserved. Closed stories and epics cannot be reset.
+The final lever for a wedged story, like git reset --hard. Close the story's
+tmux window, DISCARD its worktree (uncommitted, untracked and locked work
+included) and its local branch, clear its awaiting reason, and return it to
+todo. Remote branches, pull requests, story content and relationships are
+kept. --force is accepted and changes nothing. Closed stories and epics
+cannot be reset. Run reset only when the user asks; use 'story unclaim' to
+release a story and keep its work.
 
-Dirty or locked worktrees are refused unless --force is explicit. Force can
-permanently discard uncommitted files. It never overrides ownership checks,
-removes the primary or caller's checkout, or interrupts an active verifier.
-Run reset from outside the target worktree and its tmux window.
+Once reserved, a reset never fails. Whatever it cannot prove the story owns
+(your own worktree or tmux window, a protected branch, a replaced directory)
+is left in place and named in the story's completion comment. That comment
+also records the deleted branch's tip and the 'git branch <name> <sha>'
+command that restores it. If something left would collide with the next
+dispatch, the story waits with an awaiting reason that names it.
 
-Absent resources are already clean. If cleanup fails partway, story show
-reports the retained reset reservation and diagnostics. Retry story reset
-<id> after resolving that error; repeat --force only if you still authorize
-losing worktree changes. Dispatch and lifecycle changes remain unavailable
-until the reservation finishes. Comments remain available during recovery.
+The daemon finishes the reset: it waits out store contention, waits for a
+running dispatch or verifier and then proceeds, and resumes an interrupted
+reset by itself. This command waits up to 90 seconds; until the reset ends,
+story show reports it under reset. Comments remain available meanwhile.
+With --json, the reset field reports the reset this command ran: whether it
+finished, what it removed, what it left in place and why, and the recovery
+record.
 
 Examples:
   story reset SH-42
-  story reset SH-42 --force
 "#,
         );
 
@@ -1267,6 +1284,11 @@ Related:
         m.insert(
             "commit-sync",
             r#"story commit-sync [--since <duration>]
+
+In a dispatched worktree with an open closing PR, this also queues the current
+commit for immediate daemon publication. Publication does not wait for the
+verifier queue. Dirty working files are not published. Failures remain on the
+story and retry; overrides remain allowed and unpublished branches are kept.
 
 Scan recent git commits for story ID references and record them in
 each story's "referenced by" field. A commit that CLAIMS a story also
@@ -2803,6 +2825,7 @@ story verifier ack <incident-id> [--leave-stopped]
 story verifier gate-config <checkout> <base> <head> <tree> --json
 story verifier repair show <recovery-id> --json
 story verifier repair decide <recovery-id> --input <json-file>
+story verifier repair satisfy <recovery-id> --input <json-file>
 
 Inspect and control this project's centralized verifier.
 
@@ -2827,6 +2850,20 @@ Inspect and control this project's centralized verifier.
   this exception does not change unrelated story priorities. Scope advice
   never grants certification, credentials, or permission overrides.
 
+  repair satisfy records, once, an operator's statement that the
+  prerequisite of an external-scope recovery is restored. The file needs
+  version (1), the current revision from repair show, context, question,
+  decision, rationale, and evidence (what shows the prerequisite is back).
+  A dispatched agent session (STORYHOOK_DISPATCH, STORYHOOK_AUTO or
+  STORYHOOK_FULL_AUTO set) is refused: only an operator can make it.
+  Stale or conflicting input is refused; identical replay returns the
+  recorded result. The statement retires the recovery: the verifier
+  releases the holds the recovery set and resumes the affected agents, and
+  a later fault opens a new recovery that names this one (supersedes). It
+  is an attestation, not a check, and grants no certification: each
+  affected story still needs a fresh generation that passes the gate.
+  Clearing a hold by hand does not satisfy the prerequisite.
+
   gate-config reads committed gate configuration from the exact proposed merge.
   Supply pinned Git object IDs for both parents and the expected tree. This
   local, store-free helper does not change the checkout or certify a tree.
@@ -2845,8 +2882,9 @@ Inspect and control this project's centralized verifier.
   project_recoveries adds fault, affected stories, assessment and repair owner,
   repair PR, phase, completed-attempt budget, and next action. These records
   are distinct from infrastructure halts. Old payloads have no recovery rows.
-  Unresolved and invalid recoveries are listed. A valid landed recovery leaves
-  the list when no affected story is held or still owes a fresh generation.
+  Unresolved and invalid recoveries are listed. A valid landed or satisfied
+  recovery leaves the list when no affected story is held or still owes a
+  fresh generation.
   An invalid row names the record, locus, validation error and repair show
   command. Ownership and attempt counts are unavailable for that row.
   The dashboard reads the same snapshot. Use repair show for full evidence.
@@ -2978,8 +3016,11 @@ your tailnet only, never the public internet or a plain LAN address.
 Default port is 3456; --port or STORYHOOK_DAEMON_ADDR moves it. That
 variable chooses the port only: 127.0.0.1 is the one IP it accepts,
 and any other is refused rather than accepted and quietly ignored,
-because there is no other address for it to name. Data refreshes
-every 3 seconds via polling.
+because there is no other address for it to name. STORYHOOK_TAILNET=0
+keeps the server on 127.0.0.1 only: it never asks 'tailscale' and
+never binds a second address. Every test environment sets it. The
+switch only narrows, and any value but 0 or 1 is refused. Data
+refreshes every 3 seconds via polling.
 
 Commands:
   start        Start the dashboard as a background daemon (does not

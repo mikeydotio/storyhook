@@ -279,6 +279,11 @@
       "count": 1,
       "kind": "proof",
       "reason": "The signal regression must reap the wrapper below the wrapped sleep of 60 seconds. Scaling poll_ceiling could let a deferred shell trap pass after the sleep finishes."
+    },
+    ".wait_with_output_within(2*(5*patience+stopped_hold)": {
+      "count": 1,
+      "kind": "delegated",
+      "reason": "The stopped-owner experiment derives its outer bound from both competitors: each receives five graced patience windows plus the deliberate stopped hold; this observes their complete supplied cleanup budgets."
     }
   },
   "tests/orphan_check.rs": {

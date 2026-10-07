@@ -18,13 +18,13 @@ fn reservation() -> String {
 }
 
 #[test]
-fn native_and_card_reservations_exclude_each_other_without_losing_the_owner() {
+fn a_card_reset_supersedes_a_native_reservation_that_cannot_join_it_afterwards() {
     for native_first in [true, false] {
         let fixture = ServiceFixture::new();
         let ctx = fixture.ctx();
         let story = StoryService::new(&ctx)
             .create(&NewStoryInput {
-                title: "One reset contract at a time".into(),
+                title: "One reset owner at a time".into(),
                 ..Default::default()
             })
             .unwrap();
@@ -37,21 +37,30 @@ fn native_and_card_reservations_exclude_each_other_without_losing_the_owner() {
                     tx.put_legacy_story_reset(fixture.project(), StoryNo::new(1), Some(&native))
                 })
                 .unwrap();
-            assert!(service.reserve(&story.id, &story.id).is_err());
+            // The final lever takes the story over instead of refusing.
+            let card = service.reserve(&story.id, &story.id).unwrap();
             fixture
                 .store()
                 .read(|tx| {
+                    assert!(tx.story_resets(fixture.project())?.is_empty());
                     assert_eq!(
-                        tx.story_resets(fixture.project())?.get(&StoryNo::new(1)),
-                        Some(&native)
-                    );
-                    assert!(
                         tx.story_reset(fixture.project(), StoryNo::new(1))?
-                            .is_none()
+                            .unwrap()
+                            .token,
+                        card.token
                     );
+                    let row = tx.story(fixture.project(), StoryNo::new(1))?.unwrap();
+                    let note = &row.snapshot.comments.last().unwrap().text;
+                    assert!(note.contains("native-reset-owner"), "{note}");
                     Ok(())
                 })
                 .unwrap();
+            assert!(
+                service
+                    .execute(&story.id, &card.token, || Ok(()))
+                    .unwrap()
+                    .completed
+            );
         } else {
             let card = service.reserve(&story.id, &story.id).unwrap();
             assert!(
@@ -108,36 +117,32 @@ fn card_reset_waits_for_quiescence_then_acquires_the_shared_workspace_lock() {
     let service = StoryResetService::new(&ctx);
     let reset = service.reserve(&story.id, &story.id).unwrap();
     let mut quiesced = false;
-    let error = service
+    let mut releaser = None;
+    let done = service
         .execute(&story.id, &reset.token, || {
             quiesced = true;
+            // The owner lets go only after the reset has started waiting.
+            releaser = Some(std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                drop(owner);
+            }));
             Ok(())
         })
-        .unwrap_err();
+        .unwrap();
+    releaser.unwrap().join().unwrap();
     assert!(
         quiesced,
         "workspace admission must follow dispatch/verifier quiescence"
     );
-    assert!(error.to_string().contains("workspace is busy"), "{error}");
-    assert!(!service.get(&story.id, &reset.token).unwrap().completed);
-    assert_eq!(
-        fixture
-            .store()
-            .read(|tx| Ok(tx.story(fixture.project(), StoryNo::new(1))?.unwrap().state))
-            .unwrap(),
-        "in-progress"
-    );
-    assert_eq!(
-        service.reserve(&story.id, &story.id).unwrap().token,
-        reset.token
-    );
-    let done = service
-        .execute(&story.id, &reset.token, || {
-            drop(owner);
-            Ok(())
-        })
-        .unwrap();
     assert!(done.completed);
+    assert!(
+        !done
+            .residue
+            .iter()
+            .any(|entry| entry.resource == "workspace lock"),
+        "the reset must wait for and take the shared lock: {:?}",
+        done.residue
+    );
 }
 
 #[test]
@@ -190,7 +195,7 @@ fn card_receipts_refuse_payload_identity_that_disagrees_with_the_storage_key() {
 }
 
 #[test]
-fn native_reset_derives_interrupts_and_never_resumes_the_todo_story() {
+fn native_reset_never_resumes_the_todo_story_and_leaves_no_pending_delivery() {
     for (state, awaiting) in [
         ("todo", None),
         ("in-progress", None),
@@ -220,36 +225,30 @@ fn native_reset_derives_interrupts_and_never_resumes_the_todo_story() {
         if let Some(reason) = awaiting {
             stories.set_awaiting(&story.id, reason).unwrap();
         }
-        let initial = fixture
-            .store()
-            .read(|tx| tx.block_deliveries(fixture.project()))
-            .unwrap()
-            .len();
-        let mut expected = initial;
         for attempt in 0..2 {
-            if awaiting.is_none() && (state != "blocked" || attempt > 0) {
-                expected += 1;
-            }
             reset_story(&ctx, &story.id, false, &ResetCaller::default()).unwrap();
             fixture
                 .store()
                 .read(|tx| {
-                    let deliveries = tx.block_deliveries(fixture.project())?;
-                    assert_eq!(
-                        deliveries.len(),
-                        expected,
-                        "state={state}, awaiting={awaiting:?}, attempt={attempt}"
-                    );
-                    assert!(
-                        deliveries
-                            .iter()
-                            .all(|delivery| delivery.story == StoryNo::new(1)
-                                && delivery.action == BlockAction::Interrupt)
-                    );
+                    let case = format!("state={state}, awaiting={awaiting:?}, attempt={attempt}");
+                    for delivery in tx.block_deliveries(fixture.project())? {
+                        assert_ne!(delivery.action, BlockAction::Resume, "{case}: {delivery:?}");
+                        assert_ne!(
+                            delivery.status,
+                            storyhook::store::DeliveryStatus::Pending,
+                            "{case}: {delivery:?}"
+                        );
+                    }
                     let row = tx.story(fixture.project(), StoryNo::new(1))?.unwrap();
-                    assert_eq!(row.state, "todo");
-                    assert_eq!(row.awaiting.as_deref(), awaiting);
-                    assert!(tx.story_resets(fixture.project())?.is_empty());
+                    assert_eq!(row.state, "todo", "{case}");
+                    // Every reset clears the awaiting reason (council C1).
+                    assert_eq!(row.awaiting, None, "{case}");
+                    assert!(
+                        tx.story_reset(fixture.project(), StoryNo::new(1))?
+                            .unwrap()
+                            .completed,
+                        "{case}"
+                    );
                     Ok(())
                 })
                 .unwrap();

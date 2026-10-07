@@ -197,6 +197,11 @@ trap _cleanup EXIT
 # left alone; an inherited value wins, because run-tests.sh has already
 # rewritten $HOME by the time this runs.
 if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
+  # A fresh fixture owns no pane in the operator's server. TMUX outranks
+  # TMUX_TMPDIR in resource discovery, so isolating only the latter still
+  # queried the host when this script was launched inside tmux (SH-888).
+  # Nested instances retain selectors deliberately installed by their owner.
+  unset TMUX TMUX_PANE
   export STORYHOOK_REAL_HOME="${STORYHOOK_REAL_HOME:-$HOME}"
   STORYHOOK_TEST_HOME="$(mktemp -d /tmp/storyhook-plugin-home.XXXXXX)"
   export STORYHOOK_TEST_HOME
@@ -641,6 +646,30 @@ assert_ok() {
   if [ "$actual" != "$2" ]; then
     fail_test "$3 — expected [$2], got [$actual] — answer: [$1]"
   fi
+}
+
+# residue_reasons <answer> <resource-prefix> — the reasons a reset answer gives
+# for what it left in place, for each resource that starts with the prefix,
+# joined with "|". Empty when the reset left no such resource (SH-886).
+residue_reasons() {
+  printf '%s' "$1" | jq -r --arg prefix "$2" \
+    '[(.residue // [])[] | select(.resource | startswith($prefix)) | .reason] | join("|")'
+}
+
+# assert_held_out_of_dispatch <repo> <id> <label> — a reset that left residue
+# the next dispatch would collide with released the story, held it with an
+# awaiting reason, and so no dispatch is offered it (SH-886 decision D7). This
+# is what a refused reset's kept claim protected under the old contract.
+assert_held_out_of_dispatch() {
+  local repo="$1" id="$2" label="$3" shown ready
+  shown=$(cd "$repo" && story show "$id" --json) || :
+  assert_eq "$(jqf "$shown" .story.story.state)" todo "$label: reset released the story"
+  assert_contains "$(jqf "$shown" '.story.story.awaiting // ""')" "next dispatch would collide with" \
+    "$label: the residue holds the story out of dispatch"
+  ready=",$(cd "$repo" && story list --ready --json | jq -r '[.stories[]?.story.id] | join(",")'),"
+  case "$ready" in
+  *",$id,"*) fail_test "$label: the held story is still offered for dispatch" ;;
+  esac
 }
 
 # router_verbs <story.sh> — derive the helper's accepted verb vocabulary from
