@@ -4,6 +4,7 @@ use crate::store::{GateExecutionPurpose, GateInputs, SqliteStore};
 use storyhook_test_support::ServiceFixture;
 mod native;
 mod recovery;
+mod retry;
 
 struct Board {
     fixture: ServiceFixture,

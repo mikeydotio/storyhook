@@ -314,7 +314,11 @@ mkdir -p "$TMUX_TMPDIR"
 # put on `$PATH`: the daemon they share identifies its binary by path string, so
 # a second spelling -- the bare artifact beside its lease, a relative name --
 # would restart it, and a foreign binary would be tested in its place.
-_STORY_TARGET_DIR="${CARGO_TARGET_DIR:-$(cd "$TESTS_DIR/../../.." && pwd)/target}"
+# shellcheck source=../../../scripts/binary-lease.sh
+. "$TESTS_DIR/../../../scripts/binary-lease.sh"
+_STORY_ARTIFACT="$(storyhook_debug_artifact "$(cd "$TESTS_DIR/../../.." && pwd)")"
+_STORY_TARGET_DIR="${_STORY_ARTIFACT%/debug/story}"
+unset _STORY_ARTIFACT
 if [ ! -x "$_STORY_TARGET_DIR/debug/story" ]; then
   echo "refusing to run: $_STORY_TARGET_DIR/debug/story does not exist." >&2
   echo "  This suite tests the \`story\` THIS checkout builds, never the one" >&2
@@ -323,8 +327,6 @@ if [ ! -x "$_STORY_TARGET_DIR/debug/story" ]; then
   echo "  first, or \`make test\`, which does." >&2
   exit 1
 fi
-# shellcheck source=../../../scripts/binary-lease.sh
-. "$TESTS_DIR/../../../scripts/binary-lease.sh"
 if [ "${_STORYHOOK_OWNS_TEST_HOME:-0}" = 1 ]; then
   _STORY_LEASE="$(storyhook_lease_binary "$_STORY_TARGET_DIR/debug/story")" || exit 1
   _STORY_LEASE_DIR="$(dirname "$_STORY_LEASE")"

@@ -47,6 +47,19 @@
 # build if this and `storyhook_test_support::BINARY_SNAPSHOT_DIR` diverge.
 STORYHOOK_BINARY_LEASE_DIR=".storyhook-test-binaries"
 
+# Resolve the debug artifact built by harnesses that invoke Cargo from the
+# repository root. Relative CARGO_TARGET_DIR values are relative to that root,
+# even when a nested fixture sources this helper from its own working directory.
+# Resolution does not select an installed binary or change lease ownership.
+storyhook_debug_artifact() {
+  local repo_root="$1" target_dir="${CARGO_TARGET_DIR:-target}"
+  case "$target_dir" in
+    /*) ;;
+    *) target_dir="$repo_root/$target_dir" ;;
+  esac
+  printf '%s/debug/story\n' "${target_dir%/}"
+}
+
 # Whether `pid` is provably absent: `kill -0` failing with ESRCH and nothing
 # else. `kill -0` succeeding, or failing with EPERM (a process that exists but
 # belongs to somebody else), both answer "might be alive", and this returns 1.

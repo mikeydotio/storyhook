@@ -712,9 +712,6 @@ pub struct ResumePlan {
 
 /// The prefix of the story comment written before a resume re-dispatch.
 pub const VERIFICATION_RESUME_PREFIX: &str = "CENTRAL VERIFICATION RESUME —";
-/// The prefix of the story comment written when a conflict-reconcile hold
-/// releases the project's queue before the story resubmitted (SH-770).
-pub const VERIFICATION_HOLD_RELEASED_PREFIX: &str = "CENTRAL VERIFICATION HOLD RELEASED —";
 /// Process boundary for repository verification and agent-session control.
 pub trait VerificationActuator: Send + Sync {
     /// Proves the branch already landed, or pushes it and leaves one open pull

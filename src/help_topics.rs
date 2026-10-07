@@ -2959,12 +2959,13 @@ Inspect and control this project's centralized verifier.
   Starting while cancellation or a gated drain still owns an attempt is refused.
   Managed repairs remain held until their required certification can run.
 
-  A merge conflict returns the story and holds this project's queue until
-  the story resubmits. The hold releases itself when the reconcile stops:
-  the story is blocked or leaves in-progress, its agent pane is gone on two
-  probes, or the story and the pane show no activity past the stall ceiling.
-  The story gets a CENTRAL VERIFICATION HOLD RELEASED comment. A later
-  resubmission joins the queue in priority order.
+  A merge conflict retains the story in verifying with an attribution hold
+  for its exact submitted generation. The worker releases the project's slot
+  so other eligible submissions can proceed; it assigns no repair and does
+  not wait for the implementer. Inspect story verifier evidence <story> --json.
+  Only native causal evidence can authorize a repair return. An explicit
+  withdrawal and later resubmission creates a new generation that joins the
+  queue in priority order; the earlier evidence remains available.
 
   ack validates the exact halted incident and enables admission atomically.
   --leave-stopped clears the incident but keeps tests disabled; eligible

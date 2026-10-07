@@ -9,49 +9,51 @@ fn compact_code(source: &str) -> String {
         .collect()
 }
 
+#[path = "support/test_only_modules.rs"]
+mod test_only_modules;
+
 fn event_writers(root: &Path) -> BTreeSet<String> {
-    let mut writers = BTreeSet::new();
+    let mut sources = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
         for entry in std::fs::read_dir(directory).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 pending.push(path);
-                continue;
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                sources.push((
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    std::fs::read_to_string(path).unwrap(),
+                ));
             }
-            // Unit-test modules call the helpers to test them, not to mutate.
-            if path.extension().is_none_or(|e| e != "rs")
-                || path.file_name().is_some_and(|name| name == "tests.rs")
-            {
-                continue;
+        }
+    }
+    let excluded = test_only_modules::external_test_module_roots(&sources);
+    sources
+        .into_iter()
+        .filter_map(|(relative, source)| {
+            let path = Path::new(&relative);
+            if excluded.iter().any(|module| path.starts_with(module)) {
+                return None;
             }
-            let source = compact_code(&std::fs::read_to_string(&path).unwrap());
-            if [
+            let source = compact_code(&source);
+            [
                 "append_and_fold(",
                 "append_restored_and_fold(",
-                // SH-886: a reset's return to todo uses its own admission.
                 "append_reset_and_fold(",
                 "append_and_fold_maintenance(",
-                // SH-772: the landing door called only this one, so a scan that
-                // knew three names never saw it.
                 "append_state_transition(",
                 "retract_closed_blocker_edges(",
                 "refold_story(",
             ]
             .iter()
             .any(|helper| source.contains(helper))
-            {
-                writers.insert(
-                    path.strip_prefix(root)
-                        .unwrap()
-                        .with_extension("")
-                        .to_string_lossy()
-                        .replace('\\', "/"),
-                );
-            }
-        }
-    }
-    writers
+            .then(|| path.with_extension("").to_string_lossy().replace('\\', "/"))
+        })
+        .collect()
 }
 
 #[test]
@@ -72,20 +74,26 @@ fn every_event_writer_accounts_for_effective_block_changes() {
         "project",
         "project_recovery",
         "project_recovery/prerequisite",
-        "project_recovery/rearm",
         "project_recovery/refusal",
         "project_recovery/resume",
-        "project_recovery/test_return",
         "relation",
         "story",
         "story_reset",
         "transfer",
         "verification",
+        "verification/attribution_hold",
+        "verification/batch_attribution",
+        "verification/causal_return",
         "verification/human",
         "verification/landed",
     ];
     // Obviation evidence changes blocking inside the caller's complete transaction.
     let delegated = [
+        (
+            "verification/causal_return",
+            "project_recovery/test_return",
+            "crate::service::verification::causal_return::apply(",
+        ),
         (
             "project_recovery/work_holds",
             "project_recovery/work",
@@ -236,7 +244,8 @@ fn derivation_is_declared_in_one_place_and_rows_are_written_through_known_doors(
 #[test]
 fn event_writer_scan_covers_nested_modules_and_all_append_doors() {
     let scratch = storyhook_test_support::scratch_dir();
-    std::fs::create_dir(scratch.path().join("nested")).unwrap();
+    std::fs::create_dir_all(scratch.path().join("nested/tests")).unwrap();
+    std::fs::create_dir_all(scratch.path().join("production/tests")).unwrap();
     for (file, source) in [
         ("ordinary.rs", "append_and_fold (tx);"),
         (
@@ -251,7 +260,11 @@ fn event_writer_scan_covers_nested_modules_and_all_append_doors() {
             "comment.rs",
             "// append_and_fold(tx);\n/* append_restored_and_fold(tx); */",
         ),
+        ("nested/mod.rs", "#[cfg(test)]\npub(crate) mod tests;"),
         ("nested/tests.rs", "append_and_fold(tx);"),
+        ("nested/tests/proof.rs", "append_and_fold(tx);"),
+        ("production.rs", "mod tests;"),
+        ("production/tests/proof.rs", "append_and_fold(tx);"),
         ("indirect.rs", "super::story::append_state_transition(tx);"),
     ] {
         std::fs::write(scratch.path().join(file), source).unwrap();
@@ -262,7 +275,8 @@ fn event_writer_scan_covers_nested_modules_and_all_append_doors() {
             "ordinary",
             "nested/restored",
             "nested/maintenance",
-            "indirect"
+            "indirect",
+            "production/tests/proof"
         ]
         .into_iter()
         .map(str::to_owned)

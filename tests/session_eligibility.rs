@@ -47,7 +47,11 @@ fn lifecycle_and_renamed_active_role_are_read_without_writes() {
     assert_eq!(before, run(&p, &["export"]));
     run(&p, &["move", "SH-1", "verifying"]);
     assert_eq!(eligibility(&p, "1")["eligible"], false);
-    run(&p, &["move", "SH-1", "done"]);
+    let reason = "eligibility fixture: explicitly complete the verification lifecycle";
+    run(&p, &["move", "SH-1", "done", reason]);
+    assert!(
+        run(&p, &["show", "SH-1"]).contains(&format!("CENTRAL VERIFICATION OVERRIDDEN — {reason}"))
+    );
     assert_eq!(eligibility(&p, "1")["reason"], "closed");
 }
 

@@ -109,7 +109,7 @@ repo_root="$PWD"
 . "$repo_root/scripts/e2e-pool.sh"
 # Cargo's own mutable artifact. Never invoked: `$story_bin`, assigned after
 # the build below, is the leased hard link of it.
-story_artifact="$repo_root/target/debug/story"
+story_artifact="$(storyhook_debug_artifact "$repo_root")"
 results_root="${STORYHOOK_E2E_RESULTS_DIR-$repo_root/e2e/test-results/current}"
 
 # One artifact tree for this invocation. Each Playwright project gets its own

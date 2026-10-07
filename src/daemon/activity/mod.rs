@@ -110,7 +110,11 @@ impl Journal {
         }
         // Before the day file is opened: a journal file never exists in a
         // directory git can see (SH-771).
-        ignore::prepare(&self.directory)?;
+        if let Some(anchor) = &self.anchor {
+            ignore::prepare_child(&self.directory, anchor)?;
+        } else {
+            ignore::prepare(&self.directory)?;
+        }
         let record = Record {
             at: at.to_rfc3339_opts(SecondsFormat::Millis, true),
             level: clean(level),

@@ -2,6 +2,7 @@
 mod retained;
 use super::*;
 use crate::service::VerificationCandidate;
+use crate::service::verification::{FAILED_GATE_RERUN_SCOPE, IMPLEMENTER_TEST_SCOPE};
 use crate::store::{GateExecution, ReadOps, StoreError};
 pub(super) use retained::Archive;
 
@@ -323,7 +324,7 @@ impl CausalReturnEvidence {
             .find(|c| c.id == plan.component)
             .expect("proved component");
         format!(
-            "CENTRAL VERIFICATION CAUSAL RETURN — {}. Repair only {}. Candidate tree {}; pinned base {}; control tree {}. Two native candidate failures match the original assertion and two control executions pass under equivalent supported conditions. Evidence {} revision {}; original {} (sha256 {}). Exact reproduction arguments: {:?}. Probe outputs: {}. Other held components are not assigned for repair. {} {} Commit, then move {} back to verifying. {}. The central verifier owns certification.",
+            "CENTRAL VERIFICATION CAUSAL RETURN — {}. Repair only {}. Candidate tree {}; pinned base {}; control tree {}. Two native candidate failures match the original assertion and two control executions pass under equivalent supported conditions. Evidence {} revision {}; original {} (sha256 {}). Exact reproduction arguments: {:?}. Probe outputs: {}. Other held components are not assigned for repair. {IMPLEMENTER_TEST_SCOPE} {FAILED_GATE_RERUN_SCOPE} Commit, then move {} back to verifying. {}. The central verifier owns certification.",
             self.candidate.story_id,
             component.check,
             plan.candidate_tree,
@@ -341,8 +342,6 @@ impl CausalReturnEvidence {
                 .filter_map(|p| p.completed.as_ref().map(|r| r.log.as_str()))
                 .collect::<Vec<_>>()
                 .join(", "),
-            crate::service::verification::IMPLEMENTER_TEST_SCOPE,
-            crate::service::verification::FAILED_GATE_RERUN_SCOPE,
             self.candidate.story_id,
             crate::service::verification::push_promise(
                 self.candidate.cleanup_lease.is_some(),

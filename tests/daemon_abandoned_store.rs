@@ -82,6 +82,32 @@ fn delete_tree(home: &Path) {
     std::fs::remove_dir_all(retired).expect("deleting the retired fixture home");
 }
 
+/// Retain the names of any recreated artifacts in the failure log, so a
+/// background writer other than the journal can be identified without reruns.
+fn remaining_tree(home: &Path) -> Vec<String> {
+    let mut pending = vec![home.to_path_buf()];
+    let mut entries = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let Ok(children) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for child in children.flatten() {
+            let path = child.path();
+            entries.push(
+                path.strip_prefix(home)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string(),
+            );
+            if child.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push(path);
+            }
+        }
+    }
+    entries.sort();
+    entries
+}
+
 /// The daemon's owner is this live test, so its parent watch never fires: only
 /// the daemon noticing that its store is gone can stop it.
 #[test]
@@ -100,8 +126,9 @@ fn a_daemon_whose_home_is_deleted_exits_and_recreates_nothing() {
     );
     assert!(
         !env.home().exists(),
-        "the exiting daemon recreated the deleted home {}",
-        env.home().display()
+        "the exiting daemon recreated the deleted home {}: {:?}",
+        env.home().display(),
+        remaining_tree(env.home())
     );
 }
 
@@ -135,7 +162,8 @@ fn a_daemon_orphaned_after_its_home_was_deleted_leaves_nothing_behind() {
     );
     assert!(
         !env.home().exists(),
-        "the exiting daemon recreated the deleted home {}",
-        env.home().display()
+        "the exiting daemon recreated the deleted home {}: {:?}",
+        env.home().display(),
+        remaining_tree(env.home())
     );
 }

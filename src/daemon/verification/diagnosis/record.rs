@@ -94,6 +94,9 @@ pub(super) fn begin<S: Store>(
             a.attempt == owner.active.attempt_id
                 && a.submission.same_generation(&cost::submission(candidate))
         }) {
+            if existing.held && existing.retired.is_none() {
+                crate::service::verification::clear_candidate_retry_incident(tx, candidate)?;
+            }
             return Ok(Some((existing.clone(), false)));
         }
         // A different held attempt is a real hold, not this coordinator's own hold.
@@ -193,6 +196,7 @@ pub(super) fn begin<S: Store>(
             retired: None,
         };
         tx.insert_attribution(&record)?;
+        crate::service::verification::clear_candidate_retry_incident(tx, candidate)?;
         Ok(Some((record, true)))
     })?)
 }

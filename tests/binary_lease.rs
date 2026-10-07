@@ -355,3 +355,46 @@ fn sourcing_the_script_defines_the_functions_and_nothing_runs() {
         "sourcing must not mint a lease or create the root"
     );
 }
+
+/// Plugin fixtures can source their harness from a temporary checkout while
+/// Cargo's configured target belongs to the source checkout. Resolve before
+/// leasing; never guess a story executable from the machine's PATH.
+#[test]
+fn debug_artifact_resolution_honors_default_absolute_and_relative_targets() {
+    let fixture = scratch_dir();
+    let repo = fixture.path().join("source checkout");
+    let elsewhere = fixture.path().join("fixture cwd");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    for (configured, expected) in [
+        (None, repo.join("target/debug/story")),
+        (Some("".to_owned()), repo.join("target/debug/story")),
+        (
+            Some("build with spaces".to_owned()),
+            repo.join("build with spaces/debug/story"),
+        ),
+        (
+            Some(format!("{}/shared target/", fixture.path().display())),
+            fixture.path().join("shared target/debug/story"),
+        ),
+    ] {
+        let mut command = Command::new("bash");
+        command
+            .args([
+                "-c",
+                "set -eu; source \"$1\"; storyhook_debug_artifact \"$2\"",
+                "artifact-resolution",
+            ])
+            .arg(lease_script())
+            .arg(&repo)
+            .current_dir(&elsewhere)
+            .env_remove("CARGO_TARGET_DIR")
+            .env("STORY_BIN", "/unrelated/installed/story");
+        if let Some(configured) = configured {
+            command.env("CARGO_TARGET_DIR", configured);
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(PathBuf::from(stdout(&output)), expected);
+    }
+}

@@ -304,6 +304,18 @@ fn a_resubmission_reads_as_a_first_attempt_until_its_own_run_line() {
     assert_eq!(tick(&fixture, &gate), TickResult::Returned);
     let earlier = gate.first_attempt();
     gate.take_probes();
+    // An unproved red gate holds its generation. Only an explicit operator
+    // withdrawal/resubmission starts the new attempt whose journal we inspect.
+    assert_eq!(story_row(&fixture, &id).state, "verifying");
+    assert!(
+        VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .is_none()
+    );
+    StoryService::new(&fixture.ctx())
+        .set_state(&id, "in-progress", None, Some("verifying"), None)
+        .unwrap();
     StoryService::new(&fixture.ctx())
         .set_state(&id, "verifying", None, Some("in-progress"), None)
         .unwrap();
@@ -408,7 +420,7 @@ fn a_landing_recovery_reads_as_a_first_attempt() {
 }
 
 #[test]
-fn a_reconcile_hand_over_reads_as_a_first_attempt() {
+fn an_unproved_conflict_never_hands_over_and_explicit_resubmission_has_a_fresh_journal() {
     let fixture = ServiceFixture::new();
     fixture.github_checkout("https://github.com/acme/widgets");
     let held = submitted(&fixture, "reconciled", Priority::High, PR_ONE);
@@ -437,23 +449,31 @@ fn a_reconcile_hand_over_reads_as_a_first_attempt() {
         &activity,
         &InFlight::new(fixture.env().clone()),
         fixture.project(),
-        |_| {
-            StoryService::new(&fixture.ctx())
-                .set_state(&held, "verifying", None, Some("in-progress"), None)
-                .unwrap();
-            Ok(VerificationQueue::new(fixture.store())
-                .ordered()
-                .unwrap()
-                .into_iter()
-                .find(|candidate| candidate.story_id == held)
-                .map_or(ReconcileWait::Ended, |candidate| {
-                    ReconcileWait::Resubmitted(Box::new(candidate))
-                }))
-        },
+        |_| panic!("unproved conflict must not wait for or assign implementer repair"),
     )
     .unwrap();
 
-    assert_eq!(result, TickResult::Completed);
+    assert_eq!(result, TickResult::Returned);
+    assert_eq!(story_row(&fixture, &held).state, "verifying");
+    assert!(activity.active_for(fixture.project()).is_none());
+    assert!(
+        VerificationQueue::new(fixture.store())
+            .next()
+            .unwrap()
+            .is_none()
+    );
+    let status = activity.status(&fixture.ctx()).unwrap();
+    assert_eq!(status.attribution_holds.len(), 1);
+    assert_eq!(status.attribution_holds[0].story_id, held);
+    // The operator can later withdraw and resubmit; it is a separate tick,
+    // and must not borrow the held attempt's progress journal.
+    StoryService::new(&fixture.ctx())
+        .set_state(&held, "in-progress", None, Some("verifying"), None)
+        .unwrap();
+    StoryService::new(&fixture.ctx())
+        .set_state(&held, "verifying", None, Some("in-progress"), None)
+        .unwrap();
+    assert_eq!(tick(&fixture, &gate), TickResult::Completed);
     let earlier = gate.first_attempt();
     let probes = gate.take_probes();
     let before: Vec<_> = probes

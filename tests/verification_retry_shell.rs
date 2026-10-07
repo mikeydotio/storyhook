@@ -476,6 +476,21 @@ raise SystemExit(status)
         assert_eq!(git(&checkout, &["rev-parse", "origin/main"]), merged);
     } else {
         assert_eq!(result, TickResult::Returned);
+        assert_eq!(row.state, "verifying");
+        let status = activity.status(&f.ctx()).unwrap();
+        assert!(status.incident.is_none());
+        assert!(!status.attribution_holds.is_empty(), "{status:?}");
+        assert!(status.attribution_holds.iter().all(|hold| {
+            hold.story_id == "SH-1"
+                && hold.cause == storyhook::service::attribution::FailureCause::Unknown
+        }));
+        assert!(VerificationQueue::new(f.store()).next().unwrap().is_none());
+        assert!(row.snapshot.comments.iter().any(|comment| {
+            comment
+                .text
+                .contains("CENTRAL VERIFICATION ATTRIBUTION HELD")
+                && comment.text.contains("No repair is assigned")
+        }));
         assert!(
             row.snapshot
                 .comments

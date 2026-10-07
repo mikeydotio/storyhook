@@ -211,20 +211,8 @@ impl VerificationActuator for StatusProbe<'_> {
     }
 }
 
-/// Asserts that `status` shows `story` held for `reason` as ordinary work.
-fn assert_reserved(status: &VerifierStatus, story: &str, reason: ReservationReason, case: &str) {
-    let reservation = status
-        .reservation
-        .as_ref()
-        .unwrap_or_else(|| panic!("{case}: no reservation in {status:?}"));
-    assert_eq!(reservation.story_id, story, "{case}");
-    assert_eq!(reservation.reason, reason, "{case}");
-    assert_eq!(status.evidence_error, None, "{case}: {status:?}");
-    assert_eq!(status.warning, None, "{case}: {status:?}");
-}
-
 #[test]
-fn every_return_reserves_the_verifier_while_its_diagnosis_is_delivered() {
+fn unproved_failures_hold_attribution_without_repair_delivery() {
     let cases = [
         (
             "red",
@@ -234,24 +222,21 @@ fn every_return_reserves_the_verifier_while_its_diagnosis_is_delivered() {
                 detail: "red".into(),
                 gate: GateCommand::DEFAULT.into(),
             },
-            ReservationReason::Remediation,
         ),
         (
             "invalid submission",
             VerificationOutcome::InvalidSubmission {
                 detail: "invalid".into(),
             },
-            ReservationReason::Remediation,
         ),
         (
             "conflict",
             VerificationOutcome::Conflict {
                 detail: "conflict".into(),
             },
-            ReservationReason::Reconcile,
         ),
     ];
-    for (case, outcome, reason) in cases {
+    for (case, outcome) in cases {
         let fixture = ServiceFixture::new();
         fixture.github_checkout("https://github.com/acme/widgets");
         let id = submitted(&fixture, case, Priority::Low, PR_ONE);
@@ -272,17 +257,33 @@ fn every_return_reserves_the_verifier_while_its_diagnosis_is_delivered() {
 
         assert_eq!(result, TickResult::Returned, "{case}");
         let probes = actuator.probes();
-        if case == "invalid submission" {
-            assert!(
-                probes.is_empty(),
-                "administrative evidence cannot assign repair"
-            );
-            assert_eq!(story_row(&fixture, &id).state, "verifying");
-        } else {
-            assert_eq!(probes.len(), 1, "{case}");
-            assert_eq!(probes[0].0, "notify", "{case}");
-            assert_reserved(&probes[0].1, &id, reason, case);
-        }
+        assert!(
+            probes.is_empty(),
+            "{case}: unproved evidence cannot assign repair"
+        );
+        assert_eq!(story_row(&fixture, &id).state, "verifying", "{case}");
+        assert!(
+            VerificationQueue::new(fixture.store())
+                .next()
+                .unwrap()
+                .is_none()
+        );
+        let status = activity.status(&fixture.ctx()).unwrap();
+        assert_eq!(status.evidence_error, None, "{case}: {status:?}");
+        assert_eq!(status.warning, None, "{case}: {status:?}");
+        assert!(status.reservation.is_none(), "{case}: the slot is released");
+        assert_eq!(status.attribution_holds.len(), 1, "{case}");
+        assert_eq!(status.attribution_holds[0].story_id, id, "{case}");
+        let evidence = fixture
+            .store()
+            .read(|tx| tx.attributions(fixture.project()))
+            .unwrap();
+        assert_eq!(evidence.len(), 1, "{case}");
+        assert!(evidence[0].held, "{case}");
+        assert!(
+            evidence[0].probes.is_empty(),
+            "{case}: no causal probe was available"
+        );
         assert!(activity.active_for(fixture.project()).is_none(), "{case}");
     }
 }

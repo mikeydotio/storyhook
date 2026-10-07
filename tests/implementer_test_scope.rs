@@ -69,19 +69,21 @@ const EXEMPT: &[(&str, &str)] = &[];
 /// inventory: a new return text that skips the rule, or one that adds it,
 /// both have to come through here.
 const RUNTIME_SITES: &[(&str, &str, usize)] = &[
-    // The RED diagnosis, shared by single-story and batch-culprit returns.
-    ("src/daemon/verification/repair_return.rs", RULE, 1),
-    ("src/daemon/verification/repair_return.rs", RERUN, 1),
-    // The CONFLICT return: no failed gate, so no rerun exception.
-    ("src/daemon/verification.rs", RULE, 1),
+    // One sealed native proof supplies ordinary and project-repair returns.
+    ("src/service/attribution/native/proof.rs", RULE, 1),
+    ("src/service/attribution/native/proof.rs", RERUN, 1),
+    // Unknown red/conflict outcomes retain evidence without assigning repair.
+    ("src/daemon/verification/repair_return.rs", RULE, 0),
+    ("src/daemon/verification/repair_return.rs", RERUN, 0),
+    ("src/daemon/verification.rs", RULE, 0),
     ("src/daemon/verification.rs", RERUN, 0),
     // The managed project-recovery delivery.
     ("src/daemon/project_recovery/transport.rs", RULE, 1),
     // The separate repair story's description and the in-place repair comment.
     ("src/service/project_recovery/decision_effects.rs", RULE, 2),
-    // A project repair whose gate failed: the same exception as a RED.
-    ("src/service/project_recovery/test_return.rs", RULE, 1),
-    ("src/service/project_recovery/test_return.rs", RERUN, 1),
+    // Failed project repairs consume the same sealed proof diagnosis above.
+    ("src/service/project_recovery/test_return.rs", RULE, 0),
+    ("src/service/project_recovery/test_return.rs", RERUN, 0),
     // The managed resume after a certified repair lands.
     ("src/service/project_recovery/resume.rs", RULE, 1),
 ];

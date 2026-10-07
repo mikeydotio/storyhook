@@ -35,6 +35,17 @@ pub(super) fn shell(harness: &Harness) -> Command {
         .env("XDG_CONFIG_HOME", harness.home.join("config"))
         .env("XDG_STATE_HOME", harness.home.join("state"))
         .env("STORYHOOK_DATA_DIR", harness.home.join("data/storyhook"))
+        // env_clear must not make the nested plugin harness look in this
+        // checkout's default target when Cargo built elsewhere. This comes
+        // from Cargo's exact artifact, not PATH or an installed release.
+        .env(
+            "CARGO_TARGET_DIR",
+            Path::new(env!("CARGO_BIN_EXE_story"))
+                .parent()
+                .expect("artifact profile directory")
+                .parent()
+                .expect("artifact target directory"),
+        )
         .envs(daemon_containment());
     Harness::declare_subprocess_patience(&mut command);
     command

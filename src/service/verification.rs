@@ -1257,6 +1257,27 @@ fn candidate_is_latest_generation(
     )
 }
 
+/// Retiring a retry into an attribution hold does not release cleanup or operator halts.
+/// Call only inside the transaction that validates and retains the current hold.
+pub(crate) fn clear_candidate_retry_incident(
+    tx: &mut impl WriteOps,
+    candidate: &VerificationCandidate,
+) -> Result<(), StoreError> {
+    let prefix = project_prefix(tx, candidate.project)?;
+    if let Some(incident) = tx
+        .verification_incident(candidate.project)?
+        .filter(|incident| {
+            candidate.verifying_generation == Some(incident.generation)
+                && candidate.story_id == incident.story.to_id(&prefix)
+                && incident.disposition == VerificationFailureDisposition::Retryable
+                && !incident.halted
+        })
+    {
+        tx.clear_verification_incident(&incident.incident_id)?;
+    }
+    Ok(())
+}
+
 fn clear_candidate_incident(
     tx: &mut impl WriteOps,
     candidate: &VerificationCandidate,

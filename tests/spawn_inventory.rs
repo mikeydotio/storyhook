@@ -336,6 +336,9 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/web.rs", "&argv[0]", Kind::Waited),
 ];
 
+#[path = "support/test_only_modules.rs"]
+mod test_only_modules;
+
 /// Every `.rs` file under `src/`, as (path relative to the crate root, source).
 ///
 /// Each file is truncated at its `#[cfg(test)]` module, because a unit test may
@@ -346,34 +349,7 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
 fn production_sources(root: &Path, crate_root: &Path, into: &mut Vec<(String, String)>) {
     let mut all = Vec::new();
     source_files(root, crate_root, &mut all);
-    // Deliberately recognize only ordinary external modules. An unfamiliar
-    // attribute or declaration remains visible to the inventory, never exempt.
-    let external = regex::Regex::new(
-        r"(?m)^[ \t]*#\[cfg\(test\)\][ \t]*\n[ \t]*mod[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*;",
-    )
-    .unwrap();
-    let mut excluded = Vec::new();
-    for (relative, source) in &all {
-        let source = storyhook_test_support::without_rust_comments(source);
-        let path = Path::new(relative);
-        let stem = path.file_stem().unwrap().to_str().unwrap();
-        let parent = path.parent().unwrap();
-        let directory = if matches!(stem, "lib" | "main" | "mod") {
-            parent.to_path_buf()
-        } else {
-            parent.join(stem)
-        };
-        for capture in external.captures_iter(&source) {
-            let before = &source[..capture.get(0).unwrap().start()];
-            if before.trim_end().ends_with(']') {
-                // Other attributes (especially #[path]) can change resolution.
-                continue;
-            }
-            let module = directory.join(&capture[1]);
-            excluded.push(module.with_extension("rs"));
-            excluded.push(module);
-        }
-    }
+    let excluded = test_only_modules::external_test_module_roots(&all);
     into.extend(all.into_iter().filter(|(relative, _)| {
         !excluded
             .iter()
@@ -408,7 +384,11 @@ fn external_test_modules_are_excluded_by_declaration_not_filename() {
     let src = root.path().join("src");
     std::fs::create_dir_all(src.join("owner/fixtures")).unwrap();
     std::fs::create_dir_all(src.join("production")).unwrap();
-    std::fs::write(src.join("owner.rs"), "#[cfg(test)]\nmod fixtures;\n").unwrap();
+    std::fs::write(
+        src.join("owner.rs"),
+        "#[cfg(test)]\npub(crate) mod fixtures;\n",
+    )
+    .unwrap();
     std::fs::write(src.join("owner/fixtures.rs"), "Command::new(\"fixture\");").unwrap();
     std::fs::write(
         src.join("owner/fixtures/helper.rs"),
@@ -431,6 +411,38 @@ fn external_test_modules_are_excluded_by_declaration_not_filename() {
         found,
         vec!["\"production\""],
         "test-only ancestry must not leak into the production census"
+    );
+}
+
+#[test]
+fn test_module_exclusions_refuse_redirected_conditional_and_unparseable_declarations() {
+    let sources = [
+        ("private.rs", "#[cfg(test)] mod fixtures;"),
+        ("visible.rs", "#[cfg(test)] pub(crate) mod fixtures;"),
+        (
+            "redirected.rs",
+            "#[cfg(test)] #[path = \"elsewhere.rs\"] mod fixtures;",
+        ),
+        (
+            "conditional.rs",
+            "#[cfg(any(test, feature = \"runtime\"))] mod fixtures;",
+        ),
+        ("named.rs", "mod tests;"),
+        ("unparsed.rs", "#[cfg(test)] mod fixtures; invalid rust!"),
+    ]
+    .into_iter()
+    .map(|(path, source)| (path.to_owned(), source.to_owned()))
+    .collect::<Vec<_>>();
+    let excluded = test_only_modules::external_test_module_roots(&sources);
+    assert_eq!(
+        excluded,
+        [
+            "private/fixtures.rs",
+            "private/fixtures",
+            "visible/fixtures.rs",
+            "visible/fixtures",
+        ]
+        .map(std::path::PathBuf::from)
     );
 }
 
