@@ -1,4 +1,4 @@
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext, Page, Request } from "@playwright/test";
 import { BASE_EXPECT_TIMEOUT_MS, gracedOperationBudget } from "../load-grace";
 import {
   test, expect, cleanUpCreatedStories, clickHeaderAction, heldReadDeadlineMs,
@@ -238,6 +238,74 @@ test("loaded drawer errors remain visible, recover on Retry and preserve dirty e
   await expect(comment).not.toBeEditable();
   await expect(page.locator('#drawer-body button:enabled:not(.drawer-detail-retry), #drawer-footer button:enabled')).toHaveCount(0);
   await expect(page.locator(".drawer-detail-retry")).toBeEnabled();
+
+  // Read-only alone prevents textarea edits, but cannot prove that the drawer's
+  // capture guard canceled Enter before a downstream submit handler saw it.
+  // Observe trusted events before that guard, then inspect their final state.
+  const keys = await comment.evaluateHandle(node => {
+    const field = node as HTMLTextAreaElement;
+    const events: KeyboardEvent[] = [];
+    let downstreamEnters = 0;
+    const capture = (event: KeyboardEvent) => {
+      if (event.target === field && ["enter", "arrowleft", "c"].includes(event.key.toLowerCase())) events.push(event);
+    };
+    const downstreamSubmit = (event: KeyboardEvent) => {
+      if (event.key === "Enter") downstreamEnters++;
+    };
+    document.addEventListener("keydown", capture, true);
+    field.addEventListener("keydown", downstreamSubmit);
+    return {
+      snapshot: () => ({ downstreamEnters, events: events.map(event => ({
+        key: event.key.toLowerCase(), repeat: event.repeat, trusted: event.isTrusted,
+        prevented: event.defaultPrevented, copyModifier: event.ctrlKey || event.metaKey,
+      })) }),
+      cleanup: () => {
+        document.removeEventListener("keydown", capture, true);
+        field.removeEventListener("keydown", downstreamSubmit);
+        events.length = 0;
+      },
+    };
+  });
+  let clientMutations = 0;
+  const observeMutation = (sent: Request) => {
+    if (!["GET", "HEAD"].includes(sent.method())) clientMutations++;
+  };
+  page.on("request", observeMutation);
+  try {
+    await comment.focus();
+    await page.keyboard.down("Enter");
+    await page.keyboard.down("Enter");
+    await page.keyboard.down("Enter");
+    await page.keyboard.up("Enter");
+    const enters = await keys.evaluate(witness => witness.snapshot());
+    expect(enters.events.map(event => ({ key: event.key, repeat: event.repeat, trusted: event.trusted, prevented: event.prevented }))).toEqual([
+      { key: "enter", repeat: false, trusted: true, prevented: true },
+      { key: "enter", repeat: true, trusted: true, prevented: true },
+      { key: "enter", repeat: true, trusted: true, prevented: true },
+    ]);
+    expect(enters.downstreamEnters).toBe(0);
+    await expect(comment).toHaveValue("Keep these unsent words for copying.");
+
+    // Copy remains available without depending on clipboard permissions or
+    // contents. ArrowLeft proves native caret movement still works, too.
+    await comment.evaluate(node => (node as HTMLTextAreaElement).setSelectionRange(5, 9));
+    await page.keyboard.press("ControlOrMeta+c");
+    expect(await comment.evaluate(node => [(node as HTMLTextAreaElement).selectionStart, (node as HTMLTextAreaElement).selectionEnd])).toEqual([5, 9]);
+    await page.keyboard.press("ArrowLeft");
+    expect(await comment.evaluate(node => [(node as HTMLTextAreaElement).selectionStart, (node as HTMLTextAreaElement).selectionEnd])).toEqual([5, 5]);
+    const allowed = await keys.evaluate(witness => witness.snapshot());
+    expect(allowed.events.slice(3)).toEqual([
+      { key: "c", repeat: false, trusted: true, prevented: false, copyModifier: true },
+      { key: "arrowleft", repeat: false, trusted: true, prevented: false, copyModifier: false },
+    ]);
+    expect(allowed.downstreamEnters).toBe(0);
+    expect(clientMutations).toBe(0);
+  } finally {
+    page.off("request", observeMutation);
+    await keys.evaluate(witness => witness.cleanup());
+    await keys.dispose();
+  }
+
   const dismissed = latch();
   page.once("dialog", async dialog => { await dialog.dismiss(); dismissed.release(); });
   await page.locator("#drawer-close").click();

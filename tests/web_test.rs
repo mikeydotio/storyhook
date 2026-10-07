@@ -3488,11 +3488,18 @@ fn web_serve_root_html_only_wraps_list_titles_and_between_label_chips() {
         "each label chip must remain atomic while its list-labels parent wraps"
     );
 
+    let row = function_body(&body, "populateListRow");
     assert!(
-        body.contains(
-            r#"el("td", { class: "col-title" }, [st.title, buildEngineLaneChip(engineLane)])"#
+        row.contains(
+            r#"el("td", { class: "col-title" }, [st.title, buildEngineLaneChip(engineLane), v.summary_truncated ? summaryShortenedNote() : null])"#
         ),
-        "populateListRow must keep the title and its non-label lane chip in the text-wrapping cell"
+        "populateListRow must keep the title, its non-label lane chip, and the conditional summary-shortening notice in the text-wrapping cell"
+    );
+    let shortened = function_body(&body, "summaryShortenedNote");
+    assert!(
+        shortened.contains(r#"class: "flag summary-truncated""#)
+            && shortened.contains(r#"["Summary shortened · open for details"]"#),
+        "a truncated summary must identify its notice as a flag and direct the reader to the full details"
     );
     assert!(
         body.contains(r#"var wrap = el("span", { class: "list-labels" }, []);"#),

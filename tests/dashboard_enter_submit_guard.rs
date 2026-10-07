@@ -48,6 +48,9 @@
 //!   no longer the input;
 //! * the label **combobox** (`e.key === ","`) adds a chip client-side and
 //!   reaches no network;
+//! * a complete conditional block whose only effects are `preventDefault()`
+//!   and `stopImmediatePropagation()`, followed by `return`, cancels activation;
+//!   unlike the line markers, this idiom requires the entire block to match;
 //! * the two guards themselves, which necessarily name the key they guard.
 //!
 //! This is a list of *exceptions*, not a list of sites to check, and the
@@ -232,7 +235,11 @@ const ALLOWED: &[Idiom] = &[
 /// Every 1-based line of `src/web_dashboard.html` code (comments stripped) that
 /// names `"Enter"`, paired with the line itself.
 fn enter_lines() -> Vec<(usize, String)> {
-    strip_comments(&read("src/web_dashboard.html"))
+    enter_lines_in(&read("src/web_dashboard.html"))
+}
+
+fn enter_lines_in(source: &str) -> Vec<(usize, String)> {
+    strip_comments(source)
         .lines()
         .enumerate()
         .filter(|(_, line)| line.contains("\"Enter\""))
@@ -245,12 +252,55 @@ fn allowed_idiom(line: &str) -> Option<&'static Idiom> {
     ALLOWED.iter().find(|idiom| line.contains(idiom.marker))
 }
 
+/// A pure cancellation block is not a submission. Check the entire predicate
+/// and body, not a helper name, receiver, source location, or the mere presence
+/// of `preventDefault` (submitting handlers commonly call that, too). The
+/// explicit return is essential: stopping propagation does not stop the current
+/// callback from reaching a submit statement after the conditional block.
+///
+/// Whitespace and comments may change without changing the operation. No other
+/// statements, conditions, calls, or trailing code on the closing line qualify.
+fn pure_enter_suppression_lines(source: &str) -> std::collections::BTreeSet<usize> {
+    let code = strip_comments(source);
+    let lines: Vec<_> = code.lines().collect();
+    let mut accepted = std::collections::BTreeSet::new();
+    for (start, line) in lines.iter().enumerate() {
+        if !line.trim_start().starts_with("if") {
+            continue;
+        }
+        let mut block = String::new();
+        for (end, next) in lines.iter().enumerate().skip(start) {
+            block.extend(next.chars().filter(|c| !c.is_whitespace()));
+            if !next.contains('}') {
+                continue;
+            }
+            if [
+                r#"if(event.key==="Enter"){event.preventDefault();event.stopImmediatePropagation();return;}"#,
+                r#"if(type!=="keydown"||event.key==="Enter"){event.preventDefault();event.stopImmediatePropagation();return;}"#,
+            ]
+            .contains(&block.as_str())
+            {
+                accepted.extend((start..=end).filter_map(|index| {
+                    lines[index].contains("\"Enter\"").then_some(index + 1)
+                }));
+            }
+            break;
+        }
+    }
+    accepted
+}
+
+fn enter_offenders(source: &str) -> Vec<(usize, String)> {
+    let suppressions = pure_enter_suppression_lines(source);
+    enter_lines_in(source)
+        .into_iter()
+        .filter(|(number, line)| allowed_idiom(line).is_none() && !suppressions.contains(number))
+        .collect()
+}
+
 #[test]
 fn every_enter_submitting_input_goes_through_bind_enter_submit() {
-    let offenders: Vec<(usize, String)> = enter_lines()
-        .into_iter()
-        .filter(|(_, line)| allowed_idiom(line).is_none())
-        .collect();
+    let offenders = enter_offenders(&read("src/web_dashboard.html"));
 
     assert!(
         offenders.is_empty(),
@@ -260,8 +310,9 @@ fn every_enter_submitting_input_goes_through_bind_enter_submit() {
          issues one request per OS auto-repeat (SH-362: nine DELETEs, measured). A correctly wired \
          site names no key at all, which is why any \"Enter\" left in the code is either a guard, a \
          known non-submitting idiom, or this defect. The idioms this test recognises are:\n{}\n\n\
-         If the line above genuinely is none of those, it needs an entry in ALLOWED with the \
-         property that makes it not-a-submit — not an exemption.",
+         A complete pure cancellation block (preventDefault, stopImmediatePropagation, return) \
+         is also admitted. If the line above genuinely is neither that nor an idiom above, it \
+         needs a semantic rule stating why it cannot submit — not a source-site exemption.",
         offenders
             .iter()
             .map(|(number, line)| format!("  src/web_dashboard.html:{number}: {line}"))
@@ -273,6 +324,90 @@ fn every_enter_submitting_input_goes_through_bind_enter_submit() {
             .collect::<Vec<_>>()
             .join("\n"),
     );
+}
+
+#[test]
+fn pure_enter_suppression_accepts_formatting_and_the_actual_capture_guard() {
+    for source in [
+        r#"if (event.key === "Enter") { event.preventDefault(); event.stopImmediatePropagation(); return; }"#,
+        r#"if (
+            type !== "keydown" ||
+            event.key === "Enter"
+        ) {
+            // Only cancel the event; no activation or submit follows.
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return;
+        }"#,
+        // This later callback statement is unreachable on Enter only because
+        // the accepted cancellation branch explicitly returns.
+        r#"if (event.key === "Enter") {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return;
+        }
+        submitThing();"#,
+    ] {
+        assert_eq!(
+            enter_lines_in(source).len(),
+            1,
+            "control must contain Enter"
+        );
+        assert_eq!(pure_enter_suppression_lines(source).len(), 1);
+        assert!(
+            enter_offenders(source).is_empty(),
+            "pure cancellation rejected"
+        );
+    }
+    // A recognizer that accepts only its synthetic examples still misses the
+    // checkpoint defect. Read the real capture handler without exempting its
+    // location or the drawer receiver from the ordinary scan.
+    let source = read("src/web_dashboard.html");
+    let matched = pure_enter_suppression_lines(&source);
+    assert!(
+        enter_lines_in(&source).iter().any(|(number, line)| {
+            matched.contains(number) && line.contains("type") && line.contains("keydown")
+        }),
+        "the actual non-submitting capture guard must survive the scan"
+    );
+}
+
+#[test]
+fn enter_suppression_rejects_submission_and_incomplete_cancellation_mutants() {
+    let pure = r#"if (type !== "keydown" || event.key === "Enter") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+    }"#;
+    for mutant in [
+        pure.replace(
+            "event.preventDefault();",
+            "event.preventDefault(); submitThing();",
+        ),
+        pure.replace(
+            "event.stopImmediatePropagation();",
+            "submitThing(); event.stopImmediatePropagation();",
+        ),
+        pure.replace("event.preventDefault();", ""),
+        pure.replace("event.stopImmediatePropagation();", ""),
+        pure.replace("return;", ""),
+        format!("{}\nsubmitThing();", pure.replace("return;", "")),
+        pure.replace("stopImmediatePropagation", "stopPropagation"),
+        pure.replace("event.key", "submitThing().key"),
+        pure.replace("}", "} submitThing();"),
+    ] {
+        assert_eq!(
+            enter_lines_in(&mutant).len(),
+            1,
+            "mutation must remain visible"
+        );
+        assert!(pure_enter_suppression_lines(&mutant).is_empty());
+        assert_eq!(
+            enter_offenders(&mutant).len(),
+            1,
+            "an added submit or incomplete cancellation must remain an offender: {mutant}"
+        );
+    }
 }
 
 #[test]
@@ -351,6 +486,7 @@ fn an_inline_enter_submit_is_rejected_however_it_is_spelled() {
              allowlist has grown a marker broad enough to cover the defect this test exists to \
              catch"
         );
+        assert_eq!(enter_offenders(spelling).len(), 1);
         assert!(
             strip_comments(spelling).contains("\"Enter\""),
             "the stripper removed {spelling:?}, which is code — a scan that cannot see this line \
