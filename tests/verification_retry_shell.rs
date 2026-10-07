@@ -484,7 +484,25 @@ raise SystemExit(status)
             hold.story_id == "SH-1"
                 && hold.cause == storyhook::service::attribution::FailureCause::Unknown
         }));
-        assert!(VerificationQueue::new(f.store()).next().unwrap().is_none());
+        let queue = VerificationQueue::new(f.store());
+        let runnable = queue.runnable().unwrap();
+        assert_eq!(
+            runnable
+                .iter()
+                .map(|candidate| (candidate.project, candidate.story_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(f.project(), "SH-2")],
+            "held SH-1 must not run; unheld SH-2 must remain runnable: {runnable:#?}; {status:#?}"
+        );
+        let next = queue
+            .next()
+            .unwrap()
+            .expect("unheld SH-2 remains eligible after SH-1 is held");
+        assert_eq!(
+            (next.project, next.story_id.as_str()),
+            (f.project(), "SH-2"),
+            "{next:#?}"
+        );
         assert!(row.snapshot.comments.iter().any(|comment| {
             comment
                 .text
