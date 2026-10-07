@@ -97,7 +97,10 @@ class Arithmetic(unittest.TestCase):
 
 class Modes(unittest.TestCase):
     def setUp(self):
-        for name in (adapter.GRANT, adapter.REQUEST, adapter.SHARE, adapter.LEASE_FD):
+        # Cargo's runner gives every test binary an admission marker; these
+        # cases must start from a process with no admission of its own.
+        for name in (adapter.GRANT, adapter.REQUEST, adapter.SHARE, adapter.LEASE_FD,
+                     adapter.ENTRY, adapter.UNITS):
             os.environ.pop(name, None)
         self.tmp = tempfile.TemporaryDirectory(dir="/tmp", prefix="hm-")
         self.addCleanup(self.tmp.cleanup)
