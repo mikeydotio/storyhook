@@ -180,6 +180,11 @@ trap _cleanup EXIT
 # left alone; an inherited value wins, because run-tests.sh has already
 # rewritten $HOME by the time this runs.
 if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
+  # A fresh fixture owns no pane in the operator's server. TMUX outranks
+  # TMUX_TMPDIR in resource discovery, so isolating only the latter still
+  # queried the host when this script was launched inside tmux (SH-888).
+  # Nested instances retain selectors deliberately installed by their owner.
+  unset TMUX TMUX_PANE
   export STORYHOOK_REAL_HOME="${STORYHOOK_REAL_HOME:-$HOME}"
   STORYHOOK_TEST_HOME="$(mktemp -d /tmp/storyhook-plugin-home.XXXXXX)"
   export STORYHOOK_TEST_HOME
