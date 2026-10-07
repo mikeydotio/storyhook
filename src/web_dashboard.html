@@ -3832,25 +3832,40 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
 
   function renderPageControls(mount, key) {
     var page = boardPages[key];
+    if (!page) {
+      clear(mount);
+      delete mount.dataset.pageControls;
+      return;
+    }
+    var label = page.error || (page.loading ? readinessNote("stories", false) :
+      (page.total === 0 ? "No matching stories" : "Showing " + page.rows.length + " of " + page.total));
+    // Independent column arrivals must not replace an unchanged Retry or
+    // paging button while it is being focused or clicked. Handlers read the
+    // current page, so a preserved node never owns an obsolete cursor.
+    var fingerprint = JSON.stringify([key, label, !!page.error, !!page.loading, page.history.length, !!page.nextCursor]);
+    if (mount.dataset.pageControls === fingerprint && mount.childElementCount) return;
     clear(mount);
-    if (!page) return;
+    mount.dataset.pageControls = fingerprint;
     mount.setAttribute("role", "status");
     mount.dataset.pageKey = key;
-    var label = page.error || (page.loading ? readinessNote("stories", false) :
-      (page.rows.length ? "Showing " + page.rows.length + " of " + page.total : "No matching stories"));
     mount.appendChild(el("span", {}, [label]));
     if (page.error) {
       mount.appendChild(el("button", { type: "button", class: "btn btn-ghost board-page-retry", onClick: function() {
-        loadBoardPage(key, page.cursor, page.history); renderView();
+        var current = boardPages[key];
+        if (current) { loadBoardPage(key, current.cursor, current.history); renderView(); }
       } }, ["Retry"]));
     }
     if (page.history.length) mount.appendChild(el("button", { type: "button", class: "btn btn-ghost board-page-previous", disabled: !!page.loading, onClick: function() {
-      var previous = page.history.slice();
+      var current = boardPages[key];
+      if (!current || !current.history.length) return;
+      var previous = current.history.slice();
       var cursor = previous.pop();
       loadBoardPage(key, cursor, previous); renderView();
     } }, ["Previous"]));
     if (page.nextCursor) mount.appendChild(el("button", { type: "button", class: "btn btn-ghost board-page-next", disabled: !!page.loading, onClick: function() {
-      loadBoardPage(key, page.nextCursor, page.history.concat([page.cursor])); renderView();
+      var current = boardPages[key];
+      if (!current || !current.nextCursor) return;
+      loadBoardPage(key, current.nextCursor, current.history.concat([current.cursor])); renderView();
     } }, ["Next"]));
   }
 
@@ -9925,7 +9940,8 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
       var sortBtn = column.querySelector(".column-sort-btn");
       sortBtn.title = sortLabel;
       sortBtn.setAttribute("aria-label", sortLabel);
-      reconcileColumnCards(column.querySelector(".column-cards"), cards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById);
+      reconcileColumnCards(column.querySelector(".column-cards"), cards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById,
+        !!page && page.total === 0 && !page.loading && !page.error);
     });
 
     // Evicted pages/categories must not linger as invisible exit DOM.
@@ -10036,15 +10052,16 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
    * SH-401 subsequently made the paint wait for every primary press by gating
    * `renderView`, so this function cannot run in that interval on any browser;
    * `card-reposition-click-race.spec.ts` drives this exact path. */
-  function reconcileColumnCards(cardsEl, desiredCards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById) {
-    if (!desiredCards.length) {
-      if (!cardsEl.querySelector(".column-empty")) {
-        cardsEl.appendChild(el("div", { class: "column-empty" }, ["No stories"]));
-      }
+  function reconcileColumnCards(cardsEl, desiredCards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById, knownEmpty) {
+    var placeholder = cardsEl.querySelector(".column-empty");
+    if (!desiredCards.length && knownEmpty) {
+      if (!placeholder) cardsEl.appendChild(el("div", { class: "column-empty" }, ["No stories"]));
       return;
     }
-    var placeholder = cardsEl.querySelector(".column-empty");
+    // Loading and failed reads have their own page status; an absent card
+    // window is not evidence that the column contains no stories.
     if (placeholder) detach(placeholder);
+    if (!desiredCards.length) return;
 
     var cursor = cardsEl.firstElementChild;
     desiredCards.forEach(function(v) {

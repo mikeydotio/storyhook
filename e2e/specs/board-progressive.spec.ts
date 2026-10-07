@@ -1,4 +1,5 @@
 import type { APIRequestContext, Page } from "@playwright/test";
+import { BASE_EXPECT_TIMEOUT_MS, gracedOperationBudget } from "../load-grace";
 import {
   test, expect, cleanUpCreatedStories, clickHeaderAction, heldReadDeadlineMs,
   latch, openFilters, openProject, projectSlug, requiredEnv, seedToken,
@@ -21,6 +22,7 @@ type Probe = {
   drawerId: string | null; drawerDetail: Card | null; drawerRefs: Record<string, unknown>;
   draft: { rows: Card[]; project: { id: string } } | null;
   draftOpen: { id: string; project: string } | null; draftDetailRead: boolean;
+  retryClicks: number;
 };
 const releases = new Set<() => void>();
 const headers = () => ({ "X-Storyhook": "1", "X-Storyhook-Token": requiredEnv("DASHBOARD_TOKEN") });
@@ -39,13 +41,19 @@ async function installProbe(page: Page) {
     const html = await response.text();
     const anchor = "})();\n</script>";
     expect(html.split(anchor)).toHaveLength(2);
-    const instrument = `Object.defineProperty(window, '__boardProbe', {get: function() {
+    const instrument = `var boardProbeRetryClicks = 0;
+    document.addEventListener('click', function(event) {
+      if (event.isTrusted && event.target.closest &&
+          event.target.closest('[data-page-key="todo"] .board-page-retry')) boardProbeRetryClicks++;
+    }, true);
+    Object.defineProperty(window, '__boardProbe', {get: function() {
       return JSON.parse(JSON.stringify({repo: state.repoId, epoch: boardEpoch,
         rows: state.data ? state.data.stories : [], refs: state.data ? state.data.refs : {},
         pages: boardPages, requests: boardRequests.length, queued: boardQueue.length,
         drawerRead: !!drawerRead, drawerId: state.drawerId,
         drawerDetail: state.drawerDetail, drawerRefs: drawerRefs, draft: draftWindow,
-        draftOpen: draftOpenOwner, draftDetailRead: !!draftDetailRead}));
+        draftOpen: draftOpenOwner, draftDetailRead: !!draftDetailRead,
+        retryClicks: boardProbeRetryClicks}));
     }});\n`;
     await route.fulfill({ response, body: html.replace(anchor, instrument + anchor) });
   });
@@ -404,14 +412,16 @@ test("bounded daemon summaries replace page windows and preserve scroll across a
   expect(Math.abs(scrollAfter - scrollBefore.top)).toBeLessThanOrEqual(1);
   expect(await cards.evaluateAll(nodes => nodes.map(node => node.getAttribute("data-id")))).toEqual(firstIds);
   await preservedCard!.dispose();
+  const measurements = {
+    fixtureStories: 55, pageResponseBytes: bytes.byteLength,
+    pageSummaryBytes: Buffer.byteLength(JSON.stringify(fresh.stories)), summaryCount: fresh.stories.length,
+    legacyWholeProjectResponseBytes: legacyBytes.byteLength, legacyWholeProjectRows: legacyRows.length,
+    legacyHistoryCharacters: historyCharacters(legacyRows), firstWindow, nextWindow,
+    afterRefresh: await residentMetrics(page), scrollBefore, scrollAfter, sameNode,
+  };
+  console.log("SH894_BOARD_WINDOW_METRICS " + JSON.stringify(measurements));
   await testInfo.attach("board-bounded-window-measurements", {
-    contentType: "application/json", body: JSON.stringify({
-      fixtureStories: 55, pageResponseBytes: bytes.byteLength,
-      pageSummaryBytes: Buffer.byteLength(JSON.stringify(fresh.stories)), summaryCount: fresh.stories.length,
-      legacyWholeProjectResponseBytes: legacyBytes.byteLength, legacyWholeProjectRows: legacyRows.length,
-      legacyHistoryCharacters: historyCharacters(legacyRows), firstWindow, nextWindow,
-      afterRefresh: await residentMetrics(page), scrollBefore, scrollAfter, sameNode,
-    }, null, 2),
+    contentType: "application/json", body: JSON.stringify(measurements, null, 2),
   });
 });
 
@@ -428,19 +438,22 @@ test("one column paints before another reply arrives with at most two board read
   expect(waiting.requests).toBe(2);
   expect(waiting.queued).toBeGreaterThan(0);
   await expect(page.locator('.column[data-state="todo"] .card')).toHaveCount(0);
+  await expect(page.locator('.column[data-state="todo"] .column-empty, .column[data-state="in-progress"] .column-empty')).toHaveCount(0);
   await todo.deliver();
   await expect(page.locator('.column[data-state="todo"] .card')).toHaveCount(2);
   expect((await probe(page)).pages["in-progress"].loading).toBe(true);
   expect((await probe(page)).requests).toBeLessThanOrEqual(2);
   await expect(page.locator('[data-page-key="in-progress"]')).toContainText("Loading");
+  const measurements = {
+    beforeDelivery: { liveReads: waiting.requests, queuedReads: waiting.queued, residentRows: waiting.rows.length },
+    firstCompletedVisiblePage: "todo", stillHeldPage: "in-progress",
+    stillHeldLoading: (await probe(page)).pages["in-progress"].loading,
+    completedResponse: todo.measurement(), heldResponse: held.measurement(),
+    afterFirstPaint: await residentMetrics(page),
+  };
+  console.log("SH894_BOARD_FIRST_PAINT_METRICS " + JSON.stringify(measurements));
   await testInfo.attach("board-progressive-first-paint-measurements", {
-    contentType: "application/json", body: JSON.stringify({
-      beforeDelivery: { liveReads: waiting.requests, queuedReads: waiting.queued, residentRows: waiting.rows.length },
-      firstCompletedVisiblePage: "todo", stillHeldPage: "in-progress",
-      stillHeldLoading: (await probe(page)).pages["in-progress"].loading,
-      completedResponse: todo.measurement(), heldResponse: held.measurement(),
-      afterFirstPaint: await residentMetrics(page),
-    }, null, 2),
+    contentType: "application/json", body: JSON.stringify(measurements, null, 2),
   });
   await held.deliver();
   await idle(page);
@@ -495,18 +508,34 @@ test("filter, view and project changes discard incompatible pages and inactive D
 });
 
 test("a failed page offers Retry without presenting a false empty column", async ({ page }) => {
-  let fail = true;
-  await page.route(url => optionsOf(url)?.column === "todo", route => fail
-    ? route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"temporary read failure"}' })
-    : route.fallback());
-  await page.goto("/");
+  const unrelated = await holdOne(page, url => optionsOf(url)?.column === "in-progress");
+  await page.route(url => optionsOf(url)?.column === "todo", async route => {
+    // The read-only probe observes the trusted click in the capture phase,
+    // before Retry issues its XHR. Background polls cannot heal this failure
+    // while Playwright is still finding/stabilizing the actual click target.
+    if ((await probe(page)).retryClicks === 0) {
+      return route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"temporary read failure"}' });
+    }
+    return route.fallback();
+  });
+  await page.goto(`/?boardFetchTimeoutMs=${heldReadDeadlineMs()}`);
   await openProject(page, "Alpha Project");
+  await unrelated.taken;
   const controls = page.locator('[data-page-key="todo"]');
   await expect(controls.locator(".board-page-retry")).toBeVisible();
   await expect(controls).not.toContainText("No matching stories");
+  await expect(page.locator('.column[data-state="todo"] .column-empty')).toHaveCount(0);
   expect((await probe(page)).pages.todo.error).toBeTruthy();
-  fail = false;
-  await controls.locator(".board-page-retry").click();
+  const retry = await controls.locator(".board-page-retry").elementHandle();
+  expect(retry).not.toBeNull();
+  await unrelated.deliver();
+  await idle(page);
+  expect(await retry!.evaluate(node => node.isConnected &&
+    document.querySelector('[data-page-key="todo"] .board-page-retry') === node)).toBe(true);
+  await retry!.dispose();
+  expect((await probe(page)).retryClicks).toBe(0);
+  await controls.locator(".board-page-retry").click({ timeout: gracedOperationBudget(BASE_EXPECT_TIMEOUT_MS) });
+  expect((await probe(page)).retryClicks).toBe(1);
   await expect(page.locator('.column[data-state="todo"] .card')).toHaveCount(2);
   await expect(controls.locator(".board-page-retry")).toHaveCount(0);
 });
