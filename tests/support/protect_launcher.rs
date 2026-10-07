@@ -21,6 +21,19 @@ pub(super) fn quoted(path: &Path) -> String {
 }
 
 pub(super) fn shell(harness: &Harness) -> Command {
+    // The shared lease names the actual build location even with an external
+    // Cargo target. Locate its profile directory through the shared lease
+    // marker rather than reaching Cargo's replaceable executable directly.
+    let profile = storyhook_test_support::story_binary()
+        .ancestors()
+        .find(|path| {
+            path.file_name()
+                == Some(std::ffi::OsStr::new(
+                    storyhook_test_support::BINARY_SNAPSHOT_DIR,
+                ))
+        })
+        .and_then(Path::parent)
+        .expect("the shared binary lease lives below its artifact profile");
     let mut command = Command::new("bash");
     command
         .current_dir(&harness.root)
@@ -36,15 +49,12 @@ pub(super) fn shell(harness: &Harness) -> Command {
         .env("XDG_STATE_HOME", harness.home.join("state"))
         .env("STORYHOOK_DATA_DIR", harness.home.join("data/storyhook"))
         // env_clear must not make the nested plugin harness look in this
-        // checkout's default target when Cargo built elsewhere. This comes
-        // from Cargo's exact artifact, not PATH or an installed release.
+        // checkout's default target when Cargo built elsewhere. This path is
+        // only for lib.sh's lease checks: the nested harness keeps the fixture
+        // installed from our lease on PATH, with no inherited STORY_BIN.
         .env(
             "CARGO_TARGET_DIR",
-            Path::new(env!("CARGO_BIN_EXE_story"))
-                .parent()
-                .expect("artifact profile directory")
-                .parent()
-                .expect("artifact target directory"),
+            profile.parent().expect("artifact target directory"),
         )
         .envs(daemon_containment());
     Harness::declare_subprocess_patience(&mut command);
