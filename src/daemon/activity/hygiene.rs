@@ -234,7 +234,10 @@ fn publish(env: &Environment, findings: &Findings) -> Result<(), AppError> {
     let directory = path
         .parent()
         .expect("the findings file lives in the daemon state directory");
-    std::fs::create_dir_all(directory)?;
+    // Startup creates this directory when it claims the daemon pidfile.
+    // A sweep can finish after the home was detached while its store stayed
+    // open. Never recreate that anchor: doing so also reauthorizes the
+    // anchored activity journal to write into an abandoned home.
     let mut staged = tempfile::NamedTempFile::new_in(directory)?;
     staged.write_all(&serde_json::to_vec(findings)?)?;
     staged
