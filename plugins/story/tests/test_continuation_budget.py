@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -202,6 +203,33 @@ class ContinuationBudgetTests(unittest.TestCase):
         self.patch(subprocess, 'run', side_effect=process)
         with self.assertRaisesRegex(RuntimeError, 'git.*fixture.*fixture diagnostic'):
             runtime.command(['git', 'fixture'], cwd='/tmp', env={'FIXTURE': 'value'})
+
+    def test_process_start_survives_slow_ps_within_shared_budget(self):
+        """A live PID's incarnation probe may take longer than the former two seconds."""
+        pid = os.getpid()
+        self.costs['ps'] = 5
+        with probe_budget.operation():
+            self.assertEqual(runtime.process_start(pid), 'head')
+            self.assertEqual(probe_budget.remaining(), probe_budget.BUDGET_SECONDS - 5)
+        self.assertEqual(self.calls, [('ps', probe_budget.BUDGET_SECONDS)])
+        subprocess.run.assert_called_once()
+        self.assertEqual(subprocess.run.call_args.args[0],
+                         ['ps', '-p', str(pid), '-o', 'lstart='])
+
+    def test_process_start_reports_exhausted_shared_budget(self):
+        """The same real process_start path must refuse when ps exceeds time left."""
+        pid = os.getpid()
+        self.costs['ps'] = 5
+        with probe_budget.operation():
+            self.now += probe_budget.BUDGET_SECONDS - 3
+            with self.assertRaises(probe_budget.ProbeTimeout) as failure:
+                runtime.process_start(pid)
+            self.assertEqual(probe_budget.remaining(), 0)
+        self.assertEqual(self.calls, [('ps', 3)])
+        detail = str(failure.exception)
+        for expected in (f'ps -p {pid} -o lstart=', '3.0s allowance',
+                         '30.0s of a 30s operation budget', '12.50 on 10 cores'):
+            self.assertIn(expected, detail)
 
 
 if __name__ == '__main__':
