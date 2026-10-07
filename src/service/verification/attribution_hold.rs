@@ -10,9 +10,13 @@ impl<S: Store> VerificationQueue<'_, S> {
         candidate: &VerificationCandidate,
         attempt_id: &str,
         check: &str,
+        cause: FailureCause,
         detail: &str,
     ) -> Result<GenerationWrite<()>, AppError> {
-        if candidate.project != ctx.project() || check.trim().is_empty() || detail.trim().is_empty()
+        if candidate.project != ctx.project()
+            || check.trim().is_empty()
+            || detail.trim().is_empty()
+            || !matches!(cause, FailureCause::Unknown | FailureCause::Integration)
         {
             return Err(AppError::Validation(
                 "attribution hold requires this project and a complete diagnostic".into(),
@@ -57,16 +61,16 @@ impl<S: Store> VerificationQueue<'_, S> {
                     id: check.into(), check: check.into(), signature: detail.into(),
                     requirement: "Establish causal responsibility before assigning a repair".into(),
                     log: format!("story:{}:attribution:{id}", candidate.story_id),
-                    observed_cause: FailureCause::Unknown,
+                    observed_cause: cause,
                 }],
-                preparation: None, plans: vec![], probes: vec![], assessments: vec![], diagnosis_ms: 0,
+                preparation: None, settlement: None, plans: vec![], probes: vec![], assessments: vec![], diagnosis_ms: 0,
                 held: true, retired: None,
             };
             tx.insert_attribution(&record)?;
             let states = tx.state_map(project)?;
             append_and_fold(tx, project, story, &prefix, &states, ExpectedSeq::Exact(row.head_seq),
                 &[StoryEvent::StoryCommentAdded { at: now.clone(), text: format!(
-                    "CENTRAL VERIFICATION ATTRIBUTION HELD — {check}. Cause: unknown. Evidence: {id}. The story remains verifying; no repair is assigned. Inspect `story verifier evidence {} --json` and establish cause before retry or repair.\n\n{}",
+                    "CENTRAL VERIFICATION ATTRIBUTION HELD — {check}. Cause: {cause:?}. Evidence: {id}. The story remains verifying; no repair is assigned. Inspect `story verifier evidence {} --json` and establish cause before retry or repair.\n\n{}",
                     candidate.story_id, crate::text_lint::quote_evidence(detail)) }], ctx.provenance())?;
             Ok(GenerationWrite::Applied(()))
         })?)
@@ -200,6 +204,7 @@ mod tests {
                     &candidate,
                     "owned-attempt",
                     "submission",
+                    FailureCause::Unknown,
                     "input cannot be established",
                 )
                 .unwrap();
@@ -218,6 +223,7 @@ mod tests {
                             &candidate,
                             "owned-attempt",
                             "submission",
+                            FailureCause::Unknown,
                             "input cannot be established"
                         )
                         .unwrap(),

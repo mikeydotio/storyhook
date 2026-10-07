@@ -25,6 +25,7 @@ fn record(project: ProjectId) -> AttributionRecord {
         inputs: GateInputs::default(),
         created_at: "2026-10-03T00:00:00Z".into(),
         preparation: None,
+        settlement: None,
         components: vec![FailureComponent {
             id: "failure-1".into(),
             check: "fixture".into(),

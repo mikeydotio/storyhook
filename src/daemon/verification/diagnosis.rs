@@ -3,7 +3,9 @@ use super::*;
 use crate::service::attribution::*;
 use crate::store::{GateExecution, GateExecutionPurpose, StoreError};
 mod execute;
+mod head;
 mod record;
+mod selection;
 
 /// A proposed exact reproduction. Native validation establishes whether it is supported.
 pub struct RustDiagnosisRequest {
@@ -42,6 +44,26 @@ impl VerificationGuard {
         candidate: &VerificationCandidate,
         request: RustDiagnosisRequest,
     ) -> Result<RustDiagnosisResult, AppError> {
+        self.diagnose_proposal(ctx, candidate, |_| Ok(request))
+    }
+
+    /// Select an exact recorded failure without accepting assessor-supplied observations.
+    pub fn diagnose_gate_failure<S: Store>(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+    ) -> Result<RustDiagnosisResult, AppError> {
+        self.diagnose_proposal(ctx, candidate, |original| {
+            selection::propose(original, &candidate.checkout)
+        })
+    }
+
+    fn diagnose_proposal<S: Store>(
+        &self,
+        ctx: &Ctx<'_, S>,
+        candidate: &VerificationCandidate,
+        propose: impl FnOnce(&GateExecution) -> Result<RustDiagnosisRequest, String>,
+    ) -> Result<RustDiagnosisResult, AppError> {
         let started = Instant::now();
         if ctx.project() != candidate.project
             || self.active.project != candidate.project
@@ -55,9 +77,20 @@ impl VerificationGuard {
             return Ok(RustDiagnosisResult::Superseded);
         };
         let pending = self.reserve(ReservationReason::Attribution, ctx.now());
-        let selection = record::select(&original, &request);
+        let request = propose(&original);
+        let selection = request
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|request| record::select(&original, request));
+        let request = request.ok();
         let Some((mut record, fresh)) = record::begin(
-            ctx, candidate, self, control, &original, &request, &selection,
+            ctx,
+            candidate,
+            self,
+            control,
+            &original,
+            request.as_ref(),
+            &selection,
         )?
         else {
             return Ok(RustDiagnosisResult::Superseded);
@@ -90,7 +123,7 @@ impl VerificationGuard {
                     ctx,
                     candidate,
                     self,
-                    &request,
+                    request.as_ref(),
                     &selection,
                     &mut record,
                     started,

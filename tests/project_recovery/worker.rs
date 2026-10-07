@@ -44,43 +44,31 @@ PY
 }
 
 #[test]
-fn worker_delivers_scope_charter_once_after_verifier_releases_workspace() {
+fn sh870_unproved_fault_never_delivers_even_after_workspace_release() {
     let f = fixture();
-    let candidate = submitted(&f, "assessment");
+    let candidate = submitted(&f, "held fault");
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
-    let activity = VerificationActivity::new();
-    let locks = candidate.checkout.join(".git/storyhook/workspace-locks");
-    std::fs::create_dir_all(&locks).unwrap();
-    let owner = std::fs::File::create(locks.join("SH-1.lock")).unwrap();
-    fs4::FileExt::lock_exclusive(&owner).unwrap();
     let view = service
         .observe(&candidate, &fault(), "observed")
         .unwrap()
         .unwrap();
+    let locks = candidate.checkout.join(".git/storyhook/workspace-locks");
+    std::fs::create_dir_all(&locks).unwrap();
+    let owner = std::fs::File::create(locks.join("SH-1.lock")).unwrap();
+    fs4::FileExt::lock_exclusive(&owner).unwrap();
     let actuator = helper(&f, r#"{"ok":true}"#);
+    let activity = VerificationActivity::new();
     let stop = AtomicBool::new(false);
     assert!(!process_one(f.store(), f.env(), &actuator, &activity, &stop).unwrap());
     drop(owner);
-    assert!(process_one(f.store(), f.env(), &actuator, &activity, &stop).unwrap());
-    assert_eq!(
-        service
-            .show(&view.record.id)
-            .unwrap()
-            .state
-            .assessment
-            .status,
-        AssessmentStatus::Delivered
-    );
     assert!(!process_one(f.store(), f.env(), &actuator, &activity, &stop).unwrap());
-    let text = std::fs::read_to_string(candidate.checkout.join("recovery-calls")).unwrap();
-    assert_eq!(text.lines().count(), 1);
-    assert!(text.contains(&view.state.assessment.dispatch_identity));
-    assert!(text.contains("Do not edit before"));
+    assert_eq!(service.show(&view.record.id).unwrap(), view);
+    assert!(!candidate.checkout.join("recovery-calls").exists());
 }
 
 #[test]
-fn interrupted_assessment_retains_uncertainty_without_replaying_delivery() {
+fn sh870_interrupted_legacy_assessment_is_held_without_replaying_delivery() {
     let f = fixture();
     let candidate = submitted(&f, "interrupted");
     let ctx = f.ctx();
@@ -89,7 +77,12 @@ fn interrupted_assessment_retains_uncertainty_without_replaying_delivery() {
         .observe(&candidate, &fault(), "observed")
         .unwrap()
         .unwrap();
-    service.claim_assessment(&view.record.id).unwrap().unwrap();
+    let mut pending = view.clone();
+    pending.state.assessment.status = AssessmentStatus::InFlight;
+    pending.state.assessment.hold = None;
+    pending.state.assessment.epoch = 1;
+    pending.state.assessment.started_at = Some(ctx.now());
+    legacy::save(&f, pending);
     let actuator = helper(&f, r#"{"ok":true}"#);
     assert!(
         process_one(
@@ -104,23 +97,18 @@ fn interrupted_assessment_retains_uncertainty_without_replaying_delivery() {
     let held = service.show(&view.record.id).unwrap();
     assert_eq!(
         held.state.assessment.hold,
-        Some(AssessmentHold::OwnershipUncertain)
+        Some(AssessmentHold::CauseUnproved)
     );
     assert!(!candidate.checkout.join("recovery-calls").exists());
 }
 
 #[test]
-fn same_story_repair_delivery_uses_accepted_scope_and_original_target() {
+fn sh870_retained_same_story_repair_delivery_uses_accepted_scope_and_original_target() {
     let f = fixture();
     let initial = decision::ready(&f);
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
-    let view = service
-        .decide(
-            &initial.record.id,
-            &decision::input(&initial, RepairScope::SameStory),
-        )
-        .unwrap();
+    let view = legacy::retain(&f, initial.clone(), RepairScope::SameStory);
     let actuator = helper(&f, r#"{"ok":true}"#);
     assert!(
         process_one(
@@ -138,7 +126,8 @@ fn same_story_repair_delivery_uses_accepted_scope_and_original_target() {
 }
 
 #[test]
-fn fresh_separate_repair_dispatch_requires_proven_absence_and_independent_identity() {
+fn sh870_retained_fresh_separate_repair_dispatch_requires_proven_absence_and_independent_identity()
+{
     for (reason, expected) in [
         ("pane-unavailable", WorkStatus::Delivered),
         ("provider-unknown", WorkStatus::Held),
@@ -147,12 +136,7 @@ fn fresh_separate_repair_dispatch_requires_proven_absence_and_independent_identi
         let initial = decision::ready(&f);
         let ctx = f.ctx();
         let service = ProjectRecoveryService::new(&ctx);
-        let view = service
-            .decide(
-                &initial.record.id,
-                &decision::input(&initial, RepairScope::SeparateStory),
-            )
-            .unwrap();
+        let view = legacy::retain(&f, initial.clone(), RepairScope::SeparateStory);
         let actuator = helper(
             &f,
             &format!(r#"{{"ok":false,"reason":"{reason}","display":"provider response"}}"#),
@@ -192,7 +176,7 @@ fn fresh_separate_repair_dispatch_requires_proven_absence_and_independent_identi
 }
 
 #[test]
-fn absent_original_agent_without_managed_resources_is_held_not_replaced() {
+fn sh870_retained_absent_original_agent_without_managed_resources_is_held_not_replaced() {
     let f = fixture();
     let candidate = submitted(&f, "unleased assessment");
     let ctx = f.ctx();
@@ -201,6 +185,7 @@ fn absent_original_agent_without_managed_resources_is_held_not_replaced() {
         .observe(&candidate, &fault(), "observed")
         .unwrap()
         .unwrap();
+    let view = legacy::retain(&f, view, RepairScope::SameStory);
     let actuator = helper(
         &f,
         r#"{"ok":false,"reason":"pane-unavailable","display":"absent"}"#,
@@ -216,7 +201,7 @@ fn absent_original_agent_without_managed_resources_is_held_not_replaced() {
         .unwrap()
     );
     assert_eq!(
-        service.show(&view.record.id).unwrap().state.assessment.hold,
+        service.show(&view.record.id).unwrap().state.work[0].hold,
         Some(AssessmentHold::OwnershipUncertain)
     );
     assert_eq!(
@@ -229,7 +214,7 @@ fn absent_original_agent_without_managed_resources_is_held_not_replaced() {
 }
 
 #[test]
-fn policy_monitor_cancels_live_delivery_and_retains_transient_reservations() {
+fn sh870_retained_policy_monitor_cancels_live_delivery_and_retains_transient_reservations() {
     const PROVIDER_DELAY_SECS: u64 = 30;
     for stop in [false, true] {
         let f = fixture();
@@ -240,6 +225,7 @@ fn policy_monitor_cancels_live_delivery_and_retains_transient_reservations() {
             .observe(&candidate, &fault(), "observed")
             .unwrap()
             .unwrap();
+        let view = legacy::retain(&f, view, RepairScope::SameStory);
         let actuator = helper(
             &f,
             &serde_json::json!({"ok":true,"delay":PROVIDER_DELAY_SECS}).to_string(),
@@ -283,7 +269,7 @@ fn policy_monitor_cancels_live_delivery_and_retains_transient_reservations() {
         });
         let held = service.show(&view.record.id).unwrap();
         assert_eq!(
-            held.state.assessment.hold,
+            held.state.work[0].hold,
             Some(if stop {
                 AssessmentHold::OperatorStop
             } else {
@@ -294,7 +280,7 @@ fn policy_monitor_cancels_live_delivery_and_retains_transient_reservations() {
 }
 
 #[test]
-fn existing_managed_claim_is_adopted_only_with_exact_lease_and_one_transition() {
+fn sh870_retained_existing_managed_claim_is_adopted_only_with_exact_lease_and_one_transition() {
     use storyhook::domain::{StoryCleanupLease, TmuxCleanupTarget};
     use storyhook::service::engine::{EngineService, StartRequest};
     use storyhook::store::{EngineAgent, EngineLaneState, EngineScope};
@@ -303,12 +289,7 @@ fn existing_managed_claim_is_adopted_only_with_exact_lease_and_one_transition() 
         let initial = decision::ready(&f);
         let ctx = f.ctx();
         let service = ProjectRecoveryService::new(&ctx);
-        let view = service
-            .decide(
-                &initial.record.id,
-                &decision::input(&initial, RepairScope::SeparateStory),
-            )
-            .unwrap();
+        let view = legacy::retain(&f, initial.clone(), RepairScope::SeparateStory);
         let run = EngineService::new(&ctx, &storyhook_test_support::FakeDispatcher::default())
             .start(StartRequest {
                 scope: EngineScope::Project,
@@ -390,17 +371,12 @@ fn existing_managed_claim_is_adopted_only_with_exact_lease_and_one_transition() 
 }
 
 #[test]
-fn transient_operator_block_revokes_work_even_after_it_is_cleared() {
+fn sh870_retained_transient_operator_block_revokes_work_even_after_it_is_cleared() {
     let f = fixture();
     let initial = decision::ready(&f);
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
-    let view = service
-        .decide(
-            &initial.record.id,
-            &decision::input(&initial, RepairScope::SameStory),
-        )
-        .unwrap();
+    let view = legacy::retain(&f, initial.clone(), RepairScope::SameStory);
     let work = &view.state.work[0];
     service
         .claim_work(&view.record.id, &work.id)
@@ -418,18 +394,14 @@ fn transient_operator_block_revokes_work_even_after_it_is_cleared() {
 }
 
 #[test]
-fn proven_undelivered_dispatch_is_bounded_but_unconfirmed_delivery_is_not_replayed() {
+fn sh870_retained_proven_undelivered_dispatch_is_bounded_but_unconfirmed_delivery_is_not_replayed()
+{
     for phase in ["undelivered", "received-unsubmitted"] {
         let f = fixture();
         let initial = decision::ready(&f);
         let ctx = f.ctx();
         let service = ProjectRecoveryService::new(&ctx);
-        let view = service
-            .decide(
-                &initial.record.id,
-                &decision::input(&initial, RepairScope::SeparateStory),
-            )
-            .unwrap();
+        let view = legacy::retain(&f, initial.clone(), RepairScope::SeparateStory);
         let response = serde_json::json!({"ok":false,"reason":"pane-unavailable","display":"absent", "dispatch_reply":{"ok":false,"reason":"handoff-undelivered","delivery_phase":phase,"display":"provider delivery failed"}});
         let actuator = helper(&f, &response.to_string());
         for attempt in 1..=if phase == "undelivered" { 3 } else { 1 } {
@@ -471,7 +443,7 @@ fn proven_undelivered_dispatch_is_bounded_but_unconfirmed_delivery_is_not_replay
 }
 
 #[test]
-fn proven_absence_resumes_only_the_exact_registered_lease_and_preserves_work() {
+fn sh870_retained_proven_absence_resumes_only_the_exact_registered_lease_and_preserves_work() {
     use storyhook::domain::{CLEANUP_LEASE_MARKER, StoryCleanupLease, TmuxCleanupTarget};
     for changed_identity in [false, true] {
         let f = fixture();
@@ -545,6 +517,7 @@ fn proven_absence_resumes_only_the_exact_registered_lease_and_preserves_work() {
             .observe(&candidate, &fault(), "observed")
             .unwrap()
             .unwrap();
+        let view = legacy::retain(&f, view, RepairScope::SameStory);
         if changed_identity {
             git(&worktree, &["branch", "-m", "different-owner"]);
         }
@@ -564,14 +537,14 @@ fn proven_absence_resumes_only_the_exact_registered_lease_and_preserves_work() {
         );
         let current = service.show(&view.record.id).unwrap();
         assert_eq!(
-            current.state.assessment.status,
+            current.state.work[0].status,
             if changed_identity {
-                AssessmentStatus::Held
+                WorkStatus::Held
             } else {
-                AssessmentStatus::Delivered
+                WorkStatus::Delivered
             },
             "{}",
-            current.state.assessment.detail
+            current.state.work[0].detail
         );
         let calls = std::fs::read_to_string(repository.join("recovery-calls")).unwrap();
         assert_eq!(calls.lines().count(), if changed_identity { 1 } else { 2 });
@@ -592,7 +565,7 @@ fn proven_absence_resumes_only_the_exact_registered_lease_and_preserves_work() {
 /// under. A later prefix change must not make the recovery read as damaged
 /// (SH-848): the lease still names the same story by number.
 #[test]
-fn a_retained_managed_lease_survives_a_project_prefix_change() {
+fn sh870_retained_a_retained_managed_lease_survives_a_project_prefix_change() {
     use storyhook::domain::{StoryCleanupLease, TmuxCleanupTarget};
     use storyhook::service::engine::{EngineService, StartRequest};
     use storyhook::service::project::ProjectService;
@@ -601,12 +574,7 @@ fn a_retained_managed_lease_survives_a_project_prefix_change() {
     let initial = decision::ready(&f);
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
-    let view = service
-        .decide(
-            &initial.record.id,
-            &decision::input(&initial, RepairScope::SeparateStory),
-        )
-        .unwrap();
+    let view = legacy::retain(&f, initial.clone(), RepairScope::SeparateStory);
     let run = EngineService::new(&ctx, &storyhook_test_support::FakeDispatcher::default())
         .start(StartRequest {
             scope: EngineScope::Project,

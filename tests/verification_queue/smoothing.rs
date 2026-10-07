@@ -236,34 +236,36 @@ fn a_code_conflict_the_preview_misread_as_smoothable_is_refused_at_assembly() {
 /// the red may come from the automated resolution, and how to repair it
 /// (SH-834 D7); the member before it lands on its own receipt.
 #[test]
-fn a_smoothed_culprit_is_returned_with_its_resolution_named() {
+fn sh870_smoothed_suspect_is_held_as_integration_without_assigning_repair() {
     let x = spec_with("X");
     let y = spec_with("Y");
     let board = smoothing_board(&[("docs/spec.md", &x), ("docs/spec.md", &y)], 2);
     let ids = board.stories.clone();
     let batcher = Batcher::new(&board, Gate::Culprits(vec![1]));
-
     tick(&board, &batcher);
-
     let batch = &batches(&board)[0];
-    assert!(batch.members[1].resolution.is_some(), "{batch:?}");
-    let reds: Vec<String> = story_row(&board.fixture, &ids[1])
-        .snapshot
-        .comments
+    assert!(batch.members[1].resolution.is_some());
+    let evidence = board
+        .fixture
+        .store()
+        .read(|tx| tx.attributions(board.fixture.project()))
+        .unwrap();
+    let held = evidence
         .iter()
-        .filter(|comment| comment.text.starts_with("CENTRAL VERIFICATION RED"))
-        .map(|comment| comment.text.clone())
-        .collect();
-    assert_eq!(reds.len(), 1, "{reds:?}");
-    for said in [
-        format!(
-            "{} joined the batch through an automated conflict resolution (union-insertions/1) of `docs/spec.md` with {}",
-            ids[1], ids[0]
-        ),
-        format!("in merge commit {}", batch.tip),
-        "the red may come from that resolution".to_owned(),
-        "merge `dev` into this branch, resolve those files yourself".to_owned(),
-    ] {
-        assert!(reds[0].contains(&said), "{said:?} missing from {}", reds[0]);
-    }
+        .find(|e| e.submission.story_id == ids[1])
+        .unwrap();
+    assert_eq!(
+        held.components[0].observed_cause,
+        storyhook::service::attribution::FailureCause::Integration
+    );
+    assert!(held.components[0].signature.contains("docs/spec.md"));
+    assert!(held.components[0].signature.contains("union-insertions/1"));
+    assert_eq!(story_row(&board.fixture, &ids[1]).state, "verifying");
+    assert_eq!(story_row(&board.fixture, &ids[0]).state, "done");
+    assert!(
+        batcher
+            .calls()
+            .iter()
+            .all(|call| !call.starts_with("notify-member "))
+    );
 }

@@ -267,3 +267,102 @@ fn preparation_or_uncertain_cleanup_is_visible_as_unsettled_diagnosis() {
     }
     assert!(actuator.notified.lock().unwrap().is_empty());
 }
+
+#[test]
+fn sh870_conflict_and_unproved_test_failure_never_assign_repair_or_wait_for_it() {
+    for outcome in [
+        VerificationOutcome::Conflict {
+            detail: "base moved; conflict says nothing about candidate cause".into(),
+        },
+        VerificationOutcome::TestsFailed {
+            tree: "a".repeat(40),
+            log: "/tmp/absent-sh870-original.log".into(),
+            detail: "test failure without supported causal evidence".into(),
+            gate: "gate".into(),
+        },
+    ] {
+        let f = ServiceFixture::new();
+        f.github_checkout("https://github.com/acme/widgets");
+        let id = submitted(&f, "unproved failure", Priority::High, PR_ONE);
+        let actuator = FakeActuator::new(outcome);
+        assert_eq!(
+            tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
+            TickResult::Returned
+        );
+        assert_eq!(story_row(&f, &id).state, "verifying");
+        assert!(actuator.notified.lock().unwrap().is_empty());
+        assert!(VerificationQueue::new(f.store()).next().unwrap().is_none());
+        let records = f.store().read(|tx| tx.attributions(f.project())).unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].held);
+        assert!(records[0].probes.is_empty());
+        assert_eq!(
+            tick_with(f.store(), f.env(), &actuator, f.project()).unwrap(),
+            TickResult::Idle
+        );
+    }
+}
+
+#[test]
+fn sh870_unproved_failures_cannot_notify_or_restart_any_agent_state() {
+    for conflict in [false, true] {
+        for policy in [false, true] {
+            for transport in ["live", "absent", "unreachable", "refused-resume"] {
+                let f = ServiceFixture::new();
+                f.github_checkout("https://github.com/acme/widgets");
+                let id = submitted(&f, "unproved failure", Priority::High, PR_ONE);
+                if policy {
+                    StoryService::new(&f.ctx())
+                        .set_labels(&id, &[LABEL_NO_AUTO.into()], &[])
+                        .unwrap();
+                }
+                let outcome = if conflict {
+                    VerificationOutcome::Conflict {
+                        detail: "both modified src/lib.rs".into(),
+                    }
+                } else {
+                    VerificationOutcome::TestsFailed {
+                        tree: "a".repeat(40),
+                        log: "/unavailable/original.log".into(),
+                        detail: "raw failed gate".into(),
+                        gate: GateCommand::DEFAULT.into(),
+                    }
+                };
+                let actuator = FakeActuator::new(outcome);
+                let actuator = match transport {
+                    "absent" => actuator.with_notify_script([NotifyScript::Absent("pane-dead")]),
+                    "unreachable" => {
+                        actuator.with_notify_script([NotifyScript::Fail("cannot reach agent")])
+                    }
+                    "refused-resume" => actuator
+                        .with_notify_script([NotifyScript::Absent("pane-dead")])
+                        .refusing_redispatch("wrong branch"),
+                    _ => actuator,
+                };
+                let activity = VerificationActivity::new();
+                let inflight = InFlight::new(f.env().clone());
+                assert_eq!(
+                    tick_with_reconciliation(
+                        f.store(),
+                        f.env(),
+                        &actuator,
+                        &activity,
+                        &inflight,
+                        f.project(),
+                        |_| panic!("unproved repair must not wait")
+                    )
+                    .unwrap(),
+                    TickResult::Returned
+                );
+                let row = story_row(&f, &id);
+                assert_eq!(row.state, "verifying");
+                assert!(row.awaiting.is_none());
+                assert!(actuator.notified.lock().unwrap().is_empty());
+                assert!(actuator.redispatched.lock().unwrap().is_empty());
+                assert!(activity.active_all().is_empty());
+                assert!(lifecycle::read_inflight(f.env()).is_empty());
+                assert!(VerificationQueue::new(f.store()).next().unwrap().is_none());
+            }
+        }
+    }
+}

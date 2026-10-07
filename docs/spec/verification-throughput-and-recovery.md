@@ -432,8 +432,28 @@ submission, control revision, human reservation, blockers, awaiting and landing
 state in the same transaction as the return. It records a native assessment and
 raw evidence digests without changing any gate result. A mixed record keeps its
 unproved components and hold; the repair text names only the proved component.
-The daemon diagnosis coordinator and migration of all existing return paths to
-this boundary remain required before SH-870 is complete.
+The ordinary failed-gate route now uses the daemon coordinator and this boundary.
+Refresh the open, ready, same-repository PR head through the bounded GitHub
+metadata command before applying the capability. A changed or unavailable head
+keeps the evidence held. An accepted recovery lineage uses the same capability
+inside its existing transaction, preserving its decision, attempts and delivery
+identity. Raw project fault observations, legacy undecided scope charters,
+integration conflicts and bisection suspects grant no new repair work. Existing
+accepted decisions and their delivery, admission, landing and dependency-resume
+receipts remain valid under their original authority checks.
+
+A red batch still localizes suspects and can land certified prefixes. Retain a
+non-head suspect's evidence under that member's generation and the batch head's
+physical admission; the shared attempt ID must never substitute one member's
+evidence for another's. Preserve automated-resolution metadata as integration
+cause evidence. No conflict route waits for an unproved implementer repair.
+
+Whole-comparison cleanup has its own immutable settlement receipt, distinct
+from completed preparation and individual probes. Missing or failed settlement
+blocks a later comparison even after retirement or daemon restart. The active
+owner can reserve its next probe within that same record; it cannot use that
+exception to start a replacement comparison. Only explicit settled ownership
+plus matching durable evidence can mint the return capability.
 
 Reserve each physical probe durably before launch. Allow at most eight starts
 and 300000 milliseconds of active diagnosis per submission, across admissions

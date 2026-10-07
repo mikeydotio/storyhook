@@ -1,8 +1,7 @@
 //! Human reservations across admission, external operations, and recovery.
 
 use super::*;
-use storyhook::daemon::bus::ChangeBus;
-use storyhook::daemon::verification::{HoldWatch, LandingOutcome, wait_for_reconciled_candidate};
+use storyhook::daemon::verification::LandingOutcome;
 use storyhook::service::landing::{LandingAdmission, VerifiedSubmission};
 use storyhook::store::LandingIntent;
 
@@ -125,7 +124,7 @@ impl VerificationActuator for ReservingActuator<'_> {
 
 #[test]
 fn every_owned_phase_releases_a_new_human_reservation() {
-    for phase in ["submit", "verify", "notify", "land", "recover"] {
+    for phase in ["submit", "verify", "land", "recover"] {
         for transient in [false, true] {
             let f = ServiceFixture::new();
             f.github_checkout("https://github.com/acme/widgets");
@@ -208,39 +207,37 @@ fn every_owned_phase_releases_a_new_human_reservation() {
 }
 
 #[test]
-fn human_reservation_releases_reconciliation_without_a_resubmission() {
+fn sh870_human_reservation_preserves_unproved_conflict_hold() {
     let f = ServiceFixture::new();
     f.github_checkout("https://github.com/acme/widgets");
-    let id = submitted(&f, "repair", Priority::High, PR_ONE);
+    let id = submitted(&f, "conflict", Priority::High, PR_ONE);
     let activity = VerificationActivity::new();
     let inflight = InFlight::new(f.env().clone());
-    let bus = ChangeBus::new();
-    let subscription = bus.subscribe();
-    let stop = std::sync::atomic::AtomicBool::new(false);
     let actuator = FakeActuator::new(VerificationOutcome::Conflict {
-        detail: "conflict".into(),
+        detail: "base changed".into(),
     });
-    let result = tick_with_reconciliation(
-        f.store(),
-        f.env(),
-        &actuator,
-        &activity,
-        &inflight,
-        f.project(),
-        |reserved| {
-            reserve(&f, &id, true);
-            wait_for_reconciled_candidate(
-                f.store(),
-                &subscription,
-                &stop,
-                reserved,
-                &HoldWatch::production(&super::reconcile_hold::live_agent),
-            )
-        },
-    )
-    .unwrap();
-    assert_eq!(result, TickResult::Returned);
+    assert_eq!(
+        tick_with_reconciliation(
+            f.store(),
+            f.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            f.project(),
+            |_| panic!("no unproved repair wait")
+        )
+        .unwrap(),
+        TickResult::Returned
+    );
+    let evidence = f.store().read(|tx| tx.attributions(f.project())).unwrap();
+    reserve(&f, &id, true);
+    assert_eq!(
+        f.store().read(|tx| tx.attributions(f.project())).unwrap(),
+        evidence
+    );
+    assert!(VerificationQueue::new(f.store()).next().unwrap().is_none());
     assert!(activity.active_all().is_empty());
+    assert!(actuator.notified.lock().unwrap().is_empty());
 }
 
 #[test]

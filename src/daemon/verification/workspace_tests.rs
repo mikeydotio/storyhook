@@ -109,7 +109,7 @@ PY
 }
 
 #[test]
-fn remediation_reuses_verifier_lock_without_parking_or_interrupting_agent() {
+fn sh870_recorded_repair_delivery_reuses_verifier_lock_without_interrupting_agent() {
     let fixture = ServiceFixture::new();
     let store = SqliteStore::open(fixture.store().path()).unwrap();
     let project = ProjectId::new(fixture.project().get());
@@ -131,14 +131,18 @@ fn remediation_reuses_verifier_lock_without_parking_or_interrupting_agent() {
     let ctx = Ctx::new(&store, project, env.home(), env.clone()).no_hooks(true);
     let diagnosis =
         "CENTRAL VERIFICATION RED — repair the failed assertion.\nPreserve this diagnosis.";
-    let result = return_for_repair(
+    // This transport regression begins after a recorded repair. Causal validation
+    // is exercised through the native coordinator and return transaction tests.
+    StoryService::new(&ctx)
+        .set_state(&candidate.story_id, "in-progress", None, None, None)
+        .unwrap();
+    let result = repair_return::deliver_return(
         &VerificationQueue::new(&store),
         &ctx,
-        &actuator,
+        &repair_return::SlotTransport(&actuator),
         &candidate,
         diagnosis,
-        &guard,
-        ReservationReason::Remediation,
+        &guard.cancellation,
     )
     .unwrap();
     let row = store

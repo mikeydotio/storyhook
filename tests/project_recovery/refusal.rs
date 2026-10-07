@@ -5,12 +5,7 @@ fn refused(f: &ServiceFixture) -> (RecoveryView, VerificationCandidate) {
     let view = decision::ready(f);
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
-    let view = service
-        .decide(
-            &view.record.id,
-            &decision::input(&view, RepairScope::SameStory),
-        )
-        .unwrap();
+    let view = legacy::retain(f, view.clone(), RepairScope::SameStory);
     StoryService::new(&ctx)
         .set_state("SH-1", "verifying", None, None, None)
         .unwrap();
@@ -31,7 +26,7 @@ fn refused(f: &ServiceFixture) -> (RecoveryView, VerificationCandidate) {
 }
 
 #[test]
-fn settled_refusal_keeps_verifying_and_holds_only_its_exact_submission_once() {
+fn sh870_retained_settled_refusal_keeps_verifying_and_holds_only_its_exact_submission_once() {
     let f = fixture();
     let (view, candidate) = refused(&f);
     let ctx = f.ctx();
@@ -125,7 +120,7 @@ fn settled_refusal_keeps_verifying_and_holds_only_its_exact_submission_once() {
 }
 
 #[test]
-fn stale_or_independently_held_refusal_cannot_overwrite_story_state() {
+fn sh870_retained_stale_or_independently_held_refusal_cannot_overwrite_story_state() {
     for change in [
         "awaiting",
         "generation",
@@ -221,7 +216,7 @@ fn stale_or_independently_held_refusal_cannot_overwrite_story_state() {
 }
 
 #[test]
-fn refusal_rejects_wrong_record_attempt_reason_and_original_authority() {
+fn sh870_retained_refusal_rejects_wrong_record_attempt_reason_and_original_authority() {
     let f = fixture();
     let (view, candidate) = refused(&f);
     let ctx = f.ctx();

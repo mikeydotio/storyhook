@@ -99,6 +99,7 @@ impl Evidence {
                 observed_cause: FailureCause::Unknown,
             }],
             preparation: None,
+            settlement: None,
             plans: vec![],
             probes: vec![],
             assessments: vec![],
@@ -201,6 +202,12 @@ pub(super) fn exercise(native: NativeRustComparison, f: &Fixture, evidence: Evid
     let mut record = evidence.retain(&native, &original, mixed);
     let settled = native.settle().unwrap();
     record.diagnosis_ms = record.diagnosis_ms.max(settled.milliseconds());
+    record.settlement = Some(DiagnosticSettlement {
+        completed_at: record.created_at.clone(),
+        milliseconds: settled.milliseconds(),
+        detail: "actual native fixture settlement".into(),
+        cleanup_complete: true,
+    });
     evidence.save(&mut record);
     forgery::records(&evidence, &settled, &record);
     forgery::history(&evidence, &settled, &record);

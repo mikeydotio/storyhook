@@ -73,7 +73,13 @@ fn unfinished_preparation_blocks_later_attempts_after_rename_and_restart() {
         .write(|tx| tx.update_attribution(&next, 0))
         .unwrap_err();
     assert!(error.to_string().contains("unsettled"), "{error}");
-    let complete = preparation(&reserved, true, true, 300_000);
+    let mut complete = preparation(&reserved, true, true, 300_000);
+    complete.settlement = Some(storyhook::service::attribution::DiagnosticSettlement {
+        completed_at: AT.into(),
+        milliseconds: 300_000,
+        detail: "whole comparison settled at budget exhaustion".into(),
+        cleanup_complete: true,
+    });
     save(&store, &complete);
     let error = store
         .write(|tx| tx.update_attribution(&next, 0))
@@ -264,4 +270,27 @@ fn preparation_and_probes_share_one_unsettled_operation_fence() {
         error.to_string().contains("unsettled"),
         "a completed check is not proof of cleanup: {error}"
     );
+}
+
+#[test]
+fn comparison_settlement_is_required_after_completed_preparation_and_retirement() {
+    let (_root, store) = new_store();
+    let project = seed_project(&store, "causal", "CA");
+    let first = record(project, "first");
+    store.write(|tx| tx.insert_attribution(&first)).unwrap();
+    let reserved = preparation(&first, false, false, 0);
+    save(&store, &reserved);
+    let mut finished = preparation(&reserved, true, true, 10);
+    save(&store, &finished);
+    finished.revision += 1;
+    finished.held = false;
+    finished.retired = Some("retirement cannot prove that comparison resources settled".into());
+    save(&store, &finished);
+    let later = record(project, "later");
+    store.write(|tx| tx.insert_attribution(&later)).unwrap();
+    let next = preparation(&later, false, false, 0);
+    let error = store
+        .write(|tx| tx.update_attribution(&next, later.revision))
+        .unwrap_err();
+    assert!(error.to_string().contains("unsettled"), "{error}");
 }

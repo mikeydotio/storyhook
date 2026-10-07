@@ -203,6 +203,9 @@ pub struct AttributionRecord {
     /// Reservation retained before control preparation; absent in legacy observations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preparation: Option<super::DiagnosticPreparation>,
+    /// Whole-comparison cleanup, absent until the native owner explicitly settles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement: Option<super::DiagnosticSettlement>,
     /// Validated, immutable plans, retained in preparation order.
     pub plans: Vec<ContrastPlan>,
     /// Durable physical reservations, retained in execution order.
@@ -220,6 +223,13 @@ pub struct AttributionRecord {
 impl AttributionRecord {
     /// Unfinished execution or unproved cleanup prevents any further diagnosis launch.
     pub(crate) fn has_unsettled_diagnosis(&self) -> bool {
+        self.has_unsettled_execution()
+            || (self.preparation.is_some()
+                && self.settlement.as_ref().is_none_or(|s| !s.cleanup_complete))
+    }
+
+    /// Per-operation completion permits the live owner to reserve its next probe.
+    pub(crate) fn has_unsettled_execution(&self) -> bool {
         self.preparation.as_ref().is_some_and(|p| p.unsettled())
             || self
                 .probes

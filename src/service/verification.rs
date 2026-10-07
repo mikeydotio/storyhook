@@ -23,7 +23,8 @@ use super::story::{append_state_transition, state_transition_events};
 use super::{Ctx, append_and_fold, project_prefix, relation, resolve_story};
 
 mod attribution_hold;
-mod causal_return;
+mod batch_attribution;
+pub(in crate::service) mod causal_return;
 pub(crate) mod human;
 mod landed;
 
@@ -35,6 +36,39 @@ pub const VERIFYING_STATE: &str = VERIFYING_STATE_SLUG;
 /// the Full Auto reconciler recognises "returned for repair" by the same
 /// spelling the verifier writes (SH-650, `returned_for_repair`).
 pub const RETURNED_STATE: &str = "in-progress";
+
+/// The trailing clause of a post-verify repair return (SH-653), naming what
+/// actually happens to a "commit, then move back to verifying" fix.
+///
+/// A leased generation can carry that fix to the remote — the verifier
+/// already knows its branch — so the original promise holds. An unleased one
+/// cannot: nothing pushes it, whether this generation was submitted from
+/// outside its worktree or reached `verifying` already carrying a pull
+/// request an operator or an earlier generation linked directly (SH-647's
+/// own supported shape, still exempt from [`UNLEASED_SUBMISSION`]'s
+/// up-front refusal — that lease-free submission is not what changed here).
+/// What SH-653 found live is narrower: a story that already has a
+/// worktree-dispatched lifecycle losing its lease on a resubmission and being
+/// told "the verifier pushes" regardless — a promise that generation's own
+/// tick cannot keep, and a livelock once the published head does not merge.
+/// Naming that honestly here does not change whether verification runs, only
+/// what an unleased candidate is told about the return it just received.
+pub(crate) fn push_promise(has_cleanup_lease: bool, and_links_pull_request: bool) -> &'static str {
+    match (has_cleanup_lease, and_links_pull_request) {
+        (true, false) => "the verifier pushes",
+        (true, true) => "the verifier pushes and links the pull request",
+        (false, false) => {
+            "this generation has no cleanup lease, so nothing will push it. \
+Commit from inside the story's dispatched worktree. Move it to verifying again there so \
+the verifier can push"
+        }
+        (false, true) => {
+            "this generation has no cleanup lease, so nothing will push or link it. \
+Commit from inside the story's dispatched worktree. Move it to verifying again there. \
+The verifier can then push and link the pull request"
+        }
+    }
+}
 
 /// Which tests an implementer runs (SH-864): only the ones its story adds or
 /// changes. The central verifier runs the full suite on the merge tree, so a
@@ -64,7 +98,7 @@ pub const FAILED_GATE_RERUN_SCOPE: &str = "When a central gate failed, you may a
 /// is [`VERIFYING_STATE`], with no state change since (SH-650).
 ///
 /// This is the store-derived fact the engine reads instead of a lane mark the
-/// verifier would have to write: between `record_generation_returned` and the
+/// verifier would have to write: between `record_causal_return` and the
 /// respawned pane coming alive, the story is `in-progress` with no `awaiting`
 /// and a dead window, and a reconciler that took the dead window as evidence
 /// would quarantine the lane and strike the breaker for the very remediation
@@ -693,47 +727,6 @@ impl<'a, S: Store> VerificationQueue<'a, S> {
                     ))
                 })?;
             Ok(GenerationWrite::Applied(link))
-        })?)
-    }
-
-    /// Atomically records a diagnosis and returns only the current generation.
-    pub(crate) fn record_generation_returned(
-        &self,
-        ctx: &Ctx<'_, S>,
-        candidate: &VerificationCandidate,
-        diagnosis: &str,
-    ) -> Result<GenerationWrite<()>, AppError> {
-        let project = candidate.project;
-        let now = ctx.now();
-        Ok(ctx.write_stories(|tx| {
-            let prefix = project_prefix(&*tx, project)?;
-            let (story_no, row) = resolve_story(&*tx, project, &prefix, &candidate.story_id)?;
-            if !candidate_is_current(&*tx, &row, candidate)? {
-                return Ok(GenerationWrite::Superseded);
-            }
-            let states = tx.state_map(project)?;
-            let target = states.get(RETURNED_STATE).cloned().ok_or_else(|| {
-                AppError::Validation(format!(
-                    "project has no required OPEN `{RETURNED_STATE}` state; run `story doctor --fix`"
-                ))
-            })?;
-            clear_candidate_incident(tx, candidate)?;
-            append_state_transition(
-                tx,
-                project,
-                story_no,
-                &row,
-                &prefix,
-                &states,
-                &target,
-                &now,
-                vec![StoryEvent::StoryCommentAdded {
-                    at: now.clone(),
-                    text: diagnosis.to_string(),
-                }],
-                ctx.provenance(),
-            )?;
-            Ok(GenerationWrite::Applied(()))
         })?)
     }
 
@@ -2184,7 +2177,16 @@ mod tests {
             GenerationWrite::Superseded
         ));
         assert!(matches!(
-            queue.record_generation_returned(&ctx, &c, "stale").unwrap(),
+            queue
+                .record_generation_held(
+                    &ctx,
+                    &c,
+                    "stale",
+                    "stale",
+                    crate::service::attribution::FailureCause::Unknown,
+                    "stale"
+                )
+                .unwrap(),
             GenerationWrite::Superseded
         ));
         assert!(matches!(

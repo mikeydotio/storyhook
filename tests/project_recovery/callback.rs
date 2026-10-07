@@ -22,17 +22,12 @@ fn command(activity: &VerificationActivity, candidate: &VerificationCandidate) -
 }
 
 #[test]
-fn private_callback_round_trips_into_one_durable_admission() {
+fn sh870_retained_private_callback_round_trips_into_one_durable_admission() {
     let f = fixture();
     let view = decision::ready(&f);
     let activity = VerificationActivity::new();
     let ctx = f.ctx().with_verification_activity(Some(&activity));
-    ProjectRecoveryService::new(&ctx)
-        .decide(
-            &view.record.id,
-            &decision::input(&view, RepairScope::SameStory),
-        )
-        .unwrap();
+    legacy::retain(&f, view.clone(), RepairScope::SameStory);
     StoryService::new(&ctx)
         .set_state("SH-1", "verifying", None, None, None)
         .unwrap();
@@ -58,7 +53,7 @@ fn private_callback_round_trips_into_one_durable_admission() {
 }
 
 #[test]
-fn private_callback_requires_exact_live_owner_and_original_reservation() {
+fn sh870_retained_private_callback_requires_exact_live_owner_and_original_reservation() {
     let f = fixture();
     let candidate = submitted(&f, "callback authority");
     let activity = VerificationActivity::new();
@@ -130,7 +125,7 @@ fn private_callback_parser_requires_full_pins_and_positive_generation() {
 }
 
 #[test]
-fn private_callback_cannot_continue_a_cancelled_owner() {
+fn sh870_retained_private_callback_cannot_continue_a_cancelled_owner() {
     use storyhook::service::verification_control::VerificationAction;
     let f = fixture();
     let candidate = submitted(&f, "cancelled callback");

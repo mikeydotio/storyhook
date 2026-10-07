@@ -3,17 +3,11 @@ use storyhook::daemon::verification::{VerificationActivity, status::VerifierStat
 use storyhook::service::project_recovery::{RecoveryStatus, RecoveryView, RepairScope, WorkKind};
 
 #[test]
-fn shared_status_exposes_repair_ownership_and_legacy_payloads_default_empty() {
+fn sh870_retained_shared_status_exposes_repair_ownership_and_legacy_payloads_default_empty() {
     let f = fixture();
     let view = decision::ready(&f);
     let ctx = f.ctx();
-    let service = ProjectRecoveryService::new(&ctx);
-    let accepted = service
-        .decide(
-            &view.record.id,
-            &decision::input(&view, RepairScope::SeparateStory),
-        )
-        .unwrap();
+    let accepted = legacy::retain(&f, view.clone(), RepairScope::SeparateStory);
     let activity = VerificationActivity::new();
     let status = activity.status(&ctx).unwrap();
     let json = serde_json::to_value(&status).unwrap();
@@ -89,12 +83,7 @@ fn two_affected(f: &ServiceFixture) -> RecoveryView {
         .unwrap();
     let joined = service.show(&first.record.id).unwrap();
     assert_eq!(joined.state.subjects.len(), 2);
-    service
-        .decide(
-            &first.record.id,
-            &decision::input(&joined, RepairScope::SeparateStory),
-        )
-        .unwrap()
+    legacy::retain(f, joined.clone(), RepairScope::SeparateStory)
 }
 
 fn deliver_resumes(f: &ServiceFixture, id: &str) {
@@ -126,7 +115,7 @@ fn deliver_resumes(f: &ServiceFixture, id: &str) {
 }
 
 #[test]
-fn landed_recovery_names_only_owed_stories_and_leaves_status_once_none_owes() {
+fn sh870_retained_landed_recovery_names_only_owed_stories_and_leaves_status_once_none_owes() {
     for discharge in ["resubmit", "drop"] {
         let f = fixture();
         let view = two_affected(&f);
@@ -194,7 +183,7 @@ fn landed_recovery_names_only_owed_stories_and_leaves_status_once_none_owes() {
 }
 
 #[test]
-fn a_current_recovery_hold_keeps_the_row_after_its_story_resubmits() {
+fn sh870_retained_a_current_recovery_hold_keeps_the_row_after_its_story_resubmits() {
     let f = fixture();
     let view = resume::decided(&f);
     let id = view.record.id.clone();
@@ -212,7 +201,7 @@ fn a_current_recovery_hold_keeps_the_row_after_its_story_resubmits() {
 }
 
 #[test]
-fn a_held_resume_shows_only_while_its_story_still_owes_a_generation() {
+fn sh870_retained_a_held_resume_shows_only_while_its_story_still_owes_a_generation() {
     let f = fixture();
     let view = resume::decided(&f);
     let id = view.record.id.clone();
@@ -262,7 +251,7 @@ fn a_held_resume_shows_only_while_its_story_still_owes_a_generation() {
 }
 
 #[test]
-fn an_in_flight_resume_keeps_the_row_until_it_settles() {
+fn sh870_retained_an_in_flight_resume_keeps_the_row_until_it_settles() {
     let f = fixture();
     let view = resume::decided(&f);
     let id = view.record.id.clone();

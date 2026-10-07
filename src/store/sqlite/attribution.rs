@@ -28,6 +28,7 @@ pub(super) fn insert(conn: &Connection, record: &AttributionRecord) -> Result<()
     if record.revision != 0
         || !record.held
         || record.preparation.is_some()
+        || record.settlement.is_some()
         || !record.probes.is_empty()
         || !record.assessments.is_empty()
         || record.diagnosis_ms != 0
@@ -96,6 +97,8 @@ fn check_reservation(
             .as_ref()
             .is_some_and(|p| p.completed.is_none());
     let valid_probe = probing
+        && old.settlement.is_none()
+        && next.settlement.is_none()
         && !preparing
         && next.preparation == old.preparation
         && next.probes.len() == old.probes.len() + 1
@@ -123,7 +126,14 @@ fn check_reservation(
         milliseconds = milliseconds
             .checked_add(record.diagnosis_ms)
             .ok_or_else(|| refused("elapsed time overflow"))?;
-        if record.has_unsettled_diagnosis() {
+        // Only this record's next physical probe may run while its native
+        // comparison remains owned. A different record cannot inherit that owner.
+        let unsettled = if valid_probe && record.id == old.id {
+            record.has_unsettled_execution()
+        } else {
+            record.has_unsettled_diagnosis()
+        };
+        if unsettled {
             return Err(refused("an earlier reserved execution remains unsettled"));
         }
     }

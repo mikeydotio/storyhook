@@ -106,6 +106,13 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // SH-870: metadata-only refresh; owned control supervisor enforces its deadline,
+    // cancellation and process-group cleanup before the causal return transaction.
+    (
+        "src/daemon/verification/diagnosis/head.rs",
+        "\"bash\"",
+        Kind::Waited,
+    ),
     // Native attribution uses bounded file-backed capture. The Python driver owns
     // a broker-supervised session; a reaped driver alone cannot prove cleanup.
     (

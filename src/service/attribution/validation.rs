@@ -21,6 +21,16 @@ impl AttributionRecord {
         {
             return Err(invalid("identity, timestamp or hold state is inconsistent"));
         }
+        if let Some(settlement) = &self.settlement
+            && (self.preparation.is_none()
+                || settlement.detail.trim().is_empty()
+                || chrono::DateTime::parse_from_rfc3339(&settlement.completed_at).is_err()
+                || settlement.milliseconds > self.diagnosis_ms)
+        {
+            return Err(invalid(
+                "comparison settlement needs preparation, diagnostics, time and charged duration",
+            ));
+        }
         let mut components = BTreeSet::new();
         if self.components.is_empty()
             || self.components.iter().any(|c| {
@@ -154,6 +164,10 @@ impl AttributionRecord {
                     .as_ref()
                     .is_some_and(|new| old.preserved_by(new))
             })
+            && self
+                .settlement
+                .as_ref()
+                .is_none_or(|old| next.settlement.as_ref() == Some(old))
             && next.plans.starts_with(&self.plans)
             && next.assessments.starts_with(&self.assessments)
             && next.assessments[self.assessments.len()..]

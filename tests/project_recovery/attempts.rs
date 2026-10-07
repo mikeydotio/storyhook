@@ -6,13 +6,7 @@ use storyhook::service::project_recovery::{
 
 fn prepare(f: &ServiceFixture) -> RecoveryView {
     let view = decision::ready(f);
-    let ctx = f.ctx();
-    ProjectRecoveryService::new(&ctx)
-        .decide(
-            &view.record.id,
-            &decision::input(&view, RepairScope::SameStory),
-        )
-        .unwrap()
+    legacy::retain(f, view.clone(), RepairScope::SameStory)
 }
 fn resubmit(f: &ServiceFixture) -> VerificationCandidate {
     let ctx = f.ctx();
@@ -56,7 +50,7 @@ fn ordinary_submissions_have_no_repair_budget_but_stale_authority_is_refused() {
 }
 
 #[test]
-fn empty_commit_or_changed_base_does_not_make_original_fault_input_new() {
+fn sh870_retained_empty_commit_or_changed_base_does_not_make_original_fault_input_new() {
     let f = fixture();
     let view = prepare(&f);
     let candidate = resubmit(&f);
@@ -102,7 +96,7 @@ fn empty_commit_or_changed_base_does_not_make_original_fault_input_new() {
 }
 
 #[test]
-fn only_three_changed_completed_repair_inputs_are_admitted() {
+fn sh870_retained_only_three_changed_completed_repair_inputs_are_admitted() {
     let f = fixture();
     let view = prepare(&f);
     let ctx = f.ctx();
@@ -172,7 +166,8 @@ fn only_three_changed_completed_repair_inputs_are_admitted() {
 }
 
 #[test]
-fn interrupted_attempts_do_not_consume_completed_budget_or_allow_conflicting_replay() {
+fn sh870_retained_interrupted_attempts_do_not_consume_completed_budget_or_allow_conflicting_replay()
+{
     let f = fixture();
     let view = prepare(&f);
     let candidate = resubmit(&f);
@@ -232,17 +227,12 @@ fn interrupted_attempts_do_not_consume_completed_budget_or_allow_conflicting_rep
 }
 
 #[test]
-fn a_repair_with_a_different_fault_keeps_its_original_lineage() {
+fn sh870_unproved_recursive_fault_keeps_lineage_without_new_work() {
     let f = fixture();
     let initial = decision::ready(&f);
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
-    let view = service
-        .decide(
-            &initial.record.id,
-            &decision::input(&initial, RepairScope::SeparateStory),
-        )
-        .unwrap();
+    let view = legacy::retain(&f, initial.clone(), RepairScope::SeparateStory);
     PrLinkService::new(&ctx)
         .link("SH-2", "https://github.com/acme/widgets/pull/2", true)
         .unwrap();
@@ -289,8 +279,8 @@ fn a_repair_with_a_different_fault_keeps_its_original_lineage() {
     assert_eq!(updated.observations.len(), 2);
     assert_eq!(
         updated.state.work.len(),
-        2,
-        "completed recursive fault needs its own delivery receipt"
+        1,
+        "an unproved recursive fault grants no new delivery"
     );
     assert_eq!(
         f.store()
@@ -304,7 +294,7 @@ fn a_repair_with_a_different_fault_keeps_its_original_lineage() {
         .read(|tx| tx.story(f.project(), StoryNo::new(2)))
         .unwrap()
         .unwrap();
-    assert_eq!(row.state, "in-progress");
+    assert_eq!(row.state, "verifying");
     assert!(
         row.snapshot
             .relationships
@@ -314,7 +304,7 @@ fn a_repair_with_a_different_fault_keeps_its_original_lineage() {
 }
 
 #[test]
-fn manual_stop_after_admission_revokes_retry_without_granting_completion() {
+fn sh870_retained_manual_stop_after_admission_revokes_retry_without_granting_completion() {
     let f = fixture();
     let view = prepare(&f);
     let candidate = resubmit(&f);
@@ -347,7 +337,7 @@ fn manual_stop_after_admission_revokes_retry_without_granting_completion() {
 }
 
 #[test]
-fn an_old_unfinished_attempt_cannot_bypass_the_completed_budget() {
+fn sh870_retained_an_old_unfinished_attempt_cannot_bypass_the_completed_budget() {
     let f = fixture();
     let view = prepare(&f);
     let candidate = resubmit(&f);
@@ -382,7 +372,7 @@ fn an_old_unfinished_attempt_cannot_bypass_the_completed_budget() {
 }
 
 #[test]
-fn malformed_attempt_ownership_fails_closed_before_admission() {
+fn sh870_retained_malformed_attempt_ownership_fails_closed_before_admission() {
     let f = fixture();
     let view = prepare(&f);
     let candidate = resubmit(&f);
@@ -407,7 +397,7 @@ fn malformed_attempt_ownership_fails_closed_before_admission() {
 }
 
 #[test]
-fn certified_same_generation_retry_does_not_spend_another_changed_input_slot() {
+fn sh870_retained_certified_same_generation_retry_does_not_spend_another_changed_input_slot() {
     let f = fixture();
     let view = prepare(&f);
     let candidate = resubmit(&f);
@@ -473,7 +463,7 @@ fn certified_same_generation_retry_does_not_spend_another_changed_input_slot() {
 }
 
 #[test]
-fn a_fresh_candidate_cannot_renew_an_old_attempt_after_a_human_reservation() {
+fn sh870_retained_a_fresh_candidate_cannot_renew_an_old_attempt_after_a_human_reservation() {
     let f = fixture();
     let _view = prepare(&f);
     let original = resubmit(&f);
@@ -535,7 +525,7 @@ pub(super) fn judgment(input: &RepairInput, completion: RepairCompletion) -> Rep
 }
 
 #[test]
-fn completion_must_match_pinned_admission_before_it_counts_or_replays() {
+fn sh870_retained_completion_must_match_pinned_admission_before_it_counts_or_replays() {
     for completion in [
         RepairCompletion::Certified,
         RepairCompletion::TestsFailed,
@@ -601,7 +591,7 @@ fn completion_must_match_pinned_admission_before_it_counts_or_replays() {
 }
 
 #[test]
-fn retained_completion_requires_its_matching_judgment() {
+fn sh870_retained_retained_completion_requires_its_matching_judgment() {
     let f = fixture();
     let view = prepare(&f);
     let candidate = resubmit(&f);
@@ -631,7 +621,7 @@ fn retained_completion_requires_its_matching_judgment() {
 }
 
 #[test]
-fn transient_no_auto_cannot_renew_an_admitted_repair() {
+fn sh870_retained_transient_no_auto_cannot_renew_an_admitted_repair() {
     let f = fixture();
     let _view = prepare(&f);
     let candidate = resubmit(&f);
@@ -663,20 +653,11 @@ fn transient_no_auto_cannot_renew_an_admitted_repair() {
 }
 
 #[test]
-fn recursive_repair_return_replays_and_stops_dispatch_at_completed_budget() {
-    use storyhook::service::project_recovery::WorkStatus;
+fn sh870_recursive_faults_preserve_attempt_budget_without_returning_repair() {
     let f = fixture();
     let view = prepare(&f);
     let ctx = f.ctx();
     let service = ProjectRecoveryService::new(&ctx);
-    let first = &view.state.work[0];
-    service
-        .claim_work(&view.record.id, &first.id)
-        .unwrap()
-        .unwrap();
-    service
-        .settle_work(&view.record.id, &first.id, 1, AssessmentDelivery::Delivered)
-        .unwrap();
     for n in 1..=3 {
         let candidate = resubmit(&f);
         let attempt = format!("recursive-{n}");
@@ -689,53 +670,43 @@ fn recursive_repair_return_replays_and_stops_dispatch_at_completed_budget() {
         let RepairJudgment::ProjectFault { fault } = outcome else {
             panic!("fault")
         };
-        let returned = service
+        let held = service
             .observe(&candidate, &fault, &attempt)
             .unwrap()
             .unwrap();
-        assert_eq!(returned.state.work.len(), usize::from(n) + 1);
+        assert_eq!(held.state.work, view.state.work);
+        assert_eq!(held.state.attempts.len(), n as usize);
+        assert!(!held.state.subjects.last().unwrap().returned);
         assert_eq!(
             service
                 .observe(&candidate, &fault, &attempt)
                 .unwrap()
                 .unwrap(),
-            returned
+            held
         );
-        let work = returned.state.work.last().unwrap();
-        assert_eq!(work.story, StoryNo::new(1));
-        if n < 3 {
-            assert_eq!(work.status, WorkStatus::Pending);
-            service
-                .claim_work(&view.record.id, &work.id)
+        assert_eq!(
+            f.store()
+                .read(|tx| tx.story(f.project(), StoryNo::new(1)))
                 .unwrap()
-                .unwrap();
-            service
-                .settle_work(&view.record.id, &work.id, 1, AssessmentDelivery::Delivered)
-                .unwrap();
-        } else {
-            assert_eq!(work.status, WorkStatus::Held);
-            assert!(
-                service
-                    .claim_work(&view.record.id, &work.id)
-                    .unwrap()
-                    .is_none()
-            );
-            assert!(
-                f.store()
-                    .read(|tx| tx.story(f.project(), work.story))
-                    .unwrap()
-                    .unwrap()
-                    .awaiting
-                    .as_deref()
-                    .is_some_and(|s| s.contains("three changed repair submissions"))
-            );
-        }
+                .unwrap()
+                .state,
+            "verifying"
+        );
     }
+    let candidate = resubmit(&f);
+    assert!(matches!(
+        service
+            .admit_repair(&candidate, "fourth", &pins(4))
+            .unwrap(),
+        RepairAdmission::Deferred {
+            reason: RepairRefusal::BudgetExhausted,
+            ..
+        }
+    ));
 }
 
 #[test]
-fn failed_repair_tests_return_once_and_hold_at_three_completed_inputs() {
-    use storyhook::service::project_recovery::WorkStatus;
+fn sh870_raw_failed_repair_cannot_assign_work_at_any_completed_budget() {
     let f = fixture();
     let view = prepare(&f);
     let ctx = f.ctx();
@@ -752,60 +723,22 @@ fn failed_repair_tests_return_once_and_hold_at_three_completed_inputs() {
                 &judgment(&input, RepairCompletion::TestsFailed),
             )
             .unwrap();
-        assert!(
-            service
-                .return_failed_repair(
-                    &candidate,
-                    &id,
-                    &input.tree,
-                    "gate failed; full log: /tmp/gate.log"
-                )
-                .unwrap()
-        );
-        let returned = service.show(&view.record.id).unwrap();
-        assert!(
-            service
-                .return_failed_repair(
-                    &candidate,
-                    &id,
-                    &input.tree,
-                    "gate failed; full log: /tmp/gate.log"
-                )
-                .unwrap()
-        );
-        assert_eq!(service.show(&view.record.id).unwrap(), returned);
-        assert_eq!(
-            returned.observations.len(),
-            1,
-            "test failure is not project fault evidence"
-        );
-        let work = returned.state.work.last().unwrap();
-        assert_eq!(work.source_attempt.as_deref(), Some(id.as_str()));
-        assert_eq!(
-            work.status,
-            if n == 3 {
-                WorkStatus::Held
-            } else {
-                WorkStatus::Pending
-            }
-        );
-        let row = f
-            .store()
-            .read(|tx| tx.story(f.project(), StoryNo::new(1)))
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.state, "in-progress");
-        assert_eq!(row.awaiting.is_some(), n == 3);
-        assert!(
-            service
-                .return_failed_repair(&candidate, &id, &"f".repeat(40), "different tree")
-                .is_err()
-        );
+        let before = service.show(&view.record.id).unwrap();
+        for tree in [&input.tree, &"f".repeat(40)] {
+            assert!(
+                service
+                    .return_failed_repair(&candidate, &id, tree, "raw failed gate")
+                    .is_err()
+            );
+            assert_eq!(service.show(&view.record.id).unwrap(), before);
+        }
+        assert_eq!(before.state.work, view.state.work);
+        assert_eq!(before.state.attempts.len(), n as usize);
     }
 }
 
 #[test]
-fn failed_repair_return_preserves_operator_and_generation_authority() {
+fn sh870_raw_failed_repair_preserves_operator_and_generation_authority() {
     for change in ["label", "state", "awaiting", "stop"] {
         let f = fixture();
         let view = prepare(&f);
@@ -851,7 +784,7 @@ fn failed_repair_return_preserves_operator_and_generation_authority() {
         assert!(
             service
                 .return_failed_repair(&candidate, "failed", &input.tree, "failed gate")
-                .unwrap()
+                .is_err()
         );
         let after = f
             .store()

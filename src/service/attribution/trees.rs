@@ -34,6 +34,8 @@ const CLEAN_GIT: [(&str, &str); 6] = [
 pub enum TreeIntervention {
     /// Run the pinned base with byte-identical protected detector inputs.
     Unchanged,
+    /// Use the pinned base, transplanting this detector only when it is absent there.
+    MissingDetector(String),
     /// Copy these exact candidate paths onto the pinned base.
     Transplant(Vec<String>),
     /// Restore these exact paths from the base, preserving all other candidate inputs.
@@ -149,8 +151,25 @@ impl PreparedTrees {
                     .ok_or_else(|| invalid(&format!("missing detector input {path:?}")))?,
             )?;
         }
+        let intervention = match intervention {
+            TreeIntervention::MissingDetector(path) => {
+                path_ok(&path)?;
+                if !protected.iter().any(|protected| protected.as_str() == path) {
+                    return Err(invalid(
+                        "automatic transplant must name a protected detector",
+                    ));
+                }
+                if base_entries.contains_key(&path) {
+                    TreeIntervention::Unchanged
+                } else {
+                    TreeIntervention::Transplant(vec![path])
+                }
+            }
+            intervention => intervention,
+        };
         prepared.control = match &intervention {
             TreeIntervention::Unchanged => base_tree,
+            TreeIntervention::MissingDetector(_) => unreachable!("resolved native detector"),
             TreeIntervention::Transplant(selected) | TreeIntervention::Ablation(selected) => {
                 let selected = paths(selected)?;
                 let transplant = matches!(intervention, TreeIntervention::Transplant(_));
@@ -212,6 +231,7 @@ impl PreparedTrees {
         let patch = format!("sha256:{:x}", Sha256::digest(&prepared.patch));
         prepared.relation = match intervention {
             TreeIntervention::Unchanged => DetectorRelation::Unchanged,
+            TreeIntervention::MissingDetector(_) => unreachable!("resolved native detector"),
             TreeIntervention::Transplant(_) => DetectorRelation::Transplant { patch },
             TreeIntervention::Ablation(_) => DetectorRelation::Ablation { patch },
         };

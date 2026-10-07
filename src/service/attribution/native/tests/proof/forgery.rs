@@ -16,6 +16,9 @@ pub(super) fn records(
         |r| r.plans[0].argv.push("--ignored".into()),
         |r| r.plans[0].detector = "forged-detector".into(),
         |r| r.preparation = None,
+        |r| r.settlement = None,
+        |r| r.settlement.as_mut().unwrap().cleanup_complete = false,
+        |r| r.settlement.as_mut().unwrap().milliseconds = 0,
         |r| r.probes[1].side = ProbeSide::Candidate,
         |r| r.probes[0].id = "unreserved-request".into(),
         |r| r.probes[0].completed.as_mut().unwrap().execution_id = "foreign-execution".into(),
@@ -88,6 +91,7 @@ pub(super) fn history(
             prior.attempt = "prior-attempt".into();
             prior.revision = 0;
             prior.preparation = None;
+            prior.settlement = None;
             prior.plans.clear();
             prior.probes.clear();
             prior.assessments.clear();

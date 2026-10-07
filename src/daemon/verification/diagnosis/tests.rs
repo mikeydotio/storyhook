@@ -3,6 +3,7 @@ use crate::service::{NewStoryInput, attribution::RustTarget};
 use crate::store::{GateExecutionPurpose, GateInputs, SqliteStore};
 use storyhook_test_support::ServiceFixture;
 mod native;
+mod recovery;
 
 struct Board {
     fixture: ServiceFixture,
@@ -195,7 +196,7 @@ fn a_revision_zero_record_survives_reentry_without_replay() {
         &owner,
         control,
         &original,
-        &request,
+        Some(&request),
         &selection,
     )
     .unwrap()
@@ -246,7 +247,7 @@ fn unnamed_failed_legs_are_preserved_beside_named_cases() {
         &owner,
         control,
         &original,
-        &request,
+        Some(&request),
         &Err("unsupported output".into()),
     )
     .unwrap()
@@ -306,4 +307,54 @@ fn nonregular_original_output_cannot_wait_for_a_fifo_writer() {
             .unwrap_err();
         assert!(error.contains("regular file"), "{error}");
     });
+}
+
+#[test]
+fn a_batch_members_record_cannot_replace_the_heads_diagnosis() {
+    let b = Board::new();
+    let owner = b.owner();
+    let request = b.fail(&owner);
+    let mut submission = cost::submission(&b.candidate);
+    submission.story_id = "SH-999".into();
+    let other = AttributionRecord {
+        version: 1,
+        id: "other-member".into(),
+        revision: 0,
+        submission,
+        attempt: owner.active.attempt_id.clone(),
+        inputs: GateInputs::default(),
+        created_at: b.ctx().now(),
+        components: vec![FailureComponent {
+            id: "other".into(),
+            check: "other member".into(),
+            signature: "other failure".into(),
+            requirement: "prove cause".into(),
+            log: request.log.display().to_string(),
+            observed_cause: FailureCause::Unknown,
+        }],
+        preparation: None,
+        settlement: None,
+        plans: vec![],
+        probes: vec![],
+        assessments: vec![],
+        diagnosis_ms: 0,
+        held: true,
+        retired: None,
+    };
+    b.store.write(|tx| tx.insert_attribution(&other)).unwrap();
+    let RustDiagnosisResult::Held { evidence, .. } = owner
+        .diagnose_rust_failure(&b.ctx(), &b.candidate, request)
+        .unwrap()
+    else {
+        panic!("head must be held");
+    };
+    assert_ne!(evidence, other.id);
+    let retained = b
+        .store
+        .read(|tx| tx.attributions(b.candidate.project))
+        .unwrap();
+    assert_eq!(retained.len(), 2);
+    assert_eq!(retained[0], other);
+    assert_eq!(retained[1].submission.story_id, b.candidate.story_id);
+    assert!(VerificationQueue::new(&b.store).next().unwrap().is_none());
 }

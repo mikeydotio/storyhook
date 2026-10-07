@@ -73,6 +73,11 @@ pub(super) fn assessment_hold(
     if let Some(reason) = policy_hold(tx, project, &row.snapshot)? {
         return Ok(Some(reason));
     }
+    // Pending legacy charters and raw fault text cannot acquire new repair
+    // authority. Already accepted lineages remain governed by their work receipts.
+    if view.state.decision.is_none() {
+        return Ok(Some(AssessmentHold::CauseUnproved));
+    }
     if !subject.returned
         || row.state != super::super::verification::RETURNED_STATE
         || row.awaiting.is_some()

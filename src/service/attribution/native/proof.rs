@@ -125,6 +125,10 @@ impl SettledRustComparison {
             || record.attempt != attempt.id
             || !record.submission.same_generation(&attempt.submission)
             || record.diagnosis_ms < self.milliseconds
+            || record
+                .settlement
+                .as_ref()
+                .is_none_or(|s| !s.cleanup_complete || s.milliseconds < self.milliseconds)
             || self.observations.len() != 4
             || self.requests.len() != 4
         {
@@ -189,6 +193,19 @@ impl SettledRustComparison {
 }
 
 impl CausalReturnEvidence {
+    /// Submitted source head established by this native proof.
+    pub fn submitted_head(&self) -> &str {
+        self.record.inputs.head.as_deref().expect("proved head")
+    }
+    /// Admission whose failed gate and diagnosis establish this proof.
+    pub(in crate::service) fn attempt(&self) -> &str {
+        &self.record.attempt
+    }
+    /// Original failed merge tree established by this native proof.
+    pub(in crate::service) fn failed_tree(&self) -> &str {
+        &self.record.plans[self.plan].candidate_tree
+    }
+
     /// Reuse the same authority fence while the owner's own attribution hold is active.
     pub(crate) fn permits_diagnosis(
         tx: &impl ReadOps,
@@ -306,7 +323,7 @@ impl CausalReturnEvidence {
             .find(|c| c.id == plan.component)
             .expect("proved component");
         format!(
-            "CENTRAL VERIFICATION CAUSAL RETURN — {}. Repair only {}. Candidate tree {}; pinned base {}; control tree {}. Two native candidate failures match the original assertion and two control executions pass under equivalent supported conditions. Evidence {} revision {}; original {} (sha256 {}). Exact reproduction arguments: {:?}. Probe outputs: {}. Other held components are not assigned for repair. {} {} Commit, then move {} back to verifying. The central verifier owns submission and certification.",
+            "CENTRAL VERIFICATION CAUSAL RETURN — {}. Repair only {}. Candidate tree {}; pinned base {}; control tree {}. Two native candidate failures match the original assertion and two control executions pass under equivalent supported conditions. Evidence {} revision {}; original {} (sha256 {}). Exact reproduction arguments: {:?}. Probe outputs: {}. Other held components are not assigned for repair. {} {} Commit, then move {} back to verifying. {}. The central verifier owns certification.",
             self.candidate.story_id,
             component.check,
             plan.candidate_tree,
@@ -326,7 +343,11 @@ impl CausalReturnEvidence {
                 .join(", "),
             crate::service::verification::IMPLEMENTER_TEST_SCOPE,
             crate::service::verification::FAILED_GATE_RERUN_SCOPE,
-            self.candidate.story_id
+            self.candidate.story_id,
+            crate::service::verification::push_promise(
+                self.candidate.cleanup_lease.is_some(),
+                true
+            )
         )
     }
 }

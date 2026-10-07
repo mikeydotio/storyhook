@@ -19,7 +19,7 @@ pub use model::*;
 pub use native::{
     CausalReturnEvidence, NativeProbeBinding, NativeRustComparison, SettledRustComparison,
 };
-pub use preparation::{DiagnosticPreparation, PreparationResult};
+pub use preparation::{DiagnosticPreparation, DiagnosticSettlement, PreparationResult};
 pub use rust_cargo::{CargoTarget, RustExecutable};
 pub use rust_case::{RustCase, RustCaseObservation, RustTarget};
 pub use rust_inputs::{RustInputs, RustIntervention};

@@ -24,6 +24,8 @@ pub enum AssessmentStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AssessmentHold {
+    /// A fault observation establishes no causal repair authority.
+    CauseUnproved,
     /// The operator disabled verifier admission.
     OperatorStop,
     /// A human-only or no-auto label reserves the story.
@@ -48,6 +50,9 @@ impl AssessmentHold {
     /// Human diagnosis; callers classify by the enum rather than this text.
     pub fn detail(self) -> &'static str {
         match self {
+            Self::CauseUnproved => {
+                "causal responsibility is unproved; no implementer repair is assigned"
+            }
             Self::OperatorStop => "manual verifier stop prevents automatic recovery",
             Self::ReservedLabel => "human-only or no-auto reservation prevents automatic recovery",
             Self::AuthorityChanged => {

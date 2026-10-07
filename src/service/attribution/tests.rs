@@ -32,6 +32,7 @@ fn contrast() -> AttributionRecord {
         created_at: AT.into(),
         components: vec![component.clone()],
         preparation: None,
+        settlement: None,
         plans: vec![ContrastPlan {
             component: component.id.clone(),
             candidate_tree: "3".repeat(40),

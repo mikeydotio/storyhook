@@ -104,55 +104,7 @@ fn unchanged(f: &ServiceFixture, view: &RecoveryView) {
 }
 
 #[test]
-fn each_initial_policy_releases_only_after_all_controls_clear() {
-    for (labels, stopped) in [
-        (vec!["no-auto"], false),
-        (vec!["human-only"], false),
-        (vec!["no-auto", "human-only"], false),
-        (vec![], true),
-        (vec!["no-auto", "human-only"], true),
-    ] {
-        let f = fixture();
-        let view = reserved(&f, &labels, stopped);
-        unchanged(&f, &view);
-        assert!(status(&f).contains(if stopped { "stop" } else { "reservation" }));
-        if labels.len() == 2 {
-            StoryService::new(&f.ctx())
-                .set_labels("SH-1", &[], &["no-auto".into()])
-                .unwrap();
-            unchanged(&f, &view);
-        }
-        release(&f);
-        assert!(status(&f).contains("wait for managed reconciliation"));
-        let actuator = worker::helper(&f, r#"{"ok":true}"#);
-        assert!(
-            process_one(
-                f.store(),
-                f.env(),
-                &actuator,
-                &VerificationActivity::new(),
-                &AtomicBool::new(false)
-            )
-            .unwrap()
-        );
-        let delivered = ProjectRecoveryService::new(&f.ctx())
-            .show(&view.record.id)
-            .unwrap();
-        assert_eq!(
-            delivered.state.assessment.status,
-            AssessmentStatus::Delivered
-        );
-        assert_eq!(delivered.observations, view.observations);
-        assert_eq!(
-            delivered.state.subjects[0].candidate,
-            view.state.subjects[0].candidate
-        );
-        assert!(!status(&f).contains("reservation prevents"));
-    }
-}
-
-#[test]
-fn reservation_readdition_and_new_submission_never_renew_old_authority() {
+fn sh870_reservation_readdition_and_new_submission_never_grant_repair_authority() {
     for change in [
         "readd",
         "replace-label",
@@ -238,130 +190,13 @@ fn reservation_readdition_and_new_submission_never_renew_old_authority() {
 }
 
 #[test]
-fn recheck_catches_readded_reservation_between_selection_and_transaction() {
-    let f = fixture();
-    let view = reserved(&f, &["no-auto"], false);
-    release(&f);
-    let ctx = f.ctx();
-    let service = ProjectRecoveryService::new(&ctx);
-    assert!(service.policy_rearm_ready(&view.record.id, None).unwrap());
-    StoryService::new(&ctx)
-        .set_labels("SH-1", &["no-auto".into()], &[])
-        .unwrap();
-    unchanged(&f, &view);
-    release(&f);
-    unchanged(&f, &view);
-}
-
-#[test]
-fn restart_and_workspace_owner_preserve_single_return_and_delivery() {
-    let f = fixture();
-    let view = reserved(&f, &["no-auto"], false);
-    release(&f);
-    let candidate = &view.state.subjects[0].candidate;
-    let locks = candidate.checkout.join(".git/storyhook/workspace-locks");
-    std::fs::create_dir_all(&locks).unwrap();
-    let lock = std::fs::File::create(locks.join("SH-1.lock")).unwrap();
-    fs4::FileExt::lock_exclusive(&lock).unwrap();
-    let reopened = storyhook::store::SqliteStore::open(f.store().path()).unwrap();
-    let actuator = worker::helper(&f, r#"{"ok":true}"#);
-    let activity = VerificationActivity::new();
-    let stop = AtomicBool::new(false);
-    assert!(!process_one(&reopened, f.env(), &actuator, &activity, &stop).unwrap());
-    assert_eq!(
-        ProjectRecoveryService::new(&f.ctx())
-            .show(&view.record.id)
-            .unwrap(),
-        view
-    );
-    drop(lock);
-    assert!(process_one(&reopened, f.env(), &actuator, &activity, &stop).unwrap());
-    assert!(!process_one(f.store(), f.env(), &actuator, &activity, &stop).unwrap());
-    let ctx = f.ctx();
-    let service = ProjectRecoveryService::new(&ctx);
-    let delivered = service.show(&view.record.id).unwrap();
-    assert_eq!(delivered.state.assessment.epoch, 1);
-    assert_eq!(
-        std::fs::read_to_string(candidate.checkout.join("recovery-calls"))
-            .unwrap()
-            .lines()
-            .count(),
-        1
-    );
-    assert!(
-        service
-            .settle_assessment(
-                &view.record.id,
-                &delivered.state.assessment.dispatch_identity,
-                0,
-                AssessmentDelivery::Delivered
-            )
-            .is_err()
-    );
-}
-
-#[test]
-fn policy_masked_delivery_results_and_terminal_holds_never_replay() {
-    for reserved in [false, true] {
-        for result in [
-            AssessmentDelivery::Delivered,
-            AssessmentDelivery::Uncertain("receipt lost".into()),
-            AssessmentDelivery::ProvenFailure("handoff absent".into()),
-        ] {
-            let f = fixture();
-            let candidate = submitted(&f, "masked delivery");
-            let ctx = f.ctx();
-            let service = ProjectRecoveryService::new(&ctx);
-            let view = service
-                .observe(&candidate, &fault(), "masked")
-                .unwrap()
-                .unwrap();
-            let claimed = service.claim_assessment(&view.record.id).unwrap().unwrap();
-            if reserved {
-                StoryService::new(&ctx)
-                    .set_labels("SH-1", &["no-auto".into()], &[])
-                    .unwrap();
-            } else {
-                f.store()
-                    .write(|tx| tx.put_verification_enabled(f.project(), false))
-                    .unwrap();
-            }
-            let held = service
-                .settle_assessment(
-                    &view.record.id,
-                    &claimed.state.assessment.dispatch_identity,
-                    1,
-                    result.clone(),
-                )
-                .unwrap();
-            assert_eq!(
-                held.state.assessment.hold,
-                Some(if reserved {
-                    AssessmentHold::ReservedLabel
-                } else {
-                    AssessmentHold::OperatorStop
-                })
-            );
-            assert_eq!(held.state.assessment.last_result, Some(result));
-            release(&f);
-            unchanged(&f, &held);
-            assert!(!status(&f).contains("reservation prevents"));
-            StoryService::new(&ctx).clear_awaiting("SH-1").unwrap();
-            unchanged(&f, &held);
-        }
-    }
-}
-
-#[test]
 fn held_repair_work_keeps_its_receipt_and_exact_terminal_disposition() {
     for scope in [RepairScope::SameStory, RepairScope::SeparateStory] {
         let f = fixture();
         let initial = decision::ready(&f);
         let ctx = f.ctx();
         let service = ProjectRecoveryService::new(&ctx);
-        let view = service
-            .decide(&initial.record.id, &decision::input(&initial, scope))
-            .unwrap();
+        let view = legacy::retain(&f, initial.clone(), scope);
         let effect = &view.state.work[0].id;
         let claimed = service
             .claim_work(&view.record.id, effect)
@@ -393,70 +228,4 @@ fn held_repair_work_keeps_its_receipt_and_exact_terminal_disposition() {
         assert_eq!(service.show(&view.record.id).unwrap(), held);
         assert!(status(&f).contains("ownership reconciliation"));
     }
-}
-
-#[test]
-fn removing_initial_reservation_delivers_once_and_preserves_fault() {
-    let f = fixture();
-    let candidate = submitted(&f, "initial reservation");
-    let ctx = f.ctx();
-    let stories = StoryService::new(&ctx);
-    stories
-        .set_labels("SH-1", &["no-auto".into()], &[])
-        .unwrap();
-    let service = ProjectRecoveryService::new(&ctx);
-    let initial = service
-        .observe(&candidate, &fault(), "held-fault")
-        .unwrap()
-        .unwrap();
-    assert!(!initial.state.subjects[0].returned);
-    stories
-        .set_labels("SH-1", &[], &["no-auto".into()])
-        .unwrap();
-    let actuator = worker::helper(&f, r#"{"ok":true}"#);
-    let activity = VerificationActivity::new();
-    let stop = AtomicBool::new(false);
-    assert!(process_one(f.store(), f.env(), &actuator, &activity, &stop).unwrap());
-    let delivered = service.show(&initial.record.id).unwrap();
-    assert_eq!(
-        delivered.state.assessment.status,
-        AssessmentStatus::Delivered
-    );
-    assert_eq!(delivered.state.assessment.epoch, 1);
-    assert_eq!(
-        delivered.state.assessment.dispatch_identity,
-        initial.state.assessment.dispatch_identity
-    );
-    assert_eq!(delivered.observations, initial.observations);
-    assert_eq!(delivered.state.subjects[0].candidate, candidate);
-    assert!(delivered.state.subjects[0].returned);
-    assert!(delivered.state.work.is_empty());
-    assert!(
-        VerificationQueue::new(f.store())
-            .ordered_for(f.project())
-            .unwrap()
-            .is_empty()
-    );
-    assert!(!process_one(f.store(), f.env(), &actuator, &activity, &stop).unwrap());
-    assert_eq!(service.show(&initial.record.id).unwrap(), delivered);
-    assert_eq!(
-        std::fs::read_to_string(candidate.checkout.join("recovery-calls"))
-            .unwrap()
-            .lines()
-            .count(),
-        1
-    );
-    let mut input = decision::input(&delivered, RepairScope::SeparateStory);
-    input.evidence = vec!["attempt:held-fault".into()];
-    let accepted = service.decide(&initial.record.id, &input).unwrap();
-    assert_eq!(
-        service.decide(&initial.record.id, &input).unwrap(),
-        accepted
-    );
-    assert_eq!(accepted.state.work.len(), 1);
-    assert_eq!(
-        accepted.state.assessment.generation,
-        initial.state.assessment.generation
-    );
-    assert_eq!(accepted.observations, initial.observations);
 }

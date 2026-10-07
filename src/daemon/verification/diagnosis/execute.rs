@@ -11,7 +11,7 @@ pub(super) fn run<S: Store>(
     ctx: &Ctx<'_, S>,
     candidate: &VerificationCandidate,
     owner: &VerificationGuard,
-    request: &RustDiagnosisRequest,
+    request: Option<&RustDiagnosisRequest>,
     selection: &Result<(usize, String), String>,
     record: &mut AttributionRecord,
     started: Instant,
@@ -28,6 +28,7 @@ pub(super) fn run<S: Store>(
             ));
         }
     };
+    let request = request.expect("selected native request");
     let Some(remaining) = record::allowance(ctx.store(), record)? else {
         return Ok(held(
             record,
@@ -192,6 +193,15 @@ pub(super) fn run<S: Store>(
                 StoreError::Corrupt("diagnosis disappeared during native settlement".into())
             })
     })?;
+    record.settlement = Some(DiagnosticSettlement {
+        completed_at: ctx.now(),
+        milliseconds: elapsed(started),
+        cleanup_complete: settled.is_ok(),
+        detail: match &settled {
+            Ok(_) => "Native comparison resources explicitly settled".into(),
+            Err(error) => error.to_string(),
+        },
+    });
     checkpoint(ctx.store(), record, started)?;
     match (work, settled) {
         (Ok(()), Ok(settled)) => {

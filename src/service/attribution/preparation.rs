@@ -37,3 +37,17 @@ impl DiagnosticPreparation {
         self.completed.as_ref().is_none_or(|r| !r.cleanup_complete)
     }
 }
+
+/// Immutable completion of the whole comparison's retained native resources.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagnosticSettlement {
+    /// UTC completion time; retained evidence, never deadline authority.
+    pub completed_at: String,
+    /// Full active diagnosis through cleanup, including all prior operations.
+    pub milliseconds: u64,
+    /// Explicit native cleanup result or originating errors.
+    pub detail: String,
+    /// Whether native resource settlement succeeded.
+    pub cleanup_complete: bool,
+}

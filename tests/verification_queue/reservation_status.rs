@@ -2,12 +2,8 @@
 //! as activity, never as missing evidence (SH-768).
 
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
-use storyhook::daemon::bus::ChangeBus;
 use storyhook::daemon::verification::status::VerifierStatus;
-use storyhook::daemon::verification::{
-    HoldWatch, ReservationReason, VerifierReservation, wait_for_reconciled_candidate,
-};
+use storyhook::daemon::verification::{ReservationReason, VerifierReservation};
 
 /// A status read at `now`, as `story verifier status` takes it.
 fn status_at(
@@ -20,140 +16,40 @@ fn status_at(
         .unwrap()
 }
 
-fn seconds_after(at: &str, seconds: i64) -> String {
-    (chrono::DateTime::parse_from_rfc3339(at).unwrap() + chrono::Duration::seconds(seconds))
-        .to_rfc3339()
-}
-
-/// Ends the real waiter when its companion thread panics, so a failed
-/// assertion fails the test instead of leaving the wait to run for ever.
-struct StopOnPanic<'a>(&'a AtomicBool);
-
-impl Drop for StopOnPanic<'_> {
-    fn drop(&mut self) {
-        if thread::panicking() {
-            self.0.store(true, Ordering::Relaxed);
-        }
-    }
-}
-
 #[test]
-fn a_conflict_reservation_reads_as_activity_for_the_whole_wait() {
-    let fixture = ServiceFixture::new();
-    fixture.github_checkout("https://github.com/acme/widgets");
-    let held = submitted(&fixture, "reconciling", Priority::Low, PR_ONE);
-    let returned_generation = VerificationQueue::new(fixture.store())
-        .next()
-        .unwrap()
-        .unwrap()
-        .verifying_generation;
+fn sh870_conflict_hold_reports_evidence_without_a_live_repair_reservation() {
+    let f = ServiceFixture::new();
+    f.github_checkout("https://github.com/acme/widgets");
+    let held = submitted(&f, "conflict", Priority::Low, PR_ONE);
     let activity = VerificationActivity::new();
-    std::fs::create_dir_all(fixture.env().daemon_state_dir()).unwrap();
-    let inflight = InFlight::new(fixture.env().clone());
-    let actuator = SequencedActuator {
-        outcomes: Mutex::new(VecDeque::from([
-            VerificationOutcome::Conflict {
-                detail: "both modified src/lib.rs".into(),
-            },
-            VerificationOutcome::Certified {
-                head: "a".repeat(40),
-                tree: "b".repeat(40),
-                detail: "landed after reconciliation".into(),
-                gate: GateCommand::DEFAULT.into(),
-            },
-        ])),
-        verified: Mutex::new(Vec::new()),
-        notified: Mutex::new(Vec::new()),
-        reaped: Mutex::new(Vec::new()),
-    };
-    let bus = ChangeBus::new();
-    let subscription = bus.subscribe();
-    let stop = AtomicBool::new(false);
-
-    let result = tick_with_reconciliation(
-        fixture.store(),
-        fixture.env(),
-        &actuator,
-        &activity,
-        &inflight,
-        fixture.project(),
-        |reserved| {
-            let queued = submitted(&fixture, "queued behind", Priority::Critical, PR_TWO);
-            let status = status_at(&fixture, &activity, &fixture.env().now());
-            let reservation = status
-                .reservation
-                .clone()
-                .unwrap_or_else(|| panic!("the reconcile is not reported: {status:?}"));
-            assert_eq!(reservation.story_id, held);
-            assert_eq!(reservation.generation, returned_generation);
-            assert_eq!(reservation.reason, ReservationReason::Reconcile);
-            assert_eq!(reservation.queued_behind, 1);
-            assert_eq!(status.verifying, [queued]);
-            assert_eq!(
-                status.active.as_ref().map(|active| active.generation),
-                Some(returned_generation)
-            );
-            assert_eq!(status.evidence_error, None, "{status:?}");
-            assert_eq!(status.warning, None, "{status:?}");
-
-            // Past the publisher interval a reconcile is still activity.
-            let later = status_at(
-                &fixture,
-                &activity,
-                &seconds_after(&reservation.reserved_at, 121),
-            );
-            assert_eq!(
-                later.reservation.as_ref().and_then(|r| r.age_seconds),
-                Some(121)
-            );
-            assert_eq!(later.evidence_error, None, "{later:?}");
-            assert_eq!(later.warning, None, "{later:?}");
-            assert_eq!(later.silence_seconds, None);
-            let text = later.render_human();
-            assert!(
-                text.contains(&format!("{held} reserved for merge-conflict reconcile")),
-                "{text}"
-            );
-            assert!(!text.contains("gate on"), "{text}");
-
-            // The production waiter runs while another reader looks and the
-            // agent resubmits.
-            thread::scope(|scope| {
-                scope.spawn(|| {
-                    let _stop = StopOnPanic(&stop);
-                    let during = status_at(&fixture, &activity, &fixture.env().now());
-                    assert_eq!(
-                        during.reservation.map(|r| r.reason),
-                        Some(ReservationReason::Reconcile)
-                    );
-                    assert_eq!(during.evidence_error, None);
-                    assert_eq!(during.warning, None);
-                    StoryService::new(&fixture.ctx())
-                        .set_state(&held, "verifying", None, Some("in-progress"), None)
-                        .unwrap();
-                });
-                // SH-770 gave the wait an agent watch; a live agent keeps the
-                // hold until the resubmission, which is what this test reads.
-                wait_for_reconciled_candidate(
-                    fixture.store(),
-                    &subscription,
-                    &stop,
-                    reserved,
-                    &HoldWatch::production(&super::reconcile_hold::live_agent),
-                )
-            })
-        },
-    )
-    .unwrap();
-
-    assert_eq!(result, TickResult::Completed);
+    let inflight = InFlight::new(f.env().clone());
+    let actuator = FakeActuator::new(VerificationOutcome::Conflict {
+        detail: "base moved".into(),
+    });
     assert_eq!(
-        actuator.verified.lock().unwrap().as_slice(),
-        [held.as_str(), held.as_str()]
+        tick_with_reconciliation(
+            f.store(),
+            f.env(),
+            &actuator,
+            &activity,
+            &inflight,
+            f.project(),
+            |_| panic!("no unproved repair wait")
+        )
+        .unwrap(),
+        TickResult::Returned
     );
-    let after = status_at(&fixture, &activity, &fixture.env().now());
+    let after = status_at(&f, &activity, &f.env().now());
     assert!(after.active.is_none());
     assert!(after.reservation.is_none());
+    assert_eq!(after.attribution_holds.len(), 1);
+    assert_eq!(
+        after.attribution_holds[0].cause,
+        storyhook::service::attribution::FailureCause::Integration
+    );
+    assert_eq!(after.attribution_holds[0].story_id, held);
+    assert!(after.warning.is_none());
+    assert!(after.evidence_error.is_none());
 }
 
 #[test]

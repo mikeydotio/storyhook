@@ -6,14 +6,11 @@ fn accepted(
     scope: RepairScope,
 ) -> storyhook::service::project_recovery::RecoveryView {
     let view = decision::ready(f);
-    let ctx = f.ctx();
-    ProjectRecoveryService::new(&ctx)
-        .decide(&view.record.id, &decision::input(&view, scope))
-        .unwrap()
+    legacy::retain(f, view.clone(), scope)
 }
 
 #[test]
-fn scope_acceptance_enqueues_exactly_one_stable_repair_effect() {
+fn sh870_retained_scope_keeps_exactly_one_stable_repair_effect() {
     for scope in [
         RepairScope::SameStory,
         RepairScope::SeparateStory,
@@ -50,7 +47,7 @@ fn scope_acceptance_enqueues_exactly_one_stable_repair_effect() {
 }
 
 #[test]
-fn work_delivery_replays_and_retains_in_flight_identity_across_restart() {
+fn sh870_retained_work_delivery_replays_and_retains_in_flight_identity_across_restart() {
     let f = fixture();
     let view = accepted(&f, RepairScope::SeparateStory);
     let effect = &view.state.work[0];
@@ -115,7 +112,7 @@ fn work_delivery_replays_and_retains_in_flight_identity_across_restart() {
 }
 
 #[test]
-fn work_proven_failures_are_bounded_and_ambiguous_delivery_is_not_retried() {
+fn sh870_retained_work_proven_failures_are_bounded_and_ambiguous_delivery_is_not_retried() {
     let f = fixture();
     let view = accepted(&f, RepairScope::SameStory);
     let id = &view.state.work[0].id;
@@ -162,7 +159,7 @@ fn work_proven_failures_are_bounded_and_ambiguous_delivery_is_not_retried() {
 }
 
 #[test]
-fn stopped_and_transiently_reserved_repair_targets_cannot_be_dispatched() {
+fn sh870_retained_stopped_and_transiently_reserved_repair_targets_cannot_be_dispatched() {
     for stop in [true, false] {
         let f = fixture();
         let view = accepted(&f, RepairScope::SeparateStory);
@@ -194,7 +191,7 @@ fn stopped_and_transiently_reserved_repair_targets_cannot_be_dispatched() {
 }
 
 #[test]
-fn corrupted_effect_cannot_authorize_work_on_another_story() {
+fn sh870_retained_corrupted_effect_cannot_authorize_work_on_another_story() {
     let f = fixture();
     let view = accepted(&f, RepairScope::SeparateStory);
     let mut record = view.record.clone();
@@ -214,7 +211,7 @@ fn corrupted_effect_cannot_authorize_work_on_another_story() {
 }
 
 #[test]
-fn terminal_delivery_holds_the_unchanged_target_and_never_recreates_cleared_hold() {
+fn sh870_retained_terminal_delivery_holds_the_unchanged_target_and_never_recreates_cleared_hold() {
     for scope in [RepairScope::SameStory, RepairScope::SeparateStory] {
         let f = fixture();
         let view = accepted(&f, scope);
@@ -260,7 +257,7 @@ fn terminal_delivery_holds_the_unchanged_target_and_never_recreates_cleared_hold
 }
 
 #[test]
-fn terminal_delivery_preserves_independent_hold_and_changed_target() {
+fn sh870_retained_terminal_delivery_preserves_independent_hold_and_changed_target() {
     for change_state in [false, true] {
         let f = fixture();
         let view = accepted(&f, RepairScope::SameStory);

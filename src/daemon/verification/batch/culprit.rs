@@ -1,52 +1,11 @@
-//! How a bisection ends (SH-833; spec B7), after the batch observer: the
-//! culprit goes back to its own agent, the certified members before it land
-//! together, and every other member goes back to the queue.
-//!
-//! This runs after the observer on purpose: a culprit's return changes its
-//! state, which the observer reads as lost authority, and a landing
-//! admission makes members landing-pending (SH-832). A head culprit is
-//! returned by the tick, which takes the probe's red verdict as the head's
-//! own gate outcome (decision D7); any other culprit is returned here under
-//! its own workspace lock, without a slot reservation (decision D8).
+//! End bisection by holding suspects and landing certified prefixes.
+//! Localization does not grant causal repair authority. Each non-head hold uses
+//! that member's workspace lock and generation, and the original batch admission.
 
 use super::attempt::Attempt;
 use super::bisect::{Bisecting, update_parent};
 use super::end::{retire, stopped_result};
 use super::*;
-use crate::daemon::verification::repair_return::{ReturnTransport, deliver_return, red_diagnosis};
-
-/// Delivery under a batch member's own workspace lock: the helper refuses
-/// any other story's lock (decision D8).
-struct MemberTransport<'a> {
-    batching: &'a dyn BatchActuator,
-    lock: &'a WorkspaceLock,
-    cancellation: &'a Cancellation,
-}
-
-impl ReturnTransport for MemberTransport<'_> {
-    fn notify(
-        &self,
-        candidate: &VerificationCandidate,
-        message: &str,
-    ) -> Result<NotifyDelivery, AppError> {
-        self.batching.notify_member(
-            candidate,
-            message,
-            MemberOwner(self.lock),
-            self.cancellation,
-        )
-    }
-
-    fn redispatch(
-        &self,
-        candidate: &VerificationCandidate,
-        plan: &ResumePlan,
-    ) -> Result<(), AppError> {
-        self.batching
-            .redispatch_member(candidate, plan, MemberOwner(self.lock), self.cancellation)
-    }
-}
-
 impl<S: Store> Attempt<'_, S> {
     /// Ends a bisection: stop, halt, no culprit, a head culprit, or a member
     /// culprit and the landing of the certified members before it.
@@ -159,7 +118,7 @@ impl<S: Store> Attempt<'_, S> {
         )
     }
 
-    /// The head is the culprit: the tick returns it with the probe's red
+    /// The head is the suspect: the tick diagnoses the probe's red
     /// verdict as its own gate outcome (decision D7), unless a project
     /// recovery started meanwhile, which needs the head's own admitted gate.
     fn head_culprit(
@@ -186,9 +145,9 @@ impl<S: Store> Attempt<'_, S> {
         let found_by = found_by(&bisecting, 1, 0);
         self.found_detail(
             &mut bisecting,
-            "returned by the head's own attempt with this red verdict",
+            "held for attribution by the head's own attempt with this red verdict",
         );
-        summary.detail = format!("red; bisection returns the head {}", self.head.story_id);
+        summary.detail = format!("red; bisection identifies the head {}", self.head.story_id);
         self.close(bisecting, &mut summary, started, true);
         Ok(BatchEnd::HeadRed {
             outcome: Box::new(VerificationOutcome::TestsFailed {
@@ -202,7 +161,7 @@ impl<S: Store> Attempt<'_, S> {
         })
     }
 
-    /// A member is the culprit: return it to its own agent, then land the
+    /// A member is the suspect: retain its causal hold, then land the
     /// certified members before it (two or more through their live probe
     /// batch; the head alone through its own gate, which reuses the
     /// prefix's receipt).
@@ -218,32 +177,15 @@ impl<S: Store> Attempt<'_, S> {
         certified: usize,
     ) -> Result<BatchEnd, AppError> {
         let culprit = bisecting.members[position - 1].candidate.clone();
-        let red = bisecting.reds.get(&position).cloned().ok_or_else(|| {
+        bisecting.reds.get(&position).ok_or_else(|| {
             AppError::Storage(format!(
                 "verification batch {}: no red verdict is recorded for prefix {position}",
                 bisecting.parent.id
             ))
         })?;
-        let diagnosis = red_diagnosis(
-            &culprit,
-            &red.tree,
-            &red.gate,
-            &red.log,
-            &red.detail,
-            Some(&found_by(&bisecting, position, certified)),
-        );
-        progress_item(self.env, self.head, "bisection culprit return", "running");
-        let returned = self.return_member(owner, &culprit, &diagnosis);
-        progress_item(
-            self.env,
-            self.head,
-            "bisection culprit return",
-            if returned.starts_with("returned") {
-                "passed"
-            } else {
-                "failed"
-            },
-        );
+        progress_item(self.env, self.head, "bisection suspect hold", "running");
+        let returned = self.hold_member(owner, &culprit, &bisecting.parent)?;
+        progress_item(self.env, self.head, "bisection suspect hold", "passed");
         journal(
             "INFO",
             self.head,
@@ -271,7 +213,7 @@ impl<S: Store> Attempt<'_, S> {
                 let mut landing_summary = BatchSummary {
                     phase: Some(BatchPhase::Landing),
                     detail: format!(
-                        "red; bisection returned {}; its first {certified} members land as batch {}",
+                        "red; bisection held {}; its first {certified} members land as batch {}",
                         culprit.story_id, live.record.id
                     ),
                     ..summary.clone()
@@ -325,69 +267,42 @@ impl<S: Store> Attempt<'_, S> {
         Ok(BatchEnd::Done(summary))
     }
 
-    /// Returns the member culprit to its own agent: the transition and RED
-    /// comment, then delivery under its own lock. Answers what happened, as
-    /// an operator reads it; never fails the tick.
-    fn return_member(
+    /// Preserve a suspect without sending repair text. A storage failure propagates;
+    /// it cannot silently release a failed member back into automatic verification.
+    fn hold_member(
         &self,
         owner: &VerificationGuard,
         culprit: &VerificationCandidate,
-        diagnosis: &str,
-    ) -> String {
-        let attempt = || -> Result<String, AppError> {
-            if owner.is_cancelled() {
-                return Ok("not returned: the verifier was stopped".into());
-            }
-            if !self.queue.human_permits(culprit)? {
-                return Ok("not returned: a person holds it".into());
-            }
-            let Some(lock) = self
-                .locks
-                .as_ref()
-                .and_then(|locks| locks.get(&culprit.story_id))
-            else {
-                return Ok("not returned: the batch no longer holds its workspace lock".into());
-            };
-            if matches!(
-                self.queue
-                    .record_generation_returned(self.ctx, culprit, diagnosis)?,
-                GenerationWrite::Superseded
-            ) {
-                return Ok("not returned: it changed after the bisection found it".into());
-            }
-            let transport = MemberTransport {
-                batching: self.batching,
-                lock,
-                cancellation: &owner.cancellation,
-            };
-            Ok(
-                match deliver_return(
-                    self.queue,
-                    self.ctx,
-                    &transport,
-                    culprit,
-                    diagnosis,
-                    &owner.cancellation,
-                )? {
-                    GenerationWrite::Applied(true) => "returned to its agent".into(),
-                    GenerationWrite::Applied(false) => {
-                        "returned, but its diagnosis did not reach a live agent; its comments say why"
-                            .into()
-                    }
-                    GenerationWrite::Superseded => {
-                        "returned; it changed while its diagnosis was delivered".into()
-                    }
-                },
-            )
-        };
-        attempt().unwrap_or_else(|error| {
-            journal(
-                "ERROR",
+        batch: &VerificationBatch,
+    ) -> Result<String, AppError> {
+        if owner.is_cancelled() {
+            return Ok("not held: verifier stopped".into());
+        }
+        if !self
+            .locks
+            .as_ref()
+            .is_some_and(|locks| locks.get(&culprit.story_id).is_some())
+        {
+            return Err(AppError::Storage(
+                "batch suspect lost its workspace lock before disposition".into(),
+            ));
+        }
+        Ok(
+            match self.queue.record_batch_suspect(
+                self.ctx,
+                culprit,
                 self.head,
-                &format!("the return of culprit {} failed: {error}", culprit.story_id),
-            );
-            format!("the return failed: {error}")
-        })
+                &owner.active.attempt_id,
+                batch,
+            )? {
+                GenerationWrite::Applied(()) => {
+                    "held for causal attribution; no repair assigned".into()
+                }
+                GenerationWrite::Superseded => {
+                    "not held: batch or submission authority changed".into()
+                }
+            },
+        )
     }
 
     /// Ends the live certified probe, if any, in `phase`.
@@ -495,7 +410,7 @@ impl<S: Store> Attempt<'_, S> {
     }
 }
 
-/// The sentence the culprit's RED comment names its batch with: the red
+/// The context that names a suspect's original batch: the red
 /// batch, the members merged before the culprit and the tree they passed
 /// as, and the red tree (the acceptance of SH-833).
 pub(super) fn found_by(bisecting: &Bisecting, position: usize, certified: usize) -> String {
@@ -503,7 +418,7 @@ pub(super) fn found_by(bisecting: &Bisecting, position: usize, certified: usize)
     let all = bisecting.ids(0..bisecting.members.len()).join(", ");
     let culprit = &bisecting.members[position - 1].candidate.story_id;
     let mut text = format!(
-        "Verification batch {} ({all}) failed its gate, and bisection found that {culprit} turns it red:",
+        "Verification batch {} ({all}) failed its gate, and bisection identified {culprit} as a suspect:",
         parent.id
     );
     if certified == 0 {
@@ -542,11 +457,10 @@ pub(super) fn found_by(bisecting: &Bisecting, position: usize, certified: usize)
             resolution.conflicted_with.join(", ")
         };
         text.push_str(&format!(
-            " {culprit} joined the batch through an automated conflict resolution ({}) of {} with {with}, in merge commit {}: the red may come from that resolution, not from {culprit}'s own change. After the members before it land, merge `{}` into this branch, resolve those files yourself, and submit again.",
+            " {culprit} joined the batch through an automated conflict resolution ({}) of {} with {with}, in merge commit {}: the red may come from that resolution, not from {culprit}'s own change. No implementer repair is assigned without causal evidence.",
             resolution.strategy,
             files.join(", "),
             member.merge_commit.as_deref().unwrap_or("of the batch tip"),
-            parent.base_branch,
         ));
     }
     text

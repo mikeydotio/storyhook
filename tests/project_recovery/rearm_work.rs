@@ -35,18 +35,13 @@ fn retained_policy_work(
 }
 
 #[test]
-fn legacy_undelivered_work_rearms_without_resetting_budget_or_identity() {
+fn sh870_retained_legacy_undelivered_work_rearms_without_resetting_budget_or_identity() {
     for failures in [0, 1, 2, 3] {
         let f = fixture();
         let initial = decision::ready(&f);
         let ctx = f.ctx();
         let service = ProjectRecoveryService::new(&ctx);
-        let accepted = service
-            .decide(
-                &initial.record.id,
-                &decision::input(&initial, RepairScope::SameStory),
-            )
-            .unwrap();
+        let accepted = legacy::retain(&f, initial.clone(), RepairScope::SameStory);
         let held = retained_policy_work(&f, accepted, 0, failures);
         let effect = &held.state.work[0];
         let actuator = worker::helper(&f, r#"{"ok":true}"#);
@@ -83,7 +78,7 @@ fn legacy_undelivered_work_rearms_without_resetting_budget_or_identity() {
 }
 
 #[test]
-fn inactive_recovery_rearms_only_undelivered_resume_work() {
+fn sh870_retained_inactive_recovery_rearms_only_undelivered_resume_work() {
     let f = fixture();
     let accepted = resume::decided(&f);
     resume::land(&f, &accepted);
@@ -121,7 +116,7 @@ fn inactive_recovery_rearms_only_undelivered_resume_work() {
 }
 
 #[test]
-fn stopped_resume_with_terminal_disposition_stays_held_after_start() {
+fn sh870_retained_stopped_resume_with_terminal_disposition_stays_held_after_start() {
     let f = fixture();
     let accepted = resume::decided(&f);
     resume::land(&f, &accepted);

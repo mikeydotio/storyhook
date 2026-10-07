@@ -20,6 +20,9 @@ pub(crate) struct Fixture {
 }
 impl Fixture {
     pub(crate) fn new(fixture: bool) -> Self {
+        Self::new_case(fixture, false)
+    }
+    pub(crate) fn new_case(fixture: bool, candidate_only: bool) -> Self {
         let directory = tempfile::tempdir_in("/tmp").unwrap();
         let config = directory.path().join("authority.json");
         let mut broker = storyhook_test_support::ChildGuard::spawn(
@@ -73,14 +76,10 @@ impl Fixture {
         f.write("tests/contract.rs", if fixture {"#[test] fn answer() { assert_eq!(include_str!(\"../fixtures/value.txt\"), subject::answer()); }\n"} else {TEST});
         f.write("fixtures/value.txt", "valid");
         // Broker evidence is outside the source tree.
-        f.git(&[
-            "add",
-            "Cargo.toml",
-            "Cargo.lock",
-            "src",
-            "tests",
-            "fixtures",
-        ]);
+        f.git(&["add", "Cargo.toml", "Cargo.lock", "src", "fixtures"]);
+        if !candidate_only {
+            f.git(&["add", "tests"]);
+        }
         f.git(&["commit", "-qm", "base"]);
         f.base = f.git(&["rev-parse", "HEAD"]);
         if fixture {
@@ -88,7 +87,7 @@ impl Fixture {
         } else {
             f.write("src/lib.rs", "pub fn answer() -> u32 { 41 }\n");
         }
-        f.git(&["add", "src", "fixtures"]);
+        f.git(&["add", "src", "fixtures", "tests"]);
         f.git(&["commit", "-qm", "candidate"]);
         f
     }
@@ -124,7 +123,7 @@ impl Fixture {
                 "answer",
             )
             .unwrap(),
-            TreeIntervention::Unchanged,
+            TreeIntervention::MissingDetector("tests/contract.rs".into()),
             Environment::at(self.directory.path()),
             Instant::now() + storyhook_test_support::load_grace::graced_now(PATIENCE),
             &Cancellation::default(),

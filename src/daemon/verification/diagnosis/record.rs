@@ -75,7 +75,7 @@ pub(super) fn begin<S: Store>(
     owner: &VerificationGuard,
     control: i64,
     original: &GateExecution,
-    request: &RustDiagnosisRequest,
+    request: Option<&RustDiagnosisRequest>,
     selection: &Result<(usize, String), String>,
 ) -> Result<Option<(AttributionRecord, bool)>, AppError> {
     Ok(ctx.write_stories(|tx| {
@@ -90,7 +90,10 @@ pub(super) fn begin<S: Store>(
             return Ok(None);
         }
         let prior = tx.attributions(candidate.project)?;
-        if let Some(existing) = prior.iter().find(|a| a.attempt == owner.active.attempt_id) {
+        if let Some(existing) = prior.iter().find(|a| {
+            a.attempt == owner.active.attempt_id
+                && a.submission.same_generation(&cost::submission(candidate))
+        }) {
             return Ok(Some((existing.clone(), false)));
         }
         // A different held attempt is a real hold, not this coordinator's own hold.
@@ -109,7 +112,7 @@ pub(super) fn begin<S: Store>(
                 FailureComponent {
                     id: format!("original-{index}"),
                     check: selected
-                        .and_then(|_| request.case.check_identity())
+                        .and_then(|_| request.and_then(|request| request.case.check_identity()))
                         .unwrap_or_else(|| {
                             format!(
                                 "original:{}:{}:{}",
@@ -136,7 +139,7 @@ pub(super) fn begin<S: Store>(
             })
             .collect();
         if let Ok((index, _)) = selection {
-            components[*index].log = request.log.display().to_string();
+            components[*index].log = request.expect("selected request").log.display().to_string();
         }
         for (index, leg) in original.legs.iter().enumerate().filter(|(_, leg)| {
             matches!(leg.status.as_str(), "failed" | "fail" | "error")
@@ -181,6 +184,7 @@ pub(super) fn begin<S: Store>(
             created_at: ctx.now(),
             components,
             preparation: None,
+            settlement: None,
             plans: vec![],
             probes: vec![],
             assessments: vec![],
