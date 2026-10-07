@@ -9,6 +9,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "verifier": {
         "active": null,
+        "attribution_holds": [],
         "control": "running",
         "evidence_error": null,
         "first_hit_story": null,
@@ -97,6 +98,7 @@ source: tests/golden_cli.rs
       "total_stories": 16,
       "verifier": {
         "active": null,
+        "attribution_holds": [],
         "control": "running",
         "evidence_error": null,
         "first_hit_story": null,
@@ -126,6 +128,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "verifier": {
         "active": null,
+        "attribution_holds": [],
         "control": "running",
         "evidence_error": null,
         "first_hit_story": null,

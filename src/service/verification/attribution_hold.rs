@@ -49,6 +49,7 @@ impl<S: Store> VerificationQueue<'_, S> {
             // Repeated disposition is idempotent; different observations must remain separate.
             if tx.attributions(project)?.iter().any(|a| a.attempt == attempt_id
                 && a.held && a.components.iter().any(|c| c.check == check && c.signature == detail)) {
+                clear_candidate_retry_incident(tx, candidate)?;
                 return Ok(GenerationWrite::Applied(()));
             }
             let id = uuid::Uuid::new_v4().to_string();
@@ -67,6 +68,7 @@ impl<S: Store> VerificationQueue<'_, S> {
                 held: true, retired: None,
             };
             tx.insert_attribution(&record)?;
+            clear_candidate_retry_incident(tx, candidate)?;
             let states = tx.state_map(project)?;
             append_and_fold(tx, project, story, &prefix, &states, ExpectedSeq::Exact(row.head_seq),
                 &[StoryEvent::StoryCommentAdded { at: now.clone(), text: format!(

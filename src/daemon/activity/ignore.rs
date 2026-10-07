@@ -47,6 +47,28 @@ pub(crate) fn prepare(directory: &Path) -> io::Result<()> {
         .recursive(true)
         .mode(0o700)
         .create(directory)?;
+    prepare_existing(directory)
+}
+
+/// Prepares the journal directly beneath an existing anchor without recreating
+/// any parent. A prior existence check cannot authorize recursive creation:
+/// the daemon home may be detached between that check and this write.
+pub(super) fn prepare_child(directory: &Path, anchor: &Path) -> io::Result<()> {
+    if directory.parent() != Some(anchor) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "an anchored journal must be a direct child of its anchor",
+        ));
+    }
+    match DirBuilder::new().mode(0o700).create(directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && directory.is_dir() => {}
+        Err(error) => return Err(error),
+    }
+    prepare_existing(directory)
+}
+
+fn prepare_existing(directory: &Path) -> io::Result<()> {
     if is_current(&directory.join(IGNORE_FILE))? {
         return Ok(());
     }
@@ -116,6 +138,49 @@ mod tests {
 
     fn ignore_bytes(directory: &Path) -> Vec<u8> {
         std::fs::read(directory.join(IGNORE_FILE)).unwrap()
+    }
+
+    #[test]
+    fn anchored_preparation_never_recreates_a_home_detached_after_preflight() {
+        let root = storyhook_test_support::scratch_dir();
+        let home = root.path().join("home");
+        let anchor = home.join(".local/state/storyhook/daemons/key");
+        let directory = anchor.join("activity");
+        std::fs::create_dir_all(&anchor).unwrap();
+        prepare_child(&directory, &anchor).unwrap();
+        assert!(anchor.is_dir(), "the old append preflight succeeded");
+        let retired = root.path().join("retired-home");
+        std::fs::rename(&home, &retired).unwrap();
+        // Deterministically reproduce deletion after the preflight but before
+        // journal preparation; recursive creation here resurrects the home.
+        let error = prepare_child(&directory, &anchor).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(!home.exists());
+        let retained = retired.join(".local/state/storyhook/daemons/key/activity");
+        assert_eq!(entries(&retained), [IGNORE_FILE]);
+        assert_eq!(ignore_bytes(&retained), JOURNAL_IGNORE);
+    }
+
+    #[test]
+    fn anchored_preparation_repairs_its_ignore_file_without_creating_ancestors() {
+        let root = storyhook_test_support::scratch_dir();
+        let anchor = root.path().join("existing-anchor");
+        std::fs::create_dir(&anchor).unwrap();
+        let directory = anchor.join("activity");
+        prepare_child(&directory, &anchor).unwrap();
+        assert_eq!(
+            std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        std::fs::write(directory.join(IGNORE_FILE), "!*.jsonl\n").unwrap();
+        prepare_child(&directory, &anchor).unwrap();
+        assert_eq!(ignore_bytes(&directory), JOURNAL_IGNORE);
+        let outside = root.path().join("outside/activity");
+        assert_eq!(
+            prepare_child(&outside, &anchor).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(!outside.parent().unwrap().exists());
     }
 
     #[test]

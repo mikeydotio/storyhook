@@ -218,6 +218,7 @@ source: tests/golden_cli.rs
       },
       "verifier": {
         "active": null,
+        "attribution_holds": [],
         "control": "running",
         "evidence_error": null,
         "first_hit_story": null,

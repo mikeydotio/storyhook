@@ -476,6 +476,39 @@ raise SystemExit(status)
         assert_eq!(git(&checkout, &["rev-parse", "origin/main"]), merged);
     } else {
         assert_eq!(result, TickResult::Returned);
+        assert_eq!(row.state, "verifying");
+        let status = activity.status(&f.ctx()).unwrap();
+        assert!(status.incident.is_none());
+        assert!(!status.attribution_holds.is_empty(), "{status:?}");
+        assert!(status.attribution_holds.iter().all(|hold| {
+            hold.story_id == "SH-1"
+                && hold.cause == storyhook::service::attribution::FailureCause::Unknown
+        }));
+        let queue = VerificationQueue::new(f.store());
+        let runnable = queue.runnable().unwrap();
+        assert_eq!(
+            runnable
+                .iter()
+                .map(|candidate| (candidate.project, candidate.story_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(f.project(), "SH-2")],
+            "held SH-1 must not run; unheld SH-2 must remain runnable: {runnable:#?}; {status:#?}"
+        );
+        let next = queue
+            .next()
+            .unwrap()
+            .expect("unheld SH-2 remains eligible after SH-1 is held");
+        assert_eq!(
+            (next.project, next.story_id.as_str()),
+            (f.project(), "SH-2"),
+            "{next:#?}"
+        );
+        assert!(row.snapshot.comments.iter().any(|comment| {
+            comment
+                .text
+                .contains("CENTRAL VERIFICATION ATTRIBUTION HELD")
+                && comment.text.contains("No repair is assigned")
+        }));
         assert!(
             row.snapshot
                 .comments

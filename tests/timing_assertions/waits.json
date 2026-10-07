@@ -414,13 +414,6 @@
       "reason": "idle is graced once before the actuator is built. It triggers TERM and allows the fixture to publish its completed capture; this test proves retained results, not a particular wall-clock interval."
     }
   },
-  "tests/verification_queue/reconcile_hold.rs": {
-    ".recv_timeout(RECEIVE_POLL": {
-      "count": 1,
-      "kind": "fixture",
-      "reason": "RECEIVE_POLL is the receive polling quantum. recv_patiently checks its outer load_grace Patience after each empty receive and returns disconnection immediately."
-    }
-  },
   "tests/verification_retry_shell.rs": {
     ".wait_within(storyhook_test_support::load_grace::PATIENCE_CEILING": {
       "count": 1,

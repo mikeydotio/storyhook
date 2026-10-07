@@ -149,33 +149,92 @@ class PluginRunner(unittest.TestCase):
 
 
 
-@unittest.skipIf(POLICY.exists(), "these cases prove the disabled host; this host has a policy")
 class BrowserSuite(unittest.TestCase):
-    """The tracked browser runner, stopped at its first build by a failing cargo."""
+    """Execute tracked re-entry and artifact ownership, stopping before a build."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir="/tmp", prefix="btw-")
+        self.addCleanup(self.tmp.cleanup)
+        self.fixture = Path(self.tmp.name)
+        for name in ("scripts", "bin", "e2e"):
+            (self.fixture / name).mkdir()
+        for path in (CHECKOUT / "scripts").iterdir():
+            if path.name != "host-admit.py":
+                (self.fixture / "scripts" / path.name).symlink_to(path)
+        # Only config is shared: default results must never erase checkout artifacts.
+        (self.fixture / "e2e/playwright.config.ts").symlink_to(CHECKOUT / "e2e/playwright.config.ts")
+        # Exercise the real fast-path exec with an isolated, absent policy. No
+        # production host setting is read or changed, even on an enrolled host.
+        adapter = self.fixture / "scripts/host-admit.py"
+        adapter.write_text(f"""import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("entry", {str(CHECKOUT / 'scripts/host-admit.py')!r})
+entry = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(entry)
+entry.POLICY = {str(self.fixture / 'absent-policy.json')!r}
+with open({str(self.fixture / 'admission.log')!r}, "a") as log:
+    log.write("entry\\n")
+if os.environ.get("FIXTURE_REFUSE_ADMISSION"):
+    sys.exit(67)
+entry.fast(sys.argv[1:])
+raise AssertionError("fixture must enter the production disabled-host exec")
+""")
+        cargo = self.fixture / "bin/cargo"
+        cargo.write_text(FAKE_CARGO.replace("exit 0", "exit 73"))
+        cargo.chmod(0o755)
+        subprocess.run(["git", "init", "-q"], cwd=self.fixture, check=True)
+
+    def run_browser(self, **extra):
+        env = runner_env(self.fixture, STORYHOOK_E2E_JOBS="3")
+        for key in ("STORYHOOK_E2E_RESULTS_DIR", "STORYHOOK_E2E_DURATIONS", "FIXTURE_REFUSE_ADMISSION"):
+            env.pop(key, None)
+        env.update(extra)
+        return subprocess.run(["bash", "scripts/run-e2e.sh"], cwd=self.fixture,
+                              env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                              timeout=PROCESS_ALLOWANCE_S * 4)
 
     def test_the_browser_suite_is_admitted_once_before_its_first_build(self):
-        with tempfile.TemporaryDirectory(dir="/tmp", prefix="btw-") as tmp:
-            fixture = Path(tmp)
-            (fixture / "scripts").mkdir()
-            (fixture / "bin").mkdir()
-            for path in (CHECKOUT / "scripts").iterdir():
-                (fixture / "scripts" / path.name).symlink_to(path)
-            # The runner reads its project list from the tracked config first.
-            (fixture / "e2e").symlink_to(CHECKOUT / "e2e")
-            cargo = fixture / "bin" / "cargo"
-            cargo.write_text(FAKE_CARGO.replace("exit 0", "exit 1"))
-            cargo.chmod(0o755)
-            subprocess.run(["git", "init", "-q"], cwd=fixture, check=True)
-            done = subprocess.run(["bash", "scripts/run-e2e.sh"], cwd=fixture,
-                                  env=runner_env(fixture, STORYHOOK_E2E_JOBS="3"), capture_output=True,
-                                  text=True, stdin=subprocess.DEVNULL, timeout=PROCESS_ALLOWANCE_S * 4)
-            calls = (fixture / "cargo.log").read_text().splitlines()
-        self.assertNotEqual(done.returncode, 0, "the failing build stops the suite")
+        done = self.run_browser()
+        self.assertEqual(done.returncode, 73, done.stderr)
+        calls = (self.fixture / "cargo.log").read_text().splitlines()
         self.assertEqual(len(calls), 1, f"one build, so one admitted pass: {calls}")
         _, entry, _, units = calls[0].split("|")
         self.assertRegex(entry, r"^entry=browser-pool:\d+$")
         self.assertEqual(units, "units=", "the unit count is consumed before any slice")
+        self.assertEqual((self.fixture / "admission.log").read_text().splitlines(), ["entry"])
 
+    def test_explicit_results_survive_reentry_and_existing_paths_are_refused(self):
+        results = self.fixture / "preserved results"
+        done = self.run_browser(STORYHOOK_E2E_RESULTS_DIR=str(results))
+        self.assertEqual(done.returncode, 73, done.stderr)
+        self.assertEqual({p.name for p in results.iterdir()}, {"slice-reports", "timings"})
+        sentinel = results / "evidence.txt"
+        sentinel.write_text("retained failure evidence")
+        redirected = self.fixture / "redirected-results"
+        redirected.symlink_to(results, target_is_directory=True)
+        for existing in (results, redirected):
+            with self.subTest(existing=existing.name):
+                done = self.run_browser(STORYHOOK_E2E_RESULTS_DIR=str(existing))
+                self.assertEqual(done.returncode, 2, done.stderr)
+                self.assertIn("results directory must be new", done.stderr)
+                self.assertEqual(sentinel.read_text(), "retained failure evidence")
+                self.assertTrue(redirected.is_symlink())
+        self.assertEqual(len((self.fixture / "cargo.log").read_text().splitlines()), 1,
+                         "existing artifact paths must refuse before any build")
+        self.assertEqual((self.fixture / "admission.log").read_text().splitlines(), ["entry"] * 3)
+
+    def test_refused_admission_does_not_create_or_clear_results(self):
+        results = self.fixture / "not-created"
+        done = self.run_browser(STORYHOOK_E2E_RESULTS_DIR=str(results), FIXTURE_REFUSE_ADMISSION="1")
+        self.assertEqual(done.returncode, 67, done.stderr)
+        self.assertFalse(results.exists())
+        default = self.fixture / "e2e/test-results/current"
+        default.mkdir(parents=True)
+        sentinel = default / "evidence.txt"
+        sentinel.write_text("older evidence")
+        done = self.run_browser(FIXTURE_REFUSE_ADMISSION="1")
+        self.assertEqual(done.returncode, 67, done.stderr)
+        self.assertEqual(sentinel.read_text(), "older evidence")
+        self.assertFalse((self.fixture / "cargo.log").exists())
 
 
 class VerifierWorkers(unittest.TestCase):

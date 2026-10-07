@@ -158,7 +158,7 @@ impl Board {
     /// records outside the event log.
     fn writes(&self) -> String {
         let project = self.fixture.project();
-        let (feed, incident, intents, recovery) = self
+        let (feed, incident, intents, recovery, attributions) = self
             .fixture
             .store()
             .read(|tx| {
@@ -167,13 +167,24 @@ impl Board {
                     tx.verification_incident(project)?,
                     tx.landing_intents()?,
                     tx.verification_recovery(project)?,
+                    tx.attributions(project)?,
                 ))
             })
             .unwrap();
         let feed: Vec<String> = feed.iter().map(|event| format!("{event:?}")).collect();
-        format!("{feed:#?}\n{incident:?}\n{intents:?}\n{recovery:?}")
+        let mut writes = format!("{feed:#?}\n{incident:?}\n{intents:?}\n{recovery:?}")
             .replace(&self.root.display().to_string(), "<root>")
-            .replace(&self.fixture.cwd().display().to_string(), "<cwd>")
+            .replace(&self.fixture.cwd().display().to_string(), "<cwd>");
+        // Native attribution comments name fresh UUIDs even when both runs
+        // make identical decisions. Normalize only identities backed by this
+        // run's durable evidence; retain all event kinds and diagnostic text.
+        for (index, record) in attributions.iter().enumerate() {
+            assert!(!record.id.is_empty() && !record.attempt.is_empty());
+            writes = writes
+                .replace(&record.id, &format!("<attribution-{index}>"))
+                .replace(&record.attempt, &format!("<attempt-{index}>"));
+        }
+        writes
     }
 
     pub(super) fn records(&self) -> Vec<serde_json::Value> {

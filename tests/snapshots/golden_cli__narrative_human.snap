@@ -109,6 +109,7 @@ $ story context --format json
   "total_stories": 16,
   "verifier": {
     "active": null,
+    "attribution_holds": [],
     "control": "running",
     "evidence_error": null,
     "first_hit_story": null,

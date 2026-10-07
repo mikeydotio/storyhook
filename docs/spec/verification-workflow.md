@@ -206,7 +206,7 @@ Selection is store-derived on every tick, so a daemon restart loses nothing;
 an in-flight file records the candidate the worker holds so a restart can
 tell an interrupted verification from a fresh one (SH-547, SH-555).
 
-### Mergeability, and the conflict queue-hold
+### Mergeability, attribution holds, and proved repair delivery
 
 `scripts/verify-pr.sh <pr-url> -- <gate…>` establishes the persistent verifier worktree,
 refreshes the submission's refs (`refresh_submission_refs`: the PR head from
@@ -216,9 +216,29 @@ agree three ways before anything is judged — SH-636), and runs
 produce with `git merge-tree --write-tree` and checks it against the receipt
 store (SH-396). A conflict is `VerificationOutcome::Conflict`.
 
-On `Conflict` the worker calls `return_for_repair`: it records the generation
-as returned, moves the story back to `in-progress` (`RETURNED_STATE`),
-comments the diagnosis, and asks the actuator to `notify` — `story.sh notify`,
+**A conflict retains evidence and releases the worker (SH-870).** The worker
+calls `hold_for_attribution` with cause `Integration`. The story stays in
+`verifying`; a durable, generation-bound attribution record and a
+`CENTRAL VERIFICATION ATTRIBUTION HELD` comment explain the failure. The held
+generation is excluded from the runnable queue, while the project's slot is
+released so other eligible submissions can proceed. No repair notification,
+re-dispatch, or wait for the implementer follows an unproved conflict.
+`story verifier evidence <story> --json` exposes the evidence to inspect.
+A later explicit withdrawal and resubmission creates a new generation and
+joins the normal priority queue; the earlier record remains history. Pane
+absence, silence, or elapsed time does not establish causal responsibility.
+
+**Repair delivery requires native causal proof.** A failed gate first enters
+native diagnosis. Unknown or unsupported evidence retains an attribution hold;
+only a settled `CausalReturnEvidence` can enter `return_for_repair`. That path
+rechecks the current PR head and admitted generation, records the proved
+component's diagnosis, and returns ordinary work to `in-progress`.
+Managed project repairs use their existing durable recovery lineage. The
+diagnosis names exact reproduction arguments, preserves required test coverage,
+and states the implementer test scope and failed-gate rerun rule. Other held
+components are not assigned for repair.
+
+For an ordinary proved repair, the actuator's `notify` runs `story.sh notify`,
 which finds the story's tmux window and either pastes the diagnosis and presses
 submit, or refuses by name: `pane-unavailable` (no window), `pane-dead` (the
 pane's process has exited under `remain-on-exit`), `pane-changed` (something
@@ -228,73 +248,29 @@ provider tag), `pane-query-failed` (tmux could not be asked),
 drawn; nothing was typed) or `delivery-failed` (the paste did not show in the
 composer, or its submission was not confirmed). Since SH-780 the paste goes
 only into a composer that reads idle, and the submit key only while the
-composer shows the diagnosis: a dialog's cursor row reads like composer text,
-and a submit key there approves the dialog for the person. The daemon
-classifies the slugs through one exhaustive table, `NOTIFY_REFUSALS`, into
-**absent** (`pane-unavailable`, `pane-dead`) and **not absent** (every other
-slug); `tests/notify_reasons.rs` derives the helper's slugs from `cmd_notify`'s
-own literals and demands set-equality with the table.
+composer shows the diagnosis. The daemon classifies the slugs through
+`NOTIFY_REFUSALS` into **absent** (`pane-unavailable`, `pane-dead`) and
+**not absent** (every other slug); `tests/notify_reasons.rs` checks this table
+against the helper's own literals.
 
-**If the paste succeeded, the verifier holds.** `wait_for_reconciled_candidate`
-keeps the project's worker reserved for that story — every other project's
-worker is unaffected (SH-648) — and re-reads the store on every change-bus
-wake and every 100 ms until the same story presents a **newer**
-`verifying_generation` — the agent's resubmission — then transfers the
-reservation to it and continues in the same tick. A pass reads the store
-alone and starts no process; the checkout origin is validated once, for the
-resubmission it returns (SH-769). Other arrivals cannot take
-the slot; a daemon stop ends the wait without manufacturing a candidate. This
-is step 2's "wait, holding the queue", and it is pinned by
-`tests/verification_queue.rs` (the reservation, the generation check, and that
-a wrong candidate is an error rather than a transfer). The verifier declares
-the hold on its own slot before the return is written, so `story verifier
-status` and the dashboard show it as a `reconcile` reservation, as ordinary
-work and never as missing evidence (SH-768).
+**An absent agent may be re-dispatched for a proved repair.**
+`deliver_return` comments its intent (`CENTRAL VERIFICATION RESUME — …`),
+asks the helper for `dispatch <id> --resume --auto`, and pastes the diagnosis
+afterwards. `--resume` respawns a dead pane in place, recreates a missing window,
+reuses the `in-progress` claim, refreshes the lease marker, and appends the
+resume clause to the charter. The helper uses the abandoned dispatch's provider;
+a live Full Auto lane retains its run's provider options and `--full-auto`
+through `resume_plan`. A reserved label prevents unattended re-dispatch and
+leaves the diagnosis for a person. A delivered diagnosis finishes this attempt;
+it does not reserve the project's queue until the agent resubmits.
 
-**If the agent is absent, the verifier re-dispatches and still holds**
-(SH-650). A dispatched pane is **normally already dead** at the handoff — the
-launch command is exec'd into the pane and exits with the agent — so this is
-the common path. `return_for_repair` comments what it is about to do
-(`CENTRAL VERIFICATION RESUME — …`), asks the helper for
-`dispatch <id> --resume --auto` through the one argv composer the dashboard and
-the engine use (`run_shell_dispatch`, with `STORY_TARGET_SESSION` and
-`STORY_CREATE_SESSION` as the engine sets them), and pastes the diagnosis
-afterwards. `--resume` respawns a dead pane in place under the same pane id,
-recreates a missing window under the same name, reuses the `in-progress`
-claim, rewrites the lease marker and appends the resume clause to the charter;
-the helper relaunches the provider the abandoned dispatch recorded. A story a
-live Full Auto lane holds is re-dispatched as that lane (the run's provider
-options and `--full-auto`); see `resume_plan`. Remediation then counts as
-started, so the reservation is kept exactly as after a delivered paste
-(`a_conflict_returned_to_a_dead_pane_is_redispatched_and_still_holds_the_queue`).
-
-**The hold ends when the reconcile has stopped** (D-J, SH-770).
-`wait_for_reconciled_candidate` reads the story's queued generation and its
-own facts in one store transaction on every pass (`VerificationQueue::hold_view`).
-A newer generation always wins. Otherwise the hold releases when the story is
-blocked — the agent's `story block`, the Full Auto watchdog's quarantine, an
-open `blocked-by` (a deadlock when the blocker waits behind the hold) or the
-`blocked` state — or has left `in-progress` for any state but `verifying`.
-Once per `RECOVERY_WAKE`, and never on a pass or a wake, it asks the actuator
-whether the agent still runs (`probe_agent`: one `tmux list-panes` on the
-server the story's lease records, for the windows named for the story). Two
-`Gone` probes in a row release it; so does silence on both the story's change
-feed and the pane's output past `STALL_CEILING_SECS`, judged by the engine's
-`silent_on_both_channels`. With no pane evidence the store's silence alone
-decides at the same ceiling. A probe's verdict is judged on a fresh pass, so a
-resubmission that landed while tmux answered wins. On release the worker
-comments `CENTRAL VERIFICATION HOLD RELEASED —` with the cause and the returned
-generation, journals it, and serves the queue; when the story resubmits later
-it is an ordinary queue member.
-
-**Only a refusal that is not absence, or a refused re-dispatch, parks.**
-`return_for_repair` then falls back to `set_generation_awaiting` naming the
-refusal, the reservation and the activity slot are both released, and the
-story sits in `in-progress` with an `awaiting` reason until a person acts
-(`a_refused_resume_redispatch_parks_the_story_and_releases_the_reservation`,
-`a_notify_failure_that_is_not_absence_parks_without_redispatching`). Under
-Full Auto that `awaiting` classifies as `AgentBlocked` (`full-auto-engine.md`,
-"The verifying handoff") — now for a story a person genuinely has to look at.
+**A notification error or refused re-dispatch parks the proved repair.**
+`deliver_return` uses `set_generation_awaiting` to record the refusal. The story
+remains `in-progress` with an `awaiting` reason until a person acts, and the
+attempt releases the activity slot. Under Full Auto that awaiting work
+classifies as `AgentBlocked` (`full-auto-engine.md`, "The verifying handoff").
+If re-dispatch succeeds but the subsequent paste fails, a comment records the
+failure: the resumed agent can read the diagnosis already stored on the story.
 
 ### The gate
 

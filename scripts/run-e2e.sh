@@ -109,32 +109,7 @@ repo_root="$PWD"
 . "$repo_root/scripts/e2e-pool.sh"
 # Cargo's own mutable artifact. Never invoked: `$story_bin`, assigned after
 # the build below, is the leased hard link of it.
-story_artifact="$repo_root/target/debug/story"
-results_root="${STORYHOOK_E2E_RESULTS_DIR-$repo_root/e2e/test-results/current}"
-
-# One artifact tree for this invocation. Each Playwright project gets its own
-# output directory below, so a later project's startup no longer erases the
-# screenshots, traces and error contexts from earlier failures while this
-# script deliberately continues through the remaining matrix.
-if [ "${STORYHOOK_E2E_RESULTS_DIR+x}" = x ]; then
-  case "$results_root" in
-    /*) ;;
-    *) echo "run-e2e.sh: STORYHOOK_E2E_RESULTS_DIR must be absolute" >&2; exit 2 ;;
-  esac
-  # mkdir (without -p) refuses an existing path, including a symlink. The
-  # caller owns its parent and no existing artifacts can be overwritten.
-  mkdir "$results_root" || { echo "run-e2e.sh: results directory must be new: $results_root" >&2; exit 2; }
-else
-  rm -rf "$results_root"
-  mkdir -p "$results_root"
-fi
-mkdir -p "$results_root/slice-reports" "$results_root/timings"
-# History is advisory and shared across linked worktrees, like the Rust pool.
-e2e_history="${STORYHOOK_E2E_DURATIONS:-$(git rev-parse --path-format=absolute --git-common-dir)/storyhook/e2e-durations.tsv}"
-e2e_timing() {
-  printf '%s\t%s\n' "$1" "$((SECONDS - $2))" >>"$results_root/timings/${slice:-plan}.tsv"
-}
-
+story_artifact="$(storyhook_debug_artifact "$repo_root")"
 # --- The engine set, derived from the config (SH-335). ------------------
 #
 # `e2e/playwright.config.ts` names each project with a line of the exact
@@ -195,6 +170,34 @@ case "${STORYHOOK_HOST_ENTRY:-}" in
 esac
 e2e_jobs="${STORYHOOK_HOST_UNITS:-$e2e_jobs}"
 unset STORYHOOK_HOST_UNITS
+
+# Artifact mutation belongs to the admitted pass only. Admission re-executes
+# this script; creating a caller-owned result directory before it would make
+# that pass refuse its own directory (or clear the default tree twice).
+results_root="${STORYHOOK_E2E_RESULTS_DIR-$repo_root/e2e/test-results/current}"
+
+# One artifact tree for this invocation. Each Playwright project gets its own
+# output directory below, so a later project's startup no longer erases the
+# screenshots, traces and error contexts from earlier failures while this
+# script deliberately continues through the remaining matrix.
+if [ "${STORYHOOK_E2E_RESULTS_DIR+x}" = x ]; then
+  case "$results_root" in
+    /*) ;;
+    *) echo "run-e2e.sh: STORYHOOK_E2E_RESULTS_DIR must be absolute" >&2; exit 2 ;;
+  esac
+  # mkdir (without -p) refuses an existing path, including a symlink. The
+  # caller owns its parent and no existing artifacts can be overwritten.
+  mkdir "$results_root" || { echo "run-e2e.sh: results directory must be new: $results_root" >&2; exit 2; }
+else
+  rm -rf "$results_root"
+  mkdir -p "$results_root"
+fi
+mkdir -p "$results_root/slice-reports" "$results_root/timings"
+# History is advisory and shared across linked worktrees, like the Rust pool.
+e2e_history="${STORYHOOK_E2E_DURATIONS:-$(git rev-parse --path-format=absolute --git-common-dir)/storyhook/e2e-durations.tsv}"
+e2e_timing() {
+  printf '%s\t%s\n' "$1" "$((SECONDS - $2))" >>"$results_root/timings/${slice:-plan}.tsv"
+}
 
 # --- WebKit's Tab order, measured once, never assumed (SH-335). ---------
 #

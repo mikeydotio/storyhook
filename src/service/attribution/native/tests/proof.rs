@@ -433,5 +433,12 @@ fn revocations(
         );
         fs::write(path, original).unwrap();
     }
-    assert!(!proof.diagnosis().contains("unproved-shared-check"));
+    let diagnosis = proof.diagnosis();
+    assert!(!diagnosis.contains("unproved-shared-check"));
+    for rule in [
+        crate::service::verification::IMPLEMENTER_TEST_SCOPE,
+        crate::service::verification::FAILED_GATE_RERUN_SCOPE,
+    ] {
+        assert_eq!(diagnosis.matches(rule).count(), 1, "{diagnosis}");
+    }
 }

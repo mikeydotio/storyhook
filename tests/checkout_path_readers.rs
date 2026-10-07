@@ -43,6 +43,10 @@ use std::path::Path;
 /// implements it, so naming the column is its job.
 const ALLOWED: &[(&str, &str)] = &[
     (
+        "src/service/attribution/native/tests/proof.rs",
+        "native proof revocation fixture replaces the already-selected project's checkout to prove stale repair authority is rejected; it never resolves a project from that path",
+    ),
+    (
         "src/daemon/reset/tests.rs",
         "reset fixtures clear a selected project's checkout to exercise missing-checkout handling; paths do not select identity",
     ),
